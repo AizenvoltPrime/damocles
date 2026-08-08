@@ -70,7 +70,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 - Nested (subagent/team) MCP arrives as `customTools`, never via the shared registrar — that is what preserves the nested-session republisher exemption, so never "simplify" it into sharing the registrar.
 - A nested agent's MCP set is frozen at spawn from ONE descriptor read (names + definitions + gate classifier + blurbs); a server connecting mid-run reaches the next agent, never a running one. The grant is uniform across every agent type and mode; `disallowed_tools` is the one opt-out and it is exact and case-sensitive.
 - Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision — see `docs/invariants.md` before changing it.
-- All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`.
+- All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed — never sequence a delete off a promise that resolves either way.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
@@ -78,7 +78,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 - Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
 - The team profile catalog is generated — edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
 - A subagent's model is configuration, never the spawning model's choice (`Agent` has no `model` param).
-- Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom. Never mutate `process.env` for per-session config.
+- Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom — never hand-roll a `completeSimple` call, because that seam is what keeps untrusted content (transcripts, memories, queries) in data position instead of instruction position. Never mutate `process.env` for per-session config.
 - Implementation gotchas live in the code and in memory observations — search those before assuming.
 
 ## Permission Modes

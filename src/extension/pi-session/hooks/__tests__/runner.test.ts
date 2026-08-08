@@ -45,6 +45,35 @@ describe('parseHookOutput', () => {
     expect(d.reason).toBe('no');
   });
 
+  it('JSON deny without terminate leaves terminate absent (the default is unchanged)', () => {
+    const d = parseHookOutput(0, JSON.stringify({ decision: 'deny', reason: 'no' }), '');
+    expect(d).not.toHaveProperty('terminate');
+  });
+
+  it('JSON deny + terminate:true sets terminate', () => {
+    const d = parseHookOutput(0, JSON.stringify({ decision: 'deny', reason: 'no', terminate: true }), '');
+    expect(d.block).toBe(true);
+    expect(d.terminate).toBe(true);
+  });
+
+  /**
+   * Untrusted hook stdout becomes a turn-ending flag here and nowhere else, so the strict `=== true`
+   * check is pinned: a shell/jq one-liner emitting `"true"` or `1` is the likeliest way a hook author
+   * ends up asking for something they did not mean. Relaxing this to `Boolean(...)` would also let
+   * `"false"`, `{}` and `[]` through.
+   */
+  it.each([
+    ['the string "true"', 'true'],
+    ['the string "false"', 'false'],
+    ['the number 1', 1],
+    ['an empty object', {}],
+    ['an empty array', []],
+  ])('JSON deny + terminate as %s is IGNORED (only the boolean true terminates)', (_label, value) => {
+    const d = parseHookOutput(0, JSON.stringify({ decision: 'deny', reason: 'no', terminate: value }), '');
+    expect(d.block).toBe(true);
+    expect(d).not.toHaveProperty('terminate');
+  });
+
   it('JSON updated_input', () => {
     const d = parseHookOutput(0, JSON.stringify({ updated_input: { file_path: '/x' } }), '');
     expect(d.updatedInput).toEqual({ file_path: '/x' });

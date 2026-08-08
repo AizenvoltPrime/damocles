@@ -20,13 +20,20 @@
  * deauthenticates the provider (drops the runtime override, unregisters a fresh-registered provider,
  * and deletes any stored credential) — this both makes secret deletion take effect immediately and
  * sweeps legacy plaintext keys that Damocles ≤2.6 wrote into auth.json.
+ *
+ * pi 0.84 credential semantics: `setRuntimeApiKey` / `removeRuntimeApiKey` / `logout` serialize per
+ * provider, and after committing the credential run an OFFLINE single-provider refresh plus an
+ * availability probe that reads `auth.json` under a file lock — not 0.83's whole-runtime networked
+ * refresh. All three honor `AuthOperationOptions.signal`, which truly cancels rather than orphaning an
+ * operation still holding the lock; `deps.signal` threads that through.
  */
 
 import * as vscode from 'vscode';
-import type { Api, Model } from '@earendil-works/pi-ai';
+import type { Api, AuthOperationOptions, Model } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { log } from '../logger';
+import { describeAuthError } from './describe-error';
 import type { ModelLookup } from './pi-models';
 import { effortToPiThinking } from './pi-models';
 import { DEFAULT_MODELS, parseEffortLevel } from '../../shared/types/constants';
@@ -135,13 +142,27 @@ export type SecretResolver = (key: string) => PromiseLike<string | undefined>;
 export interface SyncCustomProvidersDeps {
   modelRuntime: ModelRuntime;
   getSecret: SecretResolver;
+  /** Cancels the sync — checked between providers and forwarded as `AuthOperationOptions.signal`. */
+  signal?: AbortSignal;
+}
+
+export interface SyncCustomProvidersResult {
+  /** Providers whose key is live on the runtime. */
+  wired: string[];
+  /** The signal fired before every provider had been processed. */
+  aborted: boolean;
+  /** Configured, but not live: failed to apply, its secret could not be read, or it was never reached
+   *  because the signal fired AND it is known-configured. A provider with no secret is deauthenticated
+   *  rather than "not wired", so it appears in neither list. Disjoint from `wired`. */
+  notWired: string[];
 }
 
 /**
- * Last key applied per provider on each live runtime — change detection so an unchanged key skips the
- * refresh-triggering re-apply (`setRuntimeApiKey` refreshes the whole runtime every call; without this,
- * every session start pays up to one full refresh per configured provider). Keyed by runtime instance
- * (WeakMap) so a disposed runtime's entries vanish with it and a recreated runtime re-syncs from scratch.
+ * Last key applied per provider, so an unchanged key skips the re-apply. That re-apply no longer
+ * refreshes the whole runtime under 0.84, but still enqueues a credential operation taking the
+ * cross-process `auth.json` lock and re-probing availability — so the cache still earns its place, and
+ * must NOT be deleted on the grounds that "the refresh is gone now". Keyed by runtime (WeakMap) so a
+ * recreated runtime re-syncs from scratch.
  */
 const syncedKeys = new WeakMap<ModelRuntime, Map<string, string>>();
 
@@ -151,17 +172,77 @@ const syncedKeys = new WeakMap<ModelRuntime, Map<string, string>>();
  * legacy plaintext keys Damocles ≤2.6 persisted — this doubles as the migration sweep). Ambient
  * environment configuration (`source: 'environment'`) is deliberately left alone. Idempotent.
  */
-async function deauthCustomProvider(runtime: ModelRuntime, def: CustomProviderDef, cache: Map<string, string>): Promise<void> {
+async function deauthCustomProvider(
+  runtime: ModelRuntime,
+  def: CustomProviderDef,
+  cache: Map<string, string>,
+  authOptions: AuthOperationOptions,
+): Promise<void> {
   const hadOverride = cache.delete(def.provider);
   const status = runtime.getProviderAuthStatus(def.provider);
   const damoclesSupplied = status.configured && (status.source === 'runtime' || status.source === 'stored');
   if (!hadOverride && !damoclesSupplied) return;
   // Fresh-registered providers (StepFun) are dropped entirely — the register config carries the key.
+  // `unregisterProvider` is synchronous and takes no options, so it gets no signal.
   if (def.mode === 'register') runtime.unregisterProvider(def.provider);
-  await runtime.removeRuntimeApiKey(def.provider);
+  await runtime.removeRuntimeApiKey(def.provider, authOptions);
   // Delete any stored credential: today a no-op, for ≤2.6 upgraders the plaintext-key sweep.
-  await runtime.logout(def.provider);
+  await runtime.logout(def.provider, authOptions);
   log('[custom-providers] deauthenticated %s (secret absent)', def.provider);
+}
+
+/** Matched by `name`, never `instanceof`: importing the class value would turn this module's type-only
+ *  `pi-coding-agent` import into a runtime one, and the package is an esbuild external. */
+function isCredentialSyncError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'CredentialSynchronizationError';
+}
+
+/** The outcome of one secret read. `failed` and `aborted` are deliberately distinct from a successful
+ *  read of `undefined`: only the latter means the user removed the key. */
+type SecretRead =
+  | { status: 'read'; key: string | undefined }
+  | { status: 'failed'; err: unknown }
+  | { status: 'aborted' };
+
+/**
+ * VS Code's `SecretStorage.get` takes no signal and is backed by the OS keyring (libsecret /
+ * gnome-keyring / DPAPI), which can wedge indefinitely — and this sync gates all user input at startup.
+ * The abort listener is removed on settle because the caller's signal is the long-lived `_syncAbort`
+ * one, which every subsequent sync would otherwise keep adding to.
+ */
+async function readSecret(getSecret: SecretResolver, secretKey: string, signal: AbortSignal | undefined): Promise<SecretRead> {
+  const read = Promise.resolve(getSecret(secretKey)).then(
+    (key): SecretRead => ({ status: 'read', key }),
+    (err): SecretRead => ({ status: 'failed', err }),
+  );
+  if (!signal) return read;
+  if (signal.aborted) return { status: 'aborted' };
+  const settled = new AbortController();
+  try {
+    return await Promise.race([
+      read,
+      new Promise<SecretRead>((resolve) => {
+        signal.addEventListener('abort', () => resolve({ status: 'aborted' }), { once: true, signal: settled.signal });
+      }),
+    ]);
+  } finally {
+    settled.abort();
+  }
+}
+
+/**
+ * Whether a provider the abort cut short is known to be configured, decided WITHOUT I/O — asking
+ * `getSecret` again here would reintroduce the very unbounded read the abort exists to cut short.
+ * Providers that fail this are not "not wired", they have no key at all, and reporting them would turn
+ * every timeout log and every user-facing fallback warning on a single-provider machine into noise.
+ */
+function isKnownConfigured(
+  runtime: ModelRuntime,
+  def: CustomProviderDef,
+  cache: Map<string, string>,
+  sawSecret: ReadonlySet<string>,
+): boolean {
+  return sawSecret.has(def.provider) || cache.has(def.provider) || runtime.getProviderAuthStatus(def.provider).configured;
 }
 
 /**
@@ -170,32 +251,51 @@ async function deauthCustomProvider(runtime: ModelRuntime, def: CustomProviderDe
  * their API key. Keys are applied as in-memory `ModelRuntime` runtime overrides (`setRuntimeApiKey`),
  * never persisted to auth.json and never `process.env`. A provider whose secret is ABSENT is
  * deauthenticated (see `deauthCustomProvider`), and an unchanged key is skipped entirely — so the
- * common session-start path with stable keys triggers zero runtime refreshes. Idempotent — safe to
- * call on every session start and on secret change. Returns the configured provider names (for
- * logging). `registerProvider` and `setRuntimeApiKey` self-refresh, so no trailing `refresh()` is
- * needed.
+ * common session-start path with stable keys enqueues zero credential operations. Idempotent — safe to
+ * call on every session start and on secret change. `registerProvider` needs no trailing `refresh()`;
+ * `setRuntimeApiKey` runs its own offline, single-provider one. Cancellable via `deps.signal`, and what
+ * it did and did not reach is reported rather than swallowed — see `SyncCustomProvidersResult`.
  */
-export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promise<string[]> {
+export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promise<SyncCustomProvidersResult> {
   const wired: string[] = [];
+  const notWired: string[] = [];
+  /** Read this sync and non-empty — the only evidence that the provider cut short mid-apply is configured. */
+  const sawSecret = new Set<string>();
+  let cutShortAt = -1;
+  // `exactOptionalPropertyTypes` forbids `{ signal: undefined }` against pi's `signal?: AbortSignal`.
+  const authOptions: AuthOperationOptions = deps.signal ? { signal: deps.signal } : {};
   let cache = syncedKeys.get(deps.modelRuntime);
   if (!cache) {
     cache = new Map();
     syncedKeys.set(deps.modelRuntime, cache);
   }
-  for (const def of CUSTOM_PROVIDER_DEFS) {
-    let key: string | undefined;
-    try {
-      key = await deps.getSecret(def.secretKey);
-    } catch {
-      key = undefined;
+  for (const [i, def] of CUSTOM_PROVIDER_DEFS.entries()) {
+    if (deps.signal?.aborted) {
+      cutShortAt = i;
+      break;
     }
+    const read = await readSecret(deps.getSecret, def.secretKey, deps.signal);
+    if (read.status === 'aborted') {
+      cutShortAt = i;
+      break;
+    }
+    if (read.status === 'failed') {
+      // A read failure is NOT an absent secret. Deauthenticating here would delete a stored auth.json
+      // credential the user may have created outside Damocles (`pi login <provider>`), unrecoverably
+      // from the UI, because a keyring happened to be locked.
+      notWired.push(def.provider);
+      log('[custom-providers] could not read the stored secret for %s; leaving it untouched: %s', def.provider, describeAuthError(read.err));
+      continue;
+    }
+    const key = read.key;
+    if (key) sawSecret.add(def.provider);
     try {
       if (!key) {
-        await deauthCustomProvider(deps.modelRuntime, def, cache);
+        await deauthCustomProvider(deps.modelRuntime, def, cache, authOptions);
         continue;
       }
       if (cache.get(def.provider) === key) {
-        wired.push(def.provider); // already live with this exact key — skip the refresh-triggering re-apply
+        wired.push(def.provider); // already live with this exact key — skip the re-apply
         continue;
       }
       if (def.mode === 'register' && def.registerConfig) {
@@ -203,15 +303,38 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
       }
       // Apply the key as an in-memory runtime override so request-auth resolution + availability checks
       // see it (the auth mechanism for `mode: 'authenticate'` providers; harmless belt-and-braces for
-      // `register` ones). `setRuntimeApiKey` refreshes internally and runs last per provider.
-      await deps.modelRuntime.setRuntimeApiKey(def.provider, key);
+      // `register` ones). Runs last per provider.
+      await deps.modelRuntime.setRuntimeApiKey(def.provider, key, authOptions);
       cache.set(def.provider, key);
       wired.push(def.provider);
     } catch (err) {
-      log('[custom-providers] failed to wire %s: %O', def.provider, err);
+      // Abort first: a cancelled operation is not a provider failure, and its key must NOT be cached
+      // because it may never have been applied.
+      if (deps.signal?.aborted) {
+        cutShortAt = i;
+        break;
+      }
+      // pi commits the runtime key BEFORE the snapshot sync that failed, so the provider IS usable —
+      // cache it and report it wired; rolling back would leave a live key with no record of it. Apply
+      // path only: the same error from `deauthCustomProvider` means the credential was removed.
+      if (key && isCredentialSyncError(err)) {
+        cache.set(def.provider, key);
+        wired.push(def.provider);
+        log('[custom-providers] %s is wired, but pi could not resynchronize its local model snapshot (it may be stale): %s', def.provider, describeAuthError(err));
+        continue;
+      }
+      notWired.push(def.provider);
+      log('[custom-providers] failed to wire %s: %s', def.provider, describeAuthError(err));
     }
   }
-  return wired;
+  if (cutShortAt >= 0) {
+    const unreached = CUSTOM_PROVIDER_DEFS.slice(cutShortAt)
+      .filter((d) => isKnownConfigured(deps.modelRuntime, d, cache, sawSecret))
+      .map((d) => d.provider);
+    notWired.push(...unreached);
+    log('[custom-providers] sync cut short (aborted); not wired: %s', unreached.join(', ') || '(none configured)');
+  }
+  return { wired, aborted: cutShortAt >= 0, notWired };
 }
 
 /** The Explore-section model resolution result: the pi model plus the pi thinking level derived from

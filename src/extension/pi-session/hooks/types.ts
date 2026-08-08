@@ -38,6 +38,8 @@ export interface HookDecision {
   permissionDecision?: 'allow' | 'deny' | 'ask';
   /** Generic block — `decision:"deny"` or `decision:"block"`. Honored by blocking-capable events. */
   block: boolean;
+  /** The hook asked to end the turn (response `terminate`). Meaningful only with a deny. */
+  terminate?: boolean;
   /** Reason text (response `reason`). */
   reason?: string;
   /** tool_call arg rewrite (response `updated_input`; denormalized before mutating `event.input`). */

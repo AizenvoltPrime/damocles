@@ -62,6 +62,8 @@ function matchEntries(entries: HookEntry[], toolName: string): HookEntry[] {
 /** PreToolUse reconciliation (Section 3.4): deny > allow > ask, with `updatedInput` applied in order. */
 export interface ToolCallHookResult {
   decision: 'allow' | 'deny' | 'ask';
+  /** The hook asked to end the turn (response `terminate`). Only ever set alongside `decision: 'deny'`. */
+  terminate?: boolean;
   reason?: string;
   additionalContext?: string;
   /** The CC-shaped input after all `updatedInput` merges (already chained across hooks). */
@@ -91,6 +93,7 @@ export async function dispatchToolCall(
   let anyFailed = false;
   let sawDeny = false;
   let sawAllow = false;
+  let sawTerminate = false;
   const denyReasons: string[] = [];
   const allowReasons: string[] = [];
   const contexts: string[] = [];
@@ -115,6 +118,8 @@ export async function dispatchToolCall(
           : 'ask';
     if (effective === 'deny') {
       sawDeny = true;
+      // `terminate` counts only from a hook that actually denied: pi honors it only on a blocked call.
+      if (decision.terminate) sawTerminate = true;
       if (decision.reason) denyReasons.push(decision.reason);
     } else if (effective === 'allow') {
       sawAllow = true;
@@ -132,6 +137,7 @@ export async function dispatchToolCall(
 
   return {
     decision,
+    ...(decision === 'deny' && sawTerminate ? { terminate: true } : {}),
     ...(reason ? { reason } : {}),
     ...(contexts.length ? { additionalContext: contexts.join('\n\n') } : {}),
     finalInput: working,

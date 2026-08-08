@@ -158,6 +158,7 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-coding-agent',
         '@earendil-works/pi-ai',
         '@earendil-works/pi-agent-core',
+        '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
         '@mistralai/mistralai',
         'openai',

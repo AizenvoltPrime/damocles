@@ -138,7 +138,9 @@ export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' |
  */
 export interface PreToolUseHookGate {
   run: (event: ToolCallEvent) => Promise<ToolCallHookResult | null>;
-  onDecision: (toolName: string, decision: 'allow' | 'deny', reason?: string) => void;
+  /** `terminate` is the hook's opt-in to ending the whole turn, not just this call — the notice must say
+   *  so, because pi's terminate path settles the turn normally and leaves no other signal. */
+  onDecision: (toolName: string, decision: 'allow' | 'deny', reason: string | undefined, terminate: boolean) => void;
   /** Surface any hook `systemMessage`(s) to the user (FR-16 transparency), independent of the decision. */
   notify: (messages: readonly string[]) => void;
   /**
@@ -211,16 +213,22 @@ export async function runPermissionGate(
         Object.assign(event.input, denormalizeToolInput(event.toolName, result.finalInput));
       }
       if (result.decision === 'deny') {
-        preToolUse.onDecision(damoclesName, 'deny', result.reason);
-        return { block: true, reason: formatPolicyBlockReason(result.reason ?? 'Blocked by a configured PreToolUse hook') };
+        preToolUse.onDecision(damoclesName, 'deny', result.reason, result.terminate === true);
+        // A hook deny defaults to non-terminating; `terminate` is the hook author's explicit opt-in.
+        return { block: true, reason: formatPolicyBlockReason(result.reason ?? 'Blocked by a configured PreToolUse hook'),
+          ...(result.terminate ? { terminate: true } : {}) };
+      }
+      // Fail closed BEFORE the force-allow: a hook that timed out or failed to spawn may be the one that
+      // would have denied, and a force-allow skips the gate entirely (canUseTool, plan mode, the
+      // read-only-shell classifier, settings deny rules). A surviving sibling's `allow` is not evidence
+      // that the down hook would have agreed.
+      if (result.anyFailed && (category === 'write' || category === 'shell')) {
+        return gateErrorFallback(event.toolName);
       }
       if (result.additionalContext) pendingContext = result.additionalContext;
       if (result.decision === 'allow') {
-        preToolUse.onDecision(damoclesName, 'allow', result.reason);
+        preToolUse.onDecision(damoclesName, 'allow', result.reason, false);
         return proceed();
-      }
-      if (result.anyFailed && (category === 'write' || category === 'shell')) {
-        return gateErrorFallback(event.toolName);
       }
     }
   }
@@ -316,5 +324,12 @@ export async function runPermissionGate(
     input,
     buildCanUseToolContext(event.toolCallId, signal, parentToolUseId),
   );
-  return result.behavior === 'deny' ? { block: true, reason: formatDenyReason(result.message) } : proceed();
+  // `interrupt` becomes pi's `terminate`, and only `buildUserDenyResult`/`buildUserFileEditDenyResult`
+  // (permission-handler/utils.ts) ever set it: the user answered the prompt and left the feedback box
+  // empty. An unexplained "no" means stop; "no, do X instead" is instruction the model must keep. Every
+  // deny the user was NOT asked about goes through `buildUnaskedDenyResult`, which cannot set it.
+  // See docs/invariants.md ("Permissions and plan mode") for pi's per-batch terminate semantics.
+  return result.behavior === 'deny'
+    ? { block: true, reason: formatDenyReason(result.message), ...(result.interrupt ? { terminate: true } : {}) }
+    : proceed();
 }

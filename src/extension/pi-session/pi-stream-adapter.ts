@@ -128,7 +128,8 @@ export class PiStreamAdapter {
   private _accumulatedCost = 0;
   /** Subagent cost (USD) rolled in from nested sessions — counts toward budget + accumulated cost (Phase 5). */
   private _externalCost = 0;
-  /** Whether `budgetExceeded` was already emitted for the current over-limit state (re-armed below limit). */
+  /** Whether `budgetExceeded` was already emitted for the current over-limit state. Re-armed per turn in
+   *  `beginTurn`, and at turn end once spend is back below the limit. */
   private _budgetExceededEmitted = false;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
   private _pendingCorrelationId: string | undefined;
@@ -217,6 +218,11 @@ export class PiStreamAdapter {
     this._turnSeq += 1;
     this._assistantSeq = 0;
     this._aborted = false;
+    // Re-arm in-flight enforcement per turn: the latch is only cleared at turn end when spend is back
+    // BELOW the limit, which never happens once crossed — so a session-scoped latch would leave a turn
+    // started after the user raised the limit with no in-flight bound at all. The host's pre-prompt gate
+    // returns before this, so a still-over-limit session never reaches here and cannot re-emit.
+    this._budgetExceededEmitted = false;
     this._streamingText = '';
     this._streamingBlocks = [];
     this._committedTextLength = 0;
@@ -686,8 +692,10 @@ export class PiStreamAdapter {
   /**
    * In-flight budget enforcement (US-008): a single agentic turn can chain many model/tool calls, so
    * the moment the session's cumulative cost crosses the hard limit mid-turn we emit `budgetExceeded`
-   * and abort the turn (via `onBudgetStop`). Emitted once per over-limit state. No-op when no dollar
-   * limit applies (subscription/allowance).
+   * and ask the session to stop gracefully (via `onBudgetStop`) — the turn is NOT aborted, it runs to
+   * the end of the current model round-trip and settles through the normal `agent_end` path. Fires at
+   * most once per turn (re-armed in `beginTurn`), so every turn is bounded even after the user raises
+   * the limit. No-op when no dollar limit applies (subscription/allowance).
    */
   private enforceBudgetInFlight(session: AgentSession): void {
     const limit = this.deps.budgetLimit();
@@ -702,8 +710,9 @@ export class PiStreamAdapter {
 
   /**
    * Between-turns budget check (US-008): after a turn completes naturally, warn at ≥80% and signal
-   * exceeded at ≥100% of the hard limit, reusing the exact SDK message contract. Re-arms the
-   * exceeded flag once spend is back below the limit (e.g. after a fresh session).
+   * exceeded at ≥100% of the hard limit, reusing the exact SDK message contract. Re-arms the exceeded
+   * flag once spend is back below the limit (e.g. after a fresh session); while spend stays above it,
+   * `beginTurn` is what re-arms so the next turn is enforced.
    */
   private checkBudgetAtTurnEnd(spend: number): void {
     const limit = this.deps.budgetLimit();

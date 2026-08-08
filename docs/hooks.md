@@ -139,6 +139,7 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 | `decision: "block"` | `tool_result`: mark the result an error + append `reason`; `input`: reject the prompt |
 | `decision: "ask"` *(or omitted)* | no decision — normal flow |
 | `reason` | text shown with a deny/block |
+| `terminate` | `tool_call` + `decision: "deny"` **only**: end the turn after the current tool batch; ignored on `allow`/`ask` and on every other event. Must be the JSON boolean `true` — the string `"true"` and the number `1` are ignored |
 | `updated_input` | `tool_call`: rewrite the tool's arguments (uniform shape; mapped to the engine before it runs) |
 | `updated_output` | `tool_result`: replace the tool's output |
 | `context` | add context for the model (`tool_call`: appended to the tool's result; `tool_result`: appended; `input`: added to the turn) |
@@ -157,6 +158,19 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 > too, **except** a `tool_call` hook on a write/shell tool, which stays **fail-closed** (the tool is
 > blocked) if the hook itself can't run.
 
+> A deny **does not** end the turn unless the hook also emits `"terminate": true` — the default is
+> unchanged: the model sees the reason and carries on. `terminate` is honored only on a `tool_call` deny;
+> it is ignored on `allow` / `ask` and on every other event. Even then it takes effect only when **every**
+> finalized result in the current tool batch is terminating, so terminating one of three parallel tool
+> calls does **not** stop the agent — the other two ran and produced results the model must see.
+
+> `terminate` is read strictly as the JSON boolean `true`. The **string** `"true"`, the number `1`, and
+> any other truthy value are ignored and the turn continues — which is easy to hit from a shell or `jq`
+> one-liner, where everything is a string unless you make it otherwise. `printf '{"decision":"deny","terminate":true}'`
+> is right; `jq -n --arg t true '{decision:"deny",terminate:$t}'` emits `"true"` and silently will not
+> stop the turn. A hook that fails to run cannot terminate at all: an unhealthy hook loses its whole
+> voice, not half of it.
+
 ---
 
 ## Event keys
@@ -165,7 +179,7 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 
 | Config key | Fires | Can do |
 | --- | --- | --- |
-| `tool_call` | before a tool runs | deny / force-allow / rewrite `updated_input` / add `context` |
+| `tool_call` | before a tool runs | deny (optionally with `terminate` to end the turn) / force-allow / rewrite `updated_input` / add `context` |
 | `tool_result` | after a tool runs | modify output, add context, block (marks the result an error) |
 | `input` | on prompt submit | add context, block, rename the session (`session_title`) |
 | `agent_end` | the agent finished a turn | observe-only |
@@ -249,6 +263,14 @@ print(json.dumps({"decision": "allow", "reason": "trusted path"}))
 
 ```python
 print(json.dumps({"decision": "deny", "reason": "writes to /etc are not allowed"}))
+```
+
+**Deny and end the turn** — add `terminate` when the model should stop rather than try another way. It is
+honored only alongside a `tool_call` deny, and only if every other tool call finalized in the same batch is
+terminating too:
+
+```python
+print(json.dumps({"decision": "deny", "terminate": True, "reason": "policy: this repo is read-only"}))
 ```
 
 **Rewrite a tool's input** — return the uniform tool shape; Damocles maps it to the engine's native shape

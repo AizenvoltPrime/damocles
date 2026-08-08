@@ -23,6 +23,13 @@ export interface CanUseToolContext {
 
 export interface ApprovalResult {
   approved: boolean;
+  /**
+   * The user actually answered the prompt. Absent means nobody was asked — no webview, no tool-use id,
+   * an abort, or session teardown — and only an answered prompt may end the user's turn, so the deny
+   * builders route an unanswered one through `buildUnaskedDenyResult`. Absence is the safe default: a
+   * new resolve path that says nothing about the user cannot terminate a turn.
+   */
+  userAnswered?: true;
   customMessage?: string;
   updatedPermissions?: PermissionUpdate[];
 }
@@ -78,6 +85,8 @@ export interface PendingPlanApproval {
 
 export interface SkillApprovalResult {
   approved: boolean;
+  /** @see ApprovalResult.userAnswered */
+  userAnswered?: true;
   approvalMode?: 'acceptEdits' | 'manual';
   customMessage?: string;
 }

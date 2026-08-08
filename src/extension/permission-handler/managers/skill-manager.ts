@@ -1,7 +1,9 @@
 import { loadSkillDescription } from '../../skills/utils';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMessageFn } from '../types';
-import { buildDenyResultWithInterrupt, buildAllowResult } from '../utils';
+import { buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
+
+const ABORTED_BEFORE_ANSWER = 'The session was aborted before this skill approval was answered';
 
 export class SkillManager {
   private state: PermissionState;
@@ -37,7 +39,9 @@ export class SkillManager {
     const result = await this.requestSkillApprovalFromWebview(skillName, skillDescription, context);
 
     if (!result.approved) {
-      return buildDenyResultWithInterrupt(result.customMessage, `User denied permission for skill "${skillName}"`);
+      return result.userAnswered
+        ? buildUserDenyResult(result.customMessage, `User denied permission for skill "${skillName}"`)
+        : buildUnaskedDenyResult(result.customMessage, `Damocles could not ask the user to approve the skill "${skillName}", so it was denied`);
     }
 
     if (result.approvalMode === 'acceptEdits') {
@@ -53,15 +57,19 @@ export class SkillManager {
     context: CanUseToolContext
   ): Promise<SkillApprovalResult> {
     const toolUseId = context.toolUseID;
+    if (!toolUseId) {
+      return { approved: false, customMessage: 'Cannot request skill approval: no tool use ID' };
+    }
+
     const postMessage = this.getPostMessage();
-    if (!toolUseId || !postMessage) {
-      return { approved: false };
+    if (!postMessage) {
+      return { approved: false, customMessage: 'Cannot request skill approval: webview not available' };
     }
 
     return new Promise<SkillApprovalResult>((resolve) => {
       const abortHandler = () => {
         this.state.pendingSkillApprovals.delete(toolUseId);
-        resolve({ approved: false });
+        resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
@@ -94,6 +102,7 @@ export class SkillManager {
     pending.cleanup();
     pending.resolve({
       approved,
+      userAnswered: true,
       ...(options?.approvalMode !== undefined ? { approvalMode: options.approvalMode } : {}),
       ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });

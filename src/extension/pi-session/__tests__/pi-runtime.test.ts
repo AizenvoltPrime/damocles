@@ -1,6 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest';
+import * as vscode from 'vscode';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { PiRuntime } from '../pi-runtime';
 import { nodeSupportsPi, PI_MIN_NODE_MAJOR } from '../pi-loader';
+import type { SecretResolver } from '../custom-providers';
+
+/**
+ * Capture what `logger.ts` ACTUALLY writes, not the format-string arguments — the credential leak this
+ * guards was invisible at the argument level. Installed file-wide because `logger.ts` memoizes the
+ * channel on its first `log()` call, whichever describe block that happens to be in.
+ */
+const logLines: string[] = [];
+beforeAll(() => {
+  vi.spyOn(vscode.window, 'createOutputChannel').mockReturnValue({
+    appendLine: (line: string) => void logLines.push(line),
+    show: () => {},
+    dispose: () => {},
+  } as unknown as vscode.OutputChannel);
+});
 
 describe('PiRuntime singleton (B1)', () => {
   afterEach(async () => {
@@ -195,7 +212,8 @@ describe('unbound extension instances (B1)', () => {
         extendResources: () => undefined,
         getExtensions: () => ({ runtime: { pendingProviderRegistrations: [] } }),
       },
-      modelRuntime: { registerProvider: () => undefined, refresh: async () => undefined },
+      // 0.84's `refresh` resolves a `ModelsRefreshResult`, which `_hotReloadExtensions` now reads.
+      modelRuntime: { registerProvider: () => undefined, refresh: async () => ({ aborted: false, errors: new Map() }) },
     };
     const internals = runtime as unknown as {
       _services: unknown;
@@ -351,5 +369,190 @@ describe('nodeSupportsPi (B5)', () => {
   it('reflects the running Node major against the pi minimum', () => {
     const major = Number.parseInt(process.versions.node.split('.')[0] ?? '0', 10);
     expect(nodeSupportsPi()).toBe(major >= PI_MIN_NODE_MAJOR);
+  });
+});
+
+/**
+ * A5/A7 — `PiRuntime.syncCustomProviders` had no tests at all. `timedOut` is the single value deciding
+ * between warning the user that their model was silently downgraded and saying nothing, and the outer
+ * catch used to hardcode it to `false`. Everything here drives the real `custom-providers` sync against
+ * an injected `ModelRuntime`, so the contract WORKSTREAM B consumes is asserted end to end.
+ */
+describe('PiRuntime.syncCustomProviders', () => {
+  const STEPFUN_SECRET = 'damocles.explore.apiKey.stepfun';
+  const DEEPSEEK_SECRET = 'damocles.deepseek.apiKey';
+  const SENTINEL = 'sk-SENTINEL-MUST-NEVER-BE-LOGGED';
+
+  beforeEach(() => {
+    logLines.length = 0;
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await PiRuntime.disposeInstance();
+  });
+
+  type FakeRuntime = Record<string, unknown>;
+
+  function fakeModelRuntime(overrides: FakeRuntime = {}) {
+    return {
+      registerProvider: vi.fn(),
+      unregisterProvider: vi.fn(),
+      setRuntimeApiKey: vi.fn(async () => {}),
+      removeRuntimeApiKey: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+      getProviderAuthStatus: vi.fn(() => ({ configured: false })),
+      ...overrides,
+    };
+  }
+
+  /** The only private reach-through: `_services` is built by `init()`, which boots pi. */
+  function attach(runtime: PiRuntime, modelRuntime: FakeRuntime): void {
+    (runtime as unknown as { _services: unknown })._services = { modelRuntime: modelRuntime as unknown as ModelRuntime };
+  }
+
+  const secrets =
+    (map: Record<string, string | undefined>): SecretResolver =>
+    (key) =>
+      Promise.resolve(map[key]);
+
+  /** Replace the 3s deadline with a signal the test fires, so the timeout leg is exercised without
+   *  waiting on it and no real timer is left behind. */
+  function stubTimeout(signal: AbortSignal) {
+    return vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal);
+  }
+
+  /** A `setRuntimeApiKey` that never settles until the forwarded signal aborts — pi's credential
+   *  operations take the cross-process auth.json lock, and a contended lock is what this bounds. */
+  function hangingApply() {
+    let started!: () => void;
+    const applyStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const setRuntimeApiKey = vi.fn(
+      (_provider: string, _key: string, options: { signal?: AbortSignal }) =>
+        new Promise<void>((_resolve, reject) => {
+          started();
+          options.signal?.addEventListener('abort', () => reject(new DOMException('This operation was aborted', 'AbortError')), { once: true });
+        }),
+    );
+    return { applyStarted, setRuntimeApiKey };
+  }
+
+  it('returns empty lists and no timeout before the runtime is initialized', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    const getSecret = vi.fn(async () => 'k');
+
+    expect(await runtime.syncCustomProviders(getSecret)).toEqual({ wired: [], notWired: [], timedOut: false });
+    expect(getSecret).not.toHaveBeenCalled();
+  });
+
+  it('returns empty lists and no timeout once disposed', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    attach(runtime, fakeModelRuntime());
+    (runtime as unknown as { _disposed: boolean })._disposed = true;
+    const getSecret = vi.fn(async () => 'k');
+
+    expect(await runtime.syncCustomProviders(getSecret)).toEqual({ wired: [], notWired: [], timedOut: false });
+    expect(getSecret).not.toHaveBeenCalled();
+  });
+
+  it('reports every wired provider, an empty notWired, and no timeout on the happy path', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    attach(runtime, fakeModelRuntime());
+    const timeoutSpy = stubTimeout(new AbortController().signal);
+
+    const result = await runtime.syncCustomProviders(secrets({ [STEPFUN_SECRET]: 'sf', [DEEPSEEK_SECRET]: 'ds' }));
+
+    expect(result).toEqual({ wired: ['stepfun', 'deepseek'], notWired: [], timedOut: false });
+    expect(timeoutSpy).toHaveBeenCalledWith(3000); // the bound the docstring and CHANGELOG name
+  });
+
+  it('reports timedOut when a hanging credential operation is cut short by the deadline', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    const timeout = new AbortController();
+    stubTimeout(timeout.signal);
+    const { applyStarted, setRuntimeApiKey } = hangingApply();
+    attach(runtime, fakeModelRuntime({ setRuntimeApiKey }));
+
+    const pending = runtime.syncCustomProviders(secrets({ [STEPFUN_SECRET]: 'sf' }));
+    await applyStarted;
+    timeout.abort();
+
+    // stepfun's secret was read, so it is known-configured despite never applying — B4 needs exactly
+    // this to name the right provider in the fallback warning.
+    expect(await pending).toEqual({ wired: [], notWired: ['stepfun'], timedOut: true });
+    expect(logLines.join('\n')).toContain('custom provider sync timed out after 3000ms; not wired: stepfun');
+  });
+
+  it('does NOT report timedOut when the same cut-short sync was aborted by dispose()', async () => {
+    // The `!` in `aborted && !this._syncAbort.signal.aborted` is the whole difference between telling
+    // the user their model was downgraded and telling a closing window nothing. Inverting or dropping
+    // it flips exactly this test against the previous one.
+    const runtime = PiRuntime.get('/tmp/ws');
+    stubTimeout(new AbortController().signal);
+    const { applyStarted, setRuntimeApiKey } = hangingApply();
+    attach(runtime, fakeModelRuntime({ setRuntimeApiKey }));
+
+    const pending = runtime.syncCustomProviders(secrets({ [STEPFUN_SECRET]: 'sf' }));
+    await applyStarted;
+    await runtime.dispose();
+
+    expect(await pending).toEqual({ wired: [], notWired: ['stepfun'], timedOut: false });
+  });
+
+  it('derives timedOut in the outer catch instead of hardcoding false', async () => {
+    // Hardcoding `false` here told the caller "did not time out" on the one path where it certainly
+    // had, so `PiSession.start` skipped the fallback warning — the exact silent downgrade this
+    // release removes.
+    const runtime = PiRuntime.get('/tmp/ws');
+    stubTimeout(AbortSignal.abort());
+    attach(
+      runtime,
+      fakeModelRuntime({
+        getProviderAuthStatus: vi.fn(() => {
+          throw new DOMException('This operation was aborted', 'AbortError');
+        }),
+      }),
+    );
+
+    expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: [], timedOut: true });
+  });
+
+  it('does not claim a timeout when the outer catch saw a plain failure', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    stubTimeout(AbortSignal.abort());
+    attach(
+      runtime,
+      fakeModelRuntime({
+        getProviderAuthStatus: vi.fn(() => {
+          throw new Error('provider table is corrupt');
+        }),
+      }),
+    );
+
+    expect(await runtime.syncCustomProviders(secrets({}))).toEqual({ wired: [], notWired: [], timedOut: false });
+  });
+
+  it('never writes a credential carried by the failure the outer catch logs (A1)', async () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    stubTimeout(AbortSignal.abort());
+    attach(
+      runtime,
+      fakeModelRuntime({
+        getProviderAuthStatus: vi.fn(() => {
+          throw Object.assign(new Error('failed to synchronize credential state'), {
+            name: 'CredentialSynchronizationError',
+            credential: { type: 'api_key', key: SENTINEL },
+          });
+        }),
+      }),
+    );
+
+    await runtime.syncCustomProviders(secrets({}));
+
+    const output = logLines.join('\n');
+    expect(output).toContain('syncCustomProviders failed (non-fatal): CredentialSynchronizationError');
+    expect(output).not.toContain(SENTINEL);
+    expect(output).not.toContain('api_key');
   });
 });

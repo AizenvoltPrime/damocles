@@ -239,6 +239,28 @@ describe('AgentManager concurrency', () => {
     mgr.dispose();
   });
 
+  it('abortAll marks the records it kills consumed, so the NEXT turn does not pay to synthesise "(no output)"', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    const running = mgr.spawn(spec(0)); // background, starts immediately
+    const queued = mgr.spawn(spec(1));  // background, waits behind the concurrency cap
+    await flush();
+
+    mgr.abortAll();
+
+    // A killed agent has no result to incorporate. Leaving these unconsumed made the parent's
+    // keep-alive drain them on the next agent_end and hold the turn for one more paid round-trip.
+    expect(mgr.getRecord(running)!.resultConsumed).toBe(true);
+    expect(mgr.getRecord(queued)!.resultConsumed).toBe(true);
+    expect(mgr.hasUnconsumedBackground()).toBe(false);
+    expect(mgr.takeCompletedBackgroundResults()).toHaveLength(0);
+    // Consumed gates keep-alive injection ONLY: the records stay readable for the UI and for
+    // GetSubagentResult, which is what makes fixing this at the root safe.
+    expect(mgr.getRecord(running)!.status).toBe('stopped');
+    expect(mgr.getRecord(queued)!.status).toBe('stopped');
+    mgr.dispose();
+  });
+
   it('clearCompleted drops finished records but keeps running ones', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);

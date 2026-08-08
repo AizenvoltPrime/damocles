@@ -34,8 +34,11 @@ node_modules/**
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.proto
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.svg
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.wasm
+!node_modules/@earendil-works/pi-telemetry/**/*.js
+!node_modules/@earendil-works/pi-telemetry/**/*.json
 !node_modules/@earendil-works/pi-tui/**/*.js
 !node_modules/@earendil-works/pi-tui/**/*.json
+!node_modules/@earendil-works/pi-tui/**/*.mjs
 !node_modules/@earendil-works/pi-tui/**/*.node
 !node_modules/@google/genai/**/*.cjs
 !node_modules/@google/genai/**/*.js

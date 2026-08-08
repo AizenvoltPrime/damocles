@@ -163,7 +163,7 @@ function asString(value: unknown): string | undefined {
 
 /**
  * Interpret a parsed response object against the native (flat, snake_case) output contract:
- * `decision` ∈ allow|deny|block|ask, `reason`, `updated_input`, `updated_output`, `context`,
+ * `decision` ∈ allow|deny|block|ask, `reason`, `terminate`, `updated_input`, `updated_output`, `context`,
  * `session_title`, `system_message`. One name per field — no nesting, no aliases.
  */
 function decisionFromJson(json: Record<string, unknown>): HookDecision {
@@ -178,6 +178,8 @@ function decisionFromJson(json: Record<string, unknown>): HookDecision {
   }
   const reason = asString(json['reason']);
   if (reason) decision.reason = reason;
+
+  if (json['terminate'] === true) decision.terminate = true;
 
   const updatedInput = json['updated_input'];
   if (updatedInput && typeof updatedInput === 'object' && !Array.isArray(updatedInput)) {

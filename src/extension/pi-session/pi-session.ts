@@ -115,6 +115,10 @@ import {
 import { deferredToolNames } from "./tools/deferred-tools";
 import { mcpGroupName, type DeferrableSnapshot } from "./tools/tool-search-tool";
 
+/** Runtimes whose provider-fallback warning has already been shown (see `warnCustomProviderFallback`).
+ *  Module scope because the dedupe spans PiSession instances; weak so a disposed runtime is collectable. */
+const fallbackWarnedRuntimes = new WeakSet<PiRuntime>();
+
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses the process-singleton `PiRuntime.services` (B1) and a `PiStreamAdapter` that
@@ -168,6 +172,9 @@ export class PiSession implements ChatSession {
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
+  /** Set when the hard budget limit is crossed mid-turn, so the turn finishes gracefully at the next
+   * model round-trip boundary (`shouldStopAfterTurn`) instead of being torn mid-stream by an abort. */
+  private _budgetStopRequested = false;
   /** Set once dispose() begins, so a late hook callback draining during teardown emits nothing. */
   private _disposed = false;
   private promptIndexCounter = -1;
@@ -203,6 +210,13 @@ export class PiSession implements ChatSession {
    *  funnels through `applyActiveToolsForMode`, so re-applying this union there is what stops a settings
    *  toggle / MCP change / permission-mode change from silently deactivating a mid-conversation load. */
   private readonly toolSearchActivated = new Set<string>();
+
+  /** True when the turn must not be EXTENDED — ESC (`_aborting`) or the budget limit. For the
+   * turn-holding paths only; those meaning "the user aborted" (the slash-command release and the
+   * `prompt()` catch) deliberately keep testing `_aborting` alone. */
+  private stopRequested(): boolean {
+    return this._aborting || this._budgetStopRequested;
+  }
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -251,16 +265,21 @@ export class PiSession implements ChatSession {
     if (!pi || !services) throw new Error("PiSession.start: pi runtime not initialized");
 
     // Wire native custom providers (StepFun/DeepSeek/OpenRouter/Gemini) from secrets so subagents AND a
-    // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Awaited before
-    // resolveInitialModel so a saved custom-provider default isn't silently dropped to a Claude/GPT
-    // fallback; syncCustomProviders is fail-soft (catches + logs) so a bad key can't block startup.
+    // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
+    // before resolveInitialModel: fire-and-forget would race the user's first prompt and route turn 1 to
+    // the wrong provider. Safe to await because the sync is bounded, cancellable and fail-soft — and if
+    // it does give up, the resulting model downgrade is surfaced below rather than applied silently.
+    let syncTimedOut = false;
+    let notWiredProviders: string[] = [];
     if (this.options.secrets) {
       const secrets = this.options.secrets;
-      await piRuntime.syncCustomProviders((key) => secrets.get(key));
+      ({ notWired: notWiredProviders, timedOut: syncTimedOut } = await piRuntime.syncCustomProviders((key) => secrets.get(key)));
     }
 
+    const requestedModel = this.modelValue;
     this.supportedModelsCache = piSupportedModels();
     this.resolveInitialModel(piRuntime);
+    if (syncTimedOut) this.warnCustomProviderFallback(piRuntime, requestedModel, notWiredProviders);
 
     // Native subagent engine (Phase 5): a cross-turn per-PiSession registry + manager, created before the
     // factory so the primary session's customTools include the three subagent tools.
@@ -352,6 +371,13 @@ export class PiSession implements ChatSession {
    */
   private bindSession(session: AgentSession): void {
     this.unsubscribe = this.adapter.subscribe(session);
+    // Graceful budget stop (US-008): pi consults this once per model round-trip, so returning true ends
+    // the turn at the next boundary with the in-flight message and its tool results intact, unlike an
+    // abort. Installed here because start() and setRebindSession both funnel through bindSession, and a
+    // REPLACEMENT session brings a new Agent needing it re-installed (as `applyActiveToolsForMode` does).
+    // Must stay synchronous, and must read the field at call time — pi snapshots the function reference
+    // at run start, so a captured boolean would freeze at that run's starting value.
+    session.agent.shouldStopAfterTurn = () => this._budgetStopRequested;
     // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
     // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
     // (see PiRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
@@ -490,6 +516,53 @@ export class PiSession implements ChatSession {
     }
   }
 
+  /**
+   * Surface the model downgrade a timed-out provider sync causes: with the saved default not live,
+   * `resolveInitialModel` falls back to a curated Claude/GPT model — a different provider with different
+   * cost and capabilities than the user picked, which must not happen quietly. Fire-and-forget, so the
+   * notification never gates startup on an answer.
+   *
+   * Keyed off `notWired` (configured but not live), never off the absence from `wired`: a provider whose
+   * secret the user deleted is deauthenticated and appears in NEITHER list, and telling that user we
+   * "could not reach" their provider — then offering a reload that cannot help — is a wrong diagnosis.
+   */
+  private warnCustomProviderFallback(piRuntime: PiRuntime, requested: string, notWired: string[]): void {
+    const info = this.supportedModelsCache.find((m) => m.value === requested);
+    if (!info?.piProvider || !notWired.includes(info.piProvider)) return;
+    // A resolved substitute means a downgrade; no `desiredModel` at all means nothing was authed, which
+    // leaves `modelValue` equal to `requested` and is the MORE broken case, not a reason to stay silent.
+    const fallback = this.modelValue === requested ? null : this.modelValue;
+    if (fallback === null && this.desiredModel) return;
+    // One modal per runtime: every open panel starts its own PiSession against the same PiRuntime, and
+    // persistent lock contention would otherwise stack one identical modal per panel.
+    if (fallbackWarnedRuntimes.has(piRuntime)) return;
+    fallbackWarnedRuntimes.add(piRuntime);
+
+    const providerName = providerDisplayName(info);
+    const requestedName = info.displayName;
+    const fallbackName = fallback === null ? null : (this.supportedModelsCache.find((m) => m.value === fallback)?.displayName ?? fallback);
+    const message =
+      fallbackName === null
+        ? vscode.l10n.t(
+            "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.",
+            providerName,
+            requestedName,
+          )
+        : vscode.l10n.t(
+            "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.",
+            providerName,
+            requestedName,
+            fallbackName,
+          );
+    const reload = vscode.l10n.t("Reload Window");
+    void (async () => {
+      // VS Code's Thenable is not a Promise, so `void thenable.then(...)` attaches no rejection handler
+      // and a failing executeCommand would vanish.
+      const choice = await vscode.window.showWarningMessage(message, reload);
+      if (choice === reload) await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    })().catch((err) => log("[PiSession] provider fallback notification failed: %O", err));
+  }
+
   // ---- messaging ----------------------------------------------------------
 
   async sendMessage(
@@ -572,6 +645,7 @@ export class PiSession implements ChatSession {
 
     this.processingFlag = true;
     this._aborting = false;
+    this._budgetStopRequested = false;
     session.setThinkingLevel(this.resolveThinkingLevel());
     // Refresh the auto-compaction reserve against the current model's window before the turn, so the
     // configured trigger percent holds even after a model switch or a settings save() (US-030).
@@ -625,6 +699,7 @@ export class PiSession implements ChatSession {
     } finally {
       this.processingFlag = false;
       this._aborting = false;
+      this._budgetStopRequested = false;
     }
   }
 
@@ -734,6 +809,7 @@ export class PiSession implements ChatSession {
   private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
     this._aborting = true;
     this.processingFlag = false;
+    this._budgetStopRequested = false;
     this.adapter.markAborted();
     // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
     this.subagentManager?.abortAll();
@@ -846,6 +922,7 @@ export class PiSession implements ChatSession {
 
   reset(): void {
     this.processingFlag = false;
+    this._budgetStopRequested = false;
     this.queuedInputs = [];
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
     this.subagentManager?.abortAll();
@@ -1671,7 +1748,7 @@ export class PiSession implements ChatSession {
    * its turn. Awaited from the shared-extension `agent_end` hook before the turn settles.
    */
   private async onParentAgentEnd(event: AgentEndEvent): Promise<void> {
-    if (!this.runtime?.session || this._aborting) return;
+    if (!this.runtime?.session || this.stopRequested()) return;
     if (await this.tryBackgroundKeepAlive()) return;
     await this.tryPlanModeHold(event);
   }
@@ -1687,14 +1764,14 @@ export class PiSession implements ChatSession {
   private async tryBackgroundKeepAlive(): Promise<boolean> {
     const mgr = this.subagentManager;
     const session = this.runtime?.session;
-    if (!mgr || !session || this._aborting) return false;
+    if (!mgr || !session || this.stopRequested()) return false;
     // Gate on UNCONSUMED background results, not just still-running ones: an agent that completed
     // mid-turn but was never fetched via GetSubagentResult must still be injected, or its result is
     // silently dropped (the bug — a fast background agent that finishes before agent_end vanished).
     if (!mgr.hasUnconsumedBackground()) return false;
 
     await mgr.waitForBackground();
-    if (this._aborting) return false;
+    if (this.stopRequested()) return false;
 
     const completed = mgr.takeCompletedBackgroundResults();
     if (completed.length === 0) return false;
@@ -1736,7 +1813,7 @@ export class PiSession implements ChatSession {
    */
   private async tryPlanModeHold(event: AgentEndEvent): Promise<void> {
     if (this.permissionMode !== "plan") return;
-    if (this._aborting) return;
+    if (this.stopRequested()) return;
     if (turnHasNonErrorExitPlanModeResult(event.messages)) return;
     if (lastAssistant(event.messages)?.stopReason !== "stop") return;
 
@@ -2559,20 +2636,45 @@ export class PiSession implements ChatSession {
     return dollarBilledFrom(this.accountBillingDeps());
   }
 
-  /** The session's cumulative cost so far (resets with a new pi session). */
+  /**
+   * The session's cumulative spend: the parent session's own cost PLUS the subagent cost rolled into the
+   * adapter. This must stay the exact total `enforceBudgetInFlight` measures — a gate that measured less
+   * than the enforcer would admit a turn the enforcer had already stopped. Resets with a new pi session.
+   */
   private cumulativeCostUsd(): number {
-    return this.runtime?.session.getSessionStats().cost ?? 0;
+    return (this.runtime?.session.getSessionStats().cost ?? 0) + this.adapter.externalCost;
   }
 
-  /** Abort the in-flight turn because the hard budget limit was crossed (US-008 in-flight enforcement). */
+  /**
+   * Stop the in-flight turn because the hard budget limit was crossed (US-008 in-flight enforcement).
+   * Graceful, not an abort: the flag makes `shouldStopAfterTurn` end the turn at the next model
+   * round-trip, so the assistant message and its tool results complete and the turn settles through the
+   * normal `agent_end` path (which already emits done/result/processing:false/idle) — no torn stream and
+   * no `sessionCancelled`. Background subagents are killed outright because they run outside the
+   * parent's round-trip boundaries, so `shouldStopAfterTurn` never sees them.
+   *
+   * Overshoot is bounded to one round-trip OF THE PARENT LOOP, and that round-trip's own spend is not
+   * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
+   * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
+   * `abortAll()` never saw. Auto-compaction also still bills, because pi runs `prepareNextTurn` before
+   * `shouldStopAfterTurn`. And an in-flight TEAM keeps running to completion: unlike `beginAbort`, this
+   * deliberately does not `cancelActiveTeam()` (product decision), so a team can exceed the limit without
+   * a bound. The pre-prompt budget block refuses the NEXT turn.
+   */
   private stopForBudget(): void {
-    if (!this.processingFlag) return;
-    this._aborting = true;
-    this.processingFlag = false;
-    this.adapter.markAborted();
+    if (!this.processingFlag || this._budgetStopRequested) return;
+    this._budgetStopRequested = true;
     this.subagentManager?.abortAll();
-    this.emit({ type: "processing", isProcessing: false });
-    void this.runtime?.session.abort().catch((err) => log("[PiSession] budget abort failed: %O", err));
+    // A graceful stop never polls pi's steering queue (its loop emits agent_end and returns), and the
+    // pre-prompt block then refuses the send that would drain it — so a queued steer would sit pending
+    // until the limit is raised and could replay into an unrelated turn.
+    this.clearQueuedInputs();
+    this.runtime?.session.clearQueue();
+    this.emit({
+      type: "notification",
+      message: "Budget limit reached — this turn was stopped after the current step.",
+      notificationType: "warning",
+    });
   }
 
   /** Environment facts for the Damocles system prompt (US-007), mirroring the SDK path's source. */

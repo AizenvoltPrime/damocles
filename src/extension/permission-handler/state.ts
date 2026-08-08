@@ -74,13 +74,15 @@ export class PermissionState {
   }
 
   clearAll(): void {
-    const cleanupMap = <T extends { cleanup: () => void; resolve: (result: { approved: false }) => void }>(
+    // Teardown, not a user decision: the diagnostic keeps `userAnswered` absent, so the deny cannot be
+    // mistaken for an unexplained "no" and end a turn that is already being torn down.
+    const cleanupMap = <T extends { cleanup: () => void; resolve: (result: { approved: false; customMessage: string }) => void }>(
       map: Map<string, T>
     ) => {
       for (const [, pending] of map) {
         try {
           pending.cleanup();
-          pending.resolve({ approved: false });
+          pending.resolve({ approved: false, customMessage: 'The session ended before this request was answered' });
         } catch {
           // Ignore cleanup errors to ensure all maps are processed
         }

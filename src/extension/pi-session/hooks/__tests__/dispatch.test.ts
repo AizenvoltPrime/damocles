@@ -27,6 +27,9 @@ function mkDeps(entriesByKey: Record<string, HookEntry[]>): DispatchDeps {
 
 const allow = nodeEntry('process.stdout.write(JSON.stringify({decision:"allow"}))');
 const deny = nodeEntry('process.stdout.write(JSON.stringify({decision:"deny",reason:"no"}))');
+const denyTerminate = nodeEntry(
+  'process.stdout.write(JSON.stringify({decision:"deny",reason:"stop",terminate:true}))',
+);
 
 describe('dispatchToolCall', () => {
   it('returns null when no hook matches (FR-14 zero-cost path)', async () => {
@@ -42,6 +45,63 @@ describe('dispatchToolCall', () => {
     });
     expect(r?.decision).toBe('deny');
     expect(r?.reason).toBe('no');
+  });
+
+  it('a deny without terminate leaves terminate absent (existing hooks are unchanged)', async () => {
+    const r = await dispatchToolCall(mkDeps({ tool_call: [deny] }), { common, toolName: 'Bash', toolInput: {} });
+    expect(r?.decision).toBe('deny');
+    expect(r).not.toHaveProperty('terminate');
+  });
+
+  it('a deny that opts into terminate sets terminate', async () => {
+    const r = await dispatchToolCall(mkDeps({ tool_call: [denyTerminate] }), {
+      common,
+      toolName: 'Bash',
+      toolInput: {},
+    });
+    expect(r?.decision).toBe('deny');
+    expect(r?.terminate).toBe(true);
+  });
+
+  it('one terminating deny among several hooks wins (most-restrictive, not unanimity)', async () => {
+    const r = await dispatchToolCall(mkDeps({ tool_call: [deny, denyTerminate] }), {
+      common,
+      toolName: 'Bash',
+      toolInput: {},
+    });
+    expect(r?.decision).toBe('deny');
+    expect(r?.terminate).toBe(true);
+  });
+
+  /**
+   * A hook that timed out or failed to spawn produced no verdict at all, so it cannot have asked for a
+   * terminate — its stdout is discarded whole. This is the fail-closed property the design claims: an
+   * unhealthy hook loses its voice rather than keeping half of it.
+   */
+  it('a FAILED hook cannot contribute terminate even though its stdout asked for one', async () => {
+    const printsThenHangs = nodeEntry(
+      'process.stdout.write(JSON.stringify({decision:"deny",reason:"stop",terminate:true}));setTimeout(()=>{},10000)',
+      { timeoutMs: 200 },
+    );
+    const r = await dispatchToolCall(mkDeps({ tool_call: [printsThenHangs, deny] }), {
+      common,
+      toolName: 'Bash',
+      toolInput: {},
+    });
+    expect(r?.anyFailed).toBe(true);
+    expect(r?.decision).toBe('deny');
+    expect(r).not.toHaveProperty('terminate');
+  });
+
+  it('ignores terminate on an allow verdict (pi honors it only on a blocked call)', async () => {
+    const allowTerminate = nodeEntry('process.stdout.write(JSON.stringify({decision:"allow",terminate:true}))');
+    const r = await dispatchToolCall(mkDeps({ tool_call: [allowTerminate] }), {
+      common,
+      toolName: 'Bash',
+      toolInput: {},
+    });
+    expect(r?.decision).toBe('allow');
+    expect(r).not.toHaveProperty('terminate');
   });
 
   it('allow wins when no deny present', async () => {

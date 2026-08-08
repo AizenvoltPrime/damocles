@@ -49,6 +49,10 @@ const H = vi.hoisted(() => {
     const registryToolNames = new Set<string>(['read', 'bash', 'Edit', 'write']);
     const session = {
       sessionId: id,
+      // pi's Agent. `readonly` upstream and NOT plumbed through the session factory, so `bindSession`
+      // installs the graceful budget-stop predicate onto it per bind — a replacement session brings a
+      // new Agent, which is what the re-installation test pins.
+      agent: {} as { shouldStopAfterTurn?: () => boolean },
       isStreaming: false,
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
@@ -223,15 +227,25 @@ import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
 import * as fsSync from 'fs';
 
-function makeOptions(messages: ExtensionToWebviewMessage[]): SessionOptions {
+function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>): SessionOptions {
   return {
     cwd: '/cwd',
     permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {} } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
+    ...extra,
   };
 }
+
+/** A SecretStorage stand-in. Without it `start()` skips the provider sync entirely, which is why the
+ *  whole custom-provider fallback path was unreachable from this suite. */
+const FAKE_SECRETS = {
+  get: async () => 'sk-test',
+  store: async () => undefined,
+  delete: async () => undefined,
+  onDidChange: () => ({ dispose: () => undefined }),
+} as unknown as SessionOptions['secrets'];
 
 describe('PiSession lifecycle (US-P1-4)', () => {
   beforeEach(() => {
@@ -3116,6 +3130,584 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     runtime.newSession = async () => ({ cancelled: true });
 
     await expect(session.detachFromDeletedSession()).rejects.toThrow(/cancelled/);
+    await session.dispose();
+  });
+});
+
+/**
+ * Graceful budget stop (US-008). These tests encode the six-site `_aborting` audit: FOUR turn-holding
+ * reads must honor a budget stop via `stopRequested()`, and TWO reads must deliberately keep testing
+ * `_aborting` alone. A find-and-replace of `_aborting` would pass typecheck AND lint while silently
+ * breaking slash commands and error reporting — the two regression guards below are what catch it.
+ */
+describe('PiSession graceful budget stop (US-008)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  type AgentEndEvt = { type: 'agent_end'; messages: unknown[] };
+  type Priv = {
+    processingFlag: boolean;
+    _budgetStopRequested: boolean;
+    stopForBudget: () => void;
+    tryBackgroundKeepAlive: () => Promise<boolean>;
+    tryPlanModeHold: (event: AgentEndEvt) => Promise<void>;
+    adapter: { endTurnWithoutAgentRun: () => void; markAborted: () => void; addExternalCost: (deltaUsd: number) => void };
+    subagentManager: Record<string, unknown>;
+  };
+  const priv = (s: PiSession): Priv => s as unknown as Priv;
+  const cleanStop: AgentEndEvt = {
+    type: 'agent_end',
+    messages: [{ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'p' }] }],
+  };
+
+  /** Cross the hard limit mid-turn exactly as the adapter's `onBudgetStop` dep does. */
+  function budgetStop(session: PiSession): void {
+    priv(session).processingFlag = true;
+    priv(session).stopForBudget();
+  }
+
+  /** Arm dollar enforcement: a `maxBudgetUsd` setting AND a dollar-metered credential (the gate is a
+   *  no-op on a flat subscription, so both are required for the pre-prompt block to run at all). */
+  function withBudget(limit: number): void {
+    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' });
+    vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => (section === 'damocles' && key === 'maxBudgetUsd' ? limit : def),
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+  }
+
+  /** Drive `onParentAgentEnd` through the registered panel context (the real dispatch path). */
+  async function fireAgentEnd(session: PiSession, event: AgentEndEvt): Promise<void> {
+    const live = H.getLastSession()!;
+    const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+      _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
+    })._panelRegistry.get(live.sessionId as string)!;
+    await panel.onAgentEnd!(event);
+  }
+
+  it('a budget stop makes shouldStopAfterTurn return true and does NOT abort the agent', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const markAborted = vi.spyOn(priv(session).adapter, 'markAborted');
+
+    // Installed at bind time, and false while under budget.
+    expect(typeof live.agent.shouldStopAfterTurn).toBe('function');
+    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+
+    budgetStop(session);
+
+    // The predicate reads the field live — pi snapshots the FUNCTION at run start, then calls it once
+    // per model round-trip, so a boolean captured into the closure would freeze at the run's value.
+    expect(live.agent.shouldStopAfterTurn!()).toBe(true);
+    // Graceful: the in-flight assistant message and its tool results must finish, so nothing tears
+    // the stream and no sessionCancelled is emitted.
+    expect(live.abort).not.toHaveBeenCalled();
+    expect(markAborted).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('a budget stop still aborts background subagents (they run outside the round-trip boundary)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const abortAll = vi.fn();
+    priv(session).subagentManager.abortAll = abortAll;
+
+    budgetStop(session);
+
+    expect(abortAll).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('stopForBudget is inert when no turn is in flight', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    priv(session).processingFlag = false;
+
+    priv(session).stopForBudget();
+
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    await session.dispose();
+  });
+
+  // --- the FOUR turn-holding sites that must honor a budget stop -----------------------------------
+  // Sites 2-4 are driven directly: the coordinator's own check (site 1) would otherwise mask them, so
+  // a regression in any one of the three would hide behind a passing coordinator test.
+
+  it('turn-hold site 1/4: onParentAgentEnd declines to extend a budget-stopped turn', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const live = H.getLastSession()!;
+    // Assert the coordinator's OWN check, not just the absence of an inject: the two downstream holds
+    // bail on a budget stop themselves, so they would mask a regression here. A held parent turn that
+    // resumes spends again, so the coordinator must not even reach them.
+    const keepAlive = vi.spyOn(session as unknown as { tryBackgroundKeepAlive: () => Promise<boolean> }, 'tryBackgroundKeepAlive');
+    budgetStop(session);
+
+    await fireAgentEnd(session, cleanStop);
+
+    expect(keepAlive).not.toHaveBeenCalled();
+    expect(live.sendCustomMessage).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('turn-hold site 2/4: tryBackgroundKeepAlive entry check declines under a budget stop', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const mgr = priv(session).subagentManager;
+    mgr.hasUnconsumedBackground = vi.fn(() => true);
+    mgr.waitForBackground = vi.fn(async () => undefined);
+    mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
+    budgetStop(session);
+
+    expect(await priv(session).tryBackgroundKeepAlive()).toBe(false);
+
+    // Bailed at the entry check — it never looked for pending work, so no synthesis round is injected.
+    expect(mgr.hasUnconsumedBackground).not.toHaveBeenCalled();
+    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('turn-hold site 3/4: tryBackgroundKeepAlive re-check after the await declines under a budget stop', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const mgr = priv(session).subagentManager;
+    mgr.hasUnconsumedBackground = vi.fn(() => true);
+    // The limit is crossed WHILE waiting for background agents. The post-await re-check is the only
+    // thing between that and an injected synthesis round the user is already over budget for.
+    mgr.waitForBackground = vi.fn(async () => { budgetStop(session); });
+    mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
+
+    expect(await priv(session).tryBackgroundKeepAlive()).toBe(false);
+
+    expect(mgr.waitForBackground).toHaveBeenCalledTimes(1);
+    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('turn-hold site 4/4: tryPlanModeHold declines to extend a budget-stopped turn', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    budgetStop(session);
+
+    await priv(session).tryPlanModeHold(cleanStop);
+
+    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  // --- the TWO sites that must NOT change (regression guards) --------------------------------------
+
+  it('REGRESSION GUARD (deliberate non-change): the slash-command turn release keys off _aborting only, so it still releases the turn while a budget stop is pending', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const release = vi.spyOn(priv(session).adapter, 'endTurnWithoutAgentRun');
+    // An extension slash command: prompt() handles it synchronously and starts NO agent run, so nothing
+    // else settles the turn. Gating this branch on stopRequested() would hang the spinner forever.
+    live.prompt = vi.fn(async () => { budgetStop(session); });
+
+    await session.sendMessage('/todos', undefined, 'c1', { content: '/todos' });
+
+    expect(release).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('REGRESSION GUARD (deliberate non-change): the prompt() catch keys off _aborting only, so a genuine failure during a budget-stopped turn still surfaces an error', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // A real failure that merely COINCIDES with a budget stop. Gating the catch on stopRequested()
+    // would silently swallow it as if the user had pressed ESC — the error card would never appear.
+    live.prompt = vi.fn(async () => { budgetStop(session); throw new Error('provider exploded'); });
+
+    await session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+
+    expect(messages.some((m) => m.type === 'error' && m.message === 'provider exploded')).toBe(true);
+    await session.dispose();
+  });
+
+  // --- flag lifetime ------------------------------------------------------------------------------
+
+  it('clears _budgetStopRequested at the start of the next send and in the finally, so a raised limit lets the session run again', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+
+    // Start-of-send clear: a stop left over from a previous turn must not refuse the next one (the
+    // pre-prompt budget block, not this flag, is what refuses a send while still over the limit).
+    priv(session)._budgetStopRequested = true;
+    let seenInsidePrompt: boolean | null = null;
+    live.prompt = vi.fn(async () => { seenInsidePrompt = priv(session)._budgetStopRequested; });
+    await session.sendMessage('hi', undefined, 'c1', { content: 'hi' });
+    expect(seenInsidePrompt).toBe(false);
+
+    // Finally clear: a stop raised mid-turn is dropped once that turn settles, so raising the limit
+    // and sending again runs normally rather than stopping after the first round-trip.
+    live.prompt = vi.fn(async () => { budgetStop(session); });
+    await session.sendMessage('again', undefined, 'c2', { content: 'again' });
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+    await session.dispose();
+  });
+
+  it('re-installs shouldStopAfterTurn on the NEW Agent after a session replacement (/clear), not left stuck', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const first = H.getLastSession()!;
+    budgetStop(session);
+    expect(first.agent.shouldStopAfterTurn!()).toBe(true);
+
+    session.reset(); // -> runtime.newSession() -> setRebindSession -> bindSession
+    await new Promise((r) => setTimeout(r, 0));
+
+    const replacement = H.getLastSession()!;
+    expect(replacement).not.toBe(first);
+    // A replacement session brings a NEW Agent, so the predicate must be installed again per bind.
+    expect(typeof replacement.agent.shouldStopAfterTurn).toBe('function');
+    // reset() clears the flag, so the new Agent is not born already refusing to run — the next send is
+    // NOT what clears it. `resteerQueuedInputs` and `sendCustomMessage(triggerTurn:true)` start work
+    // outside sendMessage's try/finally, so a flag left set here truncates whichever runs first.
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    expect(replacement.agent.shouldStopAfterTurn!()).toBe(false);
+    await session.dispose();
+  });
+
+  it('beginAbort clears _budgetStopRequested, so the flag never outlives the turn it stopped', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    budgetStop(session);
+
+    await session.interrupt();
+
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+    await session.dispose();
+  });
+
+  // --- what the user is told, and what the stop leaves behind ---------------------------------------
+
+  it('tells the user the turn was cut short, exactly once even when the limit is crossed twice in one turn', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    budgetStop(session);
+    priv(session).stopForBudget(); // a second crossing in the same turn (parent spend, then a subagent)
+
+    const notices = messages.filter((m) => m.type === 'notification');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ notificationType: 'warning' });
+    expect((notices[0] as { message: string }).message).toMatch(/budget limit/i);
+    await session.dispose();
+  });
+
+  it('a second crossing in the same turn does not re-kill subagents or re-clear the queue', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const abortAll = vi.fn();
+    priv(session).subagentManager.abortAll = abortAll;
+
+    budgetStop(session);
+    priv(session).stopForBudget();
+
+    expect(abortAll).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('drops the queued steer a budget stop would otherwise strand (chip + pi steering queue)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    live.isStreaming = true;
+    expect(session.queueInput('mid-turn thought', 'q1')).toBe('queued');
+    (live.clearQueue as ReturnType<typeof vi.fn>).mockClear();
+    messages.length = 0;
+
+    budgetStop(session);
+
+    // The chip must not stay pending: the pre-prompt block refuses the next send, so nothing else
+    // would ever drain it.
+    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'q1' }]);
+    // …and pi's own steering queue must be dropped too, or the stale steer replays into a later turn.
+    expect(live.clearQueue).toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('a budget stop followed by ESC still cancels: sessionCancelled, markAborted, no lingering stop flag', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const markAborted = vi.spyOn(priv(session).adapter, 'markAborted');
+    budgetStop(session);
+
+    await session.interrupt();
+
+    expect(markAborted).toHaveBeenCalledTimes(1);
+    expect(live.abort).toHaveBeenCalledTimes(1);
+    expect(messages.some((m) => m.type === 'sessionCancelled')).toBe(true);
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    await session.dispose();
+  });
+
+  it('ESC first: a budget crossing that lands after it is inert (no notice, no second abortAll)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    priv(session).processingFlag = true;
+    await session.interrupt();
+    const abortAll = vi.fn();
+    priv(session).subagentManager.abortAll = abortAll;
+    messages.length = 0;
+
+    priv(session).stopForBudget(); // the adapter's in-flight check fires after beginAbort won the race
+
+    expect(priv(session)._budgetStopRequested).toBe(false);
+    expect(abortAll).not.toHaveBeenCalled();
+    expect(messages.some((m) => m.type === 'notification')).toBe(false);
+    await session.dispose();
+  });
+
+  it('dispose() during a budget-stopped turn tears down cleanly', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    budgetStop(session);
+
+    await expect(session.dispose()).resolves.toBeUndefined();
+
+    expect(messages.some((m) => m.type === 'error')).toBe(false);
+  });
+
+  // --- the pre-prompt gate: the bound that must survive into the NEXT turn --------------------------
+
+  it('refuses the next turn when parent + SUBAGENT spend crosses the limit ($0.40 + $0.70 vs $1.00)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    withBudget(1.0);
+    live.getSessionStats = vi.fn(() => ({ sessionId: live.sessionId, cost: 0.4, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }));
+    // Subagent spend lives on the adapter, not in pi's session stats. A gate that measured only the
+    // parent would admit this turn while the adapter's in-flight check considers the limit crossed.
+    priv(session).adapter.addExternalCost(0.7);
+
+    await session.sendMessage('again', undefined, 'c1', { content: 'again' });
+
+    expect(live.prompt).not.toHaveBeenCalled();
+    const exceeded = messages.find((m) => m.type === 'budgetExceeded');
+    expect(exceeded).toMatchObject({ finalSpend: 1.1, limit: 1.0 });
+    expect(messages.some((m) => m.type === 'processing' && m.isProcessing === false)).toBe(true);
+    // `beginTurn` (which re-arms the adapter's in-flight enforcement) is the first thing to emit
+    // processing:true, and it is unreachable past this gate — which is why re-arming per turn cannot
+    // re-emit a budget banner while the session is still over the limit.
+    expect(messages.some((m) => m.type === 'processing' && m.isProcessing === true)).toBe(false);
+    await session.dispose();
+  });
+
+  it('still admits a turn when parent + subagent spend is under the limit', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    withBudget(1.0);
+    live.getSessionStats = vi.fn(() => ({ sessionId: live.sessionId, cost: 0.4, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }));
+    priv(session).adapter.addExternalCost(0.2);
+
+    await session.sendMessage('again', undefined, 'c1', { content: 'again' });
+
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+});
+
+/**
+ * The provider-fallback warning (B4/B7/B8). `makeOptions` never set `secrets`, so `start()` skipped the
+ * sync entirely and this whole half of the release was unreachable from the suite — a
+ * `syncCustomProviders` that returned `undefined` would have thrown out of every startup with the suite
+ * still green. These drive the real `start()` path with a SecretStorage stand-in.
+ */
+describe('PiSession custom-provider fallback warning', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  type SyncResult = { wired: string[]; notWired: string[]; timedOut: boolean };
+
+  function stubSync(result: SyncResult): PiRuntime {
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue(result);
+    return runtime;
+  }
+
+  /** The warning is fire-and-forget, so let its microtasks run before asserting. */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  function startWith(model: string, result: SyncResult): { session: PiSession; warn: ReturnType<typeof vi.spyOn> } {
+    stubSync(result);
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+    const session = new PiSession(makeOptions([], { model, secrets: FAKE_SECRETS }));
+    return { session, warn };
+  }
+
+  it('names the NOT-WIRED provider and both models by display name, and offers Reload Window', async () => {
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message, action] = warn.mock.calls[0] as [string, string];
+    // Display names, never the raw pi ids the user has never seen (`deepseek` / `deepseek-v4-flash`).
+    expect(message).toContain('DeepSeek');
+    expect(message).toContain('DeepSeek V4 Flash');
+    expect(message).toContain('Opus 4.8');
+    expect(message).not.toContain('deepseek-v4-flash');
+    expect(action).toBe('Reload Window');
+    await session.dispose();
+  });
+
+  it('says nothing when the provider is in NEITHER list — no secret is a user-caused absence, not a timeout', async () => {
+    // The whole point of the notWired contract: a deleted key deauthenticates the provider, so it is in
+    // neither list. Testing `!wired.includes(provider)` here diagnosed a timeout and offered a reload
+    // that cannot possibly help.
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: ['stepfun'], notWired: [], timedOut: true });
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('says nothing when the requested model still resolved despite the timeout', async () => {
+    H.getServices().modelRuntime.getModel = (provider: string, id: string) =>
+      (provider === 'deepseek' && id === 'deepseek-v4-flash'
+        ? { id, name: 'DeepSeek V4 Flash', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
+        : undefined) as never;
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('says nothing for a first-party model (no piProvider), even on a timeout', async () => {
+    const { session, warn } = startWith('claude-opus-4-8', { wired: [], notWired: ['deepseek'], timedOut: true });
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('warns even when NO model could be resolved — the genuinely broken case must not be silent', async () => {
+    // `resolveInitialModel` found nothing authed, so `modelValue` still equals the requested value. The
+    // old "did the model change?" guard read that as "nothing to report".
+    H.getServices().modelRuntime.hasConfiguredAuth = () => false;
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0] as string).toContain('no signed-in model could be selected');
+    await session.dispose();
+  });
+
+  it('shows ONE modal per PiRuntime, not one per open panel', async () => {
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const second = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+    await session.initializeEarly();
+    await second.initializeEarly();
+    await settle();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    await session.dispose();
+    await second.dispose();
+  });
+
+  it('"Reload Window" reloads the window', async () => {
+    stubSync({ wired: [], notWired: ['deepseek'], timedOut: true });
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Reload Window' as never);
+    const exec = vi.spyOn(vscode.commands, 'executeCommand');
+    const session = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+
+    await session.initializeEarly();
+    await settle();
+
+    expect(exec).toHaveBeenCalledWith('workbench.action.reloadWindow');
+    await session.dispose();
+  });
+
+  it('a failing reload command is handled, not dropped as an unhandled rejection', async () => {
+    // VS Code's Thenable is not a Promise, so `void thenable.then(...)` attached no rejection handler
+    // and an executeCommand failure escaped as an unhandled rejection.
+    stubSync({ wired: [], notWired: ['deepseek'], timedOut: true });
+    vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Reload Window' as never);
+    // A PLAIN rejecting function, not a vi mock: vi.fn() attaches its own handler to the promise it
+    // returns, which swallows the very unhandled rejection this test exists to detect.
+    const commands = vscode.commands as unknown as { executeCommand: () => Promise<unknown> };
+    const realExecuteCommand = commands.executeCommand;
+    commands.executeCommand = () => Promise.reject(new Error('command registry down'));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    const session = new PiSession(makeOptions([], { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+
+    try {
+      await session.initializeEarly();
+      await settle();
+      await settle();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      commands.executeCommand = realExecuteCommand;
+    }
+    await session.dispose();
+  });
+
+  it('degrades silently on the accepted residual: timed out with an EMPTY notWired', async () => {
+    // The abort can fire at index 0, before any secret was read, so `timedOut` does NOT imply that
+    // notWired names anyone (contract-notWired, Amendment 1). Naming a provider we never confirmed
+    // would be a worse lie than silence — and nothing may interpolate `undefined` into user-facing text.
+    const messages: ExtensionToWebviewMessage[] = [];
+    stubSync({ wired: [], notWired: [], timedOut: true });
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+    const session = new PiSession(makeOptions(messages, { model: 'deepseek-v4-flash', secrets: FAKE_SECRETS }));
+
+    await session.initializeEarly();
+    await settle();
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(H.getLastSession()).not.toBeNull();
+    expect(messages.some((m) => JSON.stringify(m).includes('undefined'))).toBe(false);
+    await session.dispose();
+  });
+
+  it('start() survives a sync that reports nothing wired and no timeout', async () => {
+    const { session, warn } = startWith('deepseek-v4-flash', { wired: [], notWired: [], timedOut: false });
+    await session.initializeEarly();
+    await settle();
+
+    expect(H.getLastSession()).not.toBeNull();
+    expect(warn).not.toHaveBeenCalled();
     await session.dispose();
   });
 });

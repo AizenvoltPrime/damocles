@@ -27,6 +27,8 @@ import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
 import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
+import { describeAuthError } from './describe-error';
+import { isAbortError } from './web-access/util';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import {
   SUBSCRIPTION_SOURCE,
@@ -44,6 +46,14 @@ import {
   readOpenAIAuthFromDisk,
   type OpenAIAuthStatus,
 } from './openai-auth';
+
+/**
+ * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
+ * under 0.84, so the only blocking I/O left is the `auth.json` / `models-store.json` locks — shared with
+ * every other VS Code window and any `pi` CLI, while this gates all user input at startup. Not a user
+ * setting: it is not a value anyone can reason about correctly.
+ */
+const CUSTOM_PROVIDER_SYNC_TIMEOUT_MS = 3000;
 
 /** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
  *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
@@ -217,6 +227,9 @@ export class PiRuntime {
   private _compatDebounce: NodeJS.Timeout | null = null;
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
   private _sessionsCreated = 0;
+  /** Cancels an in-flight custom-provider credential sync on dispose, so a closing window does not
+   *  leave a credential operation running against the shared `auth.json` lock. */
+  private readonly _syncAbort = new AbortController();
   private _disposed = false;
 
   private constructor(primaryCwd: string, agentDir: string) {
@@ -802,17 +815,33 @@ export class PiRuntime {
    * from the `damocles.explore.apiKey.*` secrets (Phase 5, US-018.8). Idempotent and fail-soft: called on
    * session start and on secret change so subagents can reach those models by explicit id (no loopback
    * proxy). No-op when the runtime is not yet initialized.
+   *
+   * Bounded and cancellable: pi's credential operations take cross-process locks and this gates startup,
+   * so the sync is cancelled after `CUSTOM_PROVIDER_SYNC_TIMEOUT_MS` and on dispose. `timedOut` covers
+   * the timeout leg only — a disposal abort is not a timeout — so callers can tell "nothing configured"
+   * from "gave up", which is what lets `PiSession.start` surface a downgrade instead of hiding it.
+   * `notWired` means "configured, but not live"; a provider in NEITHER list simply has no secret.
    */
-  async syncCustomProviders(getSecret: SecretResolver): Promise<void> {
-    if (this._disposed || !this._services) return;
+  async syncCustomProviders(getSecret: SecretResolver): Promise<{ wired: string[]; notWired: string[]; timedOut: boolean }> {
+    if (this._disposed || !this._services) return { wired: [], notWired: [], timedOut: false };
     try {
-      const wired = await syncCustomProviders({
+      const { wired, aborted, notWired } = await syncCustomProviders({
         modelRuntime: this._services.modelRuntime,
         getSecret,
+        signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
       });
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
+      const timedOut = aborted && !this._syncAbort.signal.aborted;
+      if (timedOut) {
+        log('[PiRuntime] custom provider sync timed out after %dms; not wired: %s', CUSTOM_PROVIDER_SYNC_TIMEOUT_MS, notWired.join(', ') || '(none configured)');
+      }
+      return { wired, notWired, timedOut };
     } catch (err) {
-      log('[PiRuntime] syncCustomProviders failed (non-fatal): %O', err);
+      // Nothing is known about any provider here, so `notWired` stays empty — but the caller must still
+      // learn that Damocles gave up, or it silently skips the model-downgrade warning.
+      const timedOut = !this._syncAbort.signal.aborted && isAbortError(err);
+      log('[PiRuntime] syncCustomProviders failed (non-fatal): %s', describeAuthError(err));
+      return { wired: [], notWired: [], timedOut };
     }
   }
 
@@ -840,11 +869,15 @@ export class PiRuntime {
       try {
         modelRuntime.registerProvider(name, config);
       } catch (err) {
-        log('[PiRuntime] provider re-register failed (%s): %O', name, err);
+        log('[PiRuntime] provider re-register failed (%s): %s', name, describeAuthError(err));
       }
     }
     extensionsResult.runtime.pendingProviderRegistrations = [];
-    await modelRuntime.refresh({ allowNetwork: false });
+    // 0.84 reports per-provider composition failures instead of throwing; unread, a provider whose
+    // catalog silently fails to compose is invisible until a request against it fails.
+    const refreshed = await modelRuntime.refresh({ allowNetwork: false });
+    for (const [provider, err] of refreshed.errors) log('[PiRuntime] hot-reload refresh: provider %s failed: %s', provider, describeAuthError(err));
+    if (refreshed.aborted) log('[PiRuntime] hot-reload refresh aborted before completing');
   }
 
   /**
@@ -1084,7 +1117,9 @@ export class PiRuntime {
     // BARE: a billing-bucket switch is not a session start, so nothing binds the instance this mints.
     await this._reloadResources('bare');
     this._services.modelRuntime.unregisterProvider('anthropic');
-    await this._services.modelRuntime.refresh({ allowNetwork: false });
+    const refreshed = await this._services.modelRuntime.refresh({ allowNetwork: false });
+    for (const [provider, err] of refreshed.errors) log('[PiRuntime] plugin-removal refresh: provider %s failed: %s', provider, describeAuthError(err));
+    if (refreshed.aborted) log('[PiRuntime] plugin-removal refresh aborted before completing');
   }
 
   /**
@@ -1172,7 +1207,7 @@ export class PiRuntime {
         });
       return await runStructuredCompletion<T>(complete, model, req);
     } catch (err) {
-      log('[PiRuntime] runStructuredCompletion failed: %O', err);
+      log('[PiRuntime] runStructuredCompletion failed: %s', describeAuthError(err));
       return null;
     }
   }
@@ -1186,6 +1221,8 @@ export class PiRuntime {
 
   async dispose(): Promise<void> {
     this._disposed = true;
+    // Cancel any in-flight credential sync so a closing window releases the auth.json lock at once.
+    this._syncAbort.abort();
     if (this._initPromise) {
       try {
         await this._initPromise;

@@ -671,7 +671,12 @@ export class AgentManager {
     return true;
   }
 
-  /** Abort all running + queued subagents (interrupt / reset / budget). Returns the count aborted. */
+  /**
+   * Abort all running + queued subagents (interrupt / reset / budget). Returns the count aborted.
+   * A killed agent has no result to incorporate, so its record is marked consumed: otherwise
+   * `hasUnconsumedBackground()` keeps returning true and the NEXT turn's keep-alive injects
+   * "(no output)" and pays for a synthesis round over agents this abort just killed.
+   */
   abortAll(): number {
     let count = 0;
     for (const queued of this.queue) {
@@ -679,6 +684,7 @@ export class AgentManager {
       if (record) {
         record.status = 'stopped';
         record.completedAt = Date.now();
+        record.resultConsumed = true;
         // Never-delivered steers on a queued agent must not survive the abort (see abort()).
         record.pendingSteers = undefined;
         record.userSteers = undefined;
@@ -692,6 +698,7 @@ export class AgentManager {
         record.status = 'stopped';
         record.abortController?.abort();
         record.completedAt = Date.now();
+        record.resultConsumed = true;
         count++;
       }
     }

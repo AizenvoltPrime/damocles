@@ -615,6 +615,65 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it('settles a budget-stopped turn through the normal agent_end path — done/processing/idle/stopInfo, never sessionCancelled', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    // The host's real onBudgetStop is graceful: it never calls markAborted, so agent_end must settle
+    // the turn exactly like a natural completion. This is the claim the US-008 tests never asserted.
+    const adapter = makeBudgetAdapter(out, 1.0, () => undefined);
+    const session = fakeSessionWithCost(turn(), () => 1.2);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+
+    const tail = out.slice(out.findIndex((m) => m.type === 'done'));
+    expect(tail.map((m) => m.type)).toEqual(['done', 'processing', 'sessionStateChanged', 'stopInfo']);
+    expect(tail[1]).toMatchObject({ isProcessing: false });
+    expect(tail[2]).toMatchObject({ state: 'idle' });
+    expect(out.some((m) => m.type === 'sessionCancelled')).toBe(false);
+  });
+
+  it('re-arms in-flight enforcement per turn, so raising the limit does not leave the next turn unbounded', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    let limit = 1.0;
+    let cost = 1.1;
+    const adapter = new PiStreamAdapter({
+      onMessage: (m) => out.push(m),
+      cwd: '/cwd',
+      sessionId: () => 'SID',
+      modelValue: () => 'claude-opus-4-8',
+      defaultModelValue: () => 'claude-opus-4-8',
+      contextWindow: () => 1_000_000,
+      supportedModels: () => [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }],
+      accountInfo: () => ({ model: 'claude-opus-4-8', subscriptionType: 'apikey' }),
+      permissionMode: () => 'default',
+      apiKeySource: () => 'apikey',
+      budgetLimit: () => limit,
+      showCacheMissNotices: () => false,
+      onBudgetStop: onStop,
+      onUserMessageDelivered: () => false,
+      onMidStreamBatchCommitted: () => undefined,
+      onAssistantTextFinal: vi.fn(),
+    });
+    const session = fakeSessionWithCost(turn(), () => cost);
+    adapter.subscribe(session as never);
+
+    adapter.beginTurn('c1');
+    session.play();
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    // The user raises the limit; spend never went back below it, so the turn-end re-arm never fired.
+    // Without the per-turn re-arm this turn runs with NO in-flight bound at any spend.
+    limit = 2.0;
+    cost = 2.5;
+    adapter.beginTurn('c2');
+    session.play();
+
+    expect(onStop).toHaveBeenCalledTimes(2);
+    const exceeded = out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
+    expect(exceeded.at(-1)).toMatchObject({ finalSpend: 2.5, limit: 2.0 });
+  });
+
   it('does not emit budget messages when no dollar limit applies (subscription/allowance)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     // `makeAdapter` wires `budgetLimit: () => null` — the subscription/allowance case.

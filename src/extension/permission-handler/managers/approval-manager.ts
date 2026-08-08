@@ -3,7 +3,7 @@ import type { FileEditInput, FileWriteInput } from '../../../shared/types/conten
 import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier } from '../types';
-import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
+import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
 
@@ -26,6 +26,9 @@ function generatePatternSuggestions(toolName: string, input: Record<string, unkn
     destination: 'localSettings' as const,
   }];
 }
+
+const UNASKED_DENY_DEFAULT = 'Damocles could not ask the user for approval, so this tool call was denied';
+const ABORTED_BEFORE_ANSWER = 'The session was aborted before this approval was answered';
 
 export class ApprovalManager {
   private state: PermissionState;
@@ -58,7 +61,9 @@ export class ApprovalManager {
     const result = await this.requestFilePermissionFromWebview(toolName, typedInput, context);
 
     if (!result.approved) {
-      return buildFileEditDenyResult(result.customMessage, 'User rejected the file modification');
+      return result.userAnswered
+        ? buildUserFileEditDenyResult(result.customMessage, 'User rejected the file modification')
+        : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
     }
 
     return {
@@ -79,7 +84,9 @@ export class ApprovalManager {
     const result = await this.requestShellPermissionFromWebview(toolName, input, context);
 
     if (!result.approved) {
-      return buildDenyResult(result.customMessage, 'User rejected the shell command');
+      return result.userAnswered
+        ? buildUserDenyResult(result.customMessage, 'User rejected the shell command')
+        : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
     }
 
     return {
@@ -129,7 +136,7 @@ export class ApprovalManager {
           toolUseId,
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve({ approved });
+        resolve(approved ? { approved } : { approved, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
@@ -199,7 +206,7 @@ export class ApprovalManager {
           toolUseId,
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve({ approved });
+        resolve(approved ? { approved } : { approved, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
@@ -255,6 +262,7 @@ export class ApprovalManager {
     pending.cleanup();
     pending.resolve({
       approved,
+      userAnswered: true,
       ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
       ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
     });

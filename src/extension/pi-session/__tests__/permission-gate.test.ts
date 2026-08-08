@@ -9,6 +9,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import { DAMOCLES_PLANS_DIR } from '../../paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import type { PermissionResult } from '../../permission-handler';
+import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
@@ -306,7 +307,40 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('rm -rf blocked');
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(onDecision).toHaveBeenCalledWith('Bash', 'deny', 'rm -rf blocked');
+    expect(onDecision).toHaveBeenCalledWith('Bash', 'deny', 'rm -rf blocked', false);
+  });
+
+  /**
+   * The gate's translation of a hook `terminate` into pi's `terminate` — the headline feature. Asserted
+   * HERE and not only in the dispatch tests: dispatch decides what a hook asked for, the gate decides
+   * what pi is told. `terminate` must be ABSENT rather than `false` on the non-terminating paths
+   * (`exactOptionalPropertyTypes`), so these check presence, not falsiness.
+   */
+  it('a hook deny with terminate ends the turn and the notice says so', async () => {
+    const { panel } = makePanel({});
+    const onDecision = vi.fn();
+    const gate = preToolUseGate(hookResult({ decision: 'deny', terminate: true, reason: 'stop' }), onDecision);
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
+    expect(result?.block).toBe(true);
+    expect(result?.terminate).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(onDecision).toHaveBeenCalledWith('Bash', 'deny', 'stop', true);
+  });
+
+  it('a hook deny WITHOUT terminate blocks the call but not the turn', async () => {
+    const { panel } = makePanel({});
+    const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'stop' }), vi.fn());
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+  });
+
+  it('a fail-closed hook-infra block never terminates — a broken hook must not kill the turn', async () => {
+    const { panel } = makePanel({});
+    const gate = preToolUseGate(hookResult({ decision: 'ask', anyFailed: true }));
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
   });
 
   it('allow force-allows, skipping the approval flow and the notice fires', async () => {
@@ -316,7 +350,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(onDecision).toHaveBeenCalledWith('Write', 'allow', undefined);
+    expect(onDecision).toHaveBeenCalledWith('Write', 'allow', undefined, false);
   });
 
   it('allow overrides a plan-mode block', async () => {
@@ -356,14 +390,51 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     expect(readResult).toBeUndefined();
   });
 
-  it('allow wins over a sibling hook infra failure (allow precedes the fail-closed check)', async () => {
+  /**
+   * A force-allow skips the ENTIRE gate — canUseTool, plan mode, the read-only-shell classifier and the
+   * settings deny rules. Granting that while a configured hook is provably down (timeout / spawn failure)
+   * hands the surviving hook a veto it was never given: the down hook may be exactly the one that would
+   * have denied. Fail closed, like the `ask` path already does.
+   */
+  it('a sibling hook infra failure fails CLOSED even when another hook force-allows (write)', async () => {
     const { panel, canUseTool } = makePanel({});
     const onDecision = vi.fn();
     const gate = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true }), onDecision);
     const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
+    expect(result?.block).toBe(true);
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(onDecision).not.toHaveBeenCalled();
+  });
+
+  it('a sibling hook infra failure fails CLOSED even when another hook force-allows (shell, plan mode bypass)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const gate = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true }));
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
+    expect(result?.block).toBe(true);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('a force-allow with every hook healthy still allows, and does not stash context on the blocked path', async () => {
+    const { panel, canUseTool } = makePanel({});
+    const onDecision = vi.fn();
+    const stashContext = vi.fn();
+    const gate = preToolUseGate(hookResult({ decision: 'allow', additionalContext: 'ctx' }), onDecision, { stashContext });
+    const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(onDecision).toHaveBeenCalledWith('Write', 'allow', undefined);
+    expect(onDecision).toHaveBeenCalledWith('Write', 'allow', undefined, false);
+
+    const failed = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true, additionalContext: 'ctx' }), vi.fn(), { stashContext });
+    await runPermissionGate(ev('write', 'c2', { path: '/a', content: 'x' }), makePanel({}).panel, undefined, null, failed);
+    expect(stashContext).toHaveBeenCalledTimes(1);
+    expect(stashContext).toHaveBeenCalledWith('c1', 'ctx');
+  });
+
+  it('a read tool still force-allows through a sibling infra failure (reads cannot mutate state)', async () => {
+    const { panel } = makePanel({ evaluate: async () => 'allow' });
+    const gate = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true }));
+    const result = await runPermissionGate(ev('read', 'c1', { path: '/a' }), panel, undefined, null, gate);
+    expect(result).toBeUndefined();
   });
 
   it('no hook match (null) leaves the gate behaving exactly as today', async () => {
@@ -520,6 +591,66 @@ describe('block attribution — an automatic block must never claim the user ref
   });
 });
 
+/**
+ * An unexplained "no" is the user saying STOP: the model has no information to act on and would burn the
+ * rest of the turn guessing, so the deny is forwarded to pi as `terminate`. A "no, do X instead" is
+ * INSTRUCTION — terminating would throw it away. Every automatic block is on the instruction side too:
+ * it hands the model a reason it is meant to re-plan against, so none of them terminate.
+ *
+ * `terminate` must be ABSENT, never an explicit `undefined` — the repo compiles with
+ * `exactOptionalPropertyTypes: true`, so the conditional-spread idiom at the deny site is load-bearing.
+ * These assertions check presence, not falsiness, so a regression to `{ terminate: undefined }` fails.
+ */
+describe('terminate — an unexplained Deny ends the turn, an explained one does not', () => {
+  it('terminates on a Deny with no feedback (the real deny builder sets interrupt)', async () => {
+    const { panel } = makePanel({ canUse: async () => buildUserFileEditDenyResult(undefined, 'User rejected the file modification') });
+    const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.terminate).toBe(true);
+  });
+
+  it('does NOT terminate a Deny that carries feedback — the model must act on it, not stop', async () => {
+    const { panel } = makePanel({ canUse: async () => buildUserFileEditDenyResult('edit the other file instead', 'User rejected the file modification') });
+    const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+    expect(result?.reason).toContain('edit the other file instead');
+  });
+
+  it('does NOT terminate a deny nobody was asked about (no webview, teardown, abort)', async () => {
+    const { panel } = makePanel({
+      canUse: async () => buildUnaskedDenyResult('Cannot request permission: webview not available', 'unused'),
+    });
+    const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+    expect(result?.reason).toContain('webview not available');
+  });
+
+  it('does not terminate a plan-mode block so the model can re-plan', async () => {
+    const { panel } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('write', 't1', { path: '/repo/app.ts', content: 'x' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+  });
+
+  it('does not terminate a read-only-agent shell block so the model can rephrase the command', async () => {
+    const { panel } = makePanel({ readOnlyShell: true });
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'echo x > f.txt' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+  });
+
+  it('does not terminate a settings-rule deny — it is policy, not a user decision', async () => {
+    // The shape `PermissionHandler.canUseTool` returns for a settings deny (permission-handler/index.ts):
+    // it comes back through the same deny path as a user Deny but deliberately carries no `interrupt`.
+    const { panel } = makePanel({ canUse: async () => ({ behavior: 'deny', message: 'Permission denied by settings rule' }) });
+    const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result).not.toHaveProperty('terminate');
+  });
+});
+
 describe('gateErrorFallback (fail-closed on gate exception)', () => {
   it('blocks write/shell/unknown tools by default', () => {
     expect(gateErrorFallback('write')?.block).toBe(true);
@@ -527,6 +658,11 @@ describe('gateErrorFallback (fail-closed on gate exception)', () => {
     expect(gateErrorFallback('Edit')?.block).toBe(true);
     expect(gateErrorFallback('PowerShell')?.block).toBe(true);
     expect(gateErrorFallback('SaveObservation')?.block).toBe(true); // 'other' category → blocked
+  });
+
+  it('does not terminate — a Damocles bug must not kill the user\'s turn', () => {
+    expect(gateErrorFallback('write')).not.toHaveProperty('terminate');
+    expect(gateErrorFallback('bash')).not.toHaveProperty('terminate');
   });
 
   it('lets read-only tools through (harmless, auto-allowed on the normal path)', () => {

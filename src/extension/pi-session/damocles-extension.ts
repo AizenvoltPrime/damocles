@@ -50,15 +50,17 @@ function buildPreToolUseGate(
         toolName: mapPiToolName(event.toolName),
         toolInput: normalizeToolInput(event.toolName, event.input as Record<string, unknown>),
       }),
-    onDecision: (toolName, decision, reason) => {
-      log('[Hooks] PreToolUse %s for %s%s', decision, toolName, reason ? `: ${reason}` : '');
+    onDecision: (toolName, decision, reason, terminate) => {
+      log('[Hooks] PreToolUse %s%s for %s%s', decision, terminate ? ' (terminate)' : '', toolName, reason ? `: ${reason}` : '');
+      // A terminating block is the only one the user gets no other signal about: pi settles the turn
+      // through a normal `agent_end`, so without this line the panel just goes idle mid-task.
+      const blocked = terminate
+        ? `A hook blocked ${toolName} and ended the turn`
+        : `A hook blocked ${toolName}`;
       panel.postMessage({
         type: 'notification',
-        notificationType: decision === 'allow' ? 'warning' : 'info',
-        message:
-          decision === 'allow'
-            ? `A hook force-allowed ${toolName}${reason ? `: ${reason}` : ''}`
-            : `A hook blocked ${toolName}${reason ? `: ${reason}` : ''}`,
+        notificationType: decision === 'allow' || terminate ? 'warning' : 'info',
+        message: (decision === 'allow' ? `A hook force-allowed ${toolName}` : blocked) + (reason ? `: ${reason}` : ''),
       });
     },
     notify: (messages) => postHookSystemMessages((m) => panel.postMessage(m), messages),

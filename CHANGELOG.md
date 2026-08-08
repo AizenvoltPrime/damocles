@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.20.0] - 2026-08-08
+
+A first launch that never finished starting, a "no" the agent talked past, and a spending limit that tore the reply in half.
+
+### Added
+
+- **A `PreToolUse` hook can end the turn.** Add `"terminate": true` beside `"decision": "deny"` when the model should stop rather than look for a way around the wall. Opt-in, so existing hooks are unchanged. Honored only on a `tool_call` deny, and only when every call in the batch is denied that way — denying one of three parallel calls does not stop the agent, because the other two produced results the model still has to see. It is read strictly as the JSON boolean `true`: the string `"true"` or the number `1` is ignored, which matters if your hook is a shell or `jq` one-liner. Ending a turn this way is announced as a notification and leaves the denied tool call in the transcript. See `docs/hooks.md`.
+
+### Fixed
+
+- **A provider error can no longer print an API key into the "Damocles" output channel.** The 0.84 runtime below attaches the credential it was working on to the error it raises when a key fails to apply, and Damocles logged that error with its contents expanded — which would have written the key in full into a log people routinely paste into bug reports. Errors are now logged as their type, message and cause, never their attached data. No released version was affected: the error type that carries the credential arrives with 0.84, in this same release. If you ran a **pre-release** 2.20.0 build and saw a "failed to wire" line, rotate that provider's key.
+- **The first launch could spin forever without ever sending a prompt.** Each configured provider key was handed to the runtime one at a time, and every handover took a lock on the shared credentials file and refreshed the whole model list over the network. One stall meant no error, no timeout, just a spinner and a chat box that swallowed what you typed. Credential syncing is now bounded to 3 seconds and cancellable — including the read of the stored key itself, which is where a locked or prompting OS keyring could hang with nothing to cancel it. If the sync gives up and your saved default model belonged to a provider it could not reach, Damocles now says so — naming the provider and both models when it knows which provider was left unwired — instead of starting on a different model without a word.
+- **A provider whose key could not be read was signed out and its stored credential deleted.** A locked keyring, a dismissed keychain prompt or a momentary DPAPI failure was treated as "you removed this key", which also deleted a credential you may have created outside Damocles with `pi login`, with no way to recover it from the UI. A key that cannot be read now leaves the provider untouched and is reported as unread rather than absent.
+- **Denying a tool call without saying why now stops the agent.** An unexplained "no" was read as a hint, so the agent went looking for another route to the same thing. It now ends the turn. Denying **with** a written reason still means "not like that, do this instead" and the agent keeps going. Only your own answer to a prompt can end a turn this way: plan mode, read-only agents, your permission rules, a session you closed, and the permission system itself failing all leave the turn running — each of those gives the model something to re-plan against, and none of them is you saying no.
+- **Crossing `damocles.maxBudgetUsd` mid-reply no longer tears the conversation in half.** The turn was killed where it stood: a sentence cut off, tool results half-written, and the session reported as cancelled when you had cancelled nothing — damage every later message then built on. The reply and its tools now finish, and you are told the turn was stopped rather than being left to read it as a normal ending. Background subagents are stopped outright where they stand, since they are spending against a limit you have already passed. Spending can pass the limit by one exchange with the model, and that exchange is not itself capped: the tools it calls all run, an automatic history compaction still bills, and **a team already running continues to completion and can pass the limit by any amount.** The limit is re-checked before every turn and enforced during every turn, so raising it resumes work under the new ceiling. **Esc** still stops everything at once, teams included.
+- **Sessions went unnamed because the naming job was reading your conversation as instructions.** The background model that writes a title — and the ones that extract memories, expand searches and rerank results — got their material as if it were the request, so a conversation containing anything actionable, even "reply with exactly: ok", got obeyed instead of summarised. They now state their own task first and pass your content as marked-up data. Titles are more reliable, though not yet guaranteed; a miss is written to the "Damocles" output channel instead of passing silently. A background job that answers with a bare value instead of the structure it was asked for is now treated as a miss rather than passed on as a result.
+
+### Changed
+
+- **pi runtime upgraded `0.83.0` → `0.84.1`.** All four pi packages (`pi-coding-agent`, `pi-ai`, `pi-agent-core`, `pi-tui`) move to `^0.84.1`, which pulls in four new transitive packages (`pi-telemetry`, `pi-client`, `pi-protocol`, `grok-mermaid`) and moves `undici` 8.5.0 → 8.9.0. This is what makes the startup fix above possible: 0.84 refreshes a single provider from the local snapshot when a key is applied, instead of re-fetching the entire model list over the network, so the slowest leg of the old startup path is gone upstream rather than worked around here.
+
 ## [2.19.1] - 2026-08-03
 
 Deleting a session could leave behind a file that no session list would ever read again.
@@ -3706,6 +3727,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.20.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.1...v2.20.0
 [2.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.0...v2.19.1
 [2.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.18.0...v2.19.0
 [2.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.17.0...v2.18.0

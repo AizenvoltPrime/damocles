@@ -20,5 +20,8 @@
   "Waiting for browser frames...": "Αναμονή για καρέ προγράμματος περιήγησης...",
   "The browser closed unexpectedly. Open it again to continue.": "Το πρόγραμμα περιήγησης έκλεισε απροσδόκητα. Ανοίξτε το ξανά για να συνεχίσετε.",
   "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.": "Τα εργαλεία προγραμματιστή δεν είναι διαθέσιμα επειδή η θύρα εντοπισμού σφαλμάτων είναι απενεργοποιημένη από το damocles.browser.devToolsPort. Ενεργοποιήστε τη ρύθμιση και επανεκκινήστε το πρόγραμμα περιήγησης — η θύρα είναι σημαία χρόνου εκκίνησης και δεν μπορεί να ενεργοποιηθεί σε πρόγραμμα περιήγησης που ήδη εκτελείται.",
-  "Open Settings": "Άνοιγμα ρυθμίσεων"
+  "Open Settings": "Άνοιγμα ρυθμίσεων",
+  "Reload Window": "Επαναφόρτωση παραθύρου",
+  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και χρησιμοποιείται το \"{2}\" στη θέση του.",
+  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και δεν ήταν δυνατή η επιλογή άλλου συνδεδεμένου μοντέλου."
 }

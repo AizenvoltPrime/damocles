@@ -14,6 +14,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { PermissionResult, CanUseToolContext } from './types';
+import { buildUserDenyResult, buildUnaskedDenyResult } from './utils';
 import type { FormValues } from '../../shared/types/forms';
 import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
@@ -173,10 +174,7 @@ export class PermissionHandler {
     }
 
     if (evaluation === 'deny') {
-      return {
-        behavior: 'deny',
-        message: 'Permission denied by settings rule',
-      };
+      return buildUnaskedDenyResult(undefined, 'Permission denied by settings rule');
     }
 
     if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
@@ -204,10 +202,7 @@ export class PermissionHandler {
       return { behavior: 'allow', updatedInput: input };
     }
 
-    return {
-      behavior: 'deny',
-      message: `User denied permission for ${toolName}`,
-    };
+    return buildUserDenyResult(undefined, `User denied permission for ${toolName}`);
   }
 
   async resolveApproval(
