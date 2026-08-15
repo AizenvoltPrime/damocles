@@ -51,6 +51,7 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
       shell: 'bash',
       osVersion: 'Linux test',
       compassEnabled: false,
+      thinkingDisabled: false,
     }),
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,

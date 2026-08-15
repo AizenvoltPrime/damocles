@@ -45,11 +45,9 @@ node_modules/**
 !node_modules/@google/genai/**/*.json
 !node_modules/@google/genai/**/*.mjs
 !node_modules/@hono/node-server/**
-!node_modules/@mistralai/mistralai/**/*.js
-!node_modules/@mistralai/mistralai/**/*.json
 !node_modules/@modelcontextprotocol/sdk/**/*.js
 !node_modules/@modelcontextprotocol/sdk/**/*.json
-!node_modules/@opentelemetry/**
+!node_modules/@opentelemetry/api/**
 !node_modules/@protobufjs/**
 !node_modules/@smithy/**
 !node_modules/@types/node/**
@@ -211,6 +209,7 @@ node_modules/**
 src/**
 scripts/**
 .claude/**
+.damocles/**
 logs/**
 docs/**
 

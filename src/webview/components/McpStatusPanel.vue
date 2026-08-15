@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { McpServerStatusInfo } from '@shared/types/mcp';
+import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { Component } from 'vue';
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -12,6 +12,13 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+} from '@/components/ui/alert-dialog';
 import { Switch } from '@/components/ui/switch';
 import {
   IconCheckCircle,
@@ -19,13 +26,21 @@ import {
   IconKey,
   IconGear,
   IconBan,
+  IconWarning,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import McpServerFormDialog from './McpServerFormDialog.vue';
+import { canDeleteMcpServer, canEditMcpServer, type McpCollisionServer } from './mcp-server-form-logic';
 
 const { t } = useI18n();
 
 const props = defineProps<{
   servers: McpServerStatusInfo[];
+  configErrors: McpConfigError[];
+  /** True between emitting a write and the extension acknowledging it. */
+  mcpWriteInFlight: boolean;
+  /** The extension’s reason for refusing the last write, or null. */
+  mcpWriteError: McpWriteErrorInfo | null;
   mcpEnabled: boolean;
   visible: boolean;
 }>();
@@ -39,11 +54,90 @@ const emit = defineEmits<{
   (e: 'reauthenticate', serverName: string): void;
   (e: 'signOut', serverName: string): void;
   (e: 'trustProject'): void;
+  (e: 'openFile', filePath: string, line: number | null): void;
+  (e: 'addServer', serverName: string, config: McpServerConfig): void;
+  (e: 'updateServer', serverName: string, newServerName: string | undefined, config: McpServerConfig): void;
+  (e: 'deleteServer', serverName: string): void;
 }>();
 
 const hasUntrustedServers = computed(() => props.servers.some((s) => s.untrusted === true));
 
 const expandedServers = ref<Set<string>>(new Set());
+
+/** True while the add/edit form is open; `editingName` is null for an add. */
+const formOpen = ref(false);
+const editingName = ref<string | null>(null);
+const editingConfig = ref<McpServerConfig | null>(null);
+
+/**
+ * Whether `~/.damocles/mcp.json` itself is unusable. Every write is a read-modify-write of that file,
+ * so while it cannot be parsed no Add, Edit or Delete can succeed — and the inline collision check is
+ * blind, because it runs against the merged list, which currently holds none of that file’s servers.
+ * Offering the actions anyway would mean the user fills in a whole form to be told it was never going
+ * to work. The notice above already says which file and which line.
+ */
+const damoclesConfigBroken = computed(() =>
+  props.configErrors.some((error) => /[/\\]\.damocles[/\\]mcp\.json$/.test(error.path)),
+);
+
+/** The server awaiting delete confirmation. Delete is never emitted without passing through here. */
+const pendingDeleteName = ref<string | null>(null);
+
+function openAddForm(): void {
+  editingName.value = null;
+  editingConfig.value = null;
+  formOpen.value = true;
+}
+
+function openEditForm(server: McpServerStatusInfo): void {
+  if (!canEditMcpServer(server)) return;
+  editingName.value = server.name;
+  editingConfig.value = server.editableConfig ?? null;
+  formOpen.value = true;
+}
+
+/**
+ * Only the visibility flag is cleared. `editingName`/`editingConfig` belong to the child’s reset
+ * watcher, which fires on false → true; clearing them here instead mutates the form while reka is
+ * still animating it out, so the just-saved name starts colliding with itself and the dialog flashes
+ * “Add MCP server” plus a bogus duplicate-name error on its way off screen.
+ */
+function closeForm(): void {
+  formOpen.value = false;
+}
+
+/**
+ * Send the write and leave the form open. It closes only when `mcpWriteInFlight` goes false with no
+ * `mcpWriteError` — i.e. when the extension confirms the write landed. Closing here instead would
+ * discard everything the user typed on any rejection the webview could not predict.
+ */
+function handleFormSave(serverName: string, config: McpServerConfig): void {
+  const original = editingName.value;
+  if (original === null) {
+    emit('addServer', serverName, config);
+  } else {
+    emit('updateServer', original, serverName === original ? undefined : serverName, config);
+  }
+}
+
+watch(
+  () => props.mcpWriteInFlight,
+  (inFlight, wasInFlight) => {
+    if (wasInFlight && !inFlight && props.mcpWriteError === null) closeForm();
+  },
+);
+
+function requestDelete(server: McpServerStatusInfo): void {
+  if (!canDeleteMcpServer(server)) return;
+  pendingDeleteName.value = server.name;
+}
+
+function confirmDelete(): void {
+  const name = pendingDeleteName.value;
+  if (name === null) return;
+  emit('deleteServer', name);
+  pendingDeleteName.value = null;
+}
 
 function toggleExpanded(serverName: string): void {
   const next = new Set(expandedServers.value);
@@ -56,6 +150,9 @@ function toggleExpanded(serverName: string): void {
 }
 
 function handleKeydown(e: KeyboardEvent): void {
+  // The form and the delete confirmation stack on top of this panel and close themselves on Escape;
+  // without this guard the document-level listener would tear the whole panel down underneath them.
+  if (formOpen.value || pendingDeleteName.value !== null) return;
   if (e.key === 'Escape' && props.visible) {
     e.stopPropagation();
     e.preventDefault();
@@ -146,6 +243,103 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
       return 'bg-muted text-muted-foreground border border-border';
   }
 }
+
+/**
+ * Provenance badge label. Workspace servers are labelled too: they carry no edit or delete
+ * affordance (they live in the project's `.mcp.json`, which Damocles does not write), so without a
+ * badge the missing buttons would look arbitrary.
+ */
+function getSourceLabel(source: McpServerStatusInfo['source']): string | null {
+  switch (source) {
+    case 'workspace':
+      return t('mcp.fromWorkspace');
+    case 'damocles':
+      return t('mcp.fromDamocles');
+    case 'claude':
+      return t('mcp.fromClaudeCode');
+    case 'codex':
+      return t('mcp.fromCodex');
+    default:
+      return null;
+  }
+}
+
+/** A contextual button on a server row. */
+interface ServerRowAction {
+  key: string;
+  label: string;
+  class: string;
+  run: () => void;
+}
+
+/**
+ * A row's actions as data rather than a run of sibling `v-if`s. A row carries up to five of them and
+ * the panel is only `max-w-md` wide, so they render on their own line; deriving them here is what lets
+ * that line know whether it has anything to show without restating every button's condition.
+ */
+function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
+  const actions: ServerRowAction[] = [];
+  if (server.status === 'needs-auth') {
+    actions.push({
+      key: 'authenticate',
+      label: t('mcp.authenticate'),
+      class: 'text-warning hover:text-warning',
+      run: () => emit('authenticate', server.name),
+    });
+  }
+  if (server.status === 'failed') {
+    actions.push({
+      key: 'reconnect',
+      label: t('mcp.reconnect'),
+      class: 'text-error hover:text-error',
+      run: () => emit('reconnect', server.name),
+    });
+  }
+  if (server.supportsOAuth && server.status === 'connected') {
+    actions.push({
+      key: 'reauthenticate',
+      label: t('mcp.reauthenticate'),
+      class: 'text-warning hover:text-warning',
+      run: () => emit('reauthenticate', server.name),
+    });
+    actions.push({
+      key: 'signOut',
+      label: t('mcp.signOut'),
+      class: 'text-muted-foreground hover:text-foreground',
+      run: () => emit('signOut', server.name),
+    });
+  }
+  // Withheld while `~/.damocles/mcp.json` is unusable: every write reads that file first, so none of
+  // these can succeed until it parses again.
+  if (canEditMcpServer(server) && !damoclesConfigBroken.value) {
+    actions.push({
+      key: 'edit',
+      label: t('mcp.editServer'),
+      class: 'text-muted-foreground hover:text-foreground',
+      run: () => openEditForm(server),
+    });
+  }
+  if (canDeleteMcpServer(server) && !damoclesConfigBroken.value) {
+    actions.push({
+      key: 'delete',
+      label: t('mcp.deleteServer'),
+      class: 'text-muted-foreground hover:text-error',
+      run: () => requestDelete(server),
+    });
+  }
+  return actions;
+}
+
+const rows = computed(() => props.servers.map((server) => ({ server, actions: buildRowActions(server) })));
+
+/**
+ * Just the two fields the form's collision check reads. `McpServerStatusInfo` also carries
+ * `editableConfig`, whose `env`/`headers` values may be live credentials — there is no reason to hand
+ * the whole list, secrets included, to a component that only compares names.
+ */
+const collisionServers = computed<McpCollisionServer[]>(() =>
+  props.servers.map((server) => (server.source === undefined ? { name: server.name } : { name: server.name, source: server.source })),
+);
 </script>
 
 <template>
@@ -168,11 +362,56 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
       </DialogHeader>
 
       <div class="flex-1 overflow-y-auto py-2">
+        <div class="mb-2 flex justify-end">
+          <Button
+            size="sm"
+            variant="ghost"
+            class="h-6 px-2 text-xs"
+            :disabled="damoclesConfigBroken"
+            :title="damoclesConfigBroken ? t('mcp.addServerBlocked') : undefined"
+            @click="openAddForm"
+          >
+            {{ t('mcp.addServer') }}
+          </Button>
+        </div>
+
         <div
           v-if="!mcpEnabled"
           class="mb-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
         >
           {{ t('mcp.disabledNotice') }}
+        </div>
+
+        <!--
+          A config file that exists but does not parse. Without this the servers it defines simply
+          vanish from the list, which reads as data loss rather than a syntax error.
+        -->
+        <div
+          v-for="configError in configErrors"
+          :key="`${configError.path}:${configError.line ?? 0}`"
+          class="mb-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-muted-foreground"
+        >
+          <div class="text-error font-medium">{{ t('mcp.configErrorTitle') }}</div>
+          <div class="mt-1 font-mono break-all">{{ configError.displayPath }}</div>
+          <div class="mt-1">
+            {{
+              configError.kind === 'unreadable'
+                ? t('mcp.configErrorUnreadable')
+                : configError.line !== null && configError.column !== null
+                  ? t('mcp.configErrorAt', { line: configError.line, column: configError.column })
+                  : t('mcp.configErrorUnknown')
+            }}
+          </div>
+          <div class="mt-1.5 flex justify-end">
+            <Button
+              size="sm"
+              variant="ghost"
+              class="h-6 px-2 text-xs text-error hover:text-error"
+              @click="emit('openFile', configError.path, configError.line)"
+            >
+              {{ t('mcp.configErrorOpen') }}
+            </Button>
+          </div>
         </div>
 
         <div
@@ -192,73 +431,57 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
 
         <div v-else class="space-y-2" :class="{ 'opacity-50 pointer-events-none': !mcpEnabled }">
           <Card
-            v-for="server in servers"
+            v-for="{ server, actions } in rows"
             :key="server.name"
             class="bg-background border-border hover:bg-background/80 transition-colors"
           >
             <CardContent class="p-3">
-              <div class="flex items-center justify-between gap-3">
-                <div class="flex items-center gap-2 min-w-0 flex-1">
-                  <div class="shrink-0">
-                    <LoadingSpinner v-if="server.status === 'pending'" :size="16" :class="getStatusClass(server.status)" />
-                    <component v-else :is="getStatusIcon(server.status)" :size="16" :class="getStatusClass(server.status)" />
-                  </div>
-                  <span class="font-medium truncate" :class="{ 'opacity-50': !server.enabled }">{{ server.displayName ?? server.name }}</span>
-                  <span
-                    v-if="server.source === 'claude'"
-                    class="shrink-0 text-xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground border border-border leading-4"
-                  >
-                    {{ t('mcp.fromClaudeCode') }}
-                  </span>
+              <div class="flex items-center gap-2">
+                <div class="shrink-0">
+                  <LoadingSpinner v-if="server.status === 'pending'" :size="16" :class="getStatusClass(server.status)" />
+                  <component v-else :is="getStatusIcon(server.status)" :size="16" :class="getStatusClass(server.status)" />
                 </div>
-                <div class="flex items-center gap-2 shrink-0">
+                <span class="font-medium truncate min-w-0" :class="{ 'opacity-50': !server.enabled }">{{ server.displayName ?? server.name }}</span>
+                <span
+                  v-if="getSourceLabel(server.source)"
+                  class="shrink-0 text-xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground border border-border leading-4"
+                >
+                  {{ getSourceLabel(server.source) }}
+                </span>
+                <div class="ml-auto flex items-center gap-2 shrink-0">
                   <span
                     class="text-xs px-2 py-0.5 rounded-full whitespace-nowrap"
                     :class="getStatusBadgeClass(server.status)"
                   >
                     {{ getStatusLabel(server.status) }}
                   </span>
-                  <Button
-                    v-if="server.status === 'needs-auth'"
-                    size="sm"
-                    variant="ghost"
-                    class="h-6 px-2 text-xs text-warning hover:text-warning"
-                    @click="emit('authenticate', server.name)"
-                  >
-                    {{ t('mcp.authenticate') }}
-                  </Button>
-                  <Button
-                    v-if="server.status === 'failed'"
-                    size="sm"
-                    variant="ghost"
-                    class="h-6 px-2 text-xs text-error hover:text-error"
-                    @click="emit('reconnect', server.name)"
-                  >
-                    {{ t('mcp.reconnect') }}
-                  </Button>
-                  <Button
-                    v-if="server.supportsOAuth && server.status === 'connected'"
-                    size="sm"
-                    variant="ghost"
-                    class="h-6 px-2 text-xs text-warning hover:text-warning"
-                    @click="emit('reauthenticate', server.name)"
-                  >
-                    {{ t('mcp.reauthenticate') }}
-                  </Button>
-                  <Button
-                    v-if="server.supportsOAuth && server.status === 'connected'"
-                    size="sm"
-                    variant="ghost"
-                    class="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                    @click="emit('signOut', server.name)"
-                  >
-                    {{ t('mcp.signOut') }}
-                  </Button>
                   <Switch
                     :checked="server.enabled"
                     @update:checked="(checked: boolean) => emit('toggle', server.name, checked)"
                   />
                 </div>
+              </div>
+
+              <div v-if="actions.length > 0" class="mt-2 flex flex-wrap items-center justify-end gap-1">
+                <Button
+                  v-for="action in actions"
+                  :key="action.key"
+                  size="sm"
+                  variant="ghost"
+                  class="h-6 px-2 text-xs"
+                  :class="action.class"
+                  @click="action.run()"
+                >
+                  {{ action.label }}
+                </Button>
+              </div>
+
+              <!-- A Damocles server whose stored definition uses options this form cannot show. -->
+              <div
+                v-if="canDeleteMcpServer(server) && !canEditMcpServer(server)"
+                class="mt-2 text-xs text-muted-foreground pl-6"
+              >
+                {{ t('mcp.notFormEditable') }}
               </div>
 
               <div v-if="server.serverInfo" class="mt-2 text-xs text-muted-foreground pl-6">
@@ -317,4 +540,44 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
       </div>
     </DialogContent>
   </Dialog>
+
+  <McpServerFormDialog
+    :visible="formOpen"
+    :editing-name="editingName"
+    :editing-config="editingConfig"
+    :servers="collisionServers"
+    :submitting="mcpWriteInFlight"
+    :write-error="mcpWriteError"
+    @save="handleFormSave"
+    @cancel="closeForm"
+  />
+
+  <AlertDialog
+    :open="pendingDeleteName !== null"
+    @update:open="(open: boolean) => !open && (pendingDeleteName = null)"
+  >
+    <AlertDialogContent class="bg-card border-border max-w-md">
+      <AlertDialogHeader>
+        <AlertDialogTitle class="flex items-center gap-2">
+          <IconWarning :size="20" class="text-error" />
+          {{ t('mcp.deleteConfirmTitle') }}
+        </AlertDialogTitle>
+        <AlertDialogDescription>
+          {{ t('mcp.deleteConfirmWarning', { name: pendingDeleteName ?? '' }) }}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+
+      <div class="flex justify-end gap-2 mt-4">
+        <Button variant="ghost" @click="pendingDeleteName = null">
+          {{ t('common.cancel') }}
+        </Button>
+        <Button
+          class="bg-destructive hover:bg-destructive/80 text-destructive-foreground"
+          @click="confirmDelete"
+        >
+          {{ t('common.delete') }}
+        </Button>
+      </div>
+    </AlertDialogContent>
+  </AlertDialog>
 </template>

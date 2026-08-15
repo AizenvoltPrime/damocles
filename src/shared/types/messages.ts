@@ -1,5 +1,5 @@
 import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage } from './content';
-import type { McpServerStatusInfo } from './mcp';
+import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErrorInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
 import type { FormSchema, FormValues } from './forms';
@@ -99,6 +99,13 @@ export type WebviewToExtensionMessage =
   | { type: "authenticateMcpServer"; serverName: string }
   | { type: "reauthenticateMcpServer"; serverName: string }
   | { type: "signOutMcpServer"; serverName: string }
+  // Management of the user-global `~/.damocles/mcp.json` only; `.claude`/`.codex` entries are
+  // read-only imports and the workspace `.mcp.json` is the project's file. `serverName` on
+  // `mcpUpdateServer` is the CURRENT (pre-rename) name; `newServerName` is present only on a rename.
+  // `requestId` is echoed back in `mcpWriteResult` so the form knows which of its sends settled.
+  | { type: "mcpAddServer"; requestId: string; serverName: string; config: McpServerConfig }
+  | { type: "mcpUpdateServer"; requestId: string; serverName: string; newServerName?: string; config: McpServerConfig }
+  | { type: "mcpDeleteServer"; requestId: string; serverName: string }
   | { type: "toggleTool"; toolName: string; enabled: boolean }
   | { type: "toggleToolGroup"; group: ToolGroup; enabled: boolean }
   | { type: "requestToolStatus" }
@@ -246,7 +253,7 @@ export type ExtensionToWebviewMessage =
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
-  | { type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean }
+  | { type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[] }
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
@@ -307,7 +314,15 @@ export type ExtensionToWebviewMessage =
   | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
   | { type: "queueCancelled"; messageId: string }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
-  | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[] }
+  | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] }
+  /**
+   * The outcome of one `mcpAddServer`/`mcpUpdateServer`/`mcpDeleteServer`. Sent for every attempt,
+   * success or failure, so the form can stay open holding the user's typed definition until the write
+   * is known to have landed — a dialog that closes on send loses everything the user entered on any
+   * rejection the webview could not predict.
+   */
+  | { type: "mcpWriteResult"; requestId: string; ok: true }
+  | { type: "mcpWriteResult"; requestId: string; ok: false; error: McpWriteErrorInfo }
   | { type: "toolStatus"; data: ToolsSnapshot }
   | { type: "projectTrust"; trusted: boolean }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }

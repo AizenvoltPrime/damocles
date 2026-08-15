@@ -35,5 +35,18 @@ describe('default agent prompts — ToolSearch is described by mechanism, not by
       expect(roleParagraph).toContain('`ToolSearch`');
       expect(roleParagraph).toContain('cannot edit files');
     });
+
+    // `replace` mode inherits none of the parent's tone rules, so length calibration has to live here.
+    it(`${agent} calibrates report length against the caller's context window`, () => {
+      const prompt = DEFAULT_AGENTS.get(agent)?.systemPrompt ?? '';
+      expect(prompt).toContain("spent from the caller's context window");
+      expect(prompt).toMatch(/padding|pad with filler/);
+    });
   }
+
+  it('Explore scopes thoroughness to what it inspects, not to how much it writes', () => {
+    const prompt = DEFAULT_AGENTS.get('Explore')?.systemPrompt ?? '';
+    expect(prompt).toContain('Be thorough in what you INSPECT');
+    expect(prompt).not.toContain('Be thorough and precise');
+  });
 });

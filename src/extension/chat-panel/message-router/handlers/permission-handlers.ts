@@ -4,7 +4,7 @@ import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { buildPlanImplementationMessage } from "../utils";
-import { syncPermissionRulesToClaudeSettings } from "../../settings-manager/utils";
+import { syncPermissionRulesToSettings } from "../../settings-manager/utils";
 import { computePlanFilePath } from "../../../paths";
 import { log } from "../../../logger";
 
@@ -30,8 +30,16 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ctx.permissionHandler.autoApproveSubagent(msg.parentToolUseId);
       }
 
+      // Persisting the rule is best-effort; settling the approval is not. `resolveApproval` is what
+      // releases the agent's pending tool call, so letting a write failure propagate past this point
+      // leaves the turn blocked indefinitely with only a toast to explain it. A read-only workspace, a
+      // settings file that is not a JSON object, or an unknown destination all reach here.
       if (msg.updatedPermissions?.length) {
-        await syncPermissionRulesToClaudeSettings(msg.updatedPermissions, workspacePath);
+        try {
+          await syncPermissionRulesToSettings(msg.updatedPermissions, workspacePath);
+        } catch (err) {
+          log("[MessageRouter] Failed to persist permission rules:", err instanceof Error ? err.message : "Unknown error");
+        }
       }
 
       ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {

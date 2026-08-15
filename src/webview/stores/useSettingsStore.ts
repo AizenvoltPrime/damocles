@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, ContextWarningLevel, PanelThinkingState } from '@shared/types/settings';
-import type { McpServerStatusInfo } from '@shared/types/mcp';
+import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
 import { DEFAULT_MODELS } from '@shared/types/constants';
@@ -39,6 +39,17 @@ export interface ContextWarningState {
   autoCompactTriggered: boolean;
 }
 
+/**
+ * Statuses that can only come from the live MCP client. Anything else is derived from config alone
+ * and must not survive a config reload.
+ */
+const LIVE_MCP_STATUSES = new Set<McpServerStatusInfo["status"]>([
+  "connected",
+  "failed",
+  "needs-auth",
+  "pending",
+]);
+
 export const useSettingsStore = defineStore('settings', () => {
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
   const baseAvailableModels = ref<ModelInfo[]>([]);
@@ -50,6 +61,11 @@ export const useSettingsStore = defineStore('settings', () => {
   const mcpServers = ref<McpServerStatusInfo[]>([]);
   /** Live `damocles.mcp.enabled` — the MCP-panel master switch. */
   const mcpEnabled = ref<boolean>(true);
+  /** MCP config files that exist but do not parse, so their servers are missing from the list. */
+  const mcpConfigErrors = ref<McpConfigError[]>([]);
+  /** The requestId of the MCP write awaiting acknowledgement, or null. */
+  const mcpWriteRequestId = ref<string | null>(null);
+  const mcpWriteError = ref<McpWriteErrorInfo | null>(null);
   const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
   /** Whether the workspace is trusted — when false, project-scope subagents/skills are disabled (US-022). */
   const projectTrusted = ref<boolean>(true);
@@ -147,6 +163,52 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setMcpServers(servers: McpServerStatusInfo[]) {
     mcpServers.value = servers;
+  }
+
+  /**
+   * Apply a config-only server list (`mcpConfigUpdate`), which describes every enabled server as
+   * `idle` because it is built without consulting the live client. Observed runtime state is carried
+   * over so a config reload does not blank every server's connection until the next `mcpServerStatus`.
+   *
+   * The new payload is the base and only the RUNTIME fields below are carried over. Spreading the old
+   * entry underneath cannot express "this field is now gone" — every config field is optional — which
+   * matters most for `editableConfig`: the extension withholds it precisely so Edit stops being
+   * offered, and a resurrected copy reopens the "Edit destroys what it cannot show" hole.
+   */
+  function reconcileMcpServers(servers: McpServerStatusInfo[]) {
+    const previous = new Map(mcpServers.value.map(s => [s.name, s]));
+    mcpServers.value = servers.map(server => {
+      const prior = previous.get(server.name);
+      if (!prior || server.status !== "idle" || !LIVE_MCP_STATUSES.has(prior.status)) return server;
+      const merged: McpServerStatusInfo = { ...server, status: prior.status };
+      if (prior.tools !== undefined) merged.tools = prior.tools;
+      if (prior.serverInfo !== undefined) merged.serverInfo = prior.serverInfo;
+      if (prior.error !== undefined) merged.error = prior.error;
+      // `supportsOAuth` is deliberately NOT carried. It is runtime-derived, and a server just edited
+      // from remote to stdio would keep offering Re-authenticate — an action that cannot work. Losing
+      // the affordance for the moment before the next status message costs nothing by comparison.
+      return merged;
+    });
+  }
+
+  function setMcpConfigErrors(errors: McpConfigError[]) {
+    mcpConfigErrors.value = errors;
+  }
+
+  /** A write has been sent; the form stays open and disabled until `settleMcpWrite` matches it. */
+  function beginMcpWrite(requestId: string) {
+    mcpWriteRequestId.value = requestId;
+    mcpWriteError.value = null;
+  }
+
+  /**
+   * Apply an acknowledgement. A stale one is ignored: only the request currently in flight may
+   * settle it, or a late reply to an abandoned attempt would close a form the user has reopened.
+   */
+  function settleMcpWrite(requestId: string, error: McpWriteErrorInfo | null) {
+    if (mcpWriteRequestId.value !== requestId) return;
+    mcpWriteRequestId.value = null;
+    mcpWriteError.value = error;
   }
 
   function setMcpEnabled(enabled: boolean) {
@@ -320,6 +382,9 @@ export const useSettingsStore = defineStore('settings', () => {
     availableModels,
     accountInfo,
     mcpServers,
+    mcpConfigErrors,
+    mcpWriteRequestId,
+    mcpWriteError,
     mcpEnabled,
     toolsSnapshot,
     projectTrusted,
@@ -346,6 +411,10 @@ export const useSettingsStore = defineStore('settings', () => {
     setAvailableModels,
     setAccountInfo,
     setMcpServers,
+    reconcileMcpServers,
+    setMcpConfigErrors,
+    beginMcpWrite,
+    settleMcpWrite,
     setMcpEnabled,
     updateMcpServerStatuses,
     setToolsSnapshot,

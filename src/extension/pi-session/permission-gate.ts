@@ -37,6 +37,9 @@ export interface SystemPromptEnv {
   shell: string;
   osVersion: string;
   compassEnabled: boolean;
+  /** Gates the output-form guidance. Required, not optional: an omitted flag would render the
+   *  `/context` preview thinking-on while the live turn runs thinking-off. */
+  thinkingDisabled: boolean;
 }
 
 /**

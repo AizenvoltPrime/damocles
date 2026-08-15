@@ -6,8 +6,15 @@ import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types
 import type { PermissionMode, EffortLevel, AutoCompactConfig } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
+import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "./utils";
+import { remapMcpToolNamesForRename } from "../../pi-session/mcp/naming";
 import { McpManager } from "./managers/mcp-manager";
+import {
+  addDamoclesMcpServer,
+  updateDamoclesMcpServer,
+  deleteDamoclesMcpServer,
+} from "./managers/mcp-config-write";
 import { BrowserManager } from "./managers/browser-manager";
 import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
@@ -84,15 +91,68 @@ export class SettingsManager {
     return this.mcpManager.loadConfig();
   }
 
+  /**
+   * Add / edit / remove a server in `~/.damocles/mcp.json`, the only MCP file Damocles writes. The
+   * workspace-name set the collision policy needs comes from the manager here rather than from the
+   * message handler, so the policy's inputs stay inside the settings layer. Each throws a
+   * human-readable `Error` on a rejected definition or name collision, having written nothing.
+   */
+  async addMcpServer(serverName: string, config: McpServerConfig): Promise<void> {
+    return addDamoclesMcpServer(serverName, config, this.mcpManager.getWorkspaceServerNames());
+  }
+
+  /**
+   * A rename also moves the two stores keyed by server name, which the config file knows nothing
+   * about. Without this, renaming a server the user had switched OFF brings it back on — for stdio,
+   * spawning a process they deliberately stopped — and every tool they disabled individually silently
+   * re-enables, because `damocles.tools.disabled` holds `mcp__<prefix>__<tool>` names.
+   *
+   * Both run after the write, so a rejected write moves nothing, and before the caller reloads the
+   * config, so the reload sees the updated disabled set.
+   */
+  async updateMcpServer(serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
+    const previousNames = this.mcpManager.getServerNames();
+    await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getWorkspaceServerNames());
+
+    if (newServerName === undefined || newServerName === serverName) return;
+    await this.mcpManager.carryDisabledServerThroughRename(serverName, newServerName);
+
+    const disabledTools = vscode.workspace.getConfiguration("damocles").get<string[]>("tools.disabled", []) ?? [];
+    const remapped = remapMcpToolNamesForRename(disabledTools, previousNames, serverName, newServerName);
+    if (remapped.some((name, index) => name !== disabledTools[index])) {
+      await updateConfigAtEffectiveScope("damocles", "tools.disabled", remapped);
+    }
+  }
+
+  async deleteMcpServer(serverName: string): Promise<void> {
+    await deleteDamoclesMcpServer(serverName);
+    // Pruned so re-adding the same name later is not silently switched off by a decision about a
+    // server that no longer exists.
+    await this.mcpManager.pruneDisabledServer(serverName);
+  }
+
   async sendMcpStatus(session: ChatSession, host: WebviewHost): Promise<void> {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
     const mcpEnabled = vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
-    this.postMessage(host, { type: "mcpServerStatus", servers: mcpEntries, mcpEnabled });
+    this.postMessage(host, { type: "mcpServerStatus", servers: mcpEntries, mcpEnabled, configErrors: this.mcpManager.getConfigErrors() });
+  }
+
+  /**
+   * The config-update message. Built in one place because it is both posted to a single host and
+   * broadcast to every panel, and a field added to only one of those paths would leave some panels
+   * showing stale state.
+   */
+  buildMcpConfigUpdate(): Extract<ExtensionToWebviewMessage, { type: "mcpConfigUpdate" }> {
+    return {
+      type: "mcpConfigUpdate",
+      servers: this.getMcpServersForUI(),
+      configErrors: this.mcpManager.getConfigErrors(),
+    };
   }
 
   sendMcpConfig(host: WebviewHost): void {
-    this.postMessage(host, { type: "mcpConfigUpdate", servers: this.getMcpServersForUI() });
+    this.postMessage(host, this.buildMcpConfigUpdate());
   }
 
   loadBrowserState(): void {

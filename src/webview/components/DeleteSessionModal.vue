@@ -33,7 +33,7 @@ function handleCancel() {
 
 <template>
   <AlertDialog :open="visible" @update:open="(open: boolean) => !open && handleCancel()">
-    <AlertDialogContent class="bg-card border-border max-w-md">
+    <AlertDialogContent class="bg-card border-border max-w-md max-h-[85vh] overflow-y-auto">
       <AlertDialogHeader>
         <AlertDialogTitle class="flex items-center gap-2">
           <IconWarning :size="20" class="text-error" />
@@ -46,9 +46,11 @@ function handleCancel() {
         </AlertDialogDescription>
       </AlertDialogHeader>
 
-      <div v-if="sessionName" class="p-3 rounded bg-muted text-sm overflow-hidden">
+      <div v-if="sessionName" class="p-3 rounded bg-muted text-sm">
         <div class="text-xs text-muted-foreground mb-1">{{ t('deleteSession.sessionLabel') }}</div>
-        <div class="break-words">{{ sessionName }}</div>
+        <div class="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
+          {{ sessionName }}
+        </div>
       </div>
 
       <div class="flex justify-end gap-2 mt-4">

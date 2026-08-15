@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
+import { McpWriteError } from "../../settings-manager/managers/mcp-config-write";
 import { log } from "../../../logger";
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -21,6 +22,50 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     for (const [, instance] of getPanels()) {
       await settingsManager.sendStepfunAuthStatus(instance.host);
       await settingsManager.sendExploreKeyStatus(instance.host);
+    }
+  }
+
+  /**
+   * Re-read the merged sources after a write, re-feed the live MCP client, and refresh every panel.
+   *
+   * A broadcast rather than a post to the acting panel: the watcher covers `path.dirname(...)` of the
+   * user-global files, and a non-recursive watcher over a directory that did not exist when it was
+   * created never fires — leaving a second panel offering Edit for something already deleted.
+   */
+  async function applyMcpConfigChange(ctx: HandlerContext): Promise<void> {
+    await settingsManager.loadMcpConfig();
+    ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+    broadcast(settingsManager.buildMcpConfigUpdate());
+    await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+  }
+
+  /**
+   * Run one `~/.damocles/mcp.json` mutation and acknowledge it, always. The form holds the user's
+   * typed definition until the ack lands, so a missing one strands the dialog — every path through
+   * here must end in exactly one `mcpWriteResult`.
+   */
+  async function runMcpWrite(
+    ctx: HandlerContext,
+    requestId: string,
+    serverName: string,
+    what: string,
+    apply: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await apply();
+      await applyMcpConfigChange(ctx);
+      postMessage(ctx.host, { type: "mcpWriteResult", requestId, ok: true });
+    } catch (err) {
+      // The server NAME only: `msg.config` may carry an `env` or `headers` map, and this channel is
+      // written to disk.
+      log("[MessageRouter] Error %s MCP server %s:", what, serverName, err instanceof Error ? err.message : "Unknown error");
+      const error = err instanceof McpWriteError
+        ? err.info
+        : { code: "writeFailed" as const, params: { detail: err instanceof Error ? err.message : "Unknown error" } };
+      postMessage(ctx.host, { type: "mcpWriteResult", requestId, ok: false, error });
+      // The panel renders the reason inline against the still-open form, so no notification here — a
+      // toast as well would say the same thing twice.
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
     }
   }
 
@@ -270,7 +315,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       try {
         await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
         ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-        ctx.session.restartForMcpChanges();
         // Push live status now (shows "connecting"); the MCP status listener auto-pushes "connected"
         // once the background connect settles.
         await settingsManager.sendMcpStatus(ctx.session, ctx.host);
@@ -283,6 +327,33 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         });
         await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       }
+    },
+
+    /**
+     * The three `~/.damocles/mcp.json` mutations. Each applies the change, reloads the merged config,
+     * re-feeds the live session so it takes effect with no window reload, refreshes every panel, and
+     * acknowledges. On failure nothing has been written, and the reason travels back as a code the
+     * panel translates against the still-open form.
+     */
+    mcpAddServer: async (msg, ctx) => {
+      if (msg.type !== "mcpAddServer") return;
+      await runMcpWrite(ctx, msg.requestId, msg.serverName, "adding", async () => {
+        await settingsManager.addMcpServer(msg.serverName, msg.config);
+      });
+    },
+
+    mcpUpdateServer: async (msg, ctx) => {
+      if (msg.type !== "mcpUpdateServer") return;
+      await runMcpWrite(ctx, msg.requestId, msg.serverName, "updating", async () => {
+        await settingsManager.updateMcpServer(msg.serverName, msg.newServerName, msg.config);
+      });
+    },
+
+    mcpDeleteServer: async (msg, ctx) => {
+      if (msg.type !== "mcpDeleteServer") return;
+      await runMcpWrite(ctx, msg.requestId, msg.serverName, "removing", async () => {
+        await settingsManager.deleteMcpServer(msg.serverName);
+      });
     },
 
     reconnectMcpServer: async (msg, ctx) => {
@@ -361,7 +432,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
         // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
         ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-        ctx.session.restartForMcpChanges();
         await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       } catch (err) {
         log("[MessageRouter] Error setting MCP enabled:", err);

@@ -92,7 +92,6 @@ export interface ChatSession {
 
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
   setMcpServers(mcpServers: Record<string, McpServerConfig>): void;
-  restartForMcpChanges(): void;
   /** Register a listener fired whenever live MCP runtime status changes (connect/disconnect/list-change),
    * so the webview reflects connecting → connected without a manual refresh. */
   setMcpStatusListener(listener: () => void): void;

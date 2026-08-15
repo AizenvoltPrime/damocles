@@ -39,19 +39,19 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 ### Key Modules (`src/extension/`)
 
-| Module                | Purpose                                                                                      |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `pi-session/`         | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
-| `chat-panel/`         | Panel, session manager, settings, message routing, history                                   |
-| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent)             |
-| `memory/`             | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL)                    |
-| `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default)                 |
-| `web-access/`         | Key-free web tools behind `pi.webSearch.enabled` (off by default); SSRF-guarded `safe-fetch.ts`, fail-soft `execute` |
-| `browser/`            | Patchright (stealth Chromium) + MCP tools, one `BrowserPanel` per page, scoped by `agent-scope.ts` (off by default) |
-| `team/`               | Multi-agent teams via MessageBus + Scratchpad (off by default); per-role model/effort from `damocles.team.*` |
-| `voice/`              | STT via Whisper/Deepgram/Google Cloud + Jarvis sidecar (off by default)                      |
-| `paths.ts`            | Shared path constants (`~/.damocles`) + per-session plan-file path                           |
-| `asset-sources.ts`    | `.claude` + `.codex` skill/command specs, ordered by `damocles.assetSourcePrecedence`        |
+| Module | Purpose |
+| --- | --- |
+| `pi-session/` | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
+| `chat-panel/` | Panel, session manager, settings, message routing, history |
+| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
+| `memory/` | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL) |
+| `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default) |
+| `web-access/` | Key-free web tools behind `pi.webSearch.enabled` (off by default); SSRF-guarded `safe-fetch.ts`, fail-soft `execute` |
+| `browser/` | Patchright (stealth Chromium) + MCP tools, one `BrowserPanel` per page, scoped by `agent-scope.ts` (off by default) |
+| `team/` | Multi-agent teams via MessageBus + Scratchpad (off by default); per-role model/effort from `damocles.team.*` |
+| `voice/` | STT via Whisper/Deepgram/Google Cloud + Jarvis sidecar (off by default) |
+| `paths.ts` | Shared path constants (`~/.damocles`) + per-session plan-file path |
+| `asset-sources.ts` | `.claude` + `.codex` skill/command specs, ordered by `damocles.assetSourcePrecedence` |
 
 ### Patterns
 
@@ -72,6 +72,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 - Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision — see `docs/invariants.md` before changing it.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed — never sequence a delete off a promise that resolves either way.
+- Damocles READS other tools' config (`.claude`, `.codex`, the project's `.mcp.json`) and WRITES only under `.damocles`. MCP writes go to `~/.damocles/mcp.json` alone; permission rules to `.damocles/settings*.json` alone. Never write to a file another tool owns.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
@@ -83,17 +84,17 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 
 ## Permission Modes
 
-| Mode          | Behavior                                                                |
-| ------------- | ----------------------------------------------------------------------- |
-| `plan`        | Bash/PowerShell classified by `readonly-shell.ts` (provably read-only auto-runs, else blocked); non-plan-file Edit/Write blocked; memory/Compass/enabled MCP stay available |
-| `default`     | Shows diff for Edit/Write, prompts Bash/PowerShell                      |
-| `acceptEdits` | Auto-approves Edit/Write, prompts Bash/PowerShell                       |
+| Mode | Behavior |
+| --- | --- |
+| `plan` | Bash/PowerShell classified by `readonly-shell.ts` (provably read-only auto-runs, else blocked); non-plan-file Edit/Write blocked; memory/Compass/enabled MCP stay available |
+| `default` | Shows diff for Edit/Write, prompts Bash/PowerShell |
+| `acceptEdits` | Auto-approves Edit/Write, prompts Bash/PowerShell |
 
 Read-only tools are auto-approved in all modes. `dangerouslySkipPermissions` (YOLO) auto-approves everything.
 
 ## Code Quality Standards
 
-- Self-documenting code; avoid inline comments
+- Self-documenting code
 - Prefer functional patterns over OOP
 - Tailwind instead of custom CSS; shadcn-vue from `src/webview/components/ui/`
 - **Locality of Behavior:** Keep related code physically close
@@ -103,4 +104,4 @@ Read-only tools are auto-approved in all modes. `dangerouslySkipPermissions` (YO
 - **Think before coding:** State assumptions explicitly; if unclear or multiple interpretations exist, stop and ask. Push back when a simpler approach exists.
 - **Simplicity first:** Minimum code that solves the problem. No speculative features, abstractions, configurability, or error handling for impossible scenarios.
 - **Surgical changes:** Touch only what you must. Don't refactor working code or "improve" adjacent style. Remove only imports/vars YOUR changes made unused; leave pre-existing dead code (mention it). Every changed line should trace to the request.
-- **Goal-driven execution:** Define success criteria and loop until verified — e.g. "fix the bug" → write a test that reproduces it, then make it pass. For multi-step tasks, state a brief plan with a verification step per item.
+- **Goal-driven execution:** Define success criteria up front — e.g. "fix the bug" → write a test that reproduces it, then make it pass. For multi-step tasks, state a brief plan before starting.

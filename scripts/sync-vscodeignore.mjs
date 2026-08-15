@@ -160,7 +160,6 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-agent-core',
         '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
-        '@mistralai/mistralai',
         'openai',
         '@anthropic-ai/sdk',
         '@modelcontextprotocol/sdk',
@@ -169,6 +168,10 @@ const RUNTIME_NARROW_PKGS = new Set(
         // JS/JSON + the browser-launch assets are loaded at runtime — narrow to drop TS source/maps/docs.
         'patchright',
         'patchright-core',
+        // Not in the current closure — pi dropped the Mistral SDK in 0.84.2. Kept as a standing rule so
+        // a future pi release reintroducing it narrows automatically instead of silently shipping its
+        // full publish tree (TS source + maps). Entries for absent packages cost nothing.
+        '@mistralai/mistralai',
       ]),
 );
 

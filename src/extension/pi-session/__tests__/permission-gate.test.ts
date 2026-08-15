@@ -40,6 +40,7 @@ function makePanel(opts: {
       shell: 'bash',
       osVersion: 'Linux test',
       compassEnabled: false,
+      thinkingDisabled: false,
     }),
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,

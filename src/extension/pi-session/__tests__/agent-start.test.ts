@@ -41,6 +41,7 @@ interface PanelStub {
 function makePanel(opts: {
   memoryEnabled?: boolean;
   compassEnabled?: boolean;
+  thinkingDisabled?: boolean;
   plan?: boolean;
   catalog?: string;
   metadata?: unknown;
@@ -84,6 +85,7 @@ function makePanel(opts: {
       shell: 'bash',
       osVersion: 'Linux test',
       compassEnabled: Boolean(opts.compassEnabled),
+      thinkingDisabled: Boolean(opts.thinkingDisabled),
     }),
     getPlanFilePath: () => opts.planFilePath ?? '/home/.damocles/plans/do-the-thing-sess1234.md',
     isTeamEnabled: () => Boolean(opts.teamEnabled),
@@ -105,6 +107,22 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(result?.systemPrompt).toContain('AI coding agent');
     expect(result?.systemPrompt).not.toContain('operating inside pi');
     expect(result?.systemPrompt).not.toContain('PI BASE');
+  });
+
+  // Everything appended after the tone rules is what makes the tail restatement load-bearing, so it has
+  // to be last in every assembly — including the longest one.
+  it('closes on the tail conciseness reminder, whatever else was appended', async () => {
+    for (const opts of [{}, { memoryEnabled: true }, { memoryEnabled: true, plan: true, teamEnabled: true }]) {
+      const result = await buildAgentStartResult(event(), makePanel(opts).panel, 'sess-1');
+      expect(result?.systemPrompt.trimEnd().endsWith('<tone_preference>\nKeep outputs reasonably concise.\n</tone_preference>')).toBe(true);
+    }
+  });
+
+  it('gates the thinking-off output-form guidance on thinking actually being off', async () => {
+    const off = await buildAgentStartResult(event(), makePanel({ thinkingDisabled: true }).panel, 'sess-1');
+    expect(off?.systemPrompt).toContain('Do not include internal or system XML tags in your response.');
+    const on = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
+    expect(on?.systemPrompt).not.toContain('Do not include internal or system XML tags in your response.');
   });
 
   it('includes the static MEMORY_SYSTEM_PROMPT in the system prompt only when memory is enabled', async () => {

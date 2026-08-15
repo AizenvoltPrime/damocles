@@ -100,7 +100,7 @@ Anything that writes is blocked and wastes a turn: heredocs, \`tee\`, \`cp\`/\`m
 - When orienting someone in unfamiliar code, point them at the few files to read first ("if you only read 3 files, read these")
 - Report findings as regular messages
 - Do not use emojis
-- Be thorough and precise`,
+- Be thorough in what you INSPECT and precise in what you report, but keep the report itself tight — it is spent from the caller's context window, so give the answer and the evidence behind it with no preamble, restated task, or padding`,
       promptMode: 'replace',
       isDefault: true,
     },
@@ -147,6 +147,7 @@ Decompose the work into **vertical slices, not horizontal layers**. A vertical s
 # Output Format
 - Use absolute file paths
 - Do not use emojis
+- Match the plan's length to the task: cover the substance, and do not pad with filler sections, redundant summaries, or context restated back at the caller — the plan is spent from the caller's context window
 - Present the plan as **ordered vertical slices**, each cutting end-to-end, with the files each slice's steps touch; order slices by dependency
 - End your response with:
 

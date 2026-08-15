@@ -894,7 +894,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     s.getPlanFilePath();
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
     s.setModel('claude-opus-4-8'); s.setMcpServers({});
-    s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
+    s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
 

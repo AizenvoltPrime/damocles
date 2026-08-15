@@ -1979,11 +1979,6 @@ export class PiSession implements ChatSession {
     this.refreshActiveTools();
   }
 
-  /** A `.mcp.json` watcher change or browser toggle: reconcile connections + re-apply the active set. */
-  restartForMcpChanges(): void {
-    this.refreshActiveTools();
-  }
-
   setMcpStatusListener(listener: () => void): void {
     this._mcpStatusListener = listener;
   }
@@ -2687,6 +2682,7 @@ export class PiSession implements ChatSession {
       shell: process.env["SHELL"] ?? "unknown",
       osVersion: `${os.type()} ${os.release()}`,
       compassEnabled: !!this.options.compassService?.isEnabled,
+      thinkingDisabled: this.resolveThinkingLevel() === "off",
     };
   }
 

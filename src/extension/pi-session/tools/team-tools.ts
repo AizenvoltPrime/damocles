@@ -418,7 +418,7 @@ function isFullSuiteCommand(command: string): boolean {
 
 const teamSynthesizeResultSchema = Type.Object(
   {
-    result: Type.String({ description: 'Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work' }),
+    result: Type.String({ description: 'Summary of what was accomplished, files changed, decisions made, verification results, remaining work — cover each without padding' }),
   },
   { additionalProperties: false },
 );

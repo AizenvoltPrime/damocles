@@ -4,7 +4,7 @@ import type {
   BeforeAgentStartEventResult,
   BuildSystemPromptOptions,
 } from '@earendil-works/pi-coding-agent';
-import { buildSystemPrompt } from './system-prompt';
+import { buildSystemPrompt, TONE_REMINDER_SECTION } from './system-prompt';
 import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
@@ -104,8 +104,9 @@ export interface DamoclesSystemPromptInputs {
  * the `/context` preview/estimate: `buildSystemPrompt` (model-aware, per session) + the static memory
  * instructions (when memory is enabled) + the plan-mode instruction (when plan mode is active) or the
  * one-line plan reminder (outside plan mode, when a plan file exists), then re-append pi's discovered
- * project-context files and skills. pi's identity / tool-prose / pi-docs / guidelines are dropped. The
- * result is stable across turns for a given model, so the prompt cache holds.
+ * project-context files and skills, and close on the tail conciseness reminder. pi's identity /
+ * tool-prose / pi-docs / guidelines are dropped. The result is stable across turns for a given model,
+ * so the prompt cache holds.
  */
 export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): string {
   const parts: string[] = [buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled })];
@@ -117,7 +118,8 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): str
     parts.push(planFileReminder(i.existingPlanFile));
     if (i.teamEnabled) parts.push(teamPlanDirective());
   }
-  return parts.join('\n\n') + renderContextFiles(i.contextFiles) + renderSkills(i.skills, i.hasReadTool);
+  const body = parts.join('\n\n') + renderContextFiles(i.contextFiles) + renderSkills(i.skills, i.hasReadTool);
+  return body + '\n\n' + TONE_REMINDER_SECTION;
 }
 
 /** Assemble the Damocles system prompt for this turn from the `before_agent_start` event + panel. */

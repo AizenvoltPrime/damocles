@@ -13,6 +13,7 @@ import { CompassService } from "../compass";
 import { VoiceService } from "../voice/service";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import type { WebviewHost } from "./types";
+import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { log } from "../logger";
 
@@ -154,7 +155,7 @@ export class ChatPanelProvider {
         // Live MCP status: push fresh runtime status to this panel whenever a server connects/disconnects,
         // so the panel reflects connecting → connected automatically (no manual refresh).
         session.setMcpStatusListener(() => {
-          void this.settingsManager.sendMcpStatus(session, host);
+          this.pushMcpStatus(session, host);
         });
         return session;
       },
@@ -192,12 +193,14 @@ export class ChatPanelProvider {
     }
 
     this.settingsManager.setOnMcpConfigChange(() => {
-      const servers = this.settingsManager.getMcpServersForUI();
-      this.panelManager.broadcast({ type: "mcpConfigUpdate", servers });
+      this.panelManager.broadcast(this.settingsManager.buildMcpConfigUpdate());
       // Reconcile live MCP connections on a .mcp.json change — no session restart (US-014.9).
       const enabled = this.settingsManager.getEnabledMcpServers();
       for (const [, instance] of this.panelManager.getPanels()) {
         instance.session.setMcpServers(enabled);
+        // The broadcast above describes config only, so every enabled server reads as `idle`. Without
+        // this the panel would sit on that placeholder until some unrelated event pushed real status.
+        this.pushMcpStatus(instance.session, instance.host);
       }
     });
 
@@ -205,11 +208,11 @@ export class ChatPanelProvider {
     // `vscode.workspace.isTrusted` live, so re-feed the now-trusted set, connect them, and refresh status.
     this.context.subscriptions.push(
       vscode.workspace.onDidGrantWorkspaceTrust(() => {
-        this.panelManager.broadcast({ type: "mcpConfigUpdate", servers: this.settingsManager.getMcpServersForUI() });
+        this.panelManager.broadcast(this.settingsManager.buildMcpConfigUpdate());
         const enabled = this.settingsManager.getEnabledMcpServers();
         for (const [, instance] of this.panelManager.getPanels()) {
           instance.session.setMcpServers(enabled);
-          void this.settingsManager.sendMcpStatus(instance.session, instance.host);
+          this.pushMcpStatus(instance.session, instance.host);
         }
       }),
     );
@@ -238,6 +241,17 @@ export class ChatPanelProvider {
 
   getVoiceService(): VoiceService {
     return this.voiceService;
+  }
+
+  /**
+   * Push runtime MCP status to one panel. `sendMcpStatus` awaits a live SDK round-trip, so it can
+   * reject on a server that is mid-teardown; every caller here is a fire-and-forget listener, and an
+   * unhandled rejection from one would be an unhandled promise rejection in the extension host.
+   */
+  private pushMcpStatus(session: ChatSession, host: WebviewHost): void {
+    this.settingsManager.sendMcpStatus(session, host).catch(err => {
+      log('[ChatPanelProvider] Failed to push MCP status: %s', err instanceof Error ? err.message : 'Unknown error');
+    });
   }
 
   private dispatchTtsForReply(text: string): void {

@@ -9,6 +9,7 @@ interface SystemPromptOptions {
   osVersion: string;
   compassEnabled?: boolean;
   webSearchEnabled?: boolean;
+  thinkingDisabled?: boolean;
 }
 
 export function getKnowledgeCutoff(model: string): string | null {
@@ -74,7 +75,7 @@ function buildDoingTasksSection(webSearchEnabled: boolean): string {
  - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
  - Write secure code \u2014 guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
  - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.${webVerificationLine}
- - Comments: write code that reads like the surrounding file \u2014 match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers \u2014 that rots.
+ - Comments: add one only when the WHY is non-obvious \u2014 a hidden constraint, a subtle invariant, a bug workaround, surprising behavior. Never explain WHAT the code does, and never reference the current task/fix/callers \u2014 that rots. Keep each comment as short as its point needs: usually one line, more only when the constraint genuinely takes more to state. Give the reason once and stop \u2014 no restating the code, no change history, no walkthrough of alternatives. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
  - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness \u2014 if you can't test the UI, say so.`;
 }
 
@@ -100,7 +101,7 @@ const TONE_AND_STYLE_SECTION = `# Tone and style
  - Use minimum formatting for clarity: prose for simple answers; reserve headers/bold/lists for genuinely multi-part content. Code blocks, file_path:line_number refs, and step/test checklists are always fine.
  - No colon before a tool call ("Let me read the file." not "Let me read the file:"), since tool calls may not appear in output.
  - Address what you can of an ambiguous request first, then ask at most one prose question; batched or structured questions go in AskUserQuestion. Keep refusals as conversational prose, not bulleted lists.
- - Own mistakes plainly, fix them, and keep moving \u2014 no over-apology or self-abasement.`;
+ - Own mistakes plainly, fix them, and keep moving \u2014 no over-apology or self-abasement. Only flag an earlier statement as wrong when the error would change the user's code, conclusions, or decisions; for slips that change nothing for the user, fix it and move on without noting it.`;
 
 function buildCompassSection(compassEnabled: boolean): string {
   if (!compassEnabled) return "";
@@ -123,6 +124,23 @@ Users see only your text output, not tool calls or thinking. Before your first t
 End-of-turn summary: one or two sentences on what changed and what's next \u2014 or skip it entirely for a single small change you already described in flight.
 
 Don't create planning, decision, or analysis documents unless asked \u2014 work from conversation context. Match the length of any document you do write to what the task needs; don't pad with filler.`;
+
+/**
+ * Thinking off leaks two artifacts into visible text: a tool call written as prose (it never runs, and
+ * in an agentic loop it stays in history) and internal XML tags. Naming the tags specifically is less
+ * effective than the general rule.
+ */
+const THINKING_OFF_SECTION = `# Output form
+When you use a tool, you may say a brief sentence first. If no tool can express what the user asked for, say so instead of guessing. Do not include internal or system XML tags in your response.`;
+
+/**
+ * Restates the tone rules, which sit thousands of tokens earlier once memory, plan-mode guidance,
+ * context files and skills are appended. Owned by `assembleDamoclesSystemPrompt` because it must be the
+ * LAST text in the assembled prompt, after everything `buildSystemPrompt` emits.
+ */
+export const TONE_REMINDER_SECTION = `<tone_preference>
+Keep outputs reasonably concise.
+</tone_preference>`;
 
 export function buildEnvironmentSection(options: SystemPromptOptions): string {
   const { cwd, model, isGitRepo, platform, shell, osVersion } = options;
@@ -168,6 +186,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
     TONE_AND_STYLE_SECTION,
     buildSessionGuidanceSection(!!options.compassEnabled),
     TEXT_OUTPUT_SECTION,
+    options.thinkingDisabled ? THINKING_OFF_SECTION : "",
     buildEnvironmentSection(options),
   ];
   return sections.filter(Boolean).join("\n\n");

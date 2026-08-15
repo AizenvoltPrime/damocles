@@ -102,6 +102,8 @@ import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types
 import type { UserContentBlock } from "@shared/types/content";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
+import type { McpServerConfig } from "@shared/types/mcp";
+import type { WebviewToExtensionMessage } from "@shared/types/messages";
 const { postMessage, setState, getState } = useVSCode();
 const { t } = useI18n();
 
@@ -133,6 +135,9 @@ const {
   availableModels,
   accountInfo,
   mcpServers,
+  mcpConfigErrors,
+  mcpWriteRequestId,
+  mcpWriteError,
   mcpEnabled,
   toolsSnapshot,
   budgetWarning,
@@ -700,6 +705,43 @@ function handleReauthenticateMcpServer(serverName: string) {
 
 function handleSignOutMcpServer(serverName: string) {
   postMessage({ type: "signOutMcpServer", serverName });
+}
+
+/**
+ * Every MCP write carries a requestId and is registered as in-flight before it is sent, so the form
+ * can stay open holding what the user typed until the extension acknowledges it.
+ */
+function sendMcpWrite(build: (requestId: string) => WebviewToExtensionMessage) {
+  const requestId = crypto.randomUUID();
+  settingsStore.beginMcpWrite(requestId);
+  postMessage(build(requestId));
+}
+
+function handleAddMcpServer(serverName: string, config: McpServerConfig) {
+  sendMcpWrite((requestId) => ({ type: "mcpAddServer", requestId, serverName, config }));
+}
+
+function handleUpdateMcpServer(
+  serverName: string,
+  newServerName: string | undefined,
+  config: McpServerConfig,
+) {
+  // `serverName` is the pre-rename name; `newServerName` is omitted entirely for an in-place edit.
+  sendMcpWrite((requestId) =>
+    newServerName === undefined
+      ? { type: "mcpUpdateServer", requestId, serverName, config }
+      : { type: "mcpUpdateServer", requestId, serverName, newServerName, config },
+  );
+}
+
+function handleDeleteMcpServer(serverName: string) {
+  sendMcpWrite((requestId) => ({ type: "mcpDeleteServer", requestId, serverName }));
+}
+
+function handleOpenMcpConfigFile(filePath: string, line: number | null) {
+  // These files live outside the workspace (`~/.damocles/mcp.json`), which the existing openFile
+  // handler already allows and documents — no second, laxer path is introduced for this.
+  postMessage(line === null ? { type: "openFile", filePath } : { type: "openFile", filePath, line });
 }
 
 function handleOpenToolsPanel() {
@@ -1290,6 +1332,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <McpStatusPanel
       :visible="showMcpPanel"
       :servers="mcpServers"
+      :config-errors="mcpConfigErrors"
       :mcp-enabled="mcpEnabled"
       @close="uiStore.closeMcpPanel()"
       @toggle="handleToggleMcpServer"
@@ -1299,6 +1342,12 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @reauthenticate="handleReauthenticateMcpServer"
       @sign-out="handleSignOutMcpServer"
       @trust-project="postMessage({ type: 'setProjectTrusted' })"
+      @add-server="handleAddMcpServer"
+      @update-server="handleUpdateMcpServer"
+      @delete-server="handleDeleteMcpServer"
+      :mcp-write-in-flight="mcpWriteRequestId !== null"
+      :mcp-write-error="mcpWriteError"
+      @open-file="handleOpenMcpConfigFile"
     />
 
     <!-- Memory Panel (full-screen overlay) -->

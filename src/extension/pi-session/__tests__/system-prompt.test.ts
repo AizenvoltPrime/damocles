@@ -43,8 +43,21 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
 
     it('includes the single-homed comment-policy bullet', () => {
-      expect(prompt).toContain('Comments: write code that reads like the surrounding file');
+      expect(prompt).toContain('Comments: add one only when the WHY is non-obvious');
       expect(prompt).toContain('Never explain WHAT the code does');
+    });
+
+    it('bounds the length of a comment, not just when to write one', () => {
+      expect(prompt).toContain('Keep each comment as short as its point needs');
+      expect(prompt).toContain('Give the reason once and stop');
+    });
+
+    // Density-matching made the standard relative to whatever the file already did, so an
+    // over-commented file licensed more of the same.
+    it('holds the comment standard absolutely, not relative to the surrounding file', () => {
+      expect(prompt).toContain('This standard is absolute');
+      expect(prompt).not.toContain('match its comment density');
+      expect(prompt).not.toContain('reads like the surrounding file');
     });
 
     // Slice 2 invariant: a prompt must never name a tool that is not in the active set without saying
@@ -82,7 +95,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
         // The rest of the Doing-tasks section is untouched by the gating — only the one bullet moves.
         expect(p).toContain('# Doing tasks');
         expect(p).toContain('Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor)');
-        expect(p).toContain('Comments: write code that reads like the surrounding file');
+        expect(p).toContain('Comments: add one only when the WHY is non-obvious');
       }
     });
 
@@ -186,7 +199,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
+         - Comments: add one only when the WHY is non-obvious — a hidden constraint, a subtle invariant, a bug workaround, surprising behavior. Never explain WHAT the code does, and never reference the current task/fix/callers — that rots. Keep each comment as short as its point needs: usually one line, more only when the constraint genuinely takes more to state. Give the reason once and stop — no restating the code, no change history, no walkthrough of alternatives. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
         # Executing actions with care
@@ -211,7 +224,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Use minimum formatting for clarity: prose for simple answers; reserve headers/bold/lists for genuinely multi-part content. Code blocks, file_path:line_number refs, and step/test checklists are always fine.
          - No colon before a tool call ("Let me read the file." not "Let me read the file:"), since tool calls may not appear in output.
          - Address what you can of an ambiguous request first, then ask at most one prose question; batched or structured questions go in AskUserQuestion. Keep refusals as conversational prose, not bulleted lists.
-         - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement.
+         - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement. Only flag an earlier statement as wrong when the error would change the user's code, conclusions, or decisions; for slips that change nothing for the user, fix it and move on without noting it.
 
         # Session-specific guidance
          - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low — one subagent that can do the job beats several. Don't duplicate searches you've delegated.
@@ -280,7 +293,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
+         - Comments: add one only when the WHY is non-obvious — a hidden constraint, a subtle invariant, a bug workaround, surprising behavior. Never explain WHAT the code does, and never reference the current task/fix/callers — that rots. Keep each comment as short as its point needs: usually one line, more only when the constraint genuinely takes more to state. Give the reason once and stop — no restating the code, no change history, no walkthrough of alternatives. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
         # Executing actions with care
@@ -319,7 +332,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Use minimum formatting for clarity: prose for simple answers; reserve headers/bold/lists for genuinely multi-part content. Code blocks, file_path:line_number refs, and step/test checklists are always fine.
          - No colon before a tool call ("Let me read the file." not "Let me read the file:"), since tool calls may not appear in output.
          - Address what you can of an ambiguous request first, then ask at most one prose question; batched or structured questions go in AskUserQuestion. Keep refusals as conversational prose, not bulleted lists.
-         - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement.
+         - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement. Only flag an earlier statement as wrong when the error would change the user's code, conclusions, or decisions; for slips that change nothing for the user, fix it and move on without noting it.
 
         # Session-specific guidance
          - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low — one subagent that can do the job beats several. Don't duplicate searches you've delegated.
@@ -366,6 +379,37 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     it('reports the Opus 5 identity and May 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named Opus 5. The exact model ID is claude-opus-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is May 2026.');
+    });
+  });
+
+  // With thinking off, a tool call can surface as prose (it never runs, and in an agentic loop the
+  // leaked text stays in history) and internal XML tags can leak into the response. The mitigation is
+  // only correct while thinking is actually off, so both branches are pinned.
+  describe('with thinking disabled', () => {
+    it('adds the output-form guidance that keeps tool calls and internal tags out of visible text', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
+      expect(prompt).toContain('When you use a tool, you may say a brief sentence first.');
+      expect(prompt).toContain('If no tool can express what the user asked for, say so instead of guessing.');
+      expect(prompt).toContain('Do not include internal or system XML tags in your response.');
+    });
+
+    // Naming the tags specifically is less effective than the general rule, and any instruction not to
+    // think or reason increases leakage rather than suppressing it.
+    it('states the tag rule generally, without naming thinking tags or barring reasoning', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: true });
+      expect(prompt).not.toContain('<thinking>');
+      expect(prompt).not.toContain('Do not think');
+      expect(prompt).not.toContain("don't reason");
+    });
+
+    it('omits the guidance while thinking is on', () => {
+      for (const p of [
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false, thinkingDisabled: false }),
+      ]) {
+        expect(p).not.toContain('When you use a tool, you may say a brief sentence first.');
+        expect(p).not.toContain('# Output form');
+      }
     });
   });
 

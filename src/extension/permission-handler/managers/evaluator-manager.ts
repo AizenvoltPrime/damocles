@@ -1,16 +1,17 @@
 import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
-import { loadPermissionsByPriority, type FilePermissions } from '../claude-settings';
+import { loadPermissionsByPriority, type FilePermissions } from '../permission-settings';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, SHELL_TOOLS } from '../../../shared/tool-names';
 import { isPlanFilePath } from '../../paths';
 
 export class EvaluatorManager {
   private state: PermissionState;
   private cachedPermissions: FilePermissions[] | null = null;
+  private cachedFor: string | null = null;
   private cacheTime = 0;
   private readonly CACHE_TTL_MS = 5000;
-  private settingsWatcher: vscode.FileSystemWatcher | null = null;
+  private settingsWatchers: vscode.FileSystemWatcher[] = [];
 
   constructor(state: PermissionState) {
     this.state = state;
@@ -18,13 +19,15 @@ export class EvaluatorManager {
   }
 
   private setupSettingsWatcher(): void {
-    this.settingsWatcher = vscode.workspace.createFileSystemWatcher(
-      '**/.claude/settings*.json'
-    );
     const invalidate = () => { this.cachedPermissions = null; };
-    this.settingsWatcher.onDidChange(invalidate);
-    this.settingsWatcher.onDidCreate(invalidate);
-    this.settingsWatcher.onDidDelete(invalidate);
+    // createFileSystemWatcher takes a single pattern, so each settings directory needs its own watcher.
+    for (const pattern of ['**/.claude/settings*.json', '**/.damocles/settings*.json']) {
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+      watcher.onDidChange(invalidate);
+      watcher.onDidCreate(invalidate);
+      watcher.onDidDelete(invalidate);
+      this.settingsWatchers.push(watcher);
+    }
   }
 
   async evaluate(
@@ -75,12 +78,23 @@ export class EvaluatorManager {
     return 'ask';
   }
 
+  /**
+   * Cached per workspace, not just per age: the eight paths this resolves are half workspace-relative,
+   * so a hit for a different workspace would answer with another project's rules. One handler serves
+   * one workspace today, which is why this has never bitten — the key makes that an invariant rather
+   * than a coincidence.
+   */
   private async getPermissions(workspacePath: string | null): Promise<FilePermissions[]> {
     const now = Date.now();
-    if (this.cachedPermissions && (now - this.cacheTime) < this.CACHE_TTL_MS) {
+    if (
+      this.cachedPermissions &&
+      this.cachedFor === workspacePath &&
+      (now - this.cacheTime) < this.CACHE_TTL_MS
+    ) {
       return this.cachedPermissions;
     }
     this.cachedPermissions = await loadPermissionsByPriority(workspacePath);
+    this.cachedFor = workspacePath;
     this.cacheTime = now;
     return this.cachedPermissions;
   }
@@ -171,6 +185,9 @@ export class EvaluatorManager {
   }
 
   dispose(): void {
-    this.settingsWatcher?.dispose();
+    for (const watcher of this.settingsWatchers) {
+      watcher.dispose();
+    }
+    this.settingsWatchers = [];
   }
 }
