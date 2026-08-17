@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.21.1] - 2026-08-17
+
+Opus 5 says less: the phrases it overuses are banned by name, it stops restating itself, and it stops signing your commits.
+
+### Changed
+
+- **Findings, options and risks come back with short codes.** When three or more items are presented that you could accept or reject one at a time, each gets a tag — `F1` findings, `O1` options, `R1` risks, `D1` decisions, `Q1` questions, `A1` actions — and that tag stays on that item for the rest of the conversation. "Keep D1, drop O2, answer Q1" is then a complete reply, with nothing re-quoted on either side. Ordered steps, file lists and short answers stay untagged, since none of those is answered piecemeal.
+
+- **The phrases Opus 5 overuses are banned by name.** "load-bearing", "worth stating plainly", "here's the honest truth", "the real tension", "carry the argument" and "you're absolutely right" are now listed as literal strings. They had been surviving a general instruction to write plainly, which is the case for naming them outright. Em dashes are capped at one per sentence, dash-chained afterthoughts are out, and analogies are dropped where the actual subject is already in front of the model. Two worked contrast pairs close the prompt, putting a preamble-free answer beside the version that opens with "Great question!".
+
+- **Each fact is stated once.** The largest source of length was the closing recap repeating what had already been said while the work was happening, and a decision being re-justified after it was justified. Both are now ruled out, as are aphorisms, motivational lines and a closing flourish. Flattery and agreement-without-a-reason are named separately from pleasantries, which had never covered them.
+
+- **Completion is not claimed without evidence.** The rule existed only for UI work, so a passing type-check could be reported as a working feature. It now applies to every task: nothing is called done, fixed or working until something has been run that shows it, and whatever could not be verified is named instead of left to stand.
+
+- **Commits are no longer signed by the tool.** Nothing had ever stopped a co-author or attribution trailer being added to a commit message. Claude Code's own `includeCoAuthoredBy: false` is a setting of that harness, which a Damocles session never reads, so the ban now lives in the prompt where it applies here.
+
+- **The Evidence Collector agent no longer pads a report to a quota.** Its instructions demanded "3-5+ issues minimum" and capped the grade it was allowed to award, which pressed it to invent findings on a clean diff — one fabricated issue costs more than a missed one, because it spends your trust in the real findings beside it. It now reports every issue the evidence supports and awards the grade the evidence supports. Its skepticism is unchanged: screenshots are still required, and the burden of proof still sits with the implementation.
+
 ## [2.21.0] - 2026-08-15
 
 Your MCP servers are found wherever you already keep them and can now be managed from the panel, the permission rules you approve stop landing in Claude Code's files, and a `ToolSearch` call no longer throws away the prompt cache.
@@ -3767,6 +3785,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.21.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.0...v2.21.1
 [2.21.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.20.0...v2.21.0
 [2.20.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.1...v2.20.0
 [2.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.0...v2.19.1
