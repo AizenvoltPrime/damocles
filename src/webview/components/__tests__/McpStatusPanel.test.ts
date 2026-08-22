@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import McpStatusPanel from '../McpStatusPanel.vue';
 import { i18n, applyLocale } from '@/i18n';
+import { mcpSourceOrder } from '@shared/types/mcp';
 import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 
 /**
@@ -23,7 +24,12 @@ function track<T extends { unmount: () => void }>(wrapper: T): T {
   mounted.push(wrapper);
   return wrapper;
 }
-function mountPanel(servers: McpServerStatusInfo[], configErrors: McpConfigError[] = []) {
+function mountPanel(
+  servers: McpServerStatusInfo[],
+  configErrors: McpConfigError[] = [],
+  localMcpUnignored = false,
+  over: { visible?: boolean; configRevision?: number } = {},
+) {
   return track(mount(McpStatusPanel, {
     props: {
       servers,
@@ -31,7 +37,11 @@ function mountPanel(servers: McpServerStatusInfo[], configErrors: McpConfigError
       mcpWriteInFlight: false,
       mcpWriteError: null,
       mcpEnabled: true,
+      localMcpUnignored,
+      // The panel clears its reload spinner when this counter moves, so it has to be controllable.
+      configRevision: 0,
       visible: true,
+      ...over,
     },
     attachTo: document.body,
     global: { plugins: [i18n] },
@@ -60,6 +70,16 @@ const editableDamocles: McpServerStatusInfo = {
   readonly: false,
   editableConfig: { command: 'node', args: ['server.js'] },
 };
+
+/** A payload with `key` genuinely absent, which is how the extension withholds a field. */
+function without<K extends 'editableConfig' | 'readonly'>(
+  server: McpServerStatusInfo,
+  key: K,
+): McpServerStatusInfo {
+  const copy = { ...server };
+  delete copy[key];
+  return copy;
+}
 
 const buttons = (): HTMLButtonElement[] =>
   Array.from(document.body.querySelectorAll('button'));
@@ -115,24 +135,29 @@ describe('McpStatusPanel — affordance gating (contract §7.1)', () => {
   });
 
   it('shows Delete but not Edit — with an explanation — when there is no editable config', async () => {
-    mountPanel([{ ...editableDamocles, editableConfig: undefined }]);
+    mountPanel([without(editableDamocles, 'editableConfig')]);
     await nextTick();
     expect(buttonsByText('Edit')).toHaveLength(0);
     expect(buttonsByText('Delete')).toHaveLength(1);
     expect(bodyText()).toContain('Edit it directly in ~/.damocles/mcp.json');
   });
 
-  it('shows NO edit or delete affordance for claude or codex imports', async () => {
-    for (const source of ['claude', 'codex'] as const) {
-      const wrapper = mountPanel([{ name: 'imported', status: 'connected', enabled: true, source, readonly: true }]);
-      await nextTick();
-      expect(buttonsByText('Edit')).toHaveLength(0);
-      expect(buttonsByText('Delete')).toHaveLength(0);
-      expect(bodyText()).not.toContain('Edit it directly');
-      // Unmounted rather than `innerHTML = ''`: wiping the DOM under a live component leaves Vue
-      // holding fragment anchors that no longer exist, and teardown then throws.
-      wrapper.unmount();
-    }
+  it.each([
+    ['claude', 'From Claude Code'],
+    ['claude-local', 'From Claude Code (local)'],
+    ['codex', 'From Codex'],
+    ['damocles-local', 'From project .damocles'],
+  ] as const)('shows NO edit or delete affordance for a %s server, and badges it instead', async (source, badge) => {
+    // Every readonly source needs the badge: the brief's rule is that a missing Edit/Delete button
+    // must never look arbitrary. `damocles-local` is the sharp case, since it is a Damocles file the
+    // user may reasonably expect to be editable here.
+    mountPanel([{ name: 'imported', status: 'connected', enabled: true, source, readonly: true }]);
+    await nextTick();
+
+    expect(buttonsByText('Edit')).toHaveLength(0);
+    expect(buttonsByText('Delete')).toHaveLength(0);
+    expect(bodyText()).not.toContain('Edit it directly');
+    expect(bodyText()).toContain(badge);
   });
 
   it('shows NO affordance for a workspace server, which is readonly:false but not ours', async () => {
@@ -154,7 +179,7 @@ describe('McpStatusPanel — affordance gating (contract §7.1)', () => {
   });
 
   it('fails CLOSED when `readonly` is absent from the payload', async () => {
-    mountPanel([{ ...editableDamocles, readonly: undefined }]);
+    mountPanel([without(editableDamocles, 'readonly')]);
     await nextTick();
     expect(buttonsByText('Edit')).toHaveLength(0);
     expect(buttonsByText('Delete')).toHaveLength(0);
@@ -164,6 +189,326 @@ describe('McpStatusPanel — affordance gating (contract §7.1)', () => {
     mountPanel([]);
     await nextTick();
     expect(buttonsByText('Add server')).toHaveLength(1);
+  });
+});
+
+describe('McpStatusPanel: source badges', () => {
+  /** Every member of `McpServerSource`, with the label the panel must render for it. */
+  const BADGE_BY_SOURCE = {
+    workspace: 'From workspace',
+    damocles: 'From Damocles',
+    claude: 'From Claude Code',
+    codex: 'From Codex',
+    'claude-local': 'From Claude Code (local)',
+    'damocles-local': 'From project .damocles',
+  } as const satisfies Record<NonNullable<McpServerStatusInfo['source']>, string>;
+
+  it('gives every member of the source union a distinct label', () => {
+    expect(new Set(Object.values(BADGE_BY_SOURCE)).size).toBe(Object.keys(BADGE_BY_SOURCE).length);
+  });
+
+  it('renders a badge for every member of McpServerSource, enumerated at runtime', async () => {
+    // `getSourceLabel` used to end in `default: return null`, so a new member shipped unbadged. The
+    // `Record<McpServerSource, string>` behind it is exhaustive, but nothing CHECKS that: the root
+    // tsconfig excludes `src/webview` and the repo has no `vue-tsc`, so a seventh member would ship
+    // with a green typecheck. Enumerating the union from `mcpSourceOrder` at runtime is what closes
+    // that hole, and it cannot go stale the way a list written here would.
+    const everySource = mcpSourceOrder('claude');
+    expect(everySource.length).toBe(Object.keys(BADGE_BY_SOURCE).length);
+
+    for (const source of everySource) {
+      const wrapper = mountPanel([{ name: 'srv', status: 'connected', enabled: true, source, readonly: true }]);
+      await nextTick();
+
+      const expected = BADGE_BY_SOURCE[source];
+      expect(expected, `no badge label declared for source "${source}"`).toBeDefined();
+      expect(bodyText()).toContain(expected);
+
+      // Unmounted before the DOM is wiped: clearing `innerHTML` under a live component leaves Vue
+      // holding fragment anchors that no longer exist, and teardown then throws.
+      wrapper.unmount();
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('translates the badge for the personal project file', async () => {
+    // A label key that exists in en.json but not el.json renders as the dotted key path, so this also
+    // guards the key set staying in step across the two locales.
+    applyLocale('el');
+    mountPanel([{ name: 'srv', status: 'connected', enabled: true, source: 'damocles-local', readonly: true }]);
+    await nextTick();
+
+    expect(bodyText()).toContain('Από το .damocles του έργου');
+    expect(bodyText()).not.toContain('mcp.from');
+  });
+
+  it('renders no badge for a server that arrived with no source at all', async () => {
+    mountPanel([{ name: 'srv', status: 'connected', enabled: true }]);
+    await nextTick();
+
+    for (const badge of Object.values(BADGE_BY_SOURCE)) expect(bodyText()).not.toContain(badge);
+  });
+});
+
+describe('McpStatusPanel: name collisions carry trust through to the form', () => {
+  // The panel derives the form's collision list from its own server rows. A field dropped in that
+  // derivation cannot be seen by a test of the logic module, which is where this last regressed.
+  const SHADOWED = 'A project config file already defines this name and takes precedence';
+
+  const row = (over: Partial<McpServerStatusInfo>): McpServerStatusInfo => ({
+    name: 'github',
+    status: 'connected',
+    enabled: true,
+    source: 'workspace',
+    readonly: false,
+    ...over,
+  });
+
+  /** Open Add, fill in a stdio server under `name`, and submit. */
+  async function attemptAdd(name: string): Promise<void> {
+    await click(buttonByText('Add server'));
+    await type(inputByPlaceholder('my-server'), name);
+    await type(inputByPlaceholder('npx'), 'node');
+    // The dialog renders field errors only after a submit attempt, so asserting before this click
+    // would pass for every case and prove nothing.
+    await click(buttonByText('Save'));
+  }
+
+  it.each(['workspace', 'damocles-local'] as const)(
+    'lets the user add a name an untrusted %s entry holds, and emits the write',
+    async (source) => {
+      const wrapper = mountPanel([row({ source, untrusted: true })]);
+      await nextTick();
+
+      await attemptAdd('github');
+
+      expect(bodyText()).not.toContain(SHADOWED);
+      expect(wrapper.emitted('addServer')).toHaveLength(1);
+    },
+  );
+
+  it.each(['workspace', 'damocles-local'] as const)(
+    'still refuses the name when the %s entry is trusted, and emits nothing',
+    async (source) => {
+      const wrapper = mountPanel([row({ source })]);
+      await nextTick();
+
+      await attemptAdd('github');
+
+      expect(bodyText()).toContain(SHADOWED);
+      expect(wrapper.emitted('addServer')).toBeUndefined();
+    },
+  );
+
+  it('still refuses a clash whose source never arrived', async () => {
+    const wrapper = mountPanel([{ name: 'github', status: 'connected', enabled: true }]);
+    await nextTick();
+
+    await attemptAdd('github');
+
+    expect(bodyText()).toContain('already exists in ~/.damocles/mcp.json');
+    expect(wrapper.emitted('addServer')).toBeUndefined();
+  });
+
+  it('refuses a name held by an entry that is untrusted but carries no source', async () => {
+    // `untrusted` is optional on the wire just as `source` is, so the panel can forward one without
+    // the other. The allowance exists for a known repo-authored source that got demoted; with no
+    // source there is nothing demoted and the refusal stands.
+    const wrapper = mountPanel([{ name: 'github', status: 'connected', enabled: true, untrusted: true }]);
+    await nextTick();
+
+    await attemptAdd('github');
+
+    expect(bodyText()).toContain('already exists in ~/.damocles/mcp.json');
+    expect(wrapper.emitted('addServer')).toBeUndefined();
+  });
+
+  it('does not let an untrusted entry excuse an unrelated name clash', async () => {
+    // The allowance is per clashing entry, not a blanket "untrusted workspace, anything goes".
+    const wrapper = mountPanel([
+      row({ source: 'workspace', untrusted: true }),
+      row({ name: 'weather', source: 'damocles', readonly: false }),
+    ]);
+    await nextTick();
+
+    await attemptAdd('weather');
+
+    expect(bodyText()).toContain('already exists in ~/.damocles/mcp.json');
+    expect(wrapper.emitted('addServer')).toBeUndefined();
+  });
+});
+
+describe('McpStatusPanel: reload config', () => {
+  const reloadButton = (): HTMLButtonElement => buttonByText('Reload config');
+
+  it('emits reloadConfig, the only way an unwatched ~/.claude.json is re-read', async () => {
+    const wrapper = mountPanel([]);
+    await nextTick();
+    await click(reloadButton());
+
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+  });
+
+  it('names what it re-reads, since the reply usually renders identically to what is on screen', async () => {
+    mountPanel([]);
+    await nextTick();
+
+    expect(reloadButton().getAttribute('title')).toContain('~/.claude.json');
+  });
+
+  it('goes disabled with a spinner and swallows the repeat click', async () => {
+    // Each click runs a full config load and re-feeds the live MCP client, so a button that looks
+    // dead invites the user to do that three more times.
+    const wrapper = mountPanel([]);
+    await nextTick();
+    await click(reloadButton());
+
+    expect(reloadButton().hasAttribute('disabled')).toBe(true);
+    expect(reloadButton().querySelector('.animate-spinner')).not.toBeNull();
+
+    await click(reloadButton());
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+  });
+
+  it('re-enables when the config update lands, and takes the spinner with it', async () => {
+    const wrapper = mountPanel([]);
+    await nextTick();
+    await click(reloadButton());
+
+    await wrapper.setProps({ configRevision: 1 });
+    await nextTick();
+
+    expect(reloadButton().hasAttribute('disabled')).toBe(false);
+    expect(reloadButton().querySelector('.animate-spinner')).toBeNull();
+  });
+
+  it('re-enables on its own when the reply never arrives', async () => {
+    // Nothing acknowledges a reload by id, so a dropped reply would otherwise disable the button for
+    // the life of the panel.
+    vi.useFakeTimers();
+    try {
+      mountPanel([]);
+      await nextTick();
+      await click(reloadButton());
+      expect(reloadButton().hasAttribute('disabled')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await nextTick();
+
+      expect(reloadButton().hasAttribute('disabled')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reloads when the panel is opened, so an edit made while it was closed is picked up', async () => {
+    const wrapper = mountPanel([], [], false, { visible: false });
+    await nextTick();
+    expect(wrapper.emitted('reloadConfig')).toBeUndefined();
+
+    await wrapper.setProps({ visible: true });
+    await nextTick();
+
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+  });
+
+  it('does not spin the button for a reload the user did not click', async () => {
+    const wrapper = mountPanel([], [], false, { visible: false });
+    await nextTick();
+    await wrapper.setProps({ visible: true });
+    await nextTick();
+
+    expect(reloadButton().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('does not reload again when the reply to the open lands', async () => {
+    // The host answers a reload with a config update. If that fed the watcher, the panel would loop.
+    const wrapper = mountPanel([], [], false, { visible: false });
+    await nextTick();
+    await wrapper.setProps({ visible: true });
+    await wrapper.setProps({ configRevision: 7 });
+    await nextTick();
+
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+  });
+
+  it('does not reload on mount when the panel is already visible', async () => {
+    const wrapper = mountPanel([]);
+    await nextTick();
+
+    expect(wrapper.emitted('reloadConfig')).toBeUndefined();
+  });
+});
+
+describe('McpStatusPanel: the gitignore leak warning', () => {
+  const alertText = (): string =>
+    Array.from(document.body.querySelectorAll('[role="alert"]')).map(el => el.textContent ?? '').join(' ');
+
+  it('announces the warning rather than leaving it as body text', async () => {
+    // A screen reader gets nothing from an unlabelled div inside a scrolling region, and this is the
+    // highest-consequence message the panel renders.
+    mountPanel([], [], true);
+    await nextTick();
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert).not.toBeNull();
+    expect(alert!.textContent).toContain('Git can commit your MCP credentials');
+    expect(alert!.querySelector('svg')).not.toBeNull();
+  });
+
+  it('gives the instruction, not just the path', async () => {
+    // Rendering the bare constant with no sentence around it would leave the user with a filename and
+    // no idea what to do with it.
+    mountPanel([], [], true);
+    await nextTick();
+
+    expect(alertText()).toContain('.damocles/mcp.local.json');
+    expect(alertText()).toContain('Git does not ignore');
+    expect(alertText()).toContain('Add that line to .gitignore');
+  });
+
+  it('shows nothing when the file is ignored, absent, or the workspace is not a repo', async () => {
+    mountPanel([], [], false);
+    await nextTick();
+
+    expect(bodyText()).not.toContain('.damocles/mcp.local.json');
+    expect(bodyText()).not.toContain('Git can commit your MCP credentials');
+  });
+
+  it('takes the warning down on a mounted panel once git starts ignoring the file', async () => {
+    // The host re-samples the flag when `.gitignore` changes. A warning that survives the fix teaches
+    // the user to ignore warnings.
+    const wrapper = mountPanel([], [], true);
+    await nextTick();
+    expect(bodyText()).toContain('.damocles/mcp.local.json');
+
+    await wrapper.setProps({ localMcpUnignored: false });
+    await nextTick();
+
+    expect(bodyText()).not.toContain('.damocles/mcp.local.json');
+    expect(bodyText()).not.toContain('Git can commit your MCP credentials');
+    expect(document.body.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('raises the warning on a mounted panel when the user deletes the ignore line', async () => {
+    const wrapper = mountPanel([], [], false);
+    await nextTick();
+
+    await wrapper.setProps({ localMcpUnignored: true });
+    await nextTick();
+
+    expect(document.body.querySelector('[role="alert"]')).not.toBeNull();
+    expect(alertText()).toContain('.damocles/mcp.local.json');
+  });
+
+  it('translates the warning, title included', async () => {
+    applyLocale('el');
+    mountPanel([], [], true);
+    await nextTick();
+
+    expect(alertText()).toContain('Το Git μπορεί να κάνει commit τα διαπιστευτήριά σας MCP');
+    expect(alertText()).toContain('.damocles/mcp.local.json');
+    expect(alertText()).not.toContain('Git does not ignore');
   });
 });
 
@@ -217,6 +562,24 @@ describe('McpStatusPanel — add', () => {
     expect(inputByPlaceholder('npx').value).toBe('node');
     expect(bodyText()).toContain('already exists in ~/.damocles/mcp.json');
   });
+
+  it.each(['.mcp.json', '.damocles/mcp.local.json'])(
+    'names %s when the extension refuses the write as shadowed',
+    async (file) => {
+      // Two project files can shadow now, so a refusal that did not name one would leave the user
+      // hunting for a definition in the wrong place.
+      const wrapper = mountPanel([]);
+      await nextTick();
+      await click(buttonByText('Add server'));
+      await type(inputByPlaceholder('my-server'), 'weather');
+      await type(inputByPlaceholder('npx'), 'node');
+      await click(buttonByText('Save'));
+      await settleWrite(wrapper, { code: 'nameShadowed', params: { name: 'weather', file } });
+
+      expect(bodyText()).toContain(file);
+      expect(bodyText()).toContain('weather');
+    },
+  );
 });
 
 describe('McpStatusPanel — edit', () => {
@@ -347,7 +710,7 @@ describe('McpStatusPanel — unreadable config file', () => {
   });
 
   it('still offers to open a file the parser gave no location for', async () => {
-    const wrapper = mountPanel([], [{ path: '/home/me/.damocles/mcp.json', line: null, column: null }]);
+    const wrapper = mountPanel([], [{ path: '/home/me/.damocles/mcp.json', displayPath: '~/.damocles/mcp.json', kind: 'parse', line: null, column: null }]);
     await nextTick();
     expect(bodyText()).not.toContain('line null');
     await click(buttonByText('Open file'));
@@ -375,7 +738,7 @@ describe('McpStatusPanel — i18n', () => {
 
   it('translates the unreadable-config notice, location included', async () => {
     applyLocale('el');
-    mountPanel([], [{ path: '/x/mcp.json', line: 14, column: 1 }]);
+    mountPanel([], [{ path: '/x/mcp.json', displayPath: '/x/mcp.json', kind: 'parse', line: 14, column: 1 }]);
     await nextTick();
     // The location is interpolated by the webview, so it is inside the translated sentence rather
     // than an English fragment handed over by the extension.

@@ -102,7 +102,7 @@ export const useCompassStore = defineStore('compass', () => {
 		graphLoading.value = true;
 		postMessage({
 			type: 'compassRequestGraph',
-			communityId: graphCommunityFilter.value ?? undefined,
+			...(graphCommunityFilter.value !== null && { communityId: graphCommunityFilter.value }),
 			maxNodes: 500,
 		});
 	}

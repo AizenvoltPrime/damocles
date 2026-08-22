@@ -12,6 +12,7 @@
  * of truth — this layer exists so the user sees an inline error on the offending field instead of a
  * notification arriving after the fact.
  */
+import { SHADOWING_SOURCES } from '@shared/types/mcp';
 import type {
   McpServerConfig,
   McpServerStatusInfo,
@@ -90,8 +91,12 @@ export interface McpFormFieldError {
 
 export type McpFormErrors = Partial<Record<McpFormField, McpFormFieldError>>;
 
-/** The servers the form checks names against — the merged list the panel already renders. */
-export type McpCollisionServer = Pick<McpServerStatusInfo, 'name' | 'source'>;
+/**
+ * The servers the form checks names against, the merged list the panel already renders. `untrusted`
+ * is part of the collision question, not decoration: it is what tells the form the host demoted this
+ * entry below `~/.damocles/mcp.json` and will accept the write.
+ */
+export type McpCollisionServer = Pick<McpServerStatusInfo, 'name' | 'source' | 'untrusted'>;
 
 /** `mcp-write-contract` §3: server names are file-map keys, so they stay boring on purpose. */
 const NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
@@ -181,11 +186,19 @@ function validateRows(
 
 /**
  * Mirror of `mcp-write-contract` §4's collision policy, evaluated against the merged server list the
- * panel already holds:
- *  - a name owned by the workspace `.mcp.json` outranks `~/.damocles/mcp.json`, so writing it would
- *    produce a server the user can never see — rejected;
- *  - a name already in `~/.damocles/mcp.json` would overwrite a different server — rejected;
- *  - a name imported from Claude or Codex is deliberately overridable and produces no error.
+ * panel already holds. A name owned by a source in `SHADOWING_SOURCES` outranks `~/.damocles/mcp.json`,
+ * so writing it would produce a server the user can never see. A name already in `~/.damocles/mcp.json`
+ * would overwrite a different server. The form rejects both. A name imported from Claude (user or
+ * local scope) or Codex is deliberately overridable and produces no error.
+ *
+ * `SHADOWING_SOURCES` is the STATIC precedence, which holds only while the workspace is trusted. An
+ * untrusted workspace folds the repo-authored sources below `~/.damocles/mcp.json` instead of at their
+ * rank, so they stop outranking it and the host's `getShadowingServerNames()` returns nothing for them.
+ * `untrusted` marks exactly those demoted entries, which is why it is checked before the static set.
+ *
+ * `SHADOWING_SOURCES` is derived from the source order in `@shared/types/mcp`, and the host's
+ * `assertNotShadowed` rejects against the fold that actually ran, so this inline hint cannot drift
+ * from the rule the write path enforces.
  */
 function validateNameCollision(
   name: string,
@@ -195,8 +208,19 @@ function validateNameCollision(
   if (originalName !== null && name === originalName) return null;
   const clash = servers.find((server) => server.name === name);
   if (!clash) return null;
-  if (clash.source === 'workspace') return { key: 'mcp.form.errors.nameShadowedByWorkspace' };
-  if (clash.source === 'damocles') return { key: 'mcp.form.errors.nameExists' };
+  // Demoted below `~/.damocles/mcp.json`, so it cannot hide the write. It cannot be the write's own
+  // target either: only repo-authored sources are ever marked untrusted, and `damocles` is not one.
+  // Both of those follow from the source, so a flag arriving without one earns no allowance and falls
+  // through to the refusal below.
+  if (clash.untrusted === true && clash.source !== undefined) return null;
+  if (clash.source !== undefined && SHADOWING_SOURCES.has(clash.source)) {
+    return { key: 'mcp.form.errors.nameShadowedByProject' };
+  }
+  // `source` is optional on `McpServerStatusInfo`, and a clash whose provenance is unknown is still a
+  // clash, so the form refuses rather than submitting a name the merged list already holds.
+  if (clash.source === 'damocles' || clash.source === undefined) {
+    return { key: 'mcp.form.errors.nameExists' };
+  }
   return null;
 }
 

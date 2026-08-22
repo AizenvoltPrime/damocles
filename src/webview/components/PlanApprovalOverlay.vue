@@ -16,7 +16,7 @@ const { t } = useI18n();
 const { sessionStats } = storeToRefs(useSessionStore());
 const { currentSettings } = storeToRefs(useSettingsStore());
 
-const { totalContext, contextPercentage } = useContextPercentage(sessionStats);
+const { contextPercentage } = useContextPercentage(sessionStats);
 
 const contextBadgeStyle = computed(() => {
   const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);

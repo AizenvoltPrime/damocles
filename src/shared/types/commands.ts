@@ -10,6 +10,8 @@ export interface CustomSlashCommandInfo {
   argumentHint?: string;
   filePath: string;
   source: "project" | "user";
+  /** Found but withheld from the agent because the workspace is untrusted. */
+  untrusted?: boolean;
   namespace?: string;
 }
 
@@ -25,6 +27,8 @@ export interface SkillInfo {
   description: string;
   filePath: string;
   source: "project" | "user";
+  /** Found but withheld from the agent because the workspace is untrusted. */
+  untrusted?: boolean;
 }
 
 export type SlashCommandItem =

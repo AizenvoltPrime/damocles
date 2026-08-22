@@ -47,8 +47,8 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
           sdkMessageId: msgId,
           role: "assistant",
           content: textContent,
-          contentBlocks: subagentContentBlocks.length > 0 ? subagentContentBlocks : undefined,
-          toolCalls: subagentToolCalls.length > 0 ? subagentToolCalls : undefined,
+          ...(subagentContentBlocks.length > 0 && { contentBlocks: subagentContentBlocks }),
+          ...(subagentToolCalls.length > 0 && { toolCalls: subagentToolCalls }),
           timestamp: Date.now(),
           parentToolUseId,
         };
@@ -95,10 +95,10 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
 
       if (parentToolUseId && subagentStore.hasSubagent(parentToolUseId) && msgId) {
         subagentStore.updateSubagentStreaming(parentToolUseId, msgId, {
-          content: partialData.streamingText,
-          thinking: partialData.streamingThinking,
-          thinkingDuration: partialData.thinkingDuration,
-          isThinkingPhase: partialData.isThinking,
+          ...(partialData.streamingText !== undefined && { content: partialData.streamingText }),
+          ...(partialData.streamingThinking !== undefined && { thinking: partialData.streamingThinking }),
+          ...(partialData.thinkingDuration !== undefined && { thinkingDuration: partialData.thinkingDuration }),
+          ...(partialData.isThinking !== undefined && { isThinkingPhase: partialData.isThinking }),
         });
         return;
       }

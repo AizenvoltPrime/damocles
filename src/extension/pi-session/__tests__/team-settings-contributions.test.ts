@@ -35,14 +35,14 @@ describe('team role settings contributions — enum sync guard', () => {
   for (const key of MODEL_KEYS) {
     it(`${key} enum equals ['', ...DEFAULT_MODELS values]`, () => {
       expect(properties[key]).toBeDefined();
-      expect(properties[key].enum).toEqual(MODEL_VALUES);
+      expect(properties[key]!.enum).toEqual(MODEL_VALUES);
     });
   }
 
   for (const key of EFFORT_KEYS) {
     it(`${key} enum equals ['', ...TEAM_EFFORT_LEVELS]`, () => {
       expect(properties[key]).toBeDefined();
-      expect(properties[key].enum).toEqual(EFFORT_VALUES);
+      expect(properties[key]!.enum).toEqual(EFFORT_VALUES);
     });
   }
 });

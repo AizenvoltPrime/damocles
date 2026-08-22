@@ -22,9 +22,9 @@ const props = defineProps<{
   isNew: boolean;
   canRewind: boolean;
   promptIndex: number;
-  subagents?: Record<string, SubagentState>;
-  isPinnedInSticky?: boolean;
-  userMessageExpanded?: boolean;
+  subagents?: Record<string, SubagentState> | undefined;
+  isPinnedInSticky?: boolean | undefined;
+  userMessageExpanded?: boolean | undefined;
 }>();
 
 const emit = defineEmits<{

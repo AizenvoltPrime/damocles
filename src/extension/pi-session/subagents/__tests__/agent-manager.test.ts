@@ -7,7 +7,7 @@ import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT, COMPASS_SYSTEM_PROMPT } from '../../../compass/system-prompt';
 import { buildAgentPrompt } from '../prompts';
-import { createSubagentExtensionFactory } from '../subagent-extension-factory';
+import { createSubagentExtensionFactory, type SubagentGateContext } from '../subagent-extension-factory';
 import { buildNestedMcpToolset, type NestedMcpToolset } from '../../tools/mcp-tools';
 import { fullActiveToolNames } from '../../tool-status';
 import { TOOL_TOOL_SEARCH } from '../../../../shared/tool-names';
@@ -91,6 +91,13 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
   return { engine, gates };
 }
 
+/** The i-th nested session's gate, failing loudly rather than reading `undefined` off the array. */
+function gateAt(gates: readonly Gate[], i: number): Gate {
+  const g = gates[i];
+  if (!g) throw new Error(`no nested session #${i} was created (only ${gates.length} so far)`);
+  return g;
+}
+
 function spec(i: number): SpawnSpec {
   return { type: 'general-purpose', prompt: `task ${i}`, description: `d${i}`, toolCallId: `tc${i}`, runInBackground: true };
 }
@@ -100,7 +107,7 @@ describe('AgentManager concurrency', () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
-    const ids = [0, 1, 2, 3].map((i) => mgr.spawn(spec(i)));
+    const ids = [mgr.spawn(spec(0)), mgr.spawn(spec(1)), mgr.spawn(spec(2)), mgr.spawn(spec(3))] as const;
 
     // First two start running immediately; the rest queue (checked synchronously).
     expect(mgr.getRecord(ids[0])!.status).toBe('running');
@@ -112,7 +119,7 @@ describe('AgentManager concurrency', () => {
     expect(gates).toHaveLength(2);
 
     // Finish the first agent → a queued one drains into the freed slot.
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     expect(mgr.getRecord(ids[0])!.status).toBe('completed');
     expect(mgr.getRecord(ids[2])!.status).toBe('running');
@@ -121,9 +128,9 @@ describe('AgentManager concurrency', () => {
     expect(gates).toHaveLength(3);
 
     // Drain the rest.
-    gates[1].resolve();
+    gateAt(gates, 1).resolve();
     await flush();
-    gates[2].resolve();
+    gateAt(gates, 2).resolve();
     await flush();
     await flush();
     if (gates[3]) gates[3].resolve();
@@ -144,13 +151,13 @@ describe('AgentManager concurrency', () => {
     await flush();
     expect(gates).toHaveLength(2); // only two nested sessions launched; the third is queued
 
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     expect(gates).toHaveLength(3); // the freed slot drains the queued foreground spawn
 
-    gates[1].resolve();
-    gates[2].resolve();
+    gateAt(gates, 1).resolve();
+    gateAt(gates, 2).resolve();
     await flush();
     await flush();
     const records = await Promise.all([p0, p1, p2]);
@@ -171,13 +178,13 @@ describe('AgentManager concurrency', () => {
     await flush();
     expect(resolved).toBe(false); // must NOT resolve while still queued (the High-severity bug)
 
-    gates[0].resolve(); // first agent completes → b drains into the freed slot
+    gateAt(gates, 0).resolve(); // first agent completes → b drains into the freed slot
     await flush();
     await flush();
     expect(mgr.getRecord(b)!.status).toBe('running');
     expect(resolved).toBe(false);
 
-    gates[1].resolve(); // b completes
+    gateAt(gates, 1).resolve(); // b completes
     await flush();
     await flush();
     expect(resolved).toBe(true);
@@ -266,7 +273,7 @@ describe('AgentManager concurrency', () => {
     const mgr = new AgentManager(engine, 4);
     const a = mgr.spawn(spec(0));
     await flush();
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     expect(mgr.getRecord(a)!.status).toBe('completed');
     mgr.clearCompleted();
@@ -288,7 +295,7 @@ describe('AgentManager background keep-alive', () => {
     await flush();
     expect(waited).toBe(false); // still running
 
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     expect(waited).toBe(true);
@@ -303,7 +310,7 @@ describe('AgentManager background keep-alive', () => {
     mgr.spawn(spec(0));
     await flush();
     expect(mgr.takeCompletedBackgroundResults()).toHaveLength(0); // still running
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     const first = mgr.takeCompletedBackgroundResults();
@@ -321,7 +328,7 @@ describe('AgentManager background keep-alive', () => {
     await flush();
     expect(msgs.some((m) => m.type === 'backgroundTaskStarted')).toBe(true);
     expect(msgs.some((m) => m.type === 'backgroundTaskCompleted')).toBe(false);
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     expect(msgs.some((m) => m.type === 'backgroundTaskCompleted')).toBe(true);
@@ -341,13 +348,13 @@ describe('AgentManager background keep-alive', () => {
     expect(mgr.abort(id)).toBe(true);
     expect(mgr.getRecord(id)!.status).toBe('stopped');
 
-    gates[0].resolve(); // the aborted run settles (real pi: prompt rejects on the abort signal)
+    gateAt(gates, 0).resolve(); // the aborted run settles (real pi: prompt rejects on the abort signal)
     await flush();
     await flush();
 
     const completions = msgs.filter((m) => m.type === 'backgroundTaskCompleted');
     expect(completions).toHaveLength(1); // exactly one — the handler no longer optimistically posts
-    expect(completions[0].status).toBe('stopped');
+    expect(completions[0]!.status).toBe('stopped');
     mgr.dispose();
   });
 
@@ -368,7 +375,7 @@ describe('AgentManager background keep-alive', () => {
     const mgr = new AgentManager(engine, 4);
     const id = mgr.spawn(spec(0)); // background
     await flush();
-    gates[0].resolve(); // completes during the turn, before agent_end
+    gateAt(gates, 0).resolve(); // completes during the turn, before agent_end
     await flush();
     await flush();
     expect(mgr.getRecord(id)!.status).toBe('completed');
@@ -386,7 +393,7 @@ describe('AgentManager background keep-alive', () => {
     const mgr = new AgentManager(engine, 4);
     const id = mgr.spawn(spec(0));
     await flush();
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     mgr.getRecord(id)!.resultConsumed = true; // GetSubagentResult marks this on read
@@ -508,8 +515,9 @@ describe('AgentManager thinkingLevel precedence', () => {
     const mgr = new AgentManager(engine, 2);
     mgr.spawn({ ...spec(0), thinking: 'low' });
     await flush();
-    expect(captured[0].thinkingLevel).toBe('high');
-    gates[0].resolve();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.thinkingLevel).toBe('high');
+    gateAt(gates, 0).resolve();
     await flush();
     mgr.dispose();
   });
@@ -520,8 +528,9 @@ describe('AgentManager thinkingLevel precedence', () => {
     const mgr = new AgentManager(engine, 2);
     mgr.spawn({ ...spec(0), thinking: 'low' });
     await flush();
-    expect(captured[0].thinkingLevel).toBe('low');
-    gates[0].resolve();
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.thinkingLevel).toBe('low');
+    gateAt(gates, 0).resolve();
     await flush();
     mgr.dispose();
   });
@@ -533,7 +542,7 @@ describe('AgentManager thinkingLevel precedence', () => {
     mgr.spawn(spec(0));
     await flush();
     expect(captured[0]).not.toHaveProperty('thinkingLevel');
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     mgr.dispose();
   });
@@ -577,7 +586,7 @@ describe('AgentManager listActive', () => {
     // A background spawn that completes → terminal 'completed', must be excluded.
     const doneId = mgr.spawn(spec(0));
     await flush();
-    gates[0].resolve();
+    gateAt(gates, 0).resolve();
     await flush();
     await flush();
     expect(mgr.getRecord(doneId)!.status).toBe('completed');
@@ -586,7 +595,7 @@ describe('AgentManager listActive', () => {
     const stoppedId = mgr.spawn(spec(1));
     await flush();
     expect(mgr.abort(stoppedId)).toBe(true);
-    gates[1].resolve(); // let the aborted run settle so its slot frees
+    gateAt(gates, 1).resolve(); // let the aborted run settle so its slot frees
     await flush();
     await flush();
     expect(mgr.getRecord(stoppedId)!.status).toBe('stopped');
@@ -791,7 +800,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
 });
 
 describe('AgentManager → subagent gate context', () => {
-  const gateContexts = (): Array<{ deferrableToolNames: readonly string[]; readOnlyShell: boolean }> =>
+  const gateContexts = (): SubagentGateContext[] =>
     vi.mocked(createSubagentExtensionFactory).mock.calls.map(([ctx]) => ctx);
 
   it('scopes the deferrable universe to the agent OWN toolset, not the parent full set', async () => {
@@ -896,6 +905,8 @@ describe('AgentManager → capability-gated Compass guidance', () => {
       description: 'read-only replace-mode agent',
       promptMode: 'replace' as const,
       systemPrompt: 'You are a replace-mode agent.',
+      extensions: false as const,
+      skills: false as const,
     };
     const prompt = buildAgentPrompt(
       config,

@@ -7,7 +7,7 @@ import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { MAX_FINGERPRINTED_FILES, buildTeamAgentPiTools } from '../team-tools';
-import type { AgentMcpContext } from '../../../team/types';
+import type { AgentMcpContext, TeamAgent } from '../../../team/types';
 
 type PiTool = {
   name: string;
@@ -111,7 +111,7 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
     const res = await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'engineering-code-reviewer' });
     expect(calls).toEqual([['Dev', 'redo the task with more detail here', 'engineering-code-reviewer', 'reviewer']]);
-    expect(res.content[0].text).toMatch(/re-dispatched/);
+    expect(res.content[0]!.text).toMatch(/re-dispatched/);
   });
 
   it('forwards undefined profile when omitted', async () => {
@@ -254,7 +254,7 @@ describe('team_send_message — fail-loud deliverability (Slice B)', () => {
     const send = toolMap(ctx).get('team_send_message')!;
     const res = await send.execute('id', { to: 'Dev', content: 'hello' });
     expect(sends).toEqual([{ from: 'Lead', to: 'Dev', content: 'hello' }]);
-    expect(res.content[0].text).toMatch(/Message sent/);
+    expect(res.content[0]!.text).toMatch(/Message sent/);
   });
 
   it('order: self-send error fires BEFORE deliverability (checkMessageDeliverable is never consulted)', async () => {
@@ -300,7 +300,7 @@ describe('team_send_message — fail-loud deliverability (Slice B)', () => {
       const send = toolMap(ctx).get('team_send_message')!;
       const res = await send.execute('id', { to: 'Dev', content: 'ping' });
       expect(sends).toHaveLength(1);
-      expect(res.content[0].text).toMatch(/Message sent/);
+      expect(res.content[0]!.text).toMatch(/Message sent/);
     });
 
     it.each(undeliverableStatuses)('recipient status %s → surfaces the ctx error verbatim, no send', async (status) => {
@@ -561,7 +561,7 @@ describe('team_record_verification — extension-computed tree fingerprint', () 
     for (let i = 0; i < 40; i++) await record.execute('id', { command: `npx vitest run ${i}`, result: 'pass' });
     const res = await record.execute('id', { command: 'npx vitest run', result: 'pass' });
 
-    const text = res.content[0].text;
+    const text = res.content[0]!.text;
     expect(text).toContain('earlier entries');
     expect(text.split('\n').filter((l: string) => l.startsWith('- ['))).toHaveLength(25);
     expect(entries).toHaveLength(41);
@@ -578,7 +578,7 @@ describe('team_record_verification — extension-computed tree fingerprint', () 
     expect(entries[1]).toContain('→ FAIL');
     expect(entries[1]).toContain('failures: team-runner.test.ts > suppression');
     // The tool hands back every entry so a peer can see this tree was already verified.
-    expect(res.content[0].text).toContain('→ PASS');
-    expect(res.content[0].text).toContain('→ FAIL');
+    expect(res.content[0]!.text).toContain('→ PASS');
+    expect(res.content[0]!.text).toContain('→ FAIL');
   });
 });

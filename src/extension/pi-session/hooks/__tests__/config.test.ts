@@ -31,7 +31,7 @@ let workspaceRoot: string;
 
 beforeEach(() => {
   workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-hooks-ws-'));
-  (vscode.workspace as { isTrusted: boolean }).isTrusted = true;
+  vscode.__setTrusted(true);
   // Clean global between tests.
   fs.rmSync(path.join(tmpHome, 'hooks.json'), { force: true });
 });
@@ -75,7 +75,7 @@ describe('parseHooksFile', () => {
     );
     const result = parseHooksFile(p);
     expect(result['tool_call']).toHaveLength(1);
-    expect(result['tool_call'][0].command).toBe('echo ok');
+    expect(result['tool_call']![0]!.command).toBe('echo ok');
     expect(result['input']).toBeUndefined();
   });
 });
@@ -98,7 +98,7 @@ describe('HooksConfigService', () => {
 
   it('ignores the project file when the workspace is untrusted', () => {
     writeProject(workspaceRoot, JSON.stringify({ hooks: { tool_call: [{ command: 'p' }] } }));
-    (vscode.workspace as { isTrusted: boolean }).isTrusted = false;
+    vscode.__setTrusted(false);
     const svc = new HooksConfigService(workspaceRoot);
     expect(svc.getEntries('tool_call')).toEqual([]);
     expect(svc.hasEntries('tool_call')).toBe(false);

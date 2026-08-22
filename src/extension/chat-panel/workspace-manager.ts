@@ -5,12 +5,19 @@ import { RewindDiffProvider } from "./rewind-diff-provider";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "./ripgrep";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { SlashCommandItem, WorkspaceFileInfo } from "../../shared/types/commands";
+import type {
+  CustomSlashCommandInfo,
+  SkillInfo,
+  SlashCommandItem,
+  WorkspaceFileInfo,
+} from "../../shared/types/commands";
 import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
 export interface WorkspaceManagerConfig {
   workspacePath: string;
+  /** The open workspace folder, or null when none is open. Asset discovery skips project scope then. */
+  projectPath: string | null;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   broadcastToAllPanels: (message: ExtensionToWebviewMessage) => void;
 }
@@ -26,7 +33,7 @@ export class WorkspaceManager {
     this.workspacePath = config.workspacePath;
     this.postMessage = config.postMessage;
     this.broadcastToAllPanels = config.broadcastToAllPanels;
-    this.slashCommandService = new SlashCommandService(this.workspacePath);
+    this.slashCommandService = new SlashCommandService(config.projectPath);
     this.rewindDiffProvider = new RewindDiffProvider();
 
     this.slashCommandService.setOnCacheInvalidate(() => {
@@ -43,17 +50,27 @@ export class WorkspaceManager {
     }
   }
 
-  async isSkill(name: string): Promise<boolean> {
-    return this.slashCommandService.isSkill(name);
+  async findSkill(name: string): Promise<SkillInfo | undefined> {
+    return this.slashCommandService.findSkill(name);
   }
 
+  async findCommand(name: string): Promise<CustomSlashCommandInfo | undefined> {
+    return this.slashCommandService.findCommand(name);
+  }
+
+  /**
+   * The full menu, with one row per name. Precedence is builtin, then `.damocles`, then
+   * `.claude`/`.codex`, and project before user within a source. A builtin always runs, so a custom
+   * asset that collides with one would otherwise show a row that resolves to something else.
+   */
   async getCustomSlashCommands(): Promise<SlashCommandItem[]> {
     const customCommands = await this.slashCommandService.getCommands();
     const skills = await this.slashCommandService.getSkills();
+    const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name.toLowerCase()));
     const allCommands = [
       ...BUILTIN_SLASH_COMMANDS,
-      ...customCommands,
-      ...skills,
+      ...customCommands.filter((c) => !builtinNames.has(c.name.toLowerCase())),
+      ...skills.filter((s) => !builtinNames.has(s.name.toLowerCase())),
     ];
     return allCommands.sort((a, b) => a.name.localeCompare(b.name));
   }

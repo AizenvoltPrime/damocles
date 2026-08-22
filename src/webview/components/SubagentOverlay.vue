@@ -43,7 +43,7 @@ interface StreamingState {
 
 const props = defineProps<{
   subagent: SubagentState;
-  streaming?: StreamingState;
+  streaming?: StreamingState | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -209,8 +209,10 @@ function isThinkingBlock(block: ContentBlock): block is { type: 'thinking'; thin
   return block.type === 'thinking';
 }
 
-function getToolCallById(message: ChatMessage, toolId: string): ToolCall | undefined {
-  return message.toolCalls?.find(t => t.id === toolId);
+/** Zero or one entry, so the template can `v-for` over it and get a narrowed `ToolCall`. */
+function toolCallsById(message: ChatMessage, toolId: string): ToolCall[] {
+  const tool = message.toolCalls?.find(t => t.id === toolId);
+  return tool ? [tool] : [];
 }
 
 function getBlockKey(block: ContentBlock, index: number): string {
@@ -317,7 +319,7 @@ function userMessageText(message: ChatMessage): string {
 
             <template v-else-if="isToolUseBlock(block)">
               <ToolCallCard
-                v-for="tc in [getToolCallById(message, block.id)].filter(Boolean)"
+                v-for="tc in toolCallsById(message, block.id)"
                 :key="tc.id"
                 :tool-call="tc"
               />

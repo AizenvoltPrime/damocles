@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { Agent } from '@earendil-works/pi-agent-core';
 import { AgentSession, SessionManager, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -28,7 +28,14 @@ import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 const H = vi.hoisted(() => {
   const created: Array<{ tools?: string[]; customTools?: unknown; excludeTools?: string[] }> = [];
-  const sessions: Array<{ setActiveToolsByName: ReturnType<typeof vi.fn>; setAutoCompactionEnabled: ReturnType<typeof vi.fn>; calls: string[] }> = [];
+  const sessions: Array<{
+    calls: string[];
+    getAllTools: Mock<() => Array<{ name: string }>>;
+    setActiveToolsByName: Mock<(names: string[]) => void>;
+    setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
+    dispose: Mock<() => void>;
+    sessionId: string;
+  }> = [];
 
   /**
    * `getAllTools()` reports the REGISTRY, so the fake builds it the way pi does: pi's own built-ins,
@@ -43,12 +50,12 @@ const H = vi.hoisted(() => {
     const session = {
       calls,
       getAllTools: vi.fn(() => registry.map((name) => ({ name }))),
-      setActiveToolsByName: vi.fn(() => calls.push('setActiveToolsByName')),
-      setAutoCompactionEnabled: vi.fn(() => calls.push('setAutoCompactionEnabled')),
-      dispose: vi.fn(),
+      setActiveToolsByName: vi.fn<(names: string[]) => void>(() => { calls.push('setActiveToolsByName'); }),
+      setAutoCompactionEnabled: vi.fn<(enabled: boolean) => void>(() => { calls.push('setAutoCompactionEnabled'); }),
+      dispose: vi.fn<() => void>(),
       sessionId: `nested-${sessions.length}`,
     };
-    sessions.push(session as never);
+    sessions.push(session);
     return session;
   };
 
@@ -131,7 +138,7 @@ async function createNested(tools: string[], extensionFactory: ExtensionFactory 
     session,
     createOpts,
     /** The names handed to `setActiveToolsByName`, or null when the baseline was never applied. */
-    baseline: (session.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null) as string[] | null,
+    baseline: session.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null,
   };
 }
 
@@ -470,7 +477,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
     return {
       session,
       createOpts,
-      baseline: (session.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null) as string[] | null,
+      baseline: session.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null,
     };
   }
 

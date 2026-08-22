@@ -135,7 +135,7 @@ function handleSubmit() {
   // boolean for checkbox).
   const payload: FormValues = {};
   for (const field of fields.value) {
-    payload[field.id] = values[field.id];
+    payload[field.id] = values[field.id] ?? defaultValueFor(field);
   }
   emit('submit', payload);
   clearValues();
@@ -266,7 +266,7 @@ const nativeControlClass =
           :aria-invalid="showErrors && isMissing(field)"
           class="min-h-20 max-h-40 resize-none"
           :class="showErrors && isMissing(field) ? 'border-error focus-visible:ring-error' : ''"
-          @update:model-value="(v: string) => (values[field.id] = v)"
+          @update:model-value="(v) => (values[field.id] = String(v))"
         />
 
         <!-- select -->

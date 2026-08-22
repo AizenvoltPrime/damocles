@@ -36,9 +36,8 @@ export class WorkspaceAgentRegistry {
     this.parseFrontmatter = parseFrontmatter;
     this.reload();
     this.setupWatchers();
-    // Reload when the user grants workspace trust so project agents appear without a window reload
-    // (US-022). Optional-call guarded — the API is present on a real host but may be absent in tests.
-    this.trustListener = vscode.workspace.onDidGrantWorkspaceTrust?.(() => this.reload()) ?? null;
+    // Reload when the user grants workspace trust so project agents appear without a window reload.
+    this.trustListener = vscode.workspace.onDidGrantWorkspaceTrust(() => this.reload());
   }
 
   /** The shared, mutated-in-place registry. AgentManagers hold this same instance across reloads. */

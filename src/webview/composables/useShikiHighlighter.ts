@@ -69,9 +69,8 @@ export function normalizeLanguage(language: string | undefined): ExtendedLanguag
     return normalized as BundledLanguage;
   }
 
-  if (normalized in languageAliases) {
-    return languageAliases[normalized];
-  }
+  const alias = languageAliases[normalized];
+  if (alias) return alias;
 
   if (language !== 'txt' && !warnedLanguages.has(language)) {
     console.warn(`[Shiki] Unrecognized language '${language}', defaulting to txt.`);

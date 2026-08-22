@@ -12,6 +12,7 @@ import { MemoryWriteQueue } from '../write-queue';
 import type { DatabaseInstance } from '../types';
 import type { MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } from '../subcall-runner';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
+import { subCallSpy } from './subcall-spy';
 
 const WORKSPACE = '/repo/damocles';
 
@@ -46,7 +47,7 @@ interface RunnerHandle {
 
 /** Stub runner: rerank grades every candidate `low` (order-preserving), profile returns fixed sections. */
 function makeRunner(): RunnerHandle {
-  const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+  const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
     if (req.purpose === 'profile') return { value: { static: 'durable facts', dynamic: 'recent focus' } as T };
     if (req.purpose === 'rerank') {
       const items = parseRerankItems(req.prompt);
@@ -165,12 +166,16 @@ describe('InjectionManager — Slice 12 catalog bounding + fairness', () => {
     expect(metadata).not.toBeNull();
     const groups = metadata!.groups;
 
-    const byLabel = Object.fromEntries(groups.map(g => [g.label, g]));
+    const byLabel = (label: string): (typeof groups)[number] => {
+      const found = groups.find(g => g.label === label);
+      if (!found) throw new Error(`no '${label}' group in the memory catalog`);
+      return found;
+    };
     // Row bound: each group ≤ its configured limit.
-    expect(byLabel.session.entries.length).toBeLessThanOrEqual(SESSION_LIMIT);
-    expect(byLabel.project.entries.length).toBeLessThanOrEqual(PROJECT_LIMIT);
-    expect(byLabel.global.entries.length).toBeLessThanOrEqual(GLOBAL_LIMIT);
-    expect(byLabel.observations.entries.length).toBeLessThanOrEqual(OBSERVATION_LIMIT);
+    expect(byLabel('session').entries.length).toBeLessThanOrEqual(SESSION_LIMIT);
+    expect(byLabel('project').entries.length).toBeLessThanOrEqual(PROJECT_LIMIT);
+    expect(byLabel('global').entries.length).toBeLessThanOrEqual(GLOBAL_LIMIT);
+    expect(byLabel('observations').entries.length).toBeLessThanOrEqual(OBSERVATION_LIMIT);
 
     // Token bound: summed tokens across the 4 groups (no pinned here) ≤ budget.
     const summedGroupTokens = groups.reduce(

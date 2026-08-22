@@ -6,18 +6,18 @@ import { IconArrowLeft } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 
-const props = defineProps<{
+defineProps<{
   title: string;
-  subtitle?: string;
+  subtitle?: string | undefined;
   icon: Component;
-  iconClass?: string;
-  titleClass?: string;
+  iconClass?: string | undefined;
+  titleClass?: string | undefined;
   statusBadge?: {
     label: string;
     class: string;
-    icon?: Component;
-    showSpinner?: boolean;
-  };
+    icon?: Component | undefined;
+    showSpinner?: boolean | undefined;
+  } | undefined;
 }>();
 
 const emit = defineEmits<{

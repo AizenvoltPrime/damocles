@@ -54,6 +54,7 @@ import {
   type AgentConfig,
 } from "./subagents";
 import type { AgentRegistry } from "./subagents/agent-types";
+import { AGENT_SCOPE_BY_SOURCE } from "./subagents/types";
 import { resolveCheapModelFor } from "./subagents/cheap-model";
 import { formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from "./subagents/background-results";
 import { resolveExploreSectionModel } from "./custom-providers";
@@ -1702,7 +1703,7 @@ export class PiSession implements ChatSession {
       .map((c) => ({
         name: c.name,
         description: c.description,
-        source: c.source === "project-pi" || c.source === "project-claude" ? "project" : "user",
+        source: AGENT_SCOPE_BY_SOURCE[c.source ?? "default"],
         ...(c.model ? { model: c.model } : {}),
         ...(c.builtinToolNames ? { tools: c.builtinToolNames } : {}),
       }));

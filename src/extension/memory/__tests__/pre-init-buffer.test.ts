@@ -175,7 +175,7 @@ describe('MemoryService C9 — consolidation failure backoff', () => {
     scheduledDelays = [];
     // Spy the real timer (no fake clock) to read the delays armIdleTimer requests; callbacks never
     // fire in-window and dispose() clears the idle/jitter timers.
-    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((fn: (...a: unknown[]) => void, delay?: number) => {
+    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((_fn: (...a: unknown[]) => void, delay?: number) => {
       scheduledDelays.push(delay ?? 0);
       return 0 as unknown as ReturnType<typeof setTimeout>;
     }) as unknown as typeof setTimeout);

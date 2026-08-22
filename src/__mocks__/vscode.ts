@@ -128,16 +128,25 @@ export const ViewColumn = {
 
 type WatcherCb = (uri: { fsPath: string }) => void;
 
+/** The `globPattern` argument `createFileSystemWatcher` accepts, matching `vscode.GlobPattern`. */
+export type GlobPattern = string | RelativePattern;
+
 /**
  * Controllable FileSystemWatcher test double: tests drive synchronous events via
  * `emitChange`/`emitCreate`/`emitDelete`. A disposable-shaped superset of the real API. Every
  * instance is recorded in `__watchers` so tests can reach the most-recently-created watcher.
+ * `globPattern` holds the argument `createFileSystemWatcher` was called with, stored by reference so
+ * an assertion can still tell a `RelativePattern` on a `Uri` base from one on a string base and from
+ * a bare glob string. VS Code reports no events from a bare glob outside the workspace folders, so
+ * that distinction is the difference between a watcher that fires and one that never does.
  */
 export class FakeFileSystemWatcher {
   private changeCbs: WatcherCb[] = [];
   private createCbs: WatcherCb[] = [];
   private deleteCbs: WatcherCb[] = [];
   disposed = false;
+  readonly globPattern: GlobPattern | undefined;
+  constructor(globPattern?: GlobPattern) { this.globPattern = globPattern; }
   private remove(list: WatcherCb[], cb: WatcherCb) { const i = list.indexOf(cb); if (i !== -1) list.splice(i, 1); }
   onDidChange(cb: WatcherCb) { this.changeCbs.push(cb); return { dispose: () => this.remove(this.changeCbs, cb) }; }
   onDidCreate(cb: WatcherCb) { this.createCbs.push(cb); return { dispose: () => this.remove(this.createCbs, cb) }; }
@@ -162,26 +171,78 @@ export const __renameEmitter = {
   clear() { this.cbs = []; },
 };
 
-export const workspace = {
+type TrustCb = () => void;
+
+/**
+ * Controllable onDidGrantWorkspaceTrust emitter: `register` retains the subscription so `fire` can
+ * drive a trust grant synchronously. Nothing fires it unless a test does, so retaining the callback
+ * changes no existing behavior. Tests that grant trust should call `__setTrusted(true)` first, since
+ * the listeners re-read it.
+ */
+export const __trustEmitter = {
+  cbs: [] as TrustCb[],
+  register(cb: TrustCb) { this.cbs.push(cb); return { dispose: () => { this.cbs = this.cbs.filter((c) => c !== cb); } }; },
+  fire() { for (const cb of [...this.cbs]) cb(); },
+  clear() { this.cbs = []; },
+};
+
+type ConfigChangeEvent = { affectsConfiguration: (section: string) => boolean };
+type ConfigCb = (e: ConfigChangeEvent) => void;
+
+/**
+ * Controllable onDidChangeConfiguration emitter, same shape as `__trustEmitter`. `fire` takes the
+ * setting id that changed and builds the event callers destructure: `affectsConfiguration(section)`
+ * answers true for that id and for every ancestor section of it, which is what VS Code reports.
+ */
+export const __configEmitter = {
+  cbs: [] as ConfigCb[],
+  register(cb: ConfigCb) { this.cbs.push(cb); return { dispose: () => { this.cbs = this.cbs.filter((c) => c !== cb); } }; },
+  fire(changedSection: string) {
+    const e: ConfigChangeEvent = {
+      affectsConfiguration: (section) => changedSection === section || changedSection.startsWith(`${section}.`),
+    };
+    for (const cb of [...this.cbs]) cb(e);
+  },
+  clear() { this.cbs = []; },
+};
+
+let trusted = true;
+
+/**
+ * Set the value `workspace.isTrusted` reports. The real property is a readonly getter, so a test
+ * cannot assign to it and neither can production code.
+ */
+export function __setTrusted(value: boolean): void {
+  trusted = value;
+}
+
+const workspaceMock = {
   getConfiguration: () => ({
     get: (_key: string, defaultValue?: unknown) => defaultValue,
     update: () => Promise.resolve(),
   }),
   workspaceFolders: [],
-  onDidChangeConfiguration: () => ({ dispose: () => {} }),
-  onDidGrantWorkspaceTrust: () => ({ dispose: () => {} }),
+  onDidChangeConfiguration: (cb: ConfigCb) => __configEmitter.register(cb),
+  onDidGrantWorkspaceTrust: (cb: TrustCb) => __trustEmitter.register(cb),
   onDidSaveTextDocument: () => ({ dispose: () => {} }),
   onDidRenameFiles: (cb: RenameCb) => __renameEmitter.register(cb),
-  createFileSystemWatcher: () => {
-    const w = new FakeFileSystemWatcher();
+  createFileSystemWatcher: (globPattern: GlobPattern) => {
+    const w = new FakeFileSystemWatcher(globPattern);
     __watchers.push(w);
     return w;
   },
   fs: {
     readFile: () => Promise.reject(new Error('mock: file not found')),
   },
-  isTrusted: true,
 };
+
+Object.defineProperty(workspaceMock, 'isTrusted', {
+  get: () => trusted,
+  enumerable: true,
+  configurable: true,
+});
+
+export const workspace = workspaceMock as typeof workspaceMock & { readonly isTrusted: boolean };
 
 export const Uri = {
   file: (path: string) => ({ fsPath: path, path, scheme: 'file' }),
@@ -193,7 +254,12 @@ export const Uri = {
 };
 
 export class RelativePattern {
-  constructor(public base: unknown, public pattern: string) {}
+  base: unknown;
+  pattern: string;
+  constructor(base: unknown, pattern: string) {
+    this.base = base;
+    this.pattern = pattern;
+  }
 }
 
 export const EventEmitter = class {
@@ -281,7 +347,7 @@ export const l10n = {
 /**
  * `env.openExternal` / `env.clipboard` test doubles. The browser service opens the external DevTools
  * URL through `env.openExternal` and writes copy/cut text through `env.clipboard`; without these the
- * real code paths throw on `undefined` before reaching the behaviour under test. `__openedExternal`
+ * real code paths throw on `undefined` before reaching the behavior under test. `__openedExternal`
  * records every URI so a test can assert a DevTools window was — or crucially was NOT — opened.
  */
 export const __openedExternal: unknown[] = [];

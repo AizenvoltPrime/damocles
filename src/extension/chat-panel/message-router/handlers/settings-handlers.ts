@@ -33,10 +33,16 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
    * created never fires — leaving a second panel offering Edit for something already deleted.
    */
   async function applyMcpConfigChange(ctx: HandlerContext): Promise<void> {
-    await settingsManager.loadMcpConfig();
-    ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-    broadcast(settingsManager.buildMcpConfigUpdate());
-    await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+    try {
+      await settingsManager.loadMcpConfig();
+      ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+    } finally {
+      // In a `finally` so a failed reload still answers the panel: the Reload button's in-flight state
+      // ends on `mcpConfigUpdate`, and the error alone would leave it spinning until its lost-ack
+      // timeout. Rethrown, so a failed write is still acknowledged as one.
+      broadcast(settingsManager.buildMcpConfigUpdate());
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+    }
   }
 
   /**
@@ -419,6 +425,10 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       } finally {
         await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       }
+    },
+
+    mcpReloadConfig: async (_msg, ctx) => {
+      await applyMcpConfigChange(ctx);
     },
 
     requestMcpStatus: async (_msg, ctx) => {

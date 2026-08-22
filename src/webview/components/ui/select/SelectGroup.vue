@@ -4,6 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { SelectGroup } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<SelectGroupProps & { class?: HTMLAttributes["class"] }>()
 
@@ -11,7 +12,7 @@ const delegatedProps = reactiveOmit(props, "class")
 </script>
 
 <template>
-  <SelectGroup :class="cn('p-1 w-full', props.class)" v-bind="delegatedProps">
+  <SelectGroup :class="cn('p-1 w-full', props.class)" v-bind="definedProps(delegatedProps)">
     <slot />
   </SelectGroup>
 </template>

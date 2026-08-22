@@ -88,12 +88,12 @@ function computeSimpleDiff(oldLines: string[], newLines: string[]): DiffResult {
     hiddenCount: oldLines.length,
   });
 
-  for (let i = 0; i < oldLines.length; i++) {
+  for (const [i, content] of oldLines.entries()) {
     lines.push({
       oldLineNum: i + 1,
       newLineNum: null,
-      type: 'deletion',
-      content: oldLines[i],
+      type: "deletion",
+      content,
     });
   }
 
@@ -105,12 +105,12 @@ function computeSimpleDiff(oldLines: string[], newLines: string[]): DiffResult {
     hiddenCount: 0,
   });
 
-  for (let i = 0; i < newLines.length; i++) {
+  for (const [i, content] of newLines.entries()) {
     lines.push({
       oldLineNum: null,
       newLineNum: i + 1,
-      type: 'addition',
-      content: newLines[i],
+      type: "addition",
+      content,
     });
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createDamoclesExtensionFactory, type PanelRegistryReader } from '../damocles-extension';
+import { createDamoclesExtensionFactory, type CheckpointRegistryReader, type PanelRegistryReader } from '../damocles-extension';
 import { PiRuntime } from '../pi-runtime';
 import { CheckpointService, type CheckpointTreeReader } from '../checkpoint-service';
 import { DAMOCLES_CHECKPOINT_ENTRY } from '../session-store/constants';
@@ -67,6 +67,18 @@ function reader(panels?: Map<string, PanelGateContext>): PanelRegistryReader {
   return { get: (id) => panels?.get(id), values: () => panels?.values() ?? [] };
 }
 
+/** No session has a checkpoint engine, so the checkpoint hooks route nowhere. */
+function noCheckpoints(): CheckpointRegistryReader {
+  return { get: () => undefined };
+}
+
+/** The handler the extension registered for `event`, failing loudly if it registered none. */
+function handler(handlers: Handlers, event: string): (e: unknown, ctx: unknown) => unknown {
+  const found = handlers[event];
+  if (!found) throw new Error(`extension registered no '${event}' handler`);
+  return found;
+}
+
 /** A reader that answers with one panel regardless of session id. */
 function readerOf(panel: PanelGateContext): PanelRegistryReader {
   return { get: () => panel, values: () => [panel] };
@@ -78,40 +90,40 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     const panelA = panel('allow');
     const panelB = panel('deny');
     const registry = new Map<string, PanelGateContext>([['A', panelA], ['B', panelB]]);
-    createDamoclesExtensionFactory(reader(registry))(fakePi(handlers) as never);
+    createDamoclesExtensionFactory(reader(registry), noCheckpoints())(fakePi(handlers) as never);
 
-    expect(await handlers.tool_call(readEvent, ctxFor('A'))).toBeUndefined();
+    expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('A'))).toBeUndefined();
     expect(panelA.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
     expect(panelB.permissionHandler.evaluatePermission).not.toHaveBeenCalled();
 
-    const blocked = (await handlers.tool_call(readEvent, ctxFor('B'))) as { block?: boolean } | undefined;
+    const blocked = (await handler(handlers, 'tool_call')(readEvent, ctxFor('B'))) as { block?: boolean } | undefined;
     expect(blocked?.block).toBe(true);
   });
 
   it('no-ops when no panel is registered for the session', async () => {
     const handlers: Handlers = {};
-    createDamoclesExtensionFactory(reader())(fakePi(handlers) as never);
-    expect(await handlers.tool_call(readEvent, ctxFor('missing'))).toBeUndefined();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
+    expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('missing'))).toBeUndefined();
   });
 
   it('returns the Damocles system prompt (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
     const handlers: Handlers = {};
     const planning = new Map<string, PanelGateContext>([['A', panel('allow', true)], ['B', panel('allow', false)]]);
-    createDamoclesExtensionFactory(reader(planning))(fakePi(handlers) as never);
+    createDamoclesExtensionFactory(reader(planning), noCheckpoints())(fakePi(handlers) as never);
 
     const baseEvent = { type: 'before_agent_start', prompt: 'hi', systemPrompt: 'PI BASE', systemPromptOptions: { cwd: '/repo' } };
 
-    const inPlan = (await handlers.before_agent_start({ ...baseEvent }, ctxFor('A'))) as { systemPrompt: string };
+    const inPlan = (await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('A'))) as { systemPrompt: string };
     expect(inPlan.systemPrompt).not.toContain('operating inside pi');
     expect(inPlan.systemPrompt).not.toContain('PI BASE');
     expect(inPlan.systemPrompt).toContain('AI coding agent');
     expect(inPlan.systemPrompt).toContain('Plan mode is active');
 
-    const notPlan = (await handlers.before_agent_start({ ...baseEvent }, ctxFor('B'))) as { systemPrompt: string };
+    const notPlan = (await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('B'))) as { systemPrompt: string };
     expect(notPlan.systemPrompt).toContain('AI coding agent');
     expect(notPlan.systemPrompt).not.toContain('Plan mode is active');
 
-    expect(await handlers.before_agent_start({ ...baseEvent }, ctxFor('missing'))).toBeUndefined();
+    expect(await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('missing'))).toBeUndefined();
   });
 });
 
@@ -219,10 +231,10 @@ describe('context image pruning registration', () => {
 
   it('registers a context handler that returns pruned messages', async () => {
     const handlers: Handlers = {};
-    createDamoclesExtensionFactory(reader())(fakePi(handlers) as never);
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
 
     expect(typeof handlers.context).toBe('function');
-    const result = (await handlers.context({ type: 'context', messages: imageHeavy(7) }, ctxFor('S'))) as {
+    const result = (await handler(handlers, 'context')({ type: 'context', messages: imageHeavy(7) }, ctxFor('S'))) as {
       messages: Array<{ content: Array<{ type: string; text?: string }> }>;
     };
     const images = result.messages.flatMap((m) => m.content).filter((b) => b.type === 'image');
@@ -231,11 +243,11 @@ describe('context image pruning registration', () => {
 
   it('fails soft: a thrown pruning error yields undefined, not a rejection', async () => {
     const handlers: Handlers = {};
-    createDamoclesExtensionFactory(reader())(fakePi(handlers) as never);
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
 
     // content:null makes the image-counting loop throw; the handler must swallow it and return undefined.
     const bad = [{ role: 'toolResult', toolCallId: 'x', toolName: 'X', content: null, isError: false, timestamp: 0 }];
-    expect(await handlers.context({ type: 'context', messages: bad }, ctxFor('S'))).toBeUndefined();
+    expect(await handler(handlers, 'context')({ type: 'context', messages: bad }, ctxFor('S'))).toBeUndefined();
   });
 });
 
@@ -262,7 +274,7 @@ describe('session_compact checkpoint hook', () => {
     createDamoclesExtensionFactory(reader(), { get: () => service })(pi as never);
 
     const sm = { getSessionId: () => 'S' };
-    await handlers.session_compact(compactEvent, { sessionManager: sm, signal: undefined });
+    await handler(handlers, 'session_compact')(compactEvent, { sessionManager: sm, signal: undefined });
 
     expect(onSessionCompact).toHaveBeenCalledTimes(1);
     expect(onSessionCompact).toHaveBeenCalledWith('compaction-1', sm);
@@ -275,7 +287,7 @@ describe('session_compact checkpoint hook', () => {
 
     createDamoclesExtensionFactory(reader(), { get: () => undefined })(pi as never);
 
-    await handlers.session_compact(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined });
+    await handler(handlers, 'session_compact')(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined });
     expect(appended).toEqual([]);
   });
 
@@ -287,7 +299,7 @@ describe('session_compact checkpoint hook', () => {
     createDamoclesExtensionFactory(reader(), { get: () => service })(pi as never);
 
     await expect(
-      handlers.session_compact(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined }),
+      handler(handlers, 'session_compact')(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined }),
     ).resolves.toBeUndefined();
     expect(appended).toEqual([]);
   });
@@ -358,7 +370,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
   it('advertises only the tools the workspace actually has enabled', () => {
     const { pi, tool } = piCapturingToolSearch();
-    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen', 'BrowserClick'])))(pi as never);
+    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen', 'BrowserClick'])), noCheckpoints())(pi as never);
 
     const description = tool()!.description;
     expect(description).toContain('BrowserOpen');
@@ -370,7 +382,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     const { pi, tool } = piCapturingToolSearch();
     let names = ['BrowserOpen', 'CompassSearch'];
     const panel = { deferrableTools: () => ({ names, loaded: new Set<string>(), mcpGroups: new Map() }) } as unknown as PanelGateContext;
-    createDamoclesExtensionFactory(readerOf(panel))(pi as never);
+    createDamoclesExtensionFactory(readerOf(panel), noCheckpoints())(pi as never);
 
     expect(tool()!.description).toContain('CompassSearch');
     names = ['BrowserOpen'];
@@ -379,7 +391,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
   it('lists everything when no panel has registered yet (nothing to scope to)', () => {
     const { pi, tool } = piCapturingToolSearch();
-    createDamoclesExtensionFactory(reader())(pi as never);
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi as never);
 
     expect(tool()!.description).toContain('BrowserOpen');
     expect(tool()!.description).toContain('CompassSearch');
@@ -401,7 +413,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     let names = ['BrowserOpen', 'CompassSearch'];
     const panel = { deferrableTools: () => ({ names, loaded: new Set<string>(), mcpGroups: new Map() }) } as unknown as PanelGateContext;
     let republish: (() => void) | undefined;
-    createDamoclesExtensionFactory(readerOf(panel), reader(), undefined, undefined, (fn) => { republish = fn; })(pi as never);
+    createDamoclesExtensionFactory(readerOf(panel), noCheckpoints(), undefined, undefined, (fn) => { republish = fn; return () => {}; })(pi as never);
 
     expect(wraps()).toHaveLength(1);
     expect(wraps()[0]).toContain('CompassSearch');
@@ -424,7 +436,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     // handed over must stay the object the active set and any in-flight call are bound to.
     const { pi, tool, registrySize, wraps } = piCapturingToolSearch();
     let republish: (() => void) | undefined;
-    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), reader(), undefined, undefined, (fn) => { republish = fn; })(pi as never);
+    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints(), undefined, undefined, (fn) => { republish = fn; return () => {}; })(pi as never);
 
     const first = tool();
     const sizeAfterFirst = registrySize();
@@ -443,7 +455,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
    */
   it('does not recurse when pi materializes every registered tool description', () => {
     const { pi, getAllTools } = piCapturingToolSearch();
-    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])))(pi as never);
+    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints())(pi as never);
 
     expect(() => getAllTools()).not.toThrow();
     expect(getAllTools().find((t) => t.name === 'ToolSearch')!.description).toContain('BrowserOpen');
@@ -476,7 +488,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       const capture = piCapturingToolSearch();
       createDamoclesExtensionFactory(
         readerOf(panelWith(['BrowserOpen'])),
-        reader(),
+        noCheckpoints(),
         undefined,
         undefined,
         seam.onToolSearchRepublish,
@@ -504,7 +516,8 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       const seam = republisherSeam();
       const { wraps } = build(seam);
 
-      seam.registered()[0]();
+      expect(seam.registered()).toHaveLength(1);
+      seam.registered()[0]!();
 
       expect(wraps()).toHaveLength(2);
       expect(wraps()[1]).toContain('BrowserOpen');
@@ -561,7 +574,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       // `onToolSearchRepublish` is optional (subagent/test wiring omits it). No disposer exists, so the
       // handler must be a no-op rather than throwing through pi's emit loop.
       const { pi, emit } = piCapturingToolSearch();
-      createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])))(pi as never);
+      createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints())(pi as never);
 
       await expect(emit('session_shutdown', { type: 'session_shutdown', reason: 'quit' })).resolves.toBeUndefined();
     });
@@ -591,7 +604,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       expect(() =>
         createDamoclesExtensionFactory(
           readerOf(panelWith(['BrowserOpen'])),
-          reader(),
+          noCheckpoints(),
           undefined,
           undefined,
           seam.onToolSearchRepublish,
@@ -621,7 +634,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
       createDamoclesExtensionFactory(
         readerOf(panel),
-        reader(),
+        noCheckpoints(),
         undefined,
         undefined,
         (republish) => runtime.registerToolSearchRepublisher(republish),

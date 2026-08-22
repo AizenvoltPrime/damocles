@@ -100,7 +100,7 @@ describe("createClaudeAuthHandlers", () => {
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
 
     expect(H.runtime.signInSubscription).toHaveBeenCalledTimes(1);
-    expect(H.runtime.signInSubscription.mock.calls[0][0]).toBe(true);
+    expect(H.runtime.signInSubscription.mock.calls[0]![0]).toBe(true);
     expect(sent).toEqual([
       { type: "claudeAuthBusy", busy: true },
       { type: "claudeAuthStatusChanged", mode: "allowance" },
@@ -132,7 +132,7 @@ describe("createClaudeAuthHandlers", () => {
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: false }, ctx);
 
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
-    const arg = (vscode.env.openExternal as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
+    const arg = (vscode.env.openExternal as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![0];
     expect(String(arg)).toBe("https://claude.ai/oauth/authorize");
     expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
   });

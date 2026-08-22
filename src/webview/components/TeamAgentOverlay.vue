@@ -11,9 +11,8 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useVSCode } from '@/composables/useVSCode';
-import { statusBadgeClass, getAgentColor, formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
+import { getAgentColor, formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
-import type { AgentChatMessage } from '@/stores/useTeamStore';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();

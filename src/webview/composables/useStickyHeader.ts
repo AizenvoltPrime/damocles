@@ -27,8 +27,7 @@ export function useStickyHeader(
 
     let visitingIndex = -1;
     if (visitingMessageId.value !== null) {
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
+      for (const [i, it] of items.entries()) {
         if (it.type === 'user-message' && it.message.id === visitingMessageId.value) {
           visitingIndex = i;
           break;
@@ -40,13 +39,13 @@ export function useStickyHeader(
     let activeMsg: ChatMessage | null = null;
     let nextFrameTop: number | null = null;
 
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
+    for (const [i, it] of items.entries()) {
       if (it.type !== 'user-message') continue;
-      if (i >= f.items.length) continue;
+      const frameItem = f.items[i];
+      if (!frameItem) continue;
       if (visitingIndex >= 0 && i <= visitingIndex) continue;
       if (it.message.isInjected || it.message.isCombinedQueue || it.message.isQueued) continue;
-      const topY = canvasOffset + f.items[i].top;
+      const topY = canvasOffset + frameItem.top;
       if (topY < scrollTop) {
         activeIndex = i;
         activeMsg = it.message;

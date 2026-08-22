@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, type Server } from 'http';
-import { AddressInfo } from 'net';
+import type { AddressInfo } from 'net';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';

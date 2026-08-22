@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'http';
-import { AddressInfo } from 'net';
+import type { AddressInfo } from 'net';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -549,7 +549,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
       // scroll a specific overflow container.
       const scrollRes = await call('BrowserScroll', { selector: '#scrollable', y: 200 });
-      expect(texts(scrollRes)[0].startsWith('Scrolled div#scrollable by (')).toBe(true);
+      expect(texts(scrollRes)[0]!.startsWith('Scrolled div#scrollable by (')).toBe(true);
 
       // drag via locator.dragTo (primary path).
       const dragRes = await call('BrowserDrag', { sourceSelector: '#drag', targetSelector: '#drop' });
@@ -557,7 +557,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
       // act: take a snapshot to assign [data-dq] refs, then batch click + key.
       const snapRes = await call('BrowserSnapshot', {});
-      const snapText = texts(snapRes)[0];
+      const snapText = texts(snapRes)[0]!;
       const m = snapText.match(/\[(\d+)\] button "Hover me"/);
       expect(m).not.toBeNull();
       const ref = Number((m as RegExpMatchArray)[1]);
@@ -647,7 +647,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       // (1) list enumerates 2 tabs; the OPENER (/tabs) stays current — the popup is listed but not active
       // until the agent selects it.
       const listRes = await call('BrowserTabs', { action: 'list' });
-      const listText = texts(listRes)[0];
+      const listText = texts(listRes)[0]!;
       expect(listText).toContain('Open tabs (2)');
       const activeLine = listText.split('\n').find((l) => l.includes(' *'));
       expect(activeLine).toContain('/tabs');
@@ -902,7 +902,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
       // list shows both rules, REDACTED (bodyBytes, not the raw body).
       const listRes = await call('BrowserIntercept', { action: 'list' });
-      const listText = texts(listRes)[0];
+      const listText = texts(listRes)[0]!;
       expect(listText).toContain('Intercept rules (2)');
       expect(listText).toContain('bodyBytes=');
       expect(listText).not.toContain('mock');

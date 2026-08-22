@@ -41,7 +41,10 @@ function retry(): void {
 }
 
 function signIn(): void {
-  postMessage({ type: 'openSettingsPanel' });
+  // `openSettingsPanel` travels extension→webview only; the host has no handler for it, so posting it
+  // from here was silently dropped. `invokeSignIn` is the request side, and the host answers it by
+  // posting `openSettingsPanel` back.
+  postMessage({ type: 'invokeSignIn' });
 }
 
 // ── Phase-aware header badge ──────────────────────────────────────────────────────────────────

@@ -300,7 +300,7 @@ function formatInput(input: Record<string, unknown>): string {
   }
   if ("changed_files" in input && Array.isArray(input.changed_files)) {
     const files = input.changed_files as string[];
-    return files.length === 1 ? files[0] : `${files.length} files`;
+    return files.length === 1 ? files[0] ?? "" : `${files.length} files`;
   }
   if ("pattern" in input) {
     return `Pattern: ${input.pattern}`;
@@ -328,7 +328,7 @@ function formatInput(input: Record<string, unknown>): string {
   }
   if ("ids" in input && Array.isArray(input.ids)) {
     const ids = input.ids as string[];
-    return ids.length === 1 ? ids[0] : `${ids.length} memories`;
+    return ids.length === 1 ? ids[0] ?? "" : `${ids.length} memories`;
   }
   if ("title" in input) {
     return input.title as string;

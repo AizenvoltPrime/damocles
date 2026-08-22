@@ -96,6 +96,9 @@ export type WebviewToExtensionMessage =
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
   | { type: "setMcpEnabled"; enabled: boolean }
   | { type: "reconnectMcpServer"; serverName: string }
+  // Re-read every MCP source and re-feed the live client. `~/.claude.json` is deliberately unwatched,
+  // so a server added there needs an explicit prompt to be picked up without a window reload.
+  | { type: "mcpReloadConfig" }
   | { type: "authenticateMcpServer"; serverName: string }
   | { type: "reauthenticateMcpServer"; serverName: string }
   | { type: "signOutMcpServer"; serverName: string }
@@ -228,6 +231,18 @@ export type WebviewToExtensionMessage =
   | { type: "claudeSignOut" }
   | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null };
 
+/**
+ * Carried by every message that reports MCP config state, so the two producers cannot disagree.
+ *
+ * True when `<ws>/.damocles/mcp.local.json` exists and git is not ignoring it, so the panel can warn
+ * that a file holding credentials is committable. False when the file is absent, when git ignores it,
+ * when the workspace is not a git repository, when the workspace is untrusted, and when the check
+ * could not run.
+ */
+export interface McpLocalUnignoredFlag {
+  localMcpUnignored: boolean;
+}
+
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
@@ -253,7 +268,7 @@ export type ExtensionToWebviewMessage =
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
-  | { type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[] }
+  | ({ type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
@@ -314,7 +329,7 @@ export type ExtensionToWebviewMessage =
   | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
   | { type: "queueCancelled"; messageId: string }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
-  | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] }
+  | ({ type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
   /**
    * The outcome of one `mcpAddServer`/`mcpUpdateServer`/`mcpDeleteServer`. Sent for every attempt,
    * success or failure, so the form can stay open holding the user's typed definition until the write

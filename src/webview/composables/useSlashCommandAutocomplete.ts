@@ -31,7 +31,7 @@ export function useSlashCommandAutocomplete(
     }
 
     const fzf = new Fzf(commands.value, {
-      selector: cmd => cmd.name,
+      selector: (cmd: SlashCommandItem) => cmd.name,
       tiebreakers: [byLengthAsc],
       limit: MAX_FILTERED_ITEMS,
     });
@@ -101,7 +101,7 @@ export function useSlashCommandAutocomplete(
       }
 
       if (char === '/') {
-        const isAtStart = i === 0 || /\s/.test(text[i - 1]);
+        const isAtStart = i === 0 || /\s/.test(text[i - 1] ?? '');
         if (isAtStart) {
           const commandQuery = text.slice(i + 1, cursorPos);
           if (!/\s/.test(commandQuery)) {

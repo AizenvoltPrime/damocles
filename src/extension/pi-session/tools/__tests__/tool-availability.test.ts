@@ -1,13 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { PiCodingAgentModule } from '../pi-loader';
-import type { PermissionHandler } from '../../permission-handler';
+import type { PiCodingAgentModule } from '../../pi-loader';
+import type { PermissionHandler } from '../../../permission-handler';
 import { buildCustomTools, moduleToolNames } from '../index';
 import { MEMORY_PI_TOOL_NAMES } from '../memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../compass-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
 import { BrowserService } from '../../../browser';
 
-vi.mock('../../logger', () => ({ log: vi.fn() }));
+vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
 function fakePi(): PiCodingAgentModule {
   return {

@@ -116,7 +116,10 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
       sessionStore.setSelectedSession(savedState.sessionId, savedState.sessionName ?? null);
       sessionStore.setResumedSession(savedState.sessionId);
     }
-    postMessage({ type: "ready", savedSessionId: savedState?.sessionId });
+    postMessage({
+      type: "ready",
+      ...(savedState?.sessionId !== undefined && { savedSessionId: savedState.sessionId }),
+    });
     postMessage({ type: "requestVoiceConfig" });
     postMessage({ type: "requestExploreKeyStatus" });
     postMessage({ type: "requestExploreConfig" });

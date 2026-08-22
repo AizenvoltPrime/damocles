@@ -1,33 +1,35 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mock } from 'vitest';
 import { createElicitationHandler, coerceAndValidate } from '../elicitation-handler';
 import type { ElicitationUI } from '../elicitation-handler';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
 interface MockUI extends ElicitationUI {
-  select: ReturnType<typeof vi.fn>;
-  input: ReturnType<typeof vi.fn>;
-  notify: ReturnType<typeof vi.fn>;
+  select: Mock<ElicitationUI['select']>;
+  input: Mock<ElicitationUI['input']>;
+  notify: Mock<ElicitationUI['notify']>;
 }
 
-function mockUI(overrides?: Partial<MockUI>): MockUI {
+const selectSpy = (): Mock<ElicitationUI['select']> => vi.fn();
+const inputSpy = (): Mock<ElicitationUI['input']> => vi.fn();
+
+function mockUI(overrides?: Partial<Pick<MockUI, 'select' | 'input' | 'notify'>>): MockUI {
   return {
-    select: vi.fn(),
-    input: vi.fn(),
+    select: selectSpy(),
+    input: inputSpy(),
     notify: vi.fn(),
     ...overrides,
-  } as MockUI;
+  };
 }
 
 describe('createElicitationHandler — form elicitation', () => {
   it('collects a string field, reviews it, and maps Submit to accept', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Submit'),
-      input: vi.fn().mockResolvedValueOnce('octocat'),
+      input: inputSpy().mockResolvedValueOnce('octocat'),
     });
     const handler = createElicitationHandler(ui);
 
@@ -55,12 +57,11 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('flattens server-controlled field labels so they cannot forge attribution lines (L1)', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Submit'),
-      input: vi.fn().mockResolvedValueOnce('x'),
+      input: inputSpy().mockResolvedValueOnce('x'),
     });
     const handler = createElicitationHandler(ui);
 
@@ -91,8 +92,7 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('maps an enum string field to a select dialog and accepts the chosen value', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Medium (medium)')
         .mockResolvedValueOnce('Submit'),
@@ -128,8 +128,7 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('maps a boolean field to a Yes/No select', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('No')
         .mockResolvedValueOnce('Submit'),
@@ -155,15 +154,14 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('lets the user edit a value from the review screen', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Edit')
         .mockResolvedValueOnce('Name (name)')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Submit'),
-      input: vi.fn().mockResolvedValueOnce('Old').mockResolvedValueOnce('New'),
+      input: inputSpy().mockResolvedValueOnce('Old').mockResolvedValueOnce('New'),
     });
     const handler = createElicitationHandler(ui);
 
@@ -182,13 +180,12 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('validates required + format constraints and lets the user correct invalid input', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Submit'),
-      input: vi.fn().mockResolvedValueOnce('ab').mockResolvedValueOnce('octocat'),
+      input: inputSpy().mockResolvedValueOnce('ab').mockResolvedValueOnce('octocat'),
     });
     const handler = createElicitationHandler(ui);
 
@@ -217,13 +214,12 @@ describe('createElicitationHandler — form elicitation', () => {
     ['integer', true],
   ] as const)('rejects blank %s input and reprompts when required=%s', async (type, required) => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Enter value')
         .mockResolvedValueOnce('Submit'),
-      input: vi.fn().mockResolvedValueOnce('   ').mockResolvedValueOnce('7'),
+      input: inputSpy().mockResolvedValueOnce('   ').mockResolvedValueOnce('7'),
     });
     const handler = createElicitationHandler(ui);
 
@@ -247,8 +243,7 @@ describe('createElicitationHandler — form elicitation', () => {
 
   it('uses a default value and omits an optional field', async () => {
     const ui = mockUI({
-      select: vi
-        .fn()
+      select: selectSpy()
         .mockResolvedValueOnce('Continue')
         .mockResolvedValueOnce('Use default')
         .mockResolvedValueOnce('Omit')
@@ -282,17 +277,17 @@ describe('createElicitationHandler — form elicitation', () => {
     };
 
     await expect(
-      createElicitationHandler(mockUI({ select: vi.fn().mockResolvedValue('Decline') }))(params, 'demo'),
+      createElicitationHandler(mockUI({ select: selectSpy().mockResolvedValue('Decline') }))(params, 'demo'),
     ).resolves.toEqual({ action: 'decline' });
 
     await expect(
-      createElicitationHandler(mockUI({ select: vi.fn().mockResolvedValue(undefined) }))(params, 'demo'),
+      createElicitationHandler(mockUI({ select: selectSpy().mockResolvedValue(undefined) }))(params, 'demo'),
     ).resolves.toEqual({ action: 'cancel' });
   });
 
   it('cancels when a field dialog is dismissed mid-form', async () => {
     const ui = mockUI({
-      select: vi.fn().mockResolvedValueOnce('Continue').mockResolvedValueOnce(undefined),
+      select: selectSpy().mockResolvedValueOnce('Continue').mockResolvedValueOnce(undefined),
     });
     const handler = createElicitationHandler(ui);
 

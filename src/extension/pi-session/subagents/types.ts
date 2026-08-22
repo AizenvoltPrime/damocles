@@ -26,7 +26,20 @@ export type MemoryScope = 'user' | 'project' | 'local';
 export type IsolationMode = 'worktree';
 
 /** Where an agent definition was loaded from. */
-export type AgentSource = 'default' | 'project-pi' | 'project-claude' | 'global';
+export type AgentSource = 'default' | 'project-pi' | 'project-claude' | 'project-damocles' | 'global';
+
+/**
+ * The scope badge shown for an agent in the `@` menu and in `/context`, derived from provenance in
+ * this one place. Keyed by the full union, so adding a source without deciding its scope fails to
+ * compile.
+ */
+export const AGENT_SCOPE_BY_SOURCE: Record<AgentSource, 'project' | 'user'> = {
+  default: 'user',
+  global: 'user',
+  'project-claude': 'project',
+  'project-pi': 'project',
+  'project-damocles': 'project',
+};
 
 /** Unified agent configuration — used for both default and user-defined agents. */
 export interface AgentConfig {

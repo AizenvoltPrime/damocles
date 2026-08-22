@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { promises as fs } from "node:fs";
-import type { McpServerConfig, McpWriteErrorCode, McpWriteErrorInfo } from "../../../../shared/types/mcp";
+import type { McpServerConfig, McpServerSource, McpWriteErrorCode, McpWriteErrorInfo } from "../../../../shared/types/mcp";
 import { DAMOCLES_MCP_CONFIG_PATH } from "./mcp-config-import";
 import { queueSettingsWrite } from "../utils";
 import { assertValidMcpServerConfig, assertValidMcpServerName } from "./mcp-config-validate";
@@ -131,26 +131,44 @@ async function writeDamoclesMcpServers(
 }
 
 /**
- * Names defined by the workspace `.mcp.json`. That source outranks `~/.damocles/mcp.json` at merge
- * time, so writing one of these names would succeed on disk and then be invisible in the panel.
- * Rejecting is the honest outcome; silently writing a server the user cannot see is not.
- *
- * Names owned by `claude`/`codex` are deliberately NOT in scope here: `damocles` outranks both, so
- * overriding an imported server is the intended path and the entry is visibly re-tagged `damocles`.
+ * The short label of each source's file, for naming the offending one in a rejection. Keyed by the
+ * full union so a new source cannot be added without deciding what to call its file; only the sources
+ * that outrank `~/.damocles/mcp.json` can actually reach the message.
  */
-function assertNotShadowedByWorkspace(name: string, workspaceServerNames: ReadonlySet<string>): void {
-  if (workspaceServerNames.has(name)) {
-    throw new McpWriteError("nameShadowed", `"${name}" is already defined by this project's .mcp.json, which takes precedence, so the server would never be used`, { name });
-  }
+const FILE_BY_SOURCE: Record<McpServerSource, string> = {
+  workspace: ".mcp.json",
+  damocles: "~/.damocles/mcp.json",
+  "damocles-local": ".damocles/mcp.local.json",
+  claude: "~/.claude.json",
+  "claude-local": "~/.claude.json",
+  codex: "~/.codex/config.toml",
+};
+
+/**
+ * Names defined by a source that outranks `~/.damocles/mcp.json` at merge time, so writing one of them
+ * would succeed on disk and then be invisible in the panel. Rejecting is the honest outcome; silently
+ * writing a server the user cannot see is not.
+ *
+ * Names owned by `claude`/`claude-local`/`codex` are deliberately NOT in scope: `damocles` outranks all
+ * three, so overriding an imported server is the intended path and the entry is visibly re-tagged
+ * `damocles`.
+ */
+function assertNotShadowed(name: string, shadowingNames: ReadonlyMap<string, McpServerSource>): void {
+  const source = shadowingNames.get(name);
+  if (source === undefined) return;
+  const file = FILE_BY_SOURCE[source];
+  // Names only. A config value, an `env` map or a `headers` map must never reach `params`; it is
+  // translated into the panel and logged.
+  throw new McpWriteError("nameShadowed", `"${name}" is already defined by ${file}, which takes precedence, so the server would never be used`, { name, file });
 }
 
 export async function addDamoclesMcpServer(
   name: string,
   config: McpServerConfig,
-  workspaceServerNames: ReadonlySet<string>,
+  shadowingNames: ReadonlyMap<string, McpServerSource>,
 ): Promise<void> {
   asInvalidDefinition(() => { assertValidMcpServerName(name); assertValidMcpServerConfig(config); });
-  assertNotShadowedByWorkspace(name, workspaceServerNames);
+  assertNotShadowed(name, shadowingNames);
 
   await writeDamoclesMcpServers(servers => {
     if (Object.hasOwn(servers, name)) throw new McpWriteError("nameExists", `"${name}" already exists in ~/.damocles/mcp.json`, { name });
@@ -167,7 +185,7 @@ export async function updateDamoclesMcpServer(
   name: string,
   newName: string | undefined,
   config: McpServerConfig,
-  workspaceServerNames: ReadonlySet<string>,
+  shadowingNames: ReadonlyMap<string, McpServerSource>,
 ): Promise<void> {
   asInvalidDefinition(() => assertValidMcpServerConfig(config));
 
@@ -179,7 +197,7 @@ export async function updateDamoclesMcpServer(
   const targetName = newName ?? name;
   asInvalidDefinition(() => assertValidMcpServerName(targetName));
   if (targetName !== name) {
-    assertNotShadowedByWorkspace(targetName, workspaceServerNames);
+    assertNotShadowed(targetName, shadowingNames);
   }
 
   await writeDamoclesMcpServers(servers => {

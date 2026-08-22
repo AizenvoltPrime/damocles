@@ -323,9 +323,10 @@ describe('team wiring — persistence, timeline and inbox are unchanged by the d
       ['content', 'from', 'messageId', 'teamId', 'timestamp', 'to', 'type'].sort(),
     );
     const emitted = w.webviewMessages.find(
-      (m) => m.type === 'teamMessage' && m.message.content.includes(NOTICE),
+      (m): m is Extract<ExtensionToWebviewMessage, { type: 'teamMessage' }> =>
+        m.type === 'teamMessage' && m.message.content.includes(NOTICE),
     )!;
-    expect(Object.keys((emitted as { message: Record<string, unknown> }).message).sort()).toEqual(
+    expect(Object.keys(emitted.message).sort()).toEqual(
       ['content', 'messageId', 'recipientAgentId', 'recipientName', 'senderAgentId', 'senderName', 'timestamp'].sort(),
     );
   });

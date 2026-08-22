@@ -19,9 +19,10 @@
   "Enter URL...": "Enter URL...",
   "Waiting for browser frames...": "Waiting for browser frames...",
   "The browser closed unexpectedly. Open it again to continue.": "The browser closed unexpectedly. Open it again to continue.",
-  "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.": "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.",
+  "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.": "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.",
   "Open Settings": "Open Settings",
   "Reload Window": "Reload Window",
   "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.",
-  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected."
+  "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.",
+  "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them."
 }

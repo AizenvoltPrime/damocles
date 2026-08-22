@@ -6,6 +6,7 @@ import { ListboxRoot, useFilter, useForwardPropsEmits } from "reka-ui"
 import { reactive, ref, watch } from "vue"
 import { cn } from "@/lib/utils"
 import { provideCommandContext } from "."
+import { definedProps } from "@/lib/definedProps"
 
 const props = withDefaults(defineProps<ListboxRootProps & { class?: HTMLAttributes["class"] }>(), {
   modelValue: "",
@@ -78,7 +79,7 @@ provideCommandContext({
 
 <template>
   <ListboxRoot
-    v-bind="forwarded"
+    v-bind="definedProps(forwarded)"
     :class="cn('flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground', props.class)"
   >
     <slot />

@@ -5,6 +5,7 @@ import { piMessageText } from './branch-text';
 import { isMcpToolName } from './mcp/naming';
 import type { McpClientManager } from './mcp/mcp-client-manager';
 import type { AgentRegistry } from './subagents/agent-types';
+import { AGENT_SCOPE_BY_SOURCE } from './subagents/types';
 import { BUILTIN_DEFERRED_GROUPS } from './tools/deferred-tools';
 
 /**
@@ -299,7 +300,7 @@ function agentsSection(agentRegistry: AgentRegistry | null): ContextUsageData['a
     .filter((c) => c.isDefault !== true)
     .map((c) => ({
       agentType: c.name,
-      source: c.source === 'project-pi' || c.source === 'project-claude' ? 'project' : 'user',
+      source: AGENT_SCOPE_BY_SOURCE[c.source ?? 'default'],
       tokens: estimateTextTokens(c.systemPrompt),
       ...(c.filePath ? { filePath: c.filePath } : {}),
     }));

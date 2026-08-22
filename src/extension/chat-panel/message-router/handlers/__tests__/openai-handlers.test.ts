@@ -44,8 +44,16 @@ vi.mock("vscode", () => {
   });
   return {
     env: { openExternal: vi.fn(() => Promise.resolve(true)) },
-    Uri: { parse: (str: string) => ({ toString: () => str }) },
-    RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
+    Uri: {
+      parse: (str: string) => ({ toString: () => str }),
+      // PiRuntime's asset watchers anchor their user-scope patterns on a Uri.
+      file: (p: string) => ({ fsPath: p, path: p, scheme: "file" }),
+    },
+    RelativePattern: class {
+      base: unknown;
+      pattern: string;
+      constructor(base: unknown, pattern: string) { this.base = base; this.pattern = pattern; }
+    },
     window: {
       createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
       showInputBox: vi.fn(() => Promise.resolve(undefined)),
@@ -395,7 +403,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
     await handlers.startCodexOAuth!({ type: "startCodexOAuth" }, ctx);
 
     expect(vscode.env.openExternal).toHaveBeenCalledTimes(1);
-    const arg = (vscode.env.openExternal as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
+    const arg = (vscode.env.openExternal as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]![0];
     expect(String(arg)).toBe("https://auth.openai.test/authorize");
     expect(sent.some((m) => m.type === "openaiCodexAuthCompleted")).toBe(true);
   });

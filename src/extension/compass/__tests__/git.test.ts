@@ -4,17 +4,22 @@ import { GraphStore } from '../database';
 import type { NodeInfo } from '../types';
 import { createTestStore } from './sql-test-helper';
 
-const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
-vi.mock('child_process', () => ({ execSync: execSyncMock }));
+const { execFileSyncMock } = vi.hoisted(() => ({ execFileSyncMock: vi.fn() }));
+vi.mock('child_process', () => ({ execFileSync: execFileSyncMock }));
 
-import { getChangedFiles, parseGitDiffRanges, resolveRepoRoot, resetRepoRootCacheForTests } from '../git';
+import { getChangedFiles, parseGitDiffRanges, resolveRepoRoot, resetRepoRootCacheForTests, GIT_HARDENING_ARGS } from '../git';
 import { analyzeChanges, mapChangesToNodes } from '../changes';
 
 
 beforeEach(() => {
-	execSyncMock.mockReset();
+	execFileSyncMock.mockReset();
 	resetRepoRootCacheForTests();
 });
+
+/** The argv of one recorded call, minus the hardening prefix. */
+function subcommandArgs(call: unknown[]): string[] {
+	return (call[1] as string[]).slice(GIT_HARDENING_ARGS.length);
+}
 
 function abs(root: string, rel: string): string {
 	return path.resolve(root, rel).replace(/\\/g, '/');
@@ -24,24 +29,81 @@ function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: stri
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
 }
 
-function mockGit(handlers: { revParse?: () => string; diff?: (command: string) => string }): void {
-	execSyncMock.mockImplementation((command: unknown) => {
-		const cmd = String(command);
-		if (cmd.startsWith('git rev-parse --show-toplevel')) {
+function mockGit(handlers: { revParse?: () => string; diff?: (args: string[]) => string }): void {
+	execFileSyncMock.mockImplementation((file: unknown, args: unknown) => {
+		const argv = (args as string[]).slice(GIT_HARDENING_ARGS.length);
+		if (file !== 'git') throw new Error(`unexpected executable: ${String(file)}`);
+		if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') {
 			if (!handlers.revParse) throw new Error('fatal: not a git repository');
 			return handlers.revParse();
 		}
-		if (cmd.startsWith('git diff')) {
+		if (argv[0] === 'diff') {
 			if (!handlers.diff) throw new Error('git diff failed');
-			return handlers.diff(cmd);
+			return handlers.diff(argv);
 		}
-		throw new Error(`unexpected git command: ${cmd}`);
+		throw new Error(`unexpected git command: ${argv.join(' ')}`);
 	});
 }
 
 function revParseCallCount(): number {
-	return execSyncMock.mock.calls.filter(c => String(c[0]).startsWith('git rev-parse')).length;
+	return execFileSyncMock.mock.calls.filter(c => subcommandArgs(c)[0] === 'rev-parse').length;
 }
+
+describe('git invocation hardening', () => {
+	it('overrides core.fsmonitor, which the repository sets and git runs as a command', () => {
+		mockGit({ revParse: () => '/repo-h-1\n', diff: () => 'src/a.ts\n' });
+
+		getChangedFiles('/repo-h-1');
+		parseGitDiffRanges('/repo-h-1');
+
+		expect(execFileSyncMock.mock.calls.length).toBeGreaterThan(0);
+		for (const call of execFileSyncMock.mock.calls) {
+			const argv = call[1] as string[];
+			expect(argv.slice(0, 2)).toEqual(['-c', 'core.fsmonitor=false']);
+			expect(argv.indexOf('core.fsmonitor=false')).toBeLessThan(argv.findIndex(a => a === 'diff' || a === 'rev-parse'));
+		}
+	});
+
+	it('hardens the staged-diff fallback too', () => {
+		mockGit({
+			revParse: () => '/repo-h-2\n',
+			diff: args => {
+				if (args.includes('--cached')) return 'src/c.ts\n';
+				throw new Error('bad revision');
+			},
+		});
+
+		getChangedFiles('/repo-h-2');
+
+		const staged = execFileSyncMock.mock.calls.find(c => (c[1] as string[]).includes('--cached'));
+		expect(staged).toBeDefined();
+		expect((staged![1] as string[]).slice(0, 2)).toEqual(['-c', 'core.fsmonitor=false']);
+	});
+
+	it('passes git an argv and no shell, so a ref reaching argv is never re-parsed', () => {
+		mockGit({ revParse: () => '/repo-h-3\n', diff: () => 'src/a.ts\n' });
+
+		getChangedFiles('/repo-h-3', 'release/1.0');
+
+		for (const call of execFileSyncMock.mock.calls) {
+			expect(call[0]).toBe('git');
+			expect(Array.isArray(call[1])).toBe(true);
+			expect(call[2]).not.toHaveProperty('shell');
+		}
+		const diff = execFileSyncMock.mock.calls.find(c => subcommandArgs(c)[0] === 'diff');
+		expect(subcommandArgs(diff!)).toEqual(['diff', '--name-only', 'release/1.0', '--']);
+	});
+
+	it('passes no GIT_DIR/GIT_WORK_TREE env, which would retarget the checkpoint engine bare repo', () => {
+		mockGit({ revParse: () => '/repo-h-4\n', diff: () => 'src/a.ts\n' });
+
+		getChangedFiles('/repo-h-4');
+
+		for (const call of execFileSyncMock.mock.calls) {
+			expect((call[2] as { env?: unknown }).env).toBeUndefined();
+		}
+	});
+});
 
 describe('resolveRepoRoot', () => {
 	it('returns the resolved repo root from rev-parse', () => {
@@ -135,7 +197,7 @@ describe('getChangedFiles', () => {
 		mockGit({ revParse: () => '/repo-gc-4\n', diff: () => 'src/a.ts\n' });
 
 		expect(getChangedFiles('/repo-gc-4', 'HEAD; rm -rf /')).toEqual([]);
-		expect(execSyncMock).not.toHaveBeenCalled();
+		expect(execFileSyncMock).not.toHaveBeenCalled();
 	});
 
 	it('rejects leading-dash refs that would inject git options', () => {
@@ -144,7 +206,7 @@ describe('getChangedFiles', () => {
 		expect(getChangedFiles('/repo-gc-7', '--ext-diff')).toEqual([]);
 		expect(getChangedFiles('/repo-gc-7', '-')).toEqual([]);
 		expect(parseGitDiffRanges('/repo-gc-7', '--no-index').size).toBe(0);
-		expect(execSyncMock).not.toHaveBeenCalled();
+		expect(execFileSyncMock).not.toHaveBeenCalled();
 	});
 
 	it('falls back to staged diff when the base diff fails', () => {
@@ -196,7 +258,7 @@ describe('parseGitDiffRanges', () => {
 		mockGit({ revParse: () => '/repo-pd-4\n', diff: () => '+++ b/src/a.ts\n@@ -1 +1 @@' });
 
 		expect(parseGitDiffRanges('/repo-pd-4', '$(whoami)').size).toBe(0);
-		expect(execSyncMock).not.toHaveBeenCalled();
+		expect(execFileSyncMock).not.toHaveBeenCalled();
 	});
 });
 

@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>();
 
 const store = useQuestionStore();
-const listboxRef = ref<InstanceType<typeof ListboxRoot> | null>(null);
+const listboxRef = ref<{ $el?: HTMLElement } | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 const customInputValue = ref('');
 const previewingOptionLabel = ref<string | null>(null);
@@ -130,7 +130,7 @@ function handleCustomInputSave() {
   store.setCustomInput(currentQuestion.value.question, customInputValue.value, isMultiSelect.value);
   store.exitCustomInputMode();
   nextTick(() => {
-    (listboxRef.value?.$el as HTMLElement)?.focus();
+    listboxRef.value?.$el?.focus();
   });
 }
 
@@ -138,7 +138,7 @@ function handleCustomInputBack() {
   customInputValue.value = '';
   store.exitCustomInputMode();
   nextTick(() => {
-    (listboxRef.value?.$el as HTMLElement)?.focus();
+    listboxRef.value?.$el?.focus();
   });
 }
 
@@ -163,7 +163,7 @@ function getAnswerSummary(question: Question): string {
 watch(() => props.visible, (visible) => {
   if (visible) {
     nextTick(() => {
-      (listboxRef.value?.$el as HTMLElement)?.focus();
+      listboxRef.value?.$el?.focus();
     });
   }
 });
@@ -172,7 +172,7 @@ watch(() => store.currentTabIndex, () => {
   previewingOptionLabel.value = null;
   if (!isOnSubmitTab.value && !isCustomInputMode.value) {
     nextTick(() => {
-      (listboxRef.value?.$el as HTMLElement)?.focus();
+      listboxRef.value?.$el?.focus();
     });
   }
 });
@@ -373,7 +373,7 @@ watch(() => store.currentTabIndex, () => {
             class="mt-2 min-h-8 h-8 bg-background border-border resize-none text-xs"
             :placeholder="t('question.notesPlaceholder')"
             :model-value="store.annotationNotes.get(question.question) ?? ''"
-            @update:model-value="(v: string) => store.setAnnotationNotes(question.question, v)"
+            @update:model-value="(v) => store.setAnnotationNotes(question.question, String(v))"
           />
         </div>
       </div>

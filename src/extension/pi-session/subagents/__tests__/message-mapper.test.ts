@@ -22,7 +22,7 @@ describe('piMessagesToHistoryAgentMessages', () => {
 
     expect(out[0]).toEqual({ role: 'user', contentBlocks: [{ type: 'text', text: 'do the thing' }] });
 
-    const assistant = out[1];
+    const assistant = out[1]!;
     expect(assistant.role).toBe('assistant');
     expect(assistant.contentBlocks[0]).toEqual({ type: 'thinking', thinking: 'hmm' });
     expect(assistant.contentBlocks[1]).toEqual({ type: 'text', text: 'looking' });
@@ -41,7 +41,7 @@ describe('piMessagesToHistoryAgentMessages', () => {
       { role: 'toolResult', toolCallId: 'tc1', toolName: 'bash', content: [{ type: 'text', text: 'exit 1' }], isError: true },
     ];
     const out = piMessagesToHistoryAgentMessages(messages);
-    const toolBlock = out[1].contentBlocks[0] as { type: string; result?: string; isError?: boolean };
+    const toolBlock = out[1]!.contentBlocks[0] as { type: string; result?: string; isError?: boolean };
     expect(toolBlock.type).toBe('tool_use');
     expect(toolBlock.result).toBe('exit 1');
     expect(toolBlock.isError).toBe(true);
@@ -53,7 +53,7 @@ describe('piMessagesToHistoryAgentMessages', () => {
       { role: 'toolResult', toolCallId: 'tc1', toolName: 'read', content: [{ type: 'text', text: 'ok' }], isError: false },
     ];
     const out = piMessagesToHistoryAgentMessages(messages);
-    const toolBlock = out[0].contentBlocks[0] as { isError?: boolean };
+    const toolBlock = out[0]!.contentBlocks[0] as { isError?: boolean };
     expect(toolBlock.isError).toBeUndefined();
   });
 

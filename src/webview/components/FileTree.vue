@@ -4,7 +4,7 @@ import type { FileEntry } from '@shared/types/session';
 
 const { t } = useI18n();
 
-const props = defineProps<{
+defineProps<{
   files: FileEntry[];
 }>();
 

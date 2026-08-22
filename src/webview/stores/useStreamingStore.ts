@@ -59,9 +59,9 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
 
     if (updates.thinking !== undefined) {
-      const incomingLen = updates.thinking?.length ?? 0;
-      const currentLen = current.thinking?.length ?? 0;
-      result.thinking = incomingLen >= currentLen ? updates.thinking : current.thinking;
+      const incoming = updates.thinking;
+      const existing = current.thinking;
+      result.thinking = existing !== undefined && incoming.length < existing.length ? existing : incoming;
     }
 
     if (updates.contentBlocks !== undefined) {
@@ -106,6 +106,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     if (index === -1) return;
 
     const current = messages.value[index];
+    if (!current) return;
     const merged = mergeMessageUpdate(current, updates);
     const newMessages = [...messages.value];
     newMessages[index] = merged;
@@ -145,18 +146,18 @@ export const useStreamingStore = defineStore("streaming", () => {
 
     if (streamingMessageId.value) {
       const prevIndex = messages.value.findIndex(m => m.id === streamingMessageId.value);
-      if (prevIndex !== -1) {
-        const prev = messages.value[prevIndex];
-
+      const prev = prevIndex === -1 ? undefined : messages.value[prevIndex];
+      if (prev) {
         if (!sdkMessageId) {
           return prev;
         }
 
         if (!prev.sdkMessageId) {
+          const promoted: ChatMessage = { ...prev, sdkMessageId };
           const newMessages = [...messages.value];
-          newMessages[prevIndex] = { ...prev, sdkMessageId };
+          newMessages[prevIndex] = promoted;
           messages.value = newMessages;
-          return messages.value[prevIndex];
+          return promoted;
         }
 
         const newMessages = [...messages.value];
@@ -167,7 +168,7 @@ export const useStreamingStore = defineStore("streaming", () => {
 
     const newMsg: ChatMessage = {
       id: generateId(),
-      sdkMessageId,
+      ...(sdkMessageId !== undefined && { sdkMessageId }),
       role: "assistant",
       content: "",
       contentBlocks: [],
@@ -187,46 +188,44 @@ export const useStreamingStore = defineStore("streaming", () => {
   ): void {
     toolStatusCache.value.set(toolUseId, { status, ...options });
 
-    for (let i = 0; i < messages.value.length; i++) {
-      const msg = messages.value[i];
-      if (msg.toolCalls) {
-        const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
-        if (toolIndex !== -1) {
-          const updatedToolCalls = [...msg.toolCalls];
-          updatedToolCalls[toolIndex] = {
-            ...updatedToolCalls[toolIndex],
-            status,
-            ...(options?.result !== undefined && { result: options.result }),
-            ...(options?.errorMessage !== undefined && { errorMessage: options.errorMessage }),
-            ...(options?.feedback !== undefined && { feedback: options.feedback }),
-            ...(options?.durationMs !== undefined && { durationMs: options.durationMs }),
-          };
-          const newMessages = [...messages.value];
-          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
-          messages.value = newMessages;
-          return;
-        }
-      }
+    for (const [i, msg] of messages.value.entries()) {
+      if (!msg.toolCalls) continue;
+      const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
+      const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
+      if (!target) continue;
+
+      const updatedToolCalls = [...msg.toolCalls];
+      updatedToolCalls[toolIndex] = {
+        ...target,
+        status,
+        ...(options?.result !== undefined && { result: options.result }),
+        ...(options?.errorMessage !== undefined && { errorMessage: options.errorMessage }),
+        ...(options?.feedback !== undefined && { feedback: options.feedback }),
+        ...(options?.durationMs !== undefined && { durationMs: options.durationMs }),
+      };
+      const newMessages = [...messages.value];
+      newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+      messages.value = newMessages;
+      return;
     }
   }
 
   function updateToolMetadata(toolUseId: string, metadata: Record<string, unknown>): void {
-    for (let i = 0; i < messages.value.length; i++) {
-      const msg = messages.value[i];
-      if (msg.toolCalls) {
-        const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
-        if (toolIndex !== -1) {
-          const updatedToolCalls = [...msg.toolCalls];
-          updatedToolCalls[toolIndex] = {
-            ...updatedToolCalls[toolIndex],
-            metadata: { ...updatedToolCalls[toolIndex].metadata, ...metadata },
-          };
-          const newMessages = [...messages.value];
-          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
-          messages.value = newMessages;
-          return;
-        }
-      }
+    for (const [i, msg] of messages.value.entries()) {
+      if (!msg.toolCalls) continue;
+      const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
+      const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
+      if (!target) continue;
+
+      const updatedToolCalls = [...msg.toolCalls];
+      updatedToolCalls[toolIndex] = {
+        ...target,
+        metadata: { ...target.metadata, ...metadata },
+      };
+      const newMessages = [...messages.value];
+      newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+      messages.value = newMessages;
+      return;
     }
     toolMetadataCache.value.set(toolUseId, { ...toolMetadataCache.value.get(toolUseId), ...metadata });
   }
@@ -258,10 +257,10 @@ export const useStreamingStore = defineStore("streaming", () => {
       name: tool.name,
       input: tool.input,
       status: cachedStatus?.status ?? "pending",
-      result: cachedStatus?.result,
-      errorMessage: cachedStatus?.errorMessage,
-      feedback: cachedStatus?.feedback,
-      metadata: cachedMetadata,
+      ...(cachedStatus?.result !== undefined && { result: cachedStatus.result }),
+      ...(cachedStatus?.errorMessage !== undefined && { errorMessage: cachedStatus.errorMessage }),
+      ...(cachedStatus?.feedback !== undefined && { feedback: cachedStatus.feedback }),
+      ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
       ...(cachedStatus?.durationMs !== undefined && { durationMs: cachedStatus.durationMs }),
     };
 
@@ -305,7 +304,11 @@ export const useStreamingStore = defineStore("streaming", () => {
         const mergedMetadata = exists.metadata || tool.metadata
           ? { ...exists.metadata, ...tool.metadata }
           : undefined;
-        merged.set(tool.id, { ...exists, ...tool, metadata: mergedMetadata });
+        merged.set(tool.id, {
+          ...exists,
+          ...tool,
+          ...(mergedMetadata !== undefined && { metadata: mergedMetadata }),
+        });
       }
     }
 
@@ -322,25 +325,20 @@ export const useStreamingStore = defineStore("streaming", () => {
   function extractToolCalls(content: ContentBlock[]): ToolCall[] {
     return content
       .filter((block): block is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => block.type === "tool_use")
-      .map((block) => {
+      .map((block): ToolCall => {
         const cached = toolStatusCache.value.get(block.id);
-        if (cached) {
-          toolStatusCache.value.delete(block.id);
-          return {
-            id: block.id,
-            name: block.name,
-            input: block.input,
-            status: cached.status,
-            result: cached.result,
-            errorMessage: cached.errorMessage,
-            feedback: cached.feedback,
-          };
+        if (!cached) {
+          return { id: block.id, name: block.name, input: block.input, status: "pending" };
         }
+        toolStatusCache.value.delete(block.id);
         return {
           id: block.id,
           name: block.name,
           input: block.input,
-          status: "pending" as const,
+          status: cached.status,
+          ...(cached.result !== undefined && { result: cached.result }),
+          ...(cached.errorMessage !== undefined && { errorMessage: cached.errorMessage }),
+          ...(cached.feedback !== undefined && { feedback: cached.feedback }),
         };
       });
   }
@@ -360,18 +358,19 @@ export const useStreamingStore = defineStore("streaming", () => {
     promptIndex?: number,
     isMidStream?: boolean,
   ): ChatMessage {
+    const blocks = contentBlocksFromUserContent(content);
     const msg: ChatMessage = {
       id: generateId(),
-      sdkMessageId,
-      correlationId,
+      ...(sdkMessageId !== undefined && { sdkMessageId }),
+      ...(correlationId !== undefined && { correlationId }),
       role: "user",
       content: extractDisplayContent(content),
-      contentBlocks: contentBlocksFromUserContent(content),
+      ...(blocks !== undefined && { contentBlocks: blocks }),
       timestamp: Date.now(),
       isReplay,
-      isInjected,
-      isCombinedQueue: isMidStream || undefined,
-      promptIndex,
+      ...(isInjected !== undefined && { isInjected }),
+      ...(isMidStream === true && { isCombinedQueue: true }),
+      ...(promptIndex !== undefined && { promptIndex }),
     };
     messages.value = [...messages.value, msg];
     return msg;
@@ -401,8 +400,8 @@ export const useStreamingStore = defineStore("streaming", () => {
       timestamp: Date.now(),
       isReplay,
       isInjected: true,
-      steerTarget,
-      promptIndex,
+      ...(steerTarget !== undefined && { steerTarget }),
+      ...(promptIndex !== undefined && { promptIndex }),
     };
     messages.value = [...messages.value, msg];
     return msg;
@@ -436,6 +435,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       return null;
     }
     const removedMessage = messages.value[index];
+    if (!removedMessage) return null;
     const content = removedMessage.content;
     messages.value = messages.value.slice(0, index);
     streamingMessageId.value = null;
@@ -447,6 +447,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     if (index === -1) return null;
 
     const removedMessage = messages.value[index];
+    if (!removedMessage) return null;
     messages.value = messages.value.filter((_, i) => i !== index);
     return removedMessage.content;
   }
@@ -460,7 +461,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   function assignSdkIdByCorrelationId(correlationId: string, sdkMessageId: string): void {
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const msg = messages.value[i];
-      if (msg.correlationId === correlationId) {
+      if (msg && msg.correlationId === correlationId) {
         if (msg.sdkMessageId !== sdkMessageId) {
           const newMessages = [...messages.value];
           newMessages[i] = { ...msg, sdkMessageId };
@@ -476,7 +477,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     const primaryId = queueMessageIds[0];
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const msg = messages.value[i];
-      if (msg.id === primaryId) {
+      if (msg && msg.id === primaryId) {
         if (msg.sdkMessageId !== sdkMessageId) {
           const newMessages = [...messages.value];
           newMessages[i] = { ...msg, sdkMessageId };
@@ -504,12 +505,13 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function addQueuedMessage(message: QueuedMessage): void {
+    const blocks = contentBlocksFromUserContent(message.content);
     const chatMessage: ChatMessage = {
       id: message.id,
       sdkMessageId: message.id,
       role: "user",
       content: extractDisplayContent(message.content),
-      contentBlocks: contentBlocksFromUserContent(message.content),
+      ...(blocks !== undefined && { contentBlocks: blocks }),
       timestamp: message.timestamp,
       isQueued: true,
       isInjected: true,
@@ -519,8 +521,8 @@ export const useStreamingStore = defineStore("streaming", () => {
 
   function markQueueProcessed(messageId: string): void {
     const index = messages.value.findIndex((m) => m.id === messageId);
-    if (index !== -1) {
-      const msg = messages.value[index];
+    const msg = index === -1 ? undefined : messages.value[index];
+    if (msg) {
       const newMessages = messages.value.filter((_, i) => i !== index);
       newMessages.push({ ...msg, isQueued: false });
       messages.value = newMessages;
@@ -532,16 +534,18 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function combineQueuedMessages(messageIds: string[], combinedContent: string, contentBlocks?: UserContentBlock[]): void {
+    const combinedId = messageIds[0];
+    if (combinedId === undefined) return;
+
     const idsSet = new Set(messageIds);
-    const firstQueuedIndex = messages.value.findIndex((m) => idsSet.has(m.id));
-    const timestamp = firstQueuedIndex !== -1 ? messages.value[firstQueuedIndex].timestamp : Date.now();
+    const firstQueued = messages.value.find((m) => idsSet.has(m.id));
 
     const combinedMessage: ChatMessage = {
-      id: messageIds[0],
+      id: combinedId,
       role: "user",
       content: combinedContent,
-      contentBlocks,
-      timestamp,
+      ...(contentBlocks !== undefined && { contentBlocks }),
+      timestamp: firstQueued?.timestamp ?? Date.now(),
       isCombinedQueue: true,
     };
     messages.value = [...messages.value.filter((m) => !idsSet.has(m.id)), combinedMessage];
@@ -562,44 +566,30 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function updateToolElapsedTime(toolUseId: string, elapsedSeconds: number): void {
-    for (let i = 0; i < messages.value.length; i++) {
-      const msg = messages.value[i];
-      if (msg.toolCalls) {
-        const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
-        if (toolIndex !== -1) {
-          const updatedToolCalls = [...msg.toolCalls];
-          updatedToolCalls[toolIndex] = {
-            ...updatedToolCalls[toolIndex],
-            elapsedTimeSeconds: elapsedSeconds,
-          };
-          const newMessages = [...messages.value];
-          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
-          messages.value = newMessages;
-          return;
-        }
-      }
-    }
+    patchToolCall(toolUseId, { elapsedTimeSeconds: elapsedSeconds });
   }
 
   function updateToolSummary(toolUseIds: string[], summary: string): void {
-    if (toolUseIds.length === 0) return;
     const lastId = toolUseIds[toolUseIds.length - 1];
-    for (let i = 0; i < messages.value.length; i++) {
-      const msg = messages.value[i];
-      if (msg.toolCalls) {
-        const toolIndex = msg.toolCalls.findIndex((t) => t.id === lastId);
-        if (toolIndex !== -1) {
-          const updatedToolCalls = [...msg.toolCalls];
-          updatedToolCalls[toolIndex] = {
-            ...updatedToolCalls[toolIndex],
-            summary,
-          };
-          const newMessages = [...messages.value];
-          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
-          messages.value = newMessages;
-          return;
-        }
-      }
+    if (lastId === undefined) return;
+    patchToolCall(lastId, { summary });
+  }
+
+  /** Replaces the first tool call matching `toolUseId` with a patched copy, rebuilding the owning
+   *  message so the ref identity changes and dependent computeds re-evaluate. */
+  function patchToolCall(toolUseId: string, patch: Partial<ToolCall>): void {
+    for (const [i, msg] of messages.value.entries()) {
+      if (!msg.toolCalls) continue;
+      const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
+      const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
+      if (!target) continue;
+
+      const updatedToolCalls = [...msg.toolCalls];
+      updatedToolCalls[toolIndex] = { ...target, ...patch };
+      const newMessages = [...messages.value];
+      newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+      messages.value = newMessages;
+      return;
     }
   }
 

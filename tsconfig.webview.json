@@ -1,9 +1,31 @@
+// Type-checks the Vue 3 webview app, which `tsconfig.json` excludes outright.
+//
+// Run it with `npm run typecheck:webview` (vue-tsc, not tsc). Plain tsc cannot resolve `.vue`
+// modules at all, so it silently skips most of this tree and reports a flattering, meaningless
+// number. Only vue-tsc actually compiles the SFC script blocks and templates.
+//
+// Differences from `tsconfig.json`, each deliberate:
+//
+// - `lib` adds DOM/DOM.Iterable and `types` is pinned. Leaving `types` unset pulls every package in
+//   node_modules/@types into the global scope, including @types/node and @types/vscode. Neither
+//   exists in a webview at runtime, and @types/node in particular retypes `setTimeout` to return
+//   `NodeJS.Timeout`, which makes browser timer code typecheck against an API the webview does not
+//   have. `vite/client` supplies the CSS/asset module declarations that `noUncheckedSideEffectImports`
+//   requires; `vitest/globals` covers the handful of specs that use the globals rather than importing.
+//
+// - `declaration` and `isolatedDeclarations` are off. This tree is bundled by vite and never emits
+//   `.d.ts`, so declaration-emit rules only constrain code for an output that is never produced.
+//   Vue SFCs cannot satisfy `isolatedDeclarations` at all, since their default export type is
+//   synthesised by the compiler rather than written out.
+//
+// - `noPropertyAccessFromIndexSignature` is off. See the note on the option below.
 {
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "vitest/globals"],
 
     "strict": true,
     "noUnusedLocals": true,
@@ -12,18 +34,23 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "noPropertyAccessFromIndexSignature": true,
     "exactOptionalPropertyTypes": true,
 
+    // Off for this tree only. Every site the rule fires on reads an agent-supplied tool-input bag
+    // typed `Record<string, unknown>`, where by construction no key is declared, so there is no
+    // declared-vs-arbitrary distinction for the rule to surface. The check that actually matters at
+    // those sites (is the value present, is it the type we assume) comes from `noUncheckedIndexedAccess`
+    // plus `unknown`, both of which stay on and force the same `typeof` guard either way.
+    "noPropertyAccessFromIndexSignature": false,
+
     "verbatimModuleSyntax": true,
-    "isolatedDeclarations": true,
     "erasableSyntaxOnly": true,
     "noUncheckedSideEffectImports": true,
 
+    "noEmit": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "sourceMap": true,
     "jsx": "preserve",
     "baseUrl": ".",
     "paths": {

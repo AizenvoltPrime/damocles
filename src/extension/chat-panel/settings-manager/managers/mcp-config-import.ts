@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { promises as fs } from "node:fs";
 import { parse as parseToml, TomlError } from "smol-toml";
+import { mcpSourceOrder } from "../../../../shared/types/mcp";
 import type {
   McpConfigError,
   McpHttpServerConfig,
@@ -13,10 +14,15 @@ import type { AssetSourcePrecedence } from "../../../asset-sources";
 import type { McpServerEntry } from "../types";
 import { log } from "../../../logger";
 
+// Precedence is declared in the shared module so the webview form reads the same order. Re-exported
+// here because this is where every host consumer already looks for MCP source metadata.
+export { mcpSourceOrder };
+
 /**
  * Read-only import of MCP servers from Claude Code / Claude Desktop (US-014.2, decision D15).
- * Sources: `~/.claude.json` (CC global `mcpServers`) and `~/.claude/claude_desktop_config.json`.
- * The CC global wins over Desktop on a name collision; the workspace `.mcp.json` wins over both.
+ * Sources: `~/.claude.json` (CC user scope `mcpServers`, and CC local scope
+ * `projects[<workspaceRoot>].mcpServers`) and `~/.claude/claude_desktop_config.json`.
+ * Relative rank against the Damocles-owned files is declared once, in `mcpSourceOrder`.
  */
 const CLAUDE_GLOBAL_CONFIG_PATH = join(homedir(), ".claude.json");
 const CLAUDE_DESKTOP_CONFIG_PATH = join(homedir(), ".claude", "claude_desktop_config.json");
@@ -41,15 +47,32 @@ export interface GlobalMcpSources {
 
 /**
  * Whether a source's servers are read-only in Damocles, derived from provenance in this one place so
- * `source` and `readonly` can never disagree. Damocles owns the workspace `.mcp.json` and
- * `~/.damocles/mcp.json`; the Claude and Codex files belong to other tools and are imported read-only.
- * Keyed by the full union, so adding a source without deciding its editability fails to compile.
+ * `source` and `readonly` can never disagree. The Claude and Codex files belong to other tools and are
+ * imported read-only; `<ws>/.damocles/mcp.local.json` is Damocles-owned but has no write path, so it is
+ * read-only too. Keyed by the full union, so adding a source without deciding its editability fails to
+ * compile.
  */
 const READONLY_BY_SOURCE: Record<McpServerSource, boolean> = {
   workspace: false,
   damocles: false,
   claude: true,
   codex: true,
+  "claude-local": true,
+  "damocles-local": true,
+};
+
+/**
+ * Whether a source's file lives in the working tree, so a repository you clone could have authored it.
+ * This, not scope, is what the workspace-trust gate tests: withholding `claude-local` would punish a
+ * server the user configured in their own home directory because of a repo that had no hand in it.
+ */
+export const REPO_AUTHORED_BY_SOURCE: Record<McpServerSource, boolean> = {
+  workspace: true,
+  damocles: false,
+  claude: false,
+  codex: false,
+  "claude-local": false,
+  "damocles-local": true,
 };
 
 /**
@@ -120,23 +143,30 @@ function locateJsonParseFailure(err: unknown, text: string): Pick<McpConfigError
   return { line: null, column: null };
 }
 
+/** A parsed JSON config document, or null when there is nothing usable to read keys out of. */
+interface JsonFileRead {
+  document: Record<string, unknown> | null;
+  error: McpConfigError | null;
+}
+
 /**
- * Read one MCP config file. A missing file is not an error — every source is optional. Anything else
- * is reported rather than swallowed: a stray comma or a permission denial would otherwise make every
- * server in it disappear from the panel with no explanation anywhere.
+ * Read and parse one JSON config file. A missing file is not an error, because every source is
+ * optional.
+ * Anything else is reported rather than swallowed: a stray comma or a permission denial would
+ * otherwise make every server in it disappear from the panel with no explanation anywhere.
  *
  * The OS message is not carried; only its `code` reaches the log and the webview gets `kind` alone.
  * Same ENOENT-only distinction `readDocument` makes on the write side.
  */
-export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
+async function readJsonConfigFile(path: string): Promise<JsonFileRead> {
   let raw: string;
   try {
     raw = await fs.readFile(path, "utf-8");
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { servers: {}, error: null };
+    if (code === "ENOENT") return { document: null, error: null };
     log("[McpConfig] %s could not be read (%s); its servers were skipped", path, code ?? "unknown error");
-    return { servers: {}, error: { path, displayPath: collapseHome(path), kind: "unreadable", line: null, column: null } };
+    return { document: null, error: { path, displayPath: collapseHome(path), kind: "unreadable", line: null, column: null } };
   }
 
   let parsed: unknown;
@@ -146,21 +176,99 @@ export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
     const { line, column } = locateJsonParseFailure(err, raw);
     const at = line === null ? "location unknown" : `line ${line}, column ${column}`;
     log("[McpConfig] %s could not be parsed (%s); its servers were skipped", path, at);
-    return { servers: {}, error: { path, displayPath: collapseHome(path), kind: "parse", line, column } };
+    return { document: null, error: { path, displayPath: collapseHome(path), kind: "parse", line, column } };
   }
 
-  if (!parsed || typeof parsed !== "object") return { servers: {}, error: null };
-  return { servers: coerceServerMap((parsed as Record<string, unknown>)["mcpServers"]), error: null };
+  if (!parsed || typeof parsed !== "object") return { document: null, error: null };
+  return { document: parsed as Record<string, unknown>, error: null };
+}
+
+/** Read the top-level `mcpServers` map of one `{ "mcpServers": {...} }` file. */
+export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
+  const { document, error } = await readJsonConfigFile(path);
+  return { servers: document ? coerceServerMap(document["mcpServers"]) : {}, error };
+}
+
+/** The personal per-project Damocles MCP file: gitignored, read-only, highest precedence. */
+export function localMcpConfigPath(workspaceRoot: string): string {
+  return join(workspaceRoot, ".damocles", "mcp.local.json");
+}
+
+/**
+ * A path in the form `projects` is keyed by: resolved absolute, with one trailing separator removed,
+ * and case-folded only on Windows, where the filesystem is case-insensitive and a drive letter may
+ * legitimately differ in case between the two sides.
+ */
+function normalizeProjectKey(target: string): string {
+  const resolved = resolve(target);
+  return process.platform === "win32"
+    ? stripTrailingSeparator(resolved).toLowerCase()
+    : stripTrailingSeparator(resolved);
+}
+
+function stripTrailingSeparator(target: string): string {
+  return target.length > 1 && target.endsWith(sep) ? target.slice(0, -1) : target;
+}
+
+/**
+ * Claude Code's *local* scope inside an already-parsed `~/.claude.json`: the servers a plain
+ * `claude mcp add` writes, which land under `projects[<workspaceRoot>].mcpServers` rather than at the
+ * top level. Local is that command's default, so this is the most common way a Claude Code user has
+ * servers configured.
+ *
+ * No `projects` key, or no key matching this workspace, is an ordinary absence rather than a reason to
+ * guess a nearest match.
+ *
+ * Keys are indexed by their normalised form rather than scanned, so two Windows keys naming the same
+ * directory in different case resolve to the last one written rather than to whichever the object
+ * happened to list first.
+ */
+function claudeLocalScope(
+  document: Record<string, unknown>,
+  workspaceRoot: string,
+): Record<string, McpServerConfig> {
+  const projects = document["projects"];
+  if (!isTable(projects)) return {};
+
+  const byNormalizedKey = new Map<string, unknown>();
+  for (const [key, project] of Object.entries(projects)) {
+    byNormalizedKey.set(normalizeProjectKey(key), project);
+  }
+
+  const project = byNormalizedKey.get(normalizeProjectKey(workspaceRoot));
+  return isTable(project) ? coerceServerMap(project["mcpServers"]) : {};
+}
+
+/** Both Claude Code MCP scopes, as read from one parse of `~/.claude.json`. */
+export interface ClaudeMcpScopes {
+  /** Claude Desktop, then the top level of `~/.claude.json`, which wins a name collision. */
+  user: Record<string, McpServerConfig>;
+  /** `projects[<workspaceRoot>]`, or empty with no workspace and on no matching key. */
+  local: Record<string, McpServerConfig>;
+}
+
+/**
+ * Read both Claude Code scopes together. `~/.claude.json` is where Claude Code accretes per-project
+ * history and is routinely several megabytes, and `loadConfig` re-runs on every watcher event, so the
+ * file is read and parsed exactly once per call and both scopes come off that one document.
+ *
+ * A `~/.claude.json` that fails to parse is logged by the reader and contributes nothing to either
+ * scope; it is not surfaced on the panel, because it is another tool's file and theirs to fix.
+ */
+export async function readClaudeMcpScopes(workspaceRoot: string | undefined): Promise<ClaudeMcpScopes> {
+  const [desktop, global] = await Promise.all([
+    readMcpServersFromFile(CLAUDE_DESKTOP_CONFIG_PATH),
+    readJsonConfigFile(CLAUDE_GLOBAL_CONFIG_PATH),
+  ]);
+  const document = global.document;
+  return {
+    user: { ...desktop, ...(document ? coerceServerMap(document["mcpServers"]) : {}) },
+    local: document && workspaceRoot !== undefined ? claudeLocalScope(document, workspaceRoot) : {},
+  };
 }
 
 async function readMcpServersFromFile(path: string): Promise<Record<string, McpServerConfig>> {
   return (await readMcpConfigFile(path)).servers;
-}
-
-export async function importClaudeMcpServers(): Promise<Record<string, McpServerConfig>> {
-  const desktop = await readMcpServersFromFile(CLAUDE_DESKTOP_CONFIG_PATH);
-  const global = await readMcpServersFromFile(CLAUDE_GLOBAL_CONFIG_PATH);
-  return { ...desktop, ...global };
 }
 
 /** The user-global Damocles MCP servers. Same file shape as `.mcp.json`, so the same reader serves it. */
@@ -277,28 +385,39 @@ export async function readCodexMcpServers(): Promise<Record<string, McpServerCon
   return coerceServerMap(mapped);
 }
 
+/** Sort provenance-tagged batches into `mcpSourceOrder`, lowest precedence first, ready to fold. */
+export function orderMcpSources(
+  sources: readonly McpSourceServers[],
+  precedence: AssetSourcePrecedence,
+): McpSourceServers[] {
+  const order = mcpSourceOrder(precedence);
+  return [...sources].sort((a, b) => order.indexOf(a.source) - order.indexOf(b.source));
+}
+
 /**
- * The user-global MCP sources, lowest precedence first, ready to fold. The claude/codex pair is ordered
- * by `damocles.assetSourcePrecedence` — the loser is folded first so the configured winner overwrites
- * it — and `~/.damocles/mcp.json` outranks both because Damocles owns it. The caller appends the
- * workspace `.mcp.json`, which outranks everything. Each reader degrades to `{}` on its own, so one
- * unreadable ecosystem never costs you the others.
+ * The MCP sources that do not depend on workspace trust. `workspaceRoot` is needed for Claude Code's
+ * local scope, which is keyed by project path inside the user-global `~/.claude.json`; with no folder
+ * open there is no key to look up and that source contributes nothing. Each reader degrades to `{}` on
+ * its own, so one unreadable ecosystem never costs you the others.
+ *
+ * The batches come back in no particular order. Ranking happens once, in the caller, which has to
+ * place the two working-tree files among these anyway.
  */
 export async function readGlobalMcpSources(
-  precedence: AssetSourcePrecedence,
+  workspaceRoot: string | undefined,
 ): Promise<GlobalMcpSources> {
   const [claude, codex, damocles] = await Promise.all([
-    importClaudeMcpServers(),
+    readClaudeMcpScopes(workspaceRoot),
     readCodexMcpServers(),
     readDamoclesMcpServers(),
   ]);
-  const claudeSource: McpSourceServers = { source: "claude", servers: claude };
-  const codexSource: McpSourceServers = { source: "codex", servers: codex };
-  const damoclesSource: McpSourceServers = { source: "damocles", servers: damocles.servers };
   return {
-    sources: precedence === "codex"
-      ? [claudeSource, codexSource, damoclesSource]
-      : [codexSource, claudeSource, damoclesSource],
+    sources: [
+      { source: "claude", servers: claude.user },
+      { source: "claude-local", servers: claude.local },
+      { source: "codex", servers: codex },
+      { source: "damocles", servers: damocles.servers },
+    ],
     // Only the file Damocles owns is surfaced. The Claude and Codex imports are other tools' files:
     // a parse failure there is logged, but is theirs to fix and not worth a notice in this panel.
     errors: damocles.error ? [damocles.error] : [],

@@ -4,6 +4,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { RepoManager } from '../repo-manager';
+import {
+  CHECKPOINT_EXCLUDE_SET,
+  CHECKPOINT_EXCLUDE_SET_VERSION,
+  CHECKPOINT_EXCLUDE_VERSION_KEY,
+  DEFAULT_CHECKPOINT_EXCLUDES,
+  LEGACY_CHECKPOINT_EXCLUDES,
+} from '../types';
 import { getGitDir, getIndexPath } from '../resolver';
 import { parseDiffStats } from '../diff-parser';
 
@@ -29,7 +36,9 @@ function writeFile(workTree: string, rel: string, content: string): Promise<void
   return fs.promises.mkdir(path.dirname(full), { recursive: true }).then(() => fs.promises.writeFile(full, content, 'utf8'));
 }
 
-describe('RepoManager (real git)', () => {
+// Every case here spawns real git processes, so the 5000 ms default detects worker contention
+// rather than a hang. A per-describe ceiling keeps a genuine hang bounded in the files that do not.
+describe('RepoManager (real git)', { timeout: 20_000 }, () => {
   let h: Harness;
 
   beforeEach(async () => {
@@ -50,6 +59,61 @@ describe('RepoManager (real git)', () => {
     await h.repo.ensureReady(['.git']);
     const exclude2 = await fs.promises.readFile(path.join(gitDir, 'info', 'exclude'), 'utf8');
     expect(exclude2).toBe('.git\n');
+  });
+
+  /** The exact bytes `ensureReady` writes for a pattern list. */
+  function excludeFileFor(patterns: readonly string[]): string {
+    return `${patterns.join('\n')}\n`;
+  }
+
+  function readMarker(gitDir: string): string {
+    return execFileSync('git', [`--git-dir=${gitDir}`, 'config', '--get', CHECKPOINT_EXCLUDE_VERSION_KEY]).toString().trim();
+  }
+
+  it('stamps the exclude-set version on a repo it creates, and writes the current set', async () => {
+    await h.repo.ensureReady(CHECKPOINT_EXCLUDE_SET);
+    const gitDir = getGitDir(h.repoDir);
+    expect(readMarker(gitDir)).toBe(String(CHECKPOINT_EXCLUDE_SET_VERSION));
+    const exclude = await fs.promises.readFile(path.join(gitDir, 'info', 'exclude'), 'utf8');
+    expect(exclude).toBe(excludeFileFor(DEFAULT_CHECKPOINT_EXCLUDES));
+  });
+
+  it('writes the legacy set to a repo carrying no version marker', async () => {
+    // A repo created before the marker existed. Its older checkpoints hold no `.damocles` content, so
+    // narrowing the exclude set now would let a rewind to one of them delete the whole directory.
+    await h.repo.ensureReady(['.git']);
+    const gitDir = getGitDir(h.repoDir);
+    expect(() => readMarker(gitDir)).toThrow();
+
+    await h.repo.ensureReady(CHECKPOINT_EXCLUDE_SET);
+    const exclude = await fs.promises.readFile(path.join(gitDir, 'info', 'exclude'), 'utf8');
+    expect(exclude).toBe(excludeFileFor(LEGACY_CHECKPOINT_EXCLUDES));
+    expect(exclude).toContain('.damocles/**');
+  });
+
+  it('keeps writing the current set to an already-stamped repo on later calls', async () => {
+    await h.repo.ensureReady(CHECKPOINT_EXCLUDE_SET);
+    await h.repo.ensureReady(CHECKPOINT_EXCLUDE_SET);
+    const exclude = await fs.promises.readFile(path.join(getGitDir(h.repoDir), 'info', 'exclude'), 'utf8');
+    expect(exclude).toBe(excludeFileFor(DEFAULT_CHECKPOINT_EXCLUDES));
+  });
+
+  it('treats an unparseable marker value as absent rather than as the current version', async () => {
+    await h.repo.ensureReady(['.git']);
+    const gitDir = getGitDir(h.repoDir);
+    execFileSync('git', [`--git-dir=${gitDir}`, 'config', CHECKPOINT_EXCLUDE_VERSION_KEY, 'not-a-number']);
+
+    await h.repo.ensureReady(CHECKPOINT_EXCLUDE_SET);
+    const exclude = await fs.promises.readFile(path.join(gitDir, 'info', 'exclude'), 'utf8');
+    expect(exclude).toBe(excludeFileFor(LEGACY_CHECKPOINT_EXCLUDES));
+  });
+
+  it('writes a plain pattern list verbatim, with no marker read or write', async () => {
+    await h.repo.ensureReady(['.git', 'secret/']);
+    const gitDir = getGitDir(h.repoDir);
+    expect(() => readMarker(gitDir)).toThrow();
+    const exclude = await fs.promises.readFile(path.join(gitDir, 'info', 'exclude'), 'utf8');
+    expect(exclude).toBe(excludeFileFor(['.git', 'secret/']));
   });
 
   it('checkpoint commits and returns a 40-char HEAD hash', async () => {

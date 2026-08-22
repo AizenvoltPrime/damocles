@@ -17,6 +17,7 @@ import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
 
+
 /**
  * Slice 3 §3.3 — the nested session's ToolSearch registration and activation port.
  *
@@ -219,7 +220,7 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     const before = current();
     const result = await call(tool!, ['browser']);
     expect([...current()].sort()).toEqual([...before].sort());
-    expect(result.content[0].text).toContain('already loaded');
+    expect(result.content[0]!.text).toContain('already loaded');
   });
 
   it('an agent can NEVER activate outside its own allowlist — Explore cannot reach compass or Edit', async () => {
@@ -265,15 +266,15 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
 
     expect(result.details?.matches).toEqual([]);
     expect(setActiveTools).not.toHaveBeenCalled();
-    expect(result.content[0].text).toMatch(/Unknown entries/);
-    for (const n of ['Edit', 'read', TOOL_TOOL_SEARCH]) expect(result.content[0].text, n).toContain(n);
+    expect(result.content[0]!.text).toMatch(/Unknown entries/);
+    for (const n of ['Edit', 'read', TOOL_TOOL_SEARCH]) expect(result.content[0]!.text, n).toContain(n);
   });
 
   it('reports names outside the universe as unknown instead of silently dropping them', async () => {
     const { tool } = register(BROWSER_PI_TOOL_NAMES, ['read', TOOL_TOOL_SEARCH]);
     const result = await call(tool!, ['CompassSearch', 'BrowserOpen']);
-    expect(result.content[0].text).toContain('CompassSearch');
-    expect(result.content[0].text).toMatch(/Unknown entries/);
+    expect(result.content[0]!.text).toContain('CompassSearch');
+    expect(result.content[0]!.text).toMatch(/Unknown entries/);
     expect(result.details?.matches).toEqual(['BrowserOpen']);
   });
 
@@ -290,7 +291,7 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     // that ordering by activating a browser tool through pi directly, then asking ToolSearch for it.
     h.setActiveTools(['read', TOOL_TOOL_SEARCH, BROWSER_PI_TOOL_NAMES[0]!]);
     const result = await call(tool, [BROWSER_PI_TOOL_NAMES[0]!]);
-    expect(result.content[0].text).toContain('already loaded');
+    expect(result.content[0]!.text).toContain('already loaded');
   });
 
   it('a team agent\'s deferrable set carries compass but never a team_* tool (§3.5)', async () => {
@@ -316,7 +317,7 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     const { tool } = register(deferredToolNames(teamEligible, []), ['read', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES]);
     const result = await call(tool!, [TEAM_AGENT_PI_TOOL_NAMES[0]!]);
     expect(result.details?.matches).toEqual([]);
-    expect(result.content[0].text).toContain(TEAM_AGENT_PI_TOOL_NAMES[0]!);
+    expect(result.content[0]!.text).toContain(TEAM_AGENT_PI_TOOL_NAMES[0]!);
   });
 });
 
@@ -507,8 +508,8 @@ describe('nested ToolSearch — per-server activation and execution (criterion 4
     const { mcp } = snapshot(GIT_DESCRIPTORS);
     const { tool } = registerWithMcp({ mcp });
     const result = await call(tool!, ['ctx7', 'git']);
-    expect(result.content[0].text).toMatch(/Unknown entries/);
-    expect(result.content[0].text).toContain('ctx7');
+    expect(result.content[0]!.text).toMatch(/Unknown entries/);
+    expect(result.content[0]!.text).toContain('ctx7');
     expect([...(result.details?.matches ?? [])].sort()).toEqual(['mcp__git__commit', 'mcp__git__status']);
   });
 });
@@ -547,7 +548,7 @@ describe('nested ToolSearch — the group name ROUND-TRIPS through sanitization 
     // would advertise `my-server` and THIS would be the working call while the advertised one failed.
     const raw = await call(tool!, ['my-server']);
     expect(raw.details?.matches).toEqual([]);
-    expect(raw.content[0].text).toMatch(/Unknown entries/);
+    expect(raw.content[0]!.text).toMatch(/Unknown entries/);
   });
 
   it('two servers that sanitize to the same prefix stay addressable as distinct groups', () => {

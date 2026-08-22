@@ -1,0 +1,24 @@
+// The happy-dom half of the test type-check. Every suite under src/extension/browser/__tests__ opens
+// with `// @vitest-environment happy-dom` and drives page scripts against real DOM globals, so it is
+// checked with the DOM lib that `tsconfig.tests.json` deliberately withholds from extension-host code.
+{
+  "extends": "./tsconfig.tests.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["./src/webview/*"]
+    }
+  },
+  // The `.d.ts` glob is not decoration: ambient `declare module` files (cross-spawn, the vscode
+  // test API) only take effect when they are root files of the program.
+  "include": [
+    "src/extension/browser/__tests__/**/*",
+    // Joins the extension's UI bridge to the webview handler that answers it, so it links webview
+    // modules that need the DOM globals.
+    "src/extension/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    "src/__mocks__/**/*",
+    "src/**/*.d.ts"
+  ],
+  "exclude": ["node_modules", "dist", "src/webview"]
+}

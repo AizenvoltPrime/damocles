@@ -6,7 +6,9 @@ import { AVAILABLE_AGENTS, type WorkspaceFileInfo, type CustomAgentInfo, type At
 
 const MAX_VISIBLE_ITEMS = 10;
 
-const builtinAgentItems: AtMentionItem[] = AVAILABLE_AGENTS
+// Not widened to `AtMentionItem[]`: the dedupe below keys builtins on `data.id` and custom agents on
+// `data.name`, which only typecheck while each list keeps its own variant of the union.
+const builtinAgentItems = AVAILABLE_AGENTS
   .map(a => ({ type: 'builtin-agent' as const, data: a }));
 
 function getItemSearchString(item: AtMentionItem): string {
@@ -37,7 +39,7 @@ export function useAtMentionAutocomplete(
   const customAgentsLoaded = ref(false);
 
   const filteredItems = computed((): AtMentionItem[] => {
-    const customAgentItems: AtMentionItem[] = customAgents.value.map(a => ({
+    const customAgentItems = customAgents.value.map(a => ({
       type: 'custom-agent' as const,
       data: a,
     }));
@@ -119,7 +121,7 @@ export function useAtMentionAutocomplete(
       }
 
       if (char === '@') {
-        const isAtStart = i === 0 || /\s/.test(text[i - 1]);
+        const isAtStart = i === 0 || /\s/.test(text[i - 1] ?? '');
         if (isAtStart) {
           const mentionQuery = text.slice(i + 1, cursorPos);
           return { triggered: true, query: mentionQuery, startIndex: i };
@@ -197,12 +199,14 @@ export function useAtMentionAutocomplete(
         return true;
 
       case 'Tab':
-      case 'Enter':
-        if (filteredItems.value.length > 0) {
-          insertMention(filteredItems.value[selectedIndex.value]);
+      case 'Enter': {
+        const selected = filteredItems.value[selectedIndex.value];
+        if (selected) {
+          insertMention(selected);
           return true;
         }
         return false;
+      }
 
       case 'Escape':
         close();
@@ -245,9 +249,8 @@ export function useAtMentionAutocomplete(
   }
 
   function selectItem(index: number) {
-    if (index >= 0 && index < filteredItems.value.length) {
-      insertMention(filteredItems.value[index]);
-    }
+    const item = filteredItems.value[index];
+    if (item) insertMention(item);
   }
 
   return {

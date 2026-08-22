@@ -45,5 +45,6 @@
   "configuration.team.implementorEffort.description": "Reasoning effort for implementor role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored.",
   "configuration.team.reviewerModel.description": "Model for reviewer role specialists. Leave empty to use the active panel model.",
   "configuration.team.reviewerEffort.description": "Reasoning effort for reviewer role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored.",
-  "command.setExploreApiKey.title": "Set Explore API Key"
+  "command.setExploreApiKey.title": "Set Explore API Key",
+  "capabilities.untrustedWorkspaces.description": "In a restricted workspace, Damocles withholds everything the repository itself authors: project skills, project slash commands, project subagents, MCP servers defined in the repository, and the repository AGENTS.md or CLAUDE.md instructions file. Your own user-scope skills, commands, agents, and instructions still load. Granting trust loads the project ones with no window reload. The two permission settings and the Compass toggle also ignore any value the repository sets, because a repository could use them to switch the permission gate off or to start indexing its own files."
 }

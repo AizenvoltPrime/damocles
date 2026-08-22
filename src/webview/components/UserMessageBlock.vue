@@ -21,9 +21,9 @@ const props = withDefaults(
     messageIndex: number;
     canRewind: boolean;
     promptIndex: number;
-    mode?: "canvas" | "pinned";
-    offset?: number;
-    expanded?: boolean;
+    mode?: "canvas" | "pinned" | undefined;
+    offset?: number | undefined;
+    expanded?: boolean | undefined;
   }>(),
   {
     mode: "canvas",

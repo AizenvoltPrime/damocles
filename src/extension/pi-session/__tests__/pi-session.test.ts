@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { ForkSpawnArgs } from '../../../shared/types/session';
 
 const H = vi.hoisted(() => {
   const seq: string[] = [];
@@ -226,6 +227,10 @@ import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOO
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
 import * as fsSync from 'fs';
+// The on-disk-invariant suite drives the REAL SessionManager. `pi-loader` is mocked, so nothing else
+// pulls this package in, and loading it takes most of a second. Imported statically so that cost is
+// paid once during collection instead of inside a test's 5s timeout budget.
+import * as realPi from '@earendil-works/pi-coding-agent';
 
 function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>): SessionOptions {
   return {
@@ -245,7 +250,7 @@ const FAKE_SECRETS = {
   store: async () => undefined,
   delete: async () => undefined,
   onDidChange: () => ({ dispose: () => undefined }),
-} as unknown as SessionOptions['secrets'];
+} as unknown as NonNullable<SessionOptions['secrets']>;
 
 describe('PiSession lifecycle (US-P1-4)', () => {
   beforeEach(() => {
@@ -872,6 +877,26 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('emitCustomAgents badges a .damocles project agent as project scope', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    // The registry the session bound at start scans the developer's real home dir, so swap in a
+    // fixed one before re-emitting; the mapping under test is the source -> scope badge.
+    const internals = session as unknown as { agentRegistry: unknown; emitCustomAgents: () => void };
+    internals.agentRegistry = {
+      getAvailableConfigs: () => [
+        { name: 'Reviewer', description: 'Reviews code', isDefault: false, source: 'project-damocles' },
+      ],
+    };
+    internals.emitCustomAgents();
+
+    const emitted = messages.filter((m) => m.type === 'customAgents').at(-1) as { agents: unknown[] };
+    expect(emitted.agents).toEqual([{ name: 'Reviewer', description: 'Reviews code', source: 'project' }]);
+    await session.dispose();
+  });
+
   it('dispose tears down the runtime but leaves the PiRuntime singleton alive', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
@@ -1274,7 +1299,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
   it('rewindFiles(compactionId, fork-conversation) branches at the compaction parent with no prompt (US-002)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
-    const onSpawnFork = vi.fn(async () => undefined);
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
     const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -1287,7 +1312,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
     expect(onSpawnFork).toHaveBeenCalledTimes(1);
-    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null; promptContent?: string };
+    const args = onSpawnFork.mock.calls[0]![0];
     expect(args.forkAtUuid).toBe('a1');
     expect(args.promptContent).toBeUndefined();
     await session.dispose();
@@ -1295,7 +1320,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
   it('rewindFiles fails soft when the anchor cannot be resolved (US-002 FR-7)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
-    const onSpawnFork = vi.fn(async () => undefined);
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
     const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -1310,7 +1335,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
   it('rewindFiles forks the very first message (parentId null) through to spawnPiFork (US-002 H1)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
-    const onSpawnFork = vi.fn(async () => undefined);
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
     const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -1324,14 +1349,14 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
     expect(onSpawnFork).toHaveBeenCalledTimes(1);
-    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null };
+    const args = onSpawnFork.mock.calls[0]![0];
     expect(args.forkAtUuid).toBeNull();
     await session.dispose();
   });
 
   it('forks a first message whose parent is metadata WITHOUT a branched session id (no replay of an unwritten file)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
-    const onSpawnFork = vi.fn(async () => undefined);
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
     const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -1356,7 +1381,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
     expect(onSpawnFork).toHaveBeenCalledTimes(1);
-    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null; piBranchedSessionId?: string; promptContent?: string };
+    const args = onSpawnFork.mock.calls[0]![0];
     expect(args.forkAtUuid).toBe('meta1');
     // No branched session id → showForked won't try to replay a never-written file; the prompt prefills.
     expect(args.piBranchedSessionId).toBeUndefined();
@@ -1392,7 +1417,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
   it('rewindFiles(compactionId, fork-and-rewind-code) restores the snapshot AND spawns the fork (Slice 2)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
-    const onSpawnFork = vi.fn(async () => undefined);
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
     const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -1416,7 +1441,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(safeCheckout).toHaveBeenCalledWith('snap-commit');
     expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
     expect(onSpawnFork).toHaveBeenCalledTimes(1);
-    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null };
+    const args = onSpawnFork.mock.calls[0]![0];
     expect(args.forkAtUuid).toBe('a1');
     await session.dispose();
   });
@@ -1454,7 +1479,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
   const evt = (messages: unknown[]): AgentEndEvt => ({ type: 'agent_end', messages });
 
   /** Drive the `agent_end` coordinator through the registered panel context (the real dispatch path). */
-  async function fireAgentEnd(session: PiSession, event: AgentEndEvt): Promise<void> {
+  async function fireAgentEnd(event: AgentEndEvt): Promise<void> {
     const live = H.getLastSession()!;
     const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
       _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
@@ -1481,7 +1506,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.setPermissionMode('plan');
     const { send, hold, defer } = spies(session);
 
-    await fireAgentEnd(session, evt([assistant('stop')]));
+    await fireAgentEnd(evt([assistant('stop')]));
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0]).toMatchObject({ customType: 'damocles-plan-mode-nudge', display: false });
@@ -1499,7 +1524,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.setPermissionMode('plan');
     const { send, hold, defer } = spies(session);
 
-    await fireAgentEnd(session, evt([assistant('stop'), exitResult(false)]));
+    await fireAgentEnd(evt([assistant('stop'), exitResult(false)]));
 
     expect(send).not.toHaveBeenCalled();
     expect(hold).not.toHaveBeenCalled();
@@ -1513,7 +1538,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.setPermissionMode('plan');
     const { send, hold } = spies(session);
 
-    await fireAgentEnd(session, evt([exitResult(true), assistant('stop')]));
+    await fireAgentEnd(evt([exitResult(true), assistant('stop')]));
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(hold).toHaveBeenCalledTimes(1);
@@ -1526,7 +1551,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     // default mode (never entered plan)
     const { send, hold } = spies(session);
 
-    await fireAgentEnd(session, evt([assistant('stop')]));
+    await fireAgentEnd(evt([assistant('stop')]));
 
     expect(send).not.toHaveBeenCalled();
     expect(hold).not.toHaveBeenCalled();
@@ -1542,7 +1567,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.setPermissionMode('plan');
     const { send, hold } = spies(session);
 
-    await fireAgentEnd(session, evt([assistant(reason)]));
+    await fireAgentEnd(evt([assistant(reason)]));
 
     expect(send).not.toHaveBeenCalled();
     expect(hold).not.toHaveBeenCalled();
@@ -1556,7 +1581,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     (session as unknown as { _aborting: boolean })._aborting = true;
     const { send, hold } = spies(session);
 
-    await fireAgentEnd(session, evt([assistant('stop')]));
+    await fireAgentEnd(evt([assistant('stop')]));
 
     expect(send).not.toHaveBeenCalled();
     expect(hold).not.toHaveBeenCalled();
@@ -1572,7 +1597,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     // A prose "what should I do?" stop is still a clean stop with no ExitPlanMode — intended: redirect
     // the model to AskUserQuestion via the nudge rather than letting it stall on an unanswerable prose Q.
     const proseQuestion = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Which database should I use?' }] };
-    await fireAgentEnd(session, evt([proseQuestion]));
+    await fireAgentEnd(evt([proseQuestion]));
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(hold).toHaveBeenCalledTimes(1);
@@ -1592,7 +1617,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
 
     const { send, hold, defer } = spies(session);
-    await fireAgentEnd(session, evt([assistant('stop')]));
+    await fireAgentEnd(evt([assistant('stop')]));
 
     // Exactly one inject (the background results), with the background custom type — NOT the plan nudge.
     expect(send).toHaveBeenCalledTimes(1);
@@ -2457,15 +2482,30 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
   const teamExecCtx = { sessionManager: { getSessionId: () => 'team-agent-1' } };
 
   /** A minimal nested `pi` exposing the ExtensionAPI members the subagent factory + ToolSearch touch. */
+  /** The slice of a pi tool definition this nested-pi stub records and the tests then invoke. */
+  interface NestedTool {
+    name: string;
+    description: string;
+    execute: (
+      toolCallId: string,
+      params: Record<string, unknown>,
+      signal: AbortSignal | undefined,
+      onUpdate: undefined,
+      ctx: unknown,
+    ) => Promise<unknown>;
+  }
+
   function nestedTeamPi(initialActive: string[] = []) {
-    const registered = new Map<string, { name: string; description: string; execute: (...a: never[]) => Promise<unknown> }>();
+    const registered = new Map<string, NestedTool>();
     let active = [...initialActive];
+    const registerTool = (tool: NestedTool): void => { registered.set(tool.name, tool); };
     return {
       registered,
+      registerTool,
       active: () => [...active],
       api: {
         on: () => {},
-        registerTool: (tool: { name: string }) => registered.set(tool.name, tool as never),
+        registerTool,
         getActiveTools: () => [...active],
         setActiveTools: (names: string[]) => { active = [...names]; },
         getAllTools: () => [...registered.values()].map((t) => ({ name: t.name, description: t.description })),
@@ -2564,10 +2604,10 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const baseline = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES];
     const nested = nestedTeamPi(baseline);
     engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
-    for (const tool of mcp.tools) nested.api.registerTool(tool as never); // pi merges customTools likewise
+    for (const tool of mcp.tools) nested.registerTool(tool as unknown as NestedTool); // pi merges customTools likewise
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
-    const result = (await tool.execute('tc-1', { tools: ['git'] }, undefined, undefined, teamExecCtx) as never) as {
+    const result = (await tool.execute('tc-1', { tools: ['git'] }, undefined, undefined, teamExecCtx)) as {
       details?: { matches: string[] };
     };
 
@@ -2581,7 +2621,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     mcpCallTool.mockClear();
     const definition = nested.registered.get('mcp__git__commit')!;
     const controller = new AbortController();
-    const callResult = (await definition.execute('tc-2', { message: 'ship it' } as never, controller.signal as never, undefined as never, {} as never)) as {
+    const callResult = (await definition.execute('tc-2', { message: 'ship it' }, controller.signal, undefined, {})) as {
       content: Array<{ type: string; text?: string }>;
     };
     expect(mcpCallTool).toHaveBeenCalledTimes(1);
@@ -2626,13 +2666,13 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
-    const result = (await tool.execute('tc-1', { tools: [TEAM_AGENT_PI_TOOL_NAMES[0]!] }, undefined, undefined, teamExecCtx) as never) as {
+    const result = (await tool.execute('tc-1', { tools: [TEAM_AGENT_PI_TOOL_NAMES[0]!] }, undefined, undefined, teamExecCtx)) as {
       details?: { matches: string[] };
       content: Array<{ text: string }>;
     };
 
     expect(result.details?.matches).toEqual([]);
-    expect(result.content[0].text).toMatch(/Unknown entries/);
+    expect(result.content[0]!.text).toMatch(/Unknown entries/);
 
     cfg.mockRestore();
     await session.dispose();
@@ -3007,8 +3047,7 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
   });
 
   async function seededManager(): Promise<{ sm: { getSessionFile(): string | undefined }; file: string }> {
-    const pi = await import('@earendil-works/pi-coding-agent');
-    const sm = pi.SessionManager.create('/cwd', dir);
+    const sm = realPi.SessionManager.create('/cwd', dir);
     // pi buffers until an assistant message exists; this pair is what flips it to flushed = true and
     // puts the file on disk, which is the precondition for the resurrection.
     sm.appendMessage({ role: 'user', content: 'hello world' } as never);
@@ -3019,7 +3058,6 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
   it('characterises the hazard: pi appends to a path it no longer has, recreating it unreadable', async () => {
     // Not a test of our code — a pin on the dependency behaviour the guards exist for. If pi ever
     // makes `_persist` re-check the file, this fails and the guards can be reconsidered.
-    const pi = await import('@earendil-works/pi-coding-agent');
     const { sm, file } = await seededManager();
     expect(fsSync.existsSync(file)).toBe(true);
 
@@ -3031,14 +3069,13 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!).type).toBe('session_info');
     // …and that one-liner is what poisons every later read of the store.
-    expect(() => pi.SessionManager.open(file, dir)).toThrow(/not a valid pi session/);
+    expect(() => realPi.SessionManager.open(file, dir)).toThrow(/not a valid pi session/);
   });
 
   it('a title landing after the file was deleted does NOT recreate it', async () => {
     const { file } = await seededManager();
     // The panel's live session opens that same real file, so its writes are real writes.
-    const pi = await import('@earendil-works/pi-coding-agent');
-    H.setSessionManagerFactory(() => pi.SessionManager.open(file, dir));
+    H.setSessionManagerFactory(() => realPi.SessionManager.open(file, dir));
 
     let release!: (t: string) => void;
     TITLE.impl = () => new Promise<string>((r) => { release = r; });
@@ -3079,9 +3116,9 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
     let release!: () => void;
     const parked = new Promise<void>((r) => { release = r; });
-    H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args: unknown[]) => {
+    H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args) => {
       await parked;
-      return (base as (...a: unknown[]) => unknown)(...args);
+      return base(...args);
     });
     return { release };
   }
@@ -3184,7 +3221,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
   }
 
   /** Drive `onParentAgentEnd` through the registered panel context (the real dispatch path). */
-  async function fireAgentEnd(session: PiSession, event: AgentEndEvt): Promise<void> {
+  async function fireAgentEnd(event: AgentEndEvt): Promise<void> {
     const live = H.getLastSession()!;
     const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
       _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
@@ -3252,7 +3289,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     const keepAlive = vi.spyOn(session as unknown as { tryBackgroundKeepAlive: () => Promise<boolean> }, 'tryBackgroundKeepAlive');
     budgetStop(session);
 
-    await fireAgentEnd(session, cleanStop);
+    await fireAgentEnd(cleanStop);
 
     expect(keepAlive).not.toHaveBeenCalled();
     expect(live.sendCustomMessage).not.toHaveBeenCalled();

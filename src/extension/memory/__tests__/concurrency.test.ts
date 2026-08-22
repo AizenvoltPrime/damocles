@@ -12,6 +12,7 @@ import { FactGraphManager } from '../managers/fact-graph-manager';
 import { ProfileManager } from '../managers/profile-manager';
 import { InjectionManager } from '../managers/injection-manager';
 import { runConsolidation, type ConsolidationCtx } from '../consolidation';
+import { subCallSpy } from './subcall-spy';
 
 /**
  * DatabaseInstance proxy counting `.transaction(...)` calls. The write queue wraps each `run()`
@@ -71,7 +72,7 @@ function seedMemory(
 /** Mock runner: extracts one fixed fact, judges no contradiction/merge. */
 function makeRunner(extractMemories: ExtractedMemorySeed[]): MemorySubCallRunner {
   return {
-    run: vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    run: subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') return { value: { memories: extractMemories } as T };
       if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
       return { value: { contradicts: false, merged_ids: [], content: '' } as T };

@@ -22,12 +22,14 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     mcpServerStatus: (msg, ctx) => {
       ctx.stores.settingsStore.setMcpServers(msg.servers);
       ctx.stores.settingsStore.setMcpEnabled(msg.mcpEnabled);
-      ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors ?? []);
+      ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
+      ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
     },
 
     mcpConfigUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.reconcileMcpServers(msg.servers);
-      ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors ?? []);
+      ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
+      ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
     },
 
     mcpWriteResult: (msg, ctx) => {

@@ -57,10 +57,11 @@ const isInEditMode = computed(() =>
 defineExpose({ isInEditMode });
 
 function scrollToSelectedSession() {
-  if (!props.selectedSessionId) return;
+  const sessionId = props.selectedSessionId;
+  if (!sessionId) return;
   nextTick(() => {
     const selectedElement = sessionsListRef.value?.querySelector(
-      `[data-session-id="${CSS.escape(props.selectedSessionId)}"]`
+      `[data-session-id="${CSS.escape(sessionId)}"]`
     );
     selectedElement?.scrollIntoView({ block: 'nearest' });
   });

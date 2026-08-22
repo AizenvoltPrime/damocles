@@ -10,7 +10,7 @@ const { t } = useI18n();
 const props = defineProps<{
   visible: boolean;
   skillName: string;
-  skillDescription?: string;
+  skillDescription?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -20,7 +20,7 @@ const emit = defineEmits<{
 const showCustomInput = ref(false);
 const customMessage = ref('');
 const selectedValue = ref<string>('yes');
-const listboxRef = ref<InstanceType<typeof ListboxRoot> | null>(null);
+const listboxRef = ref<{ $el?: HTMLElement } | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 
 const options = computed(() => [
@@ -64,7 +64,7 @@ function handleCustomBack() {
   showCustomInput.value = false;
   customMessage.value = '';
   nextTick(() => {
-    (listboxRef.value?.$el as HTMLElement)?.focus();
+    listboxRef.value?.$el?.focus();
   });
 }
 
@@ -83,9 +83,10 @@ function handleKeydown(e: KeyboardEvent) {
     '3': 'no',
   };
 
-  if (shortcutMap[e.key]) {
+  const shortcut = shortcutMap[e.key];
+  if (shortcut) {
     e.preventDefault();
-    handleSelect(shortcutMap[e.key]);
+    handleSelect(shortcut);
   }
 }
 
@@ -93,7 +94,7 @@ watch(() => props.visible, (visible) => {
   if (visible) {
     resetState();
     nextTick(() => {
-      (listboxRef.value?.$el as HTMLElement)?.focus();
+      listboxRef.value?.$el?.focus();
     });
   }
 });

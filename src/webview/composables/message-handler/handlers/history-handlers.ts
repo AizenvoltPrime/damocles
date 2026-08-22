@@ -1,7 +1,7 @@
 import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
-import { convertHistoryTools } from "../utils";
+import { convertHistoryTools, toUserContentBlocks } from "../utils";
 import { TOOL_AGENT, TOOL_TASK_LIST, TOOL_MONITOR, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
 
@@ -13,7 +13,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         return;
       }
       ctx.stores.streamingStore.addUserMessage(
-        msg.contentBlocks ?? msg.content,
+        toUserContentBlocks(msg.contentBlocks) ?? msg.content,
         true,
         msg.sdkMessageId,
         msg.isInjected,
@@ -35,7 +35,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
             teamStore.registerTeamFromTool(
               tool.id,
               tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
-              { status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled', result: tool.result },
+              {
+                status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled',
+                ...(tool.result !== undefined && { result: tool.result }),
+              },
             );
             // registerTeamFromTool only has the create_team input (title + roster). Pull the full
             // persisted team (per-agent models, tokens, tool counts, aggregate stats) so the historical
@@ -61,12 +64,13 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         }
       }
 
+      const toolCalls = convertHistoryTools(msg.tools);
       streamingStore.addMessage({
         role: "assistant",
         content: msg.content,
-        thinking: msg.thinking,
-        toolCalls: convertHistoryTools(msg.tools),
-        contentBlocks: msg.contentBlocks,
+        ...(msg.thinking !== undefined && { thinking: msg.thinking }),
+        ...(toolCalls !== undefined && { toolCalls }),
+        ...(msg.contentBlocks !== undefined && { contentBlocks: msg.contentBlocks }),
         timestamp: Date.now(),
         isReplay: true,
       });

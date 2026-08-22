@@ -137,7 +137,7 @@ describe('Vue SFC extraction (sample_vue.vue)', () => {
 	});
 
 	it('extracts IMPORTS_FROM: vue, ./UserList.vue', async () => {
-		const { nodes, edges } = await extractFile(path.join(FIXTURES, 'sample_vue.vue'), FIXTURES);
+		const { edges } = await extractFile(path.join(FIXTURES, 'sample_vue.vue'), FIXTURES);
 		const imports = edges.filter(e => e.kind === 'IMPORTS_FROM');
 		const targets = new Set(imports.map(e => e.target));
 		expect(targets.has('vue')).toBe(true);

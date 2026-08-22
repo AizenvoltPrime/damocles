@@ -10,7 +10,7 @@ function hooksJsoncBlocks(markdown: string): string[] {
   const fence = /```jsonc\r?\n([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   while ((m = fence.exec(markdown)) !== null) {
-    if (m[1].includes('"hooks"')) blocks.push(m[1]);
+    if (m[1]!.includes('"hooks"')) blocks.push(m[1]!);
   }
   return blocks;
 }

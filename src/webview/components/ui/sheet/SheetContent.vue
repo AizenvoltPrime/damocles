@@ -13,6 +13,7 @@ import {
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { sheetVariants } from "."
+import { definedProps } from "@/lib/definedProps"
 
 interface SheetContentProps extends DialogContentProps {
   class?: HTMLAttributes["class"]
@@ -39,7 +40,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
     />
     <DialogContent
       :class="cn(sheetVariants({ side }), props.class)"
-      v-bind="{ ...forwarded, ...$attrs }"
+      v-bind="{ ...definedProps(forwarded), ...$attrs }"
     >
       <slot />
 

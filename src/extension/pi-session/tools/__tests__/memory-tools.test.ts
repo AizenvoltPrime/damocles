@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Check } from 'typebox/value';
+import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { MemoryService } from '../../../memory';
 import type { SearchQuery } from '@shared/types/memory';
@@ -7,7 +8,7 @@ import { buildMemoryPiTools, type MemoryPiToolDeps } from '../memory-tools';
 
 interface CapturedTool {
   name: string;
-  parameters: unknown;
+  parameters: TSchema;
   execute: (id: string, input: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
 }
 

@@ -18,10 +18,8 @@ export function usePromptHistory() {
   const shouldRestoreOriginal = ref(false);
 
   const isNavigating = computed(() => historyIndex.value >= 0);
-  const currentEntry = computed(() =>
-    historyIndex.value >= 0 && historyIndex.value < history.value.length
-      ? history.value[historyIndex.value]
-      : null
+  const currentEntry = computed<string | null>(() =>
+    historyIndex.value >= 0 ? history.value[historyIndex.value] ?? null : null
   );
 
   let pendingNavigate = false;

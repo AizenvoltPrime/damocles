@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import * as vscode from 'vscode';
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler } from '../../permission-handler';
@@ -381,7 +382,9 @@ export class AgentManager {
     const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
     const extras: PromptExtras = {};
     if (Array.isArray(config.skills)) {
-      const loaded = preloadSkills(config.skills, this.engine.cwd);
+      const loaded = preloadSkills(config.skills, this.engine.cwd, {
+        includeProjectScope: vscode.workspace.isTrusted,
+      });
       if (loaded.length > 0) extras.skillBlocks = loaded;
     }
     // Gate on the agent's own CAPABILITY, never the workspace flag: a `tools: *` agent inherits Compass

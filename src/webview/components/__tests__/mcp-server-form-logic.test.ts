@@ -6,6 +6,7 @@ import {
   canEditMcpServer,
   createArgRow,
   createEmptyFormState,
+  createKeyValueRow,
   formStateFromConfig,
   isMcpFormValid,
   submittedServerName,
@@ -21,6 +22,10 @@ import {
 
 /** Form args are identified rows so `v-for` keys follow a row rather than its index. */
 const argRows = (...values: string[]) => values.map((value) => createArgRow(value));
+
+/** Env and header rows carry the same stable id, minted the way the form mints one. */
+const kvRows = (...pairs: [key: string, value: string][]) =>
+  pairs.map(([key, value]) => createKeyValueRow(key, value));
 
 function stdio(overrides: Partial<McpServerFormState> = {}): McpServerFormState {
   return { ...createEmptyFormState(), name: 'my-server', command: 'npx', ...overrides };
@@ -90,15 +95,23 @@ describe('validateMcpServerForm — name collisions (contract §4)', () => {
     });
   });
 
-  it('rejects a name the workspace .mcp.json already defines, since it would be shadowed', () => {
-    const servers = [server('taken', 'workspace')];
-    expect(validateMcpServerForm(stdio({ name: 'taken' }), null, servers).name).toEqual({
-      key: 'mcp.form.errors.nameShadowedByWorkspace',
-    });
-  });
+  it.each(['workspace', 'damocles-local'] as const)(
+    'rejects a name the %s file already defines, since it would be shadowed',
+    (source) => {
+      // Both outrank `~/.damocles/mcp.json`, so writing the name would produce a server the merge
+      // immediately hides. The key names the project rather than `.mcp.json`, because two different
+      // project files now reach this branch.
+      const servers = [server('taken', source)];
+      expect(validateMcpServerForm(stdio({ name: 'taken' }), null, servers).name).toEqual({
+        key: 'mcp.form.errors.nameShadowedByProject',
+      });
+    },
+  );
 
-  it('ALLOWS overriding a claude or codex import — damocles outranks both by design', () => {
-    for (const source of ['claude', 'codex'] as const) {
+  it('ALLOWS overriding a claude, claude-local or codex import: damocles outranks all three', () => {
+    // `claude-local` is project-SCOPED but still ranks below `damocles`, so it stays overridable.
+    // Treating scope as the test rather than precedence would wrongly reject this one.
+    for (const source of ['claude', 'claude-local', 'codex'] as const) {
       const servers = [server('imported', source)];
       expect(validateMcpServerForm(stdio({ name: 'imported' }), null, servers).name).toBeUndefined();
     }
@@ -115,6 +128,75 @@ describe('validateMcpServerForm — name collisions (contract §4)', () => {
       key: 'mcp.form.errors.nameExists',
     });
   });
+
+  it.each(['workspace', 'damocles-local'] as const)(
+    'ALLOWS the name when an untrusted %s entry holds it, because the host would accept the write',
+    (source) => {
+      // Untrusted folds the repo-authored sources below `~/.damocles/mcp.json`, so they stop
+      // outranking it and the host stops reporting them as shadowing. Refusing here would block a
+      // write the extension accepts, with a reason that is not true.
+      const clash: McpServerStatusInfo = { name: 'github', status: 'connected', enabled: true, source, untrusted: true };
+
+      expect(validateMcpServerForm(stdio({ name: 'github' }), null, [clash]).name).toBeUndefined();
+    },
+  );
+
+  it('still rejects when the same source is present and trusted', () => {
+    // Pins the allowance to `untrusted`, not to the source. Without this the test above would pass
+    // against a version that stopped checking `SHADOWING_SOURCES` at all.
+    const trusted: McpServerStatusInfo = { name: 'github', status: 'connected', enabled: true, source: 'workspace', untrusted: false };
+
+    expect(validateMcpServerForm(stdio({ name: 'github' }), null, [trusted]).name).toEqual({
+      key: 'mcp.form.errors.nameShadowedByProject',
+    });
+  });
+
+  it('rejects a clash that is untrusted AND sourceless, rather than letting the flag excuse it', () => {
+    // `untrusted` is optional on the wire exactly as `source` is, so a payload can carry the flag with
+    // no provenance. The untrusted allowance exists because a KNOWN repo-authored source was demoted
+    // below `~/.damocles/mcp.json`. With no source there is nothing to have been demoted, so the
+    // allowance has no basis and the gate falls back to refusing, like every other gate here.
+    const nameless: McpServerStatusInfo = { name: 'github', status: 'connected', enabled: true, untrusted: true };
+
+    expect(validateMcpServerForm(stdio({ name: 'github' }), null, [nameless]).name).toEqual({
+      key: 'mcp.form.errors.nameExists',
+    });
+  });
+
+  it('reads the untrusted VALUE, not merely the presence of the field', () => {
+    // `untrusted: false` is what a trusted repo entry carries. A gate written as "the field is set"
+    // rather than "the field is true" would swallow the refusal below it.
+    const trustedDamocles: McpServerStatusInfo = { name: 'github', status: 'connected', enabled: true, source: 'damocles', untrusted: false };
+
+    expect(validateMcpServerForm(stdio({ name: 'github' }), null, [trustedDamocles]).name).toEqual({
+      key: 'mcp.form.errors.nameExists',
+    });
+  });
+
+  it('still allows an untrusted clash that DID carry its source', () => {
+    // Pins the fix above to the missing source, not to the flag. Widening it to refuse every untrusted
+    // clash would put back the write the host accepts.
+    const sourced: McpServerStatusInfo = { name: 'github', status: 'connected', enabled: true, source: 'workspace', untrusted: true };
+
+    expect(validateMcpServerForm(stdio({ name: 'github' }), null, [sourced]).name).toBeUndefined();
+  });
+
+  it('rejects a clash whose source the payload did not carry, rather than submitting it', () => {
+    // `source` is optional on the wire, and every other gate in this module fails closed. Falling
+    // through to "no error" here let the form submit a name the merged list already holds.
+    const nameless: McpServerStatusInfo = { name: 'taken', status: 'connected', enabled: true };
+
+    expect(validateMcpServerForm(stdio({ name: 'taken' }), null, [nameless]).name).toEqual({
+      key: 'mcp.form.errors.nameExists',
+    });
+  });
+
+  it('still lets a rename keep its own sourceless entry', () => {
+    // Failing closed must not mean refusing to edit a server whose provenance never arrived.
+    const nameless: McpServerStatusInfo = { name: 'mine', status: 'connected', enabled: true };
+
+    expect(validateMcpServerForm(stdio({ name: 'mine' }), 'mine', [nameless]).name).toBeUndefined();
+  });
 });
 
 describe('validateMcpServerForm — stdio', () => {
@@ -125,12 +207,12 @@ describe('validateMcpServerForm — stdio', () => {
   });
 
   it('ignores a fully blank env row', () => {
-    const state = stdio({ env: [{ key: '  ', value: '' }] });
+    const state = stdio({ env: kvRows(['  ', '']) });
     expect(validateMcpServerForm(state, null, noServers)).toEqual({});
   });
 
   it('rejects an env row with a value but no name, which would otherwise vanish on save', () => {
-    const state = stdio({ env: [{ key: '', value: 'secret-ish' }] });
+    const state = stdio({ env: kvRows(['', 'secret-ish']) });
     expect(validateMcpServerForm(state, null, noServers).env).toEqual({
       key: 'mcp.form.errors.envKeyRequired',
     });
@@ -138,10 +220,7 @@ describe('validateMcpServerForm — stdio', () => {
 
   it('rejects duplicate env names and reports the key, never the value', () => {
     const state = stdio({
-      env: [
-        { key: 'TOKEN', value: 'a' },
-        { key: 'TOKEN', value: 'b' },
-      ],
+      env: kvRows(['TOKEN', 'a'], ['TOKEN', 'b']),
     });
     const error = validateMcpServerForm(state, null, noServers).env;
     expect(error).toEqual({ key: 'mcp.form.errors.envDuplicateKey', params: { name: 'TOKEN' } });
@@ -180,7 +259,7 @@ describe('validateMcpServerForm — remote', () => {
   });
 
   it('rejects a header row with a value but no name', () => {
-    const state = remote({ headers: [{ key: '', value: 'Bearer x' }] });
+    const state = remote({ headers: kvRows(['', 'Bearer x']) });
     expect(validateMcpServerForm(state, null, noServers).headers).toEqual({
       key: 'mcp.form.errors.headerKeyRequired',
     });
@@ -188,10 +267,7 @@ describe('validateMcpServerForm — remote', () => {
 
   it('rejects duplicate header names and reports the key, never the value', () => {
     const state = remote({
-      headers: [
-        { key: 'Authorization', value: 'Bearer one' },
-        { key: 'Authorization', value: 'Bearer two' },
-      ],
+      headers: kvRows(['Authorization', 'Bearer one'], ['Authorization', 'Bearer two']),
     });
     const error = validateMcpServerForm(state, null, noServers).headers;
     expect(error).toEqual({
@@ -236,7 +312,7 @@ describe('buildMcpServerConfig — contract §2 key set', () => {
 
   it('omits empty optionals entirely rather than sending [] / {} / ""', () => {
     const config = buildMcpServerConfig(
-      stdio({ args: argRows('', ''), env: [{ key: '', value: '' }], cwd: '' }),
+      stdio({ args: argRows('', ''), env: kvRows(['', '']), cwd: '' }),
     );
     expect(config).toEqual({ command: 'npx' });
   });
@@ -245,7 +321,7 @@ describe('buildMcpServerConfig — contract §2 key set', () => {
     const config = buildMcpServerConfig(
       stdio({
         args: argRows('-y', 'pkg'),
-        env: [{ key: ' TOKEN ', value: ' padded value ' }],
+        env: kvRows([' TOKEN ', ' padded value ']),
         cwd: '/tmp/work',
       }),
     );
@@ -319,7 +395,7 @@ describe('buildMcpServerConfig — contract §2 key set', () => {
   it('includes headers and bearerTokenEnv when filled', () => {
     expect(
       buildMcpServerConfig(
-        remote({ headers: [{ key: 'X-Trace', value: '1' }], bearerTokenEnv: ' MY_TOKEN ' }),
+        remote({ headers: kvRows(['X-Trace', '1']), bearerTokenEnv: ' MY_TOKEN ' }),
       ),
     ).toEqual({
       type: 'http',
@@ -348,7 +424,7 @@ describe('buildMcpServerConfig — contract §2 key set', () => {
 
 describe('formStateFromConfig — round trip', () => {
   it('round-trips a stdio config through the form unchanged', () => {
-    const config = { command: 'node', args: argRows('server.js'), env: { A: '1' }, cwd: '/srv' };
+    const config = { command: 'node', args: ['server.js'], env: { A: '1' }, cwd: '/srv' };
     expect(buildMcpServerConfig(formStateFromConfig('s', config))).toEqual(config);
   });
 
@@ -356,8 +432,8 @@ describe('formStateFromConfig — round trip', () => {
     // The seam mcp-backend found: both of these pass `isFormEditableMcpServerConfig`, so the panel
     // offers Edit for them, and an untouched Save must return them byte-for-byte.
     for (const config of [
-      { command: 'node', args: argRows('--prefix= '), cwd: '/srv/ ' },
-      { command: 'node', args: argRows('  ') },
+      { command: 'node', args: ['--prefix= '], cwd: '/srv/ ' },
+      { command: 'node', args: ['  '] },
     ]) {
       expect(buildMcpServerConfig(formStateFromConfig('s', config))).toEqual(config);
     }
@@ -420,12 +496,25 @@ describe('affordance gates (contract §7.1) — fail closed', () => {
     expect(canEditMcpServer(info)).toBe(false);
   });
 
-  it('refuses both for readonly claude and codex imports', () => {
-    for (const source of ['claude', 'codex'] as const) {
+  it('refuses both for every readonly source, including the two with no write path at all', () => {
+    // `damocles-local` is a Damocles-owned file and still gets no affordance: nothing writes
+    // `<ws>/.damocles/mcp.local.json`, so a Save would have nowhere to land.
+    for (const source of ['claude', 'claude-local', 'codex', 'damocles-local'] as const) {
       const info: McpServerStatusInfo = { ...damocles, source, readonly: true };
       expect(canDeleteMcpServer(info)).toBe(false);
       expect(canEditMcpServer(info)).toBe(false);
     }
+  });
+
+  it('refuses both for damocles-local even if an editableConfig somehow arrived', () => {
+    const info: McpServerStatusInfo = {
+      ...damocles,
+      source: 'damocles-local',
+      readonly: true,
+      editableConfig: { command: 'npx' },
+    };
+    expect(canDeleteMcpServer(info)).toBe(false);
+    expect(canEditMcpServer(info)).toBe(false);
   });
 
   it('refuses both for workspace servers even though they are readonly:false', () => {

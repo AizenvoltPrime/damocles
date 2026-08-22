@@ -21,7 +21,9 @@ export async function transcribe(params: TranscribeParams): Promise<string> {
 
 async function transcribeWhisper({ audioBuffer, mimeType, apiKey, language }: TranscribeParams): Promise<string> {
   const isWav = mimeType.includes("wav");
-  const blob = new Blob([audioBuffer], { type: mimeType });
+  // A copy into a plain ArrayBuffer: `Buffer` is backed by ArrayBufferLike, which the DOM `Blob`
+  // and `fetch` overloads reject, so passing it directly only type-checks without the DOM lib.
+  const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
   const formData = new FormData();
   formData.append("file", blob, isWav ? "audio.wav" : "audio.webm");
   formData.append("model", "whisper-1");
@@ -51,7 +53,7 @@ async function transcribeDeepgram({ audioBuffer, mimeType, apiKey, language }: T
         Authorization: `Token ${apiKey}`,
         "Content-Type": mimeType,
       },
-      body: audioBuffer,
+      body: new Uint8Array(audioBuffer),
     },
   );
 

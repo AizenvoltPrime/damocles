@@ -7,16 +7,16 @@ import AgentBadge from './AgentBadge.vue';
 const { t } = useI18n();
 
 const props = defineProps<{
-  subagents: Map<string, SubagentState>;
+  subagents: Record<string, SubagentState>;
 }>();
 
 defineEmits<{
   (e: 'expand', subagentId: string): void;
 }>();
 
-const subagentList = computed(() => Array.from(props.subagents.values()));
+const subagentList = computed(() => Object.values(props.subagents));
 
-const hasSubagents = computed(() => props.subagents.size > 0);
+const hasSubagents = computed(() => subagentList.value.length > 0);
 
 const hasRunningSubagent = computed(() =>
   subagentList.value.some(s => s.status === 'running')

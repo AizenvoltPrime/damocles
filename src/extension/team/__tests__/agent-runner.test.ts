@@ -81,12 +81,13 @@ describe('AgentRunner (pi-native team agent)', () => {
   it('steers (delivers immediately) when a message arrives mid-stream', async () => {
     // The opening prompt stays in-flight (does not resolve its turn) until we end it, so the bus
     // delivery lands while `isStreaming` is true → the runner steers it immediately as a prompt.
-    let endOpening: (() => void) | null = null;
+    // A holder, not a `let`: control-flow analysis cannot see the assignment made inside `onPrompt`.
+    const opening: { end: (() => void) | null } = { end: null };
     const fake = new FakeSession({
       isStreaming: true,
       // Hold the opening turn open until we end it; the steered prompt injects without ending the turn.
       onPrompt: (text, s) => {
-        if (text === 'do the task') endOpening = () => s.emit({ type: 'turn_end' });
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
       },
     });
     const messageBus = new MessageBus('team-1');
@@ -103,7 +104,8 @@ describe('AgentRunner (pi-native team agent)', () => {
     messageBus.send('peer', 'worker', 'steer me');
     // Wait until the steered prompt is issued (2nd prompt), then end the opening turn so the run settles.
     await fake.whenPrompted(2);
-    endOpening?.();
+    if (!opening.end) throw new Error('the opening prompt never reached the fake session');
+    opening.end();
     await run;
 
     expect(fake.prompts).toContain('[Message from peer]: steer me');

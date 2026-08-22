@@ -196,18 +196,23 @@ describe('McpServerFormDialog — invalid input is rejected with a visible error
     expect(wrapper.emitted('save')).toBeUndefined();
   });
 
-  it('reports a collision with the workspace .mcp.json before anything is sent', async () => {
-    const wrapper = mountForm({
-      servers: [{ name: 'taken', status: 'connected', enabled: true, source: 'workspace' }],
-    });
-    await nextTick();
-    await type(byPlaceholder('my-server'), 'taken');
-    await type(byPlaceholder('npx'), 'node');
-    await click(buttonByText('Save'));
+  it.each(['workspace', 'damocles-local'] as const)(
+    'reports a collision with the project %s file before anything is sent',
+    async (source) => {
+      const wrapper = mountForm({
+        servers: [{ name: 'taken', source }],
+      });
+      await nextTick();
+      await type(byPlaceholder('my-server'), 'taken');
+      await type(byPlaceholder('npx'), 'node');
+      await click(buttonByText('Save'));
 
-    expect(wrapper.emitted('save')).toBeUndefined();
-    expect(bodyText()).toContain("This project's .mcp.json already defines this name");
-  });
+      expect(wrapper.emitted('save')).toBeUndefined();
+      // The wording no longer names `.mcp.json`: two different project files reach this branch, and
+      // claiming the wrong one would send the user to edit a file that does not define the name.
+      expect(bodyText()).toContain('A project config file already defines this name');
+    },
+  );
 
   it('rejects a non-http URL', async () => {
     const wrapper = mountForm();
@@ -303,7 +308,7 @@ describe('McpServerFormDialog — edit', () => {
       editingName: 'weather',
       editingConfig: stored,
       servers: [
-        { name: 'weather', status: 'connected', enabled: true, source: 'damocles', readonly: false },
+        { name: 'weather', source: 'damocles' },
       ],
     });
     await nextTick();

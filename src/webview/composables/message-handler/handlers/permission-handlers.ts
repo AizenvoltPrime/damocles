@@ -14,7 +14,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         name: msg.toolName,
         input: msg.toolInput,
         status: "awaiting_approval",
-        metadata: msg.editLineNumber ? { editLineNumber: msg.editLineNumber } : undefined,
+        ...(msg.editLineNumber ? { metadata: { editLineNumber: msg.editLineNumber } } : {}),
       };
 
       if (msg.toolName === TOOL_EDIT || msg.toolName === TOOL_WRITE) {
@@ -28,24 +28,26 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
           id: toolCall.id,
           name: toolCall.name,
           input: toolCall.input,
-          metadata: toolCall.metadata,
+          ...(toolCall.metadata !== undefined && { metadata: toolCall.metadata }),
         });
         streamingStore.updateToolStatus(toolCall.id, "awaiting_approval");
       }
 
       const agentDescription = parentToolUseId ? subagentStore.getSubagentDescription(parentToolUseId) : undefined;
 
+      // `PendingPermissionInfo` declares these optional, so an absent field is forwarded as an
+      // absent key rather than an explicit undefined that a later spread could use to clobber.
       permissionStore.addPermission(msg.toolUseId, {
         toolName: msg.toolName,
-        filePath: msg.filePath,
-        originalContent: msg.originalContent,
-        proposedContent: msg.proposedContent,
-        command: msg.command,
-        parentToolUseId,
-        agentDescription,
-        suggestions: msg.suggestions,
-        blockedPath: msg.blockedPath,
-        decisionReason: msg.decisionReason,
+        ...(msg.filePath !== undefined && { filePath: msg.filePath }),
+        ...(msg.originalContent !== undefined && { originalContent: msg.originalContent }),
+        ...(msg.proposedContent !== undefined && { proposedContent: msg.proposedContent }),
+        ...(msg.command !== undefined && { command: msg.command }),
+        ...(parentToolUseId !== undefined && { parentToolUseId }),
+        ...(agentDescription !== undefined && { agentDescription }),
+        ...(msg.suggestions !== undefined && { suggestions: msg.suggestions }),
+        ...(msg.blockedPath !== undefined && { blockedPath: msg.blockedPath }),
+        ...(msg.decisionReason !== undefined && { decisionReason: msg.decisionReason }),
       });
     },
 
@@ -71,8 +73,8 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       questionStore.setQuestion({
         toolUseId: msg.toolUseId,
         questions: msg.questions,
-        parentToolUseId,
-        agentDescription,
+        ...(parentToolUseId !== undefined && { parentToolUseId }),
+        ...(agentDescription !== undefined && { agentDescription }),
       });
     },
 
@@ -84,8 +86,8 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       formStore.setForm({
         toolUseId: msg.toolUseId,
         form: msg.form,
-        parentToolUseId,
-        agentDescription,
+        ...(parentToolUseId !== undefined && { parentToolUseId }),
+        ...(agentDescription !== undefined && { agentDescription }),
       });
     },
 
@@ -102,7 +104,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       permissionStore.setPendingSkillApproval({
         toolUseId: msg.toolUseId,
         skillName: msg.skillName,
-        skillDescription: msg.skillDescription,
+        ...(msg.skillDescription !== undefined && { skillDescription: msg.skillDescription }),
       });
       if (msg.skillDescription) {
         streamingStore.updateToolMetadata(msg.toolUseId, {

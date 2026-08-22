@@ -16,10 +16,12 @@
  *  - Project-scope dirs load only when `includeProjectScope` is true (VS Code workspace trust gate).
  *
  * Discovery precedence (later wins, overlaid latest-name-wins onto the registry's defaults):
- *   1. global-claude:  ~/.claude/agents/**\/*.md
- *   2. global-pi:      ~/.pi/agent/agents/**\/*.md
- *   3. project-claude: <cwd>/.claude/agents/**\/*.md   (trust-gated)
- *   4. project-pi:     <cwd>/.pi/agents/**\/*.md         (trust-gated, highest)
+ *   1. global-claude:    ~/.claude/agents/**\/*.md
+ *   2. global-pi:        ~/.pi/agent/agents/**\/*.md
+ *   3. global-damocles:  ~/.damocles/agents/**\/*.md
+ *   4. project-claude:   <cwd>/.claude/agents/**\/*.md    (trust-gated)
+ *   5. project-pi:       <cwd>/.pi/agents/**\/*.md        (trust-gated)
+ *   6. project-damocles: <cwd>/.damocles/agents/**\/*.md  (trust-gated, highest)
  */
 
 import { existsSync, readdirSync, type Dirent } from 'node:fs';
@@ -36,7 +38,7 @@ export type ParseFrontmatter = <T extends Record<string, unknown> = Record<strin
 ) => { frontmatter: T; body: string };
 
 export interface LoadCustomAgentsOptions {
-  /** Whether to scan project-scope dirs (.pi/agents, .claude/agents). Gate on VS Code workspace trust. */
+  /** Whether to scan project-scope dirs (.claude/agents, .pi/agents, .damocles/agents). Gate on VS Code workspace trust. */
   includeProjectScope: boolean;
   /** User home directory used for global discovery. Defaults to `os.homedir()`; overridable in tests. */
   homeDir?: string;
@@ -60,10 +62,12 @@ export function agentDiscoveryDirs(opts: {
   const dirs: AgentDirSpec[] = [
     { dir: join(opts.homeDir, '.claude', 'agents'), source: 'global' },
     { dir: join(opts.homeDir, '.pi', 'agent', 'agents'), source: 'global' },
+    { dir: join(opts.homeDir, '.damocles', 'agents'), source: 'global' },
   ];
   if (opts.includeProjectScope) {
     dirs.push({ dir: join(opts.cwd, '.claude', 'agents'), source: 'project-claude' });
     dirs.push({ dir: join(opts.cwd, '.pi', 'agents'), source: 'project-pi' });
+    dirs.push({ dir: join(opts.cwd, '.damocles', 'agents'), source: 'project-damocles' });
   }
   return dirs;
 }
@@ -90,9 +94,12 @@ export function loadCustomAgents(
 
 /**
  * Recursively collect `.md` file paths under `dir`, skipping hidden dirs, node_modules, and symlinks.
- * Symlinks are never followed — matching the skill-loader / fs-safety posture — so a `agents/x -> /`
+ * Symlinks are never followed, matching the skill-loader / fs-safety posture, so a `agents/x -> /`
  * link in a (trusted-but-hostile) workspace can't make the scanner walk the whole linked subtree or
  * load definitions from outside the intended tree.
+ *
+ * Entries are visited in name order, so when two files in one directory declare the same frontmatter
+ * `name` the alphabetically last file wins, on every filesystem.
  */
 function collectMarkdownFiles(dir: string): string[] {
   if (!existsSync(dir) || isSymlink(dir)) return [];
@@ -103,6 +110,7 @@ function collectMarkdownFiles(dir: string): string[] {
   } catch {
     return [];
   }
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   const files: string[] = [];
   for (const entry of entries) {

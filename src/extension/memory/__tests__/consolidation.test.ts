@@ -19,6 +19,7 @@ import {
 } from '../consolidation';
 import { maybeVacuum, VACUUM_FREELIST_RATIO, VACUUM_MIN_PAGES } from '../dedup-decay';
 import type { ConsolidationPhaseEvent } from '@shared/types/consolidation';
+import { subCallSpy, type SubCallSpy } from './subcall-spy';
 
 const BUDGET_CHARS = CANDIDATE_TOKEN_BUDGET * 4;
 
@@ -51,8 +52,8 @@ function countConsumedCandidates(db: DatabaseInstance): number {
 }
 
 /** Stub runner: extract returns the supplied value, merge/conflict report none, profile is empty. */
-function makeRunner(extractValue: unknown): { runner: MemorySubCallRunner; run: ReturnType<typeof vi.fn> } {
-  const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+function makeRunner(extractValue: unknown): { runner: MemorySubCallRunner; run: SubCallSpy } {
+  const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
     if (req.purpose === 'extract') return { value: extractValue as T };
     if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
     return { value: { contradicts: false, merged_ids: [], content: '' } as T };
@@ -60,12 +61,23 @@ function makeRunner(extractValue: unknown): { runner: MemorySubCallRunner; run: 
   return { runner: { run }, run };
 }
 
+/** A nested object in a JSON-schema literal, failing loudly rather than widening to `undefined`. */
+function schemaNode(node: Record<string, unknown>, key: string): Record<string, unknown> {
+  const child = node[key];
+  if (typeof child !== 'object' || child === null) throw new Error(`schema has no object at '${key}'`);
+  return child as Record<string, unknown>;
+}
+
 function makeCtx(
   db: DatabaseInstance,
   runner: MemorySubCallRunner,
-  overrides: Partial<ConsolidationCtx> = {},
+  overrides: Omit<Partial<ConsolidationCtx>, 'sessionId'> & { sessionId?: string | undefined } = {},
 ): ConsolidationCtx {
   const writeQueue = new MemoryWriteQueue();
+  // An explicit `sessionId: undefined` override must CLEAR the default, so the key is only set when
+  // it resolves to a real id (exactOptionalPropertyTypes forbids writing undefined into it).
+  const { sessionId: sessionOverride, ...rest } = overrides;
+  const sessionId = 'sessionId' in overrides ? sessionOverride : SESSION_ID;
   return {
     db,
     writeQueue,
@@ -74,13 +86,13 @@ function makeCtx(
     profileManager: new ProfileManager(db, writeQueue, runner),
     instanceId: 'test-instance',
     reason: 'switch',
-    sessionId: SESSION_ID,
     workspace: WORKSPACE,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},
     isDisposed: () => false,
-    ...overrides,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...rest,
   };
 }
 
@@ -147,7 +159,7 @@ describe('runConsolidation', () => {
     seedCandidate(db, SESSION_ID, 'q1', 'a1');
     seedCandidate(db, SESSION_ID, 'q2', 'a2');
 
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') return { value: null, failure: 'transient' };
       if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
       return { value: { contradicts: false, merged_ids: [], content: '' } as T };
@@ -163,7 +175,7 @@ describe('runConsolidation', () => {
     seedCandidate(db, SESSION_ID, 'q1', 'a1');
 
     const onNoModel = vi.fn();
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') return { value: null, failure: 'no-model' };
       return { value: { static: '', dynamic: '' } as T };
     });
@@ -177,7 +189,7 @@ describe('runConsolidation', () => {
   it('releases the batch if the extractor throws (H1)', async () => {
     seedCandidate(db, SESSION_ID, 'q1', 'a1');
 
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') throw new Error('proxy start failed');
       return { value: { static: '', dynamic: '' } as T };
     });
@@ -323,7 +335,7 @@ describe('runConsolidation — terminal-result guarantees (no silent failure)', 
 
   it('returns failed/error with phase:extract when the extractor throws — and still runs maintenance', async () => {
     seedCandidate(db, SESSION_ID, 'q', 'a');
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') throw new Error('proxy start failed');
       return { value: { static: '', dynamic: '' } as T };
     });
@@ -342,7 +354,7 @@ describe('runConsolidation — terminal-result guarantees (no silent failure)', 
   it('returns failed/no-model when no extraction model is available — and still runs maintenance', async () => {
     seedCandidate(db, SESSION_ID, 'q', 'a');
     const onNoModel = vi.fn();
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') return { value: null, failure: 'no-model' };
       return { value: { static: '', dynamic: '' } as T };
     });
@@ -497,7 +509,7 @@ describe('consolidation leases — cross-window claim stamping + expiry reclaim 
   it('releaseCandidates clears the lease (claimed_by/claimed_at NULL) and restores consumed=0 on a transient failure', async () => {
     const id = seedCandidate(db, SESSION_ID, 'q', 'a');
     // Transient extraction failure after the claim stamped a lease → the batch is released.
-    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+    const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
       if (req.purpose === 'extract') return { value: null, failure: 'transient' };
       if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
       return { value: { contradicts: false, merged_ids: [], content: '' } as T };
@@ -609,7 +621,7 @@ describe('mergePendingConsolidation — forceExtract survival (flag-loss fix)', 
   it('OR-keeps forceExtract when a manual run folds into an in-flight auto pass', () => {
     const merged = mergePendingConsolidation(
       { reason: 'idle' },
-      { reason: 'manual', sessionId: undefined, forceExtract: true },
+      { reason: 'manual', forceExtract: true },
     );
     expect(merged.forceExtract).toBe(true);
   });
@@ -959,10 +971,10 @@ describe('runConsolidation — C6 session-scope stamping (never a NULL-session s
 
 describe('EXTRACTION_SCHEMA + prompt (C10)', () => {
   it('caps memories at maxItems 10, drops forget_after, and removes observation from the kind enum', () => {
-    const props = (EXTRACTION_SCHEMA.properties as Record<string, Record<string, unknown>>).memories;
+    const props = schemaNode(EXTRACTION_SCHEMA.properties as Record<string, unknown>, 'memories');
     expect(props.maxItems).toBe(10);
 
-    const itemProps = (props.items as Record<string, Record<string, unknown>>).properties;
+    const itemProps = schemaNode(schemaNode(props, 'items'), 'properties');
     expect(itemProps.forget_after).toBeUndefined();
     expect((itemProps.kind as { enum: string[] }).enum).toEqual(['fact', 'preference', 'episode']);
     expect((itemProps.kind as { enum: string[] }).enum).not.toContain('observation');

@@ -78,14 +78,18 @@ function drawToCanvas(
   return canvas;
 }
 
+/** Payload half of a `data:<mime>;base64,<payload>` URL. */
+function base64Payload(dataUrl: string): string {
+  return dataUrl.slice(dataUrl.indexOf(',') + 1);
+}
+
 function tryCanvasExport(
   canvas: HTMLCanvasElement,
   mimeType: string,
   quality?: number,
 ): string | null {
   const dataUrl = canvas.toDataURL(mimeType, quality);
-  const base64 = dataUrl.split(',')[1];
-  if (base64.length <= SDK_MAX_BASE64_SIZE) return dataUrl;
+  if (base64Payload(dataUrl).length <= SDK_MAX_BASE64_SIZE) return dataUrl;
   return null;
 }
 
@@ -105,7 +109,7 @@ export async function resizeImageForSDK(file: File): Promise<ResizedImage> {
     img.naturalHeight > SDK_MAX_DIMENSION;
 
   if (!needsResize) {
-    const base64 = dataUrl.split(',')[1];
+    const base64 = base64Payload(dataUrl);
     if (base64.length <= SDK_MAX_BASE64_SIZE) {
       return { dataUrl, base64Data: base64, mediaType };
     }
@@ -127,7 +131,7 @@ export async function resizeImageForSDK(file: File): Promise<ResizedImage> {
       const resultType = (isGif ? 'image/png' : mediaType) as SupportedMediaType;
       return {
         dataUrl: nativeResult,
-        base64Data: nativeResult.split(',')[1],
+        base64Data: base64Payload(nativeResult),
         mediaType: resultType,
       };
     }
@@ -137,7 +141,7 @@ export async function resizeImageForSDK(file: File): Promise<ResizedImage> {
       if (result) {
         return {
           dataUrl: result,
-          base64Data: result.split(',')[1],
+          base64Data: base64Payload(result),
           mediaType: 'image/jpeg',
         };
       }

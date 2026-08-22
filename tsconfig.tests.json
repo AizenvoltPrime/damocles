@@ -1,0 +1,47 @@
+// Type-checks what `tsconfig.json` cannot: the test files and the `vscode` mock they run against.
+//
+// `import ... from 'vscode'` resolves to the ambient `declare module 'vscode'` in `@types/vscode`,
+// which wins over any `paths` alias, so both tests and production code are checked against the real
+// API. `src/__mocks__/vscode-test-api.d.ts` augments that module with the test-only exports the mock
+// adds on top of it (`__setTrusted`, `__watchers`, `FakeFileSystemWatcher`, ...), which is what lets a
+// test import them. Pointing the alias at the mock instead would check every `vscode.*` call against
+// a stand-in far thinner than the API the extension actually ships against.
+//
+// `declaration` and `isolatedDeclarations` are off: nothing is emitted from here, and the
+// declaration-emit rules only add noise about untyped exports in test helpers.
+//
+// This is the node-environment half. Suites that declare `// @vitest-environment happy-dom` need the
+// DOM lib, which cannot go here: DOM's `Blob`/`fetch` shadow Node's and reject `Buffer`. They are
+// checked by `tsconfig.tests.dom.json`, and both halves must stay at zero.
+//
+// Every strictness flag that affects what a type *is* stays inherited from `tsconfig.json`. The one
+// relaxation, `noPropertyAccessFromIndexSignature`, is purely syntactic: `noUncheckedIndexedAccess`
+// still widens an index-signature read to `T | undefined` whether it is written `o.k` or `o['k']`.
+//
+// `npm run typecheck` runs this, so it is a gate at zero. Suppressing a finding here (a cast that
+// erases the mismatch, a dropped assertion) buys a green run at the cost of the thing it exists for.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "isolatedDeclarations": false,
+    "noPropertyAccessFromIndexSignature": false,
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["./src/webview/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/webview",
+    "src/extension/browser/__tests__",
+    "src/extension/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    // Parser input, not project code: multi-language sample files read off disk as text by the
+    // compass extraction suites, several of which import modules that intentionally do not exist.
+    "src/extension/compass/__tests__/fixtures"
+  ]
+}

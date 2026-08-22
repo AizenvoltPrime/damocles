@@ -15,8 +15,6 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
   return {
     agentId: `id-${partial.name}`,
     teamId: 'team-1',
-    name: partial.name,
-    role: partial.role,
     attempt: 0,
     specialization: '',
     status: 'running',
@@ -419,7 +417,7 @@ describe('TeamRunner brief-conflict gate', () => {
 
     const nudges = h.messageBus.getAllMessages().filter((m) => m.to === 'Lead' && m.content.includes('UNRESOLVED brief conflicts'));
     expect(nudges).toHaveLength(2);
-    expect(nudges[0].content).toContain('Dev (async vs sync mismatch)');
+    expect(nudges[0]!.content).toContain('Dev (async vs sync mismatch)');
   });
 
   it('does not nudge when no conflict is open', async () => {
@@ -491,6 +489,13 @@ describe('TeamRunner brief-conflict gate', () => {
  * awaiting-review branch of onTurnEnd — the ordering where the LAST peer settles via team_report_complete
  * while a peer is already parked in standby (its promise.then never fires, so the branch must recover).
  */
+/** A private TeamRunner collaborator, failing loudly rather than widening to `undefined`. */
+function privateField<T>(runner: TeamRunner, key: string): T {
+  const value = (runner as unknown as Record<string, unknown>)[key];
+  if (value === undefined) throw new Error(`TeamRunner has no '${key}' field`);
+  return value as T;
+}
+
 interface CapturedRun {
   config: AgentRunConfig;
   resolve: (result: unknown) => void;
@@ -572,8 +577,8 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
 
 describe('TeamRunner — per-agent browser scope disposal (success-only auto-close)', () => {
   const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
-  const result = (status: 'completed' | 'failed' | 'cancelled'): AgentResult => ({
-    status, finalResponse: status === 'completed' ? 'ok' : null, toolCallCount: 0, durationMs: 0,
+  const result = (status: 'completed' | 'failed' | 'cancelled', agentId = 'A'): AgentResult => ({
+    agentId, status, finalResponse: status === 'completed' ? 'ok' : null, toolCallCount: 0, durationMs: 0,
     totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
   });
   const agentOf = (runner: TeamRunner, name: string): TeamAgent =>
@@ -868,7 +873,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     return (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
   }
   function setOf(runner: TeamRunner, key: string): Set<string> {
-    return (runner as unknown as Record<string, Set<string>>)[key];
+    return privateField<Set<string>>(runner, key);
   }
 
   it('INCIDENT REPRO: a lone specialist ending bare is nudged once (deferred) then converted — never completed', async () => {
@@ -1138,7 +1143,7 @@ function makeModelWiringRunner(
       // Invoke the real createSession closure TeamRunner built so its resolved opts are captured.
       currentName = cfg.name;
       void cfg.createSession();
-      return new Promise((resolve) => { runs.set(cfg.name, { config: cfg, resolve }); });
+      return new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); });
     },
   };
 
@@ -1275,7 +1280,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
     flush: async () => undefined,
   };
   target['agentRunner'] = {
-    startAgent: (cfg: AgentRunConfig) => new Promise((resolve) => { runs.set(cfg.name, { config: cfg, resolve }); }),
+    startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
   };
 
   const agents = target['agents'] as Map<string, TeamAgent>;
@@ -1289,8 +1294,8 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
 
   return {
     runner, runs, agents, initAgentFileCalls, teamEntries, statusUpdates, sentToLead, messageBus,
-    set: (name, key) => (runner as unknown as Record<string, Set<string>>)[key],
-    map: (key) => (runner as unknown as Record<string, Map<string, unknown>>)[key],
+    set: (_name, key) => privateField<Set<string>>(runner, key),
+    map: (key) => privateField<Map<string, unknown>>(runner, key),
   };
 }
 

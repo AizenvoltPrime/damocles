@@ -1,7 +1,70 @@
 import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
-import type { TaskCreateInput, TaskUpdateInput } from "@shared/types/subagents";
+import type { TaskCreateInput, TaskUpdateInput, TaskUpdateStatus } from "@shared/types/subagents";
 import type { HandlerRegistry } from "../types";
 import { extractDenialFeedback } from "../utils";
+
+function str(bag: Record<string, unknown>, key: string): string | undefined {
+  const value = bag[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function record(bag: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = bag[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+/**
+ * Tool inputs arrive as untyped agent JSON, so the required key is read rather than asserted: a
+ * TaskCreate with no subject is not a task the store can track, and asserting would hand it a
+ * `subject` of `undefined` typed as `string`.
+ */
+function readTaskCreateInput(bag: Record<string, unknown>): TaskCreateInput | undefined {
+  const subject = str(bag, "subject");
+  if (subject === undefined) return undefined;
+  const description = str(bag, "description");
+  const activeForm = str(bag, "activeForm");
+  const metadata = record(bag, "metadata");
+  return {
+    subject,
+    ...(description !== undefined && { description }),
+    ...(activeForm !== undefined && { activeForm }),
+    ...(metadata !== undefined && { metadata }),
+  };
+}
+
+function readTaskUpdateInput(bag: Record<string, unknown>): TaskUpdateInput | undefined {
+  const taskId = str(bag, "taskId");
+  if (taskId === undefined) return undefined;
+
+  const status = str(bag, "status");
+  const isUpdateStatus = (s: string): s is TaskUpdateStatus =>
+    s === "pending" || s === "in_progress" || s === "completed" || s === "deleted";
+
+  const strings = (key: string): string[] | undefined => {
+    const value = bag[key];
+    return Array.isArray(value) && value.every((v): v is string => typeof v === "string") ? value : undefined;
+  };
+
+  const subject = str(bag, "subject");
+  const description = str(bag, "description");
+  const activeForm = str(bag, "activeForm");
+  const owner = str(bag, "owner");
+  const metadata = record(bag, "metadata");
+  const addBlocks = strings("addBlocks");
+  const addBlockedBy = strings("addBlockedBy");
+
+  return {
+    taskId,
+    ...(subject !== undefined && { subject }),
+    ...(description !== undefined && { description }),
+    ...(activeForm !== undefined && { activeForm }),
+    ...(status !== undefined && isUpdateStatus(status) && { status }),
+    ...(addBlocks !== undefined && { addBlocks }),
+    ...(addBlockedBy !== undefined && { addBlockedBy }),
+    ...(owner !== undefined && { owner }),
+    ...(metadata !== undefined && { metadata }),
+  };
+}
 
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
@@ -27,9 +90,11 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
 
       if (msg.tool.name === TOOL_TASK_CREATE) {
-        taskStore.trackToolInput(msg.tool.id, { tool: "TaskCreate", input: msg.tool.input as TaskCreateInput });
+        const input = readTaskCreateInput(msg.tool.input);
+        if (input) taskStore.trackToolInput(msg.tool.id, { tool: "TaskCreate", input });
       } else if (msg.tool.name === TOOL_TASK_UPDATE) {
-        taskStore.trackToolInput(msg.tool.id, { tool: "TaskUpdate", input: msg.tool.input as TaskUpdateInput });
+        const input = readTaskUpdateInput(msg.tool.input);
+        if (input) taskStore.trackToolInput(msg.tool.id, { tool: "TaskUpdate", input });
       }
 
       if (msg.tool.name === TOOL_MONITOR) {
@@ -172,7 +237,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, status, {
           errorMessage: msg.error,
-          feedback,
+          ...(feedback !== undefined && { feedback }),
           ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
         });
       }

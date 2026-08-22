@@ -71,7 +71,9 @@ afterEach(async () => {
   }
 });
 
-describe('runCheckpointMaintenance (real git)', () => {
+// Every case here spawns real git processes, so the 5000 ms default detects worker contention
+// rather than a hang. A per-describe ceiling keeps a genuine hang bounded in the files that do not.
+describe('runCheckpointMaintenance (real git)', { timeout: 20_000 }, () => {
   // Case 1: repack produces a pack and collapses reachable loose objects.
   it('repacks a repo into a pack and shrinks loose objects', async () => {
     const base = await makeRoot();
@@ -374,7 +376,7 @@ function clearThrottle(base: string): void {
   fs.rmSync(path.join(base, '.last-maintenance'), { force: true });
 }
 
-describe('runCheckpointMaintenance age eviction (real git)', () => {
+describe('runCheckpointMaintenance age eviction (real git)', { timeout: 20_000 }, () => {
   // Case 7: an idle repo past retention is deleted whole while a recently active sibling is repacked.
   it('evicts an idle repo and repacks a surviving sibling', async () => {
     const base = await makeRoot();

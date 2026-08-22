@@ -16,7 +16,7 @@ beforeAll(() => {
     appendLine: (line: string) => void logLines.push(line),
     show: () => {},
     dispose: () => {},
-  } as unknown as vscode.OutputChannel);
+  } as unknown as vscode.LogOutputChannel);
 });
 
 describe('PiRuntime singleton (B1)', () => {

@@ -26,7 +26,7 @@ class FakeWebSocket extends EventEmitter {
     this.readyState = 3;
   }
   send(_data: unknown, _opts?: unknown): void {}
-  once(event: string, listener: (...args: unknown[]) => void): this {
+  override once(event: string, listener: (...args: unknown[]) => void): this {
     return super.once(event, listener);
   }
 }
@@ -84,6 +84,7 @@ const baseConfig: ManagerConfig = {
   pythonSourceDir: "/fake/python-source",
   modelsDir: "/fake/models",
   runtimeMode: "cuda",
+  wakeWordEnabled: true,
   diagnostics: false,
   initPayload: {
     wakeWord: "hey_jarvis",

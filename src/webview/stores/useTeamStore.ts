@@ -128,7 +128,7 @@ export const useTeamStore = defineStore('team', () => {
 
   function handleTeamStarted(team: TeamState): void {
     const pendingKey = Object.keys(teams.value).find(
-      k => k.startsWith('pending-') && teams.value[k].toolUseId === team.toolUseId
+      k => k.startsWith('pending-') && teams.value[k]?.toolUseId === team.toolUseId
     );
     if (pendingKey) {
       const { [pendingKey]: _, ...rest } = teams.value;
@@ -285,19 +285,23 @@ export const useTeamStore = defineStore('team', () => {
     if (!msgs) return;
     const updated = [...msgs];
     for (let i = updated.length - 1; i >= 0; i--) {
-      const m = updated[i]!;
-      if (m.role === 'assistant' && m.toolCalls) {
-        const tool = m.toolCalls.find(t => t.id === toolUseId);
-        if (tool) {
-          const updatedTools = m.toolCalls.map(t =>
-            t.id === toolUseId
-              ? { ...t, result, isError, status: (isError ? 'error' : 'completed') as AgentToolCall['status'] }
-              : t
-          );
-          updated[i] = { ...m, toolCalls: updatedTools };
-          break;
-        }
-      }
+      const m = updated[i];
+      if (!m || m.role !== 'assistant' || !m.toolCalls) continue;
+      const toolCalls = m.toolCalls;
+      if (!toolCalls.some(t => t.id === toolUseId)) continue;
+
+      const updatedTools: AgentToolCall[] = toolCalls.map(t =>
+        t.id === toolUseId
+          ? {
+              ...t,
+              result,
+              ...(isError !== undefined && { isError }),
+              status: isError ? 'error' : 'completed',
+            }
+          : t
+      );
+      updated[i] = { ...m, toolCalls: updatedTools };
+      break;
     }
     agentMessages.value = { ...agentMessages.value, [agentId]: updated };
   }

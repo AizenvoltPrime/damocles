@@ -16,6 +16,7 @@ type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: 
 
 // Status priority for preventing downgrades (higher = more final)
 const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
+  'pending': 0,
   'abandoned': 0,
   'awaiting_approval': 1,
   'approved': 2,
@@ -27,8 +28,7 @@ const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
 
 function extractLastTextFromMessages(agentMessages?: HistoryAgentMessage[]): string {
   if (!agentMessages || agentMessages.length === 0) return '';
-  for (let i = agentMessages.length - 1; i >= 0; i--) {
-    const msg = agentMessages[i];
+  for (const msg of [...agentMessages].reverse()) {
     const texts = msg.contentBlocks
       .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && 'text' in b)
       .map(b => b.text);
@@ -55,16 +55,18 @@ function buildChatMessagesFromHistory(
       } else if (block.type === 'tool_use') {
         contentBlocks.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input } as ToolUseBlock);
         const existing = existingToolStatuses?.get(block.id);
+        const result = existing?.result ?? block.result;
+        const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
         // On resume-from-disk there is no live status, so derive failed/completed from the persisted
-        // isError flag — otherwise a failed nested tool would rehydrate as succeeded.
+        // isError flag, otherwise a failed nested tool would rehydrate as succeeded.
         toolCalls.push({
           id: block.id,
           name: block.name,
           input: block.input,
           status: existing?.status ?? (block.isError ? 'failed' : 'completed'),
-          result: existing?.result ?? block.result,
-          errorMessage: existing?.errorMessage ?? (block.isError ? block.result : undefined),
-          metadata: block.metadata,
+          ...(result !== undefined && { result }),
+          ...(errorMessage !== undefined && { errorMessage }),
+          ...(block.metadata !== undefined && { metadata: block.metadata }),
         });
       }
     }
@@ -74,7 +76,7 @@ function buildChatMessagesFromHistory(
       role: msg.role,
       content: '',
       contentBlocks,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      ...(toolCalls.length > 0 && { toolCalls }),
       timestamp: startTime + idx,
     };
   });
@@ -149,13 +151,14 @@ export const useSubagentStore = defineStore('subagent', () => {
     const key = toolUseId && subagents.value[toolUseId] ? toolUseId : null;
 
     const fallbackKey = key ? null : Object.keys(subagents.value).find(
-      k => subagents.value[k].sdkAgentId === sdkAgentId
+      k => subagents.value[k]?.sdkAgentId === sdkAgentId
     );
 
     const targetKey = key || fallbackKey;
     if (!targetKey) return;
 
     const subagent = subagents.value[targetKey];
+    if (!subagent) return;
     subagents.value = {
       ...subagents.value,
       [targetKey]: { ...subagent, lastAssistantMessage },
@@ -165,12 +168,13 @@ export const useSubagentStore = defineStore('subagent', () => {
   function resetToRunning(toolId: string, description?: string, isBackground?: boolean): void {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
+    // The stale end time is dropped, not set to undefined, so a later spread cannot resurrect it.
+    const { endTime: _clearedEndTime, ...withoutEndTime } = subagent;
     subagents.value = {
       ...subagents.value,
       [toolId]: {
-        ...subagent,
+        ...withoutEndTime,
         status: 'running',
-        endTime: undefined,
         isBackground: !!isBackground,
         ...(description ? { description } : {}),
       },
@@ -236,9 +240,8 @@ export const useSubagentStore = defineStore('subagent', () => {
         [agentToolId]: {
           ...subagent,
           result,
-          sdkAgentId: result.sdkAgentId || subagent.sdkAgentId,
-          status: subagent.status === 'running' ? 'completed' : subagent.status,
-          endTime: subagent.status === 'running' ? Date.now() : subagent.endTime,
+          ...(result.sdkAgentId ? { sdkAgentId: result.sdkAgentId } : {}),
+          ...(subagent.status === 'running' ? { status: 'completed' as const, endTime: Date.now() } : {}),
         },
       };
     }
@@ -302,8 +305,8 @@ export const useSubagentStore = defineStore('subagent', () => {
       isThinkingPhase?: boolean;
     }
   ): void {
-    if (!(parentToolUseId in subagents.value)) return;
-    if (subagents.value[parentToolUseId].messagesSealed) return;
+    const target = subagents.value[parentToolUseId];
+    if (!target || target.messagesSealed) return;
 
     const existing = streamingMessages.value[parentToolUseId];
     if (!existing || existing.sdkMessageId !== sdkMessageId) {
@@ -312,8 +315,8 @@ export const useSubagentStore = defineStore('subagent', () => {
         [parentToolUseId]: {
           sdkMessageId,
           content: updates.content ?? '',
-          thinking: updates.thinking,
-          thinkingDuration: updates.thinkingDuration,
+          ...(updates.thinking !== undefined && { thinking: updates.thinking }),
+          ...(updates.thinkingDuration !== undefined && { thinkingDuration: updates.thinkingDuration }),
           isThinkingPhase: updates.isThinkingPhase ?? true,
         },
       };
@@ -364,20 +367,21 @@ export const useSubagentStore = defineStore('subagent', () => {
   ): boolean {
     const newPriority = STATUS_PRIORITY[status] ?? 0;
 
+    const patch: Partial<ToolCall> = {
+      status,
+      ...(result !== undefined && { result }),
+      ...(errorMessage !== undefined && { errorMessage }),
+      ...(durationMs !== undefined && { durationMs }),
+    };
+
     for (const [subagentId, subagent] of Object.entries(subagents.value)) {
       const toolIndex = subagent.toolCalls.findIndex(t => t.id === toolUseId);
-      if (toolIndex !== -1) {
-        const oldPriority = STATUS_PRIORITY[subagent.toolCalls[toolIndex].status] ?? 0;
-        if (newPriority < oldPriority) return true;
+      const directTool = toolIndex === -1 ? undefined : subagent.toolCalls[toolIndex];
+      if (directTool) {
+        if (newPriority < (STATUS_PRIORITY[directTool.status] ?? 0)) return true;
 
         const updatedToolCalls = [...subagent.toolCalls];
-        updatedToolCalls[toolIndex] = {
-          ...updatedToolCalls[toolIndex],
-          status,
-          ...(result !== undefined && { result }),
-          ...(errorMessage !== undefined && { errorMessage }),
-          ...(durationMs !== undefined && { durationMs }),
-        };
+        updatedToolCalls[toolIndex] = { ...directTool, ...patch };
         subagents.value = {
           ...subagents.value,
           [subagentId]: {
@@ -388,34 +392,26 @@ export const useSubagentStore = defineStore('subagent', () => {
         return true;
       }
 
-      for (let msgIdx = 0; msgIdx < subagent.messages.length; msgIdx++) {
-        const msg = subagent.messages[msgIdx];
-        if (msg.toolCalls) {
-          const msgToolIndex = msg.toolCalls.findIndex(t => t.id === toolUseId);
-          if (msgToolIndex !== -1) {
-            const oldPriority = STATUS_PRIORITY[msg.toolCalls[msgToolIndex].status] ?? 0;
-            if (newPriority < oldPriority) return true;
+      for (const [msgIdx, msg] of subagent.messages.entries()) {
+        if (!msg.toolCalls) continue;
+        const msgToolIndex = msg.toolCalls.findIndex(t => t.id === toolUseId);
+        const nestedTool = msgToolIndex === -1 ? undefined : msg.toolCalls[msgToolIndex];
+        if (!nestedTool) continue;
 
-            const updatedMsgToolCalls = [...msg.toolCalls];
-            updatedMsgToolCalls[msgToolIndex] = {
-              ...updatedMsgToolCalls[msgToolIndex],
-              status,
-              ...(result !== undefined && { result }),
-              ...(errorMessage !== undefined && { errorMessage }),
-              ...(durationMs !== undefined && { durationMs }),
-            };
-            const updatedMessages = [...subagent.messages];
-            updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
-            subagents.value = {
-              ...subagents.value,
-              [subagentId]: {
-                ...subagent,
-                messages: updatedMessages,
-              },
-            };
-            return true;
-          }
-        }
+        if (newPriority < (STATUS_PRIORITY[nestedTool.status] ?? 0)) return true;
+
+        const updatedMsgToolCalls = [...msg.toolCalls];
+        updatedMsgToolCalls[msgToolIndex] = { ...nestedTool, ...patch };
+        const updatedMessages = [...subagent.messages];
+        updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
+        subagents.value = {
+          ...subagents.value,
+          [subagentId]: {
+            ...subagent,
+            messages: updatedMessages,
+          },
+        };
+        return true;
       }
     }
     return false;
@@ -427,11 +423,12 @@ export const useSubagentStore = defineStore('subagent', () => {
   ): boolean {
     for (const [subagentId, subagent] of Object.entries(subagents.value)) {
       const toolIndex = subagent.toolCalls.findIndex(t => t.id === toolUseId);
-      if (toolIndex !== -1) {
+      const directTool = toolIndex === -1 ? undefined : subagent.toolCalls[toolIndex];
+      if (directTool) {
         const updatedToolCalls = [...subagent.toolCalls];
         updatedToolCalls[toolIndex] = {
-          ...updatedToolCalls[toolIndex],
-          metadata: { ...updatedToolCalls[toolIndex].metadata, ...metadata },
+          ...directTool,
+          metadata: { ...directTool.metadata, ...metadata },
         };
         subagents.value = {
           ...subagents.value,
@@ -443,28 +440,27 @@ export const useSubagentStore = defineStore('subagent', () => {
         return true;
       }
 
-      for (let msgIdx = 0; msgIdx < subagent.messages.length; msgIdx++) {
-        const msg = subagent.messages[msgIdx];
-        if (msg.toolCalls) {
-          const msgToolIndex = msg.toolCalls.findIndex(t => t.id === toolUseId);
-          if (msgToolIndex !== -1) {
-            const updatedMsgToolCalls = [...msg.toolCalls];
-            updatedMsgToolCalls[msgToolIndex] = {
-              ...updatedMsgToolCalls[msgToolIndex],
-              metadata: { ...updatedMsgToolCalls[msgToolIndex].metadata, ...metadata },
-            };
-            const updatedMessages = [...subagent.messages];
-            updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
-            subagents.value = {
-              ...subagents.value,
-              [subagentId]: {
-                ...subagent,
-                messages: updatedMessages,
-              },
-            };
-            return true;
-          }
-        }
+      for (const [msgIdx, msg] of subagent.messages.entries()) {
+        if (!msg.toolCalls) continue;
+        const msgToolIndex = msg.toolCalls.findIndex(t => t.id === toolUseId);
+        const nestedTool = msgToolIndex === -1 ? undefined : msg.toolCalls[msgToolIndex];
+        if (!nestedTool) continue;
+
+        const updatedMsgToolCalls = [...msg.toolCalls];
+        updatedMsgToolCalls[msgToolIndex] = {
+          ...nestedTool,
+          metadata: { ...nestedTool.metadata, ...metadata },
+        };
+        const updatedMessages = [...subagent.messages];
+        updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
+        subagents.value = {
+          ...subagents.value,
+          [subagentId]: {
+            ...subagent,
+            messages: updatedMessages,
+          },
+        };
+        return true;
       }
     }
     return false;
@@ -492,16 +488,16 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     return contentBlocks
       .filter((b): b is ToolUseBlock => b.type === 'tool_use')
-      .map(block => {
+      .map((block): ToolCall => {
         const existing = subagent.toolCalls.find(t => t.id === block.id);
         return {
           id: block.id,
           name: block.name,
           input: block.input,
           status: existing?.status ?? 'completed',
-          result: existing?.result,
-          errorMessage: existing?.errorMessage,
-          metadata: existing?.metadata,
+          ...(existing?.result !== undefined && { result: existing.result }),
+          ...(existing?.errorMessage !== undefined && { errorMessage: existing.errorMessage }),
+          ...(existing?.metadata !== undefined && { metadata: existing.metadata }),
         };
       });
   }
@@ -554,15 +550,18 @@ export const useSubagentStore = defineStore('subagent', () => {
           .join('\n') || '';
       }
       if (!contentText) contentText = extractLastTextFromMessages(tool.agentMessages);
+      const totalToolUseCount = parsed.totalToolUseCount ?? tool.agentToolCount;
+      const resultAgentId = tool.sdkAgentId || parsed.agentId;
       result = {
         content: contentText,
-        totalDurationMs: parsed.totalDurationMs,
-        totalTokens: parsed.totalTokens,
-        totalToolUseCount: parsed.totalToolUseCount ?? tool.agentToolCount,
-        sdkAgentId: tool.sdkAgentId || parsed.agentId,
+        ...(parsed.totalDurationMs !== undefined && { totalDurationMs: parsed.totalDurationMs }),
+        ...(parsed.totalTokens !== undefined && { totalTokens: parsed.totalTokens }),
+        ...(totalToolUseCount !== undefined && { totalToolUseCount }),
+        ...(resultAgentId !== undefined && { sdkAgentId: resultAgentId }),
       };
     }
 
+    const restoredAgentId = tool.sdkAgentId || result?.sdkAgentId;
     const startTime = tool.agentStartTimestamp ?? Date.now();
     const endTime = tool.agentEndTimestamp ?? Date.now();
     const messages = stripLeadingUserMessage(buildChatMessagesFromHistory(tool.agentMessages || [], tool.id, startTime));
@@ -579,10 +578,10 @@ export const useSubagentStore = defineStore('subagent', () => {
         endTime,
         messages,
         toolCalls: [],
-        result,
-        model: tool.agentModel,
-        templatePath: tool.agentTemplatePath,
-        sdkAgentId: tool.sdkAgentId || result?.sdkAgentId,
+        ...(result !== undefined && { result }),
+        ...(tool.agentModel !== undefined && { model: tool.agentModel }),
+        ...(tool.agentTemplatePath !== undefined && { templatePath: tool.agentTemplatePath }),
+        ...(restoredAgentId !== undefined && { sdkAgentId: restoredAgentId }),
         messagesSealed: false,
         ...(isBackground ? { isBackground: true } : {}),
       },
@@ -633,15 +632,16 @@ export const useSubagentStore = defineStore('subagent', () => {
     if (!subagent) return;
 
     const existingToolStatuses = new Map<string, ToolStatus>();
-    for (const tc of subagent.toolCalls) {
-      existingToolStatuses.set(tc.id, { status: tc.status, result: tc.result, errorMessage: tc.errorMessage });
-    }
+    const rememberStatus = (tc: ToolCall): void => {
+      existingToolStatuses.set(tc.id, {
+        status: tc.status,
+        ...(tc.result !== undefined && { result: tc.result }),
+        ...(tc.errorMessage !== undefined && { errorMessage: tc.errorMessage }),
+      });
+    };
+    for (const tc of subagent.toolCalls) rememberStatus(tc);
     for (const msg of subagent.messages) {
-      if (msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          existingToolStatuses.set(tc.id, { status: tc.status, result: tc.result, errorMessage: tc.errorMessage });
-        }
-      }
+      for (const tc of msg.toolCalls ?? []) rememberStatus(tc);
     }
 
     const messages = stripLeadingUserMessage(

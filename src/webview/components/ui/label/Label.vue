@@ -4,6 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { Label } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<LabelProps & { class?: HTMLAttributes["class"] }>()
 
@@ -12,7 +13,7 @@ const delegatedProps = reactiveOmit(props, "class")
 
 <template>
   <Label
-    v-bind="delegatedProps"
+    v-bind="definedProps(delegatedProps)"
     :class="
       cn(
         'text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70',

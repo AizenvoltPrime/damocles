@@ -11,9 +11,9 @@ const props = withDefaults(
     content: string;
     /** When set (e.g. WebFetch's source URL), relative image/link hrefs are resolved against it so
      *  extracted web content renders correctly. Omitted for normal messages → hrefs pass through. */
-    baseUrl?: string;
+    baseUrl?: string | undefined;
     /** Gate remote images behind click-to-load. Default true (chat unchanged); Memory panel passes false. */
-    allowRemoteImages?: boolean;
+    allowRemoteImages?: boolean | undefined;
   }>(),
   { baseUrl: undefined, allowRemoteImages: true }
 );
@@ -72,7 +72,7 @@ function handleLinkClick(e: MouseEvent, href: string) {
 
   const match = filePath.match(/(.*):(\d+)(-\d+)?$/);
   let values: { line: number } | undefined;
-  if (match) {
+  if (match?.[1] !== undefined && match[2] !== undefined) {
     filePath = match[1];
     values = { line: parseInt(match[2]) };
   }
@@ -84,7 +84,7 @@ function handleLinkClick(e: MouseEvent, href: string) {
   postMessage({
     type: 'openFile',
     filePath,
-    line: values?.line,
+    ...(values !== undefined && { line: values.line }),
   });
 }
 
@@ -159,7 +159,7 @@ function renderToken(token: Token): VNode | null {
       }
       // Allowlist, not denylist: a denylist misses uppercase HTTPS:// and scheme-relative //host.
       if (props.allowRemoteImages === false && !src.toLowerCase().startsWith('data:image/')) {
-        return h(RemoteImagePlaceholder, { src, alt: imgToken.text, title: imgToken.title || undefined });
+        return h(RemoteImagePlaceholder, { src, alt: imgToken.text, ...(imgToken.title ? { title: imgToken.title } : {}) });
       }
       return h('img', {
         src,

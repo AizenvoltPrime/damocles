@@ -3,11 +3,11 @@ import { computed } from 'vue';
 import { IconImage } from '@/components/icons';
 
 const props = defineProps<{
-  filename?: string;
-  width?: number;
-  height?: number;
-  title?: string;
-  thumbnailUrl?: string;
+  filename?: string | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
+  title?: string | undefined;
+  thumbnailUrl?: string | undefined;
 }>();
 
 const emit = defineEmits<{

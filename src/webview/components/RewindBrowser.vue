@@ -53,6 +53,8 @@ const filteredPrompts = computed(() => {
   );
 });
 
+const selectedPrompt = computed<RewindHistoryItem | undefined>(() => filteredPrompts.value[selectedIndex.value]);
+
 watch(() => props.isOpen, (isOpen) => {
   if (isOpen) {
     searchQuery.value = '';
@@ -93,12 +95,12 @@ function handleKeyDown(event: KeyboardEvent) {
         selectedIndex.value = 0;
       }
       break;
-    case 'Enter':
+    case 'Enter': {
       event.preventDefault();
-      if (filteredPrompts.value.length > 0) {
-        emit('select', filteredPrompts.value[selectedIndex.value]);
-      }
+      const selected = selectedPrompt.value;
+      if (selected) emit('select', selected);
       break;
+    }
     case 'Escape':
       event.preventDefault();
       emit('close');
@@ -213,12 +215,12 @@ onUnmounted(() => {
           </div>
 
           <div
-            v-if="filteredPrompts.length > 0 && filteredPrompts[selectedIndex]"
+            v-if="selectedPrompt"
             class="px-4 py-3 border-t border-border/30 bg-card/30"
           >
             <!-- Legacy (checkpoint-less) compaction anchor: branches to the full pre-compaction
                  conversation in a new panel; no files change. -->
-            <template v-if="filteredPrompts[selectedIndex].kind === 'compaction' && !isCheckpointBacked(filteredPrompts[selectedIndex])">
+            <template v-if="selectedPrompt.kind === 'compaction' && !isCheckpointBacked(selectedPrompt)">
               <div class="flex items-start gap-2 text-xs text-muted-foreground">
                 <IconLayers :size="14" class="mt-0.5 shrink-0 text-info" />
                 <span class="flex-1 min-w-0">{{ t('rewindBrowser.compactionRestores') }}</span>
@@ -232,33 +234,33 @@ onUnmounted(() => {
               <div class="flex items-start gap-2 text-xs text-muted-foreground">
                 <IconFile :size="14" class="mt-0.5 shrink-0" />
                 <div class="flex-1 min-w-0">
-                  <template v-if="filteredPrompts[selectedIndex].filesAffected === 0">
+                  <template v-if="selectedPrompt.filesAffected === 0">
                     <span>{{ t('rewindBrowser.noFilesRestored') }}</span>
                   </template>
-                  <template v-else-if="filteredPrompts[selectedIndex].files">
-                    <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}:</span>
+                  <template v-else-if="selectedPrompt.files">
+                    <span>{{ t('rewindBrowser.filesRestored', { n: selectedPrompt.filesAffected }, selectedPrompt.filesAffected) }}:</span>
                     <div class="flex flex-wrap gap-1 mt-1">
                       <span
-                        v-for="file in filteredPrompts[selectedIndex].files.slice(0, 5)"
+                        v-for="file in selectedPrompt.files.slice(0, 5)"
                         :key="file.path"
                         class="px-1.5 py-0.5 bg-primary/20 rounded text-xs font-mono truncate max-w-[7.5rem]"
                         :title="file.displayName"
                       >{{ file.displayName }}</span>
                       <span
-                        v-if="filteredPrompts[selectedIndex].files.length > 5"
+                        v-if="selectedPrompt.files.length > 5"
                         class="px-1.5 py-0.5 text-xs text-muted-foreground"
-                      >{{ t('rewindBrowser.moreFiles', { n: filteredPrompts[selectedIndex].files.length - 5 }) }}</span>
+                      >{{ t('rewindBrowser.moreFiles', { n: selectedPrompt.files.length - 5 }) }}</span>
                     </div>
                   </template>
                   <template v-else>
-                    <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}</span>
+                    <span>{{ t('rewindBrowser.filesRestored', { n: selectedPrompt.filesAffected }, selectedPrompt.filesAffected) }}</span>
                   </template>
                 </div>
               </div>
-              <template v-if="isCheckpointBacked(filteredPrompts[selectedIndex])">
+              <template v-if="isCheckpointBacked(selectedPrompt)">
                 <div class="flex items-center gap-2 text-xs text-info mt-2">
                   <IconLayers :size="14" />
-                  <span>{{ filteredPrompts[selectedIndex].filesAffected > 0
+                  <span>{{ selectedPrompt.filesAffected > 0
                     ? t('rewindBrowser.compactionFullRewind')
                     : t('rewindBrowser.compactionForkOnly') }}</span>
                 </div>

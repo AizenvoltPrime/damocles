@@ -1,14 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadCustomAgents, type ParseFrontmatter } from '../custom-agents';
+import { AGENT_SCOPE_BY_SOURCE } from '../types';
 
 /** Minimal YAML-ish frontmatter parser for the tests (key: value, with bool/number coercion). */
 const parseFrontmatter: ParseFrontmatter = ((content: string) => {
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(content);
   const fm: Record<string, unknown> = {};
-  if (m) {
+  if (m?.[1] !== undefined) {
     for (const line of m[1].split('\n')) {
       const idx = line.indexOf(':');
       if (idx === -1) continue;
@@ -127,5 +128,88 @@ describe('loadCustomAgents', () => {
     const a = load(true).get('Shared')!;
     expect(a.description).toBe('from project');
     expect(a.source).toBe('project-pi');
+  });
+
+  it('.damocles/agents overrides both .claude/agents and .pi/agents for the same name', () => {
+    writeAgent('.claude/agents', 'Dup', 'description: from claude');
+    writeAgent('.pi/agents', 'Dup', 'description: from pi');
+    writeAgent('.damocles/agents', 'Dup', 'description: from damocles');
+    const a = load(true).get('Dup')!;
+    expect(a.description).toBe('from damocles');
+    expect(a.source).toBe('project-damocles');
+  });
+
+  it('~/.damocles/agents overrides ~/.claude/agents and ~/.pi/agent/agents for the same name', () => {
+    writeAgentAt(home, '.claude/agents', 'shared', 'name: Shared\ndescription: from global claude');
+    writeAgentAt(home, '.pi/agent/agents', 'shared', 'name: Shared\ndescription: from global pi');
+    writeAgentAt(home, '.damocles/agents', 'shared', 'name: Shared\ndescription: from global damocles');
+    const a = load(false).get('Shared')!;
+    expect(a.description).toBe('from global damocles');
+    expect(a.source).toBe('global');
+  });
+
+  it('project .damocles/agents is NOT loaded when untrusted, while ~/.damocles/agents still is', () => {
+    writeAgent('.damocles/agents', 'ProjectOnly', 'description: untrusted');
+    writeAgentAt(home, '.damocles/agents', 'GlobalOnly', 'description: from global damocles');
+    const agents = load(false);
+    expect(agents.has('ProjectOnly')).toBe(false);
+    expect(agents.get('GlobalOnly')!.description).toBe('from global damocles');
+    expect(agents.get('GlobalOnly')!.source).toBe('global');
+  });
+
+  it('discovers .damocles/agents recursively (nested subfolders)', () => {
+    writeAgent('.damocles/agents/engineering', 'engineering-backend', 'name: Backend Architect\ndescription: designs systems');
+    const a = load(true).get('Backend Architect')!;
+    expect(a.description).toBe('designs systems');
+    expect(a.source).toBe('project-damocles');
+  });
+
+  it('skips symlinked .md files under .damocles/agents while loading the real ones', () => {
+    writeAgent('.damocles/agents', 'Real', 'description: a real file');
+    const outside = mkdtempSync(join(tmpdir(), 'damocles-outside-'));
+    try {
+      writeAgentAt(outside, 'agents', 'Target', 'description: outside the workspace tree');
+      let symlinkSupported = true;
+      try {
+        symlinkSync(join(outside, 'agents', 'Target.md'), join(cwd, '.damocles/agents', 'Linked.md'));
+      } catch (err) {
+        console.warn(`Skipping symlink-refusal test: symlink creation failed (${(err as Error).message})`);
+        symlinkSupported = false;
+      }
+      if (!symlinkSupported) return;
+
+      const agents = load(true);
+      expect(agents.get('Real')!.description).toBe('a real file');
+      expect(agents.has('Linked')).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('AGENT_SCOPE_BY_SOURCE', () => {
+  // The @ menu and /context badge each agent through this map, so every source the loader can emit
+  // has to land on the scope a user would read off the file's location.
+  it('badges a loaded agent by where its file lives', () => {
+    writeAgentAt(home, '.claude/agents', 'g1', 'name: GlobalClaude\ndescription: d');
+    writeAgentAt(home, '.pi/agent/agents', 'g2', 'name: GlobalPi\ndescription: d');
+    writeAgentAt(home, '.damocles/agents', 'g3', 'name: GlobalDamocles\ndescription: d');
+    writeAgent('.claude/agents', 'p1', 'name: ProjectClaude\ndescription: d');
+    writeAgent('.pi/agents', 'p2', 'name: ProjectPi\ndescription: d');
+    writeAgent('.damocles/agents', 'p3', 'name: ProjectDamocles\ndescription: d');
+
+    const agents = load(true);
+    const scopeOf = (name: string) => AGENT_SCOPE_BY_SOURCE[agents.get(name)!.source!];
+
+    expect(scopeOf('GlobalClaude')).toBe('user');
+    expect(scopeOf('GlobalPi')).toBe('user');
+    expect(scopeOf('GlobalDamocles')).toBe('user');
+    expect(scopeOf('ProjectClaude')).toBe('project');
+    expect(scopeOf('ProjectPi')).toBe('project');
+    expect(scopeOf('ProjectDamocles')).toBe('project');
+  });
+
+  it('badges an agent carrying no source as user scope', () => {
+    expect(AGENT_SCOPE_BY_SOURCE['default']).toBe('user');
   });
 });

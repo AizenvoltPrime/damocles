@@ -11,7 +11,7 @@ vi.mock('vscode', () => ({
   window: { showErrorMessage: vi.fn() },
   workspace: { getConfiguration: () => ({ get: () => undefined }) },
   l10n: { t: (s: string) => s },
-}), { virtual: true });
+}));
 
 vi.mock('../../../../pi-session/session-store', () => ({
   renamePiSession: vi.fn(),

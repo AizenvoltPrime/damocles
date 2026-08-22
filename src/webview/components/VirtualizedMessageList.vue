@@ -141,9 +141,9 @@ const visibleItems = computed(() => {
   const frameItems = engine.frame.value.items;
   const result: Array<{ item: typeof all[number]; frameItem: typeof frameItems[number]; index: number }> = [];
   for (let i = start; i < end && i < all.length; i++) {
-    if (i < frameItems.length) {
-      result.push({ item: all[i], frameItem: frameItems[i], index: i });
-    }
+    const item = all[i];
+    const frameItem = frameItems[i];
+    if (item && frameItem) result.push({ item, frameItem, index: i });
   }
   return result;
 });

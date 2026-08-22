@@ -27,16 +27,24 @@ vi.mock("node:os", async (importOriginal) => {
 const logMock = vi.hoisted(() => vi.fn());
 vi.mock("../../../../logger", () => ({ log: logMock }));
 
-import type { McpServerConfig, McpStdioServerConfig } from "../../../../../shared/types/mcp";
+import type { McpServerConfig, McpServerSource, McpStdioServerConfig } from "../../../../../shared/types/mcp";
 import {
   addDamoclesMcpServer,
   updateDamoclesMcpServer,
   deleteDamoclesMcpServer,
+  McpWriteError,
 } from "../mcp-config-write";
 import { isFormEditableMcpServerConfig } from "../mcp-config-validate";
 
 const MCP_PATH = path.join(fakeHome, ".damocles", "mcp.json");
-const NO_WORKSPACE_NAMES: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The shadowing set the manager hands the write path: server name → the higher-precedence source
+ * that already owns it. A map rather than a set because the refusal has to name the offending file.
+ */
+const NO_SHADOWING_NAMES: ReadonlyMap<string, McpServerSource> = new Map();
+const shadowedBy = (source: McpServerSource): ReadonlyMap<string, McpServerSource> =>
+  new Map<string, McpServerSource>([["shared", source]]);
 
 function writeConfigFile(content: string): void {
   fs.mkdirSync(path.dirname(MCP_PATH), { recursive: true });
@@ -66,7 +74,7 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
   it("creates ~/.damocles/mcp.json and its parent directory on the first write", async () => {
     expect(fs.existsSync(MCP_PATH)).toBe(false);
 
-    await addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES);
+    await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
 
     expect(readServers()).toEqual({ docs: stdio });
     // Trailing newline, matching `syncPermissionRulesToSettings`' sibling files.
@@ -81,7 +89,7 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
       mcpServers: { existing: { command: "old" } },
     }, null, 2));
 
-    await addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES);
+    await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
 
     const doc = readConfigFile();
     expect(doc["$schema"]).toBe("https://example.invalid/mcp.schema.json");
@@ -96,7 +104,7 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
     const exotic = { command: "legacy", lifecycle: "lazy", idleTimeout: 7, debug: true, env: { TOKEN: "keep-me" } };
     writeConfigFile(JSON.stringify({ mcpServers: { exotic, docs: { command: "old" } } }, null, 2));
 
-    await updateDamoclesMcpServer("docs", undefined, { command: "new" }, NO_WORKSPACE_NAMES);
+    await updateDamoclesMcpServer("docs", undefined, { command: "new" }, NO_SHADOWING_NAMES);
 
     expect(readServers()["exotic"]).toEqual(exotic);
     expect(isFormEditableMcpServerConfig(exotic)).toBe(false);
@@ -106,7 +114,7 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
     const handEdited = '{ "mcpServers": { "docs": { "command": "x" },,, }';
     writeConfigFile(handEdited);
 
-    await expect(addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES)).rejects.toThrow(/not valid JSON/);
+    await expect(addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES)).rejects.toThrow(/not valid JSON/);
 
     expect(fs.readFileSync(MCP_PATH, "utf-8")).toBe(handEdited);
   });
@@ -115,7 +123,7 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
     const wrongShape = JSON.stringify({ mcpServers: ["docs"] });
     writeConfigFile(wrongShape);
 
-    await expect(addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES)).rejects.toThrow(/not an object/);
+    await expect(addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES)).rejects.toThrow(/not an object/);
 
     expect(fs.readFileSync(MCP_PATH, "utf-8")).toBe(wrongShape);
   });
@@ -123,13 +131,13 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
   it("treats a missing file as zero servers rather than an error", async () => {
     expect(fs.existsSync(MCP_PATH)).toBe(false);
 
-    await addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES);
+    await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
 
     expect(readConfigFile()).toEqual({ mcpServers: { docs: stdio } });
   });
 
   it("writes atomically, leaving no temp file behind", async () => {
-    await addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES);
+    await addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES);
 
     // `writeFile` truncates before it writes; a crash in that window would leave a zero-length
     // mcp.json that parses as nothing and drops every server. The write goes to a sibling and is
@@ -144,8 +152,8 @@ describe("writeDamoclesMcpServers — file round-trip", () => {
     // `"toString" in servers` is true for a plain object, so an unguarded check reports that a server
     // nobody defined already exists — and assigning to `__proto__` would hit the setter, mutating the
     // prototype while JSON.stringify drops the key and the user is told the save worked.
-    await addDamoclesMcpServer("toString", stdio, NO_WORKSPACE_NAMES);
-    await addDamoclesMcpServer("__proto__", stdio, NO_WORKSPACE_NAMES);
+    await addDamoclesMcpServer("toString", stdio, NO_SHADOWING_NAMES);
+    await addDamoclesMcpServer("__proto__", stdio, NO_SHADOWING_NAMES);
 
     // Asserted key-by-key rather than against an object literal: `{ __proto__: … }` in a literal sets
     // the prototype instead of a key, which is the same trap the code under test had to avoid.
@@ -172,16 +180,16 @@ describe("writeDamoclesMcpServers — concurrency", () => {
     // Fired without awaiting the first: both read-modify-write cycles are in flight at once. If the
     // read happened outside the queued critical section, the second would read the pre-first map and
     // `a` would vanish.
-    const first = addDamoclesMcpServer("alpha", { command: "a" }, NO_WORKSPACE_NAMES);
-    const second = addDamoclesMcpServer("beta", { command: "b" }, NO_WORKSPACE_NAMES);
+    const first = addDamoclesMcpServer("alpha", { command: "a" }, NO_SHADOWING_NAMES);
+    const second = addDamoclesMcpServer("beta", { command: "b" }, NO_SHADOWING_NAMES);
     await Promise.all([first, second]);
 
     expect(readServers()).toEqual({ alpha: { command: "a" }, beta: { command: "b" } });
   });
 
   it("keeps the queue alive after a rejected write so the next one still lands", async () => {
-    const rejected = addDamoclesMcpServer("bad name", { command: "a" }, NO_WORKSPACE_NAMES);
-    const accepted = addDamoclesMcpServer("good", { command: "b" }, NO_WORKSPACE_NAMES);
+    const rejected = addDamoclesMcpServer("bad name", { command: "a" }, NO_SHADOWING_NAMES);
+    const accepted = addDamoclesMcpServer("good", { command: "b" }, NO_SHADOWING_NAMES);
 
     await expect(rejected).rejects.toThrow();
     await accepted;
@@ -201,7 +209,7 @@ describe("validation — nothing is written when a definition is rejected", () =
 
   it("rejects a missing command and writes no file at all", async () => {
     await expectNoWrite(
-      () => addDamoclesMcpServer("docs", {} as McpServerConfig, NO_WORKSPACE_NAMES),
+      () => addDamoclesMcpServer("docs", {} as McpServerConfig, NO_SHADOWING_NAMES),
       /a command is required/,
     );
     expect(fs.existsSync(MCP_PATH)).toBe(false);
@@ -209,7 +217,7 @@ describe("validation — nothing is written when a definition is rejected", () =
 
   it("rejects an unknown key rather than silently stripping or persisting it", async () => {
     await expectNoWrite(
-      () => addDamoclesMcpServer("docs", { command: "x", lifecycle: "lazy" } as McpServerConfig, NO_WORKSPACE_NAMES),
+      () => addDamoclesMcpServer("docs", { command: "x", lifecycle: "lazy" } as McpServerConfig, NO_SHADOWING_NAMES),
       /"lifecycle" is not a supported server option/,
     );
   });
@@ -221,7 +229,7 @@ describe("validation — nothing is written when a definition is rejected", () =
     ["an untrimmed name", " docs ", /whitespace/],
     ["an over-long name", "x".repeat(65), /at most 64 characters/],
   ])("rejects %s", async (_label, name, message) => {
-    await expectNoWrite(() => addDamoclesMcpServer(name, stdio, NO_WORKSPACE_NAMES), message);
+    await expectNoWrite(() => addDamoclesMcpServer(name, stdio, NO_SHADOWING_NAMES), message);
   });
 
   it.each([
@@ -232,7 +240,7 @@ describe("validation — nothing is written when a definition is rejected", () =
     ["an empty headers map", { type: "http", url: "https://x.invalid", headers: {} }, /headers must be omitted/],
     ["a non-string header value", { type: "http", url: "https://x.invalid", headers: { A: 1 } }, /must be a string/],
   ])("rejects a remote server with %s", async (_label, config, message) => {
-    await expectNoWrite(() => addDamoclesMcpServer("docs", config as McpServerConfig, NO_WORKSPACE_NAMES), message);
+    await expectNoWrite(() => addDamoclesMcpServer("docs", config as McpServerConfig, NO_SHADOWING_NAMES), message);
   });
 
   it.each([
@@ -243,7 +251,7 @@ describe("validation — nothing is written when a definition is rejected", () =
     ["a url without a remote type", { command: "x", url: "https://x.invalid" }, /must set its type/],
     ["an unknown type", { type: "grpc", url: "https://x.invalid" }, /not a supported server type/],
   ])("rejects a stdio server with %s", async (_label, config, message) => {
-    await expectNoWrite(() => addDamoclesMcpServer("docs", config as McpServerConfig, NO_WORKSPACE_NAMES), message);
+    await expectNoWrite(() => addDamoclesMcpServer("docs", config as McpServerConfig, NO_SHADOWING_NAMES), message);
   });
 });
 
@@ -252,7 +260,7 @@ describe("secrets", () => {
     await addDamoclesMcpServer(
       "remote",
       { type: "http", url: "https://api.example.invalid/mcp", bearerTokenEnv: "EXAMPLE_API_TOKEN" },
-      NO_WORKSPACE_NAMES,
+      NO_SHADOWING_NAMES,
     );
 
     const raw = fs.readFileSync(MCP_PATH, "utf-8");
@@ -268,11 +276,11 @@ describe("secrets", () => {
   it("rejects a raw bearerToken without echoing the token value", async () => {
     const config = { type: "http", url: "https://api.example.invalid/mcp", bearerToken: "sk-live-SECRET" };
 
-    await expect(addDamoclesMcpServer("remote", config as McpServerConfig, NO_WORKSPACE_NAMES))
+    await expect(addDamoclesMcpServer("remote", config as McpServerConfig, NO_SHADOWING_NAMES))
       .rejects.toThrow(/bearer token cannot be stored here/);
 
     expect(fs.existsSync(MCP_PATH)).toBe(false);
-    const thrown = await addDamoclesMcpServer("remote", config as McpServerConfig, NO_WORKSPACE_NAMES).catch(e => String(e));
+    const thrown = await addDamoclesMcpServer("remote", config as McpServerConfig, NO_SHADOWING_NAMES).catch(e => String(e));
     expect(thrown).not.toContain("sk-live-SECRET");
   });
 
@@ -280,7 +288,7 @@ describe("secrets", () => {
     await addDamoclesMcpServer(
       "docs",
       { command: "docs-server", env: { API_KEY: "sk-live-SECRET" } },
-      NO_WORKSPACE_NAMES,
+      NO_SHADOWING_NAMES,
     );
 
     expect(logMock).toHaveBeenCalled();
@@ -293,26 +301,49 @@ describe("secrets", () => {
 });
 
 describe("name-collision policy", () => {
-  it("rejects adding a name the workspace .mcp.json already defines", async () => {
-    await expect(addDamoclesMcpServer("shared", stdio, new Set(["shared"])))
-      .rejects.toThrow(/already defined by this project's \.mcp\.json/);
+  /** The short file label the refusal must carry for each shadowing source. */
+  const SHADOWING_FILE: readonly (readonly [McpServerSource, string])[] = [
+    ["workspace", ".mcp.json"],
+    ["damocles-local", ".damocles/mcp.local.json"],
+  ];
+
+  it.each(SHADOWING_FILE)("rejects adding a name %s already defines, naming that file", async (source, file) => {
+    const err = await addDamoclesMcpServer("shared", stdio, shadowedBy(source)).catch(e => e as McpWriteError);
+
+    expect(err).toBeInstanceOf(McpWriteError);
+    // The code and params are what cross to the webview; the English message stays for the log only.
+    // `.damocles/mcp.local.json` outranks `~/.damocles/mcp.json` too, so naming the wrong file would
+    // send the user to edit a file that does not define the name.
+    expect((err as McpWriteError).info).toEqual({ code: "nameShadowed", params: { name: "shared", file } });
     expect(fs.existsSync(MCP_PATH)).toBe(false);
   });
 
-  it("rejects renaming onto a name the workspace .mcp.json defines", async () => {
+  it.each(SHADOWING_FILE)("rejects renaming onto a name %s defines", async (source, file) => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "old" } } }));
 
-    await expect(updateDamoclesMcpServer("docs", "shared", stdio, new Set(["shared"])))
-      .rejects.toThrow(/already defined by this project's \.mcp\.json/);
+    const err = await updateDamoclesMcpServer("docs", "shared", stdio, shadowedBy(source))
+      .catch(e => e as McpWriteError);
 
+    expect((err as McpWriteError).info).toEqual({ code: "nameShadowed", params: { name: "shared", file } });
     expect(readServers()).toEqual({ docs: { command: "old" } });
   });
 
-  it("ALLOWS adding a name only a claude/codex import defines, with no warning", async () => {
-    // Those sources are lower precedence than `~/.damocles/mcp.json`, so the override is the intended
-    // path: the entry is simply re-tagged `damocles`. Only the workspace file shadows us, and it is the
-    // only name set the collision check is given.
-    await addDamoclesMcpServer("imported-from-claude", stdio, NO_WORKSPACE_NAMES);
+  it("puts nothing but the name and the file in the refusal, never a config value", async () => {
+    // `params` is serialised to the webview and interpolated into a visible string. `env` is the usual
+    // home for an MCP token, so a config value reaching it would put a credential on screen.
+    const withSecret: McpServerConfig = { command: "node", env: { TOKEN: "sk-live-SUPERSECRET" } };
+
+    const err = await addDamoclesMcpServer("shared", withSecret, shadowedBy("workspace"))
+      .catch(e => e as McpWriteError);
+
+    expect(Object.keys((err as McpWriteError).info.params ?? {}).sort()).toEqual(["file", "name"]);
+    expect(JSON.stringify((err as McpWriteError).info)).not.toContain("SUPERSECRET");
+  });
+
+  it("ALLOWS adding a name only a claude/codex/claude-local import defines, with no warning", async () => {
+    // Those sources rank below `~/.damocles/mcp.json`, so they never appear in the shadowing map at
+    // all and the override is the intended path: the entry is simply re-tagged `damocles`.
+    await addDamoclesMcpServer("imported-from-claude", stdio, NO_SHADOWING_NAMES);
 
     expect(readServers()).toEqual({ "imported-from-claude": stdio });
     expect(logMock.mock.calls.flat().join(" ")).not.toMatch(/warn/i);
@@ -321,7 +352,7 @@ describe("name-collision policy", () => {
   it("rejects adding a name that already exists in ~/.damocles/mcp.json", async () => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "old" } } }));
 
-    await expect(addDamoclesMcpServer("docs", stdio, NO_WORKSPACE_NAMES))
+    await expect(addDamoclesMcpServer("docs", stdio, NO_SHADOWING_NAMES))
       .rejects.toThrow(/already exists in ~\/\.damocles\/mcp\.json/);
 
     expect(readServers()).toEqual({ docs: { command: "old" } });
@@ -330,7 +361,7 @@ describe("name-collision policy", () => {
   it("rejects updating a server Damocles does not own", async () => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "old" } } }));
 
-    await expect(updateDamoclesMcpServer("from-claude", undefined, stdio, NO_WORKSPACE_NAMES))
+    await expect(updateDamoclesMcpServer("from-claude", undefined, stdio, NO_SHADOWING_NAMES))
       .rejects.toThrow(/is not defined in ~\/\.damocles\/mcp\.json/);
 
     expect(readServers()).toEqual({ docs: { command: "old" } });
@@ -349,7 +380,7 @@ describe("update and delete", () => {
   it("renames in a single write, leaving exactly one entry under the new name and none under the old", async () => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "old" }, other: { command: "keep" } } }));
 
-    await updateDamoclesMcpServer("docs", "handbook", { command: "new" }, NO_WORKSPACE_NAMES);
+    await updateDamoclesMcpServer("docs", "handbook", { command: "new" }, NO_SHADOWING_NAMES);
 
     const servers = readServers();
     expect(Object.keys(servers).sort()).toEqual(["handbook", "other"]);
@@ -360,7 +391,7 @@ describe("update and delete", () => {
   it("edits in place when newServerName equals the current name", async () => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "old" } } }));
 
-    await updateDamoclesMcpServer("docs", "docs", { command: "new", cwd: "/srv" }, NO_WORKSPACE_NAMES);
+    await updateDamoclesMcpServer("docs", "docs", { command: "new", cwd: "/srv" }, NO_SHADOWING_NAMES);
 
     expect(readServers()).toEqual({ docs: { command: "new", cwd: "/srv" } });
   });
@@ -370,7 +401,7 @@ describe("update and delete", () => {
     // against itself. Only a rename may move a key.
     writeConfigFile(JSON.stringify({ mcpServers: { alpha: { command: "a" }, beta: { command: "b" }, gamma: { command: "c" } } }));
 
-    await updateDamoclesMcpServer("beta", undefined, { command: "b2" }, NO_WORKSPACE_NAMES);
+    await updateDamoclesMcpServer("beta", undefined, { command: "b2" }, NO_SHADOWING_NAMES);
 
     expect(Object.keys(readServers())).toEqual(["alpha", "beta", "gamma"]);
   });
@@ -381,7 +412,7 @@ describe("update and delete", () => {
     // Parses, but the wrong protocol — a distinct branch that must also stay quiet.
     ["a non-http URL", "ftp://user:sk-live-SECRET@example.invalid/mcp", /must use http or https/],
   ])("rejects %s without echoing the value, which can carry a token", async (_label, url, message) => {
-    const thrown = await addDamoclesMcpServer("remote", { type: "http", url } as McpServerConfig, NO_WORKSPACE_NAMES)
+    const thrown = await addDamoclesMcpServer("remote", { type: "http", url } as McpServerConfig, NO_SHADOWING_NAMES)
       .then(() => "resolved", (e: unknown) => String(e));
 
     expect(thrown).toMatch(message);
@@ -391,7 +422,7 @@ describe("update and delete", () => {
   it("rejects a rename onto another Damocles-owned name rather than overwriting it", async () => {
     writeConfigFile(JSON.stringify({ mcpServers: { docs: { command: "a" }, handbook: { command: "b" } } }));
 
-    await expect(updateDamoclesMcpServer("docs", "handbook", { command: "c" }, NO_WORKSPACE_NAMES))
+    await expect(updateDamoclesMcpServer("docs", "handbook", { command: "c" }, NO_SHADOWING_NAMES))
       .rejects.toThrow(/already exists in ~\/\.damocles\/mcp\.json/);
 
     expect(readServers()).toEqual({ docs: { command: "a" }, handbook: { command: "b" } });

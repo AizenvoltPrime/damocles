@@ -10,8 +10,11 @@ export interface McpServerEntry {
   config: McpServerConfig;
   enabled: boolean;
   /** Which config file this server was read from. See `McpServerSource` for what each member means. */
-  source?: McpServerSource;
-  /** True for imported servers the user cannot edit in Damocles (`claude` and `codex`). */
+  source: McpServerSource;
+  /**
+   * True for servers the user cannot edit in Damocles: the two Claude imports, the Codex import, and
+   * `damocles-local`, which is Damocles-owned but has no write path.
+   */
   readonly?: boolean;
 }
 

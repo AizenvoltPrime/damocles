@@ -95,7 +95,7 @@ describe('TeamRunner.run — seeds the immutable mission-brief section', () => {
     expect(seedIdx).toBeGreaterThan(teamStartedIdx); // seeded AFTER the webview registers the team
 
     const seed = messages[seedIdx];
-    if (seed.type !== 'teamScratchpadUpdate') throw new Error('unreachable');
+    if (seed?.type !== 'teamScratchpadUpdate') throw new Error('the seed message is not a teamScratchpadUpdate');
     expect(seed.entry.content).toBe(BRIEF);
     expect(seed.entry.agentName).toBe('system');
     expect(seed.entry.version).toBe(1);

@@ -42,7 +42,10 @@ function handleAccept() {
     action: 'accept',
     ...(content !== undefined ? { content } : {}),
   });
-  store.answerElicitation(elicitation.elicitationId, { action: 'accept', content });
+  store.answerElicitation(elicitation.elicitationId, {
+    action: 'accept',
+    ...(content !== undefined ? { content } : {}),
+  });
   formValues.value = {};
 }
 

@@ -177,6 +177,17 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — rejection", () =>
     expect(logged).not.toContain("API_KEY");
   });
 
+  it("still refreshes the panel when the post-write reload throws, and still fails the ack", async () => {
+    const { run, posted, settingsManager } = setup();
+    settingsManager.loadMcpConfig.mockRejectedValueOnce(new Error("mcp.json is unreadable"));
+
+    await run({ type: "mcpAddServer", requestId: REQ, serverName: "docs", config: STDIO });
+
+    expect(posted.filter(m => m.type === "mcpConfigUpdate")).toHaveLength(1);
+    expect(acks(posted)).toHaveLength(1);
+    expect(acks(posted)[0]?.ok).toBe(false);
+  });
+
   it("never puts the rejected config in the acknowledgement either", async () => {
     const { run, posted } = setup(new Error("rejected"));
 
@@ -188,5 +199,19 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — rejection", () =>
     });
 
     expect(JSON.stringify(acks(posted))).not.toContain("sk-live-SECRET");
+  });
+});
+
+describe("mcpReloadConfig", () => {
+  it("refreshes the panel even when the reload throws, so the Reload button is not left in flight", async () => {
+    // The button's in-flight state ends on `mcpConfigUpdate`; without one it spins until its
+    // lost-ack timeout, over a panel showing state that no longer matches the host.
+    const { run, posted, settingsManager } = setup();
+    settingsManager.loadMcpConfig.mockRejectedValueOnce(new Error("mcp.json is unreadable"));
+
+    await expect(run({ type: "mcpReloadConfig" })).rejects.toThrow("mcp.json is unreadable");
+
+    expect(posted.filter(m => m.type === "mcpConfigUpdate")).toHaveLength(1);
+    expect(settingsManager.sendMcpStatus).toHaveBeenCalled();
   });
 });

@@ -90,6 +90,7 @@ interface QueryItem {
   tag: string;
   id?: string;
   type?: string;
+  text?: string;
   value?: string;
 }
 

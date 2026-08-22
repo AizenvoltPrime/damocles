@@ -62,6 +62,9 @@ export class CompassService implements ICompassService {
 	private _statusBar: CompassStatusBar | null = null;
 	private _decorations: BlastRadiusDecorations | null = null;
 	private _viewDisposables: vscode.Disposable[] = [];
+	private _viewContext: vscode.ExtensionContext | null = null;
+	private _viewsRegistered = false;
+	private _trustListener: vscode.Disposable | null = null;
 
 	constructor(workspacePath: string, _damoclesDir: string, extensionPath: string, workerFactory: CompassWorkerFactory = defaultWorkerFactory) {
 		this._workspacePath = workspacePath;
@@ -73,9 +76,18 @@ export class CompassService implements ICompassService {
 			autoReindex: config.get<boolean>('autoReindex', true),
 		};
 		this._isIndexableFile = createWatcherFileFilter(workspacePath, this._config.excludePatterns);
+		// Trust can only be granted, never revoked in place, so this only ever starts Compass.
+		this._trustListener = vscode.workspace.onDidGrantWorkspaceTrust?.(() => this._onWorkspaceTrustGranted()) ?? null;
 	}
 
+	/**
+	 * The single flag every consumer reads: tool eligibility, the system prompt block, the webview
+	 * handlers, the views, and indexing itself. Trust belongs here rather than at those call sites
+	 * because Compass walks and reads the whole workspace tree and runs git inside it, so an untrusted
+	 * workspace must not reach the point of being read at all.
+	 */
 	get isEnabled(): boolean {
+		if (!vscode.workspace.isTrusted) return false;
 		return vscode.workspace.getConfiguration('damocles.compass').get<boolean>('enabled', false);
 	}
 
@@ -369,8 +381,22 @@ export class CompassService implements ICompassService {
 		return this._sendRequest({ type: 'tree:edgesForSymbol', qualifiedName });
 	}
 
-	registerViews(context: vscode.ExtensionContext): void {
+	/** Deferred startup: the views and the index were both withheld while the workspace was untrusted. */
+	private _onWorkspaceTrustGranted(): void {
+		if (this._disposed) return;
 		if (!this.isEnabled) return;
+		if (this._viewContext) this.registerViews(this._viewContext);
+		this.ensureInitialized().catch(err => {
+			log('[CompassService] Init after trust grant failed: %O', err);
+		});
+	}
+
+	registerViews(context: vscode.ExtensionContext): void {
+		// Held so a later trust grant can register the views the untrusted call skipped.
+		this._viewContext = context;
+		if (!this.isEnabled) return;
+		if (this._viewsRegistered) return;
+		this._viewsRegistered = true;
 
 		this._treeProvider = new CompassTreeProvider(this, this._workspacePath);
 		this._blastRadiusProvider = new BlastRadiusTreeProvider();
@@ -440,6 +466,10 @@ export class CompassService implements ICompassService {
 
 	async dispose(): Promise<void> {
 		this._disposed = true;
+		this._trustListener?.dispose();
+		this._trustListener = null;
+		this._viewContext = null;
+		this._viewsRegistered = false;
 		if (this._debounceTimer) {
 			clearTimeout(this._debounceTimer);
 			this._debounceTimer = null;

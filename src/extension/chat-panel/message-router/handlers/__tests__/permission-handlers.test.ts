@@ -25,7 +25,7 @@ function setup() {
   let sessionId = "old-1aaaaaaa";
   const session = {
     getPlanFilePath: vi.fn(() => "/old-plan.md"),
-    getPlanContent: vi.fn(async () => "# Plan: do X"),
+    getPlanContent: vi.fn<() => Promise<string | null>>(async () => "# Plan: do X"),
     persistenceSessionId: "old-1aaaaaaa",
     get currentSessionId() {
       return sessionId;

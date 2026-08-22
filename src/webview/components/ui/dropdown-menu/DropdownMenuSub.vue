@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DropdownMenuSubEmits, DropdownMenuSubProps } from "reka-ui"
+import { definedProps } from "@/lib/definedProps"
 import {
   DropdownMenuSub,
   useForwardPropsEmits,
@@ -12,7 +13,7 @@ const forwarded = useForwardPropsEmits(props, emits)
 </script>
 
 <template>
-  <DropdownMenuSub v-bind="forwarded">
+  <DropdownMenuSub v-bind="definedProps(forwarded)">
     <slot />
   </DropdownMenuSub>
 </template>

@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue';
+import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { HistoryAgentMessage, ContentBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
@@ -41,7 +41,7 @@ function buildChatMessagesFromExplore(
           name: block.name,
           input: block.input,
           status: 'completed',
-          result: block.result,
+          ...(block.result !== undefined && { result: block.result }),
         });
       }
     }
@@ -51,7 +51,7 @@ function buildChatMessagesFromExplore(
       role: msg.role,
       content: '',
       contentBlocks,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      ...(toolCalls.length > 0 && { toolCalls }),
       timestamp: startTime + idx,
     };
   });

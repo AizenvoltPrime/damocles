@@ -254,7 +254,7 @@ describe('createBrowserRequestInputTool.execute', () => {
     const tool = makeTool(async () => { prompted = true; return { behavior: 'allow', updatedInput: { values: {} } }; }, () => null);
     const res = await tool.execute('t', { fields: [{ id: 'a', label: 'A', type: 'text', selector: '#a' }] }, signal());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/No active browser page/);
+    expect(res.content[0]!.text).toMatch(/No active browser page/);
     expect(prompted).toBe(false); // the user is never asked to type a secret with nowhere to inject it
   });
 
@@ -269,8 +269,8 @@ describe('createBrowserRequestInputTool.execute', () => {
       ],
     }, signal());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/invalid form schema/i);
-    expect(res.content[0].text).not.toMatch(/user|reject|denied/i);
+    expect(res.content[0]!.text).toMatch(/invalid form schema/i);
+    expect(res.content[0]!.text).not.toMatch(/user|reject|denied/i);
     expect(prompted).toBe(false);
   });
 
@@ -294,7 +294,7 @@ describe('createBrowserRequestInputTool.execute', () => {
     };
     const tool = makeTool(async () => ({ behavior: 'allow', updatedInput: { values: { name: 'X' } } }), () => page);
     const res = await tool.execute('t', schema, signal());
-    const parsed = JSON.parse(res.content[0].text!);
+    const parsed = JSON.parse(res.content[0]!.text!);
     expect(parsed.submitted).toBe(false);
     expect(parsed.fields[0].ok).toBe(false);
     // The submit control was never clicked — the live form is not posted partially filled.
@@ -305,7 +305,7 @@ describe('createBrowserRequestInputTool.execute', () => {
     const tool = makeTool(async () => ({ behavior: 'allow', updatedInput: { values: {} } }), () => null);
     const res = await tool.execute('t', { fields: [{ id: 'a', label: 'A', type: 'text', selector: '#a' }] }, signal());
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/No active browser page/);
+    expect(res.content[0]!.text).toMatch(/No active browser page/);
   });
 
   it('injects values, submits, skips blank optionals, and returns a value-free result', async () => {
@@ -325,13 +325,13 @@ describe('createBrowserRequestInputTool.execute', () => {
       () => page,
     );
     const res = await tool.execute('t', schema, signal());
-    const parsed = JSON.parse(res.content[0].text!);
+    const parsed = JSON.parse(res.content[0]!.text!);
     expect(parsed.filled).toBe(2);
     expect(parsed.submitted).toBe(true);
     expect(parsed.fields.find((f: { label: string }) => f.label === 'Nick').skipped).toBe(true);
     // The secret was injected via fill but never appears in the model-facing result.
     expect(rec).toContainEqual(['fill', SECRET, { timeout: 15_000 }]);
-    expect(res.content[0].text).not.toContain(SECRET);
+    expect(res.content[0]!.text).not.toContain(SECRET);
   });
 
   it('reports a required-empty field as a value-free failure and never injects ""', async () => {
@@ -349,7 +349,7 @@ describe('createBrowserRequestInputTool.execute', () => {
       () => page,
     );
     const res = await tool.execute('t', schema, signal());
-    const parsed = JSON.parse(res.content[0].text!);
+    const parsed = JSON.parse(res.content[0]!.text!);
     const name = parsed.fields.find((f: { label: string }) => f.label === 'Name');
     expect(name.ok).toBe(false);
     expect(name.reason).toBe('required field was left empty');
@@ -363,7 +363,7 @@ describe('createBrowserRequestInputTool.execute', () => {
     const schema: FormSchema = { fields: [{ id: 'a', label: 'A', type: 'text', selector: '#a' }] };
     const tool = makeTool(async () => ({ behavior: 'allow' }), () => makePage([]));
     const res = await tool.execute('t', schema, signal());
-    const parsed = JSON.parse(res.content[0].text!);
+    const parsed = JSON.parse(res.content[0]!.text!);
     expect(parsed.fields[0].skipped).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useSubagentStore } from '../useSubagentStore';
+import { defined } from '@/__tests__/helpers';
 
 describe('useSubagentStore.registerAgentTool', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -8,29 +9,29 @@ describe('useSubagentStore.registerAgentTool', () => {
   it('flags the card as background when the Agent tool ran with run_in_background', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc1', { subagent_type: 'Explore', description: 'find', run_in_background: true });
-    expect(store.subagents['tc1'].isBackground).toBe(true);
+    expect(defined(store.subagents['tc1'], 'tc1').isBackground).toBe(true);
   });
 
   it('leaves isBackground false for a foreground Agent spawn', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc2', { subagent_type: 'Explore', description: 'find' });
-    expect(store.subagents['tc2'].isBackground).toBe(false);
+    expect(defined(store.subagents['tc2'], 'tc2').isBackground).toBe(false);
   });
 
   it('startSubagent corrects isBackground to the resolved flag (template default not in the call params)', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc3', { subagent_type: 'Explore', description: 'find' }); // param omitted → false
-    expect(store.subagents['tc3'].isBackground).toBe(false);
+    expect(defined(store.subagents['tc3'], 'tc3').isBackground).toBe(false);
     store.startSubagent('agent-3', 'Explore', 'tc3', true); // extension resolved background via frontmatter
-    expect(store.subagents['tc3'].isBackground).toBe(true);
-    expect(store.subagents['tc3'].sdkAgentId).toBe('agent-3');
+    expect(defined(store.subagents['tc3'], 'tc3').isBackground).toBe(true);
+    expect(defined(store.subagents['tc3'], 'tc3').sdkAgentId).toBe('agent-3');
   });
 
   it('startSubagent leaves isBackground untouched when no resolved flag is sent', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc4', { subagent_type: 'Explore', description: 'find', run_in_background: true });
     store.startSubagent('agent-4', 'Explore', 'tc4');
-    expect(store.subagents['tc4'].isBackground).toBe(true);
+    expect(defined(store.subagents['tc4'], 'tc4').isBackground).toBe(true);
   });
 });
 
@@ -40,11 +41,11 @@ describe('useSubagentStore live completion (foreground card)', () => {
   it('setSubagentResult resolves a running foreground card; a later duplicate completion does not re-open it or reset endTime', () => {
     const store = useSubagentStore();
     store.registerAgentTool('tc1', { subagent_type: 'Explore', description: 'find' });
-    expect(store.subagents['tc1'].status).toBe('running');
+    expect(defined(store.subagents['tc1'], 'tc1').status).toBe('running');
 
     // The synthesized toolCompleted{Agent} path: set the result while running → completes the card.
     store.setSubagentResult('tc1', { content: 'done', sdkAgentId: 'agent-1' });
-    const completed = store.subagents['tc1'];
+    const completed = defined(store.subagents['tc1'], 'tc1');
     expect(completed.status).toBe('completed');
     expect(completed.result?.content).toBe('done');
     const endTime = completed.endTime;
@@ -53,8 +54,8 @@ describe('useSubagentStore live completion (foreground card)', () => {
     // reset its end time (status + endTime are the guarded, terminal-once invariants).
     store.completeSubagent('tc1');
     store.setSubagentResult('tc1', { content: 'done', sdkAgentId: 'agent-1' });
-    expect(store.subagents['tc1'].status).toBe('completed');
-    expect(store.subagents['tc1'].endTime).toBe(endTime);
+    expect(defined(store.subagents['tc1'], 'tc1').status).toBe('completed');
+    expect(defined(store.subagents['tc1'], 'tc1').endTime).toBe(endTime);
   });
 });
 
@@ -75,7 +76,7 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
       agentResultText: STOPPED_NOTE,
       agentMessages: [{ role: 'user', contentBlocks: [{ type: 'text', text: 'search vehicles' }] }],
     });
-    const s = store.subagents['toolu_1'];
+    const s = defined(store.subagents['toolu_1'], 'toolu_1');
     expect(s.status).toBe('cancelled');
     expect(s.result?.content).toBe(STOPPED_NOTE);
   });
@@ -90,7 +91,7 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
       agentStatus: 'completed',
       agentResultText: 'Found 3 vehicle files.',
     });
-    const s = store.subagents['toolu_2'];
+    const s = defined(store.subagents['toolu_2'], 'toolu_2');
     expect(s.status).toBe('completed');
     expect(s.result?.content).toBe('Found 3 vehicle files.');
   });
@@ -104,7 +105,7 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
       agentStatus: 'error',
       agentResultText: 'boom',
     });
-    expect(store.subagents['toolu_3'].status).toBe('failed');
+    expect(defined(store.subagents['toolu_3'], 'toolu_3').status).toBe('failed');
   });
 
   it('falls back to the presence heuristic for legacy transcripts without a persisted status', () => {
@@ -115,6 +116,6 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
       input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
       result: JSON.stringify({ content: [{ type: 'text', text: 'done' }], agentId: 'agent-4' }),
     });
-    expect(store.subagents['toolu_4'].status).toBe('completed');
+    expect(defined(store.subagents['toolu_4'], 'toolu_4').status).toBe('completed');
   });
 });

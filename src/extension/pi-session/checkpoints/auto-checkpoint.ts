@@ -1,10 +1,10 @@
 import { parseDiffStats } from './diff-parser';
 import type { RepoManager } from './repo-manager';
-import type { CheckpointEntry, FileChange } from './types';
+import type { CheckpointEntry, CheckpointExcludeSet, FileChange } from './types';
 
 export interface AutoCheckpointProducerOptions {
   repo: RepoManager;
-  exclude: readonly string[];
+  exclude: readonly string[] | CheckpointExcludeSet;
   createTurnId: () => string;
   now: () => Date;
 }
@@ -44,7 +44,7 @@ interface PendingTurn {
  */
 export class AutoCheckpointProducer {
   private readonly repo: RepoManager;
-  private readonly exclude: readonly string[];
+  private readonly exclude: readonly string[] | CheckpointExcludeSet;
   private readonly createTurnId: () => string;
   private readonly now: () => Date;
   private pending: PendingTurn | null = null;

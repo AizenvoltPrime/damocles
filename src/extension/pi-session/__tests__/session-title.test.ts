@@ -1,18 +1,22 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mock } from 'vitest';
 import { generateSessionTitle, type TitleRuntime } from '../session-title';
+import type { StructuredCompletionRequest } from '../structured-completion';
 
 /**
  * The AI session-title sub-call extracted from pi-session.ts. A stub `TitleRuntime` drives the
  * auth gate, the structured-completion call, and the title extraction.
  */
 
+type StructuredCompletionSpy = Mock<(req: StructuredCompletionRequest) => Promise<unknown>> &
+  TitleRuntime['runStructuredCompletion'];
+
 function stubRuntime(opts: { authed: boolean; result: { title?: string } | null }): TitleRuntime & {
-  runStructuredCompletion: ReturnType<typeof vi.fn>;
+  runStructuredCompletion: StructuredCompletionSpy;
 } {
-  return {
-    hasAuthedSubCallModel: () => opts.authed,
-    runStructuredCompletion: vi.fn(async () => opts.result),
-  };
+  // `Mock<T>` erases the call signature's own type parameter, so a spy cannot BE a generic
+  // `runStructuredCompletion<T>`. The intersection keeps both surfaces.
+  const runStructuredCompletion = vi.fn(async () => opts.result) as StructuredCompletionSpy;
+  return { hasAuthedSubCallModel: () => opts.authed, runStructuredCompletion };
 }
 
 describe('generateSessionTitle', () => {
@@ -40,7 +44,7 @@ describe('generateSessionTitle', () => {
   it('forwards the exchange as the user message with the title schema/tool', async () => {
     const runtime = stubRuntime({ authed: true, result: { title: 'Ok' } });
     await generateSessionTitle('the first exchange', runtime);
-    const req = runtime.runStructuredCompletion.mock.calls[0][0];
+    const req = runtime.runStructuredCompletion.mock.calls[0]![0];
     expect(req.userMessage).toBe('the first exchange');
     expect(req.outputToolName).toBe('set_session_title');
     expect(req.schema).toMatchObject({ type: 'object', required: ['title'] });

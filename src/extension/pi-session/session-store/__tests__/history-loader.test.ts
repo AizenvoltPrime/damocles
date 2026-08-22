@@ -154,10 +154,10 @@ describe('reconstructMessages — steer chip (Slice 3)', () => {
     const { messages } = reconstructMessages(branch);
     expect(messages.map((m) => m.kind)).toEqual(['user', 'steer', 'assistant']);
     const steer = messages[1] as { kind: 'steer'; agentId: string; agentType?: string; description?: string; message: string };
-    expect(steer.agentId).toBe('agent-7');
-    expect(steer.agentType).toBe('coder');
-    expect(steer.description).toBe('Build parser');
-    expect(steer.message).toBe('focus on the parser');
+    expect(steer!.agentId).toBe('agent-7');
+    expect(steer!.agentType).toBe('coder');
+    expect(steer!.description).toBe('Build parser');
+    expect(steer!.message).toBe('focus on the parser');
   });
 
   it('skips a malformed steer payload (missing message / empty agentId)', () => {
@@ -189,13 +189,13 @@ describe('loadPiSessionHistory — steer chip replay (Slice 3)', () => {
     const [firstReal, steer, secondReal] = replays;
     // Real prompts keep their indices — the injected chip does NOT shift them.
     expect(firstReal).toMatchObject({ content: 'first prompt', promptIndex: 0 });
-    expect(firstReal.isInjected).toBeFalsy();
+    expect(firstReal!.isInjected).toBeFalsy();
     expect(secondReal).toMatchObject({ content: 'second prompt', promptIndex: 1 });
-    expect(secondReal.isInjected).toBeFalsy();
+    expect(secondReal!.isInjected).toBeFalsy();
     // The chip is injected, carries the steer target, and shares the un-incremented index (consumes none).
-    expect(steer.content).toBe('steer message');
-    expect(steer.isInjected).toBe(true);
-    expect(steer.promptIndex).toBe(1);
-    expect(steer.steerTarget).toEqual({ agentId: 'agent-7', agentType: 'coder', description: 'Build parser' });
+    expect(steer!.content).toBe('steer message');
+    expect(steer!.isInjected).toBe(true);
+    expect(steer!.promptIndex).toBe(1);
+    expect(steer!.steerTarget).toEqual({ agentId: 'agent-7', agentType: 'coder', description: 'Build parser' });
   });
 });

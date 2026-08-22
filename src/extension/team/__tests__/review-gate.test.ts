@@ -13,12 +13,18 @@ import {
 } from '../review-gate';
 import type { TeamAgent } from '../types';
 
+/** The rejection text of a gate decision, failing if it was accepted or carried no reason. */
+function rejection(decision: { ok: boolean; error?: string | undefined }): string {
+  if (decision.ok) throw new Error('expected a rejected decision, got ok');
+  if (decision.error === undefined) throw new Error('a rejected decision carried no error text');
+  return decision.error;
+}
+
 function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent['role'] }): TeamAgent {
   return {
     agentId: `id-${partial.name}`,
     teamId: 'team-1',
-    name: partial.name,
-    role: partial.role,
+    attempt: 0,
     specialization: '',
     status: 'awaiting-review',
     model: 'test',
@@ -53,9 +59,9 @@ describe('checkApprovalReadGate', () => {
     sp.set('frontend-findings', 'v2', 'Frontend');
     const decision = checkApprovalReadGate('Frontend', sp, 'Lead');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Cannot approve "Frontend"');
-    expect(decision.error).toContain('"frontend-findings" is v2');
-    expect(decision.error).toContain('you last read v1');
+    expect(rejection(decision)).toContain('Cannot approve "Frontend"');
+    expect(rejection(decision)).toContain('"frontend-findings" is v2');
+    expect(rejection(decision)).toContain('you last read v1');
   });
 
   it('fails when the lead has never read the specialist\'s section', () => {
@@ -63,7 +69,7 @@ describe('checkApprovalReadGate', () => {
     sp.set('findings', 'body', 'S');
     const decision = checkApprovalReadGate('S', sp, 'Lead');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('never read');
+    expect(rejection(decision)).toContain('never read');
   });
 
   it('passes when the specialist has authored no sections', () => {
@@ -91,8 +97,8 @@ describe('checkBriefReadGate', () => {
     sp.seedImmutable('mission-brief', 'the spec');
     const decision = checkBriefReadGate(sp, 'Lead');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('mission-brief');
-    expect(decision.error).toContain('team_read_scratchpad');
+    expect(rejection(decision)).toContain('mission-brief');
+    expect(rejection(decision)).toContain('team_read_scratchpad');
   });
 
   it('passes after the lead reads the mission-brief section by name', () => {
@@ -132,8 +138,8 @@ describe('checkSynthesisReadGate', () => {
     sp.set('frontend-findings', 'v2', 'Frontend');
     const decision = checkSynthesisReadGate(['Frontend'], sp, 'Lead');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Cannot synthesize');
-    expect(decision.error).toContain('"frontend-findings" is v2');
+    expect(rejection(decision)).toContain('Cannot synthesize');
+    expect(rejection(decision)).toContain('"frontend-findings" is v2');
   });
 
   it('ignores sections the caller never includes (lead-authored sections are out of scope)', () => {
@@ -388,14 +394,14 @@ describe('checkReviewActionPrecondition', () => {
   it('rejects when pending exists even if reviewRoundReady is true (the bug repro)', () => {
     const decision = checkReviewActionPrecondition(['code-reviewer'], [], true, 'approve');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Cannot approve — these specialists were never dispatched: code-reviewer.');
-    expect(decision.error).toContain('Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.');
+    expect(rejection(decision)).toContain('Cannot approve — these specialists were never dispatched: code-reviewer.');
+    expect(rejection(decision)).toContain('Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.');
   });
 
   it('uses "request revision" verb in error text when action is revise', () => {
     const decision = checkReviewActionPrecondition(['code-reviewer'], [], true, 'revise');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Cannot request revision — these specialists were never dispatched: code-reviewer.');
+    expect(rejection(decision)).toContain('Cannot request revision — these specialists were never dispatched: code-reviewer.');
   });
 
   it('reports non-settled specialists when pending is empty', () => {
@@ -406,20 +412,19 @@ describe('checkReviewActionPrecondition', () => {
       'approve',
     );
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Review round not ready — specialists still working: frontend (running, 4 tools).');
-    expect(decision.error).toContain('Wait for the [REVIEW ROUND READY] system notification.');
+    expect(rejection(decision)).toContain('Review round not ready — specialists still working: frontend (running, 4 tools).');
+    expect(rejection(decision)).toContain('Wait for the [REVIEW ROUND READY] system notification.');
   });
 
   it('reports the no-specialists terminal error when pending and non-settled are empty and reviewRoundReady is false', () => {
     const decision = checkReviewActionPrecondition([], [], false, 'approve');
     expect(decision.ok).toBe(false);
-    expect(decision.error).toBe('No specialists are awaiting review.');
+    expect(rejection(decision)).toBe('No specialists are awaiting review.');
   });
 
   it('passes when pending and non-settled are empty and reviewRoundReady is true', () => {
     const decision = checkReviewActionPrecondition([], [], true, 'approve');
-    expect(decision.ok).toBe(true);
-    expect(decision.error).toBeUndefined();
+    expect(decision).toEqual({ ok: true });
   });
 
   it('prefers the pending error when pending and non-settled both have entries', () => {
@@ -430,8 +435,8 @@ describe('checkReviewActionPrecondition', () => {
       'approve',
     );
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Cannot approve — these specialists were never dispatched: code-reviewer.');
-    expect(decision.error).not.toContain('still working');
+    expect(rejection(decision)).toContain('Cannot approve — these specialists were never dispatched: code-reviewer.');
+    expect(rejection(decision)).not.toContain('still working');
   });
 
   it('rejects with the non-settled error when reviewRoundReady is true but a specialist is still working', () => {
@@ -442,6 +447,6 @@ describe('checkReviewActionPrecondition', () => {
       'approve',
     );
     expect(decision.ok).toBe(false);
-    expect(decision.error).toContain('Review round not ready — specialists still working: frontend (running, 2 tools).');
+    expect(rejection(decision)).toContain('Review round not ready — specialists still working: frontend (running, 2 tools).');
   });
 });

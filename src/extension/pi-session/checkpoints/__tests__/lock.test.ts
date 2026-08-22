@@ -6,6 +6,16 @@ import { withRepoLock } from '../lock';
 
 let repoDir: string;
 
+/** Poll until `predicate` holds, so no assertion rides on a fixed wall-clock wait. */
+async function waitFor(predicate: () => boolean | Promise<boolean>, what: string, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() >= deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 describe('withRepoLock', () => {
   beforeEach(async () => {
     repoDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cp-lock-'));
@@ -87,12 +97,25 @@ describe('withRepoLock', () => {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     const holder = withRepoLock(repoDir, () => held, { heartbeatMs: 20 });
+    await waitFor(() => fs.existsSync(lockDir), 'the lock to be acquired');
 
-    await new Promise((r) => setTimeout(r, 60)); // acquire + first heartbeat(s)
-    const m1 = (await fs.promises.stat(lockDir)).mtimeMs;
-    await new Promise((r) => setTimeout(r, 120)); // several more heartbeats while fn is still running
-    const m2 = (await fs.promises.stat(lockDir)).mtimeMs;
-    expect(m2).toBeGreaterThan(m1);
+    // Back-date the held lock by a minute, far past the mtime resolution of any filesystem, so the
+    // refresh is a jump no coarse-grained mtime can round away. A heartbeat can land between the write
+    // and the read, so keep writing until the back-date is what stat reports.
+    const backdateMs = 60_000;
+    let backdatedTo = 0;
+    await waitFor(async () => {
+      const stale = new Date(Date.now() - backdateMs);
+      await fs.promises.utimes(lockDir, stale, stale);
+      backdatedTo = (await fs.promises.stat(lockDir)).mtimeMs;
+      return Date.now() - backdatedTo > backdateMs / 2;
+    }, 'the back-dated lock mtime to read back');
+
+    await waitFor(
+      async () => (await fs.promises.stat(lockDir)).mtimeMs > backdatedTo + backdateMs / 2,
+      'the heartbeat to refresh the lock mtime',
+    );
+    expect(Date.now() - (await fs.promises.stat(lockDir)).mtimeMs).toBeLessThan(backdateMs / 2);
 
     release();
     await holder;

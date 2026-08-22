@@ -60,11 +60,44 @@ export type SafeCheckoutResult =
   | { ok: false; reason: 'checkout-failed'; error: string; rollbackError?: string };
 
 /**
- * Glob patterns written verbatim into the bare repo's `info/exclude`. `.git` and `.damocles/**`
- * are mandatory (we never want to snapshot the user's real repo metadata or our own state); the
- * rest are performance excludes that keep heavy, regenerable trees out of every snapshot.
+ * Glob patterns written verbatim into the bare repo's `info/exclude`. `.git` is mandatory: we never
+ * snapshot the user's real repo metadata.
+ *
+ * `.damocles/settings.json` and `.damocles/settings.local.json` are excluded because the permission
+ * and MCP panels write them out of band, so a rewind must not revoke a grant made mid-turn.
+ * `.damocles/mcp.local.json` is excluded for a different reason. It has a reader
+ * (`mcp-config-import.ts`, the highest-precedence merge source) but no writer in the panel, and it is
+ * a gitignored personal file holding `env` and `headers` credentials, which must never enter the
+ * checkpoint repo.
+ *
+ * The rest of `.damocles` IS snapshotted, since project skills and commands live there and a rewind
+ * that skipped them would silently leave agent-authored edits behind. Only repos created under
+ * `CHECKPOINT_EXCLUDE_SET_VERSION` get this set; see `LEGACY_CHECKPOINT_EXCLUDES`. The remaining
+ * patterns are performance excludes that keep heavy, regenerable trees out of every snapshot.
  */
 export const DEFAULT_CHECKPOINT_EXCLUDES: readonly string[] = [
+  '.git',
+  '.damocles/settings.json',
+  '.damocles/settings.local.json',
+  '.damocles/mcp.local.json',
+  'node_modules/',
+  '.DS_Store',
+  'dist/',
+  'out/',
+  'build/',
+  'coverage/',
+  '.cache/',
+  '*.log',
+];
+
+/**
+ * The exclude set every shadow repo used before `.damocles` content became snapshottable. A repo
+ * whose older checkpoints were taken under this set has no `.damocles/skills`, `commands`, or
+ * `agents` in those trees. Switching such a repo to `DEFAULT_CHECKPOINT_EXCLUDES` would make a rewind
+ * to one of those checkpoints delete those directories, because `safeCheckout` stages everything and
+ * then hard-resets to the target tree.
+ */
+export const LEGACY_CHECKPOINT_EXCLUDES: readonly string[] = [
   '.git',
   '.damocles/**',
   'node_modules/',
@@ -76,3 +109,27 @@ export const DEFAULT_CHECKPOINT_EXCLUDES: readonly string[] = [
   '.cache/',
   '*.log',
 ];
+
+/** Git config key holding the exclude-set version the shadow repo was created under. */
+export const CHECKPOINT_EXCLUDE_VERSION_KEY = 'damocles.excludeSetVersion';
+
+/** Version stamped on shadow repos created with `DEFAULT_CHECKPOINT_EXCLUDES`. */
+export const CHECKPOINT_EXCLUDE_SET_VERSION = 1;
+
+/**
+ * A version-gated exclude set. `RepoManager.ensureReady` stamps `version` into the shadow repo's own
+ * git config at the moment it creates the repo, and writes `patterns` only for a repo carrying that
+ * stamp. A repo with an older stamp, or none at all, gets `legacyPatterns`.
+ */
+export interface CheckpointExcludeSet {
+  readonly version: number;
+  readonly patterns: readonly string[];
+  readonly legacyPatterns: readonly string[];
+}
+
+/** The version-gated set every production checkpoint path hands to `ensureReady`. */
+export const CHECKPOINT_EXCLUDE_SET: CheckpointExcludeSet = {
+  version: CHECKPOINT_EXCLUDE_SET_VERSION,
+  patterns: DEFAULT_CHECKPOINT_EXCLUDES,
+  legacyPatterns: LEGACY_CHECKPOINT_EXCLUDES,
+};

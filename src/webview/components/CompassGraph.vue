@@ -9,6 +9,11 @@ import { useCompassStore } from '@/stores/useCompassStore';
 import { useVSCode } from '@/composables/useVSCode';
 import { EDGE_STYLE, NODE_EQUIVALENT_RADIUS, nodePathGenerator } from '@/composables/compass/useGraphSymbols';
 import type { Selection as D3Selection } from 'd3-selection';
+import type { Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
+import type { ZoomBehavior } from 'd3-zoom';
+// `d3-transition` patches `selection.transition` onto d3-selection's prototype, and its types augment
+// the interface the same way. Both only apply when the module is in the program.
+import type {} from 'd3-transition';
 import type { CompassGraphNode, CompassEdgeKind } from '@shared/types/compass';
 
 const store = useCompassStore();
@@ -18,16 +23,9 @@ const containerRef = ref<HTMLElement | null>(null);
 const nodeCountText = ref('');
 const loading = ref(false);
 
-interface SimNode extends CompassGraphNode {
-	x?: number;
-	y?: number;
-	vx?: number;
-	vy?: number;
-	fx?: number | null;
-	fy?: number | null;
-}
+interface SimNode extends CompassGraphNode, SimulationNodeDatum {}
 
-interface SimLink {
+interface SimLink extends SimulationLinkDatum<SimNode> {
 	source: SimNode | string;
 	target: SimNode | string;
 	kind: CompassEdgeKind;
@@ -65,9 +63,9 @@ let d3Modules: {
 	drag: typeof import('d3-drag').drag;
 } | null = null;
 
-const simulation = shallowRef<ReturnType<typeof import('d3-force').forceSimulation> | null>(null);
+const simulation = shallowRef<Simulation<SimNode, SimLink> | null>(null);
 const svgElement = shallowRef<SVGSVGElement | null>(null);
-const currentZoomBehavior = shallowRef<ReturnType<typeof import('d3-zoom').zoom> | null>(null);
+const currentZoomBehavior = shallowRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 const currentNodes = shallowRef<SimNode[]>([]);
 const linkSel = shallowRef<D3Selection<SVGLineElement, SimLink, SVGGElement, unknown> | null>(null);
 const focusedNodeQn = ref<string | null>(null);
@@ -137,6 +135,9 @@ async function loadD3(): Promise<void> {
 		import('d3-selection'),
 		import('d3-zoom'),
 		import('d3-drag'),
+		// Loaded for its prototype patch, which `handleFitToView` calls directly. d3-zoom happens to
+		// pull it in today, so leaving it implicit would break on a d3-zoom major that stops.
+		import('d3-transition'),
 	]);
 	d3Modules = {
 		forceSimulation: force.forceSimulation,
@@ -325,12 +326,13 @@ function buildGraph(): void {
 	const nodeGroup = container.append('g');
 	const labelGroup = container.append('g');
 
-	currentZoomBehavior.value = zoom<SVGSVGElement, unknown>()
+	const zoomBehavior = zoom<SVGSVGElement, unknown>()
 		.scaleExtent([0.05, 8])
 		.on('zoom', (event: { transform: { toString(): string } }) => {
 			container.attr('transform', event.transform.toString());
 		});
-	svg.call(currentZoomBehavior.value);
+	currentZoomBehavior.value = zoomBehavior;
+	svg.call(zoomBehavior);
 
 	const simNodes: SimNode[] = rawNodes.map(n => ({ ...n }));
 	currentNodes.value = simNodes;
@@ -382,8 +384,8 @@ function buildGraph(): void {
 			drag<SVGPathElement, SimNode>()
 				.on('start', (event: { active: boolean }, d: SimNode) => {
 					if (!event.active) simulation.value?.alphaTarget(0.3).restart();
-					d.fx = d.x;
-					d.fy = d.y;
+					d.fx = d.x ?? null;
+					d.fy = d.y ?? null;
 				})
 				.on('drag', (event: { x: number; y: number }, d: SimNode) => {
 					d.fx = event.x;
@@ -421,19 +423,20 @@ function buildGraph(): void {
 		labelSel.attr('x', (d: SimNode) => d.x ?? 0).attr('y', (d: SimNode) => d.y ?? 0);
 	};
 
-	simulation.value = forceSimulation(simNodes as never[])
+	const sim = forceSimulation<SimNode, SimLink>(simNodes)
 		.alphaDecay(0.02)
 		.stop()
-		.force('link', forceLink(simLinks as never[]).id((d: never) => (d as SimNode).qualified_name).distance(100))
+		.force('link', forceLink<SimNode, SimLink>(simLinks).id((d) => d.qualified_name).distance(100))
 		.force('charge', forceManyBody().strength(-200))
 		.force('center', forceCenter(width / 2, height / 2))
-		.force('collide', forceCollide().radius(NODE_EQUIVALENT_RADIUS + 5));
+		.force('collide', forceCollide<SimNode>().radius(NODE_EQUIVALENT_RADIUS + 5));
 
-	simulation.value.tick(300);
+	simulation.value = sim;
+	sim.tick(300);
 	updatePositions();
 	handleFitToView();
 
-	simulation.value.on('tick', updatePositions).restart();
+	sim.on('tick', updatePositions).restart();
 
 	nodeCountText.value = `${simNodes.length} nodes, ${simLinks.length} edges`;
 }

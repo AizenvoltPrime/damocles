@@ -57,16 +57,66 @@ export interface McpHttpServerConfig extends McpRemoteServerConfig {
 
 export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig | McpHttpServerConfig;
 
+/** The personal MCP config, relative to the workspace root, always forward-slashed. */
+export const LOCAL_MCP_RELATIVE_PATH = ".damocles/mcp.local.json";
+
 /**
- * Where a merged server's definition came from. The single declaration of this union: `readonly` is
- * derived from it in one place (`mcp-config-import.READONLY_BY_SOURCE`), and adding a member without
- * deciding its editability fails to compile there.
+ * Every MCP source in precedence order, lowest first: the single place precedence is declared. The
+ * claude/codex tie is broken by `damocles.assetSourcePrecedence` (the loser folded first so the
+ * configured winner overwrites it); within the compat block Claude's local scope outranks its user
+ * scope, matching Claude Code's own local > project > user ordering. Damocles-owned files always
+ * outrank another tool's, and the personal `<ws>/.damocles/mcp.local.json` outranks everything.
  *
- * `workspace` is the project `.mcp.json` and `damocles` the user-global `~/.damocles/mcp.json` — the
- * two Damocles owns. `claude` (Claude Code/Desktop, US-014.2) and `codex` (`~/.codex/config.toml`)
- * belong to other tools and are imported read-only.
+ * Callers derive from these two tuples rather than restating an order: the merge fold, the write
+ * path's shadowing set and the form's inline collision hint all read off them, so they cannot drift
+ * apart. `McpServerSource` is derived from the first tuple, so a source that exists but is missing
+ * from the order cannot be expressed.
  */
-export type McpServerSource = "workspace" | "damocles" | "claude" | "codex";
+const SOURCE_ORDER_CLAUDE_WINS = ["codex", "claude", "claude-local", "damocles", "workspace", "damocles-local"] as const;
+const SOURCE_ORDER_CODEX_WINS = ["claude", "codex", "claude-local", "damocles", "workspace", "damocles-local"] as const;
+
+/**
+ * Where a merged server's definition came from. `readonly` is derived from this union in one place
+ * (`mcp-config-import.READONLY_BY_SOURCE`), and adding a member without deciding its editability
+ * fails to compile there.
+ *
+ * `workspace` is the project `.mcp.json`, `damocles` the user-global `~/.damocles/mcp.json` and
+ * `damocles-local` the personal, gitignored `<ws>/.damocles/mcp.local.json`. Damocles owns those three,
+ * though only `damocles` has a write path. `claude` (Claude Code/Desktop user scope, US-014.2),
+ * `claude-local` (Claude Code's local scope, `~/.claude.json` → `projects[<ws>].mcpServers`) and
+ * `codex` (`~/.codex/config.toml`) belong to other tools and are imported read-only.
+ */
+export type McpServerSource = (typeof SOURCE_ORDER_CLAUDE_WINS)[number];
+
+/** `A` when the two source sets are identical, `never` when either holds a member the other lacks. */
+type SameMemberSet<A extends string, B extends string> = [A] extends [B] ? ([B] extends [A] ? A : never) : never;
+
+/**
+ * The fold order handed to callers. Every slot resolves through `SameMemberSet`, so a tuple that
+ * omits a source the other declares collapses the whole type to `never` and fails to compile at the
+ * returns below, instead of silently ranking that source lowest.
+ */
+type SlotsOf<Order> = { readonly [Slot in keyof Order]: SameMemberSet<McpServerSource, (typeof SOURCE_ORDER_CODEX_WINS)[number]> };
+export type McpSourceOrder = SlotsOf<typeof SOURCE_ORDER_CLAUDE_WINS>;
+
+/**
+ * The precedence argument is spelled structurally rather than imported as `AssetSourcePrecedence`,
+ * because that type lives in the extension host and this module is also bundled into the webview.
+ */
+export function mcpSourceOrder(precedence: "claude" | "codex"): McpSourceOrder {
+  return precedence === "codex" ? SOURCE_ORDER_CODEX_WINS : SOURCE_ORDER_CLAUDE_WINS;
+}
+
+/**
+ * The sources that outrank `~/.damocles/mcp.json`, so a server Damocles wrote under one of these names
+ * would be hidden by the merge. Either precedence argument yields this same set: the tie-break only
+ * permutes `claude` and `codex`, and both rank below `damocles`.
+ *
+ * This is the static precedence. An untrusted workspace demotes repo-authored sources below
+ * `damocles`, and the host reads that effective rank off the fold it actually ran.
+ */
+export const SHADOWING_SOURCES: ReadonlySet<McpServerSource> =
+  new Set(SOURCE_ORDER_CLAUDE_WINS.slice(SOURCE_ORDER_CLAUDE_WINS.indexOf("damocles") + 1));
 
 /**
  * A config file that exists but could not be used, so its servers are missing from the list.
@@ -139,12 +189,16 @@ export interface McpServerStatusInfo {
   tools?: McpToolInfo[];
   /**
    * Where this server's definition came from: `workspace` for the project `.mcp.json`, `damocles` for
-   * the user-global `~/.damocles/mcp.json`, `claude` for the read-only Claude Code/Desktop imports
-   * (US-014.2), and `codex` for the read-only `~/.codex/config.toml` import. Later sources in that list
-   * are the ones Damocles does not own.
+   * the user-global `~/.damocles/mcp.json`, `damocles-local` for the personal
+   * `<ws>/.damocles/mcp.local.json`, `claude` for the read-only Claude Code/Desktop user-scope imports
+   * (US-014.2), `claude-local` for Claude Code's local scope (`~/.claude.json` →
+   * `projects[<ws>].mcpServers`), and `codex` for the read-only `~/.codex/config.toml` import.
    */
   source?: McpServerSource;
-  /** True for imported servers the user cannot edit in Damocles (`claude` and `codex`). */
+  /**
+   * True for servers the user cannot edit in Damocles: the two Claude imports, the Codex import, and
+   * `damocles-local`, which has no write path.
+   */
   readonly?: boolean;
   /**
    * The stored definition, sent ONLY for `damocles`-sourced servers whose config the edit form can
@@ -158,7 +212,7 @@ export interface McpServerStatusInfo {
    * `damocles` gate. Anything added downstream of this field must assume it may hold a live credential.
    */
   editableConfig?: McpServerConfig;
-  /** True when a workspace `.mcp.json` server is withheld because the workspace is untrusted (M3/US-022). */
+  /** True when a repository-authored server is withheld because the workspace is untrusted (M3/US-022). */
   untrusted?: boolean;
   /** True when this server uses OAuth (definition has a URL and auth is not disabled). */
   supportsOAuth?: boolean;

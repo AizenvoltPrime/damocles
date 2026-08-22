@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ContextUsageOverlay from '../ContextUsageOverlay.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
+import { at } from '@/__tests__/helpers';
 import { i18n, applyLocale } from '@/i18n';
 import type { ContextUsageData } from '@shared/types/session';
 
@@ -329,7 +330,7 @@ describe('ContextUsageOverlay — deferred categories are a saving, never a spen
       'Tools',
       'Tools (deferred)',
     ]);
-    expect(rows[3].text).toContain('4.0k');
+    expect(at(rows, 3).text).toContain('4.0k');
   });
 
   it('keeps the bar reconciled with the headline total despite the deferred row', () => {
@@ -399,18 +400,18 @@ describe('ContextUsageOverlay — deferred built-in tool badges', () => {
     ]);
     const rows = await sectionRows(wrapper, 'Deferred Built-in Tools');
     expect(rows.map(r => r.name)).toEqual(['BrowserOpen', 'CompassSearch']);
-    expect(rows[0].text).toContain('Deferred');
-    expect(rows[0].text).not.toContain('Loaded');
-    expect(rows[1].text).toContain('Loaded');
+    expect(at(rows, 0).text).toContain('Deferred');
+    expect(at(rows, 0).text).not.toContain('Loaded');
+    expect(at(rows, 1).text).toContain('Loaded');
   });
 
   it('flips the same row from Deferred to Loaded when activation lands', async () => {
     const before = withDeferredTools([{ name: 'BrowserOpen', tokens: 7, isLoaded: false }]);
-    expect((await sectionRows(before, 'Deferred Built-in Tools'))[0].text).toContain('Deferred');
+    expect(at(await sectionRows(before, 'Deferred Built-in Tools'), 0).text).toContain('Deferred');
 
     setActivePinia(createPinia());
     const after = withDeferredTools([{ name: 'BrowserOpen', tokens: 7, isLoaded: true }]);
-    const row = (await sectionRows(after, 'Deferred Built-in Tools'))[0];
+    const row = at(await sectionRows(after, 'Deferred Built-in Tools'), 0);
     expect(row.text).toContain('Loaded');
     expect(row.text).not.toContain('Deferred');
   });
@@ -426,7 +427,7 @@ describe('ContextUsageOverlay — deferred built-in tool badges', () => {
     );
     const rows = await sectionRows(wrapper, 'System Tools');
     expect(rows.map(r => r.name)).toEqual(['Read', 'Write']);
-    expect(rows[0].text).toContain('8');
-    expect(rows[1].text).toContain('12');
+    expect(at(rows, 0).text).toContain('8');
+    expect(at(rows, 1).text).toContain('12');
   });
 });

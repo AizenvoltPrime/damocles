@@ -3,6 +3,7 @@ import type { ToasterProps } from "vue-sonner"
 import { reactiveOmit } from "@vueuse/core"
 import { CheckIcon, InfoIcon, Loader2Icon, XCircleIcon, AlertTriangleIcon, XIcon } from "lucide-vue-next"
 import { Toaster as Sonner } from "vue-sonner"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<ToasterProps>()
 const delegatedProps = reactiveOmit(props, "toastOptions")
@@ -24,7 +25,7 @@ const toastClasses = {
   <Sonner
     class="toaster group"
     :toast-options="{ classes: toastClasses }"
-    v-bind="delegatedProps"
+    v-bind="definedProps(delegatedProps)"
   >
     <template #success-icon>
       <div class="toast-icon toast-icon-success">

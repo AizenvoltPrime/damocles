@@ -7,8 +7,8 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
       if (msg.status === "steered" || msg.status === "queued") {
         ctx.stores.streamingStore.addSteerChip(msg.message, {
           agentId: msg.agentId,
-          agentType: msg.agentType,
-          description: msg.description,
+          ...(msg.agentType !== undefined && { agentType: msg.agentType }),
+          ...(msg.description !== undefined && { description: msg.description }),
         });
         if (msg.toolUseId) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message);
         return;
@@ -46,7 +46,7 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
       if (msg.toolUseId) {
         ctx.stores.subagentStore.registerAgentTool(msg.toolUseId, {
           description: msg.description,
-          subagent_type: msg.taskType,
+          ...(msg.taskType !== undefined && { subagent_type: msg.taskType }),
         });
         ctx.stores.subagentStore.resetToRunning(msg.toolUseId, msg.description, msg.isBackground);
       }

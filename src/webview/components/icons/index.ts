@@ -1,7 +1,10 @@
-import { h, type FunctionalComponent } from "vue";
+import { h, type FunctionalComponent, type HTMLAttributes } from "vue";
 
 type IconProps = {
-  class?: string;
+  // Callers use the object and array class forms as well as plain strings, and `h` normalizes all
+  // three; typing this as `string` only narrowed what the template was allowed to pass.
+  class?: HTMLAttributes["class"];
+  style?: HTMLAttributes["style"];
   size?: number | string;
 };
 

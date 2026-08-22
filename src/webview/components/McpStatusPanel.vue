@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
+import { LOCAL_MCP_RELATIVE_PATH } from '@shared/types/mcp';
+import type {
+  McpConfigError,
+  McpServerConfig,
+  McpServerSource,
+  McpServerStatusInfo,
+  McpWriteErrorInfo,
+} from '@shared/types/mcp';
 import type { Component } from 'vue';
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -42,6 +49,10 @@ const props = defineProps<{
   /** The extension’s reason for refusing the last write, or null. */
   mcpWriteError: McpWriteErrorInfo | null;
   mcpEnabled: boolean;
+  /** True when `<ws>/.damocles/mcp.local.json` exists and git does not ignore it. */
+  localMcpUnignored: boolean;
+  /** Counts applied `mcpConfigUpdate` payloads, so the panel can see a reload land. */
+  configRevision: number;
   visible: boolean;
 }>();
 
@@ -58,9 +69,52 @@ const emit = defineEmits<{
   (e: 'addServer', serverName: string, config: McpServerConfig): void;
   (e: 'updateServer', serverName: string, newServerName: string | undefined, config: McpServerConfig): void;
   (e: 'deleteServer', serverName: string): void;
+  (e: 'reloadConfig'): void;
 }>();
 
 const hasUntrustedServers = computed(() => props.servers.some((s) => s.untrusted === true));
+
+/**
+ * How long Reload config stays disabled with no answer. `mcpReloadConfig` carries no requestId, so a
+ * reply lost to a host-side throw would otherwise disable the button for the life of the webview.
+ * Ten seconds clears the slowest plausible reload, five config reads plus a `git status` on a
+ * virtualised filesystem, and still gives the user the button back inside one attention span.
+ */
+const RELOAD_TIMEOUT_MS = 10_000;
+
+/** True between a clicked reload and the config update that answers it. */
+const reloadInFlight = ref(false);
+let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+function endReload(): void {
+  reloadInFlight.value = false;
+  if (reloadTimer !== null) {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+  }
+}
+
+function handleReloadClick(): void {
+  endReload();
+  reloadInFlight.value = true;
+  reloadTimer = setTimeout(endReload, RELOAD_TIMEOUT_MS);
+  emit('reloadConfig');
+}
+
+watch(() => props.configRevision, endReload);
+
+/**
+ * Re-read the config when the panel opens, so an edit made to `.gitignore` while the extension was
+ * not running does not leave a stale warning on screen. Only the click path raises `reloadInFlight`,
+ * so this cannot strand the button, and the transition it watches is driven by the user opening the
+ * panel, never by anything a reload sends back.
+ */
+watch(
+  () => props.visible,
+  (visible, wasVisible) => {
+    if (visible && wasVisible === false) emit('reloadConfig');
+  },
+);
 
 const expandedServers = ref<Set<string>>(new Set());
 
@@ -166,6 +220,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown);
+  endReload();
 });
 
 function getStatusIcon(status: McpServerStatusInfo['status']): Component | null {
@@ -245,23 +300,24 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
 }
 
 /**
- * Provenance badge label. Workspace servers are labelled too: they carry no edit or delete
- * affordance (they live in the project's `.mcp.json`, which Damocles does not write), so without a
- * badge the missing buttons would look arbitrary.
+ * Provenance badge label per source. Every source is labelled, including the read-only ones: only
+ * `damocles` servers carry edit and delete buttons, so without a badge the missing buttons on every
+ * other row would look arbitrary. Keyed by the full `McpServerSource` union so a new source cannot
+ * ship unbadged without failing to compile here.
  */
+const SOURCE_LABEL_KEYS: Record<McpServerSource, string> = {
+  workspace: 'mcp.fromWorkspace',
+  damocles: 'mcp.fromDamocles',
+  claude: 'mcp.fromClaudeCode',
+  codex: 'mcp.fromCodex',
+  'claude-local': 'mcp.fromClaudeLocal',
+  'damocles-local': 'mcp.fromDamoclesLocal',
+};
+
+/** `source` is optional on the wire, and a server that arrived without one carries no badge. */
 function getSourceLabel(source: McpServerStatusInfo['source']): string | null {
-  switch (source) {
-    case 'workspace':
-      return t('mcp.fromWorkspace');
-    case 'damocles':
-      return t('mcp.fromDamocles');
-    case 'claude':
-      return t('mcp.fromClaudeCode');
-    case 'codex':
-      return t('mcp.fromCodex');
-    default:
-      return null;
-  }
+  if (source === undefined) return null;
+  return t(SOURCE_LABEL_KEYS[source]);
 }
 
 /** A contextual button on a server row. */
@@ -333,12 +389,20 @@ function buildRowActions(server: McpServerStatusInfo): ServerRowAction[] {
 const rows = computed(() => props.servers.map((server) => ({ server, actions: buildRowActions(server) })));
 
 /**
- * Just the two fields the form's collision check reads. `McpServerStatusInfo` also carries
+ * Just the three fields the form's collision check reads. `McpServerStatusInfo` also carries
  * `editableConfig`, whose `env`/`headers` values may be live credentials — there is no reason to hand
  * the whole list, secrets included, to a component that only compares names.
+ *
+ * `untrusted` decides whether an entry outranks `~/.damocles/mcp.json`, so dropping it here is what
+ * made the form claim a precedence the host does not grant. Both optionals are spread conditionally
+ * because `exactOptionalPropertyTypes` separates an absent key from a present `undefined` one.
  */
 const collisionServers = computed<McpCollisionServer[]>(() =>
-  props.servers.map((server) => (server.source === undefined ? { name: server.name } : { name: server.name, source: server.source })),
+  props.servers.map((server) => ({
+    name: server.name,
+    ...(server.source === undefined ? {} : { source: server.source }),
+    ...(server.untrusted === undefined ? {} : { untrusted: server.untrusted }),
+  })),
 );
 </script>
 
@@ -362,7 +426,26 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
       </DialogHeader>
 
       <div class="flex-1 overflow-y-auto py-2">
-        <div class="mb-2 flex justify-end">
+        <div class="mb-2 flex justify-end gap-1">
+          <!--
+            `~/.claude.json` is deliberately unwatched, so a server added with `claude mcp add` stays
+            invisible until the config is re-read. This is the only way to ask for that.
+          -->
+          <Button
+            size="sm"
+            variant="ghost"
+            class="h-6 px-2 text-xs"
+            :disabled="reloadInFlight"
+            :title="t('mcp.reloadConfigTitle')"
+            @click="handleReloadClick"
+          >
+            <LoadingSpinner
+              v-if="reloadInFlight"
+              :size="12"
+              class="mr-1"
+            />
+            {{ t('mcp.reloadConfig') }}
+          </Button>
           <Button
             size="sm"
             variant="ghost"
@@ -411,6 +494,28 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
             >
               {{ t('mcp.configErrorOpen') }}
             </Button>
+          </div>
+        </div>
+
+        <!--
+          `.damocles/mcp.local.json` holds env values and headers in plain text and sits in the working
+          tree, so a commit would publish them. Damocles never edits `.gitignore` itself.
+        -->
+        <div
+          v-if="localMcpUnignored"
+          role="alert"
+          class="mb-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-muted-foreground"
+        >
+          <div class="text-error font-medium flex items-center gap-1.5">
+            <IconWarning
+              :size="14"
+              class="shrink-0"
+              aria-hidden="true"
+            />
+            {{ t('mcp.localMcpUnignoredTitle') }}
+          </div>
+          <div class="mt-1">
+            {{ t('mcp.localMcpUnignored', { line: LOCAL_MCP_RELATIVE_PATH }) }}
           </div>
         </div>
 

@@ -19,10 +19,9 @@ const OVERSCAN = 5;
 const LEVEL_GAPS = [16, 12, 8] as const;
 
 function getGap(prev: VirtualItem, curr: VirtualItem): number {
-  if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return 16;
-  if (prev.sourceMessageId !== curr.sourceMessageId) return 16;
-  const level = Math.min(prev.spacingLevel, curr.spacingLevel);
-  return LEVEL_GAPS[Math.min(level, LEVEL_GAPS.length - 1)];
+  if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return LEVEL_GAPS[0];
+  if (prev.sourceMessageId !== curr.sourceMessageId) return LEVEL_GAPS[0];
+  return prev.spacingLevel === 1 || curr.spacingLevel === 1 ? LEVEL_GAPS[1] : LEVEL_GAPS[2];
 }
 
 const CARD_HEADER = 34;
@@ -110,7 +109,8 @@ function binarySearchVisibleRange(
   let high = f.items.length;
   while (low < high) {
     const mid = (low + high) >> 1;
-    if (f.items[mid].bottom > minY) high = mid;
+    const item = f.items[mid];
+    if (!item || item.bottom > minY) high = mid;
     else low = mid + 1;
   }
   const start = Math.max(0, low - OVERSCAN);
@@ -119,7 +119,8 @@ function binarySearchVisibleRange(
   high = f.items.length;
   while (low < high) {
     const mid = (low + high) >> 1;
-    if (f.items[mid].top >= maxY) high = mid;
+    const item = f.items[mid];
+    if (!item || item.top >= maxY) high = mid;
     else low = mid + 1;
   }
   const end = Math.min(f.items.length, low + OVERSCAN);
@@ -161,8 +162,8 @@ export function useScrollEngine(
         lastBuildWidth = width;
 
         itemIdToIndex.clear();
-        for (let i = 0; i < items.length; i++) {
-          itemIdToIndex.set(items[i].id, i);
+        for (const [i, item] of items.entries()) {
+          itemIdToIndex.set(item.id, i);
         }
 
         frame.value = buildFrameWithCache(items, width);
@@ -179,15 +180,15 @@ export function useScrollEngine(
     const frameItems: FrameItem[] = new Array(items.length);
     let y = 0;
 
-    let lastVisibleIdx = -1;
-    for (let i = 0; i < items.length; i++) {
-      const height = getItemHeight(items[i], width);
-      if (height > 0 && lastVisibleIdx >= 0) {
-        y += getGap(items[lastVisibleIdx], items[i]);
+    let lastVisible: VirtualItem | null = null;
+    for (const [i, item] of items.entries()) {
+      const height = getItemHeight(item, width);
+      if (height > 0 && lastVisible) {
+        y += getGap(lastVisible, item);
       }
       frameItems[i] = { top: y, height, bottom: y + height };
       y += height;
-      if (height > 0) lastVisibleIdx = i;
+      if (height > 0) lastVisible = item;
     }
 
     return { items: frameItems, totalHeight: y + BOTTOM_PADDING };
@@ -252,25 +253,33 @@ export function useScrollEngine(
     if (index === undefined) return;
 
     const f = frame.value;
-    if (index >= f.items.length) return;
+    const resized = f.items[index];
+    if (!resized) return;
 
-    const oldHeight = f.items[index].height;
+    const oldHeight = resized.height;
     if (Math.abs(newHeight - oldHeight) < 1) return;
 
     const newItems = f.items.slice();
-    newItems[index] = { top: newItems[index].top, height: newHeight, bottom: newItems[index].top + newHeight };
+    const resizedTop = resized.top;
+    newItems[index] = { top: resizedTop, height: newHeight, bottom: resizedTop + newHeight };
 
     for (let i = index + 1; i < newItems.length; i++) {
-      const h = newItems[i].height;
+      const current = newItems[i];
+      const currentItem = items[i];
+      if (!current || !currentItem) continue;
+
+      const h = current.height;
       if (h === 0) {
-        const top = newItems[i - 1].bottom;
+        const top = newItems[i - 1]?.bottom ?? 0;
         newItems[i] = { top, height: 0, bottom: top };
         continue;
       }
       let j = i - 1;
-      while (j >= 0 && newItems[j].height === 0) j--;
-      const gap = j >= 0 ? getGap(items[j], items[i]) : 0;
-      const base = j >= 0 ? newItems[j].bottom : 0;
+      while (j >= 0 && newItems[j]?.height === 0) j--;
+      const prevItem = j >= 0 ? items[j] : undefined;
+      const prevFrame = j >= 0 ? newItems[j] : undefined;
+      const gap = prevItem ? getGap(prevItem, currentItem) : 0;
+      const base = prevFrame ? prevFrame.bottom : 0;
       const top = base + gap;
       newItems[i] = { top, height: h, bottom: top + h };
     }
@@ -282,7 +291,7 @@ export function useScrollEngine(
     const canvas = canvasRef.value;
     if (container && canvas) {
       const canvasOffset = canvas.offsetTop;
-      if ((canvasOffset + newItems[index].top) < container.scrollTop) {
+      if ((canvasOffset + resizedTop) < container.scrollTop) {
         container.scrollTop += (newHeight - oldHeight);
       }
     }

@@ -58,18 +58,18 @@ const fieldRows = computed<FieldRow[]>(() => {
   const res = result.value;
 
   if (res) {
-    return res.fields.map((f) => ({
+    return res.fields.map((f): FieldRow => ({
       label: f.label,
       type: f.type,
       ok: f.ok,
-      reason: f.reason,
+      ...(f.reason !== undefined && { reason: f.reason }),
       masked: f.masked === true || f.type === 'password',
       skipped: f.skipped === true,
     }));
   }
 
   // No result yet (pending/awaiting) — render the proposed schema.
-  return schema.value.fields.map((f) => ({
+  return schema.value.fields.map((f): FieldRow => ({
     label: f.label,
     type: f.type,
     ok: null,

@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec, execSafe } from './exec';
 import { withRepoLock } from './lock';
-import { isHexCommit } from './types';
-import type { ExecEnv, SafeCheckoutResult } from './types';
+import { CHECKPOINT_EXCLUDE_VERSION_KEY, isHexCommit } from './types';
+import type { CheckpointExcludeSet, ExecEnv, SafeCheckoutResult } from './types';
 
 /** Identity stamped on every checkpoint commit — purely cosmetic; these repos are never pushed. */
 const COMMITTER_EMAIL = 'checkpoints@damocles.local';
@@ -75,20 +75,48 @@ export class RepoManager {
    * Lazily create the bare repo on first use: `git init --bare`, stamp the committer identity, and
    * write the exclude patterns into `info/exclude`. Idempotent — once the repo exists this only
    * refreshes the exclude file when patterns are supplied.
+   *
+   * A plain array is written verbatim. A `CheckpointExcludeSet` is version-gated: a repo this call
+   * creates is stamped with the set's version and gets `patterns`, and every older repo gets
+   * `legacyPatterns`. Widening an existing repo's exclude set is not safe, because a rewind to a
+   * checkpoint taken under the older set deletes whatever the newer set started tracking.
    */
-  async ensureReady(excludePatterns?: readonly string[]): Promise<void> {
+  async ensureReady(exclude?: readonly string[] | CheckpointExcludeSet): Promise<void> {
+    let created = false;
     if (!this.isInitialized()) {
       await fs.promises.mkdir(this.gitDir, { recursive: true });
       await exec('git', ['init', '--bare', this.gitDir]);
       await configureIdentity(this.gitDir);
       await this.tuneForLargeRepos();
       await this.seedFromSourceRepo();
+      created = true;
     }
-    if (excludePatterns !== undefined) {
-      const infoDir = path.join(this.gitDir, 'info');
-      await fs.promises.mkdir(infoDir, { recursive: true });
-      await fs.promises.writeFile(path.join(infoDir, 'exclude'), `${excludePatterns.join('\n')}\n`, 'utf8');
+    if (exclude === undefined) return;
+    const patterns = 'patterns' in exclude ? await this.resolveExcludeSet(exclude, created) : exclude;
+    const infoDir = path.join(this.gitDir, 'info');
+    await fs.promises.mkdir(infoDir, { recursive: true });
+    await fs.promises.writeFile(path.join(infoDir, 'exclude'), `${patterns.join('\n')}\n`, 'utf8');
+  }
+
+  /**
+   * Pick the exclude patterns a version-gated set allows for this repo. On a repo this call just
+   * created, stamp the version and use the current patterns. Otherwise read the stamp back: a missing
+   * key makes `git config --get` exit non-zero, and an unparseable or older value is treated the same
+   * way, so absence can never read as present. `--local` confines both to this repo's own config,
+   * so a stray system or user setting cannot decide it.
+   */
+  private async resolveExcludeSet(set: CheckpointExcludeSet, created: boolean): Promise<readonly string[]> {
+    if (created) {
+      await exec('git', [`--git-dir=${this.gitDir}`, 'config', '--local', CHECKPOINT_EXCLUDE_VERSION_KEY, String(set.version)]);
+      return set.patterns;
     }
+    const probe = await execSafe('git', [`--git-dir=${this.gitDir}`, 'config', '--local', '--get', CHECKPOINT_EXCLUDE_VERSION_KEY]);
+    if (!probe.ok) return set.legacyPatterns;
+    const raw = probe.value.stdout.trim();
+    // Digits only, so nothing this code could not have written reads as a stamp. A lenient parse would
+    // accept `1.5` and `0x10` as version 1 and 16, handing the narrow set to a repo that never earned it.
+    const stamped = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    return stamped >= set.version ? set.patterns : set.legacyPatterns;
   }
 
   /**

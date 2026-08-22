@@ -20,6 +20,13 @@ import { COMPASS_PI_TOOL_NAMES, COMPASS_TOOL_CATALOG } from '../tools/compass-to
 import { WEB_PI_TOOL_NAMES, WEB_TOOL_CATALOG } from '../web-access/web-tool-specs';
 import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
+/** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
+function nth(names: readonly string[], i: number): string {
+  const name = names[i];
+  if (!name) throw new Error(`expected at least ${i + 1} names, got ${names.length}`);
+  return name;
+}
+
 /**
  * Slice 2: `ToolSearch` — the tool that turns a deferred tool back on, and the pure resolution it
  * delegates to. These exercise the CONTRACT the model and the session depend on: which names a call
@@ -86,7 +93,7 @@ describe('resolveToolSearchEntries — what a ToolSearch call resolves to', () =
   it('drops a group member that is outside the universe while keeping the rest of the group', () => {
     // A user-disabled browser tool is absent from `eligible`, hence from `deferrable`. Asking for the
     // whole `browser` group must not resurrect it — the group is a convenience, never an override.
-    const banned = BROWSER_PI_TOOL_NAMES[0];
+    const banned = nth(BROWSER_PI_TOOL_NAMES, 0);
     const universe = ALL_DEFERRABLE.filter((n) => n !== banned);
     const { matches } = resolveToolSearchEntries(['browser'], universe, mcpGroups());
     expect(matches).not.toContain(banned);
@@ -190,11 +197,11 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
     // The composition order that matters: `eligible` has already had `damocles.tools.disabled` and the
     // disabled subsystems subtracted. Deferring first and intersecting later would let a disabled tool
     // become deferrable — and therefore activatable.
-    const eligible = ['read', BROWSER_PI_TOOL_NAMES[1]];
+    const eligible = ['read', nth(BROWSER_PI_TOOL_NAMES, 1)];
     const deferred = deferredToolNames(eligible, MCP_CTX7);
-    expect(deferred).toEqual([BROWSER_PI_TOOL_NAMES[1]]);
-    expect(deferred).not.toContain(BROWSER_PI_TOOL_NAMES[0]);
-    expect(deferred).not.toContain(MCP_CTX7[0]);
+    expect(deferred).toEqual([nth(BROWSER_PI_TOOL_NAMES, 1)]);
+    expect(deferred).not.toContain(nth(BROWSER_PI_TOOL_NAMES, 0));
+    expect(deferred).not.toContain(nth(MCP_CTX7, 0));
   });
 
   it('an MCP name is deferrable only while it is advertised as an MCP name', () => {
@@ -206,11 +213,11 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
   it('activates exactly the intersection of deferred and activated, keeping everything non-deferred', () => {
     const eligible = ['read', 'Edit', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES];
     const deferred = deferredToolNames(eligible, []);
-    const active = initialActiveToolNames(eligible, deferred, new Set([BROWSER_PI_TOOL_NAMES[0]]));
+    const active = initialActiveToolNames(eligible, deferred, new Set([nth(BROWSER_PI_TOOL_NAMES, 0)]));
 
     expect(active).toContain('read');
     expect(active).toContain('Edit');
-    expect(active).toContain(BROWSER_PI_TOOL_NAMES[0]);
+    expect(active).toContain(nth(BROWSER_PI_TOOL_NAMES, 0));
     for (const n of BROWSER_PI_TOOL_NAMES.slice(1)) expect(active, n).not.toContain(n);
     for (const n of COMPASS_PI_TOOL_NAMES) expect(active, n).not.toContain(n);
   });
@@ -226,8 +233,8 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
   it('is idempotent: re-activating an already-active name changes nothing', () => {
     const eligible = ['read', ...BROWSER_PI_TOOL_NAMES];
     const deferred = deferredToolNames(eligible, []);
-    const once = initialActiveToolNames(eligible, deferred, new Set([BROWSER_PI_TOOL_NAMES[0]]));
-    const twice = initialActiveToolNames(eligible, deferred, new Set([BROWSER_PI_TOOL_NAMES[0], BROWSER_PI_TOOL_NAMES[0]]));
+    const once = initialActiveToolNames(eligible, deferred, new Set([nth(BROWSER_PI_TOOL_NAMES, 0)]));
+    const twice = initialActiveToolNames(eligible, deferred, new Set([nth(BROWSER_PI_TOOL_NAMES, 0), nth(BROWSER_PI_TOOL_NAMES, 0)]));
     expect(twice).toEqual(once);
   });
 
@@ -320,7 +327,7 @@ describe('deferred-tools.ts import discipline', () => {
     const { readFile } = await import('fs/promises');
     const source = await readFile(new URL('../tools/deferred-tools.ts', import.meta.url), 'utf8');
     // Both quote styles: a `from "./tool-catalog"` would slip straight past a single-quote-only regex.
-    const imports = [...source.matchAll(/^import[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+    const imports = [...source.matchAll(/^import[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]!);
     expect(imports).not.toContain('./tool-catalog');
     expect(imports.every((spec) => spec.startsWith('./') || spec.startsWith('../'))).toBe(true);
     for (const spec of imports) expect(spec, `${spec} is not a leaf name module`).toMatch(LEAF_NAME_MODULE);
@@ -393,7 +400,7 @@ async function run(entries: string[], snap: DeferrableSnapshot | null = snapshot
   const { port, activate } = fakePort(snap);
   const tool = createToolSearchTool(port);
   const result = (await tool.execute('tc-1', { tools: entries }, undefined, undefined, ctx())) as unknown as Result;
-  return { result, activate, text: result.content[0].text };
+  return { result, activate, text: result.content[0]!.text };
 }
 
 describe('createToolSearchTool — execute', () => {
@@ -404,14 +411,14 @@ describe('createToolSearchTool — execute', () => {
     // to that diff, and the model never learns the tools arrived.
     const { activate, result } = await run(['browser']);
     expect(activate).toHaveBeenCalledTimes(1);
-    expect([...activate.mock.calls[0][1]].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
-    expect(activate.mock.calls[0][0]).toBe('sess-1');
+    expect([...activate.mock.calls[0]![1]].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
+    expect(activate.mock.calls[0]![0]).toBe('sess-1');
     expect(result.details?.matches).toHaveLength(BROWSER_PI_TOOL_NAMES.length);
   });
 
   it('activates exactly one tool for an exact name', async () => {
     const { activate } = await run(['CompassSearch']);
-    expect(activate.mock.calls[0][1]).toEqual(['CompassSearch']);
+    expect(activate.mock.calls[0]![1]).toEqual(['CompassSearch']);
   });
 
   it('activates the known entries even when the same call names an unknown one', async () => {
@@ -419,7 +426,7 @@ describe('createToolSearchTool — execute', () => {
     // `nonsense` unknown. An all-or-nothing execute (early return on unknown) fails on the activate
     // assertion; one that swallows the unknown fails on the text assertion.
     const { activate, text, result } = await run(['BrowserOpen', 'nonsense', 'compass']);
-    const activated = activate.mock.calls[0][1];
+    const activated = activate.mock.calls[0]![1];
     expect([...activated].sort()).toEqual(['BrowserOpen', ...COMPASS_PI_TOOL_NAMES].sort());
     expect(activated).toHaveLength(1 + COMPASS_PI_TOOL_NAMES.length);
     expect(text).toContain('nonsense');
@@ -444,8 +451,8 @@ describe('createToolSearchTool — execute', () => {
       mcpGroups: new Map<string, string[]>([['browser', ['mcp__browser__scrape']], ['ctx7', [...MCP_CTX7]]]),
     });
     const { activate, text } = await run(['browser'], snap);
-    expect([...activate.mock.calls[0][1]].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
-    expect(activate.mock.calls[0][1]).not.toContain('mcp__browser__scrape');
+    expect([...activate.mock.calls[0]![1]].sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
+    expect(activate.mock.calls[0]![1]).not.toContain('mcp__browser__scrape');
     // The model must be TOLD, and told how to get the shadowed server's tools anyway — otherwise its
     // `browser` server silently never loads and it has no way to discover why.
     expect(text).toContain('built-in');
@@ -485,7 +492,7 @@ describe('createToolSearchTool — execute', () => {
   });
 
   it('reports only the newly-added tools when a call mixes loaded and unloaded names', async () => {
-    const snap = snapshot({ loaded: new Set([BROWSER_PI_TOOL_NAMES[0]]) });
+    const snap = snapshot({ loaded: new Set([nth(BROWSER_PI_TOOL_NAMES, 0)]) });
     const { text } = await run(['browser'], snap);
     expect(text).toContain(`Loaded ${BROWSER_PI_TOOL_NAMES.length - 1} tools`);
     expect(text).toContain('1 requested tool was already loaded');
@@ -496,7 +503,7 @@ describe('createToolSearchTool — execute', () => {
     // tools rather than lose the step. A `throw` here would surface as a failed tool call.
     const { result, activate } = await run(['browser'], null);
     expect(activate).not.toHaveBeenCalled();
-    expect(result.content[0].text).toContain('sess-1');
+    expect(result.content[0]!.text).toContain('sess-1');
     expect(result.details).toBeUndefined();
   });
 
@@ -744,7 +751,7 @@ describe('the advertised menu never exceeds what the session can load', () => {
     };
     const tool = createToolSearchTool(port);
     const result = (await tool.execute('tc-1', { tools: ['ctx7'] }, undefined, undefined, ctx())) as unknown as Result;
-    const text = result.content[0].text;
+    const text = result.content[0]!.text;
 
     expect(text).toContain('Not yet callable');
     expect(text).toContain('still connecting');

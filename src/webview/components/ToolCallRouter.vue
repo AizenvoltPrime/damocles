@@ -26,7 +26,7 @@ const props = defineProps<{
   toolUseId: string;
   toolName: string;
   message: ChatMessage;
-  subagents?: Record<string, SubagentState>;
+  subagents?: Record<string, SubagentState> | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -46,9 +46,9 @@ const teamByToolUseId = computed(() => {
 const team = computed(() => teamByToolUseId.value[props.toolUseId] ?? null);
 const explore = computed(() => exploreStore.explores[props.toolUseId] ?? null);
 
-function isAgentWithSubagent(): boolean {
-  return props.toolName === TOOL_AGENT && !!(props.subagents?.[props.toolUseId]);
-}
+const agentSubagent = computed(() =>
+  props.toolName === TOOL_AGENT ? props.subagents?.[props.toolUseId] ?? null : null
+);
 </script>
 
 <template>
@@ -63,8 +63,8 @@ function isAgentWithSubagent(): boolean {
     @expand="teamStore.openOverlay(team!.teamId)"
   />
   <SubagentCard
-    v-else-if="isAgentWithSubagent() && subagents?.[toolUseId]"
-    :subagent="subagents[toolUseId]"
+    v-else-if="agentSubagent"
+    :subagent="agentSubagent"
     @expand="emit('expandSubagent', toolUseId)"
   />
   <QuestionToolCard v-else-if="toolName === TOOL_ASK_USER_QUESTION" :tool-call="toolCall" />

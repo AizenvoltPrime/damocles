@@ -4,6 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { ListboxContent, useForwardProps } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<ListboxContentProps & { class?: HTMLAttributes["class"] }>()
 
@@ -13,7 +14,7 @@ const forwarded = useForwardProps(delegatedProps)
 </script>
 
 <template>
-  <ListboxContent v-bind="forwarded" :class="cn('max-h-[18.75rem] overflow-y-auto overflow-x-hidden', props.class)">
+  <ListboxContent v-bind="definedProps(forwarded)" :class="cn('max-h-[18.75rem] overflow-y-auto overflow-x-hidden', props.class)">
     <div role="presentation">
       <slot />
     </div>

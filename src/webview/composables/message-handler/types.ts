@@ -1,4 +1,4 @@
-import type { Ref, ComponentPublicInstance } from "vue";
+import type { Ref } from "vue";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "@shared/types/messages";
 import type { useUIStore } from "@/stores/useUIStore";
 import type { useSettingsStore } from "@/stores/useSettingsStore";
@@ -64,7 +64,7 @@ export interface ChatInputExposed {
 
 export interface RefContext {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<ChatInputExposed> | null>;
+  chatInputRef: Ref<ChatInputExposed | null>;
 }
 
 export interface VSCodeContext {
@@ -95,5 +95,5 @@ export type HandlerRegistry = {
 
 export interface MessageHandlerOptions {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<ChatInputExposed> | null>;
+  chatInputRef: Ref<ChatInputExposed | null>;
 }

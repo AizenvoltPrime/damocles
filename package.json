@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.21.2",
+  "version": "2.22.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -43,6 +43,17 @@
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "%capabilities.untrustedWorkspaces.description%",
+      "restrictedConfigurations": [
+        "damocles.dangerouslySkipPermissions",
+        "damocles.permissionMode",
+        "damocles.compass.enabled"
+      ]
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "secondarySidebar": [
@@ -73,12 +84,12 @@
         {
           "id": "damocles.compass.explorer",
           "name": "Explorer",
-          "when": "config.damocles.compass.enabled"
+          "when": "config.damocles.compass.enabled && isWorkspaceTrusted"
         },
         {
           "id": "damocles.compass.blastRadius",
           "name": "Blast Radius",
-          "when": "config.damocles.compass.enabled"
+          "when": "config.damocles.compass.enabled && isWorkspaceTrusted"
         }
       ]
     },
@@ -900,7 +911,7 @@
             "codex"
           ],
           "default": "claude",
-          "description": "Which source wins when a skill or slash command exists in both .claude and .codex with the same name. Affects both the agent's loaded resources and the slash-command menu."
+          "description": "Breaks a tie between .claude and .codex when a skill or slash command with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to the agent's loaded resources and the slash-command menu."
         },
         "damocles.tools.disabled": {
           "type": "array",
@@ -942,8 +953,18 @@
         },
         "damocles.explore.effort": {
           "type": "string",
-          "enum": ["", "low", "medium", "high"],
-          "enumItemLabels": ["Model default", "Low", "Medium", "High"],
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high"
+          ],
+          "enumItemLabels": [
+            "Model default",
+            "Low",
+            "Medium",
+            "High"
+          ],
           "default": "",
           "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
         }
@@ -961,7 +982,9 @@
     "watch:extension": "node esbuild.config.mjs --watch",
     "watch:webview": "vite build --watch",
     "dev": "npm run watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:tests && npm run typecheck:webview",
+    "typecheck:tests": "tsc -p tsconfig.tests.json && tsc -p tsconfig.tests.dom.json",
+    "typecheck:webview": "vue-tsc -p tsconfig.webview.json --noEmit",
     "sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
     "vscode:prepublish": "node scripts/sync-vscodeignore.mjs && npm run build",
     "package": "npx @vscode/vsce package",
@@ -997,6 +1020,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/d3-selection": "^3.0.11",
     "@types/d3-shape": "^3.1.8",
+    "@types/d3-transition": "^3.0.9",
     "@types/d3-zoom": "^3.0.8",
     "@types/diff": "^7.0.2",
     "@types/dompurify": "^3.0.5",
@@ -1016,6 +1040,7 @@
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
     "d3-shape": "^3.2.0",
+    "d3-transition": "^3.0.1",
     "d3-zoom": "^3.0.0",
     "diff": "^8.0.2",
     "dompurify": "^3.3.2",
@@ -1048,6 +1073,7 @@
     "vue-eslint-parser": "^9.4.3",
     "vue-i18n": "^11.2.8",
     "vue-sonner": "^2.0.9",
+    "vue-tsc": "^2.2.10",
     "vue3-lottie": "^3.3.1",
     "ws": "^8.18.0"
   }

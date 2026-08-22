@@ -20,11 +20,11 @@ const EXPECTED_ENUM = ['', ...stepFlash.supportedEffortLevels!];
 describe('explore effort setting contribution — enum sync guard', () => {
   it("damocles.explore.effort enum equals ['', ...step-3.7-flash supportedEffortLevels]", () => {
     expect(properties['damocles.explore.effort']).toBeDefined();
-    expect(properties['damocles.explore.effort'].enum).toEqual(EXPECTED_ENUM);
+    expect(properties['damocles.explore.effort']!.enum).toEqual(EXPECTED_ENUM);
   });
 
   it('damocles.explore.effort has a label per enum value and defaults to the model-default sentinel', () => {
-    const prop = properties['damocles.explore.effort'];
+    const prop = properties['damocles.explore.effort']!;
     expect(prop.enumItemLabels).toHaveLength(EXPECTED_ENUM.length);
     expect(prop.default).toBe('');
   });

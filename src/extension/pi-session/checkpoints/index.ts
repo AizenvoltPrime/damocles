@@ -10,8 +10,16 @@ export type {
   FileChange,
   CheckpointEntry,
   SafeCheckoutResult,
+  CheckpointExcludeSet,
 } from './types';
-export { DEFAULT_CHECKPOINT_EXCLUDES, isHexCommit } from './types';
+export {
+  DEFAULT_CHECKPOINT_EXCLUDES,
+  LEGACY_CHECKPOINT_EXCLUDES,
+  CHECKPOINT_EXCLUDE_SET,
+  CHECKPOINT_EXCLUDE_SET_VERSION,
+  CHECKPOINT_EXCLUDE_VERSION_KEY,
+  isHexCommit,
+} from './types';
 
 export { exec, execSafe } from './exec';
 export { withRepoLock } from './lock';

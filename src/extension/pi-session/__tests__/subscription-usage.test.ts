@@ -117,17 +117,17 @@ describe('parseClaudeUsage (legacy top-level windows)', () => {
       seven_day_fable: { utilization: 5, resets_at: '2026-07-15T00:00:00.000Z' },
     });
     expect(bars).toHaveLength(1);
-    expect(bars[0].id).toBe('seven_day_fable');
+    expect(bars[0]!.id).toBe('seven_day_fable');
   });
 
   it('maps null resets_at to null', () => {
     const { bars } = parseClaudeUsage({ five_hour: { utilization: 3, resets_at: null } });
-    expect(bars[0].resetsAt).toBeNull();
+    expect(bars[0]!.resetsAt).toBeNull();
   });
 
   it('maps an invalid ISO string to null', () => {
     const { bars } = parseClaudeUsage({ five_hour: { utilization: 3, resets_at: 'not-a-date' } });
-    expect(bars[0].resetsAt).toBeNull();
+    expect(bars[0]!.resetsAt).toBeNull();
   });
 
   it('skips null and malformed top-level values', () => {
@@ -244,7 +244,7 @@ describe('parseCodexUsage', () => {
       rate_limit: { primary_window: { used_percent: 10, reset_at: 1_800_000_000 } },
     });
     expect(bars.map((b) => b.id)).toEqual(['codex_primary']);
-    expect(bars[0].resetsAt).toBe(1_800_000_000_000);
+    expect(bars[0]!.resetsAt).toBe(1_800_000_000_000);
   });
 
   it('parses a free-plan single monthly window (secondary null, 30-day seconds)', () => {
@@ -271,7 +271,7 @@ describe('parseCodexUsage', () => {
     const { bars } = parseCodexUsage({
       rate_limit: { primary_window: { used_percent: 10 } },
     });
-    expect(bars[0].resetsAt).toBeNull();
+    expect(bars[0]!.resetsAt).toBeNull();
   });
 
   it('passes plan_type through', () => {

@@ -4,7 +4,33 @@ import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCom
 import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
+import {
+  DEFAULT_TTS_VOICE,
+  DEFAULT_WAKE_SENSITIVITY,
+  DEFAULT_END_OF_TURN_MS,
+  DEFAULT_MAX_UTTERANCE_MS,
+} from '@shared/types/voice';
 import { DEFAULT_MODELS } from '@shared/types/constants';
+
+/**
+ * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
+ * defaults declared in package.json, so a read that lands before that message sees the setting the
+ * user actually has rather than `undefined`.
+ */
+const INITIAL_VOICE_CONFIG: VoiceConfig = {
+  provider: 'openai-whisper',
+  language: 'en',
+  mode: 'off',
+  wakeWord: 'hey_jarvis',
+  wakeWordSensitivity: DEFAULT_WAKE_SENSITIVITY,
+  ttsEnabled: false,
+  ttsVoice: DEFAULT_TTS_VOICE,
+  localGpu: 'auto',
+  endOfTurnSilenceMs: DEFAULT_END_OF_TURN_MS,
+  maxUtteranceMs: DEFAULT_MAX_UTTERANCE_MS,
+  autoSubmit: true,
+  diagnostics: false,
+};
 
 const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
   enabled: false,
@@ -63,6 +89,14 @@ export const useSettingsStore = defineStore('settings', () => {
   const mcpEnabled = ref<boolean>(true);
   /** MCP config files that exist but do not parse, so their servers are missing from the list. */
   const mcpConfigErrors = ref<McpConfigError[]>([]);
+  /** True when `<ws>/.damocles/mcp.local.json` exists and git does not ignore it. */
+  const mcpLocalUnignored = ref<boolean>(false);
+  /**
+   * Counts applied `mcpConfigUpdate` payloads. `mcpReloadConfig` carries no requestId and the reply
+   * usually renders identically to what is on screen, so this counter is what tells the panel a
+   * reload it asked for came back.
+   */
+  const mcpConfigRevision = ref<number>(0);
   /** The requestId of the MCP write awaiting acknowledgement, or null. */
   const mcpWriteRequestId = ref<string | null>(null);
   const mcpWriteError = ref<McpWriteErrorInfo | null>(null);
@@ -77,7 +111,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const panelThinkingModel = ref<string>("");
   const defaultThinking = ref<PanelThinkingState | null>(null);
   const defaultThinkingModel = ref<string>("");
-  const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
+  const voiceConfig = ref<VoiceConfig>({ ...INITIAL_VOICE_CONFIG });
   const voiceHasApiKey = ref(false);
   const exploreHasApiKey = ref(false);
   const exploreProvider = ref('openrouter');
@@ -189,10 +223,15 @@ export const useSettingsStore = defineStore('settings', () => {
       // the affordance for the moment before the next status message costs nothing by comparison.
       return merged;
     });
+    mcpConfigRevision.value += 1;
   }
 
   function setMcpConfigErrors(errors: McpConfigError[]) {
     mcpConfigErrors.value = errors;
+  }
+
+  function setMcpLocalUnignored(unignored: boolean) {
+    mcpLocalUnignored.value = unignored;
   }
 
   /** A write has been sent; the form stays open and disabled until `settleMcpWrite` matches it. */
@@ -348,6 +387,11 @@ export const useSettingsStore = defineStore('settings', () => {
     accountInfo.value = null;
     mcpServers.value = [];
     mcpEnabled.value = true;
+    mcpConfigErrors.value = [];
+    mcpLocalUnignored.value = false;
+    mcpConfigRevision.value = 0;
+    mcpWriteRequestId.value = null;
+    mcpWriteError.value = null;
     toolsSnapshot.value = { groups: [], tools: [] };
     budgetWarning.value = null;
     contextWarning.value = null;
@@ -357,7 +401,7 @@ export const useSettingsStore = defineStore('settings', () => {
     panelThinkingModel.value = "";
     defaultThinking.value = null;
     defaultThinkingModel.value = "";
-    voiceConfig.value = { provider: "openai-whisper", language: "en" };
+    voiceConfig.value = { ...INITIAL_VOICE_CONFIG };
     voiceHasApiKey.value = false;
     exploreHasApiKey.value = false;
     exploreProvider.value = 'openrouter';
@@ -383,6 +427,8 @@ export const useSettingsStore = defineStore('settings', () => {
     accountInfo,
     mcpServers,
     mcpConfigErrors,
+    mcpLocalUnignored,
+    mcpConfigRevision,
     mcpWriteRequestId,
     mcpWriteError,
     mcpEnabled,
@@ -413,6 +459,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setMcpServers,
     reconcileMcpServers,
     setMcpConfigErrors,
+    setMcpLocalUnignored,
     beginMcpWrite,
     settleMcpWrite,
     setMcpEnabled,

@@ -8,7 +8,7 @@ import {
   getIndexPath,
   getCheckpointEntries,
   execSafe,
-  DEFAULT_CHECKPOINT_EXCLUDES,
+  CHECKPOINT_EXCLUDE_SET,
   type CheckpointEntry,
 } from './checkpoints';
 
@@ -107,7 +107,7 @@ export class CheckpointService {
     this.repo = new RepoManager(getGitDir(repoDir), getIndexPath(repoDir), this.host.cwd);
     this.producer = new AutoCheckpointProducer({
       repo: this.repo,
-      exclude: DEFAULT_CHECKPOINT_EXCLUDES,
+      exclude: CHECKPOINT_EXCLUDE_SET,
       createTurnId: () => `turn-${++this.turnCounter}`,
       now: () => new Date(),
     });
@@ -193,7 +193,7 @@ export class CheckpointService {
         if (!producer) return [];
         if (!this.repo) return [];
         const snapshotHash = await this.repo.withLock(async () => {
-          await this.repo!.ensureReady(DEFAULT_CHECKPOINT_EXCLUDES);
+          await this.repo!.ensureReady(CHECKPOINT_EXCLUDE_SET);
           return this.repo!.checkpoint(compactionEntryId);
         });
         const entry: CheckpointEntry = {

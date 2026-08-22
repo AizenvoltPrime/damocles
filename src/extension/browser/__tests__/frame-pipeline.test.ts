@@ -359,7 +359,7 @@ describe('P2 — backpressure: a visible panel acks only on frameRendered or the
 
     // Two acks, but for two DIFFERENT sessionIds — this is not a double-ack of one frame, which is
     // what would actually corrupt Chromium's in-flight count.
-    const acked = ack.mock.calls.map((c) => c[0]);
+    const acked = ack.mock.calls.map((c: [number]) => c[0]);
     expect(acked).toEqual([60, 61]);
     expect(new Set(acked).size).toBe(2);
     expect(push).not.toHaveBeenCalled();
@@ -387,7 +387,7 @@ describe('a late frameRendered after the fallback fired issues NO second ack', (
 
     // Exactly one ack for sessionId 41 — a duplicate would corrupt Chromium's in-flight count.
     expect(ack).toHaveBeenCalledTimes(1);
-    expect(ack.mock.calls.filter((c) => c[0] === 41)).toHaveLength(1);
+    expect(ack.mock.calls.filter((c: [number]) => c[0] === 41)).toHaveLength(1);
     service.dispose();
   });
 
@@ -503,7 +503,7 @@ describe('two frames in flight leave zero unacked-but-abandoned frames', () => {
     priv(service).onFrameRendered(entry, entry.pendingAck!.frameId);
 
     // Both sessionIds acked, each exactly once: Chromium's in-flight count is balanced.
-    expect(ack.mock.calls.map((c) => c[0])).toEqual([1, 2]);
+    expect(ack.mock.calls.map((c: [number]) => c[0])).toEqual([1, 2]);
     expect(push).toHaveBeenCalledTimes(2);
     service.dispose();
   });
@@ -518,7 +518,7 @@ describe('two frames in flight leave zero unacked-but-abandoned frames', () => {
     }
     priv(service).onFrameRendered(entry, entry.pendingAck!.frameId);
 
-    const acked = ack.mock.calls.map((c) => c[0]);
+    const acked = ack.mock.calls.map((c: [number]) => c[0]);
     expect(acked).toEqual([1, 2, 3, 4, 5]);
     expect(new Set(acked).size).toBe(acked.length); // no sessionId acked twice
     expect(entry.pendingAck).toBeNull();

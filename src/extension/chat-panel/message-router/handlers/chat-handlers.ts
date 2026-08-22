@@ -3,6 +3,7 @@ import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../ty
 import type { UserContentBlock } from "../../../../shared/types/content";
 import type { ContentInput } from "../../../session-types";
 import type { MemoryScope } from "../../../../shared/types/memory";
+import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
@@ -30,13 +31,24 @@ type InterceptResult =
 
 const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
 const COMPACT_SLASH_RE = /^\/compact(?:\s+(.*))?$/;
-const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
 
 /** Builtins expanded to a canonical prompt before handing the turn to the agent. */
 const DIRECT_COMMANDS: ReadonlySet<string> = new Set(["init"]);
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager, markUserTypedDuringTurn } = deps;
+
+  /** Withheld project-scope asset: no turn is sent, since the agent never loaded it. */
+  const refuseUntrusted = (ctx: HandlerContext): InterceptResult => {
+    postMessage(ctx.host, {
+      type: "notification",
+      message: vscode.l10n.t(
+        "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
+      ),
+      notificationType: "warning",
+    });
+    return { kind: "handled" };
+  };
 
   const tryInterceptLocal = async (
     originalTextContent: string,
@@ -112,7 +124,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     let transformedContent: string | null = null;
     let preApprovedSkillName: string | null = null;
-    const skillMatch = trimmed.match(ANY_SLASH_RE);
+    const skillMatch = trimmed.match(SLASH_INVOCATION_RE);
     if (skillMatch) {
       const [, skillName, skillArgs] = skillMatch;
       if (skillName) {
@@ -126,14 +138,26 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           }
           transformedContent = result.content;
         } else {
-          const isSkill = await workspaceManager.isSkill(skillName);
-          if (isSkill) {
+          // Both lookups run before any branch: a withheld asset of one kind must not speak for a
+          // working asset of the other kind that claims the same name. Both are memoized scans.
+          const skill = await workspaceManager.findSkill(skillName);
+          const command = await workspaceManager.findCommand(skillName);
+          const skillRunnable = skill !== undefined && skill.untrusted !== true;
+          const commandRunnable = command !== undefined && command.untrusted !== true;
+
+          if (skillRunnable) {
             ctx.permissionHandler.preApproveSkill(skillName);
             preApprovedSkillName = skillName;
             transformedContent = skillArgs
               ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
               : `Execute skill ${skillName}`;
+          } else if (!commandRunnable && (skill !== undefined || command !== undefined)) {
+            // Everything claiming this name is withheld from the agent, so passing it through would
+            // send `/name` to the model as literal text.
+            return refuseUntrusted(ctx);
           }
+          // A runnable command needs no transform: pi expands the prompt template inside `prompt()`.
+          // An unknown name passes through unchanged too.
         }
       }
     }

@@ -46,10 +46,10 @@ export const useTaskStore = defineStore("task", () => {
     const newTask: Task = {
       id: result.task.id,
       subject: result.task.subject,
-      description: fromInput?.description || undefined,
+      ...(fromInput?.description ? { description: fromInput.description } : {}),
       status: "pending",
-      activeForm: fromInput?.activeForm || undefined,
-      metadata: fromInput?.metadata || undefined,
+      ...(fromInput?.activeForm ? { activeForm: fromInput.activeForm } : {}),
+      ...(fromInput?.metadata ? { metadata: fromInput.metadata } : {}),
     };
     tasks.value = [...tasks.value, newTask];
   }
@@ -90,12 +90,13 @@ export const useTaskStore = defineStore("task", () => {
       .filter(t => t.id && t.subject)
       .map(sdkTask => {
         const existing = existingById.get(sdkTask.id);
+        const owner = sdkTask.owner ?? existing?.owner;
         return {
           ...(existing ?? {}),
           id: sdkTask.id,
           subject: sdkTask.subject,
           status: sdkTask.status,
-          owner: sdkTask.owner ?? existing?.owner,
+          ...(owner !== undefined && { owner }),
           blockedBy: sdkTask.blockedBy,
         } satisfies Task;
       });

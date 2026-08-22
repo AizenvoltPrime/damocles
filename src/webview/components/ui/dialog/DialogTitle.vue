@@ -4,6 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { DialogTitle, useForwardProps } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<DialogTitleProps & { class?: HTMLAttributes["class"] }>()
 
@@ -14,7 +15,7 @@ const forwardedProps = useForwardProps(delegatedProps)
 
 <template>
   <DialogTitle
-    v-bind="forwardedProps"
+    v-bind="definedProps(forwardedProps)"
     :class="
       cn(
         'text-lg font-semibold leading-none tracking-tight',

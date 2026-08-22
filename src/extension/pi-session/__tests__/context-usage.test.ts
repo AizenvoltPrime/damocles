@@ -207,6 +207,21 @@ describe('buildContextUsage — independent section degradation', () => {
     const agents = buildContextUsage(session, '', deps({ agentRegistry: registry })).agents;
     expect(agents).toEqual([{ agentType: 'custom', source: 'user', tokens: 1, filePath: '/a/custom.md' }]);
   });
+
+  it('badges a .damocles project agent as project scope, like the other project sources', () => {
+    const session = fakeSession({ contextUsage: { tokens: 0 } });
+    const registry = {
+      getAvailableConfigs: () => [
+        { name: 'reviewer', isDefault: false, source: 'project-damocles', systemPrompt: 'xxxx', filePath: '/w/.damocles/agents/reviewer.md' },
+        { name: 'planner', isDefault: false, source: 'project-pi', systemPrompt: 'xxxx', filePath: '/w/.pi/agents/planner.md' },
+      ],
+    } as unknown as AgentRegistry;
+    const agents = buildContextUsage(session, '', deps({ agentRegistry: registry })).agents;
+    expect(agents).toEqual([
+      { agentType: 'reviewer', source: 'project', tokens: 1, filePath: '/w/.damocles/agents/reviewer.md' },
+      { agentType: 'planner', source: 'project', tokens: 1, filePath: '/w/.pi/agents/planner.md' },
+    ]);
+  });
 });
 
 /**

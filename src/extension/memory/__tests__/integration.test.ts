@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import * as crypto from 'crypto';
 import { createTestMemoryDb } from './test-helpers';
 import { MemoryWriteQueue } from '../write-queue';
@@ -9,6 +9,7 @@ import { ProfileManager } from '../managers/profile-manager';
 import { RetrievalManager } from '../managers/retrieval-manager';
 import { InjectionManager } from '../managers/injection-manager';
 import { runConsolidation, type ConsolidationCtx } from '../consolidation';
+import { subCallSpy, type SubCallSpy } from './subcall-spy';
 
 const WORKSPACE = '/repo/damocles';
 const SESSION_ID = 'session-integration';
@@ -80,8 +81,8 @@ function parseRerankItems(prompt: string): RerankItem[] {
 
 interface RunnerHandle {
   runner: MemorySubCallRunner;
-  run: ReturnType<typeof vi.fn>;
-  onNoModel: ReturnType<typeof vi.fn>;
+  run: SubCallSpy;
+  onNoModel: Mock<() => void>;
 }
 
 /**
@@ -92,7 +93,7 @@ function makeRunner(
   extractMemories: ExtractedMemorySeed[],
   relevanceById: Record<string, 'high' | 'medium' | 'low'> = {},
 ): RunnerHandle {
-  const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+  const run = subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
     if (req.purpose === 'extract') return { value: { memories: extractMemories } as T };
     if (req.purpose === 'profile') return { value: { static: 'durable facts', dynamic: 'recent focus' } as T };
     if (req.purpose === 'rerank') {
@@ -102,7 +103,7 @@ function makeRunner(
     }
     return { value: { contradicts: false, merged_ids: [], content: '' } as T };
   });
-  const onNoModel = vi.fn();
+  const onNoModel = vi.fn<() => void>();
   return { runner: { run }, run, onNoModel };
 }
 
@@ -222,15 +223,15 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     };
 
     const contradictHandle: RunnerHandle = {
-      onNoModel: vi.fn(),
-      run: vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      onNoModel: vi.fn<() => void>(),
+      run: subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
         if (req.purpose === 'extract') return { value: { memories: [newFact] } as T };
         if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } as T };
         if (req.purpose === 'merge') return { value: { contradicts: true, merged_ids: [] } as T };
         if (req.purpose === 'rerank') return { value: { results: [] } as T };
         return { value: null };
       }),
-      runner: { run: vi.fn() },
+      runner: { run: subCallSpy(async () => ({ value: null })) },
     };
     contradictHandle.runner = { run: contradictHandle.run };
 
@@ -272,12 +273,12 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     seedCandidate(db, SESSION_ID, 'And this?', 'Sure.');
 
     const degradeHandle: RunnerHandle = {
-      onNoModel: vi.fn(),
-      run: vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      onNoModel: vi.fn<() => void>(),
+      run: subCallSpy(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
         if (req.purpose === 'extract') return { value: null, failure: 'no-model' };
         return { value: null };
       }),
-      runner: { run: vi.fn() },
+      runner: { run: subCallSpy(async () => ({ value: null })) },
     };
     degradeHandle.runner = { run: degradeHandle.run };
 

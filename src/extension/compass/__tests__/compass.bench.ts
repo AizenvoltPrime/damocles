@@ -7,7 +7,8 @@ import { detectEntryPoints, traceFlows, storeFlows } from '../flows';
 import { detectCommunities, storeCommunities } from '../communities';
 import { analyzeChanges } from '../changes';
 import { createTestStore } from './sql-test-helper';
-
+
+
 let store: GraphStore;
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
@@ -47,8 +48,7 @@ function seedLargeGraph(store: GraphStore, fileCount: number, functionsPerFile: 
 				line_start: lineStart,
 				line_end: lineStart + 12,
 				language: 'typescript',
-				params: kind === 'Function' ? '(x: number)' : undefined,
-				return_type: kind === 'Function' ? 'void' : undefined,
+				...(kind === 'Function' ? { params: '(x: number)', return_type: 'void' } : {}),
 			}));
 
 			store.upsertEdge(makeEdge({

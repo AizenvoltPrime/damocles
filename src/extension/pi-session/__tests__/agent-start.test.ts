@@ -114,7 +114,7 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
   it('closes on the tail conciseness reminder, whatever else was appended', async () => {
     for (const opts of [{}, { memoryEnabled: true }, { memoryEnabled: true, plan: true, teamEnabled: true }]) {
       const result = await buildAgentStartResult(event(), makePanel(opts).panel, 'sess-1');
-      expect(result?.systemPrompt.trimEnd().endsWith('<tone_preference>\nKeep outputs reasonably concise.\n</tone_preference>')).toBe(true);
+      expect(result?.systemPrompt?.trimEnd().endsWith('<tone_preference>\nKeep outputs reasonably concise.\n</tone_preference>')).toBe(true);
     }
   });
 

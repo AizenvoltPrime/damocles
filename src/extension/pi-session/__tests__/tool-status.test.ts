@@ -10,6 +10,20 @@ import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 import { fullActiveToolNames, activeToolNamesWithDeferral, buildToolStatus, type ToolStatusDeps } from '../tool-status';
 
+/** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
+function nth(names: readonly string[], i: number): string {
+  const name = names[i];
+  if (!name) throw new Error(`expected at least ${i + 1} names, got ${names.length}`);
+  return name;
+}
+
+/** The named group of a status snapshot, failing loudly rather than widening to `undefined`. */
+function group(snap: ReturnType<typeof buildToolStatus>, name: string): ReturnType<typeof buildToolStatus>['groups'][number] {
+  const found = snap.groups.find((g) => g.group === name);
+  if (!found) throw new Error(`no '${name}' group in the tool-status snapshot`);
+  return found;
+}
+
 /**
  * The Tools-panel snapshot + full-active-set assembly extracted from pi-session.ts. Fabricated
  * `ToolStatusDeps` drive the gating/de-dup/disabled-filter logic.
@@ -41,19 +55,19 @@ describe('fullActiveToolNames', () => {
   });
 
   it('gates web tools on webEnabled', () => {
-    expect(fullActiveToolNames(deps({ webEnabled: false }))).not.toContain(WEB_TOOLS[0]);
-    expect(fullActiveToolNames(deps({ webEnabled: true }))).toContain(WEB_TOOLS[0]);
+    expect(fullActiveToolNames(deps({ webEnabled: false }))).not.toContain(nth(WEB_TOOLS, 0));
+    expect(fullActiveToolNames(deps({ webEnabled: true }))).toContain(nth(WEB_TOOLS, 0));
   });
 
   it('includes team tools only when team is available AND enabled', () => {
-    expect(fullActiveToolNames(deps({ teamEnabled: true, teamAvailable: false }))).not.toContain(TEAM_MAIN_PI_TOOL_NAMES[0]);
-    expect(fullActiveToolNames(deps({ teamEnabled: false, teamAvailable: true }))).not.toContain(TEAM_MAIN_PI_TOOL_NAMES[0]);
-    expect(fullActiveToolNames(deps({ teamEnabled: true, teamAvailable: true }))).toContain(TEAM_MAIN_PI_TOOL_NAMES[0]);
+    expect(fullActiveToolNames(deps({ teamEnabled: true, teamAvailable: false }))).not.toContain(nth(TEAM_MAIN_PI_TOOL_NAMES, 0));
+    expect(fullActiveToolNames(deps({ teamEnabled: false, teamAvailable: true }))).not.toContain(nth(TEAM_MAIN_PI_TOOL_NAMES, 0));
+    expect(fullActiveToolNames(deps({ teamEnabled: true, teamAvailable: true }))).toContain(nth(TEAM_MAIN_PI_TOOL_NAMES, 0));
   });
 
   it('includes memory tools only when the service is enabled', () => {
-    expect(fullActiveToolNames(deps({ memoryService: memDisabled }))).not.toContain(MEMORY_PI_TOOL_NAMES[0]);
-    expect(fullActiveToolNames(deps({ memoryService: memEnabled }))).toContain(MEMORY_PI_TOOL_NAMES[0]);
+    expect(fullActiveToolNames(deps({ memoryService: memDisabled }))).not.toContain(nth(MEMORY_PI_TOOL_NAMES, 0));
+    expect(fullActiveToolNames(deps({ memoryService: memEnabled }))).toContain(nth(MEMORY_PI_TOOL_NAMES, 0));
   });
 
   it('includes MCP tool names only when mcpEnabled', () => {
@@ -62,13 +76,13 @@ describe('fullActiveToolNames', () => {
   });
 
   it('subtracts the per-tool disabled set', () => {
-    const names = fullActiveToolNames(deps({ disabled: new Set([PI_NATIVE_ACTIVE_TOOLS[0]]) }));
-    expect(names).not.toContain(PI_NATIVE_ACTIVE_TOOLS[0]);
+    const names = fullActiveToolNames(deps({ disabled: new Set([nth(PI_NATIVE_ACTIVE_TOOLS, 0)]) }));
+    expect(names).not.toContain(nth(PI_NATIVE_ACTIVE_TOOLS, 0));
   });
 
   it('de-dups names (pi requires unique tool names)', () => {
     // An MCP name colliding with a native name must appear once.
-    const collide = PI_NATIVE_ACTIVE_TOOLS[0];
+    const collide = nth(PI_NATIVE_ACTIVE_TOOLS, 0);
     const names = fullActiveToolNames(deps({ mcpEnabled: true, mcpToolNames: [collide] }));
     expect(names.filter((n) => n === collide)).toHaveLength(1);
   });
@@ -131,12 +145,12 @@ describe('activeToolNamesWithDeferral', () => {
     const activated = new Set(BROWSER_PI_TOOL_NAMES);
     const first = activeToolNamesWithDeferral(before, activated);
     for (const n of BROWSER_PI_TOOL_NAMES) expect(first, n).toContain(n);
-    expect(first).not.toContain(MEMORY_PI_TOOL_NAMES[0]);
+    expect(first).not.toContain(nth(MEMORY_PI_TOOL_NAMES, 0));
 
     const after = deps({ ...everything, memoryService: memEnabled });
     const second = activeToolNamesWithDeferral(after, activated);
     for (const n of BROWSER_PI_TOOL_NAMES) expect(second, n).toContain(n);
-    expect(second).toContain(MEMORY_PI_TOOL_NAMES[0]); // proves the recompute read the new snapshot, not a cache
+    expect(second).toContain(nth(MEMORY_PI_TOOL_NAMES, 0)); // proves the recompute read the new snapshot, not a cache
     // Compass stayed unactivated through both — activation is per-name, never "all deferred tools".
     for (const n of COMPASS_PI_TOOL_NAMES) expect(second, n).not.toContain(n);
     // And the new group behaves like the other deferred ones under the same recompute: eligible
@@ -150,11 +164,11 @@ describe('activeToolNamesWithDeferral', () => {
     // five. Without this, the only coverage of web deferral here would be the set-difference case above,
     // which cannot distinguish "deferred" from "not eligible".
     const d = deps(everything);
-    expect(fullActiveToolNames(d)).toContain(WEB_TOOLS[0]);
-    expect(activeToolNamesWithDeferral(d, none)).not.toContain(WEB_TOOLS[0]);
+    expect(fullActiveToolNames(d)).toContain(nth(WEB_TOOLS, 0));
+    expect(activeToolNamesWithDeferral(d, none)).not.toContain(nth(WEB_TOOLS, 0));
 
-    const active = activeToolNamesWithDeferral(d, new Set([WEB_TOOLS[0]]));
-    expect(active).toContain(WEB_TOOLS[0]);
+    const active = activeToolNamesWithDeferral(d, new Set([nth(WEB_TOOLS, 0)]));
+    expect(active).toContain(nth(WEB_TOOLS, 0));
     for (const n of WEB_TOOLS.slice(1)) expect(active, n).not.toContain(n);
   });
 
@@ -175,7 +189,7 @@ describe('activeToolNamesWithDeferral', () => {
     // `deferredToolNames` intersects with `eligible`, and `disabled` is subtracted BEFORE deferral — so a
     // user-disabled tool is not deferrable and ToolSearch cannot bring it back. Reversing that
     // composition order (defer first, subtract later) would let this name through.
-    const banned = BROWSER_PI_TOOL_NAMES[0];
+    const banned = nth(BROWSER_PI_TOOL_NAMES, 0);
     const d = deps({ ...everything, disabled: new Set([banned]) });
     expect(fullActiveToolNames(d)).not.toContain(banned);
 
@@ -186,10 +200,10 @@ describe('activeToolNamesWithDeferral', () => {
 
   it('defers MCP names too, and activates one by exact name without pulling in its siblings', () => {
     const d = deps(everything);
-    expect(activeToolNamesWithDeferral(d, none)).not.toContain(MCP_NAMES[0]);
-    const active = activeToolNamesWithDeferral(d, new Set([MCP_NAMES[0]]));
-    expect(active).toContain(MCP_NAMES[0]);
-    expect(active).not.toContain(MCP_NAMES[1]);
+    expect(activeToolNamesWithDeferral(d, none)).not.toContain(nth(MCP_NAMES, 0));
+    const active = activeToolNamesWithDeferral(d, new Set([nth(MCP_NAMES, 0)]));
+    expect(active).toContain(nth(MCP_NAMES, 0));
+    expect(active).not.toContain(nth(MCP_NAMES, 1));
   });
 });
 
@@ -207,20 +221,18 @@ describe('buildToolStatus', () => {
     const snap = buildToolStatus(
       deps({ memoryService: memEnabled, compassService: compassEnabled, webEnabled: true, teamEnabled: true, teamAvailable: true }),
     );
-    const byGroup = Object.fromEntries(snap.groups.map((g) => [g.group, g]));
-    expect(byGroup.memory.enabled).toBe(true);
-    expect(byGroup.compass.enabled).toBe(true);
-    expect(byGroup.web.enabled).toBe(true);
-    expect(byGroup.team.enabled).toBe(true);
-    expect(byGroup.core.enabled).toBe(true);
+    expect(group(snap, 'memory').enabled).toBe(true);
+    expect(group(snap, 'compass').enabled).toBe(true);
+    expect(group(snap, 'web').enabled).toBe(true);
+    expect(group(snap, 'team').enabled).toBe(true);
+    expect(group(snap, 'core').enabled).toBe(true);
   });
 
   it('reflects availability from service presence', () => {
     const snap = buildToolStatus(deps({ teamAvailable: false, browserAvailable: true }));
-    const byGroup = Object.fromEntries(snap.groups.map((g) => [g.group, g]));
-    expect(byGroup.team.available).toBe(false);
-    expect(byGroup.browser.available).toBe(true);
-    expect(byGroup.memory.available).toBe(false);
+    expect(group(snap, 'team').available).toBe(false);
+    expect(group(snap, 'browser').available).toBe(true);
+    expect(group(snap, 'memory').available).toBe(false);
   });
 
   it('team group enabled reflects the raw flag even without availability', () => {
@@ -235,13 +247,15 @@ describe('buildToolStatus', () => {
     const core = snap.tools.find((t) => !t.toggleable)!;
     expect(core.enabled).toBe(true);
     const memTool = snap.tools.find((t) => t.group === 'memory');
-    if (memTool) expect(memTool.enabled).toBe(false);
+    expect(memTool).toBeDefined();
+    expect(memTool!.enabled).toBe(false);
   });
 
   it('a toggleable tool is off when its group is on but the tool is per-tool disabled', () => {
-    const memName = MEMORY_PI_TOOL_NAMES[0];
+    const memName = nth(MEMORY_PI_TOOL_NAMES, 0);
     const snap = buildToolStatus(deps({ memoryService: memEnabled, disabled: new Set([memName]) }));
     const memTool = snap.tools.find((t) => t.name === memName);
-    if (memTool) expect(memTool.enabled).toBe(false);
+    expect(memTool).toBeDefined();
+    expect(memTool!.enabled).toBe(false);
   });
 });

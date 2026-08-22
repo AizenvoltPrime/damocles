@@ -14,8 +14,9 @@ import * as vscode from 'vscode';
 import { log } from '../logger';
 import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
+import { CONTEXT_FILE_CANDIDATES, overrideGlobalContextFile } from './context-files';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
-import { compatSources, type AssetSourcePrecedence } from '../asset-sources';
+import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-sources';
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import { renamePiSession } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
@@ -61,33 +62,32 @@ function keyInteraction(key: string): AuthInteraction {
   return { prompt: async () => key, notify: () => {} };
 }
 
-/** An existing compat resource directory plus its source attribution (for pi's resource source info). */
-interface CompatResourceEntry {
+/** An existing asset resource directory plus its source attribution (for pi's resource source info). */
+interface AssetResourceEntry {
   path: string;
-  source: AssetSourcePrecedence;
+  source: AssetSourceName;
   scope: 'project' | 'user';
 }
 
 /**
- * Existing compat resource directories for a given kind ('skills' | 'commands') across every configured
- * source (`.claude` + `.codex`, ordered by `damocles.assetSourcePrecedence`), project (`<cwd>`) then
- * user-global (`~`) within each. Codex maps 'commands' → `.codex/prompts`. Only existing dirs are
- * returned so the loader never warns on a missing one. Additive to pi-native dirs; pi-native sources
- * outrank these, and earlier dirs in this list outrank later ones (pi's loader is first-wins on a name
- * collision).
+ * Existing asset resource directories for a given kind ('skills' | 'commands') across every source
+ * (`.damocles` first, then `.claude` + `.codex` ordered by `damocles.assetSourcePrecedence`), project
+ * (`<cwd>`) then user-global (`~`) within each. Codex maps 'commands' → `.codex/prompts`. Project dirs
+ * are dropped in an untrusted workspace so a repo cannot inject system-prompt text through a `SKILL.md`.
+ * Only existing dirs are returned so the loader never warns on a missing one. Additive to pi-native
+ * dirs; pi-native sources outrank these, and earlier dirs in this list outrank later ones (pi's loader
+ * is first-wins on a name collision).
  */
-function compatResourceEntries(cwd: string, kind: 'skills' | 'commands'): CompatResourceEntry[] {
-  const entries: CompatResourceEntry[] = [];
-  for (const source of compatSources()) {
-    const sub = kind === 'skills' ? source.skills : source.commands;
-    entries.push({ path: path.join(cwd, sub), source: source.name, scope: 'project' });
-    entries.push({ path: path.join(os.homedir(), sub), source: source.name, scope: 'user' });
-  }
-  return entries.filter((e) => existsSync(e.path));
+function assetResourceEntries(cwd: string, kind: 'skills' | 'commands'): AssetResourceEntry[] {
+  const trusted = vscode.workspace.isTrusted;
+  return assetSourceDirs(kind, { workspacePath: cwd, homeDir: os.homedir() })
+    .filter((d) => trusted || d.scope !== 'project')
+    .map((d) => ({ path: d.dir, source: d.source, scope: d.scope }))
+    .filter((e) => existsSync(e.path));
 }
 
-function compatResourcePaths(cwd: string, kind: 'skills' | 'commands'): string[] {
-  return compatResourceEntries(cwd, kind).map((e) => e.path);
+function assetResourcePaths(cwd: string, kind: 'skills' | 'commands'): string[] {
+  return assetResourceEntries(cwd, kind).map((e) => e.path);
 }
 
 export interface PiCreateSessionOptions {
@@ -221,10 +221,17 @@ export class PiRuntime {
   private _lastRegisteredRepublisherDisposer: (() => void) | null = null;
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
-  /** Watchers on the `.claude`/`.codex` skill+command roots — fire `_reloadResources` so the agent's
-   *  loaded skills/prompts hot-reload when a compat dir is created/edited/deleted (no window reload). */
-  private readonly _compatWatchers: vscode.FileSystemWatcher[] = [];
-  private _compatDebounce: NodeJS.Timeout | null = null;
+  /** Watchers on the `.damocles`/`.claude`/`.codex` skill+command roots. They fire `_reloadResources`
+   *  so the agent's loaded skills/prompts hot-reload when an asset dir is created, edited, or deleted,
+   *  with no window reload. */
+  private readonly _assetWatchers: vscode.FileSystemWatcher[] = [];
+  private _assetDebounce: NodeJS.Timeout | null = null;
+  /** The additional resource roots handed to pi's loader. pi aliases these arrays rather than copying
+   *  them and re-reads them on every `reload()`, so they are only ever updated in place. */
+  private readonly _additionalSkillPaths: string[] = [];
+  private readonly _additionalPromptTemplatePaths: string[] = [];
+  /** Granting trust admits the project-scope asset dirs, which need a reload to reach the loader. */
+  private _trustListener: vscode.Disposable | null = null;
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
   private _sessionsCreated = 0;
   /** Cancels an in-flight custom-provider credential sync on dispose, so a closing window does not
@@ -383,18 +390,39 @@ export class PiRuntime {
   }
 
   /**
-   * Push the current `.claude`/`.codex` skill + command directories into the live resource loader via
-   * `extendResources` (which re-scans immediately). `additionalSkillPaths`/`additionalPromptTemplatePaths`
-   * are frozen at services-construction and `reload()` recomputes the active set from them — so a compat
-   * dir created AFTER init (or wiped by a reload) would otherwise never reach the agent without a window
-   * reload. Re-applied after init, after every `reload()` (via `_reloadResources`), and on the compat
-   * watcher. existsSync-filtered, so absent dirs add nothing and produce no "path does not exist" warning.
+   * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
+   * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
+   * source). pi aliases these arrays rather than copying them
+   * (`resource-loader.ts:264-265`) and re-reads them per reload (`:468`, `:483`), which is what makes
+   * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
+   * loader on the stale one.
+   *
+   * This has to happen before the reload rather than after it. `extendResources` merges primary-first
+   * (`resource-loader.ts:355-358`), so a dir that reaches the loader only through that call lands
+   * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
+   * trust grant admitting the project dirs, and a project asset dir created after init, which is the
+   * case the asset watchers exist for.
    */
-  private applyCompatResources(): void {
+  private _refreshAdditionalResourcePaths(): void {
+    const skills = assetResourcePaths(this._primaryCwd, 'skills');
+    this._additionalSkillPaths.splice(0, this._additionalSkillPaths.length, ...skills);
+    const commands = assetResourcePaths(this._primaryCwd, 'commands');
+    this._additionalPromptTemplatePaths.splice(0, this._additionalPromptTemplatePaths.length, ...commands);
+  }
+
+  /**
+   * Push the current `.damocles`/`.claude`/`.codex` skill + command directories into the live resource
+   * loader via `extendResources` (which re-scans immediately). Every reload already rebuilds the base
+   * set from the same recomputed dirs, so this is a no-op on the path list itself. What it adds is the
+   * per-dir source/scope metadata pi's resource-source info reports, which `reload()` does not carry.
+   * Re-applied after init and after every `reload()` (via `_reloadResources`). existsSync-filtered, so
+   * absent dirs add nothing and produce no "path does not exist" warning.
+   */
+  private applyAssetResources(): void {
     const loader = this._services?.resourceLoader;
     if (!loader) return;
     const toEntries = (kind: 'skills' | 'commands') =>
-      compatResourceEntries(this._primaryCwd, kind).map((e) => ({
+      assetResourceEntries(this._primaryCwd, kind).map((e) => ({
         path: e.path,
         metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const },
       }));
@@ -404,7 +432,7 @@ export class PiRuntime {
     try {
       loader.extendResources({ skillPaths, promptPaths });
     } catch (err) {
-      log('[PiRuntime] applyCompatResources failed: %O', err);
+      log('[PiRuntime] applyAssetResources failed: %O', err);
     }
   }
 
@@ -426,11 +454,12 @@ export class PiRuntime {
     return run;
   }
 
-  /** Reload the resource loader, retire/adopt the republisher of the instance the reload replaces or
-   *  mints, then re-apply the compat dirs (reload recomputes from the frozen additional paths and drops
-   *  `extendResources` additions, so they must be re-pushed each time). */
+  /** Recompute the additional resource roots, reload the resource loader, retire/adopt the republisher
+   *  of the instance the reload replaces or mints, then re-apply the asset dirs (the reload drops the
+   *  `extendResources` source/scope metadata, so it has to be re-pushed each time). */
   private async _runResourceReload(binding: ReloadBinding): Promise<void> {
     if (this._disposed || !this._services) return;
+    this._refreshAdditionalResourcePaths();
     // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
     // that below would hand the runtime a disposer for a live panel.
     this._lastRegisteredRepublisherDisposer = null;
@@ -441,36 +470,50 @@ export class PiRuntime {
     this._unboundRepublisherDisposer = null;
     if (binding === 'bare') this._trackCurrentInstanceAsUnbound();
     else this._lastRegisteredRepublisherDisposer = null;
-    this.applyCompatResources();
+    this.applyAssetResources();
   }
 
   /**
-   * Watch the `.claude`/`.codex` skill + command roots (project + user) so the agent's loaded resources
-   * hot-reload when a compat dir is created, edited, or deleted — matching the slash-command menu's own
-   * watcher and giving `.codex` skills the same no-reload refresh as `.claude`. Routes through a full
-   * `_reloadResources()` (not a bare `applyCompatResources()`): `extendResources` is additive and can never
-   * drop a resource, so deletions — of a single file or a whole compat dir — only take effect once the
-   * loader's base set is recomputed and the surviving dirs re-extended. Debounced; `_reloadResources`
-   * serializes it so an `extendResources` can't interleave with an in-flight reload, and the `.catch`
-   * keeps a failed reload from surfacing as an unhandled rejection.
+   * Watch the `.damocles`/`.claude`/`.codex` skill + command roots (project + user) so the agent's
+   * loaded resources hot-reload when an asset dir is created, edited, or deleted, matching the
+   * slash-command menu's own watcher. Routes through a full `_reloadResources()` (not a bare
+   * `applyAssetResources()`): `extendResources` is additive and can never drop a resource, so a
+   * deletion, of a single file or of a whole asset dir, only takes effect once the loader's base set is
+   * recomputed and the surviving dirs re-extended. Debounced; `_reloadResources` serializes it so an
+   * `extendResources` can't interleave with an in-flight reload, and the `.catch` keeps a failed reload
+   * from surfacing as an unhandled rejection.
+   *
+   * Project watchers stay registered in an untrusted workspace: the reload they fire still excludes
+   * project dirs, so the only cost is a redundant reload.
+   *
+   * The user-global instructions file (`~/.damocles/AGENTS.md` and its siblings) is watched too, since
+   * the same reload is what re-runs the context-file override.
    *
    * BARE: a skill-file edit starts no session, so the runtime owns retiring the instance this mints.
    */
-  private _setupCompatWatchers(): void {
+  private _setupAssetWatchers(): void {
     const onChange = () => {
-      if (this._compatDebounce) clearTimeout(this._compatDebounce);
-      this._compatDebounce = setTimeout(() => {
-        this._reloadResources('bare').catch((err) => log('[PiRuntime] compat watcher reload failed: %O', err));
+      if (this._assetDebounce) clearTimeout(this._assetDebounce);
+      this._assetDebounce = setTimeout(() => {
+        this._reloadResources('bare').catch((err) => log('[PiRuntime] asset watcher reload failed: %O', err));
       }, 300);
     };
-    for (const source of compatSources()) {
+    for (const source of assetSources()) {
       for (const sub of [source.skills, source.commands]) {
-        this._compatWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this._primaryCwd, `${sub}/**`)));
-        const userGlob = `${path.join(os.homedir(), sub).replace(/\\/g, '/')}/**`;
-        this._compatWatchers.push(vscode.workspace.createFileSystemWatcher(userGlob));
+        this._assetWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this._primaryCwd, `${sub}/**`)));
+        // The user dirs sit outside every workspace folder, and a plain string glob reports no event
+        // from there. Anchoring the pattern on the dir's own Uri is what makes these fire.
+        const userDir = vscode.Uri.file(path.join(os.homedir(), sub));
+        this._assetWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(userDir, '**')));
       }
     }
-    for (const watcher of this._compatWatchers) {
+    const globalContextDir = vscode.Uri.file(path.join(os.homedir(), '.damocles'));
+    this._assetWatchers.push(
+      vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(globalContextDir, `{${CONTEXT_FILE_CANDIDATES.join(',')}}`),
+      ),
+    );
+    for (const watcher of this._assetWatchers) {
       watcher.onDidCreate(onChange);
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
@@ -534,6 +577,7 @@ export class PiRuntime {
       },
     };
 
+    this._refreshAdditionalResourcePaths();
     this._services = await pi.createAgentSessionServices({
       cwd: this._primaryCwd,
       agentDir: this._agentDir,
@@ -550,12 +594,22 @@ export class PiRuntime {
             (republish) => this.registerToolSearchRepublisher(republish),
           ),
         ],
-        // US-016: surface `.claude` + `.codex` skills and slash commands (Claude/Codex commands = pi
+        // US-016: surface `.damocles` + `.claude` + `.codex` skills and slash commands (commands = pi
         // prompt templates; Codex commands live under `.codex/prompts`) as additional resource roots,
         // additive to pi-native dirs (agentDir + cwd/.pi); pi-native sources outrank these on a name
-        // collision, and `damocles.assetSourcePrecedence` orders Claude vs Codex among them.
-        additionalSkillPaths: compatResourcePaths(this._primaryCwd, 'skills'),
-        additionalPromptTemplatePaths: compatResourcePaths(this._primaryCwd, 'commands'),
+        // collision, `.damocles` outranks the other two, and `damocles.assetSourcePrecedence` orders
+        // Claude vs Codex among them.
+        additionalSkillPaths: this._additionalSkillPaths,
+        additionalPromptTemplatePaths: this._additionalPromptTemplatePaths,
+        agentsFilesOverride: (base) => ({
+          agentsFiles: overrideGlobalContextFile(base.agentsFiles, {
+            agentDir: this._agentDir,
+            homeDir: os.homedir(),
+            // Read per call, never captured: the trust-grant reload re-runs this closure, and that is
+            // what surfaces the project instructions file with no window reload.
+            trusted: vscode.workspace.isTrusted,
+          }),
+        }),
         // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover
         // packages can't load tools/commands or fire event handlers. The inline factory extension (the
         // Damocles extension itself — permission gate, checkpoint hooks, MCP registration; tagged
@@ -567,6 +621,9 @@ export class PiRuntime {
         }),
       },
     });
+    // A window closing mid-init has already run `dispose()`, which awaits this promise before tearing
+    // down. Stop here rather than register watchers and install plugins for a runtime nobody can use.
+    if (this._disposed) return;
     // `createAgentSessionServices` already ran the factory above, so an extension instance exists with
     // no session bound to it and none guaranteed to arrive: `_reconcileSubscriptionPin` below can
     // supersede it with a bare reload before the first panel ever opens. Adopt it now — otherwise that
@@ -575,10 +632,18 @@ export class PiRuntime {
     for (const diag of this._services.diagnostics) {
       log('[PiRuntime] services diagnostic (%s): %s', diag.type, diag.message);
     }
-    // Push compat (`.claude`/`.codex`) skills + prompts into the loader and watch their dirs so they
-    // hot-reload — the additional paths captured above are frozen, so dirs created later need this.
-    this.applyCompatResources();
-    this._setupCompatWatchers();
+    // Attach the source/scope metadata for the `.damocles`/`.claude`/`.codex` roots, and watch those
+    // dirs so a skill or command created later reaches the agent with no window reload.
+    this.applyAssetResources();
+    this._setupAssetWatchers();
+    // The paths above were computed against the trust state at init, which excluded every project dir
+    // in a restricted window. The reload recomputes them.
+    //
+    // BARE: a trust grant starts no session, so the runtime owns retiring the instance this mints.
+    this._trustListener =
+      vscode.workspace.onDidGrantWorkspaceTrust?.(() => {
+        this._reloadResources('bare').catch((err) => log('[PiRuntime] trust-grant reload failed: %O', err));
+      }) ?? null;
     // Runs after services exist (the package manager needs their settingsManager), so the stale plugin
     // has already loaded — `_installSubscriptionPlugin` hot-reloads extensions to swap it out.
     await this._reconcileSubscriptionPin(pi);
@@ -704,6 +769,9 @@ export class PiRuntime {
         // Suppress the AGENTS.md/CLAUDE.md re-append that would otherwise follow systemPromptOverride.
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
+        // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
+        // (resource-loader.ts:514-522), so an override would repopulate the list `noContextFiles`
+        // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
         noThemes: true,
@@ -1247,12 +1315,14 @@ export class PiRuntime {
     this._mcpRegistrar = null;
     this._hooksConfig?.dispose();
     this._hooksConfig = null;
-    if (this._compatDebounce) {
-      clearTimeout(this._compatDebounce);
-      this._compatDebounce = null;
+    if (this._assetDebounce) {
+      clearTimeout(this._assetDebounce);
+      this._assetDebounce = null;
     }
-    for (const watcher of this._compatWatchers) watcher.dispose();
-    this._compatWatchers.length = 0;
+    for (const watcher of this._assetWatchers) watcher.dispose();
+    this._assetWatchers.length = 0;
+    this._trustListener?.dispose();
+    this._trustListener = null;
     this._activeToolRefreshers.clear();
     // Cleared alongside the refreshers, not left behind: both are per-live-instance registries, and a
     // half-cleared pair invites the inference that republishers are somehow exempt from teardown.

@@ -577,7 +577,7 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     // The panel VS Code hands back on window reload, carrying the OLD extension version's options.
     // `retainContextWhenHidden` is fixed at createWebviewPanel time and CANNOT be reassigned on a
     // live panel, so adopting it would silently keep a renderer alive for the whole window session.
-    const restored = vscode.window.createWebviewPanel('damocles-browser-view', 'old', {}, {
+    const restored = vscode.window.createWebviewPanel('damocles-browser-view', 'old', vscode.ViewColumn.One, {
       enableScripts: true, retainContextWhenHidden: true,
     }) as unknown as vscode.WebviewPanel;
     const disposeSpy = vi.spyOn(restored, 'dispose');
@@ -613,7 +613,7 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
     const launch = vi.mocked(await import('../launcher')).launchBrowserContext;
     launch.mockClear();
     const service = new BrowserService();
-    const restored = vscode.window.createWebviewPanel('damocles-browser-view', 'old', {}, {}) as unknown as vscode.WebviewPanel;
+    const restored = vscode.window.createWebviewPanel('damocles-browser-view', 'old', vscode.ViewColumn.One, {}) as unknown as vscode.WebviewPanel;
     const disposeSpy = vi.spyOn(restored, 'dispose');
 
     await service.restorePanel(restored, 'http://restored');
@@ -628,7 +628,7 @@ describe('a deserialized panel is DISPOSED and recreated, never adopted', () => 
 
   it('disposes an EXTRA restored panel when the session is already claimed', async () => {
     const service = await makeService();
-    const extra = vscode.window.createWebviewPanel('damocles-browser-view', 'extra', {}, {}) as unknown as vscode.WebviewPanel;
+    const extra = vscode.window.createWebviewPanel('damocles-browser-view', 'extra', vscode.ViewColumn.One, {}) as unknown as vscode.WebviewPanel;
     const disposeSpy = vi.spyOn(extra, 'dispose');
 
     // A second persisted browser tab: the fresh Chromium context cannot be reconnected to it.
@@ -1070,10 +1070,10 @@ describe('Q1 — every user-visible panel string comes from l10n', () => {
   function markedHtml(): { html: string; keys: string[] } {
     const keys: string[] = [];
     let n = 0;
-    vi.spyOn(vscode.l10n, 't').mockImplementation((message: string) => {
+    vi.spyOn(vscode.l10n, 't').mockImplementation(((message: string) => {
       keys.push(message);
       return `${MARKER}${n++}`;
-    });
+    }) as unknown as typeof vscode.l10n.t);
     const panel = new BrowserPanel();
     panel.show('http://a');
     const html = __webviewPanels[__webviewPanels.length - 1]!.webview.html;

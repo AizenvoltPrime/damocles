@@ -11,6 +11,9 @@
  *   - ~/.agents/skills           (user, cross-tool Agent Skills spec)
  *   - ~/.pi/skills               (legacy global, pre-Pi)
  *
+ * The two project roots load only when `includeProjectScope` is true, since their contents go straight
+ * into a subagent's system prompt.
+ *
  * Layout per root: `<root>/<name>.md` (flat) or `<root>/.../<name>/SKILL.md` (directory skill).
  * Recursion skips dotfile entries and node_modules; symlinks are rejected for security.
  */
@@ -27,17 +30,31 @@ export interface PreloadedSkill {
   content: string;
 }
 
-export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill[] {
-  return skillNames.map((name) => ({ name, content: loadSkillContent(name, cwd) }));
+export interface PreloadSkillsOptions {
+  /** Whether to read the project roots (`<cwd>/.pi/skills`, `<cwd>/.agents/skills`). Gate on VS Code workspace trust. */
+  includeProjectScope: boolean;
 }
 
-function loadSkillContent(name: string, cwd: string): string {
+export function preloadSkills(
+  skillNames: string[],
+  cwd: string,
+  options: PreloadSkillsOptions,
+): PreloadedSkill[] {
+  return skillNames.map((name) => ({
+    name,
+    content: loadSkillContent(name, cwd, options.includeProjectScope),
+  }));
+}
+
+function loadSkillContent(name: string, cwd: string, includeProjectScope: boolean): string {
   if (isUnsafeName(name)) {
     return `(Skill "${name}" skipped: name contains path traversal characters)`;
   }
+  const projectRoots = includeProjectScope
+    ? [join(cwd, '.pi', 'skills'), join(cwd, '.agents', 'skills')]
+    : [];
   const roots = [
-    join(cwd, '.pi', 'skills'),
-    join(cwd, '.agents', 'skills'),
+    ...projectRoots,
     join(PI_AGENT_DIR, 'skills'),
     join(homedir(), '.agents', 'skills'),
     join(homedir(), '.pi', 'skills'),
@@ -46,7 +63,9 @@ function loadSkillContent(name: string, cwd: string): string {
     const content = findInRoot(root, name);
     if (content !== undefined) return content;
   }
-  return `(Skill "${name}" not found in .pi/skills/, .agents/skills/, or global skill locations)`;
+  return includeProjectScope
+    ? `(Skill "${name}" not found in .pi/skills/, .agents/skills/, or global skill locations)`
+    : `(Skill "${name}" not found in global skill locations)`;
 }
 
 function findInRoot(root: string, name: string): string | undefined {

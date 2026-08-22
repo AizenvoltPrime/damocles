@@ -13,12 +13,12 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 const { t } = useI18n();
 
 const props = defineProps<{
-  thinking?: string;
-  isStreaming?: boolean;
-  duration?: number;
+  thinking?: string | undefined;
+  isStreaming?: boolean | undefined;
+  duration?: number | undefined;
   /** Start expanded (and stay open). Used where the indicator can't persist its expanded state across
    * a re-mount — e.g. a sealed subagent thought replacing the live streaming one. */
-  defaultExpanded?: boolean;
+  defaultExpanded?: boolean | undefined;
 }>();
 
 const thinkingRef = computed(() => props.thinking ?? '');
@@ -140,7 +140,7 @@ onUnmounted(() => {
         class="thinking-container mt-2 py-2 px-3 border-l-2 border-border rounded-r-md overflow-hidden max-h-64 overflow-y-auto"
       >
         <div class="thinking-content text-xs text-muted-foreground font-mono">
-          <MarkdownRenderer :content="isStreaming ? displayedContent : thinking" />
+          <MarkdownRenderer :content="(isStreaming ? displayedContent : thinking) ?? ''" />
         </div>
       </div>
     </CollapsibleContent>

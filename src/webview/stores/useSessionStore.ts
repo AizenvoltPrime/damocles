@@ -51,8 +51,7 @@ export const useSessionStore = defineStore('session', () => {
 
   const lastAccessedFile = computed(() => {
     const files = Object.values(accessedFiles.value);
-    if (files.length === 0) return undefined;
-    return files[files.length - 1].path;
+    return files[files.length - 1]?.path;
   });
 
   function setCurrentSession(id: string | null) {
@@ -126,10 +125,10 @@ export const useSessionStore = defineStore('session', () => {
       timestamp: ts,
       trigger,
       preTokens,
-      postTokens,
-      summary,
-      messageCutoffTimestamp,
-      entryId,
+      ...(postTokens !== undefined && { postTokens }),
+      ...(summary !== undefined && { summary }),
+      ...(messageCutoffTimestamp !== undefined && { messageCutoffTimestamp }),
+      ...(entryId !== undefined && { entryId }),
     };
     compactMarkers.value = [...compactMarkers.value, marker];
   }
@@ -138,7 +137,9 @@ export const useSessionStore = defineStore('session', () => {
     if (compactMarkers.value.length === 0) return;
     const markers = [...compactMarkers.value];
     const lastIndex = markers.length - 1;
-    markers[lastIndex] = { ...markers[lastIndex], summary };
+    const last = markers[lastIndex];
+    if (!last) return;
+    markers[lastIndex] = { ...last, summary };
     compactMarkers.value = markers;
   }
 

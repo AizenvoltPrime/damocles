@@ -26,12 +26,12 @@ export function usePhraseCycler(
   isActive: (() => boolean) | Ref<boolean>,
   phrases: string[] = WITTY_PHRASES
 ): { currentPhrase: Ref<string> } {
-  const currentPhrase = ref(phrases[0]);
+  const currentPhrase = ref(phrases[0] ?? '');
   let intervalId: ReturnType<typeof setInterval> | null = null;
 
   const selectRandomPhrase = () => {
-    const index = Math.floor(Math.random() * phrases.length);
-    currentPhrase.value = phrases[index];
+    const next = phrases[Math.floor(Math.random() * phrases.length)];
+    if (next !== undefined) currentPhrase.value = next;
   };
 
   const clearCurrentInterval = () => {

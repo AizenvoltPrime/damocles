@@ -104,6 +104,12 @@ import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage } from "@shared/types/messages";
+/** Shape persisted through the webview host's `setState`, restored on panel reload. */
+interface PanelState {
+  sessionId?: string;
+  sessionName?: string | null;
+}
+
 const { postMessage, setState, getState } = useVSCode();
 const { t } = useI18n();
 
@@ -136,6 +142,8 @@ const {
   accountInfo,
   mcpServers,
   mcpConfigErrors,
+  mcpLocalUnignored,
+  mcpConfigRevision,
   mcpWriteRequestId,
   mcpWriteError,
   mcpEnabled,
@@ -442,7 +450,7 @@ function handleSessionSelect(sessionId: string) {
   sessionStore.setResumedSession(sessionId);
   sessionStore.setSelectedSession(sessionId, sessionName);
   postMessage({ type: "resumeSession", sessionId });
-  setState({ ...getState(), sessionId, sessionName });
+  setState({ ...getState<PanelState>(), sessionId, sessionName });
 }
 
 function handleSessionRename(sessionId: string, newName: string) {
@@ -460,13 +468,20 @@ function handleSessionTag(sessionId: string, tag: string | null) {
   postMessage({ type: "tagSession", sessionId, tag });
 }
 
+/** The session-list messages declare `selectedSessionId` as optional, so with no selection the key
+ *  is omitted rather than sent as an explicit undefined. */
+function selectedSessionIdField(): { selectedSessionId?: string } {
+  const id = selectedSessionId.value;
+  return id ? { selectedSessionId: id } : {};
+}
+
 function handleSessionLoadMore() {
   if (!hasMoreSessions.value || loadingMoreSessions.value) return;
   sessionStore.setLoadingMoreSessions(true);
   postMessage({
     type: "requestMoreSessions",
     offset: nextSessionsOffset.value,
-    selectedSessionId: selectedSessionId.value ?? undefined,
+    ...selectedSessionIdField(),
   });
 }
 
@@ -475,10 +490,10 @@ function handleSessionSearch(query: string, offset: number = 0) {
     if (offset > 0) {
       sessionStore.setLoadingMoreSessions(true);
     }
-    postMessage({ type: "searchSessions", query, offset, selectedSessionId: selectedSessionId.value ?? undefined });
+    postMessage({ type: "searchSessions", query, offset, ...selectedSessionIdField() });
   } else {
     sessionStore.setLoadingMoreSessions(true);
-    postMessage({ type: "requestMoreSessions", offset: 0, selectedSessionId: selectedSessionId.value ?? undefined });
+    postMessage({ type: "requestMoreSessions", offset: 0, ...selectedSessionIdField() });
   }
 }
 
@@ -707,6 +722,10 @@ function handleSignOutMcpServer(serverName: string) {
   postMessage({ type: "signOutMcpServer", serverName });
 }
 
+function handleReloadMcpConfig() {
+  postMessage({ type: "mcpReloadConfig" });
+}
+
 /**
  * Every MCP write carries a requestId and is registered as in-flight before it is sent, so the form
  * can stay open holding what the user typed until the extension acknowledges it.
@@ -802,16 +821,19 @@ function handlePermissionApproval(
     handleSetPermissionMode("acceptEdits");
   }
 
-  // JSON round-trip to strip Vue reactive proxies before postMessage
-  const updatedPermissions = options?.updatedPermissions ? JSON.parse(JSON.stringify(options.updatedPermissions)) : undefined;
+  // JSON round-trip to strip Vue reactive proxies before postMessage. JSON.parse is `any` by
+  // definition, so the round-trip result is re-asserted as the type that went in.
+  const updatedPermissions: PermissionUpdate[] | undefined = options?.updatedPermissions
+    ? (JSON.parse(JSON.stringify(options.updatedPermissions)) as PermissionUpdate[])
+    : undefined;
 
   postMessage({
     type: "approveEdit",
     toolUseId,
     approved,
-    customMessage: options?.customMessage,
-    acceptAll: options?.acceptAll,
-    parentToolUseId: permission?.parentToolUseId ?? undefined,
+    ...(options?.customMessage !== undefined && { customMessage: options.customMessage }),
+    ...(options?.acceptAll !== undefined && { acceptAll: options.acceptAll }),
+    ...(permission?.parentToolUseId ? { parentToolUseId: permission.parentToolUseId } : {}),
     ...(updatedPermissions ? { updatedPermissions } : {}),
   });
   permissionStore.removePermission(toolUseId);
@@ -867,7 +889,7 @@ function handleOpenMemoryPanel() {
   postMessage({ type: "requestMemories" });
 }
 
-function handleCreateMemory(payload: { tier: MemoryTier; kind: 'fact' | 'preference' | 'episode'; content: string; requestId: string }) {
+function handleCreateMemory(payload: { tier: Exclude<MemoryTier, 'observation'>; kind: 'fact' | 'preference' | 'episode'; content: string; requestId: string }) {
   postMessage({ type: "createMemory", tier: payload.tier, kind: payload.kind, content: payload.content, requestId: payload.requestId });
 }
 
@@ -886,7 +908,10 @@ function handleUnpinMemory(id: string) {
 function handleLoadMoreObservations() {
   if (memoryStore.loadingObservations || !memoryStore.hasMoreObservations) return;
   memoryStore.loadingObservations = true;
-  postMessage({ type: "requestMoreObservations", cursor: memoryStore.observationCursor ?? undefined });
+  postMessage({
+    type: "requestMoreObservations",
+    ...(memoryStore.observationCursor ? { cursor: memoryStore.observationCursor } : {}),
+  });
 }
 
 function handleDismissBudgetWarning() {
@@ -910,7 +935,7 @@ function handlePlanApprove(options: { approvalMode: "acceptEdits" | "manual"; cl
     toolUseId,
     approved: true,
     approvalMode: options.approvalMode,
-    clearContext: options.clearContext,
+    ...(options.clearContext !== undefined && { clearContext: options.clearContext }),
   });
   permissionStore.clearPendingPlanApproval();
 }
@@ -964,7 +989,7 @@ function handleSkillApprove(approved: boolean, options?: { approvalMode?: "accep
   if (approved) {
     streamingStore.updateToolStatus(toolUseId, "completed");
   } else {
-    streamingStore.updateToolStatus(toolUseId, "denied", { feedback: options?.customMessage });
+    streamingStore.updateToolStatus(toolUseId, "denied", options?.customMessage !== undefined ? { feedback: options.customMessage } : {});
   }
 
   if (options?.approvalMode === "acceptEdits" && settingsStore.currentSettings.permissionMode !== "plan") {
@@ -975,8 +1000,8 @@ function handleSkillApprove(approved: boolean, options?: { approvalMode?: "accep
     type: "approveSkill",
     toolUseId,
     approved,
-    approvalMode: options?.approvalMode,
-    customMessage: options?.customMessage,
+    ...(options?.approvalMode !== undefined && { approvalMode: options.approvalMode }),
+    ...(options?.customMessage !== undefined && { customMessage: options.customMessage }),
   });
   permissionStore.clearPendingSkillApproval();
 }
@@ -1222,7 +1247,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :decision-reason="currentPermission.decisionReason"
       :queue-position="1"
       :queue-total="pendingPermissionCount"
-      @approve="(approved, options) => handlePermissionApproval(currentPermission.toolUseId, approved, options)"
+      @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
     />
 
     <TeamPermissionPrompt />
@@ -1333,6 +1358,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :visible="showMcpPanel"
       :servers="mcpServers"
       :config-errors="mcpConfigErrors"
+      :local-mcp-unignored="mcpLocalUnignored"
+      :config-revision="mcpConfigRevision"
       :mcp-enabled="mcpEnabled"
       @close="uiStore.closeMcpPanel()"
       @toggle="handleToggleMcpServer"
@@ -1341,6 +1368,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @authenticate="handleAuthenticateMcpServer"
       @reauthenticate="handleReauthenticateMcpServer"
       @sign-out="handleSignOutMcpServer"
+      @reload-config="handleReloadMcpConfig"
       @trust-project="postMessage({ type: 'setProjectTrusted' })"
       @add-server="handleAddMcpServer"
       @update-server="handleUpdateMcpServer"

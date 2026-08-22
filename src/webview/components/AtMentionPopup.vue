@@ -20,6 +20,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [item: AtMentionItem];
   close: [];
+  'update:selectedIndex': [index: number];
 }>();
 
 const popupRef = ref<HTMLDivElement | null>(null);

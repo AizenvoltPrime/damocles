@@ -7,25 +7,52 @@ const logMock = vi.hoisted(() => vi.fn());
 vi.mock("node:fs", () => ({ promises: { readFile: readFileMock } }));
 vi.mock("../../../../logger", () => ({ log: logMock }));
 
+import { join, resolve, sep } from "node:path";
 import {
   mergeMcpEntries,
   coerceServerMap,
+  localMcpConfigPath,
+  orderMcpSources,
+  readClaudeMcpScopes,
   readCodexMcpServers,
   readDamoclesMcpServers,
   readGlobalMcpSources,
+  readMcpConfigFile,
   DAMOCLES_MCP_CONFIG_PATH,
+  mcpSourceOrder,
+  REPO_AUTHORED_BY_SOURCE,
   type McpSourceServers,
 } from "../mcp-config-import";
 import { buildServerPrefixMap } from "../../../../pi-session/mcp/naming";
-import type { McpServerConfig, McpStdioServerConfig, McpHttpServerConfig } from "../../../../../shared/types/mcp";
+import { SHADOWING_SOURCES } from "../../../../../shared/types/mcp";
+import type { AssetSourcePrecedence } from "../../../../asset-sources";
+import type {
+  McpServerConfig,
+  McpServerSource,
+  McpStdioServerConfig,
+  McpHttpServerConfig,
+} from "../../../../../shared/types/mcp";
 
-/** Home-relative path suffix (forward-slashed) → file contents. Anything unset reads as ENOENT. */
+/** Path suffix (forward-slashed) → file contents. Anything unset reads as ENOENT. */
 const files = new Map<string, string>();
 
 const CLAUDE_GLOBAL = ".claude.json";
 const CLAUDE_DESKTOP = ".claude/claude_desktop_config.json";
 const DAMOCLES_MCP = ".damocles/mcp.json";
 const CODEX_TOML = ".codex/config.toml";
+
+/**
+ * A resolved, platform-native workspace root. `resolve` rather than a literal, because
+ * `readClaudeMcpScopes` matches `projects` keys after resolving them and a bare `/ws/project`
+ * would never match on Windows.
+ */
+const WS_ROOT = resolve(join(sep, "ws", "project"));
+const OTHER_WS_ROOT = resolve(join(sep, "ws", "other-project"));
+
+/** The two workspace files, keyed by full forward-slashed path so no home suffix can shadow them. */
+const forwardSlashed = (target: string): string => target.replace(/\\/g, "/");
+const WS_MCP = forwardSlashed(join(WS_ROOT, ".mcp.json"));
+const WS_LOCAL_MCP = forwardSlashed(localMcpConfigPath(WS_ROOT));
 
 beforeEach(() => {
   files.clear();
@@ -92,27 +119,48 @@ describe("mergeMcpEntries", () => {
     expect(names).toEqual(["ccOnly", "shared", "wsOnly"]);
   });
 
-  it("derives readonly from source alone: the two Damocles-owned files are editable, imports are not", () => {
+  it("yields ONE entry per name however many sources define it", () => {
+    // Consumers look a name up with `find`, which returns the first match and cannot see a second.
+    // The webview's collision check is one of them, and it reads `untrusted` off whatever it finds,
+    // so a duplicate would let an untrusted workspace row answer for a same-named damocles row.
+    const everySource = mcpSourceOrder("claude");
     const entries = mergeMcpEntries(
-      [
-        { source: "codex", servers: { cx: { command: "x" } } },
-        { source: "claude", servers: { cl: { command: "x" } } },
-        { source: "damocles", servers: { dm: { command: "x" } } },
-        { source: "workspace", servers: { wsp: { command: "x" } } },
-      ],
+      everySource.map(source => ({ source, servers: { contested: { command: source } } })),
+      new Set(),
+    );
+
+    expect(entries.filter(e => e.name === "contested")).toHaveLength(1);
+    expect(entries.map(e => e.name)).toEqual(["contested"]);
+    // The survivor is the last source folded, which is the highest ranked.
+    expect(entries[0]!.source).toBe(everySource[everySource.length - 1]);
+  });
+
+  it("derives readonly from source alone, across every source in the union", () => {
+    // `damocles-local` is readonly despite being a Damocles-owned file: there is no write path to
+    // `<ws>/.damocles/mcp.local.json`, so offering Edit would produce a save with nowhere to land.
+    const everySource = mcpSourceOrder("claude");
+    const entries = mergeMcpEntries(
+      everySource.map(source => ({ source, servers: { [source]: { command: "x" } } })),
       new Set(),
     );
     const readonlyBySource = Object.fromEntries(entries.map(e => [e.source, e.readonly]));
-    expect(readonlyBySource).toEqual({ codex: true, claude: true, damocles: false, workspace: false });
+    expect(readonlyBySource).toEqual({
+      codex: true,
+      claude: true,
+      "claude-local": true,
+      damocles: false,
+      workspace: false,
+      "damocles-local": true,
+    });
   });
 });
 
-describe("importClaudeMcpServers (unchanged by the ordered-source fold)", () => {
+describe("the claude user scope (unchanged by the ordered-source fold)", () => {
   it("folds both Claude files into the single claude source, with the CC global winning", async () => {
     files.set(CLAUDE_DESKTOP, JSON.stringify({ mcpServers: { shared: { command: "desktop" }, dt: { command: "d" } } }));
     files.set(CLAUDE_GLOBAL, JSON.stringify({ mcpServers: { shared: { command: "global" } } }));
 
-    const claude = (await readGlobalMcpSources("claude")).sources.find(s => s.source === "claude");
+    const claude = (await readGlobalMcpSources(undefined)).sources.find(s => s.source === "claude");
     expect((claude?.servers["shared"] as McpStdioServerConfig).command).toBe("global");
     expect(Object.keys(claude?.servers ?? {}).sort()).toEqual(["dt", "shared"]);
   });
@@ -166,16 +214,16 @@ describe("readDamoclesMcpServers (~/.damocles/mcp.json)", () => {
     files.set(DAMOCLES_MCP, "{ not json");
     files.set(CLAUDE_GLOBAL, JSON.stringify({ mcpServers: { cl: { command: "cl-cmd" } } }));
 
-    const { sources, errors } = await readGlobalMcpSources("claude");
+    const { sources, errors } = await readGlobalMcpSources(WS_ROOT);
 
     expect(errors).toHaveLength(1);
-    expect(errors[0].path).toBe(DAMOCLES_MCP_CONFIG_PATH);
+    expect(errors[0]!.path).toBe(DAMOCLES_MCP_CONFIG_PATH);
     expect(sources.find(s => s.source === "claude")?.servers["cl"]).toBeDefined();
   });
 
   it("reports nothing when every file is readable", async () => {
     files.set(DAMOCLES_MCP, JSON.stringify({ mcpServers: { dm: { command: "dm-cmd" } } }));
-    expect((await readGlobalMcpSources("claude")).errors).toEqual([]);
+    expect((await readGlobalMcpSources(WS_ROOT)).errors).toEqual([]);
   });
 });
 
@@ -342,53 +390,370 @@ bearer_token_env_var = "sk-looks-like-a-secret"
     files.set(CLAUDE_GLOBAL, JSON.stringify({ mcpServers: { cl: { command: "cl-cmd" } } }));
     files.set(DAMOCLES_MCP, JSON.stringify({ mcpServers: { dm: { command: "dm-cmd" } } }));
 
-    const entries = mergeMcpEntries((await readGlobalMcpSources("claude")).sources, new Set());
+    const entries = mergeMcpEntries(orderMcpSources((await readGlobalMcpSources(WS_ROOT)).sources, "claude"), new Set());
     expect(entries.map(e => e.name).sort()).toEqual(["cl", "dm"]);
     expect(logMock).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("precedence fold order across all four sources", () => {
-  /** The same server name defined in every source, so only precedence decides which command survives. */
-  function seedAllSources(opts: { workspace: boolean; damocles: boolean }): Record<string, McpServerConfig> {
-    files.set(CLAUDE_GLOBAL, JSON.stringify({ mcpServers: { shared: { command: "claude-cmd" } } }));
-    files.set(CODEX_TOML, '[mcp_servers.shared]\ncommand = "codex-cmd"\n');
-    if (opts.damocles) files.set(DAMOCLES_MCP, JSON.stringify({ mcpServers: { shared: { command: "damocles-cmd" } } }));
-    return opts.workspace ? { shared: { command: "workspace-cmd" } } : {};
+describe("readClaudeMcpScopes (~/.claude.json: the user scope and projects[<ws>].mcpServers)", () => {
+  const localScope = { localOnly: { command: "local-cmd" }, shared: { command: "local-shared" } };
+  const userScope = { userOnly: { command: "user-cmd" }, shared: { command: "user-shared" } };
+
+  /** `~/.claude.json` holding the user scope always, and the local scope under `projectsKey`. */
+  function claudeJson(projectsKey: string | null): string {
+    const doc: Record<string, unknown> = { mcpServers: userScope };
+    if (projectsKey !== null) doc["projects"] = { [projectsKey]: { mcpServers: localScope } };
+    return JSON.stringify(doc);
   }
 
-  async function winningCommand(
-    precedence: "claude" | "codex",
-    opts: { workspace: boolean; damocles: boolean },
-  ): Promise<string | undefined> {
-    const workspaceServers = seedAllSources(opts);
-    const { sources } = await readGlobalMcpSources(precedence);
-    sources.push({ source: "workspace", servers: workspaceServers });
-    const entry = mergeMcpEntries(sources, new Set()).find(e => e.name === "shared");
-    return (entry?.config as McpStdioServerConfig | undefined)?.command;
+  const localNames = async (workspaceRoot: string): Promise<string[]> =>
+    Object.keys((await readClaudeMcpScopes(workspaceRoot)).local).sort();
+
+  it("separates the two scopes, so the local one is no longer invisible", async () => {
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+
+    // `claude mcp add` defaults to local scope, so before this reader those servers were never loaded.
+    const scopes = await readClaudeMcpScopes(WS_ROOT);
+
+    expect(Object.keys(scopes.local).sort()).toEqual(["localOnly", "shared"]);
+    // The user scope must not start pulling project-keyed servers in.
+    expect(Object.keys(scopes.user).sort()).toEqual(["shared", "userOnly"]);
+    expect((scopes.local["shared"] as McpStdioServerConfig).command).toBe("local-shared");
+    expect((scopes.user["shared"] as McpStdioServerConfig).command).toBe("user-shared");
+  });
+
+  it("reads and parses ~/.claude.json exactly once for both scopes", async () => {
+    // The file accretes per-project history and routinely runs to megabytes, and `loadConfig` re-runs
+    // on every watcher event, so two readers over one document is the whole point of this function.
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+    readFileMock.mockClear();
+
+    await readClaudeMcpScopes(WS_ROOT);
+
+    const claudeReads = readFileMock.mock.calls.filter(
+      ([target]) => forwardSlashed(String(target)).endsWith(CLAUDE_GLOBAL),
+    );
+    expect(claudeReads).toHaveLength(1);
+  });
+
+  it("merges Claude Desktop into the user scope only, letting ~/.claude.json win", async () => {
+    // The local scope is a `~/.claude.json` construct; Claude Desktop has no project keys at all, so
+    // it must never leak into the project-scoped half.
+    files.set(CLAUDE_DESKTOP, JSON.stringify({ mcpServers: { shared: { command: "desktop" }, dt: { command: "d" } } }));
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+
+    const scopes = await readClaudeMcpScopes(WS_ROOT);
+
+    expect((scopes.user["shared"] as McpStdioServerConfig).command).toBe("user-shared");
+    expect(Object.keys(scopes.user).sort()).toEqual(["dt", "shared", "userOnly"]);
+    expect(Object.keys(scopes.local).sort()).toEqual(["localOnly", "shared"]);
+  });
+
+  it("lets the local scope outrank the user scope on a name collision, as Claude Code itself does", async () => {
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+
+    const { sources } = await readGlobalMcpSources(WS_ROOT);
+    const entry = mergeMcpEntries(orderMcpSources(sources, "claude"), new Set()).find(e => e.name === "shared");
+
+    expect((entry?.config as McpStdioServerConfig).command).toBe("local-shared");
+    expect(entry?.source).toBe("claude-local");
+  });
+
+  it("contributes nothing when the only projects key names a different directory", async () => {
+    files.set(CLAUDE_GLOBAL, claudeJson(OTHER_WS_ROOT));
+
+    // Never a nearest-match guess: another project's servers arriving here would spawn processes the
+    // user configured for a different repository.
+    expect((await readClaudeMcpScopes(WS_ROOT)).local).toEqual({});
+    // The user scope is keyed by nothing, so it still arrives.
+    expect(Object.keys((await readClaudeMcpScopes(WS_ROOT)).user).sort()).toEqual(["shared", "userOnly"]);
+    expect((await readGlobalMcpSources(WS_ROOT)).sources.find(s => s.source === "claude-local")?.servers)
+      .toEqual({});
+  });
+
+  it("matches across a trailing separator on either side", async () => {
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT + sep));
+    expect(await localNames(WS_ROOT)).toContain("localOnly");
+
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+    expect(await localNames(WS_ROOT + sep)).toContain("localOnly");
+  });
+
+  it.runIf(process.platform === "win32")("matches a Windows drive letter written in the other case", async () => {
+    // VS Code and the shell disagree about drive-letter case often enough that an exact string
+    // compare loses the match. Only Windows paths are case-insensitive, so only Windows folds case.
+    const otherCase = WS_ROOT.charAt(0).toLowerCase() + WS_ROOT.slice(1);
+    expect(otherCase).not.toBe(WS_ROOT);
+    files.set(CLAUDE_GLOBAL, claudeJson(otherCase));
+
+    expect(await localNames(WS_ROOT)).toEqual(["localOnly", "shared"]);
+  });
+
+  it("treats a ~/.claude.json with no projects key as no local servers rather than a failure", async () => {
+    files.set(CLAUDE_GLOBAL, JSON.stringify({ mcpServers: userScope }));
+
+    expect((await readClaudeMcpScopes(WS_ROOT)).local).toEqual({});
+    expect((await readGlobalMcpSources(WS_ROOT)).errors).toEqual([]);
+    expect(logMock).not.toHaveBeenCalled();
+  });
+
+  it("yields no local servers when there is no workspace at all", async () => {
+    files.set(CLAUDE_GLOBAL, claudeJson(WS_ROOT));
+
+    const scopes = await readClaudeMcpScopes(undefined);
+    expect(scopes.local).toEqual({});
+    // With no folder open there is no key to look up, but the user scope does not depend on one.
+    expect(Object.keys(scopes.user).sort()).toEqual(["shared", "userOnly"]);
+    expect((await readGlobalMcpSources(undefined)).sources.find(s => s.source === "claude-local")?.servers)
+      .toEqual({});
+  });
+
+  it("loses both scopes, not just one, when ~/.claude.json does not parse", async () => {
+    files.set(CLAUDE_GLOBAL, '{ "projects": { not json');
+
+    const scopes = await readClaudeMcpScopes(WS_ROOT);
+
+    expect(scopes.user).toEqual({});
+    expect(scopes.local).toEqual({});
+  });
+
+  it("keeps another tool's parse failure off the panel, exactly as the user-scope import does", async () => {
+    files.set(CLAUDE_GLOBAL, '{ "projects": { not json');
+    files.set(DAMOCLES_MCP, JSON.stringify({ mcpServers: { dm: { command: "dm-cmd" } } }));
+
+    const { sources, errors } = await readGlobalMcpSources(WS_ROOT);
+
+    expect(errors).toEqual([]);
+    expect(sources.find(s => s.source === "damocles")?.servers["dm"]).toBeDefined();
+  });
+
+  it("drops junk entries in the local scope the same way the top level does", async () => {
+    files.set(CLAUDE_GLOBAL, JSON.stringify({
+      projects: { [WS_ROOT]: { mcpServers: { good: { command: "x" }, junk: { notACommand: true }, $schema: "y" } } },
+    }));
+
+    expect(await localNames(WS_ROOT)).toEqual(["good"]);
+  });
+
+  it.runIf(process.platform === "win32")("resolves two keys differing only in case to the last one written", async () => {
+    // Windows paths are case-insensitive, so both keys name the same directory. Scanning for the
+    // first normalised match makes the answer depend on object insertion order, which is not a rule
+    // anyone can reason about. Indexing by the normalised key states one: the last write wins.
+    const upper = WS_ROOT.charAt(0).toUpperCase() + WS_ROOT.slice(1);
+    const lower = WS_ROOT.charAt(0).toLowerCase() + WS_ROOT.slice(1);
+    expect(upper).not.toBe(lower);
+
+    files.set(CLAUDE_GLOBAL, JSON.stringify({
+      projects: {
+        [upper]: { mcpServers: { first: { command: "a" } } },
+        [lower]: { mcpServers: { second: { command: "b" } } },
+      },
+    }));
+    expect(await localNames(WS_ROOT)).toEqual(["second"]);
+
+    files.set(CLAUDE_GLOBAL, JSON.stringify({
+      projects: {
+        [lower]: { mcpServers: { second: { command: "b" } } },
+        [upper]: { mcpServers: { first: { command: "a" } } },
+      },
+    }));
+    expect(await localNames(WS_ROOT)).toEqual(["first"]);
+  });
+
+  it("keeps each workspace's local scope to itself when two projects are keyed", async () => {
+    // One `~/.claude.json` holds every project the user has ever opened, so picking the wrong key
+    // silently starts another repository's servers.
+    files.set(CLAUDE_GLOBAL, JSON.stringify({
+      mcpServers: userScope,
+      projects: {
+        [WS_ROOT]: { mcpServers: { mine: { command: "mine" } } },
+        [OTHER_WS_ROOT]: { mcpServers: { theirs: { command: "theirs" } } },
+      },
+    }));
+
+    expect(await localNames(WS_ROOT)).toEqual(["mine"]);
+    expect(await localNames(OTHER_WS_ROOT)).toEqual(["theirs"]);
+  });
+});
+
+describe("precedence fold order across all six sources", () => {
+  /** One distinguishable command per source, so only precedence decides which survives the fold. */
+  const COMMAND_BY_SOURCE: Record<McpServerSource, string> = {
+    claude: "claude-cmd",
+    codex: "codex-cmd",
+    "claude-local": "claude-local-cmd",
+    damocles: "damocles-cmd",
+    workspace: "workspace-cmd",
+    "damocles-local": "damocles-local-cmd",
+  };
+
+  /** Define `shared` in exactly `present`, leaving every other source's file absent. */
+  function seedSources(present: readonly McpServerSource[]): void {
+    files.clear();
+    const server = (source: McpServerSource) => ({ shared: { command: COMMAND_BY_SOURCE[source] } });
+
+    const claudeDoc: Record<string, unknown> = {};
+    if (present.includes("claude")) claudeDoc["mcpServers"] = server("claude");
+    if (present.includes("claude-local")) claudeDoc["projects"] = { [WS_ROOT]: { mcpServers: server("claude-local") } };
+    if (Object.keys(claudeDoc).length > 0) files.set(CLAUDE_GLOBAL, JSON.stringify(claudeDoc));
+
+    if (present.includes("codex")) files.set(CODEX_TOML, `[mcp_servers.shared]\ncommand = "${COMMAND_BY_SOURCE.codex}"\n`);
+    if (present.includes("damocles")) files.set(DAMOCLES_MCP, JSON.stringify({ mcpServers: server("damocles") }));
+    if (present.includes("workspace")) files.set(WS_MCP, JSON.stringify({ mcpServers: server("workspace") }));
+    if (present.includes("damocles-local")) files.set(WS_LOCAL_MCP, JSON.stringify({ mcpServers: server("damocles-local") }));
   }
 
-  it("lets the workspace .mcp.json outrank every global source", async () => {
-    expect(await winningCommand("claude", { workspace: true, damocles: true })).toBe("workspace-cmd");
-    expect(await winningCommand("codex", { workspace: true, damocles: true })).toBe("workspace-cmd");
+  /**
+   * The batches a trusted workspace folds, ranked the way `loadConfig` ranks them: the globals and the
+   * two workspace-tree files go through one `orderMcpSources` call, so no caller depends on a reader
+   * happening to emit its half in the right order.
+   */
+  async function foldedSources(precedence: AssetSourcePrecedence): Promise<McpSourceServers[]> {
+    const { sources } = await readGlobalMcpSources(WS_ROOT);
+    return orderMcpSources([
+      ...sources,
+      { source: "workspace", servers: (await readMcpConfigFile(join(WS_ROOT, ".mcp.json"))).servers },
+      { source: "damocles-local", servers: (await readMcpConfigFile(localMcpConfigPath(WS_ROOT))).servers },
+    ], precedence);
+  }
+
+  it("answers repo-authorship for every source in the union", () => {
+    // The trust gate reads this map and nothing else. `claude-local` is the sharp case: it is
+    // project-scoped, so the panel groups it with the project, yet it lives in `~/.claude.json`, which
+    // a repository you cloned cannot write. Marking it repo-authored would withhold a server the user
+    // configured themselves.
+    const everySource = mcpSourceOrder("claude");
+    expect(Object.keys(REPO_AUTHORED_BY_SOURCE).sort()).toEqual([...everySource].sort());
+
+    expect(REPO_AUTHORED_BY_SOURCE["claude-local"]).toBe(false);
+    expect(REPO_AUTHORED_BY_SOURCE["claude"]).toBe(false);
+    expect(REPO_AUTHORED_BY_SOURCE["codex"]).toBe(false);
+    expect(REPO_AUTHORED_BY_SOURCE["damocles"]).toBe(false);
+    // Both files that live in the working tree answer the other way.
+    expect(REPO_AUTHORED_BY_SOURCE["workspace"]).toBe(true);
+    expect(REPO_AUTHORED_BY_SOURCE["damocles-local"]).toBe(true);
   });
 
-  it("lets ~/.damocles/mcp.json outrank both imports once the workspace entry is gone", async () => {
-    expect(await winningCommand("claude", { workspace: false, damocles: true })).toBe("damocles-cmd");
-    expect(await winningCommand("codex", { workspace: false, damocles: true })).toBe("damocles-cmd");
+  it("ranks exactly the repo-authored sources above ~/.damocles/mcp.json", () => {
+    // The equality two layers depend on, asserted as a property rather than inferred from literals in
+    // three files. The untrusted fold demotes the repo-authored sources, and the panel marks exactly
+    // those entries `untrusted`, so the webview can treat the flag as "this one was demoted" only
+    // while these two sets agree. Nothing else states that they must.
+    const order = mcpSourceOrder("claude");
+    const aboveDamocles = [...order.slice(order.indexOf("damocles") + 1)].sort();
+    const repoAuthored = Object.entries(REPO_AUTHORED_BY_SOURCE)
+      .filter(([, authored]) => authored)
+      .map(([source]) => source)
+      .sort();
+
+    expect(repoAuthored).toEqual(aboveDamocles);
+    expect([...SHADOWING_SOURCES].sort()).toEqual(repoAuthored);
   });
 
-  it("breaks the remaining claude/codex tie with assetSourcePrecedence, and flipping it flips the winner", async () => {
-    expect(await winningCommand("claude", { workspace: false, damocles: false })).toBe("claude-cmd");
-    expect(await winningCommand("codex", { workspace: false, damocles: false })).toBe("codex-cmd");
+  it("keeps the write target itself out of the repo-authored set", () => {
+    // Load-bearing across layers, and the reason is in neither layer. An untrusted workspace marks
+    // every repo-authored entry `untrusted`, and the form skips its collision check for those. If
+    // `~/.damocles/mcp.json` were ever repo-authored, its own servers would arrive marked untrusted
+    // and the form would stop refusing a name that file already holds, so a save would silently
+    // overwrite an existing server. It is user-global and outside the repository, so this is false by
+    // construction, but nothing in the type forces it: the map demands a boolean for every source and
+    // constrains none of them.
+    expect(REPO_AUTHORED_BY_SOURCE["damocles"]).toBe(false);
+
+    // The same reasoning as a property rather than a literal: no source may be both repo-authored and
+    // the one the write path targets.
+    const repoAuthored = Object.entries(REPO_AUTHORED_BY_SOURCE)
+      .filter(([, authored]) => authored)
+      .map(([source]) => source);
+    expect(repoAuthored).not.toContain("damocles");
   });
+
+  it("declares the order the brief fixes, lowest precedence first", () => {
+    expect(mcpSourceOrder("claude")).toEqual([
+      "codex", "claude", "claude-local", "damocles", "workspace", "damocles-local",
+    ]);
+    expect(mcpSourceOrder("codex")).toEqual([
+      "claude", "codex", "claude-local", "damocles", "workspace", "damocles-local",
+    ]);
+  });
+
+  it("holds exactly six sources, the same six under either tie-break", () => {
+    // `McpServerSource` is derived from the claude-first tuple, so a member added to one tuple and
+    // forgotten in the other cannot be caught by reading the union back. Both are compared here.
+    const claudeFirst = mcpSourceOrder("claude");
+    const codexFirst = mcpSourceOrder("codex");
+
+    expect([...claudeFirst].sort()).toEqual([
+      "claude", "claude-local", "codex", "damocles", "damocles-local", "workspace",
+    ]);
+    expect([...codexFirst].sort()).toEqual([...claudeFirst].sort());
+    expect(new Set(claudeFirst).size).toBe(6);
+    expect(new Set(codexFirst).size).toBe(6);
+
+    // The tie-break permutes `claude` and `codex` and moves nothing else.
+    expect(claudeFirst.slice(2)).toEqual(codexFirst.slice(2));
+  });
+
+  it("hands back the same array every call, since a sort comparator asks for it per comparison", () => {
+    expect(mcpSourceOrder("claude")).toBe(mcpSourceOrder("claude"));
+    expect(mcpSourceOrder("codex")).toBe(mcpSourceOrder("codex"));
+    expect(mcpSourceOrder("claude")).not.toBe(mcpSourceOrder("codex"));
+  });
+
+  it("keeps every Damocles-owned source above every imported one, whichever way the tie breaks", () => {
+    // The compat imports stay contiguous at the bottom. If one ever floated above `damocles`, another
+    // tool's file would start overriding the file Damocles writes.
+    for (const precedence of ["claude", "codex"] as const) {
+      const order = mcpSourceOrder(precedence);
+      const imported = ["claude", "codex", "claude-local"] as const;
+      const owned = ["damocles", "workspace", "damocles-local"] as const;
+      expect(Math.max(...imported.map(s => order.indexOf(s)))).toBeLessThan(
+        Math.min(...owned.map(s => order.indexOf(s))),
+      );
+      expect(order.indexOf("claude-local")).toBeGreaterThan(order.indexOf("claude"));
+    }
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "resolves the winner to the highest-ranked source present, under assetSourcePrecedence=%s",
+    async (precedence) => {
+      const order = mcpSourceOrder(precedence);
+
+      // Peel one source off the top at a time: the winner must walk down the order exactly.
+      const winners: (string | undefined)[] = [];
+      for (let top = order.length - 1; top >= 0; top--) {
+        seedSources(order.slice(0, top + 1));
+        const entry = mergeMcpEntries(await foldedSources(precedence), new Set()).find(e => e.name === "shared");
+        winners.push((entry?.config as McpStdioServerConfig | undefined)?.command);
+      }
+
+      expect(winners).toEqual([...order].reverse().map(source => COMMAND_BY_SOURCE[source]));
+    },
+  );
+
+  it.each(["claude", "codex"] as const)(
+    "ranks every global batch into the declared order, under assetSourcePrecedence=%s",
+    async (precedence) => {
+      // `readGlobalMcpSources` emits its four batches in whatever order it builds them, so the caller
+      // ranks them. This is the same call `loadConfig` makes.
+      seedSources(mcpSourceOrder(precedence));
+      const { sources } = await readGlobalMcpSources(WS_ROOT);
+      const ranked = orderMcpSources(sources, precedence).map(s => s.source);
+
+      expect(ranked).toContain("claude-local");
+      expect(ranked).toEqual(mcpSourceOrder(precedence).filter(source => ranked.includes(source)));
+    },
+  );
 
   it("tags each surviving entry with the source it actually came from", async () => {
-    seedAllSources({ workspace: false, damocles: false });
+    seedSources(["claude", "codex", "claude-local"]);
     files.set(CODEX_TOML, '[mcp_servers.shared]\ncommand = "codex-cmd"\n\n[mcp_servers.cxOnly]\ncommand = "cx"\n');
-    const entries = mergeMcpEntries((await readGlobalMcpSources("claude")).sources, new Set());
+
+    const entries = mergeMcpEntries(orderMcpSources((await readGlobalMcpSources(WS_ROOT)).sources, "claude"), new Set());
     const bySource = Object.fromEntries(entries.map(e => [e.name, e.source]));
-    expect(bySource).toEqual({ shared: "claude", cxOnly: "codex" });
+
+    expect(bySource).toEqual({ shared: "claude-local", cxOnly: "codex" });
   });
 });
 
@@ -401,7 +766,8 @@ describe("prefix-map stability under a precedence flip", () => {
     files.set(CODEX_TOML, '[mcp_servers."my.server"]\ncommand = "c"\n\n[mcp_servers.zeta]\ncommand = "d"\n');
 
     const prefixesFor = async (precedence: "claude" | "codex") => {
-      const entries = mergeMcpEntries((await readGlobalMcpSources(precedence)).sources, new Set());
+      const { sources } = await readGlobalMcpSources(undefined);
+      const entries = mergeMcpEntries(orderMcpSources(sources, precedence), new Set());
       return Object.fromEntries(buildServerPrefixMap(entries.map(e => e.name)));
     };
 

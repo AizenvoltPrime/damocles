@@ -6,8 +6,20 @@ import type { ModelInfo } from '../../../shared/types/settings';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
+interface BranchEntry {
+  type: string;
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  message?: unknown;
+}
+
 /** A SessionManager stub whose active branch ends with a single user entry (the rewind/id key). */
-function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []) {
+function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []): {
+  getLeafId: () => string;
+  getBranch: () => BranchEntry[];
+  getEntries: () => unknown[];
+} {
   return {
     getLeafId: () => userEntryId,
     getBranch: () => [{ type: 'message', id: userEntryId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }],
@@ -52,6 +64,7 @@ function makeAdapter(
     permissionMode: () => 'default',
     apiKeySource: () => 'allowance',
     budgetLimit: () => null,
+    sessionCost: () => 0,
     showCacheMissNotices: hooks?.showCacheMissNotices ?? (() => false),
     onBudgetStop: () => undefined,
     onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
@@ -75,6 +88,7 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     permissionMode: () => 'default',
     apiKeySource: () => 'apikey',
     budgetLimit: () => limit,
+    sessionCost: () => 0,
     showCacheMissNotices: () => false,
     onBudgetStop: onStop,
     onUserMessageDelivered: () => false,
@@ -123,7 +137,7 @@ function normalize(messages: ExtensionToWebviewMessage[]): unknown[] {
       const text = m.data.isThinking ? m.data.streamingThinking : m.data.streamingText;
       const prev = out[out.length - 1] as { type: string; phase?: string } | undefined;
       if (prev && prev.type === 'partial' && prev.phase === phase) {
-        (prev as { text?: string }).text = text;
+        (prev as { text?: string | undefined }).text = text;
       } else {
         out.push({ type: 'partial', phase, text });
       }
@@ -649,6 +663,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
       permissionMode: () => 'default',
       apiKeySource: () => 'apikey',
       budgetLimit: () => limit,
+      sessionCost: () => cost,
       showCacheMissNotices: () => false,
       onBudgetStop: onStop,
       onUserMessageDelivered: () => false,

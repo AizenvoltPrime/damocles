@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue';
+import { onUnmounted } from 'vue';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -45,7 +45,7 @@ function onInput(value: string): void {
 		postMessage({
 			type: 'compassSearch',
 			query: value.trim(),
-			kind: store.searchKind ?? undefined,
+			...(store.searchKind !== null && { kind: store.searchKind }),
 			limit: 30,
 		});
 	}, 300);
@@ -58,7 +58,7 @@ function selectKind(kind: CompassNodeKind | null): void {
 		postMessage({
 			type: 'compassSearch',
 			query: store.searchQuery.trim(),
-			kind: kind ?? undefined,
+			...(kind !== null && { kind }),
 			limit: 30,
 		});
 	}

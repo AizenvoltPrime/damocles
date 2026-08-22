@@ -68,8 +68,7 @@ export function useVirtualizedMessages(
     const markers = compactMarkers.value ?? [];
     const notices = cacheMissNotices.value ?? [];
 
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
+    for (const [i, msg] of msgs.entries()) {
       const isStreaming = !!streamingMessageId.value && msg.id === streamingMessageId.value;
 
       const markersBeforeThis = getMarkersBeforeMessage(markers, msgs, msg.timestamp, i);
@@ -108,7 +107,7 @@ export function useVirtualizedMessages(
           sourceMessageId: msg.id,
           spacingLevel: 0,
           text: msg.content,
-          imageBlocks: imageBlocks?.length ? imageBlocks : undefined,
+          ...(imageBlocks?.length ? { imageBlocks } : {}),
         });
         continue;
       }
@@ -147,7 +146,7 @@ export function useVirtualizedMessages(
           originalMessageIndex: i,
           sourceMessageId: msg.id,
           spacingLevel: 1,
-          text: msg.backgroundTaskLabel,
+          ...(msg.backgroundTaskLabel !== undefined && { text: msg.backgroundTaskLabel }),
         });
       }
 
@@ -162,22 +161,31 @@ export function useVirtualizedMessages(
         });
       }
 
-      if (msg.contentBlocks && msg.contentBlocks.length > 0) {
-        flattenContentBlocks(result, msg, i, isStreaming);
+      const blocks = msg.contentBlocks;
+      if (blocks && blocks.length > 0) {
+        flattenContentBlocks(result, msg, blocks, i, isStreaming);
       } else {
         flattenFallback(result, msg, i, isStreaming);
       }
     }
 
+    // Trailing markers outlive the messages they were cut from, so when the list is empty they still
+    // need an anchor. The empty id reproduces what consumers already saw and keeps them off undefined.
+    const anchor: ChatMessage = msgs[msgs.length - 1] ?? {
+      id: '',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+    };
+
     const trailingMarkers = getTrailingMarkers(markers, msgs);
-    const dummyMsg = msgs.length > 0 ? msgs[msgs.length - 1] : ({} as ChatMessage);
     for (const marker of trailingMarkers) {
       result.push({
         id: `marker-${marker.id}`,
         type: 'compact-marker',
-        message: dummyMsg,
+        message: anchor,
         originalMessageIndex: msgs.length - 1,
-        sourceMessageId: dummyMsg.id ?? '',
+        sourceMessageId: anchor.id,
         spacingLevel: 0,
         marker,
       });
@@ -188,9 +196,9 @@ export function useVirtualizedMessages(
       result.push({
         id: `cache-miss-${notice.id}`,
         type: 'cache-miss-notice',
-        message: dummyMsg,
+        message: anchor,
         originalMessageIndex: msgs.length - 1,
-        sourceMessageId: dummyMsg.id ?? '',
+        sourceMessageId: anchor.id,
         spacingLevel: 0,
         notice,
       });
@@ -205,13 +213,11 @@ export function useVirtualizedMessages(
 function flattenContentBlocks(
   result: VirtualItem[],
   msg: ChatMessage,
+  blocks: ContentBlock[],
   msgIndex: number,
   isStreaming: boolean,
 ): void {
-  const blocks = msg.contentBlocks!;
-
-  for (let bi = 0; bi < blocks.length; bi++) {
-    const block = blocks[bi];
+  for (const [bi, block] of blocks.entries()) {
     if (isTextBlock(block)) {
       result.push({
         id: `text-${msg.id}-${bi}`,
@@ -318,7 +324,7 @@ function getMarkersBeforeMessage(
 
 function getTrailingMarkers(markers: CompactMarkerType[], messages: ChatMessage[]): CompactMarkerType[] {
   if (!markers.length) return [];
-  const lastMsgTimestamp = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
+  const lastMsgTimestamp = messages[messages.length - 1]?.timestamp ?? 0;
   return markers.filter(m => getMarkerPositionTimestamp(m) > lastMsgTimestamp);
 }
 
@@ -335,6 +341,6 @@ function getNoticesBeforeMessage(
 
 function getTrailingNotices(notices: CacheMissNotice[], messages: ChatMessage[]): CacheMissNotice[] {
   if (!notices.length) return [];
-  const lastMsgTimestamp = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
+  const lastMsgTimestamp = messages[messages.length - 1]?.timestamp ?? 0;
   return notices.filter(n => n.timestamp > lastMsgTimestamp);
 }

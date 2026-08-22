@@ -5,15 +5,23 @@ import { isWithinRoot } from './util';
 export const GIT_TIMEOUT: number = 30_000;
 export const SAFE_GIT_REF: RegExp = /^(?!-)[A-Za-z0-9_.~^/@{}-]+$/;
 
+/**
+ * Prefixed to every git invocation. Git reads the repository's own `.git/config` before anything
+ * else, and `core.fsmonitor` there names a command git runs while refreshing the index.
+ */
+export const GIT_HARDENING_ARGS: readonly string[] = ['-c', 'core.fsmonitor=false'];
+
 const repoRootCache = new Map<string, string | null>();
 
 export function resetRepoRootCacheForTests(): void {
 	repoRootCache.clear();
 }
 
-function runGit(command: string, cwd: string): string {
-	return childProcess.execSync(command, {
-		cwd, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'],
+function runGit(args: string[], cwd: string): string {
+	// `execFileSync`, not `execSync`: no shell, so a ref or path that reaches argv is never re-parsed.
+	// No `ExecEnv` either, since the checkpoint engine's overrides retarget git at its private bare repo.
+	return childProcess.execFileSync('git', [...GIT_HARDENING_ARGS, ...args], {
+		cwd, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
 	});
 }
 
@@ -23,7 +31,7 @@ export function resolveRepoRoot(workspaceRoot: string): string | null {
 
 	let repoRoot: string | null;
 	try {
-		const stdout = runGit('git rev-parse --show-toplevel', workspaceRoot);
+		const stdout = runGit(['rev-parse', '--show-toplevel'], workspaceRoot);
 		const trimmed = stdout.trim();
 		repoRoot = trimmed ? path.resolve(trimmed) : null;
 	} catch {
@@ -47,10 +55,10 @@ export function getChangedFiles(workspaceRoot: string, base: string = 'HEAD~1'):
 
 	let stdout: string;
 	try {
-		stdout = runGit(`git diff --name-only ${base} --`, workspaceRoot);
+		stdout = runGit(['diff', '--name-only', base, '--'], workspaceRoot);
 	} catch {
 		try {
-			stdout = runGit('git diff --name-only --cached', workspaceRoot);
+			stdout = runGit(['diff', '--name-only', '--cached'], workspaceRoot);
 		} catch {
 			return [];
 		}
@@ -76,7 +84,7 @@ export function parseGitDiffRanges(
 
 	let stdout: string;
 	try {
-		stdout = runGit(`git diff --unified=0 ${base} --`, workspaceRoot);
+		stdout = runGit(['diff', '--unified=0', base, '--'], workspaceRoot);
 	} catch {
 		return new Map();
 	}

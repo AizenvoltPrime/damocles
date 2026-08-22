@@ -438,7 +438,11 @@
     "toolDestructive": "Destructive",
     "toolNetwork": "Network",
     "fromWorkspace": "From workspace",
+    "fromDamoclesLocal": "From project .damocles",
+    "fromClaudeLocal": "From Claude Code (local)",
     "addServer": "Add server",
+    "reloadConfig": "Reload config",
+    "reloadConfigTitle": "Re-read every MCP config file from disk, including ~/.claude.json, which Damocles does not watch.",
     "editServer": "Edit",
     "deleteServer": "Delete",
     "notFormEditable": "This server uses options this form cannot show. Edit it directly in ~/.damocles/mcp.json.",
@@ -482,13 +486,13 @@
       "removeHeader": "Remove header",
       "bearerTokenEnvLabel": "Bearer token variable",
       "bearerTokenEnvPlaceholder": "MY_API_TOKEN",
-      "bearerTokenEnvHelp": "The name of an environment variable holding the token — not the token itself. Damocles never stores token values.",
+      "bearerTokenEnvHelp": "The name of an environment variable holding the token, not the token itself. Damocles never stores token values.",
       "errors": {
         "nameRequired": "A name is required.",
         "nameTooLong": "A name may be at most {max} characters.",
         "nameInvalid": "A name may only contain letters, digits, dots, underscores and hyphens.",
         "nameExists": "A server with this name already exists in ~/.damocles/mcp.json.",
-        "nameShadowedByWorkspace": "This project's .mcp.json already defines this name and takes precedence, so the server would never be used.",
+        "nameShadowedByProject": "A project config file already defines this name and takes precedence, so the server would never be used.",
         "commandRequired": "A command is required.",
         "envKeyRequired": "Every environment variable needs a name.",
         "envDuplicateKey": "The environment variable “{name}” is listed twice.",
@@ -511,12 +515,12 @@
       "prefixCollision": "Tools will be named mcp__…_2__ because \"{other}\" already uses this prefix.",
       "writeErrors": {
         "nameExists": "\"{name}\" already exists in ~/.damocles/mcp.json. It may have been added by hand.",
-        "nameMissing": "\"{name}\" is no longer in ~/.damocles/mcp.json — it may have been removed elsewhere.",
-        "nameShadowed": "This project's .mcp.json already defines \"{name}\" and takes precedence, so the server would never be used.",
-        "fileUnparseable": "~/.damocles/mcp.json is not valid JSON. Fix the file, then try again — nothing was written.",
+        "nameMissing": "\"{name}\" is no longer in ~/.damocles/mcp.json. It may have been removed elsewhere.",
+        "nameShadowed": "{file} already defines \"{name}\" and takes precedence, so the server would never be used.",
+        "fileUnparseable": "~/.damocles/mcp.json is not valid JSON. Fix the file, then try again. Nothing was written.",
         "fileNotObject": "~/.damocles/mcp.json must contain a JSON object. Fix the file, then try again.",
         "fileServersNotObject": "The \"mcpServers\" key in ~/.damocles/mcp.json is not an object. Fix the file, then try again.",
-        "fileUnreadable": "~/.damocles/mcp.json could not be read. Check its permissions — nothing was written.",
+        "fileUnreadable": "~/.damocles/mcp.json could not be read. Check its permissions. Nothing was written.",
         "writeFailed": "The change could not be saved: {detail}",
         "invalidDefinition": "The server definition was rejected: {detail}"
       }
@@ -525,8 +529,10 @@
     "configErrorAt": "Invalid JSON at line {line}, column {column}. The servers it defines are not shown. Fix the file, or delete it to start over.",
     "configErrorUnknown": "The file is not valid JSON. The servers it defines are not shown. Fix the file, or delete it to start over.",
     "configErrorOpen": "Open file",
-    "configErrorUnreadable": "The file could not be read — check its permissions. The servers it defines are not shown.",
-    "addServerBlocked": "Fix the config file above first — every change is written to it."
+    "configErrorUnreadable": "The file could not be read. Check its permissions. The servers it defines are not shown.",
+    "addServerBlocked": "Fix the config file above first. Every change is written to it.",
+    "localMcpUnignoredTitle": "Git can commit your MCP credentials",
+    "localMcpUnignored": "Git does not ignore {line}, your personal MCP config, so a commit can publish the credentials it holds. Add that line to .gitignore."
   },
   "tools": {
     "title": "Tools",
@@ -947,7 +953,8 @@
   "slashCommand": {
     "loading": "Loading commands...",
     "noMatches": "No matching commands",
-    "createHint": "Create commands in .claude/commands/"
+    "createHint": "Create commands in .damocles/commands/",
+    "untrustedBadge": "untrusted"
   },
   "subagentIndicator": {
     "active": "Active agents:",

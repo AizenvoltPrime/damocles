@@ -4,6 +4,7 @@ import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { SliderRange, SliderRoot, SliderThumb, SliderTrack, useForwardPropsEmits } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<SliderRootProps & { class?: HTMLAttributes["class"] }>()
 const emits = defineEmits<SliderRootEmits>()
@@ -19,7 +20,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       'relative flex w-full touch-none select-none items-center data-[orientation=vertical]:flex-col data-[orientation=vertical]:w-2 data-[orientation=vertical]:h-full',
       props.class,
     )"
-    v-bind="forwarded"
+    v-bind="definedProps(forwarded)"
   >
     <SliderTrack class="relative h-2 w-full data-[orientation=vertical]:w-2 grow overflow-hidden rounded-full bg-secondary">
       <SliderRange class="absolute h-full data-[orientation=vertical]:w-full bg-primary" />

@@ -6,6 +6,7 @@ import FormPrompt from '../FormPrompt.vue';
 import { useFormStore } from '@/stores/useFormStore';
 import { i18n } from '@/i18n';
 import type { FormSchema } from '@shared/types/forms';
+import { firstEmit } from '@/__tests__/helpers';
 
 function withForm(schema: FormSchema) {
   useFormStore().setForm({ toolUseId: 't1', form: schema });
@@ -34,7 +35,7 @@ describe('FormPrompt — submission', () => {
     await input.setValue('Alexios');
     await input.trigger('keydown', { key: 'Enter' });
     expect(wrapper.emitted('submit')).toBeTruthy();
-    expect(wrapper.emitted('submit')![0][0]).toEqual({ name: 'Alexios' });
+    expect(firstEmit(wrapper.emitted('submit'), 'submit')).toEqual({ name: 'Alexios' });
   });
 
   it('submits when the Submit button is clicked (Enter mirrors this exactly)', async () => {
@@ -43,7 +44,7 @@ describe('FormPrompt — submission', () => {
     await wrapper.vm.$nextTick();
     await wrapper.get('#form-field-name').setValue('X');
     await submitButton(wrapper).trigger('click');
-    expect(wrapper.emitted('submit')![0][0]).toEqual({ name: 'X' });
+    expect(firstEmit(wrapper.emitted('submit'), 'submit')).toEqual({ name: 'X' });
   });
 
   it('does NOT submit on Enter inside a textarea (newline preserved)', async () => {
@@ -91,7 +92,7 @@ describe('FormPrompt — field value emission', () => {
     await wrapper.vm.$nextTick();
     await wrapper.get('select').setValue('r2');
     await submitButton(wrapper).trigger('click');
-    expect(wrapper.emitted('submit')![0][0]).toEqual({ role: 'r2' });
+    expect(firstEmit(wrapper.emitted('submit'), 'submit')).toEqual({ role: 'r2' });
   });
 
   it('emits a radio value', async () => {
@@ -102,7 +103,7 @@ describe('FormPrompt — field value emission', () => {
     await wrapper.vm.$nextTick();
     await wrapper.get('input[type="radio"][value="pro"]').setValue();
     await submitButton(wrapper).trigger('click');
-    expect(wrapper.emitted('submit')![0][0]).toEqual({ plan: 'pro' });
+    expect(firstEmit(wrapper.emitted('submit'), 'submit')).toEqual({ plan: 'pro' });
   });
 
   it('emits a checkbox boolean', async () => {
@@ -111,7 +112,7 @@ describe('FormPrompt — field value emission', () => {
     await wrapper.vm.$nextTick();
     await wrapper.get('[role="checkbox"]').trigger('click');
     await submitButton(wrapper).trigger('click');
-    expect(wrapper.emitted('submit')![0][0]).toEqual({ tos: true });
+    expect(firstEmit(wrapper.emitted('submit'), 'submit')).toEqual({ tos: true });
   });
 });
 

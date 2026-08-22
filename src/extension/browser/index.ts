@@ -1513,7 +1513,7 @@ export class BrowserService {
     if (!this.readDevToolsPortSetting()) {
       const OPEN_SETTINGS = vscode.l10n.t('Open Settings');
       const choice = await vscode.window.showWarningMessage(
-        vscode.l10n.t('DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.'),
+        vscode.l10n.t('DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser. The port is a launch-time flag and cannot be turned on for a running browser.'),
         OPEN_SETTINGS,
       );
       if (choice === OPEN_SETTINGS) {

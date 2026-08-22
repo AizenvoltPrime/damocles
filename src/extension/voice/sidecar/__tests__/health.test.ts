@@ -46,7 +46,7 @@ describe("HealthMonitor", () => {
     // Only one of the outstanding pongs comes back. The previous
     // behavior flipped healthy here on the strength of one stray
     // pong even though earlier nonces were still missing.
-    monitor.recordPong(sentNonces[0]);
+    monitor.recordPong(sentNonces[0]!);
     expect(events[events.length - 1]).toBe("unhealthy");
     monitor.stop();
   });

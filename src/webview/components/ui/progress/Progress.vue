@@ -7,6 +7,7 @@ import {
   ProgressRoot,
 } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = withDefaults(
   defineProps<ProgressRootProps & { class?: HTMLAttributes["class"] }>(),
@@ -20,7 +21,7 @@ const delegatedProps = reactiveOmit(props, "class")
 
 <template>
   <ProgressRoot
-    v-bind="delegatedProps"
+    v-bind="definedProps(delegatedProps)"
     :class="
       cn(
         'relative h-4 w-full overflow-hidden rounded-full bg-secondary',

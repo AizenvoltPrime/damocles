@@ -38,7 +38,11 @@ export class ChatPanelProvider {
     this.extensionUri = extensionUri;
     this.context = context;
     const homeDir = process.env["HOME"] || process.env["USERPROFILE"] || "";
-    this.workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || homeDir;
+    const projectPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    // Session storage and history key on this path, so with no folder open they need the home dir.
+    // Asset discovery must not follow them there: with no folder open there is no project scope, so
+    // it takes `projectPath` and scans the user dirs alone.
+    this.workspacePath = projectPath || homeDir;
 
     const postMessage = (host: WebviewHost, message: unknown) => {
       this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
@@ -63,6 +67,7 @@ export class ChatPanelProvider {
 
     this.workspaceManager = new WorkspaceManager({
       workspacePath: this.workspacePath,
+      projectPath,
       postMessage,
       broadcastToAllPanels: (message) => this.panelManager.broadcast(message),
     });
@@ -204,10 +209,17 @@ export class ChatPanelProvider {
       }
     });
 
-    // Granting workspace trust unblocks workspace `.mcp.json` servers (M3): getEnabledMcpServers reads
-    // `vscode.workspace.isTrusted` live, so re-feed the now-trusted set, connect them, and refresh status.
+    // Granting workspace trust unblocks workspace `.mcp.json` servers (M3). The re-read has to come
+    // first: trust decides what `loadConfig` samples, not only what the trust gate withholds
+    // afterwards. It picks the fold that ranks repo-authored sources, runs the gitignore check that
+    // an untrusted workspace skips, and records which sources actually outrank `~/.damocles/mcp.json`.
+    // None of those recover on their own, so the re-feed and the broadcast below both wait for it.
+    // A watcher firing in the same window takes the later generation and this load then assigns
+    // nothing, so the broadcast can carry the pre-grant snapshot until that load's own change
+    // notification lands.
     this.context.subscriptions.push(
-      vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      vscode.workspace.onDidGrantWorkspaceTrust(async () => {
+        await this.settingsManager.loadMcpConfig();
         this.panelManager.broadcast(this.settingsManager.buildMcpConfigUpdate());
         const enabled = this.settingsManager.getEnabledMcpServers();
         for (const [, instance] of this.panelManager.getPanels()) {

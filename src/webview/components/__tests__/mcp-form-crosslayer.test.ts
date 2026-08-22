@@ -3,6 +3,7 @@ import {
   buildMcpServerConfig,
   createArgRow,
   createEmptyFormState,
+  createKeyValueRow,
   isMcpFormValid,
   submittedServerName,
   validateMcpServerForm,
@@ -11,11 +12,17 @@ import {
 
 /** Form args are identified rows; the built config is still a plain string[]. */
 const argRows = (...values: string[]) => values.map((value) => createArgRow(value));
+
+/** Env and header rows carry a stable id, minted the same way the form mints one. */
+const kvRows = (...pairs: { key: string; value: string }[]) =>
+  pairs.map(({ key, value }) => createKeyValueRow(key, value));
 import {
   assertValidMcpServerConfig,
   assertValidMcpServerName,
   isFormEditableMcpServerConfig,
 } from '../../../extension/chat-panel/settings-manager/managers/mcp-config-validate';
+import { LOCAL_MCP_RELATIVE_PATH, mcpSourceOrder, SHADOWING_SOURCES } from '@shared/types/mcp';
+import type { McpServerSource } from '@shared/types/mcp';
 
 /**
  * The invariant BETWEEN the two layers, which neither layer's own tests can express:
@@ -58,16 +65,16 @@ function everyFormShape(): McpServerFormState[] {
       base({ args: argRows('a', w, 'b') }),
       base({ command: `node${w}` }),
       base({ name: `ok-name${w}` }),
-      base({ env: [{ key: 'KEY', value: w }] }),
-      base({ env: [{ key: `KEY${w}`, value: 'v' }] }),
+      base({ env: kvRows({ key: 'KEY', value: w }) }),
+      base({ env: kvRows({ key: `KEY${w}`, value: 'v' }) }),
       base({ mode: 'remote', url: `https://example.test/${w}` }),
       base({ mode: 'remote', url: 'https://example.test', bearerTokenEnv: w }),
-      base({ mode: 'remote', url: 'https://example.test', headers: [{ key: 'H', value: w }] }),
+      base({ mode: 'remote', url: 'https://example.test', headers: kvRows({ key: 'H', value: w }) }),
       base({
         mode: 'remote',
         remoteType: 'sse',
         url: 'https://example.test',
-        headers: [{ key: `H${w}`, value: 'v' }],
+        headers: kvRows({ key: `H${w}`, value: 'v' }),
       }),
     );
   }
@@ -107,6 +114,44 @@ describe('cross-layer: a form the UI accepts is a definition the extension accep
     }
 
     expect(notEditable).toEqual([]);
+  });
+
+  it('spells the personal MCP config the same way on both sides of the wire', () => {
+    // The host asks git about this path and the panel tells the user to paste it into `.gitignore`.
+    // Two literals that must agree became one export; this pins the value and its shape.
+    expect(LOCAL_MCP_RELATIVE_PATH).toBe('.damocles/mcp.local.json');
+    // Forward slashes on every platform, because git accepts them everywhere and the panel renders
+    // the string verbatim as a `.gitignore` line.
+    expect(LOCAL_MCP_RELATIVE_PATH).not.toMatch(/\\/);
+    expect(LOCAL_MCP_RELATIVE_PATH.startsWith('/')).toBe(false);
+  });
+
+  it('derives SHADOWING_SOURCES from the precedence order rather than restating it', () => {
+    // Both layers now read this one set, so it is the single thing that has to be right. Recomputed
+    // here rather than compared to a literal: a hand-written `{workspace, damocles-local}` would pass
+    // an equality check against itself and say nothing about the ordering it is supposed to follow.
+    const order = mcpSourceOrder('claude');
+    const aboveDamocles = order.slice(order.indexOf('damocles') + 1);
+
+    expect(aboveDamocles.length).toBe(2);
+    expect([...SHADOWING_SOURCES].sort()).toEqual([...aboveDamocles].sort());
+    // The tie-break only permutes `claude` and `codex`, both below `damocles`, so the set is the same
+    // under either precedence. The shared module derives it once from the `"claude"` arm alone.
+    const flipped = mcpSourceOrder('codex');
+    expect(flipped.slice(flipped.indexOf('damocles') + 1)).toEqual(aboveDamocles);
+  });
+
+  it('rejects a name from exactly the shadowing sources the extension refuses to write, no more', () => {
+    // The form's inline hint and the host's `assertNotShadowed` are two code paths over one set. Drift
+    // is a real defect either way: too narrow lets the user type a name the extension then refuses
+    // after the dialog has closed, too wide blocks a name that would have worked.
+    const formRejects: McpServerSource[] = [];
+    for (const source of mcpSourceOrder('claude')) {
+      const errors = validateMcpServerForm(base({ name: 'taken' }), null, [{ name: 'taken', source }]);
+      if (errors.name?.key === 'mcp.form.errors.nameShadowedByProject') formRejects.push(source);
+    }
+
+    expect([...formRejects].sort()).toEqual([...SHADOWING_SOURCES].sort());
   });
 
   it('covers a meaningful number of shapes — a vacuous pass would prove nothing', () => {

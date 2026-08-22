@@ -126,7 +126,7 @@ describe("ConfigManager — team role settings", () => {
 
       await manager.sendCurrentSettings(hostStub, permStub);
 
-      const [, msg] = postMessage.mock.calls[0];
+      const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;
       expect(team.reviewerEffort).toBe("max");
     });
@@ -140,7 +140,7 @@ describe("ConfigManager — team role settings", () => {
       await manager.sendCurrentSettings(hostStub, permStub);
 
       expect(postMessage).toHaveBeenCalledTimes(1);
-      const [, msg] = postMessage.mock.calls[0];
+      const [, msg] = postMessage.mock.calls[0]!;
       expect(msg.type).toBe("settingsUpdate");
       const team = (msg.settings as ExtensionSettings).team;
       expect(team.leadModel).toBe("gpt-5.6-sol");
@@ -153,7 +153,7 @@ describe("ConfigManager — team role settings", () => {
 
       await manager.sendCurrentSettings(hostStub, permStub);
 
-      const [, msg] = postMessage.mock.calls[0];
+      const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;
       expect(team.reviewerModel).toBe("deepseek-v4-pro");
       expect(team.reviewerEffort).toBe("max");
@@ -162,7 +162,7 @@ describe("ConfigManager — team role settings", () => {
     it("defaults all roles to empty model + null effort when nothing is stored", async () => {
       await manager.sendCurrentSettings(hostStub, permStub);
 
-      const [, msg] = postMessage.mock.calls[0];
+      const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;
       expect(team).toEqual({
         leadModel: "",

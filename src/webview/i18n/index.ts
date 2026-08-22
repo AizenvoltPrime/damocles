@@ -1,4 +1,5 @@
 import { createI18n } from 'vue-i18n';
+import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import en from './locales/en.json';
 import el from './locales/el.json';
 
@@ -20,7 +21,9 @@ export const i18n = createI18n({
   },
 });
 
-type MessageSender = (message: { type: string; locale: string }) => void;
+/** Narrowed to the one message this module sends, so `postMessage` can be handed over directly
+ *  instead of being widened to a shape the extension host does not accept. */
+type MessageSender = (message: Extract<WebviewToExtensionMessage, { type: "setLanguagePreference" }>) => void;
 
 let sendMessage: MessageSender | null = null;
 
@@ -29,7 +32,7 @@ export function initLocaleMessaging(messageSender: MessageSender) {
 }
 
 function normalizeLocale(locale: string): SupportedLocale {
-  const normalized = locale.split('-')[0];
+  const normalized = locale.split('-')[0] ?? '';
   return isSupportedLocale(normalized) ? normalized : 'en';
 }
 

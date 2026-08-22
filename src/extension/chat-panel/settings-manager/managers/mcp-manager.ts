@@ -1,14 +1,20 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
+import { LOCAL_MCP_RELATIVE_PATH } from "../../../../shared/types/mcp";
+import type { McpConfigError, McpServerConfig, McpServerSource, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
 import type { McpServerEntry } from "../types";
 import {
   mergeMcpEntries,
+  orderMcpSources,
   readMcpConfigFile,
   readGlobalMcpSources,
+  localMcpConfigPath,
   CODEX_CONFIG_PATH,
   DAMOCLES_MCP_CONFIG_PATH,
+  REPO_AUTHORED_BY_SOURCE,
 } from "./mcp-config-import";
+import type { McpSourceServers } from "./mcp-config-import";
+import { isLocalMcpFileUnignored } from "./mcp-local-gitignore";
 import { isFormEditableMcpServerConfig } from "./mcp-config-validate";
 import { getAssetSourcePrecedence } from "../../../asset-sources";
 import { log } from "../../../logger";
@@ -16,10 +22,31 @@ import { log } from "../../../logger";
 /** workspaceState key for the Damocles-owned disabled-server set (replaces CC's disabledMcpjsonServers). */
 export const MCP_DISABLED_SERVERS_KEY = "damocles.mcp.disabledServers";
 
+function isRepoAuthored(entry: McpServerEntry): boolean {
+  return REPO_AUTHORED_BY_SOURCE[entry.source];
+}
+
+/**
+ * The sources folded after `target`, so they overwrite it on a name collision. Taken from the fold
+ * that actually ran rather than from the static precedence, because an untrusted workspace demotes
+ * the repo-authored sources below it.
+ */
+function sourcesFoldedAbove(target: McpServerSource, folded: readonly McpSourceServers[]): ReadonlySet<McpServerSource> {
+  const above = new Set<McpServerSource>();
+  let reached = false;
+  for (const { source } of folded) {
+    if (reached) above.add(source);
+    else reached = source === target;
+  }
+  return above;
+}
+
 export class McpManager {
   private entries: McpServerEntry[] = [];
   private configLoaded = false;
   private configErrors: McpConfigError[] = [];
+  private localMcpUnignored = false;
+  private shadowingSources: ReadonlySet<McpServerSource> = new Set();
   private loadGeneration = 0;
   private watchers: vscode.FileSystemWatcher[] = [];
   private toggleLock: Promise<void> = Promise.resolve();
@@ -43,14 +70,21 @@ export class McpManager {
       this.onConfigChange?.();
     };
 
-    // The three files Damocles or Codex own, so hand-editing any of them refreshes the panel with no
-    // window reload. A watcher only reaches outside the workspace when its pattern has a base path.
+    // The files Damocles or Codex own, so hand-editing any of them refreshes the panel with no window
+    // reload. A watcher only reaches outside the workspace when its pattern has a base path.
     //
     // The two `~/.claude*` files are deliberately NOT watched: Claude Code rewrites its global file
     // continuously, and each event here reloads every source and re-drives `setMcpServers()`, cycling
     // live connections. Those still need a window reload — the right trade for another tool's file.
+    // Claude Code's local scope lives in that same `~/.claude.json`, so it is excluded for the same
+    // reason; the panel's Reload config action is how a change there is picked up.
+    //
+    // `.gitignore` is watched because the leak warning is sampled here too. Without it, adding the
+    // line the panel asks for changes nothing on screen until some other config file happens to move.
     const patterns = [
       new vscode.RelativePattern(workspacePath, ".mcp.json"),
+      new vscode.RelativePattern(workspacePath, LOCAL_MCP_RELATIVE_PATH),
+      new vscode.RelativePattern(workspacePath, ".gitignore"),
       new vscode.RelativePattern(path.dirname(DAMOCLES_MCP_CONFIG_PATH), path.basename(DAMOCLES_MCP_CONFIG_PATH)),
       new vscode.RelativePattern(path.dirname(CODEX_CONFIG_PATH), path.basename(CODEX_CONFIG_PATH)),
     ];
@@ -131,12 +165,12 @@ export class McpManager {
   /**
    * The set of servers that should actually be connected. Gated by the master `damocles.mcp.enabled`
    * switch (M6: off ⇒ none, so disabling tears down live connections) and by workspace trust (M3:
-   * workspace `.mcp.json` servers are withheld in an untrusted workspace; the user-global sources —
-   * `~/.damocles/mcp.json`, the Claude imports and the Codex import — are unaffected, because none of
-   * them is authored by the repository you just opened). The test stays an explicit `source ===
-   * "workspace"` one rather than `!readonly`: `damocles` entries are editable *and* trusted, so routing
-   * trust through `readonly` would silently start withholding them. This is the single chokepoint
-   * feeding the live MCP client.
+   * servers from a file in the working tree are withheld in an untrusted workspace; the sources living
+   * in the user's home directory are unaffected, because the repository you just opened cannot have
+   * authored them). The test is `REPO_AUTHORED_BY_SOURCE` rather than `!readonly` or a scope check:
+   * `damocles` entries are editable *and* trusted, and `claude-local` is project-scoped but written in
+   * `~/.claude.json`, so either substitute would withhold servers a repo had no hand in. This is the
+   * single chokepoint feeding the live MCP client.
    */
   getEnabledServers(): Record<string, McpServerConfig> {
     if (!this.isMasterEnabled()) return {};
@@ -144,7 +178,7 @@ export class McpManager {
     return Object.fromEntries(
       this.entries
         .filter(entry => entry.enabled)
-        .filter(entry => trusted || entry.source !== "workspace")
+        .filter(entry => trusted || !isRepoAuthored(entry))
         .map(entry => [entry.name, entry.config])
     );
   }
@@ -153,15 +187,15 @@ export class McpManager {
     return vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
   }
 
-  /** A workspace-sourced server withheld from connecting because the workspace is untrusted (M3). */
-  private isUntrustedWorkspaceServer(entry: McpServerEntry): boolean {
-    return entry.source === "workspace" && !vscode.workspace.isTrusted;
+  /** A server from a working-tree file, withheld from connecting because the workspace is untrusted (M3). */
+  private isUntrustedRepoServer(entry: McpServerEntry): boolean {
+    return isRepoAuthored(entry) && !vscode.workspace.isTrusted;
   }
 
   getServersForUI(): McpServerStatusInfo[] {
     return this.entries.map(entry => {
       const info = this.toStatusInfo(entry, entry.enabled ? "idle" : "disabled");
-      if (this.isUntrustedWorkspaceServer(entry)) info.untrusted = true;
+      if (this.isUntrustedRepoServer(entry)) info.untrusted = true;
       return info;
     });
   }
@@ -176,12 +210,28 @@ export class McpManager {
   }
 
   /**
-   * The names the workspace `.mcp.json` defines in the currently-merged set. That source outranks
-   * `~/.damocles/mcp.json`, so the write path rejects these names rather than persisting a server the
-   * merge would then hide. Read off the merged entries, so it reflects exactly what the panel shows.
+   * The names currently defined by a source that outranks `~/.damocles/mcp.json`, mapped to that
+   * source. The write path rejects these rather than persisting a server the merge would then hide,
+   * and the mapped source is what lets the rejection name the offending file. Read off the merged
+   * entries and the fold that produced them, so it reflects exactly what the panel shows and cannot
+   * claim a precedence the merge did not grant.
    */
-  getWorkspaceServerNames(): ReadonlySet<string> {
-    return new Set(this.entries.filter(entry => entry.source === "workspace").map(entry => entry.name));
+  getShadowingServerNames(): ReadonlyMap<string, McpServerSource> {
+    const shadowing = new Map<string, McpServerSource>();
+    for (const entry of this.entries) {
+      if (this.shadowingSources.has(entry.source)) {
+        shadowing.set(entry.name, entry.source);
+      }
+    }
+    return shadowing;
+  }
+
+  /**
+   * True when `<ws>/.damocles/mcp.local.json` exists and git is not ignoring it, so the credentials it
+   * may hold are one `git add` away from being published. Sampled during `loadConfig()`.
+   */
+  getLocalMcpUnignored(): boolean {
+    return this.localMcpUnignored;
   }
 
   /** Every merged server name, in merge order — the input `buildServerPrefixMap` sees at spawn time. */
@@ -190,42 +240,67 @@ export class McpManager {
   }
 
   async loadConfig(): Promise<void> {
-    // Three independent triggers reach this method — the panel write path, the file watchers and
-    // session startup — and it awaits five reads before assigning. Without a generation stamp an older
-    // read can finish last and install a staler snapshot; because `getEnabledServers()` feeds the live
-    // MCP client, that does not merely show stale rows, it disconnects servers.
+    // Three independent triggers reach this method: the panel write path, the file watchers and
+    // session startup. Every config read and the git check complete before anything is assigned, so
+    // without a generation stamp an older run can finish last and install a staler snapshot. Because
+    // `getEnabledServers()` feeds the live MCP client, that does not merely show stale rows, it
+    // disconnects servers.
     const generation = ++this.loadGeneration;
 
-    // Lowest precedence first: {claude, codex} ordered by `damocles.assetSourcePrecedence` (the loser
-    // folded first so the configured winner overwrites it), then `~/.damocles/mcp.json`, then the
-    // workspace `.mcp.json` folded below as the highest. Reusing the asset-precedence setting keeps
-    // one knob governing every Claude-vs-Codex tie-break, so assets and MCP can never disagree.
-    const { sources, errors } = await readGlobalMcpSources(getAssetSourcePrecedence());
-    const configErrors = [...errors];
+    // One knob governs every Claude-vs-Codex tie-break, so assets and MCP can never disagree about it.
+    const precedence = getAssetSourcePrecedence();
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-    let workspaceServers: Record<string, McpServerConfig> = {};
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      const read = await readMcpConfigFile(path.join(workspaceFolder.uri.fsPath, ".mcp.json"));
-      workspaceServers = read.servers;
+    const workspaceFiles: readonly (readonly [McpServerSource, string])[] = workspaceRoot === undefined
+      ? []
+      : [
+        ["workspace", path.join(workspaceRoot, ".mcp.json")],
+        ["damocles-local", localMcpConfigPath(workspaceRoot)],
+      ];
+
+    // Asking git runs the repository's own `.git/config`, and `core.fsmonitor` in it is a command git
+    // executes, so an untrusted workspace never gets asked. Its repo-authored servers are withheld
+    // from the client anyway, which is what the warning protects.
+    const localMcpCheck: Promise<boolean> | boolean = workspaceRoot !== undefined && vscode.workspace.isTrusted
+      ? isLocalMcpFileUnignored(workspaceRoot)
+      : false;
+
+    const [global, localMcpUnignored, workspaceReads] = await Promise.all([
+      readGlobalMcpSources(workspaceRoot),
+      localMcpCheck,
+      Promise.all(workspaceFiles.map(async ([source, file]) => ({ source, read: await readMcpConfigFile(file) }))),
+    ]);
+
+    const configErrors = [...global.errors];
+    const sources = [...global.sources];
+    for (const { source, read } of workspaceReads) {
+      sources.push({ source, servers: read.servers });
       if (read.error) configErrors.push(read.error);
     }
 
-    // An untrusted workspace's `.mcp.json` is folded LOWEST instead of highest. Folded highest it would
-    // overwrite a same-named user-global server, and `getEnabledServers()` would then withhold the
-    // merged entry for being workspace-sourced — so opening an untrusted repo that happens to name a
-    // server `github` would silently stop your own trusted `github` from connecting. A repository you
-    // have not trusted has no business overriding your settings; folded lowest it can still contribute
-    // servers of its own, which stay visible, tagged `untrusted`, and withheld from the client.
-    if (vscode.workspace.isTrusted) sources.push({ source: "workspace", servers: workspaceServers });
-    else sources.unshift({ source: "workspace", servers: workspaceServers });
+    const ranked = orderMcpSources(sources, precedence);
+    // In an untrusted workspace the sources a repository could have authored are folded LOWEST instead
+    // of at their rank, keeping their order relative to each other. Folded at rank they would overwrite
+    // same-named user-global servers, and the trust gate would then withhold the merged entry for being
+    // repo-authored, so opening an untrusted repo that happens to name a server `github` would silently
+    // stop your own trusted `github` from connecting. A repository you have not trusted has no business
+    // overriding your settings; folded lowest it can still contribute servers of its own, which stay
+    // visible, tagged `untrusted`, and withheld from the client.
+    const folded = vscode.workspace.isTrusted
+      ? ranked
+      : [
+        ...ranked.filter(entry => REPO_AUTHORED_BY_SOURCE[entry.source]),
+        ...ranked.filter(entry => !REPO_AUTHORED_BY_SOURCE[entry.source]),
+      ];
 
     const disabled = new Set(this.getDisabledServers());
-    const entries = mergeMcpEntries(sources, disabled);
+    const entries = mergeMcpEntries(folded, disabled);
 
     if (generation !== this.loadGeneration) return;
     this.configErrors = configErrors;
     this.entries = entries;
+    this.shadowingSources = sourcesFoldedAbove("damocles", folded);
+    this.localMcpUnignored = localMcpUnignored;
     this.configLoaded = true;
   }
 
@@ -233,7 +308,7 @@ export class McpManager {
     const statusMap = new Map(sdkStatuses.map(s => [s.name, s]));
     return this.entries.map(entry => {
       const sdkServer = statusMap.get(entry.name);
-      const untrusted = this.isUntrustedWorkspaceServer(entry);
+      const untrusted = this.isUntrustedRepoServer(entry);
       const status = untrusted
         ? "disabled"
         : entry.enabled

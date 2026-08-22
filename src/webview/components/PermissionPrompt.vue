@@ -13,17 +13,17 @@ const { t } = useI18n();
 const props = defineProps<{
   visible: boolean;
   toolUseId: string;
-  toolName?: string;
-  filePath?: string;
-  originalContent?: string;
-  proposedContent?: string;
-  command?: string;
-  agentDescription?: string;
-  queuePosition?: number;
-  queueTotal?: number;
-  suggestions?: PermissionUpdate[];
-  blockedPath?: string;
-  decisionReason?: string;
+  toolName?: string | undefined;
+  filePath?: string | undefined;
+  originalContent?: string | undefined;
+  proposedContent?: string | undefined;
+  command?: string | undefined;
+  agentDescription?: string | undefined;
+  queuePosition?: number | undefined;
+  queueTotal?: number | undefined;
+  suggestions?: PermissionUpdate[] | undefined;
+  blockedPath?: string | undefined;
+  decisionReason?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -33,7 +33,7 @@ const emit = defineEmits<{
 const showCustomInput = ref(false);
 const customMessage = ref('');
 const selectedValue = ref<string>('yes');
-const listboxRef = ref<InstanceType<typeof ListboxRoot> | null>(null);
+const listboxRef = ref<{ $el?: HTMLElement } | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 const showDestinationPicker = ref(false);
 const pendingSuggestion = ref<PermissionUpdate | null>(null);
@@ -150,7 +150,7 @@ function handleCustomBack() {
   showCustomInput.value = false;
   customMessage.value = '';
   nextTick(() => {
-    (listboxRef.value?.$el as HTMLElement)?.focus();
+    listboxRef.value?.$el?.focus();
   });
 }
 
@@ -188,9 +188,10 @@ function handleKeydown(e: KeyboardEvent) {
     ? { '1': 'yes', '2': 'yes-accept-all', '3': 'always-allow', '4': 'no', '5': 'always-deny' }
     : { '1': 'yes', '2': 'yes-accept-all', '3': 'no' };
 
-  if (shortcutMap[e.key]) {
+  const shortcut = shortcutMap[e.key];
+  if (shortcut) {
     e.preventDefault();
-    handleSelect(shortcutMap[e.key]);
+    handleSelect(shortcut);
   }
 }
 
@@ -198,7 +199,7 @@ watch(() => props.visible, (visible) => {
   if (visible) {
     resetState();
     nextTick(() => {
-      (listboxRef.value?.$el as HTMLElement)?.focus();
+      listboxRef.value?.$el?.focus();
     });
   }
 });

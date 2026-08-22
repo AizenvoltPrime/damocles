@@ -93,12 +93,12 @@ export class SettingsManager {
 
   /**
    * Add / edit / remove a server in `~/.damocles/mcp.json`, the only MCP file Damocles writes. The
-   * workspace-name set the collision policy needs comes from the manager here rather than from the
+   * shadowing-name map the collision policy needs comes from the manager here rather than from the
    * message handler, so the policy's inputs stay inside the settings layer. Each throws a
    * human-readable `Error` on a rejected definition or name collision, having written nothing.
    */
   async addMcpServer(serverName: string, config: McpServerConfig): Promise<void> {
-    return addDamoclesMcpServer(serverName, config, this.mcpManager.getWorkspaceServerNames());
+    return addDamoclesMcpServer(serverName, config, this.mcpManager.getShadowingServerNames());
   }
 
   /**
@@ -112,7 +112,7 @@ export class SettingsManager {
    */
   async updateMcpServer(serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
     const previousNames = this.mcpManager.getServerNames();
-    await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getWorkspaceServerNames());
+    await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getShadowingServerNames());
 
     if (newServerName === undefined || newServerName === serverName) return;
     await this.mcpManager.carryDisabledServerThroughRename(serverName, newServerName);
@@ -135,7 +135,13 @@ export class SettingsManager {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
     const mcpEnabled = vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
-    this.postMessage(host, { type: "mcpServerStatus", servers: mcpEntries, mcpEnabled, configErrors: this.mcpManager.getConfigErrors() });
+    this.postMessage(host, {
+      type: "mcpServerStatus",
+      servers: mcpEntries,
+      mcpEnabled,
+      configErrors: this.mcpManager.getConfigErrors(),
+      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(),
+    });
   }
 
   /**
@@ -148,6 +154,7 @@ export class SettingsManager {
       type: "mcpConfigUpdate",
       servers: this.getMcpServersForUI(),
       configErrors: this.mcpManager.getConfigErrors(),
+      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(),
     };
   }
 

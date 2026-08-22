@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ref } from 'vue';
 import type { ChatMessage, CompactMarker, CacheMissNotice } from '@shared/types/session';
 import { useVirtualizedMessages } from '../useVirtualizedMessages';
+import { at } from '@/__tests__/helpers';
 
 function build(messages: ChatMessage[], cacheMissNotices: CacheMissNotice[] = []) {
   return useVirtualizedMessages(
@@ -26,7 +27,7 @@ describe('useVirtualizedMessages refusal handling', () => {
     const { items } = build([refusal]);
 
     expect(items.value).toHaveLength(1);
-    const item = items.value[0];
+    const item = at(items.value, 0);
     expect(item.type).toBe('refusal-message');
     expect(item.id).toBe('refusal-r1');
     expect(item.text).toBe('declined for safety');
@@ -51,7 +52,7 @@ describe('useVirtualizedMessages refusal handling', () => {
     const { items } = build([assistant, refusal]);
 
     expect(items.value).toHaveLength(1);
-    expect(items.value[0].type).toBe('refusal-message');
+    expect(at(items.value, 0).type).toBe('refusal-message');
   });
 });
 
@@ -74,7 +75,7 @@ describe('useVirtualizedMessages cache-miss notice interleaving', () => {
     const types = items.value.map(i => i.type);
     expect(types).toEqual(['user-message', 'cache-miss-notice', 'user-message']);
 
-    const noticeItem = items.value[1];
+    const noticeItem = at(items.value, 1);
     expect(noticeItem.type).toBe('cache-miss-notice');
     // Namespaced once — no `cache-miss-cache-miss-` double prefix.
     expect(noticeItem.id).toBe('cache-miss-200-0');
@@ -96,6 +97,6 @@ describe('useVirtualizedMessages cache-miss notice interleaving', () => {
 
     const types = items.value.map(i => i.type);
     expect(types).toEqual(['user-message', 'cache-miss-notice']);
-    expect(items.value[1].notice).toEqual(notice);
+    expect(at(items.value, 1).notice).toEqual(notice);
   });
 });

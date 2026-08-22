@@ -94,8 +94,21 @@ function highlightMatch(text: string): string {
   return `${escapedBefore}<span class="text-primary font-semibold">${escapedMatch}</span>${escapedAfter}`;
 }
 
+function isUntrusted(command: SlashCommandItem): boolean {
+  // `BuiltinSlashCommandInfo` carries no `untrusted` field, so narrow the union before reading it.
+  return command.source !== 'builtin' && command.untrusted === true;
+}
+
+function argumentHint(command: SlashCommandItem): string | null {
+  // `SkillInfo` carries no `argumentHint`, so narrow the union before reading it.
+  return 'argumentHint' in command ? command.argumentHint ?? null : null;
+}
+
 function getSourceBadge(command: SlashCommandItem): string | null {
   if (command.source === 'builtin') return null;
+  if (command.untrusted) {
+    return t('slashCommand.untrustedBadge');
+  }
   if (command.source === 'user') {
     return 'user';
   }
@@ -210,15 +223,18 @@ function agentTypeLabel(agentType: string): string {
                   />
                   <!-- Argument hint -->
                   <span
-                    v-if="cmd.argumentHint"
+                    v-if="argumentHint(cmd)"
                     class="text-xs text-muted-foreground/70 font-mono"
                   >
-                    {{ cmd.argumentHint }}
+                    {{ argumentHint(cmd) }}
                   </span>
                   <!-- Source badge -->
                   <span
                     v-if="getSourceBadge(cmd)"
-                    class="text-xs px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50"
+                    class="text-xs px-1.5 py-0.5 rounded border"
+                    :class="isUntrusted(cmd)
+                      ? 'bg-warning/15 text-warning border-warning/40'
+                      : 'bg-muted-foreground/15 text-muted-foreground border-border/50'"
                   >
                     {{ getSourceBadge(cmd) }}
                   </span>

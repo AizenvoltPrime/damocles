@@ -17,6 +17,8 @@ import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 type TabId = 'all' | 'note' | 'observations' | 'search';
+/** Observations are written by the agent, never created from this panel, so the create path excludes that tier. */
+type MemoryCreateTier = Exclude<MemoryTier, 'observation'>;
 type MemoryCreateKind = 'fact' | 'preference' | 'episode';
 
 const props = defineProps<{
@@ -29,7 +31,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'create', payload: { tier: MemoryTier; kind: MemoryCreateKind; content: string; requestId: string }): void;
+  (e: 'create', payload: { tier: MemoryCreateTier; kind: MemoryCreateKind; content: string; requestId: string }): void;
   (e: 'delete', id: string): void;
   (e: 'pin', id: string): void;
   (e: 'unpin', id: string): void;
@@ -46,7 +48,7 @@ const { postMessage } = useVSCode();
 
 const activeTab = ref<TabId>('all');
 const newMemoryContent = ref('');
-const newMemoryTier = ref<MemoryTier>('project');
+const newMemoryTier = ref<MemoryCreateTier>('project');
 const newMemoryKind = ref<MemoryCreateKind>('fact');
 const pendingCreate = ref(false);
 // Correlates this panel's in-flight create with its settlement so a chat /remember or a failed
@@ -76,7 +78,7 @@ const scopeOptions: { id: ScopeFilter; label: string }[] = [
   { id: 'global', label: 'Global' },
 ];
 
-const tierOptions: { id: MemoryTier; label: string }[] = [
+const tierOptions: { id: MemoryCreateTier; label: string }[] = [
   { id: 'session', label: 'Session' },
   { id: 'project', label: 'Project' },
   { id: 'global', label: 'Global' },

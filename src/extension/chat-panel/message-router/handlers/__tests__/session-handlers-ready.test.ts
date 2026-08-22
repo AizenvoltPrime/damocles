@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createSessionHandlers } from '../session-handlers';
 
-vi.mock('vscode', () => ({ window: { showErrorMessage: vi.fn() }, workspace: { getConfiguration: () => ({ get: () => undefined }) } }), { virtual: true });
+vi.mock('vscode', () => ({ window: { showErrorMessage: vi.fn() }, workspace: { getConfiguration: () => ({ get: () => undefined }) } }));
 vi.mock('../../../../pi-session/session-store', () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
 vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { exists: false, get: vi.fn() } }));
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));

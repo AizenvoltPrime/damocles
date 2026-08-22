@@ -108,9 +108,10 @@ describe('useMemoryStore create tokens', () => {
   it('setForgotten flips every loaded row sharing the version chain, not just the clicked id', () => {
     const store = useMemoryStore();
     const now = Date.now();
-    const row = (id: string, rootId: string | null) => ({
-      id, tier: 'project' as const, kind: 'fact' as const, scope: 'project' as const,
-      content: id, sessionId: null, timestamp: now, forgotten: false, rootId,
+    const row = (id: string, rootId: string | null): MemoryEntry => ({
+      id, tier: 'project', kind: 'fact', scope: 'project',
+      content: id, sessionId: null, workspace: null, tags: [],
+      createdAt: now, updatedAt: now, forgotten: false, rootId,
     });
     store.setMemories([row('v1', null), row('v2', 'v1'), row('unrelated', null)]);
 

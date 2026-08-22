@@ -13,7 +13,7 @@ import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, exploreThinkingLevel } from 
 describe('CUSTOM_PROVIDER_DEFS — StepFun adaptive-thinking compat', () => {
   it('registers step-3.7-flash with compat.forceAdaptiveThinking', () => {
     const stepfun = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun');
-    expect(stepfun?.registerConfig?.models?.[0].compat).toEqual({ forceAdaptiveThinking: true });
+    expect(stepfun?.registerConfig?.models?.[0]?.compat).toEqual({ forceAdaptiveThinking: true });
   });
 });
 
@@ -83,7 +83,7 @@ beforeAll(() => {
     appendLine: (line: string) => void logLines.push(line),
     show: () => {},
     dispose: () => {},
-  } as unknown as vscode.OutputChannel);
+  } as unknown as vscode.LogOutputChannel);
 });
 beforeEach(() => {
   logLines.length = 0;
@@ -115,8 +115,8 @@ describe('syncCustomProviders', () => {
 
     expect(result).toEqual({ wired: ['stepfun', 'deepseek'], aborted: false, notWired: [] });
     expect(runtime.registerProvider).toHaveBeenCalledTimes(1); // only StepFun is mode:'register'
-    expect(runtime.registerProvider.mock.calls[0][0]).toBe('stepfun');
-    expect(runtime.registerProvider.mock.calls[0][1]).toMatchObject({ apiKey: 'sf-key' });
+    expect(runtime.registerProvider.mock.calls[0]![0]).toBe('stepfun');
+    expect(runtime.registerProvider.mock.calls[0]![1]).toMatchObject({ apiKey: 'sf-key' });
     // Signal IDENTITY, not `expect.anything()`: `{}` matches `expect.anything()`, so deleting the
     // options argument entirely — the whole cancellation mechanism — would keep this green.
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledWith('stepfun', 'sf-key', { signal: controller.signal });

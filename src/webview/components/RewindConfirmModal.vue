@@ -19,11 +19,11 @@ const props = defineProps<{
   visible: boolean;
   canFork: boolean;
   kind?: RewindHistoryItem['kind'];
-  messagePreview?: string;
-  filesAffected?: number;
-  files?: Array<{ path: string; displayName: string }>;
-  linesChanged?: { added: number; removed: number };
-  loadingMetadata?: boolean;
+  messagePreview?: string | undefined;
+  filesAffected?: number | undefined;
+  files?: Array<{ path: string; displayName: string }> | undefined;
+  linesChanged?: { added: number; removed: number } | undefined;
+  loadingMetadata?: boolean | undefined;
 }>();
 
 const emit = defineEmits<{

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { PlanManager } from '../plan-manager';
 import { PermissionState } from '../../state';
 import type { CanUseToolContext, PostMessageFn } from '../../types';
@@ -73,7 +73,7 @@ describe('PlanManager.handleExitPlanMode', () => {
     expect(result.behavior).toBe('allow');
     if (result.behavior === 'allow') {
       expect(result.updatedInput).toEqual({ approved: true, approvalMode: 'acceptEdits' });
-      expect('plan' in result.updatedInput).toBe(false);
+      expect(result.updatedInput).not.toHaveProperty('plan');
     }
   });
 });

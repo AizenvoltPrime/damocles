@@ -8,9 +8,9 @@ const { t } = useI18n();
 
 const props = defineProps<{
   isProcessing: boolean;
-  currentToolName?: string;
-  statusOverride?: string;
-  activeHooks?: Map<string, { hookName: string; hookEvent: string }>;
+  currentToolName?: string | undefined;
+  statusOverride?: string | undefined;
+  activeHooks?: Map<string, { hookName: string; hookEvent: string }> | undefined;
 }>();
 
 const startTime = ref<number | null>(null);
@@ -23,7 +23,7 @@ const hookLabel = computed(() => {
   if (!props.activeHooks?.size) return null;
   if (props.activeHooks.size === 1) {
     const [hook] = props.activeHooks.values();
-    return hook.hookEvent;
+    return hook?.hookEvent ?? null;
   }
   return t('status.hooksCount', { count: props.activeHooks.size });
 });

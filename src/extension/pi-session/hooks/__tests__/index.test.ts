@@ -145,7 +145,7 @@ describe('registerConfiguredHooks — PostToolUse', () => {
     registerConfiguredHooks(pi as never, deps);
     const patch = (await handlers.get('tool_result')!(resultEvent(), fakeCtx())) as { isError?: boolean; content?: { text: string }[] };
     expect(patch?.isError).toBe(true);
-    expect(patch?.content?.[0].text).toContain('unsafe');
+    expect(patch?.content?.[0]?.text).toContain('unsafe');
   });
 
   it('appends stashed PreToolUse additionalContext to the result and drains the stash (H1 delivery)', async () => {
@@ -155,8 +155,8 @@ describe('registerConfiguredHooks — PostToolUse', () => {
     const { deps } = mkDeps({}, { preToolUseContextStash: stash });
     registerConfiguredHooks(pi as never, deps);
     const patch = (await handlers.get('tool_result')!(resultEvent(), fakeCtx())) as { content?: { text: string }[] };
-    expect(patch?.content?.[0].text).toContain('out');
-    expect(patch?.content?.[0].text).toContain('from pre-hook');
+    expect(patch?.content?.[0]?.text).toContain('out');
+    expect(patch?.content?.[0]?.text).toContain('from pre-hook');
     expect(stash.has('c1')).toBe(false);
   });
 

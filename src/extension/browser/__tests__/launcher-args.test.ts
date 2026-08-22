@@ -10,18 +10,20 @@ import { join } from 'path';
  * only capture the options handed to `launchPersistentContext`.
  */
 
-const launchPersistentContext = vi.fn(async () => ({}) as unknown);
+type CapturedOpts = { args: string[]; ignoreDefaultArgs?: string[]; headless: boolean };
+
+const launchPersistentContext = vi.fn<(userDataDir: string, opts: CapturedOpts) => Promise<unknown>>(async () => ({}));
 
 vi.mock('patchright', () => ({
-  chromium: { launchPersistentContext: (...a: unknown[]) => launchPersistentContext(...a) },
+  chromium: { launchPersistentContext: (userDataDir: string, opts: CapturedOpts) => launchPersistentContext(userDataDir, opts) },
 }));
 
 import { launchBrowserContext } from '../launcher';
 
-type CapturedOpts = { args: string[]; ignoreDefaultArgs?: string[]; headless: boolean };
-
 function capturedOpts(call = 0): CapturedOpts {
-  return launchPersistentContext.mock.calls[call][1] as CapturedOpts;
+  const captured = launchPersistentContext.mock.calls[call];
+  if (!captured) throw new Error(`launchPersistentContext was called fewer than ${call + 1} time(s)`);
+  return captured[1];
 }
 
 const baseOpts = {

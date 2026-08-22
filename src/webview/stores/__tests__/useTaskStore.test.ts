@@ -17,7 +17,6 @@ const createOutput = (id: string, subject: string): TaskCreateOutput => ({
 
 const updateOutput = (overrides: Partial<TaskUpdateOutput> & { taskId: string }): TaskUpdateOutput => ({
   success: true,
-  updatedFields: [],
   ...overrides,
 });
 

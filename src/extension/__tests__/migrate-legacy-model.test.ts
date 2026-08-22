@@ -296,7 +296,7 @@ describe('migrateLegacyModelSetting â€” DeepSeek effort-value migration (xhigh â
 
     const effortUpdates = updates.filter((u) => u.key === 'effortByModel');
     expect(effortUpdates).toHaveLength(1);
-    expect(effortUpdates[0].value).toEqual({ 'gpt-5.6-sol': 'high', 'deepseek-v4-pro': 'max' });
+    expect(effortUpdates[0]!.value).toEqual({ 'gpt-5.6-sol': 'high', 'deepseek-v4-pro': 'max' });
   });
 
   it('does not write when a scope has only a non-migrating DeepSeek entry alongside a legacy GPT key in another scope', async () => {

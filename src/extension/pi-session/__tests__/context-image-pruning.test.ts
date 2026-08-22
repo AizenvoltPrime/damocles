@@ -75,7 +75,7 @@ describe('pruneStaleImages — boundary policy', () => {
     expect(at9.prunedCount).toBe(3);
     // Same first-3 pruned at both sizes.
     for (let i = 0; i < 3; i++) {
-      expect((at9.messages[i] as { content: { text?: string }[] }).content[0].text).toBe(PLACEHOLDER);
+      expect((at9.messages[i] as { content: { text?: string }[] }).content[0]!.text).toBe(PLACEHOLDER);
     }
     expect(imageCount(at9.messages)).toBe(6);
   });
@@ -95,7 +95,7 @@ describe('pruneStaleImages — boundary policy', () => {
     expect(prunedCount).toBe(3);
     const firstContent = (messages[0] as { content: { type: string; text?: string }[] }).content;
     expect(firstContent.slice(0, 3).every((b) => b.type === 'text' && b.text === PLACEHOLDER)).toBe(true);
-    expect(firstContent[3].type).toBe('image');
+    expect(firstContent[3]!.type).toBe('image');
     expect(messages[1]).toBe(second);
   });
 

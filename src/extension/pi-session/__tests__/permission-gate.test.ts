@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, type Mock } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as path from 'path';
 import { runPermissionGate, gateErrorFallback, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
@@ -8,7 +8,7 @@ import type { McpClientManager } from '../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { DAMOCLES_PLANS_DIR } from '../../paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
-import type { PermissionResult } from '../../permission-handler';
+import type { PermissionHandler, PermissionResult } from '../../permission-handler';
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 
@@ -23,8 +23,8 @@ function makePanel(opts: {
   evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
   mcpReadOnly?: (name: string) => boolean;
 }) {
-  const canUseTool = vi.fn(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
-  const evaluatePermission = vi.fn(opts.evaluate ?? (async () => 'allow' as const));
+  const canUseTool = vi.fn<PermissionHandler['canUseTool']>(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
+  const evaluatePermission = vi.fn<PermissionHandler['evaluatePermission']>(opts.evaluate ?? (async () => 'allow' as const));
   const permissionHandler = { canUseTool, evaluatePermission } as unknown as PanelGateContext['permissionHandler'];
   const panel: PanelGateContext = {
     permissionHandler,
@@ -71,7 +71,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('write', 'call-42', { path: '/a.ts', content: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).toHaveBeenCalledTimes(1);
-    const [name, input, ctx] = canUseTool.mock.calls[0];
+    const [name, input, ctx] = canUseTool.mock.calls[0]!;
     expect(name).toBe('Write');
     expect(input).toEqual({ file_path: '/a.ts', content: 'x' });
     expect(ctx.toolUseID).toBe('call-42');
@@ -255,7 +255,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).toHaveBeenCalledTimes(1);
-    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
+    expect(canUseTool.mock.calls[0]![0]).toBe('mcp__git__commit');
   });
 
   it('in plan mode MCP tools follow normal-mode rules (not blocked by plan-mode defense)', async () => {
@@ -269,7 +269,7 @@ describe('runPermissionGate', () => {
     const nonReadResult = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), nonRead.panel, undefined);
     expect(nonReadResult).toBeUndefined();
     expect(nonRead.canUseTool).toHaveBeenCalledTimes(1);
-    expect(nonRead.canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
+    expect(nonRead.canUseTool.mock.calls[0]![0]).toBe('mcp__git__commit');
 
     // A read-only MCP tool still auto-allows via evaluatePermission without hitting canUseTool.
     const readOnly = makePanel({ plan: true, evaluate: async () => 'allow', mcpReadOnly: () => true });
@@ -285,23 +285,27 @@ function hookResult(partial: Partial<ToolCallHookResult> & { decision: 'allow' |
   return { finalInput: {}, mutated: false, anyFailed: false, systemMessages: [], ...partial };
 }
 
+const decisionSpy = (): Mock<PreToolUseHookGate['onDecision']> => vi.fn();
+const notifySpy = (): Mock<PreToolUseHookGate['notify']> => vi.fn();
+const stashSpy = (): Mock<PreToolUseHookGate['stashContext']> => vi.fn();
+
 function preToolUseGate(
   result: ToolCallHookResult | null,
-  onDecision = vi.fn(),
-  extra: { notify?: ReturnType<typeof vi.fn>; stashContext?: ReturnType<typeof vi.fn> } = {},
+  onDecision: PreToolUseHookGate['onDecision'] = decisionSpy(),
+  extra: { notify?: PreToolUseHookGate['notify']; stashContext?: PreToolUseHookGate['stashContext'] } = {},
 ): PreToolUseHookGate {
   return {
     run: async () => result,
     onDecision,
-    notify: extra.notify ?? vi.fn(),
-    stashContext: extra.stashContext ?? vi.fn(),
+    notify: extra.notify ?? notifySpy(),
+    stashContext: extra.stashContext ?? stashSpy(),
   };
 }
 
 describe('runPermissionGate — PreToolUse hooks', () => {
   it('deny blocks the tool with the FR-9 marker and raises the notice', async () => {
     const { panel, canUseTool } = makePanel({});
-    const onDecision = vi.fn();
+    const onDecision = decisionSpy();
     const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'rm -rf blocked' }), onDecision);
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
     expect(result?.block).toBe(true);
@@ -319,7 +323,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
    */
   it('a hook deny with terminate ends the turn and the notice says so', async () => {
     const { panel } = makePanel({});
-    const onDecision = vi.fn();
+    const onDecision = decisionSpy();
     const gate = preToolUseGate(hookResult({ decision: 'deny', terminate: true, reason: 'stop' }), onDecision);
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
     expect(result?.block).toBe(true);
@@ -330,7 +334,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
 
   it('a hook deny WITHOUT terminate blocks the call but not the turn', async () => {
     const { panel } = makePanel({});
-    const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'stop' }), vi.fn());
+    const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'stop' }), decisionSpy());
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
     expect(result?.block).toBe(true);
     expect(result).not.toHaveProperty('terminate');
@@ -346,7 +350,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
 
   it('allow force-allows, skipping the approval flow and the notice fires', async () => {
     const { panel, canUseTool } = makePanel({});
-    const onDecision = vi.fn();
+    const onDecision = decisionSpy();
     const gate = preToolUseGate(hookResult({ decision: 'allow' }), onDecision);
     const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(result).toBeUndefined();
@@ -399,7 +403,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
    */
   it('a sibling hook infra failure fails CLOSED even when another hook force-allows (write)', async () => {
     const { panel, canUseTool } = makePanel({});
-    const onDecision = vi.fn();
+    const onDecision = decisionSpy();
     const gate = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true }), onDecision);
     const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(result?.block).toBe(true);
@@ -417,15 +421,15 @@ describe('runPermissionGate — PreToolUse hooks', () => {
 
   it('a force-allow with every hook healthy still allows, and does not stash context on the blocked path', async () => {
     const { panel, canUseTool } = makePanel({});
-    const onDecision = vi.fn();
-    const stashContext = vi.fn();
+    const onDecision = decisionSpy();
+    const stashContext = stashSpy();
     const gate = preToolUseGate(hookResult({ decision: 'allow', additionalContext: 'ctx' }), onDecision, { stashContext });
     const result = await runPermissionGate(ev('write', 'c1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
     expect(onDecision).toHaveBeenCalledWith('Write', 'allow', undefined, false);
 
-    const failed = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true, additionalContext: 'ctx' }), vi.fn(), { stashContext });
+    const failed = preToolUseGate(hookResult({ decision: 'allow', anyFailed: true, additionalContext: 'ctx' }), decisionSpy(), { stashContext });
     await runPermissionGate(ev('write', 'c2', { path: '/a', content: 'x' }), makePanel({}).panel, undefined, null, failed);
     expect(stashContext).toHaveBeenCalledTimes(1);
     expect(stashContext).toHaveBeenCalledWith('c1', 'ctx');
@@ -449,40 +453,40 @@ describe('runPermissionGate — PreToolUse hooks', () => {
 
   it('surfaces hook systemMessage(s) via notify regardless of the decision', async () => {
     const { panel } = makePanel({ evaluate: async () => 'allow' });
-    const notify = vi.fn();
-    const gate = preToolUseGate(hookResult({ decision: 'ask', systemMessages: ['heads up'] }), vi.fn(), { notify });
+    const notify = notifySpy();
+    const gate = preToolUseGate(hookResult({ decision: 'ask', systemMessages: ['heads up'] }), decisionSpy(), { notify });
     await runPermissionGate(ev('read', 'c1', { path: '/a' }), panel, undefined, null, gate);
     expect(notify).toHaveBeenCalledWith(['heads up']);
   });
 
   it('stashes PreToolUse additionalContext (force-allow) for delivery on the tool result', async () => {
     const { panel } = makePanel({});
-    const stashContext = vi.fn();
-    const gate = preToolUseGate(hookResult({ decision: 'allow', additionalContext: 'extra ctx' }), vi.fn(), { stashContext });
+    const stashContext = stashSpy();
+    const gate = preToolUseGate(hookResult({ decision: 'allow', additionalContext: 'extra ctx' }), decisionSpy(), { stashContext });
     await runPermissionGate(ev('write', 'call-1', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(stashContext).toHaveBeenCalledWith('call-1', 'extra ctx');
   });
 
   it('stashes additionalContext on the normal approval path once the user approves', async () => {
     const { panel } = makePanel({ canUse: async () => ({ behavior: 'allow', updatedInput: {} }) });
-    const stashContext = vi.fn();
-    const gate = preToolUseGate(hookResult({ decision: 'ask', additionalContext: 'ctx' }), vi.fn(), { stashContext });
+    const stashContext = stashSpy();
+    const gate = preToolUseGate(hookResult({ decision: 'ask', additionalContext: 'ctx' }), decisionSpy(), { stashContext });
     await runPermissionGate(ev('write', 'call-7', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(stashContext).toHaveBeenCalledWith('call-7', 'ctx');
   });
 
   it('does NOT stash additionalContext when the tool is denied (no result will arrive)', async () => {
     const { panel } = makePanel({});
-    const stashContext = vi.fn();
-    const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'no', additionalContext: 'ctx' }), vi.fn(), { stashContext });
+    const stashContext = stashSpy();
+    const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'no', additionalContext: 'ctx' }), decisionSpy(), { stashContext });
     await runPermissionGate(ev('bash', 'call-1', { command: 'x' }), panel, undefined, null, gate);
     expect(stashContext).not.toHaveBeenCalled();
   });
 
   it('does NOT stash additionalContext when the user denies on the approval path', async () => {
     const { panel } = makePanel({ canUse: async () => ({ behavior: 'deny', message: 'rejected' }) });
-    const stashContext = vi.fn();
-    const gate = preToolUseGate(hookResult({ decision: 'ask', additionalContext: 'ctx' }), vi.fn(), { stashContext });
+    const stashContext = stashSpy();
+    const gate = preToolUseGate(hookResult({ decision: 'ask', additionalContext: 'ctx' }), decisionSpy(), { stashContext });
     await runPermissionGate(ev('write', 'call-8', { path: '/a', content: 'x' }), panel, undefined, null, gate);
     expect(stashContext).not.toHaveBeenCalled();
   });
@@ -498,7 +502,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     await runPermissionGate(event, panel, undefined, null, gate);
     // The custom Edit tool executes from event.input, so the rewritten CC-shaped path must land there.
     expect((event.input as Record<string, unknown>).file_path).toBe('/safe');
-    expect(canUseTool.mock.calls[0][1]).toMatchObject({ file_path: '/safe' });
+    expect(canUseTool.mock.calls[0]![1]).toMatchObject({ file_path: '/safe' });
   });
 
   it('updatedInput rewrite reaches pi-native Write, denormalized back to its raw `path`', async () => {
@@ -509,7 +513,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     // Write executes from raw pi input, so the CC `file_path` must be denormalized back to `path`.
     expect((event.input as Record<string, unknown>).path).toBe('/safe');
     expect('file_path' in (event.input as Record<string, unknown>)).toBe(false);
-    expect(canUseTool.mock.calls[0][1]).toMatchObject({ file_path: '/safe' });
+    expect(canUseTool.mock.calls[0]![1]).toMatchObject({ file_path: '/safe' });
   });
 });
 
@@ -707,8 +711,8 @@ function nestedGate(opts: {
   canUse?: () => Promise<PermissionResult>;
   evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
 } = {}) {
-  const canUseTool = vi.fn(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
-  const evaluatePermission = vi.fn(opts.evaluate ?? (async () => 'allow' as const));
+  const canUseTool = vi.fn<PermissionHandler['canUseTool']>(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
+  const evaluatePermission = vi.fn<PermissionHandler['evaluatePermission']>(opts.evaluate ?? (async () => 'allow' as const));
   const descriptors = [
     nestedDescriptor('mcp__git__status', true),   // annotated read-only
     nestedDescriptor('mcp__git__commit', false),  // NOT annotated — the common case
@@ -754,7 +758,7 @@ describe('nested gate — MCP auto-allow vs. approval (criterion 10)', () => {
 
     expect(result).toBeUndefined();
     expect(canUseTool).toHaveBeenCalledTimes(1);
-    const [name, input, callCtx] = canUseTool.mock.calls[0];
+    const [name, input, callCtx] = canUseTool.mock.calls[0]!;
     expect(name).toBe('mcp__git__commit');
     expect(input).toEqual({ message: 'x' });
     expect(callCtx.toolUseID).toBe('m2');
@@ -770,7 +774,7 @@ describe('nested gate — MCP auto-allow vs. approval (criterion 10)', () => {
     await runPermissionGate(ev('mcp__git__push', 'm3', {}), ctx, undefined, 'agent-tool-call-7');
 
     expect(canUseTool).toHaveBeenCalledTimes(1);
-    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__push');
+    expect(canUseTool.mock.calls[0]![0]).toBe('mcp__git__push');
   });
 
   it('a settings deny rule still blocks an annotated read-only MCP tool (marker present)', async () => {
@@ -824,8 +828,8 @@ describe('nested gate — a read-only agent MAY call a non-annotated MCP tool: D
 
     expect(result).toBeUndefined(); // not blocked
     expect(canUseTool).toHaveBeenCalledTimes(1);
-    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
-    expect(canUseTool.mock.calls[0][2].parentToolUseId).toBe('agent-tool-call-7');
+    expect(canUseTool.mock.calls[0]![0]).toBe('mcp__git__commit');
+    expect(canUseTool.mock.calls[0]![2].parentToolUseId).toBe('agent-tool-call-7');
   });
 
   it('DECIDED: the same agent IS still blocked on write and on a non-read-only shell command', async () => {

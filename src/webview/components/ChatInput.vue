@@ -279,7 +279,8 @@ function cycleMode() {
   const order = modeOrder.value;
   const currentIndex = order.indexOf(props.permissionMode);
   const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % order.length;
-  emit("changeMode", order[nextIndex]);
+  const nextMode = order[nextIndex];
+  if (nextMode) emit("changeMode", nextMode);
 }
 
 function toggleDangerouslySkipPermissions() {

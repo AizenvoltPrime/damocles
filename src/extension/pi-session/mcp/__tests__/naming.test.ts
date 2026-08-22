@@ -47,6 +47,18 @@ describe('mcp naming', () => {
     expect(reversed.get('my.server')).toBe('my_server_2');
   });
 
+  it('leaves existing servers\u2019 prefixes untouched when new sources contribute more servers', () => {
+    // `damocles.tools.disabled` stores fully-qualified `mcp__<prefix>__<tool>` names. Adding sources
+    // adds names, and if that moved an existing server's prefix every tool the user had switched off
+    // individually would silently come back on.
+    const existing = ['my-server', 'my.server', 'docs'];
+    const before = buildServerPrefixMap(existing);
+    const after = buildServerPrefixMap([...existing, 'personal-notes', 'claudeAdded']);
+
+    for (const [name, prefix] of before) expect(after.get(name)).toBe(prefix);
+    expect(formatMcpToolName(after.get('my.server') as string, 'search')).toBe('mcp__my_server_2__search');
+  });
+
   it('does not mutate the caller-supplied array while sorting', () => {
     const names = ['zeta', 'alpha'];
     buildServerPrefixMap(names);

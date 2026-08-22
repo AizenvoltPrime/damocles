@@ -6,6 +6,7 @@ import {
   AlertDialogDescription,
 } from "reka-ui"
 import { cn } from "@/lib/utils"
+import { definedProps } from "@/lib/definedProps"
 
 const props = defineProps<AlertDialogDescriptionProps & { class?: HTMLAttributes["class"] }>()
 
@@ -14,7 +15,7 @@ const delegatedProps = reactiveOmit(props, "class")
 
 <template>
   <AlertDialogDescription
-    v-bind="delegatedProps"
+    v-bind="definedProps(delegatedProps)"
     :class="cn('text-sm text-muted-foreground', props.class)"
   >
     <slot />
