@@ -439,7 +439,7 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
   it.each(AGENTS)('%s still carries its browser bullet in full (the load step did not displace it)', (agent) => {
     const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
     expect(prompt, agent).toContain('Then reach for the read-only inspections first: BrowserOpen, BrowserNavigate, BrowserSnapshot, BrowserQuery, BrowserScreenshot, BrowserConsole, BrowserNetwork, BrowserAccessibility.');
-    expect(prompt, agent).toContain('never type credentials yourself — ask the user via BrowserRequestInput');
+    expect(prompt, agent).toContain('never type credentials yourself. Ask the user via BrowserRequestInput');
   });
 
   it.each(AGENTS)('%s web bullet names all five web tools as read-only', (agent) => {

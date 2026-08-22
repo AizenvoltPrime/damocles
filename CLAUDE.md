@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Damocles is a VS Code extension that embeds an AI coding agent (Claude and GPT) in a Vue webview: chat with diff approval, tool visualization, session management, checkpoints/rewind, persistent memory, subagents, MCP, Compass, a Patchright browser, teams, and voice. The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`) — the sole backend.
+Damocles is a VS Code extension that embeds an AI coding agent (Claude and GPT) in a Vue webview: chat with diff approval, tool visualization, session management, checkpoints/rewind, persistent memory, subagents, MCP, Compass, a Patchright browser, teams, and voice. The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`), the sole backend.
 
 ## Development Commands
 
@@ -57,30 +57,30 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 - **Facade + DI:** Each module has `index.ts`; managers receive deps via constructor.
 - **Two-phase lazy init:** Constructor reads config; `ensureInitialized()` defers heavy work to first access (Memory, Compass).
-- **Message routing:** Domain-handler registries — `message-router/handlers/` (extension), `message-handler/handlers/` (webview).
+- **Message routing:** Domain-handler registries in `message-router/handlers/` (extension) and `message-handler/handlers/` (webview).
 
 ### Invariants
 
-Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — read the relevant section before changing a subsystem.
+Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Read the relevant section before changing a subsystem.
 
-- pi is the only engine; never add harness selection. Don't extend the webview message contract for a feature — map onto existing shapes in `pi-stream-adapter.ts`.
+- pi is the only engine; never add harness selection. Don't extend the webview message contract for a feature; map onto existing shapes in `pi-stream-adapter.ts`.
 - `Edit` cannot create files; `Write` is the only creation path.
-- Browser/Compass/Web/MCP tools are DEFERRED — registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
+- Browser/Compass/Web/MCP tools are DEFERRED, meaning registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
 - The advertised ToolSearch menu must equal the loadable set; report what pi actually activated, and sanitize third-party MCP text.
-- Nested (subagent/team) MCP arrives as `customTools`, never via the shared registrar — that is what preserves the nested-session republisher exemption, so never "simplify" it into sharing the registrar.
+- Nested (subagent/team) MCP arrives as `customTools`, never via the shared registrar. That is what preserves the nested-session republisher exemption, so never "simplify" it into sharing the registrar.
 - A nested agent's MCP set is frozen at spawn from ONE descriptor read (names + definitions + gate classifier + blurbs); a server connecting mid-run reaches the next agent, never a running one. The grant is uniform across every agent type and mode; `disallowed_tools` is the one opt-out and it is exact and case-sensitive.
-- Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision — see `docs/invariants.md` before changing it.
+- Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision, so see `docs/invariants.md` before changing it.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
-- Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed — never sequence a delete off a promise that resolves either way.
+- Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed, so never sequence a delete off a promise that resolves either way.
 - Damocles READS other tools' config (`.claude`, `.codex`, the project's `.mcp.json`) and WRITES only under `.damocles`. MCP writes go to `~/.damocles/mcp.json` alone; permission rules to `.damocles/settings*.json` alone. Never write to a file another tool owns.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
 - Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
-- The team profile catalog is generated — edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
+- The team profile catalog is generated: edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
 - A subagent's model is configuration, never the spawning model's choice (`Agent` has no `model` param).
-- Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom — never hand-roll a `completeSimple` call, because that seam is what keeps untrusted content (transcripts, memories, queries) in data position instead of instruction position. Never mutate `process.env` for per-session config.
-- Implementation gotchas live in the code and in memory observations — search those before assuming.
+- Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom. Never hand-roll a `completeSimple` call, because that seam is what keeps untrusted content (transcripts, memories, queries) in data position instead of instruction position. Never mutate `process.env` for per-session config.
+- Implementation gotchas live in the code and in memory observations, so search those before assuming.
 
 ## Permission Modes
 
@@ -104,4 +104,4 @@ Read-only tools are auto-approved in all modes. `dangerouslySkipPermissions` (YO
 - **Think before coding:** State assumptions explicitly; if unclear or multiple interpretations exist, stop and ask. Push back when a simpler approach exists.
 - **Simplicity first:** Minimum code that solves the problem. No speculative features, abstractions, configurability, or error handling for impossible scenarios.
 - **Surgical changes:** Touch only what you must. Don't refactor working code or "improve" adjacent style. Remove only imports/vars YOUR changes made unused; leave pre-existing dead code (mention it). Every changed line should trace to the request.
-- **Goal-driven execution:** Define success criteria up front — e.g. "fix the bug" → write a test that reproduces it, then make it pass. For multi-step tasks, state a brief plan before starting.
+- **Goal-driven execution:** Define success criteria up front. For "fix the bug", write a test that reproduces it, then make it pass. For multi-step tasks, state a brief plan before starting.

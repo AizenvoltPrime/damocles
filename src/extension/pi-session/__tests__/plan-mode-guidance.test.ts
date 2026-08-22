@@ -50,7 +50,7 @@ describe('buildPlanModeGuidance', () => {
   it('keeps the read-only carve-out: research/design only, write only the plan file', () => {
     const out = buildPlanModeGuidance('/p/x.md');
     expect(out).toContain('MAY run read-only shell commands');
-    expect(out).toContain('do NOT edit files');
+    expect(out).toContain('Do NOT edit files');
     expect(out).toContain('ONE');
   });
 
@@ -68,12 +68,12 @@ describe('buildPlanModeGuidance', () => {
     for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance()]) {
       expect(out).toContain('ToolSearch({tools:["browser"]})');
       expect(out).toContain('The browser tools are NOT loaded at the start of your turn');
-      expect(out).toContain('they are callable from your next step');
+      expect(out).toContain('They are callable from your next step');
       // The load step goes in FRONT of the inspection preference and credentials rule, not instead of
       // them. Names are spelled in full, matching default-agents.ts: the old `BrowserOpen/Navigate/…`
       // shorthand named seven tools that do not exist, and the model copies these into calls.
       expect(out).toContain('prefer the read-only inspections (BrowserOpen, BrowserNavigate, BrowserSnapshot, BrowserQuery, BrowserScreenshot, BrowserConsole, BrowserNetwork, BrowserAccessibility)');
-      expect(out).toContain('never type credentials yourself — ask the user via BrowserRequestInput');
+      expect(out).toContain('never type credentials yourself. Ask the user via BrowserRequestInput');
       expect(out).not.toContain('BrowserOpen/Navigate/Snapshot/Query/Screenshot/Console/Network/Accessibility');
       // The pre-slice-2 claim that the toolset is simply "available" must not survive.
       expect(out).not.toContain('its full tool set is available too');
@@ -171,7 +171,7 @@ describe('buildPlanModeGuidance', () => {
     expect(out).toContain('Plan subagent');
     // Binding, not advisory: the main prompt's "keep spawn counts low" must not be read as licence to
     // skip the Explore→Plan handoff.
-    expect(out).toContain('this is a hard rule, not a suggestion');
+    expect(out).toContain('This is a hard rule, not a suggestion');
     expect(out).toContain('you MUST produce the first draft of the plan through the Plan subagent');
     // Research is delegated SEEDED, not cold: orienting first is what lets the Explore prompt carry
     // known facts, so the subagent spends its turn on depth instead of re-deriving the obvious.

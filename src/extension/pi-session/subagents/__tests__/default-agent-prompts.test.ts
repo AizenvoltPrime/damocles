@@ -49,4 +49,20 @@ describe('default agent prompts — ToolSearch is described by mechanism, not by
     expect(prompt).toContain('Be thorough in what you INSPECT');
     expect(prompt).not.toContain('Be thorough and precise');
   });
+
+  // `replace` mode inherits no tone section, so a rule the parent states once has to be restated here
+  // or the delegated output arrives in the parent's register-free voice and gets copied into the answer.
+  for (const agent of ['Explore', 'Plan']) {
+    it(`${agent} carries the plain-writing rules its replace-mode prompt cannot inherit`, () => {
+      const prompt = DEFAULT_AGENTS.get(agent)?.systemPrompt ?? '';
+      expect(prompt).toContain('# Writing');
+      expect(prompt).toContain('No em dashes.');
+      expect(prompt).toContain('Use, not utilize or leverage.');
+      expect(prompt).toContain('Substrate and bedrock mean base');
+    });
+
+    it(`${agent} contains no em dash of its own`, () => {
+      expect(DEFAULT_AGENTS.get(agent)?.systemPrompt ?? '').not.toContain('\u2014');
+    });
+  }
 });

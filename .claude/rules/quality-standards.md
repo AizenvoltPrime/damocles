@@ -21,7 +21,7 @@ Always prioritize:
 - Address root causes rather than symptoms
 - Maintain high code quality standards throughout development
 - Always write self-documenting code with clear naming and structure
-- Use concise documentation comments for methods, classes, and properties to describe their purpose
+- Comment only to record a constraint the next editor would otherwise violate, never to describe what the code does
 
 ## Implementation Guidelines
 

@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.21.2] - 2026-08-22
+
+The em dash is gone from every prompt Damocles ships, the vocabulary that makes writing sound inflated is banned by name, unfamiliar terms get defined where they are used, and the comment policy now says which comments earn their place.
+
+### Changed
+
+- **A term you may not know is defined where it is used, in a few words.** Plain vocabulary is not the same as a plain explanation, and the rest of this release only bought the first. An answer could be free of every banned word and still assume you knew what "replace mode" or a file path meant. The agent now writes for someone who knows their own project but not this codebase and not the jargon around it, and defines an unfamiliar term inline the first time it appears, then uses it bare. The definition is budgeted to a clause: never its own sentence, never a tutorial, and never repeated for a term already defined. The rule that pays for it is stated beside it, so length does not creep: the words come out of restating your question, announcing what is about to be said, and summarising what was just said, and a short answer you have to go look something up to use does not count as short. This applies to what the agent writes to you. Subagents report to the model rather than to you, so they are left out of it and spend nothing explaining terms to a reader that already knows them.
+
+- **Em dashes are banned outright, and the substitutes are closed off with them.** The cap of one per sentence left the most recognisable tell of machine-written prose in place. Swapping it for parentheses, an en dash or a hyphen trades one tell for another, so all four are ruled out: a thought that needs separating ends the sentence or takes a comma. The 252 em dashes in the prompt sources went with the rule, along with those in `CLAUDE.md` and the README, because a rule the surrounding prompt breaks on every line is a weak instruction. Colons keep their two honest jobs, introducing a list or an example, and stop being used to weld two clauses together.
+
+- **The words that inflate writing are listed as literal strings.** Banned outright: delve, crucial, pivotal, showcase, testament, tapestry, underscore, vibrant, intricate, interplay, garner, foster, seamless, and "landscape" used as an abstraction. Banned with their plain replacement named beside them: substrate and bedrock mean base, wedge means add, vector means way, endgame means the last phase, gold-plating means more than the job needs, along with nexus, locus, paradigm, modality, flywheel, north star, "API surface", primitive as a noun, and scaffolding or harness as metaphors. "Serves as" and "boasts" become "is". The actor is named instead of hidden behind the passive, an adverb propping up a weak verb means the verb was wrong, and ideas are no longer forced into threes. This is the same tactic that worked on the tic phrases in 2.21.1: a general instruction to write plainly had not moved the model off its stock register, and naming the strings does.
+
+- **Text written into a file is now governed separately from text written into chat.** Chat text is judged on length and already was. A README, a CHANGELOG entry or a commit body is judged on register, and it outlives the turn that wrote it, so puffery survives there in a way it never does in a chat line that scrolls away. A new section covers what only files need: no promotional phrasing, sentence case headings, straight quotes, no bold-label-and-colon bullets that restate their own line, a named source or no claim at all, and an ending on a fact rather than on "the future looks bright". Its sharpest test is that a sentence which could appear unchanged in another project's documentation says nothing about this one and should be cut.
+
+- **The comment policy says which comments earn their place.** It had been one bullet stating that comments record the WHY and stay short, which is right but gives an editor nothing to decide with. It is now its own section and names the cases. A comment is earned by coupled constants that must stay equal, ordering requirements, platform and engine gotchas, ownership rules, units and coordinate conventions, a bug workaround, the meaning of a magic number, and what a non-obvious test guards. It is never earned by restating the code, by change history, by arguing against an alternative that was already rejected, or by a decorative banner. Long derivations belong in the project's design doc with a bare pointer from the code, never a paragraph summarising it, because a summary is a second copy that drifts. When a premise stops being true it is corrected everywhere it is asserted in the same change.
+
+- **Explore, Plan and the team agents get the writing rules they could not inherit.** Both subagents run in replace mode and take nothing from the panel's tone section, and the team lead and specialists each run their own session. Their output lands in the caller's context and is often lifted straight into the answer you read, so every one of them was exempt from rules the main agent followed. All five now carry the same rules from one shared source.
+
+- **A project rule that contradicted the comment policy is fixed.** `.claude/rules/quality-standards.md` still asked for documentation comments on methods, classes and properties "to describe their purpose", which is the WHAT the system prompt forbids. It is injected as context every session, so it had been arguing against the prompt on every turn. It now states the same WHY-only standard.
+
 ## [2.21.1] - 2026-08-17
 
 Opus 5 says less: the phrases it overuses are banned by name, it stops restating itself, and it stops signing your commits.
@@ -3785,6 +3805,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.21.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.1...v2.21.2
 [2.21.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.0...v2.21.1
 [2.21.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.20.0...v2.21.0
 [2.20.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.1...v2.20.0
