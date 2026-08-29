@@ -7,13 +7,13 @@ import type { FormFieldSchema, FormResult } from '@shared/types/forms';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import {
   IconPencilSquare,
-  IconGear,
   IconCheckCircle,
   IconXCircle,
   IconBan,
   IconLock,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import { useToolCardStatus } from '@/composables/useToolCardStatus';
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -21,7 +21,7 @@ const props = defineProps<{
 
 const { t } = useI18n();
 
-// The persisted tool INPUT is the FormSchema (labels/types/selectors) — never any values.
+// The persisted tool INPUT is the FormSchema of labels, types and selectors. It never holds values.
 const schema = computed(() => {
   const input = props.toolCall.input as { title?: string; fields?: unknown };
   const fields = Array.isArray(input?.fields) ? (input.fields as FormFieldSchema[]) : [];
@@ -52,7 +52,7 @@ interface FieldRow {
 }
 
 // Merge schema (labels/types) with the redacted per-field result state. Masking comes from the result's
-// own per-field `masked` flag (set from `sensitive` in buildRedactedResult) plus the password type —
+// own per-field `masked` flag (set from `sensitive` in buildRedactedResult) plus the password type,
 // never keyed by label, so two fields sharing a label can't over- or under-mask each other.
 const fieldRows = computed<FieldRow[]>(() => {
   const res = result.value;
@@ -68,7 +68,7 @@ const fieldRows = computed<FieldRow[]>(() => {
     }));
   }
 
-  // No result yet (pending/awaiting) — render the proposed schema.
+  // No result yet, so the proposed schema is what renders.
   return schema.value.fields.map((f): FieldRow => ({
     label: f.label,
     type: f.type,
@@ -92,34 +92,11 @@ const hasSubmitSelector = computed(() => {
 const isPending = computed(() => props.toolCall.status === 'pending');
 const isRunning = computed(() => props.toolCall.status === 'running');
 const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_approval');
-const isCompleted = computed(() => props.toolCall.status === 'completed');
 const isFailed = computed(() => props.toolCall.status === 'failed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
 
-const statusIcon = computed(() => {
-  if (isPending.value || isRunning.value || isAwaitingApproval.value) return null;
-  if (isCompleted.value) return IconCheckCircle;
-  if (isFailed.value || isDenied.value) return IconXCircle;
-  if (isAbandoned.value) return IconBan;
-  return IconGear;
-});
-
-const statusClass = computed(() => {
-  if (isRunning.value || isAwaitingApproval.value) return 'text-primary';
-  if (isCompleted.value) return 'text-success';
-  if (isFailed.value || isDenied.value) return 'text-error';
-  if (isAbandoned.value) return 'text-muted-foreground';
-  return 'text-muted-foreground';
-});
-
-const cardClass = computed(() => {
-  if (isAwaitingApproval.value) return 'border-primary/50 bg-primary/5';
-  if (isFailed.value || isDenied.value) return 'border-error/50';
-  if (isAbandoned.value) return 'border-muted/50 opacity-60';
-  if (isCompleted.value) return 'border-success/30';
-  return 'border-border';
-});
+const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.toolCall.status);
 
 const headerText = computed(() => {
   const title = schema.value.title;

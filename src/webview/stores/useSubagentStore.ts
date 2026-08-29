@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState, SubagentResult } from '@shared/types/subagents';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
+import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
 export interface StreamingSubagentMessage {
   sdkMessageId: string;
@@ -17,13 +18,19 @@ type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: 
 // Status priority for preventing downgrades (higher = more final)
 const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
   'pending': 0,
-  'abandoned': 0,
   'awaiting_approval': 1,
   'approved': 2,
   'running': 3,
-  'denied': 4,
-  'failed': 4,
-  'completed': 5,
+  // Strictly over every live status and strictly under every recorded outcome: a real result replaces
+  // it, a spinner never does.
+  'unrecorded': 4,
+  // Terminal, so it must outrank every live status; least informative of the terminal ones, so a
+  // recorded result may still replace it.
+  'abandoned': 5,
+  'denied': 5,
+  'failed': 5,
+  'completed': 6,
+  'cancelled': 6,
 };
 
 function extractLastTextFromMessages(agentMessages?: HistoryAgentMessage[]): string {
@@ -57,13 +64,20 @@ function buildChatMessagesFromHistory(
         const existing = existingToolStatuses?.get(block.id);
         const result = existing?.result ?? block.result;
         const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
-        // On resume-from-disk there is no live status, so derive failed/completed from the persisted
-        // isError flag, otherwise a failed nested tool would rehydrate as succeeded.
+        // Both callers hand this a transcript whose run is over, so a block with no recorded result
+        // never reached an outcome and a tracked pre-terminal status would spin for the session's life.
+        const recorded: ToolCall['status'] = block.isError
+          ? 'failed'
+          : block.result === undefined ? 'unrecorded' : 'completed';
+        const tracked = existing?.status;
         toolCalls.push({
           id: block.id,
           name: block.name,
           input: block.input,
-          status: existing?.status ?? (block.isError ? 'failed' : 'completed'),
+          status: resolveCancelledStatus(
+            tracked !== undefined && TERMINAL_TOOL_STATUSES.has(tracked) ? tracked : recorded,
+            block.metadata,
+          ),
           ...(result !== undefined && { result }),
           ...(errorMessage !== undefined && { errorMessage }),
           ...(block.metadata !== undefined && { metadata: block.metadata }),
@@ -367,11 +381,19 @@ export const useSubagentStore = defineStore('subagent', () => {
   ): boolean {
     const newPriority = STATUS_PRIORITY[status] ?? 0;
 
-    const patch: Partial<ToolCall> = {
-      status,
-      ...(result !== undefined && { result }),
-      ...(errorMessage !== undefined && { errorMessage }),
-      ...(durationMs !== undefined && { durationMs }),
+    // Live output is view state for a running call, so the keys are dropped rather than set to
+    // undefined, which exactOptionalPropertyTypes rejects.
+    const applyStatus = (tool: ToolCall): ToolCall => {
+      const resolved = resolveCancelledStatus(status, tool.metadata);
+      const { liveOutput: _clearedOutput, liveOutputTruncated: _clearedTruncated, cancelRequested: _clearedCancel, ...withoutLiveOutput } = tool;
+      const base = TERMINAL_TOOL_STATUSES.has(resolved) ? withoutLiveOutput : tool;
+      return {
+        ...base,
+        status: resolved,
+        ...(result !== undefined && { result }),
+        ...(errorMessage !== undefined && { errorMessage }),
+        ...(durationMs !== undefined && { durationMs }),
+      };
     };
 
     for (const [subagentId, subagent] of Object.entries(subagents.value)) {
@@ -381,7 +403,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         if (newPriority < (STATUS_PRIORITY[directTool.status] ?? 0)) return true;
 
         const updatedToolCalls = [...subagent.toolCalls];
-        updatedToolCalls[toolIndex] = { ...directTool, ...patch };
+        updatedToolCalls[toolIndex] = applyStatus(directTool);
         subagents.value = {
           ...subagents.value,
           [subagentId]: {
@@ -401,7 +423,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         if (newPriority < (STATUS_PRIORITY[nestedTool.status] ?? 0)) return true;
 
         const updatedMsgToolCalls = [...msg.toolCalls];
-        updatedMsgToolCalls[msgToolIndex] = { ...nestedTool, ...patch };
+        updatedMsgToolCalls[msgToolIndex] = applyStatus(nestedTool);
         const updatedMessages = [...subagent.messages];
         updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
         subagents.value = {
@@ -417,19 +439,15 @@ export const useSubagentStore = defineStore('subagent', () => {
     return false;
   }
 
-  function updateSubagentToolMetadata(
-    toolUseId: string,
-    metadata: Record<string, unknown>
-  ): boolean {
+  /** Replaces the first tool call matching `toolUseId`, in an agent's live list or in one of its
+   *  messages, with whatever `replace` returns. Returning a rebuilt call is how a key gets dropped. */
+  function replaceSubagentTool(toolUseId: string, replace: (tool: ToolCall) => ToolCall): boolean {
     for (const [subagentId, subagent] of Object.entries(subagents.value)) {
       const toolIndex = subagent.toolCalls.findIndex(t => t.id === toolUseId);
       const directTool = toolIndex === -1 ? undefined : subagent.toolCalls[toolIndex];
       if (directTool) {
         const updatedToolCalls = [...subagent.toolCalls];
-        updatedToolCalls[toolIndex] = {
-          ...directTool,
-          metadata: { ...directTool.metadata, ...metadata },
-        };
+        updatedToolCalls[toolIndex] = replace(directTool);
         subagents.value = {
           ...subagents.value,
           [subagentId]: {
@@ -447,10 +465,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         if (!nestedTool) continue;
 
         const updatedMsgToolCalls = [...msg.toolCalls];
-        updatedMsgToolCalls[msgToolIndex] = {
-          ...nestedTool,
-          metadata: { ...nestedTool.metadata, ...metadata },
-        };
+        updatedMsgToolCalls[msgToolIndex] = replace(nestedTool);
         const updatedMessages = [...subagent.messages];
         updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };
         subagents.value = {
@@ -464,6 +479,37 @@ export const useSubagentStore = defineStore('subagent', () => {
       }
     }
     return false;
+  }
+
+  /** `patch` reads the target because a metadata patch merges onto it. */
+  function patchSubagentTool(toolUseId: string, patch: (tool: ToolCall) => Partial<ToolCall>): boolean {
+    return replaceSubagentTool(toolUseId, tool => ({ ...tool, ...patch(tool) }));
+  }
+
+  function updateSubagentToolMetadata(
+    toolUseId: string,
+    metadata: Record<string, unknown>
+  ): boolean {
+    return patchSubagentTool(toolUseId, tool => {
+      const merged = { ...tool.metadata, ...metadata };
+      return { metadata: merged, status: resolveCancelledStatus(tool.status, merged) };
+    });
+  }
+
+  function updateSubagentToolLiveOutput(toolUseId: string, output: string, truncated: boolean): boolean {
+    return patchSubagentTool(toolUseId, () => ({ liveOutput: output, liveOutputTruncated: truncated }));
+  }
+
+  function markSubagentToolCancelRequested(toolUseId: string): boolean {
+    return patchSubagentTool(toolUseId, () => ({ cancelRequested: true }));
+  }
+
+  function clearSubagentToolCancelRequested(toolUseId: string): boolean {
+    return replaceSubagentTool(toolUseId, tool => {
+      // The key is dropped rather than set to undefined, which exactOptionalPropertyTypes rejects.
+      const { cancelRequested: _clearedCancel, ...withoutCancel } = tool;
+      return withoutCancel;
+    });
   }
 
   function getSubagent(id: string): SubagentState | undefined {
@@ -490,11 +536,13 @@ export const useSubagentStore = defineStore('subagent', () => {
       .filter((b): b is ToolUseBlock => b.type === 'tool_use')
       .map((block): ToolCall => {
         const existing = subagent.toolCalls.find(t => t.id === block.id);
+        // pi seals the assistant message before it starts the tool, so an untracked block has not run
+        // yet and any terminal default here is a green check on a tool that is about to execute.
         return {
           id: block.id,
           name: block.name,
           input: block.input,
-          status: existing?.status ?? 'completed',
+          status: resolveCancelledStatus(existing?.status ?? 'pending', existing?.metadata),
           ...(existing?.result !== undefined && { result: existing.result }),
           ...(existing?.errorMessage !== undefined && { errorMessage: existing.errorMessage }),
           ...(existing?.metadata !== undefined && { metadata: existing.metadata }),
@@ -689,6 +737,9 @@ export const useSubagentStore = defineStore('subagent', () => {
     addToolCallToSubagent,
     updateSubagentToolStatus,
     updateSubagentToolMetadata,
+    updateSubagentToolLiveOutput,
+    markSubagentToolCancelRequested,
+    clearSubagentToolCancelRequested,
     getSubagent,
     hasSubagent,
     getSubagentDescription,

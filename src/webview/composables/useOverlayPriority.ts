@@ -2,7 +2,6 @@ import { computed, type ComputedRef } from "vue";
 import {
   useUIStore,
   usePermissionStore,
-  useStreamingStore,
   useSubagentStore,
   useQuestionStore,
   useFormStore,
@@ -17,11 +16,11 @@ import { useTeamStore } from "@/stores/useTeamStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useBtwStore } from "@/stores/useBtwStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
+import { resolveExpandedTool } from "@/composables/useExpandedTool";
 
 export function isForegroundOverlayOpen(): boolean {
   const uiStore = useUIStore();
   const permissionStore = usePermissionStore();
-  const streamingStore = useStreamingStore();
   const subagentStore = useSubagentStore();
   const questionStore = useQuestionStore();
   const formStore = useFormStore();
@@ -48,7 +47,7 @@ export function isForegroundOverlayOpen(): boolean {
   if (questionStore.pendingQuestion) return true;
   if (formStore.pendingForm) return true;
   if (subagentStore.expandedSubagent) return true;
-  if (streamingStore.expandedTool) return true;
+  if (resolveExpandedTool()) return true;
   if (diffStore.expandedDiff) return true;
   if (planViewStore.viewingPlan) return true;
   if (contextInjectionStore.isOverlayOpen) return true;

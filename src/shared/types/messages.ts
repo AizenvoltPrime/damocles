@@ -70,6 +70,9 @@ export type WebviewToExtensionMessage =
   | { type: "requestRewindHistory" }
   | { type: "clearSession" }
   | { type: "interrupt" }
+  /** `requestId` identifies the exact card the webview optimistically marked, since one tool call id can
+   *  appear in the streaming, subagent and team stores at once. Echoed back on `toolCancelRejected`. */
+  | { type: "cancelToolCall"; toolUseId: string; note?: string; requestId?: string }
   | { type: "requestMcpStatus" }
   | { type: "requestSupportedCommands" }
   | { type: "openSettings" }
@@ -277,6 +280,10 @@ export type ExtensionToWebviewMessage =
   | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
+  /** No live shell call matched the cancel, so the optimistic "Stopping..." state has nothing to clear it.
+   *  Match on `requestId` when present, else fall back to `toolUseId`. Not an error: the ordinary case is
+   *  a click landing after the call finished. */
+  | { type: "toolCancelRejected"; toolUseId: string; requestId?: string }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
@@ -308,7 +315,7 @@ export type ExtensionToWebviewMessage =
   | {
       type: "requestPermission";
       toolUseId: string;
-      toolName: "Write" | "Edit" | "Bash" | "PowerShell" | "Monitor";
+      toolName: "Write" | "Edit" | "Bash" | "PowerShell";
       toolInput: Record<string, unknown>;
       filePath?: string;
       originalContent?: string;
@@ -428,7 +435,7 @@ export type ExtensionToWebviewMessage =
   | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string; isBackground?: boolean }
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
-  | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string }
+  | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string; output?: string; outputTruncated?: boolean }
   | { type: "toolUseSummary"; summary: string; precedingToolUseIds: string[] }
   | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
   | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
@@ -445,7 +452,6 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
-  | { type: "monitorEvent"; taskId: string; summary: string; event: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }
   | { type: "teamStarted"; team: import('./team').TeamState }
@@ -458,7 +464,9 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentStreamDelta"; teamId: string; agentId: string; deltaType: 'thinking' | 'text'; text: string }
   | { type: "teamAgentAssistant"; teamId: string; agentId: string; messageId: string; content: import('./team').TeamAgentContentBlock[]; timestamp: number }
   | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; timestamp: number }
-  | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean }
+  | { type: "teamAgentToolProgress"; teamId: string; agentId: string; toolUseId: string; output: string; outputTruncated?: boolean }
+  // `metadata` is the team path's only carrier for a tool result's `details`; the other two producers emit `toolMetadata`.
+  | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentContentBlock[][] }

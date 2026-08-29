@@ -3,7 +3,12 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { AgentRunConfig, AgentResult } from './types';
 import type { TeamAgentContentBlock } from '../../shared/types/team';
+import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
+import { joinResultText } from '../pi-session/tool-result-text';
+import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
+import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
 
 /**
  * Pi-native team agent runner (US-024b). Each team agent is a nested `createSubagentSession` driven
@@ -65,8 +70,12 @@ export class AgentRunner {
     let costUsd = 0;
     let lastRolledCost = 0;
 
-    /** Messages delivered by the MessageBus while idle, flushed as one combined prompt at the next turn. */
-    const pendingMessages: Array<{ from: string; content: string }> = [];
+    /**
+     * Text waiting to be prompted, flushed as one combined prompt at the next turn. `echoed` records
+     * whether the overlay has already seen it: a user note is echoed the moment it is accepted (that
+     * echo is what the delivery caller is told about), a bus message is echoed at flush.
+     */
+    const pendingMessages: Array<{ text: string; echoed: boolean }> = [];
     /** Wakes the idle-wait when a message arrives or the agent must terminate (abort). */
     let waitResolve: ((reason: 'message' | 'abort') => void) | null = null;
 
@@ -78,8 +87,11 @@ export class AgentRunner {
       }
     };
 
+    // Per-run so a torn-down agent's pending frames can never fire into the next run's cards.
+    const outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((msg) => config.onMessage(msg));
+
     const unsubscribeSession = session.subscribe((event: AgentSessionEvent) => {
-      this.handleSessionEvent(event, config, {
+      this.handleSessionEvent(event, config, outputCoalescer, {
         onToolUse: (name) => {
           toolCallCount++;
           config.onToolCall?.(name, toolCallCount);
@@ -109,25 +121,49 @@ export class AgentRunner {
       if (msg.from === config.name) return;
       if (msg.to !== config.name && msg.to !== null) return;
       if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to, ...(msg.kind ? { kind: msg.kind } : {}) })) return;
-      pendingMessages.push({ from: msg.from, content: msg.content });
+      pendingMessages.push({ text: `[Message from ${msg.from}]: ${msg.content}`, echoed: false });
       // Deliver immediately as a steer if mid-stream; otherwise wake the idle-wait to flush + re-prompt.
       // 0.80.5 fixes a latent race here: `isStreaming` now stays true across retry windows, so a bus
       // message arriving during a retry — which previously saw `isStreaming === false` and re-prompted a
       // still-active session — now correctly steers instead.
       if (session.isStreaming) {
-        const combined = flushPending();
-        this.emitUserMessage(config, combined);
-        void session.prompt(combined, { streamingBehavior: 'steer' }).catch(() => {});
+        void promptQueued(flushPending(), { streamingBehavior: 'steer' }).catch(() => {});
       } else {
         wake('message');
       }
     });
 
+    // A user note reaches the run here rather than through the bus, so no delivery filter, no self-name
+    // filter and no post-teardown subscription can drop it without the caller finding out.
+    const unbindNote = config.bindNoteDelivery((text: string): boolean => {
+      if (config.abortSignal.aborted) return false;
+      this.emitUserMessage(config, text);
+      pendingMessages.push({ text, echoed: true });
+      if (session.isStreaming) {
+        void promptQueued(flushPending(), { streamingBehavior: 'steer' }).catch(() => {});
+      } else {
+        wake('message');
+      }
+      return true;
+    });
+
     const onAbort = (): void => { wake('abort'); void session.abort().catch(() => {}); };
     config.abortSignal.addEventListener('abort', onAbort, { once: true });
 
+    /**
+     * Every prompt of queued content goes through here. `expandPromptTemplates: false` is the
+     * leading-slash guard: a user note is the one queued string that reaches pi without the
+     * `[Message from X]:` prefix, and pi would otherwise dispatch a note beginning with `/` as an
+     * extension command and return without ever prompting the agent.
+     */
+    const promptQueued = (text: string, options?: { streamingBehavior: 'steer' }): Promise<void> =>
+      session.prompt(text, { ...options, expandPromptTemplates: false });
+
+    /** Combines the queue into one prompt, echoing only the parts the overlay has not already seen. */
     const flushPending = (): string => {
-      const combined = pendingMessages.map((m) => `[Message from ${m.from}]: ${m.content}`).join('\n\n');
+      const unechoed = pendingMessages.filter((m) => !m.echoed).map((m) => m.text).join('\n\n');
+      if (unechoed) this.emitUserMessage(config, unechoed);
+      const combined = pendingMessages.map((m) => m.text).join('\n\n');
       pendingMessages.length = 0;
       return combined;
     };
@@ -143,9 +179,7 @@ export class AgentRunner {
       // re-prompt; else, if the agent must keep waiting, idle until a message arrives or it must abort.
       while (!config.abortSignal.aborted) {
         if (pendingMessages.length > 0) {
-          const combined = flushPending();
-          this.emitUserMessage(config, combined);
-          await session.prompt(combined);
+          await promptQueued(flushPending());
           continue;
         }
         if (!config.keepAlive?.()) {
@@ -160,10 +194,7 @@ export class AgentRunner {
         if (!config.keepAlive?.() && pendingMessages.length === 0) break;
         config.onKeepAliveResume?.();
         const combined = flushPending();
-        if (combined) {
-          this.emitUserMessage(config, combined);
-          await session.prompt(combined);
-        }
+        if (combined) await promptQueued(combined);
       }
       if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
@@ -176,8 +207,10 @@ export class AgentRunner {
       }
     } finally {
       waitResolve = null;
+      unbindNote();
       unsubscribeBus();
       unsubscribeSession();
+      outputCoalescer.dispose();
       config.abortSignal.removeEventListener('abort', onAbort);
       config.forgetSession(session);
     }
@@ -199,6 +232,7 @@ export class AgentRunner {
   private handleSessionEvent(
     event: AgentSessionEvent,
     config: AgentRunConfig,
+    outputCoalescer: ToolOutputCoalescer<ExtensionToWebviewMessage>,
     cb: {
       onToolUse: (name: string) => void;
       onAssistantText: (text: string) => void;
@@ -225,14 +259,53 @@ export class AgentRunner {
           }
         }
         break;
+      case 'tool_execution_update': {
+        // The team path has no elapsed-time progress message, so a non-live tool emits nothing at all.
+        if (!LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName))) break;
+        // A thunk, so a frame the coalescer holds is rendered from the newest partial rather than the
+        // one that happened to open the window.
+        outputCoalescer.push(event.toolCallId, () => {
+          // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
+          const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
+          return {
+            type: 'teamAgentToolProgress',
+            teamId: config.teamId,
+            agentId: config.agentId,
+            toolUseId: event.toolCallId,
+            output: joinResultText(event.partialResult),
+            outputTruncated: Boolean(details?.truncation?.truncated),
+          };
+        });
+        break;
+      }
       case 'tool_execution_end': {
+        // Cancel before anything else: a pending partial landing after the result would resurrect stale output.
+        outputCoalescer.cancel(event.toolCallId);
         const resultText = joinResultText(event.result);
+        // The team path has no `toolMetadata` message, so the result's details ride on this one or reach the card never.
+        const details = (event.result as { details?: unknown } | undefined)?.details;
+        const metadata = details && typeof details === 'object'
+          ? normalizeToolDetails(details as Record<string, unknown>)
+          : undefined;
         config.onMessage({
           type: 'teamAgentToolResult', teamId: config.teamId,
           agentId: config.agentId,
           toolUseId: event.toolCallId,
           result: resultText,
           isError: event.isError === true,
+          ...(metadata ? { metadata } : {}),
+        });
+        // Persisted alongside the live message: a reopened team derives each card's terminal status
+        // from this entry, and the cancelled marker travels in `metadata` or nowhere.
+        const block: TeamAgentContentBlock = {
+          type: 'tool_result',
+          tool_use_id: event.toolCallId,
+          content: resultText,
+          is_error: event.isError === true,
+          ...(metadata ? { metadata } : {}),
+        };
+        config.persistence.appendAgentEntry(config.teamId, config.agentId, {
+          type: 'tool_result', agentId: config.agentId, content: [block], timestamp: new Date().toISOString(),
         });
         break;
       }
@@ -276,9 +349,12 @@ export class AgentRunner {
       } else if (b.type === 'thinking') {
         blocks.push({ type: 'thinking', thinking: b.thinking ?? '' });
       } else if (b.type === 'toolCall' && b.id && b.name) {
-        cb.onToolUse(b.name);
-        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName: b.name, toolInput: (b.arguments ?? {}) as Record<string, unknown> });
-        blocks.push({ type: 'tool_use', id: b.id, name: b.name, input: b.arguments ?? {} });
+        const toolName = mapPiToolName(b.name);
+        // normalizeToolInput switches on the raw pi name, so it takes b.name and never the mapped one.
+        const toolInput = normalizeToolInput(b.name, (b.arguments ?? {}) as Record<string, unknown>);
+        cb.onToolUse(toolName);
+        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName, toolInput });
+        blocks.push({ type: 'tool_use', id: b.id, name: toolName, input: toolInput });
       }
     }
     if (blocks.length === 0) return;
@@ -314,14 +390,4 @@ export class AgentRunner {
       ...(extra?.progressSummary ? { progressSummary: extra.progressSummary } : {}),
     });
   }
-}
-
-/** Join the text blocks of a pi tool result into the single string the team card renders. */
-function joinResultText(result: unknown): string {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
-  if (!Array.isArray(content)) return typeof result === 'string' ? result : '';
-  return content
-    .filter((c) => c?.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text)
-    .join('');
 }

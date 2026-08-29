@@ -17,6 +17,7 @@ import {
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
+import { ownEntry } from '@/utils/ownEntry';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -69,15 +70,14 @@ const formattedDuration = computed(() => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 });
 
-const agentIcon = computed((): Component => {
-  const icons: Record<string, Component> = {
-    'code-reviewer': IconSearch,
-    Explore: IconCompass,
-    Plan: IconClipboard,
-    'general-purpose': IconRobot,
-  };
-  return icons[props.subagent.agentType] || IconClipboard;
-});
+const AGENT_TYPE_ICONS: Record<string, Component> = {
+  'code-reviewer': IconSearch,
+  Explore: IconCompass,
+  Plan: IconClipboard,
+  'general-purpose': IconRobot,
+};
+
+const agentIcon = computed((): Component => ownEntry(AGENT_TYPE_ICONS, props.subagent.agentType) ?? IconClipboard);
 
 const toolCount = computed(() => {
   if (props.subagent.result?.totalToolUseCount) {

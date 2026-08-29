@@ -34,7 +34,6 @@ export const TOOL_CRON_DELETE = "CronDelete";
 export const TOOL_CRON_LIST = "CronList";
 export const TOOL_ENTER_WORKTREE = "EnterWorktree";
 export const TOOL_EXIT_WORKTREE = "ExitWorktree";
-export const TOOL_MONITOR = "Monitor";
 export const TOOL_POWERSHELL = "PowerShell";
 export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 
@@ -51,9 +50,13 @@ export const SUBAGENT_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_GET_SUBAGEN
 /** Plan-mode entry/exit tools. Plan mode is a top-level panel concern owned by the primary session, so
  *  these are excluded from every subagent allowlist — a nested agent must never enter or exit plan mode. */
 export const PLAN_MODE_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE]);
-export const SHELL_TOOLS: Set<string> = new Set([TOOL_BASH, TOOL_POWERSHELL, TOOL_MONITOR]);
+// Read-only: this set decides whether a call needs shell approval, so an importer must not be able to
+// widen it with `.add()`.
+export const SHELL_TOOLS: ReadonlySet<string> = new Set([TOOL_BASH, TOOL_POWERSHELL]);
+// Streaming-capable shell tools. Kept separate from SHELL_TOOLS: a future non-streaming shell tool joins one without the other.
+export const LIVE_OUTPUT_TOOLS: ReadonlySet<string> = new Set([TOOL_BASH, TOOL_POWERSHELL]);
 
-export type ShellToolName = "Bash" | "PowerShell" | "Monitor";
+export type ShellToolName = "Bash" | "PowerShell";
 export function isShellTool(name: string): name is ShellToolName {
   return SHELL_TOOLS.has(name);
 }

@@ -1,4 +1,12 @@
 {
+  "liveOutput": {
+    "regionLabel": "Live command output",
+    "truncated": "Earlier output dropped, showing the latest lines",
+    "waiting": "Waiting for output..."
+  },
+  "overlay": {
+    "close": "Close"
+  },
   "common": {
     "cancel": "Cancel",
     "save": "Save",
@@ -63,19 +71,19 @@
       "transcribing": "Transcribing...",
       "noApiKey": "Set an API key in Settings to use voice input",
       "wake": {
-        "off": "Voice off — sidecar not running",
+        "off": "Voice off. Sidecar not running",
         "loading": "Loading voice models…",
         "error": "Voice error",
-        "unmute": "Muted — click to unmute",
-        "recording": "Recording — click to mute",
-        "listening": "Listening for wake word — click to mute",
+        "unmute": "Muted. Click to unmute",
+        "recording": "Recording. Click to mute",
+        "listening": "Listening for wake word. Click to mute",
         "cpu": "Running on CPU instead of GPU.",
         "cpuFallback": {
-          "noCuda": "CUDA not available — running on CPU.",
-          "lowVram": "Insufficient free VRAM — fell back to CPU.",
+          "noCuda": "CUDA not available. Running on CPU.",
+          "lowVram": "Insufficient free VRAM. Fell back to CPU.",
           "userPref": "CPU mode selected in settings.",
-          "cudaOomFallback": "CUDA ran out of memory — fell back to CPU.",
-          "ttsUnloaded": "Low VRAM — TTS unloaded."
+          "cudaOomFallback": "CUDA ran out of memory. Fell back to CPU.",
+          "ttsUnloaded": "Low VRAM. TTS unloaded."
         }
       }
     }
@@ -100,19 +108,19 @@
     "whatThisEnables": "What this enables",
     "privacyAlwaysOn": "Mic is always-on while wake-word mode is active.",
     "privacyLocal": "All processing happens on this machine. No audio or transcripts ever leave.",
-    "privacyWakePhrase": "The wake phrase is dropped before transcription — only what you say AFTER 'Hey Jarvis' is sent to the assistant.",
+    "privacyWakePhrase": "The wake phrase is dropped before transcription. Only what you say AFTER 'Hey Jarvis' is sent to the assistant.",
     "privacyAutoDisable": "Auto-disabled on system sleep, screen lock, and panel close.",
     "engines": "On-device engines",
     "roleWake": "Wake word",
     "roleVad": "VAD",
     "roleAsr": "ASR",
     "roleTts": "TTS",
-    "ttsLicense": "MIT — optional",
+    "ttsLicense": "MIT, optional",
     "sizeRuntime": "First-time install: ~11 GB on Windows + CUDA / ~10 GB on Linux + CUDA / ~6 GB CPU",
     "sizeModels": "~4.5 GB of model files will download",
     "sizeFirstTime": "Initial setup will configure local voice components",
     "cancel": "Cancel",
-    "accept": "I understand — start install"
+    "accept": "I understand, start install"
   },
   "voiceModelUpgrade": {
     "title": "Voice models update available",
@@ -200,13 +208,13 @@
     "autoCompactDescription": "When enabled, the conversation is summarized once usage crosses this percentage of the model's context window.",
     "extendedThinking": "Extended Thinking",
     "reasoningEffort": "Reasoning Effort",
-    "effortNone": "None — no reasoning",
-    "effortLow": "Low — minimal thinking",
+    "effortNone": "None, no reasoning",
+    "effortLow": "Low, minimal thinking",
     "effortMedium": "Medium",
     "effortHigh": "High (default)",
-    "effortXhigh": "Extra High — coding & agentic",
-    "effortMax": "Max — deepest analysis",
-    "effortUltracode": "Ultracode — maximum effort",
+    "effortXhigh": "Extra High, coding & agentic",
+    "effortMax": "Max, deepest analysis",
+    "effortUltracode": "Ultracode, maximum effort",
     "disableThinking": "Disable thinking",
     "voice": {
       "title": "Voice Input",
@@ -537,7 +545,7 @@
   "tools": {
     "title": "Tools",
     "description": "Enable or disable agent tools and tool groups.",
-    "projectAgentsUntrusted": "Project agents disabled — workspace untrusted.",
+    "projectAgentsUntrusted": "Project agents disabled. Workspace untrusted.",
     "trustWorkspace": "Trust",
     "group": {
       "memory": "Memory",
@@ -712,8 +720,20 @@
     "respondToDialog": "Please respond to the dialog",
     "notExecuted": "Not executed",
     "changedCourse": "Damocles changed course before running this tool",
+    "cancelled": "Stopped",
+    "cancelledDescription": "You stopped this command before it finished",
+    "outcomeUnrecorded": "Outcome not recorded",
+    "outcomeUnrecordedDescription": "This tool ran, but nothing about how it ended was saved with the transcript",
     "structuredOutput": "Structured Output",
-    "structuredOutputEmpty": "No structured fields provided"
+    "structuredOutputEmpty": "No structured fields provided",
+    "liveOutput": "Live output",
+    "stop": "Stop",
+    "stopWithNote": "Stop, then add an optional note",
+    "expandDetails": "Expand {name} details",
+    "stopping": "Stopping...",
+    "cancelNotePlaceholder": "Why stop? (optional)",
+    "cancelNoteSubmit": "Stop",
+    "cancelNoteBack": "Back"
   },
   "questionTool": {
     "askingQuestion": "Asking a question",
@@ -734,7 +754,7 @@
     "cancelled": "Cancelled by user",
     "failed": "Form input failed",
     "movedOn": "Moved on",
-    "skipped": "optional — left blank"
+    "skipped": "optional, left blank"
   },
   "skillTool": {
     "executed": "Skill \"{name}\" executed",
@@ -782,7 +802,7 @@
   "steerCommand": {
     "youSteered": "You steered {agent}",
     "usage": "Usage: /steer <agent> <message>",
-    "finished": "That subagent already finished — nothing to steer.",
+    "finished": "That subagent already finished. Nothing to steer.",
     "failed": "Steering the subagent failed.",
     "notFound": "No running subagent matches that id.",
     "noAgents": "No running subagents",
@@ -863,7 +883,7 @@
     "titleGeneric": "Prompt cache miss",
     "detail": "~{tokens} cached tokens re-billed (≈{cost})",
     "detailTokensOnly": "~{tokens} cached tokens re-billed",
-    "idleHint": "after {minutes} min idle — the prompt cache had expired"
+    "idleHint": "after {minutes} min idle, the prompt cache had expired"
   },
   "refusal": {
     "title": "Response Declined",
@@ -900,6 +920,9 @@
     "statusRunning": "Running",
     "statusCompleted": "Completed",
     "statusFailed": "Failed",
+    "statusCancelled": "Stopped",
+    "statusUnrecorded": "Outcome not recorded",
+    "outcomeUnrecorded": "This call finished, but its outcome was not saved with the transcript",
     "filePath": "File",
     "pattern": "Pattern",
     "searchPath": "Path",
@@ -919,8 +942,9 @@
       "allLines": "All lines",
       "ofTotal": "{total} total"
     },
-    "largeOutput": "Large output ({lines} lines) — syntax highlighting disabled",
+    "largeOutput": "Large output ({lines} lines), syntax highlighting disabled",
     "maxResults": "Max results",
+    "liveOutput": "Live output",
     "toolSearchInfo": {
       "matchCount": "{count} of {total} tools loaded",
       "pendingServers": "Pending MCP servers"
@@ -991,16 +1015,6 @@
     "taskFailed": "Background task failed",
     "taskStopped": "Background task stopped",
     "background": "Background"
-  },
-  "monitor": {
-    "starting": "Starting...",
-    "monitoring": "Monitoring",
-    "completed": "Completed",
-    "failed": "Failed",
-    "stopped": "Stopped",
-    "persistent": "Persistent",
-    "events": "events",
-    "timeout": "Timeout"
   },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",
@@ -1094,7 +1108,7 @@
     "title": "Graph Validation",
     "revalidate": "Re-validate",
     "running": "Running validation checks…",
-    "healthy": "All checks passed — graph is healthy",
+    "healthy": "All checks passed, graph is healthy",
     "checkedIn": "Checked in {ms}ms",
     "nodes": "Nodes",
     "edges": "Edges",
@@ -1106,12 +1120,12 @@
     "reindexing": "Reindexing…"
   },
   "authBanner": {
-    "independenceNote": "Damocles has its own sign-in — independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
+    "independenceNote": "Damocles has its own sign-in, independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
   },
   "openai": {
     "sectionTitle": "OpenAI Authentication",
     "authRequiredToast": "Sign in to OpenAI to use this model.",
-    "codexSessionExpired": "Session expired — please sign in again.",
+    "codexSessionExpired": "Session expired. Please sign in again.",
     "apiKey": {
       "label": "API Key",
       "configured": "Configured",
@@ -1208,7 +1222,7 @@
     "modes": {
       "apikey": "API key",
       "allowance": "Subscription · allowance",
-      "allowanceHint": "(Claude Code — included quota)",
+      "allowanceHint": "(Claude Code, included quota)",
       "extra": "Subscription · extra usage",
       "extraHint": "(metered)"
     },
@@ -1223,7 +1237,7 @@
     "searchPlaceholder": "Search prompts or tools…",
     "status": "{filtered} of {total} prompts",
     "imagePlaceholder": "[image]",
-    "emptySession": "No prompts yet — send your first message.",
+    "emptySession": "No prompts yet. Send your first message.",
     "noMatches": "No matches for \"{query}\"",
     "chipTooltip": "Open prompt navigator ({key})",
     "notFound": "Prompt not in current view",
@@ -1237,7 +1251,7 @@
       "copy": "Copy prompt",
       "copied": "Copied!",
       "editAndResend": "Use as draft",
-      "editTooltip": "Loads the prompt into the input for editing — does not auto-send",
+      "editTooltip": "Loads the prompt into the input for editing, does not auto-send",
       "rewind": "Rewind to here",
       "rewindDisabledTooltip": "No checkpoint for this prompt"
     }

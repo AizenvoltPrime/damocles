@@ -31,7 +31,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore, monitorStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -46,10 +46,10 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       subscriptionUsageStore.$reset();
       elicitationStore.$reset();
       btwStore.$reset();
-      monitorStore.$reset();
       useBackgroundTaskStore().$reset();
       useTeamStore().$reset();
       useConsolidationStore().$reset();
+      uiStore.collapseTool();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
 
@@ -70,7 +70,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     conversationCleared: (_msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore, monitorStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -85,10 +85,10 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       subscriptionUsageStore.$reset();
       elicitationStore.$reset();
       btwStore.$reset();
-      monitorStore.$reset();
       useBackgroundTaskStore().$reset();
       useTeamStore().$reset();
       useConsolidationStore().$reset();
+      uiStore.collapseTool();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
       sessionStore.setResumedSession(null);

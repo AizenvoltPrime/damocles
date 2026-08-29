@@ -58,6 +58,8 @@ export interface ChatSession {
   queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false;
   interrupt(): Promise<void>;
   cancel(): void;
+  /** Stops one running shell call; the turn continues, unlike interrupt/cancel which tear it down. */
+  cancelToolCall(toolUseId: string, note?: string): boolean;
   cancelAutoCompact(): Promise<void>;
   /** Manually compact the conversation, optionally focusing the summary with `instructions` (US-030). */
   compact(instructions?: string): Promise<void>;

@@ -283,7 +283,7 @@ export async function runPermissionGate(
       const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
       const shell = damoclesName === TOOL_BASH ? 'bash'
         : damoclesName === TOOL_POWERSHELL ? 'powershell'
-          : null; // Monitor / future shells: never read-only
+          : null; // A shell tool with no classifier must stay blocked; never default it to allow.
       const verdict = shell
         ? classifyReadOnlyShellCommand(shell, command)
         : { readOnly: false as const, reason: 'this shell tool is not permitted in a read-only context' };

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL } from '@shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
 import FormToolCard from './FormToolCard.vue';
@@ -11,7 +11,6 @@ import SkillToolCard from './SkillToolCard.vue';
 import SubagentCard from './SubagentCard.vue';
 import ExploreCard from './ExploreCard.vue';
 import TeamCard from './TeamCard.vue';
-import MonitorCard from './MonitorCard.vue';
 import SteerSubagentToolCard from './SteerSubagentToolCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useExploreStore } from '@/stores/useExploreStore';
@@ -72,11 +71,11 @@ const agentSubagent = computed(() =>
   <ExitPlanModeToolCard v-else-if="toolName === TOOL_EXIT_PLAN_MODE" :tool-call="toolCall" />
   <EnterPlanModeToolCard v-else-if="toolName === TOOL_ENTER_PLAN_MODE" :tool-call="toolCall" />
   <SkillToolCard v-else-if="toolName === TOOL_SKILL" :tool-call="toolCall" />
-  <MonitorCard v-else-if="toolName === TOOL_MONITOR" :tool-call="toolCall" @expand="emit('expandTool', $event)" />
   <SteerSubagentToolCard v-else-if="toolName === TOOL_STEER_SUBAGENT" :tool-call="toolCall" />
   <ToolCallCard
     v-else-if="toolName !== TEAM_CREATE_TOOL"
     :tool-call="toolCall"
+    source="session"
     @expand="emit('expandTool', $event)"
     @expand-diff="emit('expandDiff', $event)"
   />

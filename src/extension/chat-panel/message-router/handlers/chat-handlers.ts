@@ -280,6 +280,19 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       await ctx.session.interrupt();
     },
 
+    cancelToolCall: (msg, ctx) => {
+      if (msg.type !== "cancelToolCall") return;
+      if (ctx.session.cancelToolCall(msg.toolUseId, msg.note)) return;
+      // A false return is the ordinary race of a click landing after the call finished, never an error.
+      // It still has to be reported, because the webview marked the card "Stopping..." on the way in and
+      // nothing else will ever clear that flag.
+      postMessage(ctx.host, {
+        type: "toolCancelRejected",
+        toolUseId: msg.toolUseId,
+        ...(msg.requestId !== undefined ? { requestId: msg.requestId } : {}),
+      });
+    },
+
     cancelAutoCompact: async (_msg, ctx) => {
       await ctx.session.cancelAutoCompact();
     },

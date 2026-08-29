@@ -158,13 +158,6 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('blocks Monitor in plan mode (never read-only) without prompting', async () => {
-    const { panel, canUseTool } = makePanel({ plan: true });
-    const result = await runPermissionGate(ev('Monitor', 'c1', { command: 'anything' }), panel, undefined);
-    expect(result?.block).toBe(true);
-    expect(canUseTool).not.toHaveBeenCalled();
-  });
-
   it('routes a shell command through canUseTool in non-plan mode (normal mode unchanged)', async () => {
     const { panel, canUseTool } = makePanel({ canUse: async () => ({ behavior: 'allow', updatedInput: {} }) });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);

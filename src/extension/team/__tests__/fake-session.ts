@@ -12,8 +12,16 @@ export interface FakeSessionOptions {
 
 type Listener = (event: unknown) => void;
 
+/** The prompt options this fake records, so a test can pin the ones that carry a guarantee. */
+export interface FakePromptOptions {
+  streamingBehavior?: 'steer' | 'followUp';
+  expandPromptTemplates?: boolean;
+}
+
 export class FakeSession {
   readonly prompts: string[] = [];
+  /** Options for each prompt, index-aligned with `prompts`. */
+  readonly promptOptions: Array<FakePromptOptions | undefined> = [];
   isStreaming = false;
   get isIdle(): boolean { return !this.isStreaming; }
   aborted = false;
@@ -49,8 +57,9 @@ export class FakeSession {
     for (const l of this.listeners) l(event);
   }
 
-  async prompt(text: string, options?: { streamingBehavior?: 'steer' | 'followUp' }): Promise<void> {
+  async prompt(text: string, options?: FakePromptOptions): Promise<void> {
     this.prompts.push(text);
+    this.promptOptions.push(options);
     const waiter = this.promptWaiters.get(this.prompts.length);
     if (waiter) {
       this.promptWaiters.delete(this.prompts.length);

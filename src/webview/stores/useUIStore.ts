@@ -4,6 +4,8 @@ import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo } from '@sha
 
 type RewindSource = 'picker' | 'bubble' | null;
 
+export type ExpandedToolSource = 'session' | 'subagent' | 'team';
+
 export const useUIStore = defineStore('ui', () => {
   const isProcessing = ref(false);
   const isAtBottom = ref(true);
@@ -21,6 +23,9 @@ export const useUIStore = defineStore('ui', () => {
   const rewindMetadataLoading = ref(false);
   const tasksPanelCollapsed = ref(false);
   const showMemoryPanel = ref(false);
+  // The source tags which store owns the call; the id alone is not unique across stores.
+  const expandedToolId = ref<string | null>(null);
+  const expandedToolSource = ref<ExpandedToolSource | null>(null);
   const ideContext = ref<IdeContextDisplayInfo | null>(null);
   const ideContextEnabled = ref(true);
   // Workspace default (damocles.ideContext.enabled); seeds new conversations.
@@ -168,6 +173,16 @@ export const useUIStore = defineStore('ui', () => {
     showMemoryPanel.value = false;
   }
 
+  function expandTool(toolId: string, source: ExpandedToolSource) {
+    expandedToolId.value = toolId;
+    expandedToolSource.value = source;
+  }
+
+  function collapseTool() {
+    expandedToolId.value = null;
+    expandedToolSource.value = null;
+  }
+
   function setIdeContext(context: IdeContextDisplayInfo | null) {
     ideContext.value = context;
   }
@@ -219,6 +234,8 @@ export const useUIStore = defineStore('ui', () => {
     showMcpPanel.value = false;
     showToolsPanel.value = false;
     showMemoryPanel.value = false;
+    expandedToolId.value = null;
+    expandedToolSource.value = null;
     currentRunningTool.value = null;
     showRewindTypeModal.value = false;
     showRewindBrowser.value = false;
@@ -274,6 +291,10 @@ export const useUIStore = defineStore('ui', () => {
     showMemoryPanel,
     openMemoryPanel,
     closeMemoryPanel,
+    expandedToolId,
+    expandedToolSource,
+    expandTool,
+    collapseTool,
     tasksPanelCollapsed,
     setTasksPanelCollapsed,
     ideContext,

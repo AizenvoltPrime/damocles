@@ -61,32 +61,46 @@ jobs:
             runner: windows-latest
             rgPkg: ripgrep-win32-x64
             rgBin: rg.exe
+            nativeAsset: node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node
+            nativeReason: koffi job objects, without which a stopped command's background jobs survive
           - target: win32-arm64
             runner: windows-11-arm
             rgPkg: ripgrep-win32-arm64
             rgBin: rg.exe
+            nativeAsset: node_modules/@koromix/koffi-win32-arm64/win32_arm64/koffi.node
+            nativeReason: koffi job objects, without which a stopped command's background jobs survive
           - target: darwin-arm64
             runner: macos-latest
             rgPkg: ripgrep-darwin-arm64
             rgBin: rg
+            nativeAsset: dist/sentinel.js
+            nativeReason: the shell sentinel, without which a closed panel leaves process groups running
           - target: linux-x64
             runner: ubuntu-latest
             rgPkg: ripgrep-linux-x64
             rgBin: rg
+            nativeAsset: dist/sentinel.js
+            nativeReason: the shell sentinel, without which a closed panel leaves process groups running
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             rgPkg: ripgrep-linux-arm64
             rgBin: rg
+            nativeAsset: dist/sentinel.js
+            nativeReason: the shell sentinel, without which a closed panel leaves process groups running
           - target: alpine-x64
             runner: ubuntu-latest
             alpineContainer: true
             rgPkg: ripgrep-linux-x64
             rgBin: rg
+            nativeAsset: dist/sentinel.js
+            nativeReason: the shell sentinel, without which a closed panel leaves process groups running
           - target: alpine-arm64
             runner: ubuntu-24.04-arm
             alpineContainer: true
             rgPkg: ripgrep-linux-arm64
             rgBin: rg
+            nativeAsset: dist/sentinel.js
+            nativeReason: the shell sentinel, without which a closed panel leaves process groups running
     runs-on: ${{ matrix.runner }}
     env:
       VSIX_NAME: damocles-${{ matrix.target }}-${{ github.ref_name }}.vsix
@@ -144,6 +158,20 @@ jobs:
           echo "VSIX size: $size bytes"
           if [ "$size" -lt 30000000 ]; then
             echo "ERROR: VSIX is suspiciously small ($size bytes — bundled deps/assets likely missing)" >&2
+            exit 1
+          fi
+
+      - name: Verify VSIX bundles this target's shell-cleanup asset
+        shell: bash
+        run: |
+          listing=$(mktemp)
+          unzip -l "$VSIX_NAME" > "$listing"
+          expected="extension/${{ matrix.nativeAsset }}"
+          echo "Checking for: $expected"
+          if ! grep -qF "$expected" "$listing"; then
+            echo "ERROR: $VSIX_NAME is missing $expected (${{ matrix.nativeReason }})" >&2
+            echo "--- VSIX contents ---"
+            cat "$listing"
             exit 1
           fi
 

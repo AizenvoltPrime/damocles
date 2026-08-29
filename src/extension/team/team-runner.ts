@@ -92,6 +92,9 @@ export class TeamRunner {
   private completionResolve: ((result: string) => void) | null = null;
   private completionResolved = false;
   private cachedSessionDir: string | null = null;
+  // Each running agent's note sink, keyed by agentId, registered by its runner and dropped when that
+  // run tears down. A missing entry is the honest answer that no live run can take a user note.
+  private noteSinks = new Map<string, (text: string) => boolean>();
   private cancelAttempts = new Map<string, number>();
   private cancellationTimestamps = new Map<string, number>();
   private specialistReviewRounds = new Map<string, number>();
@@ -286,6 +289,7 @@ export class TeamRunner {
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
+      bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
@@ -725,6 +729,7 @@ export class TeamRunner {
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
+      bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
@@ -1640,6 +1645,17 @@ export class TeamRunner {
     };
   }
 
+  /**
+   * Registers one run's note sink. `redispatchSpecialist` reuses the agentId, so the teardown drops the
+   * entry only while it is still this run's, never the next attempt's.
+   */
+  private bindNoteDelivery(agentId: string, deliver: (text: string) => boolean): () => void {
+    this.noteSinks.set(agentId, deliver);
+    return () => {
+      if (this.noteSinks.get(agentId) === deliver) this.noteSinks.delete(agentId);
+    };
+  }
+
   /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
   private buildLeadContext(agentId: string, browserScopeId: string, agentName: string): AgentMcpContext {
     return {
@@ -1650,6 +1666,7 @@ export class TeamRunner {
       role: 'lead',
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
+      deliverUserNote: (text) => this.noteSinks.get(agentId)?.(text) ?? false,
       startSpecialist: (name, task, profileId, kind) => this.startSpecialist(name, task, profileId, kind),
       redispatchSpecialist: (name, task, profileId, kind) => this.redispatchSpecialist(name, task, profileId, kind),
       checkBriefReadGate: () => checkBriefReadGate(this.scratchpad, agentName),
@@ -1699,6 +1716,7 @@ export class TeamRunner {
       role: 'specialist',
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
+      deliverUserNote: (text) => this.noteSinks.get(agentId)?.(text) ?? false,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
       redispatchSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
       checkBriefReadGate: () => { throw new Error('Only the lead agent spawns specialists'); },

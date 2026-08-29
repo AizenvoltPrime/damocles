@@ -7,6 +7,7 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { AgentMcpContext } from '../../team/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
+import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../team/review-gate';
 import { execSafe } from '../checkpoints/exec';
 
@@ -36,30 +37,37 @@ interface ToolSpec {
   description: string;
 }
 
+/** Labels come from the shared map, which the webview cards also read, so the two cannot drift apart. */
+function toSpec(entry: { name: string; description: string }): ToolSpec {
+  const label = TEAM_TOOL_LABELS[entry.name];
+  if (label === undefined) throw new Error(`Team tool '${entry.name}' has no entry in TEAM_TOOL_LABELS`);
+  return { name: entry.name, label, description: entry.description };
+}
+
 const TEAM_MAIN_SPECS: readonly ToolSpec[] = [
-  { name: 'create_team', label: 'Create team', description: 'Spin up a collaborative team of specialist agents.' },
-  { name: 'get_team_status', label: 'Get team status', description: 'Get the status of a running team.' },
-  { name: 'cancel_team', label: 'Cancel team', description: 'Cancel a running team, aborting all agents.' },
-] as const;
+  { name: 'create_team', description: 'Spin up a collaborative team of specialist agents.' },
+  { name: 'get_team_status', description: 'Get the status of a running team.' },
+  { name: 'cancel_team', description: 'Cancel a running team, aborting all agents.' },
+].map(toSpec);
 
 export const TEAM_AGENT_SPECS: readonly ToolSpec[] = [
-  { name: 'team_send_message', label: 'Send message', description: 'Send a direct message to a teammate.' },
-  { name: 'team_read_messages', label: 'Read messages', description: 'Read messages sent to you from teammates.' },
-  { name: 'team_read_scratchpad', label: 'Read scratchpad', description: 'Read the shared scratchpad.' },
-  { name: 'team_write_scratchpad', label: 'Write scratchpad', description: 'Write to the shared scratchpad.' },
-  { name: 'team_get_status', label: 'Team status', description: 'Get the status of all team members.' },
-  { name: 'team_spawn_specialist', label: 'Spawn specialist', description: 'Lead-only: spawn a specialist with a task.' },
-  { name: 'team_redispatch_specialist', label: 'Redispatch specialist', description: 'Lead-only: re-run a failed or cancelled specialist as a fresh attempt.' },
-  { name: 'team_cancel_specialist', label: 'Cancel specialist', description: 'Lead-only: cancel a running specialist.' },
-  { name: 'team_request_revision', label: 'Request revision', description: 'Lead-only: send revision instructions.' },
-  { name: 'team_approve_specialist', label: 'Approve specialist', description: 'Lead-only: approve a specialist\'s work.' },
-  { name: 'team_standby', label: 'Standby', description: 'Pause until peer content arrives.' },
-  { name: 'team_report_complete', label: 'Report complete', description: 'Signal work is done, enter awaiting-review.' },
-  { name: 'team_flag_brief_conflict', label: 'Flag brief conflict', description: 'Specialist-only: flag a hard conflict with the mission-brief.' },
-  { name: 'team_resolve_brief_conflict', label: 'Resolve brief conflict', description: 'Lead-only: reconcile or dismiss a brief-conflict flag.' },
-  { name: 'team_record_verification', label: 'Record verification', description: 'Record a verification run (full-suite or scoped) against the current tree fingerprint.' },
-  { name: 'team_synthesize_result', label: 'Synthesize result', description: 'Lead-only: submit the final team result.' },
-] as const;
+  { name: 'team_send_message', description: 'Send a direct message to a teammate.' },
+  { name: 'team_read_messages', description: 'Read messages sent to you from teammates.' },
+  { name: 'team_read_scratchpad', description: 'Read the shared scratchpad.' },
+  { name: 'team_write_scratchpad', description: 'Write to the shared scratchpad.' },
+  { name: 'team_get_status', description: 'Get the status of all team members.' },
+  { name: 'team_spawn_specialist', description: 'Lead-only: spawn a specialist with a task.' },
+  { name: 'team_redispatch_specialist', description: 'Lead-only: re-run a failed or cancelled specialist as a fresh attempt.' },
+  { name: 'team_cancel_specialist', description: 'Lead-only: cancel a running specialist.' },
+  { name: 'team_request_revision', description: 'Lead-only: send revision instructions.' },
+  { name: 'team_approve_specialist', description: 'Lead-only: approve a specialist\'s work.' },
+  { name: 'team_standby', description: 'Pause until peer content arrives.' },
+  { name: 'team_report_complete', description: 'Signal work is done, enter awaiting-review.' },
+  { name: 'team_flag_brief_conflict', description: 'Specialist-only: flag a hard conflict with the mission-brief.' },
+  { name: 'team_resolve_brief_conflict', description: 'Lead-only: reconcile or dismiss a brief-conflict flag.' },
+  { name: 'team_record_verification', description: 'Record a verification run (full-suite or scoped) against the current tree fingerprint.' },
+  { name: 'team_synthesize_result', description: 'Lead-only: submit the final team result.' },
+].map(toSpec);
 
 export const TEAM_MAIN_PI_TOOL_NAMES: readonly string[] = TEAM_MAIN_SPECS.map((s) => s.name);
 export const TEAM_AGENT_PI_TOOL_NAMES: readonly string[] = TEAM_AGENT_SPECS.map((s) => s.name);

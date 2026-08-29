@@ -54,7 +54,11 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     teamAgentToolResult: (msg) => {
-      useTeamStore().handleAgentToolResult(msg.agentId, msg.toolUseId, msg.result, msg.isError);
+      useTeamStore().handleAgentToolResult(msg.agentId, msg.toolUseId, msg.result, msg.isError, msg.metadata);
+      return { skipScroll: true };
+    },
+    teamAgentToolProgress: (msg) => {
+      useTeamStore().handleAgentToolProgress(msg.agentId, msg.toolUseId, msg.output, msg.outputTruncated);
       return { skipScroll: true };
     },
     teamAgentTurnComplete: () => {

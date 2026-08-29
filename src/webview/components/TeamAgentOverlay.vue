@@ -2,14 +2,15 @@
 import { h, ref, computed, onMounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown, IconClock, IconEye } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
+import ToolCallCard from './ToolCallCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { useVSCode } from '@/composables/useVSCode';
 import { getAgentColor, formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
@@ -17,6 +18,7 @@ import { useElapsedTimer } from '@/composables/useElapsedTimer';
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 const teamStore = useTeamStore();
+const uiStore = useUIStore();
 const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen } = storeToRefs(teamStore);
 
 const agentIndex = computed(() => {
@@ -200,20 +202,14 @@ const AgentIcon = {
               <MarkdownRenderer :content="msg.content" />
             </div>
 
-            <div v-if="msg.toolCalls" class="space-y-1">
-              <div
+            <div v-if="msg.toolCalls" class="space-y-2">
+              <ToolCallCard
                 v-for="tool in msg.toolCalls"
                 :key="tool.id"
-                class="flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-foreground/5 border border-border/30"
-              >
-                <LoadingSpinner v-if="tool.status === 'running'" :size="10" />
-                <IconCheck v-else-if="tool.status === 'completed'" :size="10" class="text-success" />
-                <IconXCircle v-else-if="tool.status === 'error'" :size="10" class="text-error" />
-                <span class="font-mono text-foreground/70">{{ tool.name }}</span>
-                <Badge v-if="tool.status !== 'running'" variant="secondary" class="text-[10px] px-1 py-0 ml-auto">
-                  {{ tool.status }}
-                </Badge>
-              </div>
+                :tool-call="tool"
+                source="team"
+                @expand="(id: string) => uiStore.expandTool(id, 'team')"
+              />
             </div>
           </div>
         </template>

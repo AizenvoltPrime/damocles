@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { PermissionHandler } from '../../../permission-handler';
 import { buildCustomTools, moduleToolNames } from '../index';
+import { ShellCancelStore } from '../shell-cancel-registry';
 import { MEMORY_PI_TOOL_NAMES } from '../memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../compass-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
@@ -13,13 +14,19 @@ function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn() })),
+    // The bash override spreads its metadata from a delegate built at construction, so this stub must
+    // answer with a whole definition, not just an `execute`.
+    createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
 
 const permissionHandler = { getPermissionMode: () => 'default' } as unknown as PermissionHandler;
 
-function buildNames(opts: Parameters<typeof buildCustomTools>[0]): string[] {
-  return buildCustomTools(opts).map((t) => t.name);
+type ToolNameOpts = Omit<Parameters<typeof buildCustomTools>[0], 'getShellOptions' | 'shellCancel' | 'deliverUserNote' | 'shellJob'>;
+
+/** The shell deps are required of every caller but say nothing here: this file asserts name sets. */
+function buildNames(opts: ToolNameOpts): string[] {
+  return buildCustomTools({ ...opts, getShellOptions: () => ({}), shellCancel: new ShellCancelStore(), deliverUserNote: () => undefined, shellJob: undefined }).map((t) => t.name);
 }
 
 describe('buildCustomTools — build gate is service-presence, not enablement', () => {

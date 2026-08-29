@@ -14,7 +14,6 @@ import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
 import ToolsStatusIndicator from "./components/ToolsStatusIndicator.vue";
 import ToolsStatusPanel from "./components/ToolsStatusPanel.vue";
-import SubagentIndicator from "./components/SubagentIndicator.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
@@ -68,6 +67,8 @@ import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
 import { useAutoScroll } from "./composables/useAutoScroll";
+import { useExpandedTool } from "./composables/useExpandedTool";
+import { hasOpenOverlay } from "./composables/useOverlayEscape";
 import {
   useUIStore,
   useSettingsStore,
@@ -191,7 +192,8 @@ const {
 } = storeToRefs(permissionStore);
 
 const streamingStore = useStreamingStore();
-const { messages, streamingMessageId, expandedTool } = storeToRefs(streamingStore);
+const { messages, streamingMessageId } = storeToRefs(streamingStore);
+const expandedTool = useExpandedTool();
 
 const subagentStore = useSubagentStore();
 const { subagents, expandedSubagent } = storeToRefs(subagentStore);
@@ -973,6 +975,8 @@ onKeyStroke(
   "Escape",
   (e) => {
     if (isNavigatorOpen.value) return;
+    // Same document node as the overlay listeners, where their stopPropagation cannot reach this one.
+    if (hasOpenOverlay()) return;
     if (pendingPlanApproval.value && !isPlanOverlayVisible.value) {
       e.stopPropagation();
       e.preventDefault();
@@ -1190,15 +1194,19 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @dismiss="uiStore.dismissAuthFailure"
     />
 
-    <!-- Subagents Indicator (running and recently completed) -->
-    <SubagentIndicator :subagents="subagents" @expand="subagentStore.expandSubagent" />
-
     <!-- Message area wrapper (relative positioning for scroll-to-bottom button) -->
     <div class="relative flex-1 min-h-0">
       <!-- Toast notifications (positioned in top-right of chat area) -->
       <Toaster position="top-right" :duration="4000" />
 
-      <div ref="messageContainerRef" class="h-full overflow-y-auto message-container" @scroll="handleMessageScroll">
+      <!-- Marked as the overlay return-focus region: a transcript row can be recycled away while an overlay opened from it is up. -->
+      <div
+        ref="messageContainerRef"
+        data-overlay-return-focus
+        tabindex="-1"
+        class="h-full overflow-y-auto message-container outline-none"
+        @scroll="handleMessageScroll"
+      >
         <VirtualizedMessageList
           ref="messageListRef"
           :messages="messages"
@@ -1210,7 +1218,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           @rewind="handleBubbleRewind"
           @rewind-to-compaction="handleCompactionRewind"
           @expand-subagent="subagentStore.expandSubagent"
-          @expand-tool="streamingStore.expandTool"
+          @expand-tool="(toolId: string) => uiStore.expandTool(toolId, 'session')"
           @expand-diff="diffStore.expandDiff"
           @view-context="handleViewContext"
         />
@@ -1454,8 +1462,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     />
 
     <!-- Tool Overlay (full-screen) — MCP tools and built-in tools use dedicated overlays -->
-    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" @close="streamingStore.collapseTool" />
-    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" @close="streamingStore.collapseTool" />
+    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" @close="uiStore.collapseTool" />
+    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" @close="uiStore.collapseTool" />
 
     <!-- Diff Overlay (full-screen) -->
     <DiffOverlay v-if="expandedDiff" :diff="expandedDiff" @close="diffStore.collapseDiff" />

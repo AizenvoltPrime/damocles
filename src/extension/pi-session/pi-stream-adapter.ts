@@ -4,9 +4,11 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ResultMessage } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
-import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
+import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
+import { joinResultText } from './tool-result-text';
+import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 
 export interface PiStreamAdapterDeps {
@@ -31,13 +33,24 @@ export interface PiStreamAdapterDeps {
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
   onBudgetStop: () => void;
   /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer.
-   *  Returns true when the delivery collapsed a real queued batch (so its mid-stream marker is owed),
-   *  false for a plain follow-up or an empty buffer. */
-  onUserMessageDelivered: () => boolean;
+   *  The delivered text is passed because the host injects user messages of its own and must be able to
+   *  tell one of those apart from a queued batch. Returns true when the delivery collapsed a real queued
+   *  batch (so its mid-stream marker is owed), false for a plain follow-up or an empty buffer. */
+  onUserMessageDelivered: (deliveredText: string) => boolean;
   /** A delivered queued batch's pi user entry id is now committed to the tree (resolved at the next
    *  assistant message_start). Persist the mid-stream marker keyed to it. */
   onMidStreamBatchCommitted: (userEntryId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
+}
+
+/** The text of a delivered user message, joined the same way the host builds a queued batch's text. */
+function userMessageText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return (content as Array<{ type?: string; text?: string }>)
+    .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+    .map((c) => c.text)
+    .join('');
 }
 
 interface ToolRecord {
@@ -93,16 +106,6 @@ function latestCompactionEntryId(session: AgentSession): string | null {
   return null;
 }
 
-/** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
-function joinResultText(result: unknown): string {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((c) => c?.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text)
-    .join('');
-}
-
 /**
  * Translates a pi `AgentSession` event stream into the exact existing `ExtensionToWebviewMessage`
  * sequence the webview already renders (the SDK path's producer is swapped, not the contract). One
@@ -146,6 +149,8 @@ export class PiStreamAdapter {
    *  turn — the host uses this to release the spinner itself (see `endTurnWithoutAgentRun`). */
   private _agentRunObserved = false;
   private readonly _tools = new Map<string, ToolRecord>();
+  /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
+  private readonly _outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
 
   private readonly deps: PiStreamAdapterDeps;
 
@@ -210,6 +215,12 @@ export class PiStreamAdapter {
     return session.subscribe((event) => this.handle(session, event));
   }
 
+  /** Release the adapter's timers. Called only when the owning PiSession dies, never on a session
+   *  rebind: one adapter serves the panel across session replacements. */
+  dispose(): void {
+    this._outputCoalescer.dispose();
+  }
+
   /**
    * Mark the start of a user turn: reset streaming state, arm processing/running, emit the
    * once-per-session init payloads, and correlate the user message.
@@ -230,6 +241,11 @@ export class PiStreamAdapter {
     this._thinkingStart = null;
     this._thinkingDuration = null;
     this._tools.clear();
+    // A tool that reached neither tool_execution_end nor markAborted (a session replaced under it, or a
+    // turn settled without an agent run) can still hold a frame; emitting it now would repaint a card the
+    // webview has already terminalized. Clearing after `_tools` also keeps a held thunk from reading an
+    // elapsed time out of the map this turn just emptied.
+    this._outputCoalescer.clear();
     const sid = this.deps.sessionId();
     this._currentAssistantId = `${sid}:a:${this._turnSeq}:0`;
 
@@ -311,6 +327,8 @@ export class PiStreamAdapter {
   markAborted(): void {
     this._aborted = true;
     for (const [toolCallId, rec] of this._tools) {
+      // An aborted tool may never emit tool_execution_end, so this is the only cancel on that path.
+      this._outputCoalescer.cancel(toolCallId);
       this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(rec.name), parentToolUseId: null });
     }
     this._tools.clear();
@@ -382,10 +400,10 @@ export class PiStreamAdapter {
           this.maybeEmitCacheMissNotice(session, event.message);
           this.enforceBudgetInFlight(session);
         } else if (event.message.role === 'user' && !this._aborted) {
-          // A user message delivered mid-run is a queued (steer) injection — the initial prompt lives
-          // in the run's initial context and never emits this. Collapse the queued chips now, and if a
-          // real batch was delivered, arm the mid-stream marker for the next assistant message_start.
-          if (this.deps.onUserMessageDelivered()) this._midStreamMarkerPending = true;
+          // A user message delivered mid-run is a queued injection: the initial prompt lives in the
+          // run's initial context and never emits this. Collapse the queued chips now, and if a real
+          // batch was delivered, arm the mid-stream marker for the next assistant message_start.
+          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content))) this._midStreamMarkerPending = true;
         }
         break;
       case 'tool_execution_start': {
@@ -403,16 +421,30 @@ export class PiStreamAdapter {
         });
         break;
       }
-      case 'tool_execution_update':
-        this.emit({
+      case 'tool_execution_update': {
+        const toolName = mapPiToolName(event.toolName);
+        if (!LIVE_OUTPUT_TOOLS.has(toolName)) {
+          this.emit({ type: 'toolProgress', toolUseId: event.toolCallId, toolName, parentToolUseId: null, elapsedTimeSeconds: this.elapsed(event.toolCallId) });
+          break;
+        }
+        // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
+        const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
+        // Built at emit time so a frame held for the whole window reports the elapsed time the card is
+        // showing, not the one it had when the frame was pushed.
+        this._outputCoalescer.push(event.toolCallId, () => ({
           type: 'toolProgress',
           toolUseId: event.toolCallId,
-          toolName: mapPiToolName(event.toolName),
+          toolName,
           parentToolUseId: null,
           elapsedTimeSeconds: this.elapsed(event.toolCallId),
-        });
+          output: joinResultText(event.partialResult),
+          outputTruncated: Boolean(details?.truncation?.truncated),
+        }));
         break;
+      }
       case 'tool_execution_end':
+        // Cancel before anything else: a pending partial landing after toolCompleted would resurrect stale output.
+        this._outputCoalescer.cancel(event.toolCallId);
         this.onToolEnd(event.toolCallId, event.toolName, event.result, event.isError);
         break;
       case 'agent_end':

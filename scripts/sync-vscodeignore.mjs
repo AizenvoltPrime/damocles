@@ -55,10 +55,20 @@ function resolveDep(fromDir, dep) {
   return null;
 }
 
+/**
+ * Externals this project declares in `optionalDependencies`, which npm is allowed to leave uninstalled
+ * when its build fails on the current platform. A required external staying absent is still a hard error.
+ */
+function optionalShipRoots() {
+  const json = pkgJson(ROOT);
+  return new Set(Object.keys((json && json.optionalDependencies) || {}));
+}
+
 /** The set of top-level node_modules package names to allowlist (the externals + their prod closure). */
 function computeClosure() {
   const topLevel = new Set();
   const visited = new Set();
+  const optional = optionalShipRoots();
 
   function walk(dir) {
     if (visited.has(dir)) return;
@@ -79,6 +89,12 @@ function computeClosure() {
   for (const root of shipRoots()) {
     const dir = join(NM, root);
     if (!existsSync(dir)) {
+      // An optional external that failed to build on this platform ships nothing; the release VSIX
+      // content gate is what catches its absence on a platform that actually needs it.
+      if (optional.has(root)) {
+        console.warn(`Warning: ${root} is not installed, so the packaged extension will ship without it.`);
+        continue;
+      }
       throw new Error(`External package not installed: ${root} (run npm install)`);
     }
     topLevel.add(root);

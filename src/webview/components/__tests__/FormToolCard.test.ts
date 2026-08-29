@@ -38,7 +38,7 @@ const baseResult = (submitted: boolean): FormResult => ({
   ],
 });
 
-describe('FormToolCard — submit-status badge', () => {
+describe('FormToolCard, submit-status badge', () => {
   it('hides the Submitted/Not-submitted badge when no submitSelector was requested', () => {
     const text = render(makeToolCall(baseInput, baseResult(false))).text();
     expect(text).not.toContain('Not submitted');
@@ -58,7 +58,7 @@ describe('FormToolCard — submit-status badge', () => {
   });
 });
 
-describe('FormToolCard — masking and skipped', () => {
+describe('FormToolCard, masking and skipped', () => {
   it('masks a sensitive field with dots and does not render any value', () => {
     const text = render(makeToolCall(baseInput, baseResult(false))).text();
     expect(text).toContain('••••');
@@ -66,11 +66,11 @@ describe('FormToolCard — masking and skipped', () => {
 
   it('marks an optional blank field as skipped, not failed', () => {
     const text = render(makeToolCall(baseInput, baseResult(false))).text();
-    expect(text).toContain('optional — left blank');
+    expect(text).toContain('optional, left blank');
   });
 });
 
-describe('FormToolCard — header', () => {
+describe('FormToolCard, header', () => {
   it('pluralizes the field count', () => {
     expect(render(makeToolCall({ fields: [{ id: 'a', label: 'A', type: 'text', selector: '#a' }] })).text()).toContain('Requesting input (1 field)');
     expect(render(makeToolCall(baseInput)).text()).toContain('Requesting input (3 fields)');

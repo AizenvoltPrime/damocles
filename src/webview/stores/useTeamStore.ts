@@ -1,6 +1,8 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { TeamState, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock } from '@shared/types/team';
+import type { ToolCall } from '@shared/types/session';
+import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -14,18 +16,22 @@ export interface AgentChatMessage {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;
-  toolCalls?: AgentToolCall[];
+  toolCalls?: ToolCall[];
   contentBlocks?: TeamAgentContentBlock[];
   timestamp: number;
 }
 
-export interface AgentToolCall {
-  id: string;
-  name: string;
-  input: unknown;
-  result?: string;
-  isError?: boolean;
-  status: 'running' | 'completed' | 'error';
+type PersistedToolResult = Extract<TeamAgentContentBlock, { type: 'tool_result' }>;
+
+/**
+ * The terminal status a reloaded card carries, derived the same way the live path derives it. A call
+ * with no persisted result never recorded an outcome, so it reads as `unrecorded` rather than claiming
+ * one; `pending` and `running` are pre-terminal and put a spinner and a Stop control on a tool long gone.
+ */
+function restoredToolStatus(result: PersistedToolResult | undefined): ToolCall['status'] {
+  if (!result) return 'unrecorded';
+  if (result.is_error === true) return 'failed';
+  return resolveCancelledStatus('completed', result.metadata);
 }
 
 export const useTeamStore = defineStore('team', () => {
@@ -245,11 +251,11 @@ export const useTeamStore = defineStore('team', () => {
   function handleAgentAssistant(agentId: string, messageId: string, content: TeamAgentContentBlock[], timestamp: number): void {
     const textContent = content.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
     const thinkingContent = content.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
-    const toolCalls: AgentToolCall[] = content
+    const toolCalls: ToolCall[] = content
       .filter(b => b.type === 'tool_use')
       .map(b => {
         const t = b as { id: string; name: string; input: unknown };
-        return { id: t.id, name: t.name, input: t.input, status: 'running' as const };
+        return { id: t.id, name: t.name, input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {}, status: 'running' as const };
       });
 
     const msg: AgentChatMessage = {
@@ -280,7 +286,7 @@ export const useTeamStore = defineStore('team', () => {
     agentMessages.value = { ...agentMessages.value, [agentId]: [...current, msg] };
   }
 
-  function handleAgentToolResult(agentId: string, toolUseId: string, result: string, isError?: boolean): void {
+  function handleAgentToolResult(agentId: string, toolUseId: string, result: string, isError?: boolean, metadata?: Record<string, unknown>): void {
     const msgs = agentMessages.value[agentId];
     if (!msgs) return;
     const updated = [...msgs];
@@ -290,25 +296,94 @@ export const useTeamStore = defineStore('team', () => {
       const toolCalls = m.toolCalls;
       if (!toolCalls.some(t => t.id === toolUseId)) continue;
 
-      const updatedTools: AgentToolCall[] = toolCalls.map(t =>
-        t.id === toolUseId
-          ? {
-              ...t,
-              result,
-              ...(isError !== undefined && { isError }),
-              status: isError ? 'error' : 'completed',
-            }
-          : t
-      );
+      const updatedTools: ToolCall[] = toolCalls.map(t => {
+        if (t.id !== toolUseId) return t;
+        // The live-output keys are dropped, not set to undefined, so a later spread cannot resurrect them.
+        const { liveOutput: _clearedOutput, liveOutputTruncated: _clearedTruncated, cancelRequested: _clearedCancel, ...withoutLiveOutput } = t;
+        const mergedMetadata = metadata === undefined ? t.metadata : { ...t.metadata, ...metadata };
+        return {
+          ...withoutLiveOutput,
+          result,
+          ...(isError !== undefined && { isError }),
+          ...(mergedMetadata !== undefined && { metadata: mergedMetadata }),
+          status: resolveCancelledStatus(isError ? 'failed' : 'completed', mergedMetadata),
+        };
+      });
       updated[i] = { ...m, toolCalls: updatedTools };
       break;
     }
     agentMessages.value = { ...agentMessages.value, [agentId]: updated };
   }
 
+  function handleAgentToolProgress(agentId: string, toolUseId: string, output: string, truncated?: boolean): void {
+    const msgs = agentMessages.value[agentId];
+    if (!msgs) return;
+    const updated = [...msgs];
+    for (let i = updated.length - 1; i >= 0; i--) {
+      const m = updated[i];
+      if (!m || m.role !== 'assistant' || !m.toolCalls) continue;
+      const toolCalls = m.toolCalls;
+      const target = toolCalls.find(t => t.id === toolUseId);
+      if (!target) continue;
+      // The result path drops the live keys so a later spread cannot resurrect them, and a progress
+      // frame that outlived the result would put them straight back.
+      if (TERMINAL_TOOL_STATUSES.has(target.status)) return;
+
+      // An empty output string is a real frame: LiveOutputPane shows the waiting state for it.
+      const updatedTools: ToolCall[] = toolCalls.map(t => {
+        if (t.id !== toolUseId) return t;
+        // An absent truncated flag drops the key rather than setting undefined, so a stale true cannot survive.
+        const { liveOutputTruncated: _clearedTruncated, ...rest } = t;
+        return { ...rest, liveOutput: output, ...(truncated !== undefined && { liveOutputTruncated: truncated }) };
+      });
+      updated[i] = { ...m, toolCalls: updatedTools };
+      break;
+    }
+    agentMessages.value = { ...agentMessages.value, [agentId]: updated };
+  }
+
+  /** Searches every agent because the cancel click carries only the tool id, not the agent it belongs to. */
+  function replaceAgentTool(toolUseId: string, replace: (tool: ToolCall) => ToolCall): boolean {
+    for (const [agentId, msgs] of Object.entries(agentMessages.value)) {
+      const updated = [...msgs];
+      for (let i = updated.length - 1; i >= 0; i--) {
+        const m = updated[i];
+        if (!m || m.role !== 'assistant' || !m.toolCalls) continue;
+        const toolCalls = m.toolCalls;
+        if (!toolCalls.some(t => t.id === toolUseId)) continue;
+
+        const updatedTools: ToolCall[] = toolCalls.map(t => (t.id === toolUseId ? replace(t) : t));
+        updated[i] = { ...m, toolCalls: updatedTools };
+        agentMessages.value = { ...agentMessages.value, [agentId]: updated };
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function markAgentToolCancelRequested(toolUseId: string): boolean {
+    return replaceAgentTool(toolUseId, t => ({ ...t, cancelRequested: true }));
+  }
+
+  function clearAgentToolCancelRequested(toolUseId: string): boolean {
+    return replaceAgentTool(toolUseId, t => {
+      // The key is dropped rather than set to undefined, which exactOptionalPropertyTypes rejects.
+      const { cancelRequested: _clearedCancel, ...withoutCancel } = t;
+      return withoutCancel;
+    });
+  }
+
   function handleAgentDataLoaded(agentId: string, turns: TeamAgentContentBlock[][]): void {
+    const results = new Map<string, PersistedToolResult>();
+    for (const turn of turns) {
+      for (const block of turn) {
+        if (block.type === 'tool_result') results.set(block.tool_use_id, block);
+      }
+    }
+
     const messages: AgentChatMessage[] = [];
     for (const turn of turns) {
+      // A result belongs to the card of the call it names, so its own turn renders nothing of its own.
       const hasToolResult = turn.some(b => b.type === 'tool_result');
       if (hasToolResult) continue;
 
@@ -317,11 +392,19 @@ export const useTeamStore = defineStore('team', () => {
       if (hasAssistantContent) {
         const textContent = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
         const thinkingContent = turn.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
-        const toolCalls: AgentToolCall[] = turn
+        const toolCalls: ToolCall[] = turn
           .filter(b => b.type === 'tool_use')
           .map(b => {
             const t = b as { id: string; name: string; input: unknown };
-            return { id: t.id, name: t.name, input: t.input, status: 'completed' as const };
+            const result = results.get(t.id);
+            return {
+              id: t.id,
+              name: t.name,
+              input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {},
+              status: restoredToolStatus(result),
+              ...(result ? { result: result.content, isError: result.is_error === true } : {}),
+              ...(result?.metadata ? { metadata: result.metadata } : {}),
+            };
           });
         messages.push({
           id: crypto.randomUUID(),
@@ -423,6 +506,9 @@ export const useTeamStore = defineStore('team', () => {
     handleAgentAssistant,
     handleAgentUserMessage,
     handleAgentToolResult,
+    handleAgentToolProgress,
+    markAgentToolCancelRequested,
+    clearAgentToolCancelRequested,
     handleAgentDataLoaded,
     getTeamForToolUseId,
     permissionQueue,

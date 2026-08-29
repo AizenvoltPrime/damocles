@@ -1,6 +1,7 @@
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from "@shared/types/constants";
 import type { ToolCall } from "@shared/types/session";
 import type { ContentBlock, HistoryToolCall, UserContentBlock } from "@shared/types/content";
+import { resolveCancelledStatus } from "@/stores/tool-cancelled-status";
 
 /**
  * A replayed user turn can only ever hold text and images, but `userReplay.contentBlocks` is declared
@@ -28,15 +29,29 @@ export function extractDenialFeedback(errorMessage: string): string | undefined 
   return undefined;
 }
 
+/**
+ * The status a replayed call carries, from the only two facts the transcript keeps: whether a result
+ * was recorded at all, and whether it was an error. An error is a denial only when it carries a denial
+ * marker, the same signal the live path reads off the error text; anything else errored on its own.
+ */
+function historyToolStatus(tool: HistoryToolCall, denialFeedback: string | undefined): ToolCall["status"] {
+  if (tool.isError === true) return denialFeedback !== undefined ? "denied" : "failed";
+  if (tool.result === undefined) return "unrecorded";
+  return "completed";
+}
+
 export function convertHistoryTools(tools: HistoryToolCall[] | undefined): ToolCall[] | undefined {
-  return tools?.map((t): ToolCall => ({
-    id: t.id,
-    name: t.name,
-    input: t.input,
-    status: t.isError ? "denied" : "completed",
-    ...(t.result !== undefined && { result: t.result }),
-    ...(t.isError !== undefined && { isError: t.isError }),
-    ...(t.metadata !== undefined && { metadata: t.metadata }),
-    ...(t.feedback !== undefined && { feedback: t.feedback }),
-  }));
+  return tools?.map((t): ToolCall => {
+    const denialFeedback = t.feedback ?? (t.isError === true && t.result !== undefined ? extractDenialFeedback(t.result) : undefined);
+    return {
+      id: t.id,
+      name: t.name,
+      input: t.input,
+      status: resolveCancelledStatus(historyToolStatus(t, denialFeedback), t.metadata),
+      ...(t.result !== undefined && { result: t.result }),
+      ...(t.isError !== undefined && { isError: t.isError }),
+      ...(t.metadata !== undefined && { metadata: t.metadata }),
+      ...(denialFeedback !== undefined && { feedback: denialFeedback }),
+    };
+  });
 }

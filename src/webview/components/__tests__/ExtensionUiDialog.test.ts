@@ -1,8 +1,12 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { h, markRaw } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import ExtensionUiDialog from '../ExtensionUiDialog.vue';
+import OverlayShell from '../OverlayShell.vue';
+import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
+import { i18n } from '@/i18n';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 
@@ -31,6 +35,8 @@ const req = (requestId: string, extra: Partial<ExtensionUiRequest> = {}): Extens
   options: ['Continue', 'Decline'],
   ...extra,
 });
+
+const StubIcon = markRaw({ render: () => h('span') });
 
 const mountDialog = () => mount(ExtensionUiDialog, { attachTo: document.body });
 
@@ -280,5 +286,39 @@ describe('ExtensionUiDialog — input dialogs across a head change', () => {
     expect(wrapper.get('h3').text()).toBe('Second?');
     expect((wrapper.get('input').element as HTMLInputElement).value).toBe('two');
     expect(document.activeElement).toBe(wrapper.get('input').element);
+  });
+});
+
+describe('ExtensionUiDialog and the overlay layer beneath it', () => {
+  it('paints on the shared modal layer rather than a hardcoded class', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a'));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+
+    const root = wrapper.element as HTMLElement;
+    expect(Number(root.style.zIndex)).toBe(MODAL_Z_INDEX);
+    expect(root.className).not.toContain('z-[');
+  });
+
+  it('stays above an overlay stack deep enough to have run out of layers', async () => {
+    const shells = Array.from({ length: 20 }, () => mount(OverlayShell, {
+      props: { title: 'panel', icon: StubIcon },
+      global: { plugins: [i18n] },
+      attachTo: document.body,
+    }));
+
+    const store = useExtensionUiStore();
+    store.setRequest(req('a'));
+    const dialog = mountDialog();
+    await dialog.vm.$nextTick();
+
+    const dialogZ = Number((dialog.element as HTMLElement).style.zIndex);
+    for (const shell of shells) {
+      expect(Number((shell.element as HTMLElement).style.zIndex)).toBeLessThan(dialogZ);
+    }
+
+    for (const shell of shells) shell.unmount();
+    dialog.unmount();
   });
 });

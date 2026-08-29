@@ -19,6 +19,10 @@ import {
   TOOL_STEER_SUBAGENT,
 } from '../../../shared/tool-names';
 import { createEditTool } from './edit-tool';
+import { createBashTool, type ShellOptions } from './bash-tool';
+import { withPerCallCancel } from './cancellable-shell';
+import type { ShellCancelStore } from './shell-cancel-registry';
+import type { ShellSessionJob } from './process-tree';
 import { createPowerShellTool } from './powershell-tool';
 import { createTaskTools } from './task-tools';
 import { createPlanModeTools } from './plan-mode-tools';
@@ -44,6 +48,15 @@ export interface CustomToolDeps {
   pi: PiCodingAgentModule;
   cwd: string;
   permissionHandler: PermissionHandler;
+  /** Required, with no default: a missing one would silently drop the user's configured shell. */
+  getShellOptions: () => ShellOptions;
+  /** The session-lived store both shell tools register their per-call abort controllers in. */
+  shellCancel: ShellCancelStore;
+  /** Delivers a cancel note as a real user turn to the agent that ran the command; supplied per build context. */
+  deliverUserNote: (text: string) => void;
+  /** The session-scoped job every shell command of this panel nests inside; `undefined` off win32. Nullable
+   *  rather than optional, so a build site that omits it fails to compile instead of leaving a shell unscoped. */
+  shellJob: ShellSessionJob | undefined;
   /** Wired only when the panel's memory service is present (enabled-check is applied here). */
   memoryService?: MemoryService;
   /** Wired only when the panel's compass service is present. */
@@ -91,6 +104,13 @@ export interface ModuleToolNameDeps {
 }
 
 /**
+ * Names of pi built-ins that a Damocles tool REPLACES rather than adds. They stay out of
+ * `CUSTOM_TOOL_NAMES` because `PI_NATIVE_ACTIVE_TOOLS` already carries them, and listing an override
+ * in both makes `fullActiveToolNames` name it twice.
+ */
+export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash'];
+
+/**
  * Names of the Damocles custom tools, in active-set order. Every name MUST also be passed in the
  * session's `tools` list to be callable (US-003).
  */
@@ -112,15 +132,19 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
  * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, the Task list tools, plan,
- * question). The native `read/bash/write/grep/find/ls` come from pi directly.
+ * question). The native `read/write/grep/find/ls` come from pi directly. `bash` is pi's own tool,
+ * re-registered here under the same name so the panel owns a per-call abort controller for it.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, browserScopeId, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
+  // Bound here because this is the only place that knows which agent the tools being built run in.
+  const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
   const tools: ToolDefinition[] = [
+    createBashTool(pi, cwd, { getShellOptions, cancelRegistry, shellJob }),
     createEditTool(pi, cwd),
-    createPowerShellTool(pi, cwd),
+    withPerCallCancel(createPowerShellTool(pi, cwd, shellJob), cancelRegistry),
     taskCreate,
     taskUpdate,
     taskList,

@@ -145,61 +145,6 @@ export const WITTY_PHRASES = [
 ];
 
 /**
- * Agent-specific phrases for SubagentIndicator.
- * Each agent type has themed phrases that reflect its purpose.
- */
-export const AGENT_PHRASES: Record<string, string[]> = {
-  "code-reviewer": [
-    "Scrutinizing the code...",
-    "Hunting for bugs...",
-    "Checking for code smells...",
-    "Reviewing with a fine-tooth comb...",
-    "Looking for improvements...",
-    "Analyzing code quality...",
-    "Finding things to nitpick...",
-    "Channeling inner code critic...",
-    "Reading between the lines...",
-    "Judging your variable names...",
-  ],
-  explorer: [
-    "Mapping the codebase...",
-    "Venturing into unknown files...",
-    "Discovering hidden treasures...",
-    "Charting the directory tree...",
-    "Following the import trail...",
-    "Spelunking through code caves...",
-    "Drawing the map...",
-    "Scouting ahead...",
-    "Exploring uncharted territory...",
-    "Finding secret passages...",
-  ],
-  planner: [
-    "Drafting the master plan...",
-    "Architecting the solution...",
-    "Connecting the pieces...",
-    "Strategizing the approach...",
-    "Drawing up blueprints...",
-    "Planning world domination... er, implementation...",
-    "Thinking several steps ahead...",
-    "Designing the roadmap...",
-    "Calculating the optimal path...",
-    "Playing 4D chess...",
-  ],
-  "general-purpose": [
-    "Working on a side quest...",
-    "Handling a sub-task...",
-    "Delegating responsibility...",
-    "Spawning a helper...",
-    "Calling in reinforcements...",
-    "Multitasking efficiently...",
-    "Running a background process...",
-    "Outsourcing brain work...",
-    "Splitting the workload...",
-    "Parallel processing...",
-  ],
-};
-
-/**
  * Interval in milliseconds between phrase changes.
  * 12 seconds provides variety without being too distracting.
  */

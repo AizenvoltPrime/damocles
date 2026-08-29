@@ -2,9 +2,9 @@
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import { TOOL_MONITOR, isShellTool } from '@shared/tool-names';
+import { isShellTool, LIVE_OUTPUT_TOOLS } from '@shared/tool-names';
+import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { cronToIntervalLabel } from '@shared/utils/cron';
-import { useMonitorStore } from '@/stores/useMonitorStore';
 import {
   Collapsible,
   CollapsibleContent,
@@ -14,6 +14,9 @@ import {
   IconCheck,
   IconXCircle,
   IconWarning,
+  IconBan,
+  IconQuestionCircle,
+  IconRobot,
   IconChevronDown,
   IconFile,
   IconFileText,
@@ -24,11 +27,15 @@ import {
   IconCode,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import LiveOutputPane from './LiveOutputPane.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
+import ToolCancelControl from './ToolCancelControl.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { sanitizeUrl } from '@/lib/sanitize-url';
+import { ownEntry } from '@/utils/ownEntry';
+import { useUIStore, type ExpandedToolSource } from '@/stores/useUIStore';
 
 const TOOL_ICON_MAP: Record<string, Component> = {
   Bash: IconTerminal,
@@ -58,11 +65,13 @@ const EXT_LANG_MAP: Record<string, string> = {
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
-const monitorStore = useMonitorStore();
+const uiStore = useUIStore();
 
 const props = defineProps<{
   tool: ToolCall;
 }>();
+
+const cancelSource = computed((): ExpandedToolSource => uiStore.expandedToolSource ?? 'session');
 
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -71,8 +80,12 @@ const emit = defineEmits<{
 const isInputExpanded = ref(true);
 const isResponseExpanded = ref(true);
 
+const teamToolLabel = computed(() => ownEntry(TEAM_TOOL_LABELS, props.tool.name));
+const isTeamTool = computed(() => teamToolLabel.value !== undefined);
+
 const toolIcon = computed((): Component => {
-  return TOOL_ICON_MAP[props.tool.name] || IconSearch;
+  if (isTeamTool.value) return IconRobot;
+  return ownEntry(TOOL_ICON_MAP, props.tool.name) ?? IconSearch;
 });
 
 const subtitle = computed(() => {
@@ -89,35 +102,25 @@ const subtitle = computed(() => {
   if (props.tool.name === 'CronCreate' && input.cron) return input.cron as string;
   if (props.tool.name === 'CronDelete' && input.id) return `ID: ${input.id}`;
   if (props.tool.name === 'CronList') return t('toolOverlay.cronInfo.listJobs');
-  return t('toolOverlay.builtInTool');
-});
-
-const effectiveStatus = computed(() => {
-  if (props.tool.name === TOOL_MONITOR) {
-    const monitor = monitorStore.getByToolUseId(props.tool.id);
-    if (monitor) return monitor.status;
-  }
-  return props.tool.status;
+  // The header title stays the raw snake_case name; the label rides underneath it.
+  return teamToolLabel.value ?? t('toolOverlay.builtInTool');
 });
 
 const isRunning = computed(() => {
-  const s = effectiveStatus.value;
-  return s === 'running' || s === 'pending' || s === 'starting' || s === 'monitoring';
+  const s = props.tool.status;
+  return s === 'running' || s === 'pending';
 });
-const isFailed = computed(() => effectiveStatus.value === 'failed');
-const isCompleted = computed(() => effectiveStatus.value === 'completed');
+const isFailed = computed(() => props.tool.status === 'failed');
+const isCompleted = computed(() => props.tool.status === 'completed');
+const isCancelled = computed(() => props.tool.status === 'cancelled');
+const isUnrecorded = computed(() => props.tool.status === 'unrecorded');
+
+const showLiveOutput = computed(() =>
+  isRunning.value && LIVE_OUTPUT_TOOLS.has(props.tool.name) && props.tool.liveOutput !== undefined
+);
+const liveOutputText = computed(() => props.tool.liveOutput ?? '');
 
 const statusBadge = computed(() => {
-  const s = effectiveStatus.value;
-  if (s === 'starting') {
-    return { label: t('monitor.starting'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
-  }
-  if (s === 'monitoring') {
-    return { label: t('monitor.monitoring'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
-  }
-  if (s === 'stopped') {
-    return { label: t('monitor.stopped'), class: 'bg-warning/30 text-warning border-warning/30', icon: IconWarning };
-  }
   if (isRunning.value) {
     return { label: t('toolOverlay.statusRunning'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
   }
@@ -126,6 +129,12 @@ const statusBadge = computed(() => {
   }
   if (isFailed.value) {
     return { label: t('toolOverlay.statusFailed'), class: 'bg-error/30 text-error border-error/30', icon: IconXCircle };
+  }
+  if (isCancelled.value) {
+    return { label: t('toolOverlay.statusCancelled'), class: 'bg-muted text-muted-foreground border-muted', icon: IconBan };
+  }
+  if (isUnrecorded.value) {
+    return { label: t('toolOverlay.statusUnrecorded'), class: 'bg-muted text-muted-foreground border-muted', icon: IconQuestionCircle };
   }
   return { label: props.tool.status, class: 'bg-muted text-muted-foreground border-muted', icon: IconWarning };
 });
@@ -166,7 +175,7 @@ interface CodeSearchBlock {
 function detectLanguageFromUrl(url: string): string {
   try {
     const ext = new URL(url).pathname.split('.').pop()?.toLowerCase() ?? '';
-    return EXT_LANG_MAP[ext] ?? 'text';
+    return ownEntry(EXT_LANG_MAP, ext) ?? 'text';
   } catch {
     return 'text';
   }
@@ -227,7 +236,7 @@ const isResultTooLarge = computed(() => resultLineCount.value > SHIKI_LINE_LIMIT
 const responseLanguage = computed(() => {
   if (props.tool.name === 'Read' && props.tool.input.file_path) {
     const ext = (props.tool.input.file_path as string).split('.').pop()?.toLowerCase();
-    return EXT_LANG_MAP[ext ?? ''] || 'text';
+    return ownEntry(EXT_LANG_MAP, ext ?? '') ?? 'text';
   }
   return 'text';
 });
@@ -299,9 +308,16 @@ function handleFilePathClick(filePath: string): void {
     :status-badge="statusBadge"
     @close="emit('close')"
   >
+    <template #header-actions>
+      <ToolCancelControl
+        :tool-call="tool"
+        :source="cancelSource"
+      />
+    </template>
+
     <div class="p-4 space-y-4">
-      <!-- Running state -->
-      <div v-if="isRunning" class="text-center text-muted-foreground text-sm py-8">
+      <!-- Running state, until the first output frame arrives for a shell call -->
+      <div v-if="isRunning && !showLiveOutput" class="text-center text-muted-foreground text-sm py-8">
         <LoadingSpinner :size="24" class="mx-auto mb-2" />
         <p>{{ t('toolOverlay.running') }}</p>
       </div>
@@ -500,18 +516,6 @@ function handleFilePathClick(filePath: string): void {
                 <div class="text-xs text-muted-foreground italic pl-2">{{ t('toolOverlay.cronInfo.listJobs') }}</div>
               </template>
 
-              <!-- Monitor -->
-              <template v-else-if="tool.name === 'Monitor'">
-                <div v-if="tool.input.description" class="text-xs text-muted-foreground italic pl-2">
-                  {{ tool.input.description }}
-                </div>
-                <CodeBlock :code="(tool.input.command as string) || ''" language="bash" />
-                <div class="flex items-center gap-4 pl-2 text-xs text-muted-foreground">
-                  <span v-if="tool.input.persistent">{{ t('monitor.persistent') }}</span>
-                  <span v-else-if="tool.input.timeout_ms != null">{{ t('monitor.timeout') }}: {{ tool.input.timeout_ms }}ms</span>
-                </div>
-              </template>
-
               <!-- Fallback -->
               <div v-else class="text-sm text-muted-foreground italic pl-2">
                 {{ t('toolOverlay.noInput') }}
@@ -519,6 +523,19 @@ function handleFilePathClick(filePath: string): void {
             </div>
           </CollapsibleContent>
         </Collapsible>
+
+        <!-- Live Output Section -->
+        <div v-if="showLiveOutput" class="space-y-2">
+          <div class="flex items-center gap-2 py-1.5">
+            <LoadingSpinner :size="14" class="text-primary" />
+            <span class="text-xs font-medium text-primary">{{ t('toolOverlay.liveOutput') }}</span>
+          </div>
+          <LiveOutputPane
+            :output="liveOutputText"
+            :truncated="tool.liveOutputTruncated === true"
+            height-class="h-[45vh]"
+          />
+        </div>
 
         <!-- Read File Info Card -->
         <div v-if="readMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
@@ -693,8 +710,8 @@ function handleFilePathClick(filePath: string): void {
         </Collapsible>
 
         <!-- No Response State -->
-        <div v-else-if="!isFailed" class="text-center text-muted-foreground text-sm py-8">
-          <p>{{ t('toolOverlay.noResponse') }}</p>
+        <div v-else-if="!isFailed && !isRunning" class="text-center text-muted-foreground text-sm py-8">
+          <p>{{ isUnrecorded ? t('toolOverlay.outcomeUnrecorded') : t('toolOverlay.noResponse') }}</p>
         </div>
       </template>
     </div>

@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
 import { useVSCode } from '@/composables/useVSCode';
+import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
 
 const store = useExtensionUiStore();
 const { current, queue } = storeToRefs(store);
@@ -64,12 +65,12 @@ function cancel(): void {
 </script>
 
 <template>
-  <!-- z-[60] keeps this global modal above z-50 overlay panels (e.g. the Extensions panel that triggers the install confirm). -->
   <div
     v-if="displayed"
     ref="dialogRef"
     tabindex="-1"
-    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 outline-none"
+    class="fixed inset-0 flex items-center justify-center bg-black/50 p-4 outline-none"
+    :style="{ zIndex: MODAL_Z_INDEX }"
     @keydown.esc="cancel"
   >
     <div class="w-full max-w-md rounded-lg border border-border bg-background p-4 shadow-lg">

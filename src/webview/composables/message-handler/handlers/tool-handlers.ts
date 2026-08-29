@@ -1,7 +1,8 @@
-import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import type { TaskCreateInput, TaskUpdateInput, TaskUpdateStatus } from "@shared/types/subagents";
 import type { HandlerRegistry } from "../types";
 import { extractDenialFeedback } from "../utils";
+import { takeRejectedCancels } from "@/composables/useToolCancel";
 
 function str(bag: Record<string, unknown>, key: string): string | undefined {
   const value = bag[key];
@@ -95,10 +96,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       } else if (msg.tool.name === TOOL_TASK_UPDATE) {
         const input = readTaskUpdateInput(msg.tool.input);
         if (input) taskStore.trackToolInput(msg.tool.id, { tool: "TaskUpdate", input });
-      }
-
-      if (msg.tool.name === TOOL_MONITOR) {
-        ctx.stores.monitorStore.trackInput(msg.tool.id, msg.tool.input);
       }
 
       if (parentToolUseId && hasSubagent) {
@@ -247,9 +244,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (msg.toolName === TEAM_CREATE_TOOL) {
         ctx.stores.teamStore.failPendingTeamByToolUseId(msg.toolUseId);
       }
-      if (msg.toolName === TOOL_MONITOR) {
-        ctx.stores.monitorStore.failByToolUseId(msg.toolUseId);
-      }
       uiStore.setCurrentRunningTool(null);
     },
 
@@ -261,14 +255,47 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    toolCancelRejected: (msg, ctx) => {
+      const { streamingStore, subagentStore, teamStore } = ctx.stores;
+      for (const rejected of takeRejectedCancels(msg.toolUseId, msg.requestId)) {
+        switch (rejected.source) {
+          case "session":
+            streamingStore.clearToolCancelRequested(rejected.toolUseId);
+            break;
+          case "subagent":
+            subagentStore.clearSubagentToolCancelRequested(rejected.toolUseId);
+            break;
+          case "team":
+            teamStore.clearAgentToolCancelRequested(rejected.toolUseId);
+            break;
+        }
+      }
+    },
+
     toolProgress: (msg, ctx) => {
       const { streamingStore, subagentStore } = ctx.stores;
-      const found = subagentStore.updateSubagentToolMetadata(msg.toolUseId, {
+      // Every frame carries the elapsed time, and for a shell tool every frame also carries output, so
+      // recording it after the output branch would mean those tools never record an elapsed time at all.
+      const inSubagent = subagentStore.updateSubagentToolMetadata(msg.toolUseId, {
         elapsedTimeSeconds: msg.elapsedTimeSeconds,
       });
-      if (!found) {
+      if (!inSubagent) {
         streamingStore.updateToolElapsedTime(msg.toolUseId, msg.elapsedTimeSeconds);
       }
+
+      if (msg.output === undefined) {
+        // An elapsed-only frame keeps today's scroll behaviour, which is to return nothing.
+        return;
+      }
+      const output = msg.output;
+      const truncated = msg.outputTruncated === true;
+      if (inSubagent) {
+        subagentStore.updateSubagentToolLiveOutput(msg.toolUseId, output, truncated);
+      } else {
+        streamingStore.updateToolLiveOutput(msg.toolUseId, output, truncated);
+      }
+      // The pane has a fixed height, so an output frame never grows the card and nothing needs following.
+      return { skipScroll: true };
     },
 
     toolUseSummary: (msg, ctx) => {

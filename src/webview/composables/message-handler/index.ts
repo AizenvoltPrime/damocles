@@ -19,7 +19,6 @@ import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useTeamStore } from "@/stores/useTeamStore";
-import { useMonitorStore } from "@/stores/useMonitorStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
@@ -52,7 +51,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const backgroundTaskStore = useBackgroundTaskStore();
   const compassStore = useCompassStore();
   const teamStore = useTeamStore();
-  const monitorStore = useMonitorStore();
   const voiceJarvisStore = useVoiceJarvisStore();
   const promptNavigatorStore = usePromptNavigatorStore();
   const consolidationStore = useConsolidationStore();
@@ -78,7 +76,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     backgroundTaskStore,
     compassStore,
     teamStore,
-    monitorStore,
     voiceJarvisStore,
     promptNavigatorStore,
     consolidationStore,

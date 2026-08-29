@@ -4,6 +4,7 @@ import { MessageBus } from '../message-bus';
 import type { AgentRunConfig } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { FakeSession } from './fake-session';
+import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 
 /**
  * The pi-native team agent runner (US-024b). These tests drive a FAKE pi `AgentSession` to assert the
@@ -25,8 +26,23 @@ function baseConfig(overrides: Partial<AgentRunConfig>): AgentRunConfig {
     onMessage: vi.fn<(m: ExtensionToWebviewMessage) => void>(),
     teamId: 'team-1',
     persistence: { appendAgentEntry: vi.fn(), appendTeamEntry: vi.fn(), flush: async () => {} },
+    bindNoteDelivery: () => () => undefined,
     ...overrides,
   } as AgentRunConfig;
+}
+
+/** Captures the note sink the runner publishes, plus whether its teardown has run. */
+function noteSink(): { deliver: (text: string) => boolean; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } {
+  const sink: { deliver: (text: string) => boolean; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } = {
+    deliver: () => { throw new Error('the runner never published a note sink'); },
+    unbound: false,
+    bind: () => () => undefined,
+  };
+  sink.bind = (deliver) => {
+    sink.deliver = deliver;
+    return () => { sink.unbound = true; };
+  };
+  return sink;
 }
 
 describe('AgentRunner (pi-native team agent)', () => {
@@ -343,5 +359,553 @@ describe('AgentRunner (pi-native team agent)', () => {
 
     const result = await new AgentRunner().startAgent(config);
     expect(result.status).toBe('cancelled');
+  });
+});
+
+/**
+ * A user-authored note reaches a team agent through the sink the runner publishes, not through the
+ * MessageBus. The bus drops such a note silently in two ways the caller cannot see: the run's
+ * `unsubscribeBus()` may already have fired, and the subscriber's `msg.from === config.name` filter
+ * discards it outright for an agent the model named `user`. The sink answers the caller instead.
+ */
+describe('AgentRunner user note delivery', () => {
+  it('echoes an idle note exactly once and prompts it verbatim', async () => {
+    let alive = true;
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const entries: Array<Record<string, unknown>> = [];
+    const sink = noteSink();
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      persistence: { appendAgentEntry: (_t, _a, e) => { entries.push(e); }, appendTeamEntry: () => undefined, flush: async () => undefined },
+      bindNoteDelivery: sink.bind,
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;
+
+    expect(sink.deliver('[cancel] the shell command was stopped')).toBe(true);
+    await fake.whenPrompted(2);
+    alive = false;
+    await run;
+
+    // Prompted verbatim: a note is the user speaking, so it carries no `[Message from X]` peer prefix.
+    expect(fake.prompts[1]).toBe('[cancel] the shell command was stopped');
+    const echoes = messages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === '[cancel] the shell command was stopped');
+    expect(echoes).toHaveLength(1);
+    const persisted = entries.filter((e) => e['type'] === 'user' && e['content'] === '[cancel] the shell command was stopped');
+    expect(persisted).toHaveLength(1);
+  });
+
+  it('steers a note that arrives mid-stream, still echoing it once', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
+      },
+    });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const sink = noteSink();
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      bindNoteDelivery: sink.bind,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    expect(sink.deliver('stopped by the user')).toBe(true);
+    await fake.whenPrompted(2);
+    if (!opening.end) throw new Error('the opening prompt never reached the fake session');
+    opening.end();
+    await run;
+
+    expect(fake.prompts[1]).toBe('stopped by the user');
+    expect(messages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === 'stopped by the user')).toHaveLength(1);
+  });
+
+  it('prompts a note beginning with a slash as literal text, never as a command', async () => {
+    // pi's `prompt` defaults `expandPromptTemplates` to true, dispatches a leading-slash string as an
+    // extension command and returns without prompting the agent at all. The note is the one queued
+    // string with no `[Message from X]:` prefix, so it is the only one that can begin with `/`, and the
+    // echo has already been written by the time the prompt is issued.
+    let alive = true;
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const sink = noteSink();
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+      bindNoteDelivery: sink.bind,
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;
+    expect(sink.deliver('/compact and stop')).toBe(true);
+    await fake.whenPrompted(2);
+    alive = false;
+    await run;
+
+    expect(fake.prompts[1]).toBe('/compact and stop');
+    expect(fake.promptOptions[1]?.expandPromptTemplates).toBe(false);
+  });
+
+  it('keeps the guard on the steered path, where a note is injected mid-turn', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
+      },
+    });
+    const sink = noteSink();
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      bindNoteDelivery: sink.bind,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    expect(sink.deliver('/help me')).toBe(true);
+    await fake.whenPrompted(2);
+    if (!opening.end) throw new Error('the opening prompt never reached the fake session');
+    opening.end();
+    await run;
+
+    expect(fake.prompts[1]).toBe('/help me');
+    expect(fake.promptOptions[1]).toEqual({ streamingBehavior: 'steer', expandPromptTemplates: false });
+  });
+
+  it('tears the sink down when the run ends normally, not only when it is aborted', async () => {
+    // The ordinary exit is the wait loop finding nothing left to wait for, which is the route a late
+    // note actually takes; the abort exit below is the other one. Both leave through the same `finally`.
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const sink = noteSink();
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      bindNoteDelivery: sink.bind,
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('completed');
+    expect(sink.unbound).toBe(true);
+  });
+
+  it('tears the sink down with the bus subscription and refuses a note after the abort', async () => {
+    const ac = new AbortController();
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const sink = noteSink();
+    const config = baseConfig({
+      abortSignal: ac.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => true,
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      bindNoteDelivery: sink.bind,
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;
+    expect(sink.unbound).toBe(false);
+    ac.abort();
+    await run;
+
+    expect(sink.unbound).toBe(true);
+    const before = messages.length;
+    expect(sink.deliver('too late')).toBe(false);
+    expect(fake.prompts).toEqual(['do the task']);
+    expect(messages).toHaveLength(before);
+  });
+});
+
+/**
+ * The team runner is the only producer that used to hand the webview pi's raw tool names and raw
+ * argument keys. `ToolCallCard` keys its icon and its IN line off the Damocles names, so the mapping
+ * has to happen here. Both destinations are asserted: the live `teamAgentToolCall` message AND the
+ * entry given to `persistence.appendAgentEntry`, which nothing reads until a user reopens the team.
+ */
+
+interface PiToolCallBlock { id: string; name: string; arguments: Record<string, unknown> }
+/** `appendAgentEntry` takes an open record, so the entry is read by key rather than by a shaped type. */
+type PersistedEntry = Record<string, unknown>;
+
+/** Runs one turn whose single assistant message carries the given pi `toolCall` blocks. */
+async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: ExtensionToWebviewMessage[]; entries: PersistedEntry[] }> {
+  const messages: ExtensionToWebviewMessage[] = [];
+  const entries: PersistedEntry[] = [];
+  const fake = new FakeSession({
+    onPrompt: (_t, s) => {
+      s.emit({ type: 'message_end', message: { role: 'assistant', content: blocks.map((b) => ({ type: 'toolCall', ...b })) } });
+      s.emit({ type: 'turn_end' });
+    },
+  });
+  const config = baseConfig({
+    createSession: async () => fake as never,
+    keepAlive: () => false,
+    onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+    persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
+  });
+
+  await new AgentRunner().startAgent(config);
+  return { messages, entries };
+}
+
+function toolCallMessages(messages: ExtensionToWebviewMessage[]): Array<{ toolName: string; toolInput: Record<string, unknown> }> {
+  return messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolCall' }> => m.type === 'teamAgentToolCall');
+}
+
+/** The persisted `tool_use` block for an id, from the assistant entry the runner appended. */
+function persistedToolUse(entries: PersistedEntry[], id: string): { name: string; input: Record<string, unknown> } {
+  for (const entry of entries) {
+    if (entry['type'] !== 'assistant' || !Array.isArray(entry['content'])) continue;
+    for (const block of entry['content'] as Array<{ type: string; id?: string; name?: string; input?: unknown }>) {
+      if (block.type === 'tool_use' && block.id === id) {
+        return { name: block.name ?? '', input: (block.input ?? {}) as Record<string, unknown> };
+      }
+    }
+  }
+  throw new Error(`expected a persisted tool_use block '${id}', found none in ${entries.length} entries`);
+}
+
+/** The live assistant `tool_use` block for an id, from the message the store consumes. */
+function assistantToolUse(messages: ExtensionToWebviewMessage[], id: string): { name: string; input: Record<string, unknown> } {
+  for (const m of messages) {
+    if (m.type !== 'teamAgentAssistant') continue;
+    for (const block of m.content as Array<{ type: string; id?: string; name?: string; input?: unknown }>) {
+      if (block.type === 'tool_use' && block.id === id) {
+        return { name: block.name ?? '', input: (block.input ?? {}) as Record<string, unknown> };
+      }
+    }
+  }
+  throw new Error(`expected a live tool_use block '${id}', found none`);
+}
+
+describe('AgentRunner tool normalization', () => {
+  it('maps a pi bash call to Bash in the message, the live block and the persisted entry', async () => {
+    const { messages, entries } = await runWithToolCalls([{ id: 'tc-1', name: 'bash', arguments: { command: 'ls -la' } }]);
+
+    expect(toolCallMessages(messages)).toEqual([
+      expect.objectContaining({ toolName: 'Bash', toolInput: { command: 'ls -la' } }),
+    ]);
+    expect(assistantToolUse(messages, 'tc-1').name).toBe('Bash');
+    expect(persistedToolUse(entries, 'tc-1').name).toBe('Bash');
+  });
+
+  it('rewrites read.path to file_path in the message, the live block and the persisted entry', async () => {
+    const { messages, entries } = await runWithToolCalls([{ id: 'tc-2', name: 'read', arguments: { path: 'c:/x.ts', limit: 20 } }]);
+
+    const sent = toolCallMessages(messages)[0];
+    expect(sent?.toolName).toBe('Read');
+    expect(sent?.toolInput).toEqual({ file_path: 'c:/x.ts', limit: 20 });
+    expect(sent?.toolInput).not.toHaveProperty('path');
+
+    const persisted = persistedToolUse(entries, 'tc-2');
+    expect(persisted.name).toBe('Read');
+    expect(persisted.input).toEqual({ file_path: 'c:/x.ts', limit: 20 });
+    expect(persisted.input).not.toHaveProperty('path');
+
+    const live = assistantToolUse(messages, 'tc-2');
+    expect(live.name).toBe('Read');
+    expect(live.input).toEqual({ file_path: 'c:/x.ts', limit: 20 });
+  });
+
+  it('maps find to Glob and grep.ignoreCase to -i', async () => {
+    const { messages, entries } = await runWithToolCalls([
+      { id: 'tc-3', name: 'find', arguments: { pattern: '**/*.ts' } },
+      { id: 'tc-4', name: 'grep', arguments: { pattern: 'todo', ignoreCase: true } },
+    ]);
+
+    expect(toolCallMessages(messages).map((m) => m.toolName)).toEqual(['Glob', 'Grep']);
+    expect(persistedToolUse(entries, 'tc-3').name).toBe('Glob');
+    const grep = persistedToolUse(entries, 'tc-4');
+    expect(grep.input).toEqual({ pattern: 'todo', '-i': true });
+    expect(grep.input).not.toHaveProperty('ignoreCase');
+  });
+
+  it('passes an unmapped tool name and its arguments through untouched', async () => {
+    // Custom and MCP tools are already Damocles-shaped, so the mapping must be identity for them.
+    const { messages, entries } = await runWithToolCalls([
+      { id: 'tc-5', name: 'mcp__pi__team_send_message', arguments: { to: 'lead', content: 'done' } },
+    ]);
+
+    expect(toolCallMessages(messages)[0]?.toolName).toBe('mcp__pi__team_send_message');
+    expect(persistedToolUse(entries, 'tc-5').input).toEqual({ to: 'lead', content: 'done' });
+  });
+});
+
+/**
+ * Live shell output for team agents. The runner pushes `tool_execution_update` frames through the same
+ * 250ms keep-latest coalescer the session and subagent paths use, so the first frame for a call is a
+ * leading edge and lands synchronously.
+ */
+
+type ProgressMessage = Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolProgress' }>;
+
+/**
+ * A pi partial tool result, shaped exactly as `pi/packages/coding-agent/src/core/tools/bash.ts:353`
+ * emits it: `details` is always present and `truncation` is set to `undefined`, not omitted, when the
+ * output is not truncated. Never change this to omit `details` without re-reading that emitter.
+ */
+function partialResult(text: string, truncated?: boolean): Record<string, unknown> {
+  return {
+    content: [{ type: 'text', text }],
+    details: { truncation: truncated === true ? { truncated: true } : undefined },
+  };
+}
+
+async function runEmitting(emitEvents: (s: FakeSession) => void): Promise<ExtensionToWebviewMessage[]> {
+  const messages: ExtensionToWebviewMessage[] = [];
+  const fake = new FakeSession({
+    onPrompt: (_t, s) => {
+      emitEvents(s);
+      s.emit({ type: 'turn_end' });
+    },
+  });
+  const config = baseConfig({
+    createSession: async () => fake as never,
+    keepAlive: () => false,
+    onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+  });
+
+  await new AgentRunner().startAgent(config);
+  return messages;
+}
+
+function progressMessages(messages: ExtensionToWebviewMessage[]): ProgressMessage[] {
+  return messages.filter((m): m is ProgressMessage => m.type === 'teamAgentToolProgress');
+}
+
+describe('AgentRunner live tool output', () => {
+  it('emits a progress frame for a shell call, keyed by tool call id', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: partialResult('compiling...') });
+    });
+
+    expect(progressMessages(messages)).toEqual([
+      expect.objectContaining({ agentId: 'a1', toolUseId: 'tc-1', output: 'compiling...', outputTruncated: false }),
+    ]);
+  });
+
+  it('carries the truncated flag when pi reports the accumulator dropped output', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: partialResult('tail of a long log', true) });
+    });
+
+    expect(progressMessages(messages)[0]?.outputTruncated).toBe(true);
+  });
+
+  it('emits the empty first frame instead of swallowing it', async () => {
+    // The waiting-for-output state is exactly this frame, so a truthiness guard here would delete it.
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: partialResult('') });
+    });
+
+    const progress = progressMessages(messages);
+    expect(progress).toHaveLength(1);
+    expect(progress[0]?.output).toBe('');
+  });
+
+  it('reports untruncated when a partial carries no details at all', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: { content: [{ type: 'text', text: 'output' }] } });
+    });
+
+    expect(progressMessages(messages)[0]?.outputTruncated).toBe(false);
+  });
+
+  it('emits nothing for a tool with no live output', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_update', toolCallId: 'tc-2', toolName: 'read', args: {}, partialResult: partialResult('half a file') });
+    });
+
+    expect(progressMessages(messages)).toEqual([]);
+  });
+
+  it('drops a coalesced frame that is still pending when the call ends', async () => {
+    // A late partial landing after the result would resurrect stale output into a finished card.
+    vi.useFakeTimers();
+    try {
+      const messages = await runEmitting((s) => {
+        s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: partialResult('first') });
+        s.emit({ type: 'tool_execution_update', toolCallId: 'tc-1', toolName: 'bash', args: {}, partialResult: partialResult('second') });
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: partialResult('final'), isError: false });
+        vi.advanceTimersByTime(1000);
+      });
+
+      expect(progressMessages(messages).map((m) => m.output)).toEqual(['first']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * The team path has no `toolMetadata` message, so a tool result's `details` reaches the card on
+ * `teamAgentToolResult` or never. The cancelled marker rides on `details`, which is why this matters.
+ */
+describe('AgentRunner tool result metadata', () => {
+  function resultMessages(messages: ExtensionToWebviewMessage[]): Array<Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }>> {
+    return messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> => m.type === 'teamAgentToolResult');
+  }
+
+  it('carries the result details through to the card, normalized the same way the other producers do', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'tc-1',
+        toolName: 'bash',
+        result: { content: [{ type: 'text', text: 'partial' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' } },
+        isError: false,
+      });
+    });
+
+    const results = resultMessages(messages);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.metadata).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' });
+  });
+
+  it('applies the shared normalizer rather than passing details through raw', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'tc-1',
+        toolName: 'edit',
+        result: { content: [{ type: 'text', text: 'edited' }], details: { firstChangedLine: 42 } },
+        isError: false,
+      });
+    });
+
+    expect(resultMessages(messages)[0]?.metadata).toEqual({ firstChangedLine: 42, editLineNumber: 42 });
+  });
+
+  it('omits metadata entirely when the result carried no details', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read', result: { content: [{ type: 'text', text: 'file body' }] }, isError: false });
+    });
+
+    const results = resultMessages(messages);
+    expect(results).toHaveLength(1);
+    expect(results[0]).not.toHaveProperty('metadata');
+  });
+});
+
+/**
+ * A team reopened from history is rebuilt from the persisted entries alone, so a result the runner
+ * emits to the webview and never writes down leaves the reloaded card with no outcome to render.
+ */
+describe('AgentRunner tool result persistence', () => {
+  async function persistedEntries(emitEvents: (s: FakeSession) => void): Promise<PersistedEntry[]> {
+    const entries: PersistedEntry[] = [];
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => {
+        emitEvents(s);
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
+    });
+
+    await new AgentRunner().startAgent(config);
+    return entries;
+  }
+
+  /** The persisted `tool_result` block for an id, from the entry the runner appended. */
+  function persistedToolResult(entries: PersistedEntry[], id: string): Record<string, unknown> {
+    for (const entry of entries) {
+      if (entry['type'] !== 'tool_result' || !Array.isArray(entry['content'])) continue;
+      for (const block of entry['content'] as Array<Record<string, unknown>>) {
+        if (block['type'] === 'tool_result' && block['tool_use_id'] === id) return block;
+      }
+    }
+    throw new Error(`expected a persisted tool_result block '${id}', found none in ${entries.length} entries`);
+  }
+
+  it('writes the result text down under the id of the call it belongs to', async () => {
+    const entries = await persistedEntries((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read', result: { content: [{ type: 'text', text: 'file body' }] }, isError: false });
+    });
+
+    expect(persistedToolResult(entries, 'tc-1')).toEqual({ type: 'tool_result', tool_use_id: 'tc-1', content: 'file body', is_error: false });
+  });
+
+  it('records an errored result as an error', async () => {
+    const entries = await persistedEntries((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: { content: [{ type: 'text', text: 'command not found' }] }, isError: true });
+    });
+
+    expect(persistedToolResult(entries, 'tc-1')['is_error']).toBe(true);
+  });
+
+  it('carries the cancelled marker, which is the only thing that tells a stopped call from a finished one', async () => {
+    const entries = await persistedEntries((s) => {
+      s.emit({
+        type: 'tool_execution_end',
+        toolCallId: 'tc-1',
+        toolName: 'bash',
+        result: { content: [{ type: 'text', text: 'partial' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' } },
+        isError: false,
+      });
+    });
+
+    const block = persistedToolResult(entries, 'tc-1');
+    expect(block['is_error']).toBe(false);
+    expect(block['metadata']).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' });
+  });
+
+  it('writes one result entry per call, each addressed to its own id', async () => {
+    const entries = await persistedEntries((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read', result: { content: [{ type: 'text', text: 'first' }] }, isError: false });
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-2', toolName: 'read', result: { content: [{ type: 'text', text: 'second' }] }, isError: false });
+    });
+
+    expect(persistedToolResult(entries, 'tc-1')['content']).toBe('first');
+    expect(persistedToolResult(entries, 'tc-2')['content']).toBe('second');
+  });
+
+  it('keeps a bare-string result instead of blanking both the card and the log', async () => {
+    // A custom tool or an MCP shim can answer with a plain string rather than a content array. Both
+    // consumers read the same joined text, so blanking it loses the result on the card and writes the
+    // blank into the log a reopened team replays as authoritative.
+    const messages: ExtensionToWebviewMessage[] = [];
+    const entries: PersistedEntry[] = [];
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: 'plain string result' } as never);
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
+    });
+
+    await new AgentRunner().startAgent(config);
+
+    expect(persistedToolResult(entries, 'tc-1')['content']).toBe('plain string result');
+    const card = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> => m.type === 'teamAgentToolResult');
+    expect(card?.result).toBe('plain string result');
   });
 });

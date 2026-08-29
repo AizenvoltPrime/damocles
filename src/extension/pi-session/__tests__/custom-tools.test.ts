@@ -3,7 +3,8 @@ import { readFile } from 'fs/promises';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
-import { buildCustomTools, CUSTOM_TOOL_NAMES } from '../tools';
+import { buildCustomTools, CUSTOM_TOOL_NAMES, OVERRIDE_TOOL_NAMES } from '../tools';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import { WEB_PI_TOOL_NAMES } from '../web-access';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
 
@@ -17,8 +18,20 @@ function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
     createEditToolDefinition: vi.fn(() => ({ execute: editExec })),
+    // The bash override spreads its metadata from a delegate built at construction, so this stub must
+    // answer with a whole definition, not just an `execute`.
+    createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
+
+/** Required of every caller, and irrelevant to what this file asserts. */
+const shellDeps = (): { getShellOptions: () => Record<string, never>; shellCancel: ShellCancelStore; deliverUserNote: (text: string) => void; shellJob: undefined } => ({
+  getShellOptions: () => ({}),
+  shellCancel: new ShellCancelStore(),
+  deliverUserNote: () => undefined,
+  // The job object is win32-only and this file asserts tool composition, not process lifetime.
+  shellJob: undefined,
+});
 
 function fakePermissionHandler(): PermissionHandler {
   return {
@@ -55,7 +68,7 @@ function build(permissionHandler = fakePermissionHandler()) {
   // A stub subagent manager so the three Phase 5 subagent tools are appended. Registration reads the
   // spawnable-agent list (to advertise subagent_type values); the primary session always wires one.
   const subagentManager = { getSpawnableAgents: () => [] } as unknown as SubagentManagerArg;
-  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid', subagentManager });
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid', subagentManager, ...shellDeps() });
   return { tools, tool: lookup(tools), permissionHandler };
 }
 
@@ -68,7 +81,7 @@ function buildWithSteer(status: SteerStatus, record?: SteerRecord) {
     steer: async () => status,
     getRecord: () => record,
   } as unknown as SubagentManagerArg;
-  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', subagentManager });
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', subagentManager, ...shellDeps() });
   return { tool: lookup(tools) };
 }
 
@@ -90,7 +103,7 @@ function parsed(result: AgentToolResult<unknown>): Record<string, unknown> {
 describe('buildCustomTools — conformance', () => {
   it('registers the Damocles custom tools then the always-built web tools, in order', () => {
     const { tools } = build();
-    expect(tools.map((t) => t.name)).toEqual([...CUSTOM_TOOL_NAMES, ...WEB_PI_TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...OVERRIDE_TOOL_NAMES, ...CUSTOM_TOOL_NAMES, ...WEB_PI_TOOL_NAMES]);
   });
 
   it('added tools use the Claude-Code schemas', () => {
@@ -110,7 +123,7 @@ describe('buildCustomTools — conformance', () => {
   // `CUSTOM_TOOL_NAMES` legitimately omits it; its registration is covered by damocles-extension.test.ts
   // and its behaviour by tool-search.test.ts. Everything below is still genuinely dropped.
   it('does not register any dropped tools', () => {
-    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'Monitor', 'EnterWorktree', 'NotebookEdit', 'LSP', 'StructuredOutput']) {
+    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'EnterWorktree', 'NotebookEdit', 'LSP', 'StructuredOutput']) {
       expect(CUSTOM_TOOL_NAMES).not.toContain(dropped);
     }
   });
@@ -123,7 +136,7 @@ describe('buildCustomTools — conformance', () => {
   });
 
   it('omits the subagent tools when no manager is wired (nested subagents — no recursion)', () => {
-    const nested = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid' });
+    const nested = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', ...shellDeps() });
     const names = nested.map((t) => t.name);
     expect(names).not.toContain('Agent');
     expect(names).not.toContain('GetSubagentResult');
@@ -285,5 +298,79 @@ describe('SteerSubagent — details + phrasings', () => {
     const { tool } = buildWithSteer('not-found', undefined);
     const result = await tool('SteerSubagent').execute('tc', { agent_id: 'a1', message: 'go left' }, undefined, undefined, {} as never);
     expect((result as { details: object }).details).toEqual({ steerStatus: 'not-found' });
+  });
+});
+
+/**
+ * `deliverUserNote` is per build context, and this is the seam that carries it from the deps object to
+ * the shell tools. Which agent each context names is asserted in `tools/__tests__/note-delivery.test.ts`.
+ */
+describe('cancel note delivery wiring', () => {
+  /** A bash delegate that settles only when the signal it was handed aborts, so a Stop lands on a live call. */
+  function hangingPi(): PiCodingAgentModule {
+    return {
+      ...fakePi(),
+      createBashToolDefinition: () => ({
+        name: 'bash',
+        label: 'Bash',
+        description: 'pi bash',
+        parameters: {},
+        execute: async (_id: string, _params: unknown, signal?: AbortSignal) => {
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) resolve();
+            else signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return { content: [{ type: 'text', text: 'partial' }], details: undefined };
+        },
+      }),
+    } as unknown as PiCodingAgentModule;
+  }
+
+  function buildShellContext(shellCancel: ShellCancelStore, deliverUserNote: (text: string) => void) {
+    const tools = buildCustomTools({
+      pi: hangingPi(),
+      cwd: '/cwd',
+      permissionHandler: fakePermissionHandler(),
+      getSessionId: () => 'sid',
+      getShellOptions: () => ({}),
+      shellCancel,
+      deliverUserNote,
+      shellJob: undefined,
+    });
+    return lookup(tools)('bash');
+  }
+
+  it('threads the context callback into the shell tools, so a Stop with a note reaches it', async () => {
+    const delivered: string[] = [];
+    const shellCancel = new ShellCancelStore();
+    const bash = buildShellContext(shellCancel, (text) => delivered.push(text));
+
+    const pending = bash.execute('c1', { command: 'sleep 300' }, undefined, undefined, {} as never);
+    // Non-vacuous: an unregistered call answers false, so this also proves the tool registered itself.
+    expect(shellCancel.cancel('c1', 'wrong loop, use seq 1 5')).toBe(true);
+    await pending;
+
+    expect(delivered).toEqual(['wrong loop, use seq 1 5']);
+  });
+
+  it("gives each context its own delivery, so one agent's note never lands on another", async () => {
+    const main: string[] = [];
+    const nested: string[] = [];
+    const shellCancel = new ShellCancelStore();
+    const mainBash = buildShellContext(shellCancel, (text) => main.push(text));
+    const nestedBash = buildShellContext(shellCancel, (text) => nested.push(text));
+
+    const mainPending = mainBash.execute('main-1', { command: 'sleep 300' }, undefined, undefined, {} as never);
+    const nestedPending = nestedBash.execute('nested-1', { command: 'sleep 300' }, undefined, undefined, {} as never);
+
+    expect(shellCancel.cancel('nested-1', 'wrong dir')).toBe(true);
+    await nestedPending;
+    expect(nested).toEqual(['wrong dir']);
+    expect(main).toEqual([]);
+
+    expect(shellCancel.cancel('main-1', 'and stop that too')).toBe(true);
+    await mainPending;
+    expect(main).toEqual(['and stop that too']);
+    expect(nested).toEqual(['wrong dir']);
   });
 });

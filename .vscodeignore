@@ -45,6 +45,7 @@ node_modules/**
 !node_modules/@google/genai/**/*.json
 !node_modules/@google/genai/**/*.mjs
 !node_modules/@hono/node-server/**
+!node_modules/@koromix/koffi-*/**
 !node_modules/@modelcontextprotocol/sdk/**/*.js
 !node_modules/@modelcontextprotocol/sdk/**/*.json
 !node_modules/@opentelemetry/api/**
@@ -130,6 +131,7 @@ node_modules/**
 !node_modules/json-schema-typed/**
 !node_modules/jwa/**
 !node_modules/jws/**
+!node_modules/koffi/**
 !node_modules/long/**
 !node_modules/lru-cache/**
 !node_modules/marked/**

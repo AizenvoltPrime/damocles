@@ -198,6 +198,13 @@ export interface AgentRunConfig {
   forgetSession: (session: AgentSession) => void;
   abortSignal: AbortSignal;
   messageBus: MessageBus;
+  /**
+   * Publishes this run's note sink and returns its teardown. The runner registers on start and tears
+   * the registration down beside the bus unsubscribe, so a note arriving after the run is refused
+   * rather than resolved against a dead session. Required, not an optional hook: a construction site
+   * that forgets it is exactly how a user note goes back to vanishing with no echo.
+   */
+  bindNoteDelivery: (deliver: (text: string) => boolean) => () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
   persistence: TeamPersistenceWriter;
@@ -271,6 +278,13 @@ export interface AgentMcpContext {
   role: 'lead' | 'specialist';
   messageBus: MessageBus;
   scratchpad: Scratchpad;
+  /**
+   * Delivers a user-authored note straight to this agent's live run, echoing it to the overlay exactly
+   * once. Returns false when no live runner consumed it, so the caller can report the failure instead
+   * of assuming delivery. Deliberately not the MessageBus: the bus drops a note silently when the run's
+   * `unsubscribeBus()` has already fired, and again when the sender token equals this agent's own name.
+   */
+  deliverUserNote: (text: string) => boolean;
   startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
   /** Re-run a failed/cancelled specialist as a fresh attempt (reuses agentId, preserves transcript). */
   redispatchSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;

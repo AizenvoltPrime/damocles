@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, reactive, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import type { MemoryTier, MemoryEntry, SearchResult } from '@shared/types/memory';
 import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useMemoryStore';
 import { useVSCode } from '@/composables/useVSCode';
@@ -13,7 +14,7 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { IconArrowLeft, IconBrain, IconSearch, IconTrash, IconCopy, IconCheck } from '@/components/icons';
 import { Plus, Pin, PinOff, History, Network, EyeOff, RotateCcw, User, Save, ChevronDown, ChevronRight } from 'lucide-vue-next';
-import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import { useOverlayDialog } from '@/composables/useOverlayDialog';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 type TabId = 'all' | 'note' | 'observations' | 'search';
@@ -38,11 +39,15 @@ const emit = defineEmits<{
   (e: 'loadMoreObservations'): void;
 }>();
 
-useOverlayEscape(() => {
+/** A nested dialog is above this panel, so it answers first and the panel stays open behind it. */
+function requestClose(): void {
   if (historyDialogId.value !== null || relatedDialogId.value !== null) return;
   emit('close');
-});
+}
 
+const { zIndex, root, titleId } = useOverlayDialog(requestClose);
+
+const { t } = useI18n();
 const store = useMemoryStore();
 const { postMessage } = useVSCode();
 
@@ -323,11 +328,20 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="absolute inset-0 z-50 flex flex-col bg-background overflow-hidden">
+  <div
+    ref="root"
+    role="dialog"
+    aria-modal="true"
+    :aria-labelledby="titleId"
+    tabindex="-1"
+    class="absolute inset-0 flex flex-col bg-background overflow-hidden outline-none"
+    :style="{ zIndex }"
+  >
     <header class="flex items-center gap-3 px-4 py-3 bg-muted border-b border-border/30 shrink-0">
       <Button
         variant="ghost"
         size="icon-sm"
+        :aria-label="t('overlay.close')"
         class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
         @click="emit('close')"
       >
@@ -340,7 +354,7 @@ onUnmounted(() => {
       />
 
       <div class="flex-1 min-w-0">
-        <h2 class="text-sm font-medium text-foreground">
+        <h2 :id="titleId" class="text-sm font-medium text-foreground">
           Memory
         </h2>
         <p class="text-xs text-muted-foreground">

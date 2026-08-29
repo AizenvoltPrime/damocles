@@ -2,8 +2,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
 import { ensurePiSessionDir } from '../pi-session/session-store';
+import { mapPiToolName } from '../pi-session/tool-normalization';
 import type { TeamPersistenceWriter } from './types';
 import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentContentBlock } from '../../shared/types/team';
+
+/**
+ * One log file can hold both spellings of a tool name: entries written before the runner mapped names
+ * carry pi's raw `bash`, later ones carry `Bash`, and the card renderer keys off the mapped spelling.
+ * `mapPiToolName` is identity for a name that is already mapped, so applying it on read is safe for
+ * every entry regardless of when it was written.
+ */
+function mapToolNames(blocks: TeamAgentContentBlock[]): TeamAgentContentBlock[] {
+  return blocks.map((block) => (block.type === 'tool_use' ? { ...block, name: mapPiToolName(block.name) } : block));
+}
 
 export class TeamPersistence implements TeamPersistenceWriter {
   private readonly cwd: string;
@@ -310,10 +321,10 @@ export class TeamPersistence implements TeamPersistenceWriter {
             } else if (Array.isArray(entryContent)) {
               turns.push(entryContent as TeamAgentContentBlock[]);
             }
-          } else if (entryType === 'assistant') {
+          } else if (entryType === 'assistant' || entryType === 'tool_result') {
             const entryContent = entry['content'];
             if (Array.isArray(entryContent)) {
-              turns.push(entryContent as TeamAgentContentBlock[]);
+              turns.push(mapToolNames(entryContent as TeamAgentContentBlock[]));
             }
           }
         } catch {

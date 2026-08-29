@@ -2,7 +2,7 @@ import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
-import { TOOL_AGENT, TOOL_TASK_LIST, TOOL_MONITOR, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
@@ -24,7 +24,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     assistantReplay: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, taskStore, teamStore, monitorStore } = ctx.stores;
+      const { uiStore, streamingStore, subagentStore, taskStore, teamStore } = ctx.stores;
 
       if (msg.tools) {
         for (const tool of msg.tools) {
@@ -44,13 +44,6 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
             // persisted team (per-agent models, tokens, tool counts, aggregate stats) so the historical
             // card matches a freshly-run one instead of showing zeros until the overlay is opened.
             ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
-          }
-          if (tool.name === TOOL_MONITOR) {
-            monitorStore.restoreFromHistory(
-              tool.id,
-              tool.input as Record<string, unknown>,
-              tool.metadata as Record<string, unknown> | null | undefined,
-            );
           }
           if (tool.name === TOOL_TASK_LIST && tool.result) {
             try {

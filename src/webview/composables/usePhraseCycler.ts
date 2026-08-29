@@ -19,7 +19,7 @@ import {
  * // With custom phrases
  * const { currentPhrase } = usePhraseCycler(
  *   () => true,
- *   AGENT_PHRASES['explorer']
+ *   ['Mapping the codebase...', 'Scouting ahead...']
  * );
  */
 export function usePhraseCycler(

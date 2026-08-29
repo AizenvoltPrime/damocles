@@ -45,9 +45,5 @@ export function createBackgroundTaskHandlers(): Partial<HandlerRegistry> {
       });
       return { forceScrollToBottom: true };
     },
-
-    monitorEvent: (msg, ctx) => {
-      ctx.stores.monitorStore.incrementEventCount(msg.taskId);
-    },
   };
 }

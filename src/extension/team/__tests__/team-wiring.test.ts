@@ -347,6 +347,7 @@ describe('team wiring — the lead is never re-prompted with an identical [REVIE
       forgetSession: () => undefined,
       abortSignal: new AbortController().signal,
       messageBus: w.messageBus,
+      bindNoteDelivery: () => () => undefined,
       onMessage: () => undefined,
       teamId: 'team-1',
       persistence: { appendAgentEntry: () => undefined, appendTeamEntry: () => undefined, flush: async () => undefined },
@@ -590,5 +591,68 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
 
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
+/**
+ * The user-note seam: `PiSession` hands a team agent's cancel note to `ctx.deliverUserNote`, built by
+ * `buildLeadContext` / `buildSpecialistContext` and backed by the live run's own sink. It bypasses the
+ * MessageBus deliberately, because the bus discards such a note with no signal to the caller.
+ */
+describe('team wiring: a user note reaches the live run, or says it did not', () => {
+  /** The real MCP-context hook, resolved the same way a team agent's tools resolve it. */
+  function deliverUserNote(w: Wiring, name: string, text: string): boolean {
+    return (w.runner as unknown as {
+      buildSpecialistContext: (id: string, scope: string, name: string) => { deliverUserNote: (t: string) => boolean };
+    }).buildSpecialistContext(`id-${name}`, `id-${name}#0`, name).deliverUserNote(text);
+  }
+
+  function echoesOf(w: Wiring, text: string): ExtensionToWebviewMessage[] {
+    return w.webviewMessages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === text);
+  }
+
+  it('prompts a running specialist and echoes the note exactly once', async () => {
+    const w = makeWiring(['A']);
+    const a = startSpecialist(w, 'A');
+    await w.settle();
+
+    expect(deliverUserNote(w, 'A', 'the shell command was stopped')).toBe(true);
+    await a.whenPrompted(2);
+
+    // First segment of the batch, so the note is prompted verbatim with no `[Message from X]` prefix.
+    expect(deliveredPrompts(a)[0]!.split('\n\n')[0]).toBe('the shell command was stopped');
+    expect(echoesOf(w, 'the shell command was stopped')).toHaveLength(1);
+  });
+
+  it('reaches an agent the model named `user`, which its own bus subscription discards', async () => {
+    const w = makeWiring(['user']);
+    const u = startSpecialist(w, 'user');
+    await w.settle();
+
+    // The bus route first: the subscriber drops `msg.from === config.name`, so this is delivered nowhere
+    // and the sender is told nothing. The control probe proves the absence is a filter, not a slow tick.
+    w.messageBus.send('user', 'user', 'sent through the bus');
+    await drainPastControl(w, u, 'user');
+    expect(deliveredPrompts(u).join('\n')).toContain(CONTROL_MESSAGE);
+    expect(deliveredPrompts(u).join('\n')).not.toContain('sent through the bus');
+
+    expect(deliverUserNote(w, 'user', 'sent through the seam')).toBe(true);
+    await u.whenPrompted(3);
+    expect(deliveredPrompts(u)).toContain('sent through the seam');
+    expect(echoesOf(w, 'sent through the seam')).toHaveLength(1);
+  });
+
+  it('returns false once the run has torn down, echoing nothing', async () => {
+    const w = makeWiring(['A']);
+    const a = startSpecialist(w, 'A');
+    await w.settle();
+
+    w.runner.cancelSpecialist('A');
+    await w.settle();
+
+    const before = w.webviewMessages.length;
+    expect(deliverUserNote(w, 'A', 'too late')).toBe(false);
+    expect(w.webviewMessages).toHaveLength(before);
+    expect(deliveredPrompts(a).join('\n')).not.toContain('too late');
   });
 });

@@ -7,7 +7,9 @@ import type { ForkSpawnArgs } from '../../../shared/types/session';
 
 const H = vi.hoisted(() => {
   const seq: string[] = [];
-  const captured: { services: unknown[] } = { services: [] };
+  const captured: { services: unknown[]; customTools: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> } = { services: [], customTools: [] };
+  // The bash delegate's body, swappable per test so a case can hold a command open across a Stop click.
+  let bashExecute: (...a: never[]) => Promise<unknown> = async () => ({ content: [], details: undefined });
   let sessionCounter = 0;
   let lastSession: ReturnType<typeof makeSession> | null = null;
   // Opt-in: a test can swap the structural sessionManager fake for a REAL pi SessionManager on a
@@ -74,6 +76,7 @@ const H = vi.hoisted(() => {
       prompt: vi.fn(async () => undefined),
       steer: vi.fn(async () => undefined),
       followUp: vi.fn(async () => undefined),
+      sendUserMessage: vi.fn(async () => undefined),
       sendCustomMessage: vi.fn(async () => undefined),
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
       abort: vi.fn(async () => undefined),
@@ -103,6 +106,10 @@ const H = vi.hoisted(() => {
         getGlobalSettings: vi.fn(() => ({})),
         getProjectSettings: vi.fn(() => ({})),
         getPackages: vi.fn(() => []),
+        // The bash override builds its delegate during buildCustomTools, so session construction reads
+        // both of these before any turn runs.
+        getShellCommandPrefix: vi.fn(() => undefined),
+        getShellPath: vi.fn(() => undefined),
       },
       modelRuntime: {
         getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
@@ -139,8 +146,9 @@ const H = vi.hoisted(() => {
 
   const fakePi = {
     createAgentSessionServices: vi.fn(async () => services),
-    createAgentSessionFromServices: vi.fn(async (opts: { services: unknown }) => {
+    createAgentSessionFromServices: vi.fn(async (opts: { services: unknown; customTools?: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> }) => {
       captured.services.push(opts.services);
+      captured.customTools = opts.customTools ?? [];
       return { session: makeSession() };
     }),
     createAgentSessionRuntime: vi.fn(async (factory: (o: { sessionManager: unknown; cwd: string; agentDir: string }) => Promise<{ session: unknown }>, opts: { cwd: string; agentDir: string; sessionManager: unknown }) => {
@@ -168,6 +176,9 @@ const H = vi.hoisted(() => {
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
+    // The bash override spreads its metadata from a delegate built at construction, so this must answer
+    // with a whole definition, not just an `execute`.
+    createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: (...a: never[]) => bashExecute(...a) })),
   };
 
   return {
@@ -178,6 +189,7 @@ const H = vi.hoisted(() => {
     getServices: () => services,
     getLastSession: () => lastSession,
     setSessionManagerFactory: (f: (() => unknown) | null) => { sessionManagerFactory = f; },
+    setBashExecute: (fn: (...a: never[]) => Promise<unknown>) => { bashExecute = fn; },
   };
 });
 
@@ -192,6 +204,27 @@ vi.mock('../pi-loader', () => ({
   PI_MIN_NODE_MAJOR: 22,
   nodeSupportsPi: () => true,
 }));
+
+
+// The real factory returns undefined off win32, which would make every assertion below vacuous, so the
+// module is faked to hand out a distinct disposable per call.
+const JOB = vi.hoisted(() => ({ created: [] as Array<{ id: number; disposed: number }>, next: 0 }));
+vi.mock('../tools/process-tree', () => ({
+  createShellSessionJob: () => {
+    const handle = { id: JOB.next++, disposed: 0 };
+    JOB.created.push(handle);
+    return { dispose: () => { handle.disposed += 1; } };
+  },
+  createShellJob: () => undefined,
+  killProcessTree: () => undefined,
+}));
+
+// A recording pass-through, not a stub: every other test in this file needs the real tool set, and the
+// only thing this adds is the deps object each of the three build sites hands in.
+vi.mock('../tools', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tools')>();
+  return { ...actual, buildCustomTools: vi.fn(actual.buildCustomTools) };
+});
 
 vi.mock('../agent-dir', () => ({
   ensurePiAgentDir: (dir: string) => dir,
@@ -221,7 +254,7 @@ import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team-tools';
 import { deferredToolNames } from '../tools/deferred-tools';
-import { CUSTOM_TOOL_NAMES } from '../tools';
+import { CUSTOM_TOOL_NAMES, buildCustomTools } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
@@ -775,13 +808,13 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     session.queueInput('a', 'q1');
     session.queueInput('b', 'q2');
 
-    session.onQueuedInputsDelivered(); // adapter calls this on the user message_end delivery
+    session.onQueuedInputsDelivered('a\n\nb'); // adapter calls this with the delivered user message_end text
 
     const batch = messages.find((m) => m.type === 'queueBatchProcessed');
     expect(batch).toMatchObject({ messageIds: ['q1', 'q2'], combinedContent: 'a\n\nb' });
     // Buffer cleared — a second delivery emits nothing.
     messages.length = 0;
-    session.onQueuedInputsDelivered();
+    session.onQueuedInputsDelivered('a\n\nb');
     expect(messages.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
     await session.dispose();
   });
@@ -797,7 +830,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     // Delivery (user message_end) flushes the buffer but does NOT write yet — pi hasn't committed the
     // steered entry to the tree at this point, so keying it here would mis-key to the prior turn.
-    expect(session.onQueuedInputsDelivered()).toBe(true);
+    expect(session.onQueuedInputsDelivered('a\n\nb')).toBe(true);
     expect(append.mock.calls.some((c) => c[0] === 'damocles-mid-stream')).toBe(false);
 
     // The adapter resolves the committed entry id at the next assistant message_start and calls back.
@@ -814,7 +847,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const live = H.getLastSession()!;
     const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
 
-    expect(session.onQueuedInputsDelivered()).toBe(false);
+    expect(session.onQueuedInputsDelivered('anything')).toBe(false);
     expect(append.mock.calls.some((c) => c[0] === 'damocles-mid-stream')).toBe(false);
     await session.dispose();
   });
@@ -841,7 +874,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     session.cancel();
     expect(messages.some((m) => m.type === 'queueCancelled' && m.messageId === 'q1')).toBe(true);
     // The dropped message is not re-delivered.
-    session.onQueuedInputsDelivered();
+    session.onQueuedInputsDelivered('pending');
     expect(messages.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
     await session.dispose();
   });
@@ -922,6 +955,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
+    s.cancelToolCall('x');
 
     // async methods
     await Promise.all([
@@ -3745,6 +3779,230 @@ describe('PiSession custom-provider fallback warning', () => {
 
     expect(H.getLastSession()).not.toBeNull();
     expect(warn).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+});
+
+/**
+ * The MAIN `buildCustomTools` call site's note delivery. The other two sites are reachable from a bare
+ * PiSession and are covered in `tools/__tests__/note-delivery.test.ts`; this one lives inside the
+ * runtime factory, so only this harness can reach it.
+ */
+describe('cancel note delivery: the main build site', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.captured.customTools = [];
+    H.resetServices();
+  });
+  afterEach(async () => {
+    H.setBashExecute(async () => ({ content: [], details: undefined }));
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Hold a bash call open until the signal it was handed aborts, so the Stop click lands on a live call. */
+  function holdBashUntilAborted(): void {
+    H.setBashExecute((async (_id: string, _params: unknown, signal?: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) resolve();
+        else signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { content: [{ type: 'text', text: 'partial' }], details: undefined };
+    }) as unknown as (...a: never[]) => Promise<unknown>);
+  }
+
+  it('queues the note on the PANEL session as a real user turn and echoes it into the transcript', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    holdBashUntilAborted();
+
+    const bash = H.captured.customTools.find((t) => t.name === 'bash');
+    // Non-vacuous: without a real bash tool from the real factory the assertions below say nothing.
+    expect(bash).toBeDefined();
+    const pending = (bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>)('call-1', { command: 'sleep 300' }, undefined, undefined, {});
+
+    expect(session.cancelToolCall('call-1', 'wrong loop, use seq 1 5')).toBe(true);
+    await pending;
+
+    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn> };
+    expect(piSession.sendUserMessage).toHaveBeenCalledWith('wrong loop, use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
+
+    const echo = messages.filter((m) => m.type === 'userMessage');
+    expect(echo).toHaveLength(1);
+    expect(echo[0]).toMatchObject({ type: 'userMessage', content: 'wrong loop, use seq 1 5', isInjected: true });
+    await session.dispose();
+  });
+
+  it('delivers a note starting with a slash as literal text, never as a command', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    holdBashUntilAborted();
+
+    const bash = H.captured.customTools.find((t) => t.name === 'bash');
+    expect(bash).toBeDefined();
+    const pending = (bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>)('call-2', { command: 'sleep 300' }, undefined, undefined, {});
+
+    expect(session.cancelToolCall('call-2', '/compact and use seq 1 5')).toBe(true);
+    await pending;
+
+    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn> };
+    // `expandPromptTemplates: false` is the guard: pi's prompt() dispatches an extension command and
+    // expands skills and templates only when it is true, so the note can never be executed or throw.
+    expect(piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
+    expect(piSession.prompt).not.toHaveBeenCalled();
+    expect(piSession.steer).not.toHaveBeenCalled();
+    // The text reaches the transcript exactly as typed, with no expansion and no leading-slash stripping.
+    expect(messages.filter((m) => m.type === 'userMessage')[0]).toMatchObject({ content: '/compact and use seq 1 5' });
+    await session.dispose();
+  });
+
+  it('dispose empties the cancel store, so a call it still held cannot keep the session reachable', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    H.setBashExecute((async () => { await gate; return { content: [], details: undefined }; }) as unknown as (...a: never[]) => Promise<unknown>);
+
+    const bash = H.captured.customTools.find((t) => t.name === 'bash');
+    expect(bash).toBeDefined();
+    const run = bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>;
+    const probe = run('call-probe', { command: 'sleep 300' }, undefined, undefined, {});
+    const held = run('call-held', { command: 'sleep 300' }, undefined, undefined, {});
+    // Not vacuous: an entry registered the same way is live right now, so the store is not simply empty.
+    // `cancel` is idempotent, so the probe is a second id rather than a second cancel of the same one.
+    const store = (session as unknown as { shellCancel: { cancel: (id: string) => boolean } }).shellCancel;
+    expect(store.cancel('call-probe')).toBe(true);
+
+    await session.dispose();
+
+    // Each entry closes over its build context, so one that never releases pins the disposed PiSession,
+    // its subagent manager and its message bus for the life of the host.
+    expect(store.cancel('call-held')).toBe(false);
+    release();
+    await Promise.all([probe, held]);
+  });
+
+  it('queues nothing when the user cancelled without a note', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    holdBashUntilAborted();
+
+    const bash = H.captured.customTools.find((t) => t.name === 'bash');
+    expect(bash).toBeDefined();
+    const pending = (bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>)('call-3', { command: 'sleep 300' }, undefined, undefined, {});
+
+    expect(session.cancelToolCall('call-3')).toBe(true);
+    await pending;
+
+    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn> };
+    expect(piSession.sendUserMessage).not.toHaveBeenCalled();
+    expect(messages.filter((m) => m.type === 'userMessage')).toEqual([]);
+    await session.dispose();
+  });
+});
+
+
+/**
+ * The session job is panel-scoped: one per `PiSession`, disposed with it, never shared between panels.
+ * A host-wide singleton would compile and pass every single-panel test while killing another panel's
+ * commands on dispose, so the two-instance case is the one that matters here.
+ */
+describe('the shell session job is scoped to the panel', () => {
+  beforeEach(() => {
+    JOB.created.length = 0;
+    JOB.next = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it('creates exactly one per PiSession and disposes it with the session', async () => {
+    const session = new PiSession(makeOptions([]));
+    expect(JOB.created).toHaveLength(1);
+    expect(JOB.created[0]?.disposed).toBe(0);
+
+    await session.dispose();
+
+    expect(JOB.created[0]?.disposed).toBe(1);
+  });
+
+  it('gives two concurrent sessions their own job, so disposing one cannot reach the other', async () => {
+    const first = new PiSession(makeOptions([]));
+    const second = new PiSession(makeOptions([]));
+    expect(JOB.created).toHaveLength(2);
+
+    await first.dispose();
+
+    // The surviving panel's commands must be untouched; a shared handle would have closed here.
+    expect(JOB.created[0]?.disposed).toBe(1);
+    expect(JOB.created[1]?.disposed).toBe(0);
+
+    await second.dispose();
+    expect(JOB.created[1]?.disposed).toBe(1);
+  });
+
+  it('survives a reset, because the panel owns it and the conversation does not', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    expect(JOB.created).toHaveLength(1);
+
+    H.seq.length = 0;
+    session.reset();
+    await new Promise((r) => setTimeout(r, 0));
+    // Non-vacuous: a reset that never replaced the pi session would leave every assertion below trivially true.
+    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(1);
+
+    // A job rebuilt per conversation would mint a second handle and close the first, killing anything the
+    // user had deliberately backgrounded before the reset.
+    expect(JOB.created).toHaveLength(1);
+    expect(JOB.created[0]?.disposed).toBe(0);
+
+    await session.dispose();
+    expect(JOB.created[0]?.disposed).toBe(1);
+  });
+
+  it('hands the same job to the main, subagent and team tool builders', async () => {
+    const builds = vi.mocked(buildCustomTools);
+    builds.mockClear();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    // One handle for the panel means every context nests in it; a second would unnest one of them.
+    expect(JOB.created).toHaveLength(1);
+
+    const internals = session as unknown as {
+      buildSubagentEngine: (pi: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => unknown };
+      buildTeamAgentCustomTools: (pi: unknown, ctx: unknown) => unknown;
+    };
+    internals.buildSubagentEngine(getPiCodingAgent() as never).buildAgentToolset({
+      agentId: 'a1',
+      agentName: 'general-purpose',
+      mcpDisallowed: new Set<string>(),
+    });
+    internals.buildTeamAgentCustomTools(getPiCodingAgent() as never, {
+      agentId: 'agent-1',
+      agentName: 'specialist',
+      browserScopeId: 'agent-1#1',
+      teamId: 'team-1',
+      role: 'specialist',
+      deliverUserNote: () => true,
+    });
+
+    // The main factory site, then the subagent site, then the team site. Reading the deps each site
+    // passed is the only way to see a builder that silently omits the job.
+    const [main, subagent, team] = builds.mock.calls.map((c) => c[0]);
+    expect(builds).toHaveBeenCalledTimes(3);
+    // Not vacuous: without this, three `undefined`s would satisfy the identity checks below.
+    expect(main?.shellJob).toBeDefined();
+    expect(subagent?.shellJob).toBe(main?.shellJob);
+    expect(team?.shellJob).toBe(main?.shellJob);
+    // The cancel store is panel-scoped for the same reason, so one Stop finds the call whoever ran it.
+    expect(subagent?.shellCancel).toBe(main?.shellCancel);
+    expect(team?.shellCancel).toBe(main?.shellCancel);
     await session.dispose();
   });
 });

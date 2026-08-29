@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { log } from '../../logger';
 import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
+import { TOOL_OUTPUT_COALESCE_MS, ToolOutputCoalescer } from '../tool-output-coalescer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 
@@ -44,7 +45,7 @@ function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRunti
 function makeAdapter(
   out: ExtensionToWebviewMessage[],
   hooks?: {
-    onUserMessageDelivered?: () => boolean;
+    onUserMessageDelivered?: (deliveredText: string) => boolean;
     onMidStreamBatchCommitted?: (id: string) => void;
     modelValue?: () => string;
     defaultModelValue?: () => string;
@@ -356,6 +357,22 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     // One-shot: a second assistant message_start in the same turn does not re-record.
     listener!({ type: 'message_start', message: { role: 'assistant', content: [] } });
     expect(committed).toEqual(['u-combined']);
+  });
+
+  it('hands the delivered text to the host, so an injected note can be told from a queued batch', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const delivered: string[] = [];
+    const adapter = makeAdapter(out, { onUserMessageDelivered: (text) => { delivered.push(text); return false; } });
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-text');
+
+    listener!({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'wrong loop, use seq 1 5' }] } });
+    // Images and other blocks are dropped, matching how the host joins a queued batch's text.
+    listener!({ type: 'message_end', message: { role: 'user', content: [{ type: 'image', data: 'x' }, { type: 'text', text: 'a' }, { type: 'text', text: 'b' }] } });
+
+    expect(delivered).toEqual(['wrong loop, use seq 1 5', 'ab']);
   });
 
   it('drops a delivered-but-unresolved marker when the turn aborts before its assistant message_start', () => {
@@ -930,5 +947,273 @@ describe('logRawStopReason', () => {
     endTurn('stop', 'end_turn');
     endTurn('length', 'max_tokens');
     expect(rawLines()).toEqual([]);
+  });
+});
+
+describe('PiStreamAdapter live shell output (Slice 3)', () => {
+  beforeEach(() => {
+    // The coalescer uses only setTimeout/clearTimeout, so fake timers drive its whole window.
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drive raw pi events into a subscribed adapter, returning the listener and the emitted messages. */
+  function driven(): { out: ExtensionToWebviewMessage[]; fire: (e: unknown) => void; adapter: PiStreamAdapter } {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-live');
+    out.length = 0;
+    return { out, fire: (e) => listener!(e), adapter };
+  }
+
+  /** A pi `partialResult` for a streaming shell tool (bash.ts:353-364 shape). */
+  function partial(text: string, truncated = false): unknown {
+    return {
+      content: [{ type: 'text', text }],
+      details: {
+        truncation: truncated
+          ? { content: text, truncated: true, truncatedBy: 'lines', totalLines: 9000, totalBytes: 90_000, outputLines: 2000, outputBytes: 20_000, lastLinePartial: false, firstLineExceedsLimit: false, maxLines: 2000, maxBytes: 51_200 }
+          : undefined,
+        fullOutputPath: undefined,
+      },
+    };
+  }
+
+  const progress = (out: ExtensionToWebviewMessage[]): Extract<ExtensionToWebviewMessage, { type: 'toolProgress' }>[] =>
+    out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolProgress' }> => m.type === 'toolProgress');
+
+  it('carries the partialResult snapshot text as `output` for a Bash call', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'npm test' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('Test Suites: 3 passed\n') });
+
+    // Leading edge: the first frame for an id lands with no timer advance at all.
+    const frames = progress(out);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ toolUseId: 'b1', toolName: 'Bash', output: 'Test Suites: 3 passed\n' });
+    expect(frames[0]!.outputTruncated ?? false).toBe(false);
+  });
+
+  it('carries the empty first frame as a defined empty string, not an omitted field', () => {
+    // pi's bash sends `content: []` the moment the call starts (contracts amendment 0). The webview
+    // routes on `output !== undefined`, so an omitted field here would hide the waiting-for-output pane
+    // for the whole of a slow command's silent period.
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'sleep 30' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: { content: [], details: {} } });
+
+    const first = progress(out)[0];
+    expect(first).toBeDefined();
+    expect(first!.output).toBe('');
+    expect(first!.outputTruncated).toBe(false);
+  });
+
+  it('flags outputTruncated when pi reports the snapshot dropped earlier output', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'yes' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('tail only', true) });
+
+    expect(progress(out)[0]).toMatchObject({ output: 'tail only', outputTruncated: true });
+  });
+
+  it('emits an elapsed-only, uncoalesced frame for a non-shell tool', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'r1', toolName: 'read', args: { path: '/a.ts' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'r1', toolName: 'read', args: {}, partialResult: partial('half the file') });
+
+    // No timer advance: a Read frame must never enter the shell coalescer.
+    const frames = progress(out);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ toolUseId: 'r1', toolName: 'Read' });
+    expect('output' in frames[0]!).toBe(false);
+    expect('outputTruncated' in frames[0]!).toBe(false);
+  });
+
+  it('a non-shell tool stays uncoalesced: every update lands immediately', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'r1', toolName: 'read', args: { path: '/a.ts' } });
+    for (let i = 0; i < 3; i++) {
+      fire({ type: 'tool_execution_update', toolCallId: 'r1', toolName: 'read', args: {}, partialResult: partial(`chunk ${i}`) });
+    }
+
+    expect(progress(out)).toHaveLength(3);
+  });
+
+  it('collapses a burst inside one window to the LATEST payload', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'seq 1 100' } });
+    for (const text of ['frame-1', 'frame-2', 'frame-3', 'frame-4']) {
+      fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial(text) });
+      vi.advanceTimersByTime(10); // four frames well inside the 250ms window
+    }
+
+    // Leading edge only so far: frames 2-4 are held, not emitted.
+    expect(progress(out).map((m) => m.output)).toEqual(['frame-1']);
+
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
+    // Trailing edge emits the newest snapshot. Dropping the middle frames is lossless because
+    // partialResult is a replacement snapshot, not a delta.
+    expect(progress(out).map((m) => m.output)).toEqual(['frame-1', 'frame-4']);
+
+    // An idle window closes without emitting, so the next frame is a leading edge again.
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 2);
+    expect(progress(out)).toHaveLength(2);
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('frame-5') });
+    expect(progress(out).map((m) => m.output)).toEqual(['frame-1', 'frame-4', 'frame-5']);
+  });
+
+  it('beginTurn drops a frame left by a tool that reached no terminal event', () => {
+    const { out, fire, adapter } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'seq 1 100' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('running...') });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('held') });
+
+    // No tool_execution_end and no markAborted: a session replaced under the call, or a turn settled
+    // through endTurnWithoutAgentRun, leaves the frame with nobody to cancel it.
+    adapter.beginTurn('corr-next');
+    const startOfNextTurn = out.length;
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+
+    // The webview may already have terminalized that card, so repainting liveOutput into the new turn
+    // resurrects it.
+    expect(out.slice(startOfNextTurn).some((m) => m.type === 'toolProgress')).toBe(false);
+  });
+
+  it('tool_execution_end cancels the pending frame so no output lands after toolCompleted', () => {
+    const { out, fire } = driven();
+    fire({ type: 'tool_execution_start', toolCallId: 'b1', toolName: 'bash', args: { command: 'seq 1 100' } });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('running...') });
+    fire({ type: 'tool_execution_update', toolCallId: 'b1', toolName: 'bash', args: {}, partialResult: partial('still running...') });
+    fire({ type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash', result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
+
+    const completedAt = out.findIndex((m) => m.type === 'toolCompleted');
+    expect(completedAt).toBeGreaterThanOrEqual(0);
+
+    // Past the window the held 'still running...' snapshot must be gone, not flushed: a late partial
+    // landing after the result would repaint stale output over a finished call.
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+    expect(out.slice(completedAt).some((m) => m.type === 'toolProgress')).toBe(false);
+    expect(progress(out).map((m) => m.output)).toEqual(['running...']);
+  });
+});
+
+describe('ToolOutputCoalescer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('cancel drops the pending frame instead of flushing it', () => {
+    // The regression this guards: a cancel that flushed would repaint a stale partial over a finished
+    // tool result. Asserted here directly rather than by mutating the source, which would race the owner.
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'first');
+    coalescer.push('t1', () => 'held');
+    coalescer.cancel('t1');
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['first']);
+  });
+
+  it('cancel clears the window too, so the next push is a leading edge again', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'first');
+    coalescer.cancel('t1');
+    coalescer.push('t1', () => 'second');
+
+    // No timer advance: a cancel that only dropped the payload would leave the window open and hold this.
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['first', 'second']);
+  });
+
+  it('dispose drops every pending frame across ids and never flushes', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'a1');
+    coalescer.push('t2', () => 'b1');
+    coalescer.push('t1', () => 'a2');
+    coalescer.push('t2', () => 'b2');
+    coalescer.dispose();
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['a1', 'b1']);
+  });
+
+  it('builds the held frame at emit time, so a stale clock value cannot be shipped', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<number>(emit);
+    let clock = 0;
+
+    coalescer.push('t1', () => clock);
+    clock = 1;
+    coalescer.push('t1', () => clock);
+    clock = 2;
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
+
+    // The trailing frame reports 2, the value at emit, not the 1 it had when it was pushed.
+    expect(emit.mock.calls.map((c) => c[0])).toEqual([0, 2]);
+  });
+
+  it('clear drops every pending frame and leaves the instance usable', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'a1');
+    coalescer.push('t1', () => 'a2');
+    coalescer.clear();
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+    // A leading edge again, which is what makes this usable for the next turn rather than a teardown.
+    coalescer.push('t1', () => 'b1');
+    // And the window this opened must find nothing held: a clear that dropped the timers but kept the
+    // payloads would flush the pre-clear frame here.
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 2);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['a1', 'b1']);
+  });
+
+  it('dispose retires the instance, so a later push cannot reopen a window', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'a1');
+    coalescer.dispose();
+    coalescer.push('t1', () => 'after');
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS * 4);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['a1']);
+  });
+
+  it('windows are per id, so a busy tool never starves another', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit);
+
+    coalescer.push('t1', () => 'a1');
+    coalescer.push('t1', () => 'a2');
+    coalescer.push('t2', () => 'b1');
+    vi.advanceTimersByTime(TOOL_OUTPUT_COALESCE_MS);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['a1', 'b1', 'a2']);
+  });
+
+  it('honours an injected window rather than a module-level constant', () => {
+    const emit = vi.fn();
+    const coalescer = new ToolOutputCoalescer<string>(emit, 50);
+
+    coalescer.push('t1', () => 'a1');
+    coalescer.push('t1', () => 'a2');
+    vi.advanceTimersByTime(50);
+
+    expect(emit.mock.calls.map((c) => c[0])).toEqual(['a1', 'a2']);
   });
 });

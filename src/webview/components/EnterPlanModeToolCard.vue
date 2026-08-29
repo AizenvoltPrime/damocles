@@ -11,6 +11,7 @@ import {
   IconMessageSquare,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import { useToolCardStatus } from '@/composables/useToolCardStatus';
 
 const { t } = useI18n();
 
@@ -22,33 +23,10 @@ const isPending = computed(() => props.toolCall.status === 'pending');
 const isRunning = computed(() => props.toolCall.status === 'running');
 const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_approval');
 const isCompleted = computed(() => props.toolCall.status === 'completed');
-const isFailed = computed(() => props.toolCall.status === 'failed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
 
-const statusIcon = computed(() => {
-  if (isPending.value || isRunning.value || isAwaitingApproval.value) return null;
-  if (isCompleted.value) return IconCheckCircle;
-  if (isFailed.value || isDenied.value) return IconXCircle;
-  if (isAbandoned.value) return IconBan;
-  return null;
-});
-
-const statusClass = computed(() => {
-  if (isRunning.value || isAwaitingApproval.value) return 'text-primary';
-  if (isCompleted.value) return 'text-success';
-  if (isFailed.value || isDenied.value) return 'text-error';
-  if (isAbandoned.value) return 'text-muted-foreground';
-  return 'text-muted-foreground';
-});
-
-const cardClass = computed(() => {
-  if (isAwaitingApproval.value) return 'border-primary/50 bg-primary/5';
-  if (isFailed.value || isDenied.value) return 'border-error/50';
-  if (isAbandoned.value) return 'border-muted/50 opacity-60';
-  if (isCompleted.value) return 'border-success/30';
-  return 'border-border';
-});
+const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.toolCall.status);
 
 const headerText = computed(() => {
   if (isCompleted.value) return t('planModeTool.entered');

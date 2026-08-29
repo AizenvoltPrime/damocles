@@ -22,8 +22,10 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ContentBlock } from '../../../shared/types/content';
-import { TOOL_AGENT } from '../../../shared/tool-names';
+import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
+import { joinResultText } from '../tool-result-text';
+import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
 
 export interface SubagentStreamBridgeDeps {
@@ -60,6 +62,8 @@ export function buildAgentResultJson(opts: {
 export class SubagentStreamBridge {
   private readonly deps: SubagentStreamBridgeDeps;
   private readonly toolStarts = new Map<string, number>();
+  /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
+  private readonly outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
   private modelEmitted = false;
   private templateEmitted = false;
   /** Per-assistant-message streaming state — mirrors PiStreamAdapter so the card streams text/thinking. */
@@ -100,7 +104,12 @@ export class SubagentStreamBridge {
 
   /** Subscribe to the nested session and stream per-tool events to the card. Returns unsubscribe. */
   attach(session: AgentSession): () => void {
-    return session.subscribe((event: AgentSessionEvent) => this.handle(event));
+    const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));
+    return () => {
+      unsubscribe();
+      // The bridge dies with its subagent, so its pending timers must die here or they fire into a dead card.
+      this.outputCoalescer.dispose();
+    };
   }
 
   private handle(event: AgentSessionEvent): void {
@@ -126,16 +135,30 @@ export class SubagentStreamBridge {
         });
         break;
       }
-      case 'tool_execution_update':
-        this.emit({
+      case 'tool_execution_update': {
+        const toolName = mapPiToolName(event.toolName);
+        if (!LIVE_OUTPUT_TOOLS.has(toolName)) {
+          this.emit({ type: 'toolProgress', toolUseId: event.toolCallId, toolName, parentToolUseId, elapsedTimeSeconds: this.elapsed(event.toolCallId) });
+          break;
+        }
+        // pi omits `truncation` entirely on an untruncated partial frame, so the boolean is derived, not read.
+        const details = (event.partialResult as { details?: { truncation?: { truncated?: boolean } } } | undefined)?.details;
+        // Built at emit time so a frame held for the whole window reports the elapsed time the card is
+        // showing, not the one it had when the frame was pushed.
+        this.outputCoalescer.push(event.toolCallId, () => ({
           type: 'toolProgress',
           toolUseId: event.toolCallId,
-          toolName: mapPiToolName(event.toolName),
+          toolName,
           parentToolUseId,
           elapsedTimeSeconds: this.elapsed(event.toolCallId),
-        });
+          output: joinResultText(event.partialResult),
+          outputTruncated: Boolean(details?.truncation?.truncated),
+        }));
         break;
+      }
       case 'tool_execution_end': {
+        // Cancel before anything else: a pending partial landing after toolCompleted would resurrect stale output.
+        this.outputCoalescer.cancel(event.toolCallId);
         const durationMs = this.elapsed(event.toolCallId) * 1000;
         const toolName = mapPiToolName(event.toolName);
         this.toolStarts.delete(event.toolCallId);
@@ -268,14 +291,4 @@ export class SubagentStreamBridge {
     if (started === undefined) return 0;
     return Math.max(0, (Date.now() - started) / 1000);
   }
-}
-
-/** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
-function joinResultText(result: unknown): string {
-  const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((c) => c?.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text)
-    .join('');
 }

@@ -344,6 +344,9 @@ function handleButtonClick() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
+  // An IME commits its candidate with Enter, and Windows reports that commit as keyCode 229 only.
+  if (event.isComposing || event.keyCode === 229) return;
+
   if (event.key === "Tab" && event.shiftKey) {
     event.preventDefault();
     if (!props.isProcessing) {

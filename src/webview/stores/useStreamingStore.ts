@@ -2,6 +2,7 @@ import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import type { ChatMessage, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, UserContentBlock } from "@shared/types/content";
+import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
   status: ToolCall["status"];
@@ -16,25 +17,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   const streamingMessageId = ref<string | null>(null);
   const toolStatusCache = ref<Map<string, ToolStatusEntry>>(new Map());
   const toolMetadataCache = ref<Map<string, Record<string, unknown>>>(new Map());
-  const expandedToolId = ref<string | null>(null);
   const lastStopReason = ref<string | null>(null);
-
-  const expandedTool = computed<ToolCall | undefined>(() => {
-    if (!expandedToolId.value) return undefined;
-    for (const msg of messages.value) {
-      const tool = msg.toolCalls?.find((t) => t.id === expandedToolId.value);
-      if (tool) return tool;
-    }
-    return undefined;
-  });
-
-  function expandTool(toolId: string): void {
-    expandedToolId.value = toolId;
-  }
-
-  function collapseTool(): void {
-    expandedToolId.value = null;
-  }
 
   const streamingMessage = computed<ChatMessage | null>(() => {
     if (!streamingMessageId.value) return null;
@@ -186,18 +169,22 @@ export const useStreamingStore = defineStore("streaming", () => {
     status: ToolCall["status"],
     options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number }
   ): void {
-    toolStatusCache.value.set(toolUseId, { status, ...options });
-
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
       const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
       const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
       if (!target) continue;
 
+      // Live output is view state for a running call, so the keys are dropped rather than set to
+      // undefined, which exactOptionalPropertyTypes rejects.
+      const { liveOutput: _clearedOutput, liveOutputTruncated: _clearedTruncated, cancelRequested: _clearedCancel, ...withoutLiveOutput } = target;
+      const resolvedStatus = resolveCancelledStatus(status, target.metadata);
+      const base = TERMINAL_TOOL_STATUSES.has(resolvedStatus) ? withoutLiveOutput : target;
+
       const updatedToolCalls = [...msg.toolCalls];
       updatedToolCalls[toolIndex] = {
-        ...target,
-        status,
+        ...base,
+        status: resolvedStatus,
         ...(options?.result !== undefined && { result: options.result }),
         ...(options?.errorMessage !== undefined && { errorMessage: options.errorMessage }),
         ...(options?.feedback !== undefined && { feedback: options.feedback }),
@@ -208,6 +195,9 @@ export const useStreamingStore = defineStore("streaming", () => {
       messages.value = newMessages;
       return;
     }
+    // Only a status with no call to write it to is cached, so an entry holding a whole tool result is
+    // never left behind once the call exists in the transcript.
+    toolStatusCache.value.set(toolUseId, { status: resolveCancelledStatus(status, toolMetadataCache.value.get(toolUseId)), ...options });
   }
 
   function updateToolMetadata(toolUseId: string, metadata: Record<string, unknown>): void {
@@ -217,10 +207,12 @@ export const useStreamingStore = defineStore("streaming", () => {
       const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
       if (!target) continue;
 
+      const mergedMetadata = { ...target.metadata, ...metadata };
       const updatedToolCalls = [...msg.toolCalls];
       updatedToolCalls[toolIndex] = {
         ...target,
-        metadata: { ...target.metadata, ...metadata },
+        metadata: mergedMetadata,
+        status: resolveCancelledStatus(target.status, mergedMetadata),
       };
       const newMessages = [...messages.value];
       newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
@@ -256,7 +248,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       id: tool.id,
       name: tool.name,
       input: tool.input,
-      status: cachedStatus?.status ?? "pending",
+      status: resolveCancelledStatus(cachedStatus?.status ?? "pending", cachedMetadata),
       ...(cachedStatus?.result !== undefined && { result: cachedStatus.result }),
       ...(cachedStatus?.errorMessage !== undefined && { errorMessage: cachedStatus.errorMessage }),
       ...(cachedStatus?.feedback !== undefined && { feedback: cachedStatus.feedback }),
@@ -284,10 +276,14 @@ export const useStreamingStore = defineStore("streaming", () => {
       running: 1,
       awaiting_approval: 2,
       approved: 3,
-      denied: 3,
-      completed: 4,
-      failed: 4,
-      abandoned: 4,
+      // Strictly over every live status and strictly under every recorded outcome: a real result
+      // replaces it, a spinner never does.
+      unrecorded: 4,
+      denied: 5,
+      completed: 6,
+      failed: 6,
+      abandoned: 6,
+      cancelled: 6,
     };
 
     const merged = new Map<string, ToolCall>();
@@ -304,10 +300,13 @@ export const useStreamingStore = defineStore("streaming", () => {
         const mergedMetadata = exists.metadata || tool.metadata
           ? { ...exists.metadata, ...tool.metadata }
           : undefined;
+        // Resolved here too: an incoming tool rebuilt from a content block carries no metadata of its
+        // own, so taking its status verbatim would drop a cancelled card back to completed.
         merged.set(tool.id, {
           ...exists,
           ...tool,
           ...(mergedMetadata !== undefined && { metadata: mergedMetadata }),
+          status: resolveCancelledStatus(tool.status, mergedMetadata),
         });
       }
     }
@@ -327,18 +326,21 @@ export const useStreamingStore = defineStore("streaming", () => {
       .filter((block): block is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => block.type === "tool_use")
       .map((block): ToolCall => {
         const cached = toolStatusCache.value.get(block.id);
-        if (!cached) {
-          return { id: block.id, name: block.name, input: block.input, status: "pending" };
-        }
+        const cachedMetadata = toolMetadataCache.value.get(block.id);
+        // The metadata must ride onto the call, not just into this one derivation: a later status write
+        // re-derives from `target.metadata`, and a cancelled card with no metadata flips back to completed.
         toolStatusCache.value.delete(block.id);
+        toolMetadataCache.value.delete(block.id);
         return {
           id: block.id,
           name: block.name,
           input: block.input,
-          status: cached.status,
-          ...(cached.result !== undefined && { result: cached.result }),
-          ...(cached.errorMessage !== undefined && { errorMessage: cached.errorMessage }),
-          ...(cached.feedback !== undefined && { feedback: cached.feedback }),
+          status: resolveCancelledStatus(cached?.status ?? "pending", cachedMetadata),
+          ...(cached?.result !== undefined && { result: cached.result }),
+          ...(cached?.errorMessage !== undefined && { errorMessage: cached.errorMessage }),
+          ...(cached?.feedback !== undefined && { feedback: cached.feedback }),
+          ...(cached?.durationMs !== undefined && { durationMs: cached.durationMs }),
+          ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
         };
       });
   }
@@ -569,6 +571,32 @@ export const useStreamingStore = defineStore("streaming", () => {
     patchToolCall(toolUseId, { elapsedTimeSeconds: elapsedSeconds });
   }
 
+  function updateToolLiveOutput(toolUseId: string, output: string, truncated: boolean): void {
+    patchToolCall(toolUseId, { liveOutput: output, liveOutputTruncated: truncated });
+  }
+
+  function markToolCancelRequested(toolUseId: string): void {
+    patchToolCall(toolUseId, { cancelRequested: true });
+  }
+
+  function clearToolCancelRequested(toolUseId: string): void {
+    for (const [i, msg] of messages.value.entries()) {
+      if (!msg.toolCalls) continue;
+      const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
+      const target = toolIndex === -1 ? undefined : msg.toolCalls[toolIndex];
+      if (!target) continue;
+
+      // The key is dropped rather than set to undefined, which exactOptionalPropertyTypes rejects.
+      const { cancelRequested: _clearedCancel, ...withoutCancel } = target;
+      const updatedToolCalls = [...msg.toolCalls];
+      updatedToolCalls[toolIndex] = withoutCancel;
+      const newMessages = [...messages.value];
+      newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+      messages.value = newMessages;
+      return;
+    }
+  }
+
   function updateToolSummary(toolUseIds: string[], summary: string): void {
     const lastId = toolUseIds[toolUseIds.length - 1];
     if (lastId === undefined) return;
@@ -598,7 +626,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     streamingMessageId.value = null;
     toolStatusCache.value = new Map();
     toolMetadataCache.value = new Map();
-    expandedToolId.value = null;
     lastStopReason.value = null;
   }
 
@@ -608,10 +635,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     streamingMessageId,
     toolStatusCache,
     toolMetadataCache,
-    expandedToolId,
-    expandedTool,
-    expandTool,
-    collapseTool,
     generateId,
     getStreamingMessageIndex,
     updateStreamingMessage,
@@ -643,6 +666,9 @@ export const useStreamingStore = defineStore("streaming", () => {
     lastStopReason,
     setLastStopReason,
     updateToolElapsedTime,
+    updateToolLiveOutput,
+    markToolCancelRequested,
+    clearToolCancelRequested,
     updateToolSummary,
     $reset,
   };

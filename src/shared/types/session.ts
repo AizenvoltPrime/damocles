@@ -189,11 +189,22 @@ export interface McpToolData {
   errorMessage?: string;
 }
 
+/**
+ * Marks a tool result the user stopped mid-run. Set by the shell cancel wrapper on the result's
+ * `details`, which is persisted and re-read on reload, so a reloaded transcript still shows the
+ * cancelled state instead of a success. The extension is the only writer.
+ */
+export const CANCELLED_TOOL_DETAIL_KEY = "damoclesCancelled";
+
 export interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
-  status: "pending" | "running" | "awaiting_approval" | "approved" | "denied" | "completed" | "failed" | "abandoned";
+  /**
+   * `unrecorded` is terminal: the call ran and no outcome survived, so nothing may render it as live.
+   * `cancelled` is derived in the webview from `metadata[CANCELLED_TOOL_DETAIL_KEY]`, never sent as a status.
+   */
+  status: "pending" | "running" | "awaiting_approval" | "approved" | "denied" | "completed" | "failed" | "abandoned" | "cancelled" | "unrecorded";
   result?: string;
   isError?: boolean;
   errorMessage?: string;
@@ -202,6 +213,12 @@ export interface ToolCall {
   elapsedTimeSeconds?: number;
   summary?: string;
   durationMs?: number;
+  /** Live shell output while a Bash/PowerShell call runs. Cleared at terminal status. */
+  liveOutput?: string;
+  /** Whether pi's accumulator dropped earlier output from the snapshot above. */
+  liveOutputTruncated?: boolean;
+  /** Optimistic webview-owned flag, cleared at terminal status alongside liveOutput. */
+  cancelRequested?: boolean;
 }
 
 export interface SessionStats {

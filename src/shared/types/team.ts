@@ -46,7 +46,8 @@ export type TeamAgentContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; metadata?: Record<string, unknown> };
 
 export interface TeamState {
   teamId: string;

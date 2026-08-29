@@ -2,6 +2,38 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.23.0] - 2026-08-26
+
+Shell commands show their output while they run, one command can be stopped without ending the turn, and a team agent's tool calls are real cards you can open.
+
+### Added
+
+- **Bash and PowerShell stream their output while the command runs**, on the tool card and in the overlay. The pane keeps a bounded tail and says when earlier output was dropped.
+
+- **A Stop button on a running shell call.** Ends that one command and its children, hands the model whatever it printed, and lets the turn continue. The card reads Stopped rather than taking a success check, and that survives a reload. The panel interrupt is unchanged.
+
+- **Stop can carry a note that arrives as your next message.** Enter sends, Shift+Enter starts a line, 500 characters. It reaches the agent that ran the command, and never the tool result, because a model correctly refuses an instruction found in one. A note starting with `/` is delivered as text, never run.
+
+- **Team agent tool calls are the same cards the main session uses**, with live output and readable names: `Write scratchpad`, not `team_write_scratchpad`. The overlay still shows the raw name, so logs and greps keep working.
+
+- **The tool overlay opens from inside a subagent or team agent overlay.** It used to look like a dead click. Overlays stack in the order you opened them, and Escape closes the top one.
+
+### Changed
+
+- **A command's background jobs are killed with it, and with the panel.** `sleep 600 &` under Git Bash used to survive both. Windows now nests each command in a job object owned by the panel; Linux and macOS use the process group plus one helper process per panel.
+
+- **Behaviour change on all platforms: a process you background with `&` now ends when you close the panel**, quit the editor, or the host crashes. Letting the command finish still leaves it running. To outlive the panel, start it in a terminal.
+
+- **PowerShell kills its own children, on every platform.** They never were: the kill was unreachable code. It also no longer flashes a console window, and a missing working directory says so instead of reporting "PowerShell not found".
+
+- **Damocles carries one native dependency, koffi, loaded on Windows only.** Required lazily behind the platform check, so a Linux or macOS install never loads it. A load failure logs what that costs and falls back.
+
+- **A reloaded tool card no longer claims an outcome the transcript never recorded.** Team tool results are now persisted, so reopening a team shows what each tool returned. A call with no stored result reads as unrecorded rather than as a success, an error reads as failed rather than as something you denied, and a stopped command stays stopped. Team logs written earlier hold no results and are not rewritten.
+
+- **Team cards summarise what was passed.** A `Send message` card read `Message sent (id: c16959e3-…)`; it now reads `Sent to lead`. What the tools return to the model is unchanged. Agent-supplied text is stripped of bidirectional formatting characters, so a card cannot be made to display in a misleading order.
+
+- **Removed: the subagent chip bar and the Monitor tool card.** The chip bar pushed the conversation up the panel to show a name and a colour; the same agents are one click away in the subagent overlay. No `Monitor` tool was ever registered, so no session could produce one.
+
 ## [2.22.0] - 2026-08-22
 
 Skills and slash commands now come from `.damocles/` first, and project-scope ones stop loading in a workspace you have not trusted.
@@ -3859,6 +3891,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.23.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.22.0...v2.23.0
 [2.22.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.2...v2.22.0
 [2.21.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.1...v2.21.2
 [2.21.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.0...v2.21.1

@@ -29,10 +29,13 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
 import { stripSteerPrefix } from '@shared/steer';
 import { useVSCode } from '@/composables/useVSCode';
+import { useUIStore } from '@/stores/useUIStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
+import { ownEntry } from '@/utils/ownEntry';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
+const uiStore = useUIStore();
 
 interface StreamingState {
   content?: string;
@@ -91,7 +94,7 @@ const agentIcon = computed((): Component => {
     Plan: IconClipboard,
     'general-purpose': IconRobot,
   };
-  return icons[props.subagent.agentType] || IconClipboard;
+  return ownEntry(icons, props.subagent.agentType) ?? IconClipboard;
 });
 
 const statusBadgeClass = computed(() => {
@@ -322,6 +325,8 @@ function userMessageText(message: ChatMessage): string {
                 v-for="tc in toolCallsById(message, block.id)"
                 :key="tc.id"
                 :tool-call="tc"
+                source="subagent"
+                @expand="(id: string) => uiStore.expandTool(id, 'subagent')"
               />
             </template>
           </template>
@@ -334,6 +339,8 @@ function userMessageText(message: ChatMessage): string {
           v-for="tool in subagent.toolCalls"
           :key="tool.id"
           :tool-call="tool"
+          source="subagent"
+          @expand="(id: string) => uiStore.expandTool(id, 'subagent')"
         />
       </div>
 

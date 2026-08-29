@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { existsSync } from "fs";
 import * as fs from "fs";
 import * as path from "path";
@@ -35,6 +36,10 @@ import {
   PLAN_MODE_EXCLUDED_TOOLS,
 } from "./pi-models";
 import { buildCustomTools } from "./tools";
+import { ShellCancelStore } from "./tools/shell-cancel-registry";
+import { createShellSessionJob } from "./tools/process-tree";
+import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
+import type { ShellOptions } from "./tools/bash-tool";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
 import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
 import {
@@ -193,6 +198,8 @@ export class PiSession implements ChatSession {
    * steer at the next agent boundary. Each carries its webview chip id so the chips collapse into the
    * single combined message on delivery. Cleared on delivery, abort, and session replacement. */
   private queuedInputs: { id: string; text: string; images: ImageContent[]; content: ContentInput }[] = [];
+  /** Cancel notes pi has accepted but not yet delivered. Their delivery event is not a queued batch. */
+  private injectedNotes: string[] = [];
   /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
   private agentRegistry: AgentRegistry | null = null;
   private subagentManager: AgentManager | null = null;
@@ -211,6 +218,13 @@ export class PiSession implements ChatSession {
    *  funnels through `applyActiveToolsForMode`, so re-applying this union there is what stops a settings
    *  toggle / MCP change / permission-mode change from silently deactivating a mid-conversation load. */
   private readonly toolSearchActivated = new Set<string>();
+  /** A field, not a per-session local, so a live call's entry survives session replacement. Each entry
+   *  carries the delivery of the context that registered it, so a note still reaches the conversation
+   *  that ran the command and not the one that replaced it. */
+  private readonly shellCancel = new ShellCancelStore();
+  // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
+  // process the user deliberately backgrounded survives a /clear and dies only when the panel is disposed.
+  private readonly shellJob = createShellSessionJob();
 
   /** True when the turn must not be EXTENDED — ESC (`_aborting`) or the budget limit. For the
    * turn-holding paths only; those meaning "the user aborted" (the slash-command release and the
@@ -240,7 +254,7 @@ export class PiSession implements ChatSession {
         vscode.workspace.getConfiguration('damocles').get<boolean>('showCacheMissNotices', false),
       sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
       onBudgetStop: () => this.stopForBudget(),
-      onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
+      onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
       onMidStreamBatchCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
@@ -296,6 +310,10 @@ export class PiSession implements ChatSession {
       await sharedRuntime.prepareSessionExtensions();
       const shared = sharedRuntime.services;
       if (!shared) throw new Error("PiSession factory: pi services unavailable (B1)");
+      // Filled in below, once this factory call's session exists. The tools are built before it does, so
+      // the note delivery reads it through a thunk; binding it here and not to `this.runtime` is what
+      // keeps a leftover shell call's note in the conversation that ran the command.
+      const bound: { session?: AgentSession } = {};
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -309,6 +327,10 @@ export class PiSession implements ChatSession {
         ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
         ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
         isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
+        getShellOptions: () => this.shellOptions(),
+        shellCancel: this.shellCancel,
+        deliverUserNote: this.noteDeliveryForMain(() => bound.session),
+        shellJob: this.shellJob,
       });
       // No `tools:` on purpose. pi freezes `options.tools` into an `_allowedToolNames` filter; since the
       // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
@@ -322,6 +344,7 @@ export class PiSession implements ChatSession {
         customTools,
         thinkingLevel: this.resolveThinkingLevel(),
       });
+      bound.session = result.session;
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
     };
 
@@ -742,7 +765,14 @@ export class PiSession implements ChatSession {
     void session
       .prompt(combinedText, { streamingBehavior: "steer", ...(images.length > 0 ? { images } : {}) })
       .catch((err) => log("[PiSession] steered prompt failed: %O", err));
-    for (const text of followUp) void session.followUp(text).catch(() => {});
+    // Re-queued the way they were queued, not through `followUp()`: that one runs the extension-command
+    // check and the skill and template expansion, which would execute or rewrite a cancel note that was
+    // deliberately queued as literal text.
+    for (const text of followUp) {
+      void session
+        .sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false })
+        .catch((err) => log("[PiSession] re-queueing a preserved follow-up failed: %O", err));
+    }
   }
 
   /**
@@ -751,7 +781,16 @@ export class PiSession implements ChatSession {
    * been injected, so collapse its chips into the single combined message and clear the buffer; further
    * queueing starts a fresh combination.
    */
-  onQueuedInputsDelivered(): boolean {
+  onQueuedInputsDelivered(deliveredText: string): boolean {
+    // A cancel note is queued straight onto the pi session, so its delivery raises the same event a
+    // steered batch does. Matching on the text is exact because the note is sent with template
+    // expansion off, and it is order-independent: pi drains steers before follow-ups, so a counter
+    // would let a batch delivered first consume the note's signal.
+    const injected = this.injectedNotes.indexOf(deliveredText);
+    if (injected !== -1) {
+      this.injectedNotes.splice(injected, 1);
+      return false;
+    }
     if (this.queuedInputs.length === 0) return false;
     const messageIds = this.queuedInputs.map((q) => q.id);
     const combinedContent = this.queuedInputs.map((q) => q.text).join("\n\n");
@@ -801,6 +840,54 @@ export class PiSession implements ChatSession {
     void this.beginAbort("cancel");
   }
 
+  /** Stops one running shell call. The turn continues, so this must never reach `beginAbort`. */
+  cancelToolCall(toolUseId: string, note?: string): boolean {
+    const cancelled = this.shellCancel.cancel(toolUseId, note);
+    if (!cancelled) log("[PiSession] cancelToolCall: no live shell call for %s", toolUseId);
+    return cancelled;
+  }
+
+  /**
+   * The panel session's cancel-note delivery, bound at the main `buildCustomTools` call site to the
+   * session that call created, which is why a cancel arriving after `reset()` still reaches the
+   * conversation that ran the command rather than the one that replaced it.
+   *
+   * The echo waits for pi to accept the note into its queue, because a `sendUserMessage` that rejects
+   * outright, which is what a session being replaced or torn down under a leftover call does, would
+   * otherwise have already told the user the agent was told. Acceptance is also where the subagent and
+   * team contexts echo, so all three mean the same thing by an echo, and it is the last point that is
+   * still synchronous enough to keep the note next to the tool card it belongs to. Returning before the
+   * echo keeps the cancel path synchronous for its caller. `isInjected` is what keeps a note the user
+   * never typed into the composer out of prompt counting, which is also why `promptIndexCounter` is not
+   * advanced. Subagents and team agents echo through `subagentSteered` and `teamAgentUserMessage`, so
+   * only this context emits `userMessage`.
+   */
+  private noteDeliveryForMain(session: () => AgentSession | undefined): (text: string) => void {
+    const deliver = sessionNoteDelivery(session);
+    return (text) => {
+      const promptIndex = Math.max(0, this.promptIndexCounter);
+      void deliver(text).then(
+        () => {
+          // pi delivers this back as a user message_end of its own; record it so that delivery is not
+          // mistaken for the queued chip batch being injected.
+          this.injectedNotes.push(text);
+          this.emit({ type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true });
+        },
+        (err) => log("[PiSession] cancel note delivery to the panel session failed: %O", err),
+      );
+    };
+  }
+
+  /** One subagent's cancel-note delivery, bound at the subagent `buildCustomTools` call site. */
+  private noteDeliveryForSubagent(agentId: string): (text: string) => void {
+    return subagentNoteDelivery((id, message) => this.steerSubagent(id, message), agentId);
+  }
+
+  /** One team agent's cancel-note delivery, bound at the team `buildCustomTools` call site. */
+  private noteDeliveryForTeamAgent(ctx: AgentMcpContext): (text: string) => void {
+    return teamAgentNoteDelivery(ctx.deliverUserNote, ctx.agentName);
+  }
+
   /**
    * Tear down the in-flight turn. Emits `sessionCancelled` + idle immediately, then drives
    * `session.abort()` (which aborts the agent and waits for it to go idle). The abort promise is
@@ -817,6 +904,9 @@ export class PiSession implements ChatSession {
     // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
     this.options.teamService?.cancelActiveTeam();
     this.clearQueuedInputs();
+    // The adapter stops reporting user deliveries once aborted, so an accepted note will never be
+    // matched off this list; leaving it would let a later chip batch with the same text match it.
+    this.injectedNotes = [];
     this.emit({ type: "sessionCancelled" });
     this.emit({ type: "processing", isProcessing: false });
     const pending = (async () => {
@@ -921,10 +1011,24 @@ export class PiSession implements ChatSession {
     sm.applyOverrides({ compaction: { enabled: true, reserveTokens } });
   }
 
+  /** Read per call, never cached, so a settings edit lands without a reload. The shared manager is right
+   *  in every context: the per-subagent one is seeded from the same settings and overrides `compaction`. */
+  private shellOptions(): ShellOptions {
+    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
+    const commandPrefix = sm?.getShellCommandPrefix();
+    const shellPath = sm?.getShellPath();
+    return {
+      ...(commandPrefix !== undefined ? { commandPrefix } : {}),
+      ...(shellPath !== undefined ? { shellPath } : {}),
+    };
+  }
+
   reset(): void {
     this.processingFlag = false;
     this._budgetStopRequested = false;
     this.queuedInputs = [];
+    // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
+    this.injectedNotes = [];
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
     this.subagentManager?.abortAll();
     this.subagentManager?.clearCompleted();
@@ -987,8 +1091,17 @@ export class PiSession implements ChatSession {
 
   async dispose(): Promise<void> {
     this._disposed = true;
+    // Closing the handle is what kills whatever this panel's shells left running: the job object's
+    // kill-on-close on Windows, the EOF the sentinel is waiting for on POSIX.
+    this.shellJob?.dispose();
+    // After the job, so a still-registered call has already had its process killed; a tool whose promise
+    // never settles would otherwise leave this session reachable through the entry's delivery closure.
+    this.shellCancel.clear();
     this.unsubscribe?.();
     this.unsubscribe = null;
+    // The adapter outlives every session replacement, so its timers are released here and not in
+    // bindSession's unsubscribe, which fires on a mere rebind.
+    this.adapter.dispose();
     this.uiContext.cancelAll();
     // Tear down any active team (aborts its agents + resolves the create_team tool) — the service is
     // owned by the panel, so the panel disposes it.
@@ -1731,7 +1844,7 @@ export class PiSession implements ChatSession {
           disallowed: input.mcpDisallowed,
           agent: { agentId: input.agentId, agentName: input.agentName },
         });
-        return { customTools: [...this.buildSubagentCustomTools(pi, input.agentId), ...mcp.tools], mcp };
+        return { customTools: [...this.buildSubagentCustomTools(pi, this.noteDeliveryForSubagent(input.agentId), input.agentId), ...mcp.tools], mcp };
       },
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
@@ -1862,10 +1975,12 @@ export class PiSession implements ChatSession {
     });
   }
 
-  /** Build a nested subagent's / team agent's customTools — the SAME set MINUS the subagent tools (no
+  /** Build a nested subagent's / team agent's customTools: the same set without the subagent tools (no
    *  manager → no recursion). `browserScopeId` (the subagent record id / team agent id) isolates this
-   *  agent's browser tools to its OWN tab scope; omitted → the primary scope (only the main agent). */
-  private buildSubagentCustomTools(pi: PiCodingAgentModule, browserScopeId?: string): ToolDefinition[] {
+   *  agent's browser tools to its own tab scope; omitted → the primary scope (only the main agent).
+   *  `deliverUserNote` is the caller's: a subagent and a team agent are indistinguishable from
+   *  `browserScopeId` alone, and each reaches its own conversation through a different channel. */
+  private buildSubagentCustomTools(pi: PiCodingAgentModule, deliverUserNote: (text: string) => void, browserScopeId?: string): ToolDefinition[] {
     if (browserScopeId) this.ownedBrowserScopes.add(browserScopeId);
     return buildCustomTools({
       pi,
@@ -1876,6 +1991,10 @@ export class PiSession implements ChatSession {
       ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
       ...(browserScopeId ? { browserScopeId } : {}),
       getSessionId: () => this.memorySessionId,
+      getShellOptions: () => this.shellOptions(),
+      shellCancel: this.shellCancel,
+      deliverUserNote,
+      shellJob: this.shellJob,
     });
   }
 
@@ -2539,7 +2658,7 @@ export class PiSession implements ChatSession {
    *  tab scope, so a redispatched specialist never inherits the failed attempt's tabs. `cwd` reaches the
    *  team tools because `team_record_verification` fingerprints the working tree itself. */
   private buildTeamAgentCustomTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
-    return [...this.buildSubagentCustomTools(pi, ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx, this.cwd)];
+    return [...this.buildSubagentCustomTools(pi, this.noteDeliveryForTeamAgent(ctx), ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx, this.cwd)];
   }
 
   /**
@@ -2665,7 +2784,20 @@ export class PiSession implements ChatSession {
     // pre-prompt block then refuses the send that would drain it — so a queued steer would sit pending
     // until the limit is raised and could replay into an unrelated turn.
     this.clearQueuedInputs();
-    this.runtime?.session.clearQueue();
+    // A cancel note in that queue was already echoed as a user turn, so the transcript now says the agent
+    // was told something this drop means it never hears. Restoring it would let pi's post-run
+    // continuation drain it and bill past the limit, so the echo is corrected instead of honoured.
+    const dropped = this.runtime?.session.clearQueue().followUp ?? [];
+    for (const text of dropped) {
+      const echoed = this.injectedNotes.indexOf(text);
+      if (echoed === -1) continue;
+      this.injectedNotes.splice(echoed, 1);
+      this.emit({
+        type: "notification",
+        message: "The budget stop discarded your cancel note before the agent read it. Send it again to have it applied.",
+        notificationType: "warning",
+      });
+    }
     this.emit({
       type: "notification",
       message: "Budget limit reached — this turn was stopped after the current step.",

@@ -2,12 +2,15 @@
 import { computed, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
-import { TOOL_STRUCTURED_OUTPUT } from "@shared/tool-names";
+import { TOOL_STRUCTURED_OUTPUT, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
+import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import type { ExpandedDiff } from "@/stores/useDiffStore";
+import type { ExpandedToolSource } from "@/stores/useUIStore";
 import { useVSCode } from "@/composables/useVSCode";
+import { ownEntry } from "@/utils/ownEntry";
 
 import {
   IconGear,
@@ -17,6 +20,7 @@ import {
   IconCheck,
   IconWarning,
   IconBan,
+  IconQuestionCircle,
   IconFile,
   IconFileText,
   IconFolder,
@@ -32,8 +36,18 @@ import {
   IconMcp,
   IconCompass,
   IconBrain,
+  IconMessageSquare,
+  IconPaperPlane,
+  IconRobot,
+  IconSignal,
+  IconRotateLeft,
+  IconX,
+  IconEye,
+  IconLayers,
 } from "@/components/icons";
 import LoadingSpinner from "./LoadingSpinner.vue";
+import LiveOutputPane from "./LiveOutputPane.vue";
+import ToolCancelControl from "./ToolCancelControl.vue";
 import DiffView from "./DiffView.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 
@@ -50,6 +64,30 @@ const MEMORY_TOOL_NAMES = new Set([
   "UnforgetMemory", "UpdateMemory",
 ]);
 
+/** Icons for the nineteen team tools. `TEAM_TOOL_PRESENTATION` is the name list; this only picks glyphs. */
+const TEAM_TOOL_ICONS: Record<string, Component> = {
+  create_team: IconRobot,
+  get_team_status: IconSignal,
+  cancel_team: IconX,
+
+  team_send_message: IconPaperPlane,
+  team_read_messages: IconMessageSquare,
+  team_read_scratchpad: IconEye,
+  team_write_scratchpad: IconPencilSquare,
+  team_get_status: IconSignal,
+  team_spawn_specialist: IconRobot,
+  team_redispatch_specialist: IconRotateLeft,
+  team_cancel_specialist: IconX,
+  team_request_revision: IconRotateLeft,
+  team_approve_specialist: IconCheckCircle,
+  team_standby: IconClock,
+  team_report_complete: IconCheck,
+  team_flag_brief_conflict: IconWarning,
+  team_resolve_brief_conflict: IconCheckCircle,
+  team_record_verification: IconClipboard,
+  team_synthesize_result: IconLayers,
+};
+
 /** The Damocles subsystem a custom pi tool belongs to, for icon + expand treatment (null = none). */
 function groupForTool(name: string): "browser" | "compass" | "memory" | null {
   if (name.startsWith("Browser")) return "browser";
@@ -60,6 +98,7 @@ function groupForTool(name: string): "browser" | "compass" | "memory" | null {
 
 const props = defineProps<{
   toolCall: ToolCall;
+  source: ExpandedToolSource;
 }>();
 
 const toolGroup = computed(() => groupForTool(props.toolCall.name));
@@ -71,9 +110,18 @@ const emit = defineEmits<{
 
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
 const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
-const isExpandable = computed(() => !isStructuredOutput.value && (isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name) || toolGroup.value !== null));
 
-const displayName = computed(() => isStructuredOutput.value ? t("toolCall.structuredOutput") : props.toolCall.name);
+/** Undefined for every tool that is not one of the nineteen team tools. */
+const teamPresentation = computed(() => ownEntry(TEAM_TOOL_PRESENTATION, props.toolCall.name));
+const teamToolLabel = computed(() => teamPresentation.value?.label);
+
+const isExpandable = computed(() => !isStructuredOutput.value && (isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name) || toolGroup.value !== null || teamToolLabel.value !== undefined));
+
+// The overlay keeps showing the raw snake_case name, so session logs and greps still match the card.
+const displayName = computed(() => {
+  if (isStructuredOutput.value) return t("toolCall.structuredOutput");
+  return teamToolLabel.value ?? props.toolCall.name;
+});
 
 const structuredFields = computed(() =>
   Object.entries(props.toolCall.input).map(([key, value]) => ({
@@ -88,6 +136,14 @@ function handleCardClick(): void {
   if (isExpandable.value) {
     emit("expand", props.toolCall.id);
   }
+}
+
+/** The keyboard target is the name, not the card: role="button" on the card would hide the Stop button from assistive tech. */
+function handleNameKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  event.stopPropagation();
+  handleCardClick();
 }
 
 function handleDiffClick(): void {
@@ -169,6 +225,10 @@ const statusIconComponent = computed((): Component | null => {
       return IconWarning;
     case "abandoned":
       return IconBan;
+    case "cancelled":
+      return IconBan;
+    case "unrecorded":
+      return IconQuestionCircle;
     default:
       return IconGear;
   }
@@ -189,6 +249,8 @@ const statusClass = computed(() => {
     case "failed":
       return "text-error";
     case "abandoned":
+    case "cancelled":
+    case "unrecorded":
       return "text-muted-foreground";
     default:
       return "text-muted-foreground";
@@ -198,11 +260,18 @@ const statusClass = computed(() => {
 const isRunning = computed(() => props.toolCall.status === "running");
 const isFailed = computed(() => props.toolCall.status === "failed");
 const isAbandoned = computed(() => props.toolCall.status === "abandoned");
+const isCancelled = computed(() => props.toolCall.status === "cancelled");
+const isUnrecorded = computed(() => props.toolCall.status === "unrecorded");
 const isAwaitingApproval = computed(() => props.toolCall.status === "awaiting_approval");
+
+const showLiveOutput = computed(() =>
+  isRunning.value && LIVE_OUTPUT_TOOLS.has(props.toolCall.name) && props.toolCall.liveOutput !== undefined
+);
+const liveOutputText = computed(() => props.toolCall.liveOutput ?? "");
 
 const cardClass = computed(() => {
   if (isFailed.value) return "border-error/50";
-  if (isAbandoned.value) return "border-muted/50 opacity-60";
+  if (isAbandoned.value || isCancelled.value || isUnrecorded.value) return "border-muted/50 opacity-60";
   if (isMcpTool.value || isStructuredOutput.value) return "border-primary/30";
   return "border-border";
 });
@@ -213,6 +282,29 @@ const GROUP_ICONS: Record<NonNullable<ReturnType<typeof groupForTool>>, Componen
   memory: IconBrain,
 };
 
+const BUILT_IN_TOOL_ICONS: Record<string, Component> = {
+  Read: IconFile,
+  Write: IconPencil,
+  Edit: IconPencilSquare,
+  Bash: IconTerminal,
+  PowerShell: IconTerminal,
+  Glob: IconSearch,
+  Grep: IconSearch,
+  Ls: IconFolder,
+  WebFetch: IconGlobe,
+  WebSearch: IconSearch,
+  CodeSearch: IconCode,
+  FeedRead: IconGlobe,
+  YouTubeTranscript: IconFileText,
+  ToolSearch: IconSearch,
+  CronCreate: IconClock,
+  CronDelete: IconClock,
+  CronList: IconClock,
+  LSP: IconWrench,
+  Agent: IconClipboard,
+  [TOOL_STRUCTURED_OUTPUT]: IconCode,
+};
+
 const toolIconComponent = computed((): Component => {
   if (isMcpTool.value) {
     return IconMcp;
@@ -220,29 +312,11 @@ const toolIconComponent = computed((): Component => {
   if (toolGroup.value) {
     return GROUP_ICONS[toolGroup.value];
   }
-  const icons: Record<string, Component> = {
-    Read: IconFile,
-    Write: IconPencil,
-    Edit: IconPencilSquare,
-    Bash: IconTerminal,
-    PowerShell: IconTerminal,
-    Glob: IconSearch,
-    Grep: IconSearch,
-    Ls: IconFolder,
-    WebFetch: IconGlobe,
-    WebSearch: IconSearch,
-    CodeSearch: IconCode,
-    FeedRead: IconGlobe,
-    YouTubeTranscript: IconFileText,
-    ToolSearch: IconSearch,
-    CronCreate: IconClock,
-    CronDelete: IconClock,
-    CronList: IconClock,
-    LSP: IconWrench,
-    Agent: IconClipboard,
-    [TOOL_STRUCTURED_OUTPUT]: IconCode,
-  };
-  return icons[props.toolCall.name] || IconWrench;
+  return (
+    ownEntry(TEAM_TOOL_ICONS, props.toolCall.name) ??
+    ownEntry(BUILT_IN_TOOL_ICONS, props.toolCall.name) ??
+    IconWrench
+  );
 });
 
 const toolSearchMeta = computed(() => {
@@ -350,7 +424,19 @@ function formatInput(input: Record<string, unknown>): string {
 }
 
 /** The header/IN summary line; empty when the tool takes no meaningful input (so the row is hidden). */
-const inputSummary = computed(() => formatInput(props.toolCall.input));
+const inputSummary = computed(() => {
+  const presentation = teamPresentation.value;
+  return presentation ? presentation.summarizeInput(props.toolCall.input) : formatInput(props.toolCall.input);
+});
+
+/** An error result stays raw; the presentation summary describes a happy path that did not happen. */
+const resultSummary = computed(() => {
+  const result = props.toolCall.result;
+  if (result === undefined) return "";
+  const presentation = teamPresentation.value;
+  if (!presentation || props.toolCall.isError === true) return truncate(result, 200);
+  return presentation.summarizeResult(result, props.toolCall.input);
+});
 </script>
 
 <template>
@@ -364,7 +450,20 @@ const inputSummary = computed(() => formatInput(props.toolCall.input));
       :class="isMcpTool ? 'bg-gradient-to-r from-primary/10 to-transparent' : 'bg-foreground/5'"
     >
       <component :is="toolIconComponent" :size="18" class="shrink-0" :class="isMcpTool || isStructuredOutput ? 'text-primary' : 'text-foreground'" />
-      <span class="text-foreground font-medium">{{ displayName }}</span>
+      <span
+        v-if="isExpandable"
+        role="button"
+        tabindex="0"
+        aria-haspopup="dialog"
+        :aria-label="t('toolCall.expandDetails', { name: displayName })"
+        class="text-foreground font-medium rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        @click.stop="handleCardClick"
+        @keydown="handleNameKeydown"
+      >{{ displayName }}</span>
+      <span
+        v-else
+        class="text-foreground font-medium"
+      >{{ displayName }}</span>
       <span
         v-if="isFileOperation && filePath"
         class="text-muted-foreground text-xs truncate min-w-0 flex-1 cursor-pointer hover:text-primary hover:underline transition-colors"
@@ -378,6 +477,11 @@ const inputSummary = computed(() => formatInput(props.toolCall.input));
       >
         {{ lsPath }}
       </span>
+      <ToolCancelControl
+        :tool-call="toolCall"
+        :source="source"
+      />
+
       <span
         v-if="toolCall.durationMs !== undefined"
         class="text-xs text-muted-foreground font-mono ml-auto shrink-0"
@@ -453,6 +557,16 @@ const inputSummary = computed(() => formatInput(props.toolCall.input));
         <span v-else class="font-mono text-foreground/70 truncate">{{ inputSummary }}</span>
       </div>
 
+      <!-- Stops the click so selecting output text does not expand the card. -->
+      <div v-if="showLiveOutput" class="space-y-1 border-t border-border/30 pt-2" @click.stop>
+        <p class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('toolCall.liveOutput') }}</p>
+        <LiveOutputPane
+          :output="liveOutputText"
+          :truncated="toolCall.liveOutputTruncated === true"
+          height-class="h-[240px]"
+        />
+      </div>
+
       <div
         v-if="isFailed && toolCall.errorMessage"
         class="flex items-start gap-2 text-xs border-t border-error/20 pt-2 -mx-3 px-3 bg-error/10 -mb-3 pb-3"
@@ -496,7 +610,7 @@ const inputSummary = computed(() => formatInput(props.toolCall.input));
         <div class="flex items-start gap-2">
           <span class="text-muted-foreground font-medium shrink-0">OUT</span>
           <span class="font-mono overflow-x-auto" :class="toolCall.isError ? 'text-error' : 'text-foreground'">
-            {{ toolCall.result.slice(0, 200) }}{{ toolCall.result.length > 200 ? "..." : "" }}
+            {{ resultSummary }}
           </span>
         </div>
       </div>
@@ -509,6 +623,16 @@ const inputSummary = computed(() => formatInput(props.toolCall.input));
       <Alert v-if="isAbandoned" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
         <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.notExecuted") }}</AlertTitle>
         <AlertDescription class="text-gray-400">{{ t("toolCall.changedCourse") }}</AlertDescription>
+      </Alert>
+
+      <Alert v-if="isCancelled" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
+        <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.cancelled") }}</AlertTitle>
+        <AlertDescription class="text-gray-400">{{ t("toolCall.cancelledDescription") }}</AlertDescription>
+      </Alert>
+
+      <Alert v-if="isUnrecorded" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
+        <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.outcomeUnrecorded") }}</AlertTitle>
+        <AlertDescription class="text-gray-400">{{ t("toolCall.outcomeUnrecordedDescription") }}</AlertDescription>
       </Alert>
 
       <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden">
