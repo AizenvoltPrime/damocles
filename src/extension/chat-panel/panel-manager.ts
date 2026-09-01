@@ -27,7 +27,7 @@ export interface PanelManagerConfig {
   getInitialMessages: () => ExtensionToWebviewMessage[];
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
-  loadHistory: (sessionId: string, host: WebviewHost) => Promise<void>;
+  loadHistory: (sessionId: string, host: WebviewHost, session: ChatSession) => Promise<void>;
 }
 
 export class PanelManager {
@@ -151,11 +151,12 @@ export class PanelManager {
    */
   private async replayForkedHistory(host: WebviewHost, panelId: string, args: ForkSpawnArgs): Promise<void> {
     await this.panels.get(panelId)?.webviewReady;
-    if (!this.panels.has(panelId)) return; // closed before it mounted
+    const instance = this.panels.get(panelId);
+    if (!instance) return; // closed before it mounted
 
     try {
       // A first-message fork has no branched session (fresh panel + prefill only).
-      if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host);
+      if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host, instance.session);
     } catch (err) {
       log("[PanelManager.replayForkedHistory] history replay failed: %O", err);
       this.postMessage(host, {

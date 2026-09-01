@@ -6,12 +6,14 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan, IconClock, IconEye } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
-import { getAgentColor, formatElapsed, statusBadgeClass, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
+import { getAgentColor, formatElapsed, statusBadgeClass, formatTokenCount } from '@/composables/useTeamFormatting';
+import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useVSCode } from '@/composables/useVSCode';
 import { useTeamStore } from '@/stores/useTeamStore';
 
 const { t } = useI18n();
+const { costLabel, costTitle } = useCostLabel();
 
 const props = defineProps<{
   agent: TeamAgent;
@@ -93,7 +95,7 @@ function cancelAgent(e: Event): void {
           :title="`In: ${agent.totalInputTokens.toLocaleString()} Out: ${agent.totalOutputTokens.toLocaleString()}` + (agent.cacheReadTokens > 0 ? ` Cache read: ${agent.cacheReadTokens.toLocaleString()}` : '') + (agent.cacheCreationTokens > 0 ? ` Cache write: ${agent.cacheCreationTokens.toLocaleString()}` : '')"
         >{{ formatTokenCount(agent.totalInputTokens + agent.totalOutputTokens) }} tokens</span>
         <span v-if="agent.costUsd > 0" class="text-foreground/30">•</span>
-        <span v-if="agent.costUsd > 0" class="font-medium text-foreground/60">{{ formatCost(agent.costUsd) }}</span>
+        <span v-if="agent.costUsd > 0" class="font-medium text-foreground/60" :title="costTitle(agent.dollarBilled)">{{ costLabel(agent.costUsd, agent.dollarBilled) }}</span>
         <span v-if="agent.lastToolName" class="text-foreground/30">•</span>
         <span v-if="agent.lastToolName" class="truncate">{{ agent.lastToolName }}</span>
         <span class="ml-auto" />

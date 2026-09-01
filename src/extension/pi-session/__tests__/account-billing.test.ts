@@ -70,22 +70,22 @@ describe('apiKeySource', () => {
 describe('buildAccountInfo', () => {
   it('openai backend sets tokenSource, no subscriptionType', () => {
     const info = buildAccountInfo(deps({ modelValue: 'gpt-5.6-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, codex: false } }));
-    expect(info).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key' });
+    expect(info).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
   });
 
   it('piProvider model sets tokenSource = provider id (no Claude chip)', () => {
     const info = buildAccountInfo(deps({ modelValue: 'deepseek-v4-pro', modelInfo: deepseekModel }));
-    expect(info).toEqual({ model: 'deepseek-v4-pro', tokenSource: 'deepseek' });
+    expect(info).toEqual({ model: 'deepseek-v4-pro', tokenSource: 'deepseek', dollarBilled: true });
   });
 
   it('anthropic model sets subscriptionType = Claude auth mode', () => {
     const info = buildAccountInfo(deps({ modelValue: 'claude-opus-4-8', modelInfo: anthropicModel, claudeAuthMode: 'allowance' }));
-    expect(info).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'allowance' });
+    expect(info).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'allowance', dollarBilled: false });
   });
 
   it('undefined modelInfo falls to the Claude subscription chip (no backend/piProvider)', () => {
     const info = buildAccountInfo(deps({ modelValue: 'mystery', modelInfo: undefined, claudeAuthMode: 'extra' }));
-    expect(info).toEqual({ model: 'mystery', subscriptionType: 'extra' });
+    expect(info).toEqual({ model: 'mystery', subscriptionType: 'extra', dollarBilled: true });
   });
 });
 

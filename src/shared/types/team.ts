@@ -8,6 +8,9 @@ export interface TeamAgent {
   specialization: string;
   model: string;
   profileId: string | null;
+  /** Which launch of this agent the work fields below describe. A redispatch reuses the agentId, so an
+   *  advance is the only signal that the counters start over while usage keeps every attempt's spend. */
+  attempt: number;
   status: TeamAgentStatus;
   startTime: number | null;
   endTime: number | null;
@@ -18,6 +21,9 @@ export interface TeamAgent {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  /** Whether this agent's model bills real dollars. Its role model can differ from the panel model, so
+   *  the panel-level billing flag cannot label this agent's cost. */
+  dollarBilled: boolean;
   progressSummary: string | null;
   result: string | null;
   logFilePath: string | null;

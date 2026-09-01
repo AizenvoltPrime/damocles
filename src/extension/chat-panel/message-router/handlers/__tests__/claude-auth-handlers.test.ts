@@ -72,20 +72,26 @@ import { createClaudeAuthHandlers } from "../claude-auth-handlers";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 
-function makeDeps(sent: ExtensionToWebviewMessage[]): { deps: HandlerDependencies; ctx: HandlerContext } {
+function makeDeps(sent: ExtensionToWebviewMessage[]): {
+  deps: HandlerDependencies;
+  ctx: HandlerContext;
+  publishAccountInfo: ReturnType<typeof vi.fn>;
+} {
   const host = { id: "panel-1" } as unknown as HandlerContext["host"];
+  const publishAccountInfo = vi.fn();
   const deps = {
     workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
-    getPanels: () => new Map([["panel-1", { host }]]) as unknown as Map<string, never>,
+    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
   } as unknown as HandlerDependencies;
-  return { deps, ctx: { host } as HandlerContext };
+  return { deps, ctx: { host } as HandlerContext, publishAccountInfo };
 }
 
 describe("createClaudeAuthHandlers", () => {
   let sent: ExtensionToWebviewMessage[];
   let handlers: ReturnType<typeof createClaudeAuthHandlers>;
   let ctx: HandlerContext;
+  let publishAccountInfo: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -94,6 +100,7 @@ describe("createClaudeAuthHandlers", () => {
     const built = makeDeps(sent);
     handlers = createClaudeAuthHandlers(built.deps);
     ctx = built.ctx;
+    publishAccountInfo = built.publishAccountInfo;
   });
 
   it("claudeSignIn drives busy → status → not-busy on success", async () => {
@@ -200,5 +207,44 @@ describe("createClaudeAuthHandlers", () => {
     expect(sent.some((m) => m.type === "claudeAuthCancelled")).toBe(true);
     expect(H.runtime.signOutAnthropic).toHaveBeenCalledTimes(1);
     expect(sent.filter((m) => m.type === "claudeAuthError")).toEqual([]);
+  });
+
+  /**
+   * The account chip is derived from the Claude auth mode. Nothing republishes it on its own, so each
+   * credential change here has to ask every panel's session to publish.
+   */
+  describe("account state republication", () => {
+    it("claudeSignIn republishes to every panel", async () => {
+      await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("claudeSetBilling republishes to every panel", async () => {
+      await handlers.claudeSetBilling!({ type: "claudeSetBilling", useAllowance: false }, ctx);
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("claudeSignOut republishes to every panel", async () => {
+      await handlers.claudeSignOut!({ type: "claudeSignOut" }, ctx);
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("a failed sign-in leaves the credential untouched, so it does not republish", async () => {
+      H.runtime.signInSubscription.mockRejectedValueOnce(new Error("token exchange failed"));
+
+      await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
+
+      expect(publishAccountInfo).not.toHaveBeenCalled();
+    });
+
+    it("reading the auth status changes nothing, so it does not republish", () => {
+      handlers.getClaudeAuthStatus!({ type: "getClaudeAuthStatus" }, ctx);
+
+      expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
+      expect(publishAccountInfo).not.toHaveBeenCalled();
+    });
   });
 });

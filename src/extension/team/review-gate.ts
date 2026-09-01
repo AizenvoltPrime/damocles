@@ -55,7 +55,7 @@ export function checkBriefReadGate(
   leadName: string,
 ): { ok: boolean; error?: string } {
   if (!scratchpad.get('mission-brief')) return { ok: true };
-  if (scratchpad.getReadVersion(leadName, 'mission-brief') >= 1) return { ok: true };
+  if (scratchpad.hasCurrentRead(leadName, 'mission-brief')) return { ok: true };
   return {
     ok: false,
     error:

@@ -5,6 +5,7 @@ import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { readOpenAIAuthFromDisk, OPENAI_PREFER_API_KEY_STATE, type OpenAIAuthStatus } from "../../../pi-session/openai-auth";
 import { buildAuthInteraction } from "./auth-interaction";
+import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
 
 /** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
@@ -106,8 +107,11 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     };
   }
 
+  /** Called on the mutation paths only. The read-only status query posts `authStatusMessage()` direct,
+   *  because a read changes nothing the account chip is derived from. */
   function broadcastAuthStatus(): void {
     broadcast(authStatusMessage());
+    republishAccountInfo(getPanels);
   }
 
   /**

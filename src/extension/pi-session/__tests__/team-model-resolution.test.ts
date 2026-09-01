@@ -58,6 +58,7 @@ function deps(overrides: Partial<TeamModelDeps>): TeamModelDeps {
     openai: { apiKey: false, codex: false } as OpenAIAuthStatus,
     preferApiKey: false,
     activeModel: ANTHROPIC_ACTIVE,
+    claudeAuthMode: 'allowance',
     supportedModels: piSupportedModels(),
     roleSettings: roles({}),
     ...overrides,
@@ -232,4 +233,55 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
       expect(res.thinkingLevel).toBeUndefined();
     },
   );
+});
+
+/**
+ * A role can be pointed at a model the panel does not run, so billing follows the role's own model. The
+ * rule is account-billing's, reused, so these cases pin the wiring rather than the rule.
+ */
+describe('resolveRoleModel dollar billing', () => {
+  it('(i) unset slot on a Claude subscription is not dollar billed', () => {
+    const res = resolveRoleModel('lead', deps({ claudeAuthMode: 'allowance' }));
+    expect(res.dollarBilled).toBe(false);
+  });
+
+  it('(i2) unset slot on a Claude API key is dollar billed', () => {
+    const res = resolveRoleModel('lead', deps({ claudeAuthMode: 'apikey' }));
+    expect(res.dollarBilled).toBe(true);
+  });
+
+  it('(i3) a metered role model inside a subscription panel is dollar billed', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, deepseekResolves: true }),
+      claudeAuthMode: 'allowance',
+      roleSettings: roles({ implementor: { model: 'deepseek-v4-pro', effort: null } }),
+    });
+    const res = resolveRoleModel('implementor', d);
+    expect(res.model?.id).toBe('deepseek-v4-pro');
+    expect(res.dollarBilled).toBe(true);
+    // The panel is on a flat subscription, so a panel-derived label would call this real charge an estimate.
+    expect(resolveRoleModel('lead', d).dollarBilled).toBe(false);
+  });
+
+  it('(i4) a flat-fee role model inside an API-key panel is not dollar billed', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, stepfunResolves: true }),
+      claudeAuthMode: 'apikey',
+      roleSettings: roles({ reviewer: { model: 'step-3.7-flash', effort: null } }),
+    });
+    const res = resolveRoleModel('reviewer', d);
+    expect(res.model?.id).toBe('step-3.7-flash');
+    expect(res.dollarBilled).toBe(false);
+  });
+
+  it('(i5) the blocking error return still carries billing', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false }),
+      claudeAuthMode: 'apikey',
+      roleSettings: roles({ lead: { model: 'claude-sonnet-5', effort: null } }),
+    });
+    const res = resolveRoleModel('lead', d);
+    expect(res.error).toBeDefined();
+    expect(res.dollarBilled).toBe(true);
+  });
 });

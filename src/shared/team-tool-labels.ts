@@ -221,7 +221,7 @@ export const TEAM_TOOL_PRESENTATION: Readonly<Record<string, TeamToolPresentatio
   },
   team_report_complete: {
     label: 'Report complete',
-    summarizeInput: () => '',
+    summarizeInput: (input) => line(input['summary'], INPUT_MAX),
     summarizeResult: () => 'Awaiting the lead\'s review',
   },
   team_flag_brief_conflict: {

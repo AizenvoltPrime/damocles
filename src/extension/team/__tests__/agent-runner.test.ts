@@ -127,9 +127,9 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(fake.prompts).toContain('[Message from peer]: steer me');
   });
 
-  it('accumulates input/output/cacheWrite across turns; keeps the latest cacheRead snapshot', async () => {
-    // Two turns, each emitting one assistant message with usage. Lifetime totals must SUM input/output/
-    // cacheWrite, while cacheRead (a per-call cached-prefix snapshot) must NOT sum — keep the latest.
+  it('accumulates every usage component across turns, cacheRead included', async () => {
+    // Two turns, each emitting one assistant message with usage. Every component sums, cacheRead too:
+    // each request pays for its own cached-prefix re-read, so the running total is what cost reflects.
     let alive = true;
     const messageBus = new MessageBus('team-1');
     let turn = 0;
@@ -168,15 +168,15 @@ describe('AgentRunner (pi-native team agent)', () => {
     messageBus.send('peer', 'worker', 'second turn');
     const result = await run;
 
-    // Lifetime: input 100+200, output 30+50, cacheWrite 10+20 SUMMED; cacheRead = latest (800).
+    // Lifetime: input 100+200, output 30+50, cacheWrite 10+20, cacheRead 500+800, all summed.
     expect(result.totalInputTokens).toBe(300);
     expect(result.totalOutputTokens).toBe(80);
     expect(result.cacheCreationTokens).toBe(30);
-    expect(result.cacheReadTokens).toBe(800);
+    expect(result.cacheReadTokens).toBe(1300);
     // Cost is cumulative session cost (NOT summed) — the final result carries the latest cumulative value.
     expect(result.costUsd).toBe(0.03);
     // The last live update reflects the same latest cumulative value.
-    expect(usageUpdates.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 80, cacheCreationTokens: 30, cacheReadTokens: 800, costUsd: 0.03 });
+    expect(usageUpdates.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 80, cacheCreationTokens: 30, cacheReadTokens: 1300, costUsd: 0.03 });
     // Cost rolled into the budget as positive deltas summing to the cumulative cost.
     expect(costDeltas.reduce((a, b) => a + b, 0)).toBeCloseTo(0.03, 5);
   });
@@ -347,6 +347,31 @@ describe('AgentRunner (pi-native team agent)', () => {
     const result = await run;
     expect(result.status).toBe('cancelled');
     expect(fake.prompts).toEqual(['do the task']);
+  });
+
+  it('reclaims a message pi still holds when the turn ends, instead of ending with it undelivered', async () => {
+    // pi runs shouldStopAfterTurn before it drains the queue, so a message steered in that window is
+    // still held when the loop comes back around. The bus subscriber already echoed it to the overlay.
+    const messages: ExtensionToWebviewMessage[] = [];
+    const fake = new FakeSession({
+      // Only the opening turn is held for the test; a re-prompt ends on its own so the run can settle.
+      onPrompt: (_t, s) => { if (s.prompts.length > 1) s.emit({ type: 'turn_end' }); },
+    });
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+    }));
+
+    await fake.whenPrompted(1);
+    fake.holdSteeredMessage('[Message from Lead]: revise section 3');
+    fake.emit({ type: 'turn_end' });
+    await run;
+
+    expect(fake.prompts).toEqual(['do the task', '[Message from Lead]: revise section 3']);
+    expect(fake.pendingMessageCount).toBe(0);
+    const echoed = messages.filter((m) => m.type === 'teamAgentUserMessage').map((m) => m.content);
+    expect(echoed).toEqual(['do the task']);
   });
 
   it('returns cancelled when the abort signal fires before start', async () => {
@@ -907,5 +932,187 @@ describe('AgentRunner tool result persistence', () => {
     expect(persistedToolResult(entries, 'tc-1')['content']).toBe('plain string result');
     const card = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> => m.type === 'teamAgentToolResult');
     expect(card?.result).toBe('plain string result');
+  });
+});
+
+/**
+ * `team_standby` and `team_report_complete` both promise the agent stops here, but each only records
+ * state and hands control back to the model, which keeps working unless the engine ends the turn. The
+ * runner installs pi's `shouldStopAfterTurn` hook so it does. These tests drive the hook the runner
+ * installed on the session's `agent`, which is the object pi consults after each turn.
+ */
+
+type StopHook = NonNullable<FakeSession['agent']['shouldStopAfterTurn']>;
+
+/** A session whose turns end only when the test says so, so a run can be held open mid-flight. */
+function heldSession(): FakeSession {
+  return new FakeSession({ onPrompt: () => undefined });
+}
+
+/**
+ * Drives the stop hook while the agent's run is still in flight, the only state pi ever consults it in.
+ * The opening prompt is held open for the body, then released so the run settles.
+ */
+async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise<void>, session?: FakeSession): Promise<void> {
+  const fake = session ?? heldSession();
+  const run = new AgentRunner().startAgent(baseConfig({
+    createSession: async () => fake as never,
+    keepAlive: () => false,
+  }));
+  await fake.whenPrompted(1);
+  const hook = fake.agent.shouldStopAfterTurn;
+  if (!hook) throw new Error('the runner installed no shouldStopAfterTurn hook');
+  await body(hook, fake);
+  // pi drains its queue once the turn ends, so leave nothing held that would re-prompt this session.
+  fake.clearQueue();
+  fake.emit({ type: 'turn_end' });
+  await run;
+}
+
+/**
+ * A completed assistant message carrying one tool call per name, each paired with the successful result
+ * pi builds for it (`agent-loop.js:534` keys the result to the call id and carries `isError`).
+ */
+function turnWith(...names: string[]): Parameters<StopHook>[0] {
+  return {
+    message: { role: 'assistant', content: names.map((name, i) => ({ type: 'toolCall', id: `tc-${i}`, name, arguments: {} })) },
+    toolResults: names.map((name, i) => ({ role: 'toolResult', toolCallId: `tc-${i}`, toolName: name, content: [], isError: false })),
+    context: {},
+    newMessages: [],
+  } as unknown as Parameters<StopHook>[0];
+}
+
+describe('AgentRunner terminal-tool turn stop', () => {
+  it('stops the turn when the completed assistant message contains a team_standby call', async () => {
+    await withStopHook(async (hook) => {
+      expect(await hook(turnWith('team_write_scratchpad', 'team_standby'))).toBe(true);
+    });
+  });
+
+  it('does not stop the turn while the session has a queued message', async () => {
+    // pi drains its steering queue only after this check, so stopping here would park the agent with
+    // the message stranded in the queue.
+    await withStopHook(async (hook, fake) => {
+      fake.holdSteeredMessage('[Message from Lead]: one more thing');
+      expect(await hook(turnWith('team_standby'))).toBe(false);
+    });
+  });
+
+  it('does not stop a turn whose assistant message has no team_standby call', async () => {
+    await withStopHook(async (hook) => {
+      expect(await hook(turnWith('read', 'team_read_scratchpad'))).toBe(false);
+    });
+  });
+
+  it('stops the turn on team_report_complete too', async () => {
+    // The summary parameter carries the sign-off, so closing text after the call is a full-context
+    // charge for something the team already has.
+    await withStopHook(async (hook) => {
+      expect(await hook(turnWith('team_write_scratchpad', 'team_report_complete'))).toBe(true);
+    });
+  });
+
+  it('does not stop the turn on team_report_complete while the session has a queued message', async () => {
+    await withStopHook(async (hook, fake) => {
+      fake.holdSteeredMessage('[Message from Lead]: one more thing');
+      expect(await hook(turnWith('team_report_complete'))).toBe(false);
+    });
+  });
+
+  it('does not stop the turn when the team_report_complete call was rejected', async () => {
+    // reportComplete throws for a lead, a non-running specialist and at the review-round ceiling. The
+    // turn the agent gets that error in is the turn it reacts in.
+    await withStopHook(async (hook) => {
+      const threw = turnWith('team_report_complete');
+      (threw.toolResults[0] as { isError: boolean }).isError = true;
+      expect(await hook(threw)).toBe(false);
+
+      const noResult = turnWith('team_report_complete');
+      noResult.toolResults.length = 0;
+      expect(await hook(noResult)).toBe(false);
+    });
+  });
+
+  it('does not stop the turn when the team_standby call did not park the agent', async () => {
+    // `enterStandby` throws for a lead and for a specialist whose status is not running
+    // (`team-runner.ts:1270-1279`). The turn the agent gets that error in is the turn it reacts in, so
+    // the engine must not take it away. A missing result is the same case: nothing parked.
+    await withStopHook(async (hook) => {
+      const threw = turnWith('team_standby');
+      (threw.toolResults[0] as { isError: boolean }).isError = true;
+      expect(await hook(threw)).toBe(false);
+
+      const noResult = turnWith('team_standby');
+      noResult.toolResults.length = 0;
+      expect(await hook(noResult)).toBe(false);
+    });
+  });
+
+  it('chains to a hook the session already carried instead of replacing it', async () => {
+    const fake = heldSession();
+    let priorCalls = 0;
+    let priorStops = false;
+    fake.agent.shouldStopAfterTurn = () => { priorCalls++; return priorStops; };
+
+    await withStopHook(async (hook) => {
+      expect(await hook(turnWith('read'))).toBe(false);
+      expect(priorCalls).toBe(1);
+      priorStops = true;
+      expect(await hook(turnWith('read'))).toBe(true);
+    }, fake);
+  });
+});
+
+/**
+ * Where `AgentResult.finalResponse` comes from. The turn-ending hook means a specialist produces no
+ * closing assistant message any more, so the sign-off it passed to `team_report_complete` is the only
+ * account of its run that reaches the team card and the `agent-completed` persistence entry.
+ */
+describe('AgentRunner finalResponse', () => {
+  /** A session whose turn emits one assistant text block, so `onAssistantText` has something to take. */
+  function sessionEmittingText(text: string): FakeSession {
+    return new FakeSession({
+      onPrompt: (_t, s) => {
+        s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+        s.emit({ type: 'turn_end' });
+      },
+    });
+  }
+
+  it('takes the reported summary over trailing assistant text', async () => {
+    const fake = sessionEmittingText('thinking out loud on the way to the tool call');
+
+    const result = await new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      getReportedSummary: () => 'delivered the parser, all suites pass, nothing open',
+    }));
+
+    expect(result.finalResponse).toBe('delivered the parser, all suites pass, nothing open');
+  });
+
+  it('takes the reported summary over the session fallback when no assistant text was seen', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    fake.getLastAssistantText = (): string => 'stale text from the session';
+
+    const result = await new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      getReportedSummary: () => 'the sign-off',
+    }));
+
+    expect(result.finalResponse).toBe('the sign-off');
+  });
+
+  it('falls back to assistant text when the agent never reported a summary', async () => {
+    const fake = sessionEmittingText('here is what I found');
+
+    const result = await new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      getReportedSummary: () => null,
+    }));
+
+    expect(result.finalResponse).toBe('here is what I found');
   });
 });

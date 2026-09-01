@@ -297,6 +297,7 @@ Contribute your layer of the current vertical slice so the slice works end-to-en
 | \`team_write_scratchpad\` | Write your findings for the team to reference |
 | \`team_get_status\` | Check teammate statuses and names |
 | \`team_standby\` | Pause until peer content arrives, instead of polling |
+| \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
 | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
 | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
@@ -331,7 +332,7 @@ Based on what you found in those sections:
 Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
 ### Step 7: Report Complete
-Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly, so do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
 ### Verification Budget
 
@@ -355,14 +356,14 @@ Verification is shared team-wide through the append-only \`verification\` scratc
 
 **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section, "Cross-Review: no interacting layer per contract", and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
 
-If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response. Your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+If you need a peer's section and it does not exist yet, call \`team_standby\`. The call ends your turn for you, and you stay parked until a teammate writes a scratchpad section or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
 - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
 - Send messages directly to other specialists when you have information they need, and don't only report to the lead
 - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
 ### Waiting for Peers: Use Standby
-\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\`: the call ends your turn for you, so nothing has to follow it. You then wait at no cost until a teammate writes a scratchpad section or sends you a direct message. An append to the append-only \`verification\` ledger wakes nobody, so read that section yourself when you need it. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
 **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby. That is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 
@@ -448,6 +449,7 @@ Apply your domain expertise above to this task. Your specialized knowledge shoul
 | \`team_write_scratchpad\` | Write your findings for the team to reference |
 | \`team_get_status\` | Check teammate statuses and names |
 | \`team_standby\` | Pause until peer content arrives, instead of polling |
+| \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
 | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
 | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
@@ -482,7 +484,7 @@ Based on what you found in those sections:
 Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
 ### Step 7: Report Complete
-Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly, so do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
 ### Verification Budget
 
@@ -506,14 +508,14 @@ Verification is shared team-wide through the append-only \`verification\` scratc
 
 **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section, "Cross-Review: no interacting layer per contract", and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
 
-If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response. Your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+If you need a peer's section and it does not exist yet, call \`team_standby\`. The call ends your turn for you, and you stay parked until a teammate writes a scratchpad section or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
 - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
 - Send messages directly to other specialists when you have information they need, and don't only report to the lead
 - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
 ### Waiting for Peers: Use Standby
-\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\`: the call ends your turn for you, so nothing has to follow it. You then wait at no cost until a teammate writes a scratchpad section or sends you a direct message. An append to the append-only \`verification\` ledger wakes nobody, so read that section yourself when you need it. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
 **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby. That is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 

@@ -7,9 +7,11 @@
 /**
  * Lifetime usage components, accumulated via `message_end` events. Survives
  * compaction (which replaces session.state.messages and would reset any
- * stats-derived sum). cacheRead is excluded because each turn's cacheRead is
- * the cumulative cached prefix re-read on that one call — summing across
- * turns counts the prefix N times.
+ * stats-derived sum). These components are a token total, so cacheRead is
+ * excluded: each turn's cacheRead is the cumulative cached prefix re-read on
+ * that one call, and summing it across turns counts the same prefix N times.
+ * Summing per-request cacheRead is a different quantity, the one the API
+ * bills, so a caller that needs cost keeps its own running total.
  */
 export type LifetimeUsage = { input: number; output: number; cacheWrite: number };
 

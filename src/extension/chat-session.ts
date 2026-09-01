@@ -81,6 +81,10 @@ export interface ChatSession {
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): void;
 
+  /** Push the account/billing chip (model, credential source, dollar-metered flag) to the webview.
+   *  Callers own the timing: it is derived state with no publisher of its own. */
+  publishAccountInfo(): void;
+
   getSupportedModels(): Promise<ModelInfo[]>;
   getSupportedCommands(): Promise<SlashCommandInfo[]>;
 

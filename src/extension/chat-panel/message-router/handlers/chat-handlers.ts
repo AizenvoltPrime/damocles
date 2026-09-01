@@ -265,7 +265,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       ctx.session.setResumeSession(msg.sessionId);
 
       try {
-        await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host);
+        await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host, ctx.session);
         const rewindableIds = await deps.historyManager.extractRewindableUserIds(msg.sessionId);
         ctx.session.seedCheckpoints(rewindableIds);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });

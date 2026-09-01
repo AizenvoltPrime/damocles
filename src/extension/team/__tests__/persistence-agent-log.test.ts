@@ -86,3 +86,184 @@ describe('TeamPersistence agent log round trip', () => {
     ]);
   });
 });
+
+describe('TeamPersistence team state round trip', () => {
+  it('restores every usage total the agent-completed entry carries', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-state'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1',
+      agents: [{ name: 'lead', role: 'lead', model: 'opus' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'lead',
+      specialization: 'orchestrate', model: 'opus', timestamp: '2026-08-26T00:00:01.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'lead', status: 'completed',
+      result: 'done', toolCallCount: 4, durationMs: 900,
+      totalInputTokens: 300, totalOutputTokens: 80,
+      cacheReadTokens: 52_900_000, cacheCreationTokens: 30, costUsd: 26.45,
+      timestamp: '2026-08-26T00:00:02.000Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents[0]).toMatchObject({
+      name: 'lead', status: 'completed', toolCount: 4,
+      totalInputTokens: 300, totalOutputTokens: 80,
+      cacheReadTokens: 52_900_000, cacheCreationTokens: 30, costUsd: 26.45,
+    });
+  });
+
+  it('restores each agent own billing flag, so a reloaded card labels its cost the same way', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-billing'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1',
+      agents: [{ name: 'lead', role: 'lead', model: 'opus' }, { name: 'dev', role: 'specialist' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'lead',
+      specialization: 'orchestrate', model: 'opus', dollarBilled: false,
+      timestamp: '2026-08-26T00:00:01.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: 'agent-2', name: 'dev',
+      specialization: 'build it', model: 'sonnet', dollarBilled: true,
+      timestamp: '2026-08-26T00:00:02.000Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    // A mixed-billing team is the case a single panel-level flag gets wrong.
+    expect(state?.agents.map(a => [a.name, a.dollarBilled])).toEqual([['lead', false], ['dev', true]]);
+  });
+
+  it('sums the usage of both attempts of a re-dispatched agent, taking its work fields from the last', async () => {
+    // Every figure here is the one the observed run recorded for the specialist it cancelled and re-ran.
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-redispatch'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'remediation check', toolUseId: 'tu-1',
+      agents: [{ name: 'alpha', role: 'specialist' }],
+      timestamp: '2026-09-01T10:39:33.604Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha',
+      specialization: 'read the brief', model: 'opus', attempt: 0,
+      timestamp: '2026-09-01T10:40:23.547Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'cancelled',
+      result: 'ALPHA-READ-1: FULL', toolCallCount: 5, durationMs: 14_914,
+      totalInputTokens: 8, totalOutputTokens: 665,
+      cacheReadTokens: 56_118, cacheCreationTokens: 19_628, costUsd: 0.15659350000000002,
+      timestamp: '2026-09-01T10:40:38.479Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha',
+      specialization: 'read the brief', model: 'opus', attempt: 1, reattempt: true,
+      timestamp: '2026-09-01T10:40:46.872Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'completed',
+      result: 'ALPHA-DONE: reported the read outcome after redispatch.', toolCallCount: 4, durationMs: 28_654,
+      totalInputTokens: 8, totalOutputTokens: 1106,
+      cacheReadTokens: 73_473, cacheCreationTokens: 1960, costUsd: 0.06200525,
+      timestamp: '2026-09-01T10:41:15.527Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents[0]).toMatchObject({
+      name: 'alpha', status: 'completed', attempt: 1,
+      // Work is per attempt: the card times and counts the run that finished last.
+      toolCount: 4,
+      result: 'ALPHA-DONE: reported the read outcome after redispatch.',
+      // Spend is cumulative: the cancelled attempt burned these tokens under the same name.
+      totalInputTokens: 16, totalOutputTokens: 1771,
+      cacheReadTokens: 129_591, cacheCreationTokens: 21_588,
+    });
+    expect(state?.agents[0]?.costUsd).toBeCloseTo(0.21859875, 10);
+    expect(state?.totalToolCount).toBe(4);
+  });
+
+  it('restores a team reopened mid-attempt without the dead attempt work on the card', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-mid-attempt'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'remediation check', toolUseId: 'tu-1',
+      agents: [{ name: 'alpha', role: 'specialist' }],
+      timestamp: '2026-09-01T10:39:33.604Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha',
+      specialization: 'read the brief', model: 'opus', attempt: 0,
+      timestamp: '2026-09-01T10:40:23.547Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'cancelled',
+      result: 'ALPHA-READ-1: FULL', toolCallCount: 5, durationMs: 14_914,
+      totalInputTokens: 8, totalOutputTokens: 665,
+      cacheReadTokens: 56_118, cacheCreationTokens: 19_628, costUsd: 0.15659350000000002,
+      timestamp: '2026-09-01T10:40:38.479Z',
+    });
+    // The log ends here: the second attempt was still running when the session was reopened.
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha',
+      specialization: 'read the brief', model: 'opus', attempt: 1, reattempt: true,
+      timestamp: '2026-09-01T10:40:46.872Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents[0]).toMatchObject({
+      status: 'running', attempt: 1, toolCount: 0, endTime: null, result: null,
+      startTime: new Date('2026-09-01T10:40:46.872Z').getTime(),
+      // The cancelled attempt still spent this, so it stays on the card.
+      totalOutputTokens: 665,
+    });
+  });
+
+  it('reads a spawn entry written before the attempt counter as the agent first attempt', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-no-attempt'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1',
+      agents: [{ name: 'dev', role: 'specialist' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'dev',
+      specialization: 'build it', model: 'sonnet',
+      timestamp: '2026-08-26T00:00:01.000Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents[0]?.attempt).toBe(0);
+  });
+
+  it('labels an agent that never spawned as a charge, the safe side of an unknown', async () => {
+    const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'team-billing-unspawned'), 'session-1');
+    await persistence.initTeamFile(TEAM_ID);
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'Slice 3', toolUseId: 'tu-1',
+      agents: [{ name: 'dev', role: 'specialist' }],
+      timestamp: '2026-08-26T00:00:00.000Z',
+    });
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+
+    expect(state?.agents[0]?.dollarBilled).toBe(true);
+  });
+});

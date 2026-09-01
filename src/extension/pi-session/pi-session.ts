@@ -40,7 +40,7 @@ import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import { createShellSessionJob } from "./tools/process-tree";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
-import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
+import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, teamAgentPiToolNamesForRole } from "./tools/team-tools";
 import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
 import {
   resolveRoleModel,
@@ -108,7 +108,6 @@ import { buildContextUsage } from "./context-usage";
 import { generateSessionTitle } from "./session-title";
 import {
   buildAccountInfo as buildAccountInfoFrom,
-  apiKeySource as apiKeySourceFrom,
   dollarBilled as dollarBilledFrom,
   type AccountBillingDeps,
 } from "./account-billing";
@@ -169,7 +168,9 @@ export class PiSession implements ChatSession {
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
-  private supportedModelsCache: ModelInfo[] = [];
+  // The catalog is static, so it is populated before start(): a resumed panel defers start() and still
+  // has to resolve its model's billing.
+  private supportedModelsCache: ModelInfo[] = piSupportedModels();
   private permissionMode: PermissionMode;
   private processingFlag = false;
   /** Set while a manual compaction runs. Distinct from `processingFlag` so it gates a concurrent
@@ -246,9 +247,7 @@ export class PiSession implements ChatSession {
       defaultModelValue: () => options.getDefaultModel?.() ?? this.modelValue,
       contextWindow: () => this.contextWindowForCurrentModel(),
       supportedModels: () => this.supportedModelsCache,
-      accountInfo: () => this.buildAccountInfo(),
       permissionMode: () => this.permissionMode,
-      apiKeySource: () => this.apiKeySource(),
       budgetLimit: () => this.budgetLimitForEnforcement(),
       showCacheMissNotices: () =>
         vscode.workspace.getConfiguration('damocles').get<boolean>('showCacheMissNotices', false),
@@ -292,7 +291,6 @@ export class PiSession implements ChatSession {
     }
 
     const requestedModel = this.modelValue;
-    this.supportedModelsCache = piSupportedModels();
     this.resolveInitialModel(piRuntime);
     if (syncTimedOut) this.warnCustomProviderFallback(piRuntime, requestedModel, notWiredProviders);
 
@@ -386,6 +384,9 @@ export class PiSession implements ChatSession {
 
     const sid = this.runtime.session.sessionId;
     this.options.onSessionIdChange?.(sid);
+    // resolveInitialModel may have moved the model off the requested one, and the panel has had no
+    // account state before this point.
+    this.publishAccountInfo();
   }
 
   /**
@@ -1241,6 +1242,8 @@ export class PiSession implements ChatSession {
     // leaves `modelValue` (and everything derived from it) pointing at the still-current model.
     this.modelValue = model;
     this.desiredModel = resolution.model;
+    // The account chip is derived from the model, so it is stale until the new one is published.
+    this.publishAccountInfo();
     void this.runtime.session.setModel(resolution.model).catch((err) => log("[PiSession] setModel failed: %O", err));
   }
 
@@ -2555,6 +2558,7 @@ export class PiSession implements ChatSession {
       openai: piRuntime.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
       activeModel,
+      claudeAuthMode: piRuntime.getClaudeAuthStatus().mode,
       supportedModels: this.supportedModelsCache,
       roleSettings: {
         lead: roleSetting('lead'),
@@ -2591,7 +2595,7 @@ export class PiSession implements ChatSession {
           agent: { agentId: ctx.agentId, agentName: ctx.agentName, teamId: ctx.teamId },
         });
         return {
-          toolNames: this.teamAgentToolNames(),
+          toolNames: this.teamAgentToolNames(ctx.role),
           customTools: [...this.buildTeamAgentCustomTools(pi, ctx), ...mcp.tools],
           mcp,
         };
@@ -2601,9 +2605,12 @@ export class PiSession implements ChatSession {
         isPlanMode: () => this.permissionMode === "plan",
         parentToolUseId: agentId,
         // `buildExtensionFactory` is invoked PER AGENT SPAWN, not once at buildTeamEngine() time, so
-        // `teamAgentToolNames()` must be called HERE to read live panel state at spawn. Hoisting it to
-        // a buildTeamEngine local would freeze the deferrable set at team-construction time and
+        // `teamAgentBaseToolNames()` must be called HERE to read live panel state at spawn. Hoisting it
+        // to a buildTeamEngine local would freeze the deferrable set at team-construction time and
         // silently miss a subsystem the user toggled on mid-run.
+        //
+        // The base set, not the role-filtered one: `team_*` names are in no deferrable group, so they
+        // are intersected away regardless of role and the factory needs no role to be correct.
         //
         // The MCP half comes from the `mcp` snapshot the SAME spawn already took, never from a second
         // read: the ToolSearch inventory a nested agent is shown must be exactly what its session can
@@ -2613,13 +2620,13 @@ export class PiSession implements ChatSession {
         // `BUILTIN ∪ mcpNames` and then INTERSECTS it with `eligible` — that intersection is the point
         // (a tool the user disabled is absent from `eligible` and so can never be resurrected by
         // ToolSearch), but it also means a name missing from `eligible` is dropped. Since
-        // `teamAgentToolNames()` deliberately excludes every `mcp__*`, passing it alone yields the
+        // `teamAgentBaseToolNames()` deliberately excludes every `mcp__*`, passing it alone yields the
         // built-in groups and ZERO MCP: the agent would hold `mcp__*` in `tools:` with real definitions
         // in `customTools`, held INACTIVE by the runtime baseline, yet never advertised by its own
         // ToolSearch and unreachable through it (`resolveToolSearchEntries` → "Unknown entries").
         // This mirrors the `tools: [...toolNames, ...mcp.names]` the caller builds from the same
         // snapshot — the eligible universe is the union, in both places.
-        deferrableToolNames: deferredToolNames([...this.teamAgentToolNames(), ...mcp.names], mcp.names),
+        deferrableToolNames: deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.names),
         mcpDescriptions: mcp.descriptions,
         isMcpReadOnly: mcp.isReadOnly,
         ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
@@ -2631,26 +2638,33 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools, the
-   * main team tools (a team agent never spawns subagents or nested teams — recursion block), the
-   * plan-mode tools (plan mode is a top-level panel concern — a team agent never enters/exits it), and
-   * every `mcp__*` name. The `team_*` agent tools are added via the agent's customTools (built
-   * per-agent over its MCP context).
+   * A team agent's tool names WITHOUT its `team_*` set: the panel's full active set MINUS the subagent
+   * tools, the main team tools (a team agent never spawns subagents or nested teams, the recursion
+   * block), the plan-mode tools (plan mode is a top-level panel concern, a team agent never enters or
+   * exits it), and every `mcp__*` name.
    *
    * MCP is excluded HERE and re-added by the caller from the spawn's frozen `NestedMcpToolset`, so the
    * `mcp__*` names in `tools:` and the definitions in `customTools` come from ONE read. Leaving them in
    * would mean two independent sources of MCP names in one spawn — which is how team agents used to
    * pass names the nested registry had no definition for, and pi drops those SILENTLY.
    */
-  private teamAgentToolNames(): string[] {
+  private teamAgentBaseToolNames(): string[] {
     const exclude = new Set<string>([
       ...SUBAGENT_PI_TOOL_NAMES,
       ...TEAM_MAIN_PI_TOOL_NAMES,
       ...PLAN_MODE_TOOLS,
     ]);
-    return this.fullActiveToolNames()
-      .filter((name) => !exclude.has(name) && !isMcpToolName(name))
-      .concat(TEAM_AGENT_PI_TOOL_NAMES);
+    return this.fullActiveToolNames().filter((name) => !exclude.has(name) && !isMcpToolName(name));
+  }
+
+  /**
+   * A team agent's active-set tool names: the base set plus the `team_*` tools its ROLE may call. The
+   * definitions come from `buildTeamAgentPiTools`, which filters on the same `ctx.role`, so both halves
+   * of the spawn read one split. A name here with no matching definition is dropped SILENTLY by pi,
+   * which is why the role reaches both and not just one.
+   */
+  private teamAgentToolNames(role: AgentMcpContext["role"]): string[] {
+    return this.teamAgentBaseToolNames().concat(teamAgentPiToolNamesForRole(role));
   }
 
   /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its `team_*` tools.
@@ -2835,8 +2849,12 @@ export class PiSession implements ChatSession {
     return buildAccountInfoFrom(this.accountBillingDeps());
   }
 
-  private apiKeySource(): string {
-    return apiKeySourceFrom(this.accountBillingDeps());
+  /**
+   * Publish the account chip to the webview. Its five inputs change independently of any turn, so every
+   * mutation of one calls this and nothing else republishes. Rebuilt on each call, never cached.
+   */
+  publishAccountInfo(): void {
+    this.emit({ type: "accountInfo", data: this.buildAccountInfo() });
   }
 
   /** Whether the user opted to prefer the OpenAI API key over Codex OAuth when both are configured. */

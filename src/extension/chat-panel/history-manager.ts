@@ -1,5 +1,6 @@
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { RewindHistoryItem } from "../../shared/types/session";
+import type { ChatSession } from "../chat-session";
 import { log } from "../logger";
 import type { WebviewHost } from "./types";
 import { loadPiSessionHistory, getPiRewindableUserIds, getPiRewindHistory, getPiFileCheckpointContent } from "../pi-session/session-store";
@@ -45,7 +46,7 @@ export class HistoryManager {
     return ctrl;
   }
 
-  async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
+  async loadSessionHistory(sessionId: string, host: WebviewHost, session: ChatSession): Promise<void> {
     const ctrl = this.beginReplay(host);
     const t0 = Date.now();
 
@@ -53,6 +54,8 @@ export class HistoryManager {
     // on pi — a forked panel resumes an already-truncated branched session file (US-013c).
     await loadPiSessionHistory(this.workspacePath, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
+    // The replay contract carries no account state, and a restored panel may never run a turn.
+    session.publishAccountInfo();
     log(`[history] pi full-load ${sessionId} in ${Date.now() - t0}ms`);
   }
 

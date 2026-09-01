@@ -30,6 +30,9 @@ export interface ResolvedTeamModel {
   /** Reasoning depth for this agent's session, derived from the role's configured effort setting
    *  (coerced against the resolved model's supported levels); unset when no effort applies. */
   thinkingLevel?: ThinkingLevel;
+  /** Whether this role's model bills real dollars, so its cost is a charge rather than an estimate. A
+   *  role can run a metered model inside a flat-subscription panel, so the panel value does not answer it. */
+  dollarBilled: boolean;
   /** Set when a CONFIGURED slot is unavailable / unauthed — a blocking error the caller throws (team
    *  creation for the lead, spawn-tool error for a specialist). Never set for an unset (fail-soft) slot. */
   error?: string;
@@ -114,6 +117,15 @@ export interface TeamConfig {
   engine: TeamEngine;
 }
 
+/** The five usage counters an agent reports. Cumulative across every attempt it ran under its name. */
+export interface AgentUsageTotals {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+}
+
 export interface TeamAgent {
   agentId: string;
   teamId: string;
@@ -134,6 +146,11 @@ export interface TeamAgent {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  /** Spend from the attempts that already finished. A redispatch restarts the run's own counters, so
+   *  the totals above are this plus whatever the running attempt reports. */
+  carriedUsage: AgentUsageTotals;
+  /** Whether this agent's resolved model bills real dollars, so the card labels its cost a charge. */
+  dollarBilled: boolean;
   finalResponse: string | null;
   error: string | null;
   logFilePath: string | null;
@@ -227,6 +244,12 @@ export interface AgentRunConfig {
   /** Filter MessageBus deliveries before re-prompting (e.g. suppress broadcasts to a confirmed-complete
    *  agent, or a scratchpad notice to an agent that is not waiting for peer content). */
   shouldDeliverMessage?: (msg: { from: string; to: string | null; kind?: TeamMessage['kind'] }) => boolean;
+  /**
+   * The sign-off this agent passed to `team_report_complete`, or null if it never reported. It is the
+   * agent's own closing statement, so the runner prefers it over any assistant text when it builds
+   * `AgentResult.finalResponse`. Specialist-only: the lead never reports complete.
+   */
+  getReportedSummary?: () => string | null;
   /** Per-tool-call hook (drives the agent's live tool-count). */
   onToolCall?: (toolName: string, toolCallCount: number) => void;
   /** Per-turn usage snapshot (token totals + session cost). */
@@ -305,7 +328,7 @@ export interface AgentMcpContext {
   getNonSettledSpecialistDetails: () => Array<{name: string; status: TeamAgent['status']; toolCallCount: number}>;
   getAllAgents: () => TeamAgent[];
   enterStandby: (agentName: string) => void;
-  reportComplete: (agentName: string) => void;
+  reportComplete: (agentName: string, summary: string) => void;
   /**
    * Append one entry to the shared `verification` ledger. The caller supplies only the rendered entry —
    * the tree fingerprint is computed by the tool from git state, never taken from the agent, because a

@@ -3,7 +3,7 @@ import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-w
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ResultMessage } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
-import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
+import type { ModelInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
@@ -20,9 +20,7 @@ export interface PiStreamAdapterDeps {
   defaultModelValue: () => string;
   contextWindow: () => number;
   supportedModels: () => ModelInfo[];
-  accountInfo: () => AccountInfo;
   permissionMode: () => string;
-  apiKeySource: () => string;
   /** The hard dollar budget to enforce, or `null` when no dollar enforcement applies (US-008). */
   budgetLimit: () => number | null;
   /** Whether to surface prompt-cache-miss transcript notices. The adapter is deliberately vscode-free
@@ -350,6 +348,8 @@ export class PiStreamAdapter {
     this._thinkingDuration = null;
   }
 
+  /** Only state that never needs republishing belongs here: the guard runs this at most once per
+   *  adapter, and the adapter outlives every session replacement. */
   private emitSessionStartOnce(): void {
     if (this._initEmitted) return;
     this._initEmitted = true;
@@ -362,11 +362,9 @@ export class PiStreamAdapter {
         mcpServers: [],
         permissionMode: this.deps.permissionMode(),
         slashCommands: [],
-        apiKeySource: this.deps.apiKeySource(),
         cwd: this.deps.cwd,
       },
     });
-    this.emit({ type: 'accountInfo', data: this.deps.accountInfo() });
     const models = this.deps.supportedModels();
     this.emit({ type: 'availableModels', models });
     this.emit({ type: 'modelUpdate', activeModel: model, defaultModel: this.deps.defaultModelValue(), contextWindowSize: this.deps.contextWindow() });

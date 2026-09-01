@@ -185,8 +185,8 @@ export class ChatPanelProvider {
         this.settingsManager.setActiveModelForPanel(newPanelId, this.settingsManager.getActiveModelForPanel(sourcePanelId));
         this.settingsManager.copyPanelThinkingStateTo(sourcePanelId, newPanelId);
       },
-      loadHistory: (sessionId, host) =>
-        this.historyManager.loadSessionHistory(sessionId, host),
+      loadHistory: (sessionId, host, session) =>
+        this.historyManager.loadSessionHistory(sessionId, host, session),
     });
 
     void this.storageManager.setupSessionWatcher();

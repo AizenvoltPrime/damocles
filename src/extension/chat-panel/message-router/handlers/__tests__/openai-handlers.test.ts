@@ -166,13 +166,18 @@ function makeServices() {
   };
 }
 
-function makeDeps(sent: ExtensionToWebviewMessage[]): { deps: HandlerDependencies; ctx: HandlerContext } {
+function makeDeps(sent: ExtensionToWebviewMessage[]): {
+  deps: HandlerDependencies;
+  ctx: HandlerContext;
+  publishAccountInfo: ReturnType<typeof vi.fn>;
+} {
   const host = { id: "panel-1" } as unknown as HandlerContext["host"];
   const workspaceState = new Map<string, unknown>();
+  const publishAccountInfo = vi.fn();
   const deps = {
     workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
-    getPanels: () => new Map([["panel-1", { host }]]) as unknown as Map<string, never>,
+    getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
     context: {
       workspaceState: {
         get: (key: string, fallback?: unknown) => (workspaceState.has(key) ? workspaceState.get(key) : fallback),
@@ -180,7 +185,7 @@ function makeDeps(sent: ExtensionToWebviewMessage[]): { deps: HandlerDependencie
       },
     },
   } as unknown as HandlerDependencies;
-  return { deps, ctx: { host } as HandlerContext };
+  return { deps, ctx: { host } as HandlerContext, publishAccountInfo };
 }
 
 describe("createOpenAIHandlers (modelRuntime-backed)", () => {
@@ -188,6 +193,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
   let sent: ExtensionToWebviewMessage[];
   let handlers: ReturnType<typeof createOpenAIHandlers>;
   let ctx: HandlerContext;
+  let publishAccountInfo: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     H.ctrl.loadable = true;
@@ -199,6 +205,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
     const built = makeDeps(sent);
     handlers = createOpenAIHandlers(built.deps);
     ctx = built.ctx;
+    publishAccountInfo = built.publishAccountInfo;
   });
 
   afterEach(async () => {
@@ -433,5 +440,45 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
 
     expect(mock.modelRuntime.logout).toHaveBeenCalledWith("openai-codex");
     expect(sent.some((m) => m.type === "openaiAuthStatusChanged")).toBe(true);
+  });
+
+  /**
+   * The account chip is derived from the OpenAI credential state and the prefer-API-key flag. Nothing
+   * republishes it on its own, so each mutation here has to ask every panel's session to publish.
+   */
+  describe("account state republication", () => {
+    it("setOpenAIPreferApiKey republishes to every panel", async () => {
+      await handlers.setOpenAIPreferApiKey!(
+        { type: "setOpenAIPreferApiKey", preferApiKey: true, requestId: "r4" },
+        ctx,
+      );
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("clearOpenAIApiKey republishes to every panel", async () => {
+      await PiRuntime.get("/cwd", "/fake/agent").init();
+      mock.creds["openai"] = { type: "api_key", key: "sk-stored" };
+
+      await handlers.clearOpenAIApiKey!({ type: "clearOpenAIApiKey", requestId: "r5" }, ctx);
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("signOutCodex republishes to every panel", async () => {
+      await PiRuntime.get("/cwd", "/fake/agent").init();
+      mock.creds["openai-codex"] = { type: "oauth", expires: 1 };
+
+      await handlers.signOutCodex!({ type: "signOutCodex" }, ctx);
+
+      expect(publishAccountInfo).toHaveBeenCalledTimes(1);
+    });
+
+    it("reading the auth status changes nothing, so it does not republish", () => {
+      handlers.getOpenAIAuthStatus!({ type: "getOpenAIAuthStatus" }, ctx);
+
+      expect(sent.some((m) => m.type === "openaiAuthStatusChanged")).toBe(true);
+      expect(publishAccountInfo).not.toHaveBeenCalled();
+    });
   });
 });

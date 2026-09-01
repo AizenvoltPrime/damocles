@@ -6,11 +6,13 @@ import * as path from 'path';
 import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { MAX_FINGERPRINTED_FILES, buildTeamAgentPiTools } from '../team-tools';
+import { MAX_FINGERPRINTED_FILES, TEAM_AGENT_PI_TOOL_NAMES, TEAM_AGENT_SPECS, UNCHANGED_MARKER_PREFIX, buildAllTeamAgentPiTools, buildTeamAgentPiTools, teamAgentPiToolNamesForRole } from '../team-tools';
+import { Scratchpad } from '../../../team/scratchpad';
 import type { AgentMcpContext, TeamAgent } from '../../../team/types';
 
 type PiTool = {
   name: string;
+  description: string;
   parameters: TSchema;
   execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }> }>;
 };
@@ -61,6 +63,16 @@ function toolMap(ctx: AgentMcpContext): Map<string, PiTool> {
   return new Map(tools.map((t) => [t.name, t]));
 }
 
+/**
+ * The runtime role guard is defence in depth behind the registration filter, which does not hand a tool
+ * to the other role at all, so reaching the guard means building the unfiltered set as the wrong caller.
+ */
+function guardedTool(name: string, callerRole: 'lead' | 'specialist'): PiTool {
+  const ctx = callerRole === 'lead' ? leadCtx() : specialistCtx();
+  const tools = buildAllTeamAgentPiTools(pi, ctx, process.cwd()) as unknown as PiTool[];
+  return tools.find((t) => t.name === name)!;
+}
+
 describe('team_spawn_specialist — brief read-gate', () => {
   it('throws the read-the-brief error when the lead has not read mission-brief', async () => {
     const ctx = leadCtx({ checkBriefReadGate: () => ({ ok: false, error: 'read the `mission-brief` section first' }) });
@@ -82,7 +94,7 @@ describe('team_spawn_specialist — brief read-gate', () => {
   });
 
   it('rejects a specialist calling spawn (lead-only) before touching the gate', async () => {
-    const spawn = toolMap(specialistCtx()).get('team_spawn_specialist')!;
+    const spawn = guardedTool('team_spawn_specialist', 'specialist');
     await expect(
       spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' }),
     ).rejects.toThrow(/Only the lead/);
@@ -125,7 +137,7 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
   });
 
   it('rejects a specialist calling redispatch (lead-only)', async () => {
-    const redispatch = toolMap(specialistCtx()).get('team_redispatch_specialist')!;
+    const redispatch = guardedTool('team_redispatch_specialist', 'specialist');
     await expect(
       redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' }),
     ).rejects.toThrow(/Only the lead/);
@@ -179,7 +191,7 @@ describe('team_flag_brief_conflict — specialist-only', () => {
   });
 
   it('rejects the lead flagging (specialist-only)', async () => {
-    const flag = toolMap(leadCtx()).get('team_flag_brief_conflict')!;
+    const flag = guardedTool('team_flag_brief_conflict', 'lead');
     await expect(flag.execute('id', { detail: 'some ten-plus char detail' })).rejects.toThrow(/Only a specialist/);
   });
 });
@@ -194,7 +206,7 @@ describe('team_resolve_brief_conflict — lead-only', () => {
   });
 
   it('rejects a specialist resolving (lead-only)', async () => {
-    const resolve = toolMap(specialistCtx()).get('team_resolve_brief_conflict')!;
+    const resolve = guardedTool('team_resolve_brief_conflict', 'specialist');
     await expect(resolve.execute('id', { name: 'Dev', resolution: 'ten-plus char resolution' })).rejects.toThrow(/Only the lead/);
   });
 });
@@ -203,7 +215,7 @@ describe('team_synthesize_result — conflict gate', () => {
   it('blocks explicit synthesis while a brief conflict is open, naming the conflict', async () => {
     const ctx = leadCtx({ getOpenBriefConflicts: () => [{ name: 'Dev', detail: 'async vs sync mismatch' }] });
     const synth = toolMap(ctx).get('team_synthesize_result')!;
-    await expect(synth.execute('id', { result: 'done' })).rejects.toThrow(/unresolved brief conflicts: Dev \(async vs sync mismatch\)/);
+    await expect(synth.execute('id', { result: 'done' })).rejects.toThrow(/Unresolved brief conflicts: Dev \(async vs sync mismatch\)/);
   });
 
   it('allows synthesis once no conflict is open', async () => {
@@ -580,5 +592,379 @@ describe('team_record_verification — extension-computed tree fingerprint', () 
     // The tool hands back every entry so a peer can see this tree was already verified.
     expect(res.content[0]!.text).toContain('→ PASS');
     expect(res.content[0]!.text).toContain('→ FAIL');
+  });
+});
+
+/**
+ * The description is the contract the model reads on every request, and the engine now enforces it:
+ * an assistant message carrying a `team_standby` call ends the turn (`AgentRunner.startAgent`). These
+ * pin the prose to what the hook does, so the two cannot drift back apart.
+ */
+describe('team_standby description states what the engine does', () => {
+  const standbyDescription = (): string => toolMap(specialistCtx()).get('team_standby')!.description;
+
+  it('states that the call ends the turn and parks the agent until peer content arrives', () => {
+    const description = standbyDescription();
+    expect(description).toContain('Calling this tool ends your turn');
+    expect(description).toContain('the last thing you do in that turn');
+    expect(description).toContain('until a teammate messages you or a scratchpad notice arrives');
+    expect(description).toContain('Standby is the only state in which scratchpad update notifications wake you');
+  });
+
+  it('states the queued-message exception, the one case the engine does not stop the turn', () => {
+    // Any queued prompt suppresses the stop, so the wording must not narrow it to teammate messages:
+    // the runner also enqueues system broadcasts, scratchpad notices, and user notes via the note sink.
+    const description = standbyDescription();
+    expect(description).toContain('If a message is already queued when your turn ends, you keep running');
+    expect(description).not.toContain('If a teammate message is already queued');
+  });
+
+  it('promises no session pause of its own and points terminal work at team_report_complete', () => {
+    const description = standbyDescription();
+    // The old text promised "Your session pauses and automatically resumes", which the tool never did.
+    expect(description).not.toContain('Your session pauses');
+    expect(description).not.toContain('End your response immediately after calling this tool');
+    expect(description).toContain('This is NOT a terminal "my work is done" state');
+    expect(description).toContain('Call team_report_complete for that, never team_standby');
+  });
+
+  it('leaves team_report_complete as the terminal action and points at the summary', () => {
+    const reportComplete = toolMap(specialistCtx()).get('team_report_complete')!.description;
+    expect(reportComplete).toContain('This is the MANDATED terminal action');
+    expect(reportComplete).toContain('It must be your final call, never team_standby');
+    expect(reportComplete).toContain('passing your closing summary in `summary`');
+  });
+
+  it('no longer tells the model to end a response the engine already ends', async () => {
+    const tools = toolMap(specialistCtx());
+    expect(tools.get('team_report_complete')!.description).not.toContain('End your response immediately after calling this tool');
+    const standby = await tools.get('team_standby')!.execute('id', {});
+    const reported = await tools.get('team_report_complete')!.execute('id', { summary: 'delivered the parser, suite passes' });
+    expect(standby.content[0]!.text).toBe('Standby requested, so the turn ends here unless a message is already queued, and new peer content resumes you.');
+    expect(reported.content[0]!.text).toBe('Entering awaiting-review. The lead will review your work.');
+  });
+
+  it('returns a result that carries the queued-message exception rather than promising standby', async () => {
+    // The engine declines to stop the turn while a message is queued, so an unconditional promise here
+    // tells the model it is parked while it keeps running.
+    const standby = await toolMap(specialistCtx()).get('team_standby')!.execute('id', {});
+    const text = standby.content[0]!.text;
+    expect(text).toContain('unless a message is already queued');
+    expect(text).not.toContain('Entering standby');
+  });
+});
+
+/**
+ * The sign-off the specialist used to have nowhere to put, so it spent a second full-context request on
+ * a trailing text message instead.
+ */
+describe('team_report_complete carries the closing summary', () => {
+  const schema = (): TSchema => toolMap(specialistCtx()).get('team_report_complete')!.parameters;
+
+  it('requires a summary, rejecting the old no-argument call', () => {
+    expect(Value.Check(schema(), {})).toBe(false);
+    expect(Value.Check(schema(), { summary: 'delivered the parser, suite passes' })).toBe(true);
+  });
+
+  it('bounds the summary the way the other prose fields in this file are bounded', () => {
+    expect(Value.Check(schema(), { summary: 'too short' })).toBe(false);
+    expect(Value.Check(schema(), { summary: 'x'.repeat(32_769) })).toBe(false);
+  });
+
+  it('hands the summary to the runner unmodified, with the agent name', async () => {
+    const calls: Array<[string, string]> = [];
+    const ctx = specialistCtx({ reportComplete: (name, summary) => { calls.push([name, summary]); } });
+    await toolMap(ctx).get('team_report_complete')!.execute('id', { summary: 'delivered the parser, suite passes' });
+    expect(calls).toEqual([['Dev', 'delivered the parser, suite passes']]);
+  });
+});
+
+/**
+ * Every agent used to carry every team tool, so a lead read the specialist-only descriptions on every
+ * request and sometimes called one. Registration now follows the same split as the runtime guards.
+ */
+describe('team tool registration follows the agent role', () => {
+  const LEAD_ONLY = ['team_spawn_specialist', 'team_redispatch_specialist', 'team_cancel_specialist', 'team_request_revision', 'team_approve_specialist', 'team_resolve_brief_conflict', 'team_synthesize_result'];
+  const SPECIALIST_ONLY = ['team_standby', 'team_report_complete', 'team_flag_brief_conflict'];
+  const BOTH = ['team_send_message', 'team_read_messages', 'team_read_scratchpad', 'team_write_scratchpad', 'team_get_status', 'team_record_verification'];
+
+  it('gives the lead its own tools and the shared ones, and no specialist-only tool', () => {
+    expect([...toolMap(leadCtx()).keys()].sort()).toEqual([...LEAD_ONLY, ...BOTH].sort());
+  });
+
+  it('gives a specialist its own tools and the shared ones, and no lead-only tool', () => {
+    expect([...toolMap(specialistCtx()).keys()].sort()).toEqual([...SPECIALIST_ONLY, ...BOTH].sort());
+  });
+
+  it('exports the same names for a role as it registers tools, so a spawn cannot advertise a tool the agent lacks', () => {
+    expect([...teamAgentPiToolNamesForRole('lead')].sort()).toEqual([...toolMap(leadCtx()).keys()].sort());
+    expect([...teamAgentPiToolNamesForRole('specialist')].sort()).toEqual([...toolMap(specialistCtx()).keys()].sort());
+  });
+
+  it('keeps TEAM_AGENT_PI_TOOL_NAMES the union, which is what the gateable set asks for', () => {
+    expect([...TEAM_AGENT_PI_TOOL_NAMES].sort()).toEqual([...LEAD_ONLY, ...SPECIALIST_ONLY, ...BOTH].sort());
+  });
+
+  it('throws when a built tool has no TEAM_AGENT_ENTRIES entry, rather than dropping it for both roles', () => {
+    // A name the access table does not carry is filtered out for every role, so without the guard the
+    // omission reaches production with no error, no log and no failing test.
+    const renaming = {
+      defineTool: (tool: { name: string }) => ({ ...tool, name: tool.name === 'team_standby' ? 'team_unlisted' : tool.name }),
+    } as unknown as PiCodingAgentModule;
+    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), process.cwd())).toThrow(/team_unlisted/);
+    expect(() => buildAllTeamAgentPiTools(renaming, specialistCtx(), process.cwd())).toThrow(/TEAM_AGENT_ENTRIES/);
+    expect(() => buildAllTeamAgentPiTools(pi, specialistCtx(), process.cwd())).not.toThrow();
+  });
+
+  it('hands back a frozen name list, which every caller shares', () => {
+    const names = teamAgentPiToolNamesForRole('lead');
+    expect(Object.isFrozen(names)).toBe(true);
+    expect(teamAgentPiToolNamesForRole('lead')).toBe(names);
+    expect(Object.isFrozen(teamAgentPiToolNamesForRole('specialist'))).toBe(true);
+  });
+
+  it('keeps the runtime guard behind the filter: the wrong role still gets thrown at', async () => {
+    await expect(guardedTool('team_standby', 'lead').execute('id', {})).rejects.toThrow(/Lead agents do not use standby/);
+    await expect(guardedTool('team_report_complete', 'lead').execute('id', { summary: 'delivered the parser, suite passes' }))
+      .rejects.toThrow(/Lead agents do not report complete/);
+    await expect(guardedTool('team_synthesize_result', 'specialist').execute('id', { result: 'done' })).rejects.toThrow(/Only the lead/);
+  });
+});
+
+/** The repo prose rule, over every string this file puts in front of a model: descriptions, parameter descriptions and returned text. */
+describe('team tools carry no em dash', () => {
+  it('has none in any built description or parameter, nor anywhere in the team-tools source', () => {
+    const tools = [...toolMap(leadCtx()).values(), ...toolMap(specialistCtx()).values()];
+    const offenders = tools.filter((t) => (t.description + JSON.stringify(t.parameters)).includes('\u2014'));
+    expect(offenders.map((t) => t.name)).toEqual([]);
+    // Returned and thrown text is only reachable by executing every branch, so the source is the cover.
+    expect(fs.readFileSync(path.join(__dirname, '..', 'team-tools.ts'), 'utf8')).not.toContain('\u2014');
+  });
+});
+
+/**
+ * team_read_scratchpad withholds only content the reader provably already holds: a section whose current
+ * version is at or below the reader's recorded read version comes back as a marker instead of its body.
+ */
+describe('team_read_scratchpad returns a marker for content the reader already holds', () => {
+  const MARKER_HEAD = UNCHANGED_MARKER_PREFIX;
+
+  type ReadEntry = { section: string; content: string; author: string; version: number };
+
+  function readTool(scratchpad: Scratchpad, agentName = 'Dev'): PiTool {
+    return toolMap(specialistCtx({ agentName, scratchpad })).get('team_read_scratchpad')!;
+  }
+
+  async function readText(tool: PiTool, section?: string): Promise<string> {
+    const res = await tool.execute('id', section === undefined ? {} : { section });
+    return res.content[0]!.text;
+  }
+
+  async function readOne(tool: PiTool, section: string): Promise<ReadEntry> {
+    return JSON.parse(await readText(tool, section)) as ReadEntry;
+  }
+
+  async function readAll(tool: PiTool): Promise<ReadEntry[]> {
+    return JSON.parse(await readText(tool)) as ReadEntry[];
+  }
+
+  function marker(version: number): string {
+    return `${UNCHANGED_MARKER_PREFIX} ${version}). Content withheld to save context. This section is current, it is not empty and it is not missing.`;
+  }
+
+  it('returns full content the first time a reader sees a section', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'the whole contract body', 'Lead');
+
+    const entry = await readOne(readTool(scratchpad), 'contract');
+
+    expect(entry).toEqual({ section: 'contract', content: 'the whole contract body', author: 'Lead', version: 1 });
+  });
+
+  it('returns the marker, naming the version, on a second read of an unchanged section', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'the whole contract body', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readOne(tool, 'contract');
+    const second = await readOne(tool, 'contract');
+
+    expect(second.content).toBe(marker(1));
+    expect(second.content).toContain('(version 1)');
+    expect(second.content).not.toContain('the whole contract body');
+    // The remaining fields still describe the live section, so the reader can tell what it is holding.
+    expect(second).toMatchObject({ section: 'contract', author: 'Lead', version: 1 });
+  });
+
+  it('returns full content again once a peer writes a new version', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'v1 body', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readOne(tool, 'contract');
+    expect((await readOne(tool, 'contract')).content).toBe(marker(1));
+    scratchpad.set('contract', 'v2 body', 'Lead');
+
+    const third = await readOne(tool, 'contract');
+    expect(third.content).toBe('v2 body');
+    expect(third.version).toBe(2);
+    expect((await readOne(tool, 'contract')).content).toBe(marker(2));
+  });
+
+  it('leaves the reader recorded at the current version after a marker return', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'v1 body', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readOne(tool, 'contract');
+    expect(scratchpad.getReadVersion('Dev', 'contract')).toBe(1);
+    await readOne(tool, 'contract');
+
+    expect(scratchpad.getReadVersion('Dev', 'contract')).toBe(1);
+    expect(scratchpad.getStaleSectionsFor('Dev', 'Lead')).toEqual([]);
+  });
+
+  it('returns full content again to a reader whose read state was cleared for a re-run', async () => {
+    // A re-dispatched specialist holds none of what its previous attempt read, so the marker would
+    // withhold the brief from a session that never saw it.
+    const scratchpad = new Scratchpad();
+    scratchpad.set('mission-brief', 'the whole brief', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readOne(tool, 'mission-brief');
+    expect((await readOne(tool, 'mission-brief')).content).toBe(marker(1));
+    scratchpad.clearReader('Dev');
+
+    expect((await readOne(tool, 'mission-brief')).content).toBe('the whole brief');
+  });
+
+  it('tracks each reader separately, so one agent reading does not blind another', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'v1 body', 'Lead');
+
+    await readOne(readTool(scratchpad, 'Dev'), 'contract');
+    const other = await readOne(readTool(scratchpad, 'Qa'), 'contract');
+
+    expect(other.content).toBe('v1 body');
+  });
+
+  it('mixes full sections and markers in one all-sections response, keeping the array shape', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'contract body', 'Lead');
+    const tool = readTool(scratchpad);
+    await readAll(tool);
+    scratchpad.set('notes', 'notes body', 'Lead');
+    scratchpad.set('contract', 'contract body v2', 'Lead');
+    scratchpad.set('frozen', 'frozen body', 'Lead');
+    await readOne(tool, 'frozen');
+
+    const all = await readAll(tool);
+
+    expect(all).toHaveLength(3);
+    expect(all.map((e) => e.section)).toEqual(['contract', 'notes', 'frozen']);
+    for (const entry of all) {
+      expect(Object.keys(entry).sort()).toEqual(['author', 'content', 'section', 'version']);
+    }
+    expect(all[0]!.content).toBe('contract body v2');
+    expect(all[1]!.content).toBe('notes body');
+    expect(all[2]!.content).toBe(marker(1));
+  });
+
+  it('marks every section read even when some came back as markers', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'contract body', 'Lead');
+    scratchpad.set('notes', 'notes body', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readAll(tool);
+    await readAll(tool);
+
+    expect(scratchpad.getReadVersion('Dev', 'contract')).toBe(1);
+    expect(scratchpad.getReadVersion('Dev', 'notes')).toBe(1);
+  });
+
+  it('leaves the not-found and empty paths byte identical', async () => {
+    const scratchpad = new Scratchpad();
+    const tool = readTool(scratchpad);
+
+    expect(await readText(tool)).toBe('Scratchpad is empty.');
+    expect(await readText(tool, 'missing')).toBe('Section "missing" not found.');
+    // Neither path returns a section, so neither counts as a marker hit or a full return.
+    expect(scratchpad.getReadStats('Dev')).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  it('returns the verification ledger in full again after an append bumps its version', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.seedAppendOnly('verification');
+    const tool = readTool(scratchpad);
+
+    await readOne(tool, 'verification');
+    expect((await readOne(tool, 'verification')).content).toBe(marker(1));
+    scratchpad.appendTo('verification', '- [abc123] Lead `npm run test` PASS');
+
+    const after = await readOne(tool, 'verification');
+    expect(after.version).toBe(2);
+    expect(after.content).toBe('- [abc123] Lead `npm run test` PASS');
+  });
+
+  it('counts one outcome per section returned, not one per call', async () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('contract', 'contract body', 'Lead');
+    scratchpad.set('notes', 'notes body', 'Lead');
+    const tool = readTool(scratchpad);
+
+    await readAll(tool);
+    expect(scratchpad.getReadStats('Dev')).toEqual({ markerHits: 0, fullReturns: 2 });
+
+    scratchpad.set('notes', 'notes body v2', 'Lead');
+    await readAll(tool);
+    expect(scratchpad.getReadStats('Dev')).toEqual({ markerHits: 1, fullReturns: 3 });
+
+    await readOne(tool, 'contract');
+    expect(scratchpad.getReadStats('Dev')).toEqual({ markerHits: 2, fullReturns: 3 });
+    expect(scratchpad.getReadStats()).toEqual({ markerHits: 2, fullReturns: 3 });
+    expect(scratchpad.getReadStats('Nobody')).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  /** A model that meets an unannounced marker can read it as "the section vanished" and re-read in a loop. */
+  describe('the tool description warns the model about the marker', () => {
+    const description = (): string => readTool(new Scratchpad()).description;
+
+    it('states that a marker can arrive instead of content and what it means', () => {
+      expect(description()).toContain(MARKER_HEAD);
+      expect(description()).toContain('is current and is not empty');
+      expect(description()).toContain('already earlier in your context');
+    });
+
+    it('quotes the marker the tool actually returns, so the two cannot describe different shapes', async () => {
+      const scratchpad = new Scratchpad();
+      scratchpad.set('contract', 'the whole contract body', 'Lead');
+      const tool = readTool(scratchpad);
+      await readOne(tool, 'contract');
+
+      const returned = (await readOne(tool, 'contract')).content;
+      const quoted = tool.description.match(/beginning "([^"]+)"/)![1]!;
+
+      expect(returned.startsWith(quoted.replace(' N)', ''))).toBe(true);
+    });
+
+    it('tells the model that re-reading a marked section gains it nothing', () => {
+      expect(description()).toContain('Re-reading a marked section returns the same marker and gains you nothing');
+    });
+
+    it('keeps the marker distinct from the not-found and the empty reply', () => {
+      expect(description()).toContain('not found.');
+      expect(description()).toContain('Scratchpad is empty.');
+    });
+
+    it('carries no em dash (repo prose rule)', () => {
+      expect(description()).not.toContain('\u2014');
+    });
+
+    it('says the same thing in the short catalog blurb', () => {
+      const spec = TEAM_AGENT_SPECS.find((s) => s.name === 'team_read_scratchpad')!;
+      expect(spec.description).toContain('unchanged marker');
+      expect(spec.description).not.toContain('\u2014');
+    });
   });
 });

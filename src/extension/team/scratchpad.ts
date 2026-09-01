@@ -13,6 +13,11 @@ export interface StaleSectionInfo {
   author: string;
 }
 
+export interface ScratchpadReadStats {
+  markerHits: number;
+  fullReturns: number;
+}
+
 export interface ScratchpadRejection {
   section: string;
   attemptedBy: string;
@@ -27,6 +32,8 @@ export class Scratchpad {
   private readonly rejectionSubscribers: Array<(rejection: ScratchpadRejection) => void> = [];
   // readVersions is in-memory only; teams are ephemeral per-run and not restored on session reload.
   private readonly readVersions = new Map<string, Map<string, number>>();
+  // Counts only, never section names or payload; same in-memory lifetime as readVersions.
+  private readonly readStats = new Map<string, ScratchpadReadStats>();
   // System-owned sections that no agent (not even a second `system` write) may overwrite.
   private readonly locked = new Set<string>();
   // System-seeded sections every agent may APPEND to (the verification ledger). Distinct from both other
@@ -79,13 +86,16 @@ export class Scratchpad {
    * two agents appending in sequence both land. The section's `author` stays `system` (it is shared, not
    * owned) while the appending agent is recorded in the entry text it supplies.
    *
+   * An append is not a read, so it records none. The appender supplied one entry and has still never
+   * seen the rest of the ledger, which is what a peer looking for an existing pass needs back.
+   *
    * Bounded as a ring (oldest entries drop first, like `MessageBus.appendMessage`) because every append
    * re-persists and re-emits the WHOLE cumulative section: cost is quadratic in append count, and the
    * point of the ledger is a long session with many recorded runs. Trimming from the head keeps the
    * recent entries, which are the ones a redundancy check keys on — an old entry is stale by fingerprint
    * anyway.
    */
-  appendTo(section: string, content: string, author: string): { version: number } {
+  appendTo(section: string, content: string): { version: number } {
     const existing = this.sections.get(section);
     if (!existing || !this.appendOnly.has(section)) {
       throw new Error(`Section "${section}" is not an append-only section.`);
@@ -100,7 +110,6 @@ export class Scratchpad {
       timestamp: Date.now(),
     };
     this.sections.set(section, entry);
-    this.recordRead(author, section, version);
     this.notifySubscribers(entry);
     return { version };
   }
@@ -198,6 +207,47 @@ export class Scratchpad {
 
   getReadVersion(reader: string, section: string): number {
     return this.readVersions.get(reader)?.get(section) ?? 0;
+  }
+
+  /**
+   * Whether a reader already holds the current version of a section. The single home of the marker
+   * predicate, so no call site can drift the comparison. False when the section does not exist.
+   */
+  hasCurrentRead(reader: string, section: string): boolean {
+    const entry = this.sections.get(section);
+    if (!entry) return false;
+    return this.getReadVersion(reader, section) >= entry.version;
+  }
+
+  /** A re-run agent starts with empty model context, so its recorded reads no longer describe what it holds. */
+  clearReader(name: string): void {
+    this.readVersions.delete(name);
+    this.readStats.delete(name);
+  }
+
+  /** Called once per section returned to a reader, not once per tool call. */
+  recordReadOutcome(reader: string, outcome: 'full' | 'marker'): void {
+    let stats = this.readStats.get(reader);
+    if (!stats) {
+      stats = { markerHits: 0, fullReturns: 0 };
+      this.readStats.set(reader, stats);
+    }
+    if (outcome === 'marker') stats.markerHits++;
+    else stats.fullReturns++;
+  }
+
+  /** Per-reader counts, or the team total when no reader is given. */
+  getReadStats(reader?: string): ScratchpadReadStats {
+    if (reader !== undefined) {
+      const stats = this.readStats.get(reader);
+      return { markerHits: stats?.markerHits ?? 0, fullReturns: stats?.fullReturns ?? 0 };
+    }
+    const total: ScratchpadReadStats = { markerHits: 0, fullReturns: 0 };
+    for (const stats of this.readStats.values()) {
+      total.markerHits += stats.markerHits;
+      total.fullReturns += stats.fullReturns;
+    }
+    return total;
   }
 
   getSectionsAuthoredBy(author: string): ScratchpadEntry[] {

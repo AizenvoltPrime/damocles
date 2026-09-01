@@ -11,11 +11,13 @@ import TeamTimeline from './TeamTimeline.vue';
 import TeamScratchpad from './TeamScratchpad.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useVSCode } from '@/composables/useVSCode';
-import { formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
+import { formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
+import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
+const { costLabel, costTitle, teamDollarBilled } = useCostLabel();
 const { postMessage } = useVSCode();
 
 const teamStore = useTeamStore();
@@ -64,15 +66,19 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedTeam.value?.endTime ?? null,
 );
 
+const totalCost = computed(() => selectedTeam.value?.agents.reduce((sum, a) => sum + a.costUsd, 0) ?? 0);
+// Each agent carries its own flag and a reload restores it, so the total is labelled from the agents
+// rather than from the panel account.
+const totalBilled = computed(() => teamDollarBilled(selectedTeam.value?.agents ?? []));
+
+// The cost renders in its own subtitle span, because the estimate marker needs a title of its own.
 const subtitle = computed(() => {
   if (!selectedTeam.value) return '';
   const team = selectedTeam.value;
   const totalTokens = team.agents.reduce((sum, a) => sum + a.totalInputTokens + a.totalOutputTokens, 0);
-  const totalCost = team.agents.reduce((sum, a) => sum + a.costUsd, 0);
   const base = t('team.overlay.subtitle', { agents: team.agents.length, tools: team.totalToolCount, elapsed: formatElapsed(elapsedMs.value) });
   const parts = [base];
   if (totalTokens > 0) parts.push(`${formatTokenCount(totalTokens)} tokens`);
-  if (totalCost > 0) parts.push(formatCost(totalCost));
   return parts.join(' · ');
 });
 
@@ -95,12 +101,16 @@ const TeamIcon = {
   <OverlayShell
     v-if="selectedTeam"
     :title="selectedTeam.title"
-    :subtitle="subtitle"
     :icon="TeamIcon"
     icon-class="text-primary"
     :status-badge="statusBadge"
     @close="close"
   >
+    <template #subtitle>
+      <span>{{ subtitle }}</span>
+      <span v-if="totalCost > 0">&nbsp;·&nbsp;<span :title="costTitle(totalBilled)">{{ costLabel(totalCost, totalBilled) }}</span></span>
+    </template>
+
     <div class="flex flex-col h-full">
       <div class="flex border-b border-border/30 px-4 shrink-0">
         <button

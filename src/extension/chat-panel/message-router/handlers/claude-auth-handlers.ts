@@ -5,6 +5,7 @@ import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { readClaudeAuthFromDisk, type ClaudeAuthStatus } from "../../../pi-session/subscription";
 import { buildAuthInteraction } from "./auth-interaction";
+import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
 
 /** Sentinel thrown when the user dismisses a sign-in dialog — a benign cancel, not a failure. */
@@ -52,6 +53,8 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
     broadcast({ type: "claudeAuthBusy", busy: true });
     try {
       broadcast(statusChanged(await op()));
+      // Every op here changes the credential the account chip is derived from.
+      republishAccountInfo(getPanels);
     } catch (err) {
       if (err instanceof Error && err.message === SIGN_IN_CANCELLED) {
         broadcast({ type: "claudeAuthCancelled" });

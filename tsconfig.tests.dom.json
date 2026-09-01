@@ -17,6 +17,8 @@
     // Joins the extension's UI bridge to the webview handler that answers it, so it links webview
     // modules that need the DOM globals.
     "src/extension/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    // Same reason: it drives the runner and feeds its webview messages to the real team store.
+    "src/extension/team/__tests__/redispatch-parity.test.ts",
     "src/__mocks__/**/*",
     "src/**/*.d.ts"
   ],

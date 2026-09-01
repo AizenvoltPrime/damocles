@@ -6,10 +6,12 @@ import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
-import { formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
+import { formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
+import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
+const { costLabel, costTitle, teamDollarBilled } = useCostLabel();
 
 const props = defineProps<{
   team: TeamState;
@@ -41,6 +43,9 @@ const totalTokens = computed(() =>
 const totalCost = computed(() =>
   props.team.agents.reduce((sum, a) => sum + a.costUsd, 0)
 );
+// Each agent carries its own flag and a reload restores it, so the total is labelled from the agents
+// rather than from the panel account.
+const totalBilled = computed(() => teamDollarBilled(props.team.agents));
 
 const cardClass = computed(() => {
   switch (props.team.status) {
@@ -112,7 +117,7 @@ const statusBadgeClass = computed(() => {
         </template>
         <template v-if="totalCost > 0">
           <span class="text-foreground/40">•</span>
-          <span class="font-medium">{{ formatCost(totalCost) }}</span>
+          <span class="font-medium" :title="costTitle(totalBilled)">{{ costLabel(totalCost, totalBilled) }}</span>
         </template>
       </div>
       <div class="flex items-center">

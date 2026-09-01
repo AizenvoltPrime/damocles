@@ -190,15 +190,15 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
   it('accepts appends from ANY agent (not just the section author)', () => {
     const sp = new Scratchpad();
     sp.seedAppendOnly('verification');
-    expect(() => sp.appendTo('verification', 'entry from A', 'A')).not.toThrow();
-    expect(() => sp.appendTo('verification', 'entry from B', 'B')).not.toThrow();
+    expect(() => sp.appendTo('verification', 'entry from A')).not.toThrow();
+    expect(() => sp.appendTo('verification', 'entry from B')).not.toThrow();
   });
 
   it('lands both appends in order — neither overwrites the other', () => {
     const sp = new Scratchpad();
     sp.seedAppendOnly('verification');
-    sp.appendTo('verification', 'entry from A', 'A');
-    sp.appendTo('verification', 'entry from B', 'B');
+    sp.appendTo('verification', 'entry from A');
+    sp.appendTo('verification', 'entry from B');
     expect(sp.get('verification')?.content).toBe('entry from A\nentry from B');
     expect(sp.get('verification')?.version).toBe(3);
   });
@@ -208,8 +208,8 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
     sp.seedAppendOnly('verification');
     const versions: number[] = [];
     sp.subscribe((e) => versions.push(e.version));
-    sp.appendTo('verification', 'one', 'A');
-    sp.appendTo('verification', 'two', 'B');
+    sp.appendTo('verification', 'one');
+    sp.appendTo('verification', 'two');
     expect(versions).toEqual([2, 3]);
   });
 
@@ -224,7 +224,7 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
     const sp = new Scratchpad();
     sp.seedImmutable('mission-brief', 'spec');
     expect(() => sp.set('mission-brief', 'hijack', 'A')).toThrow(/immutable/);
-    expect(() => sp.appendTo('mission-brief', 'sneak', 'A')).toThrow(/not an append-only section/);
+    expect(() => sp.appendTo('mission-brief', 'sneak')).toThrow(/not an append-only section/);
   });
 
   it('rejects set() on an append-only section — even from an agent literally named "system"', () => {
@@ -233,7 +233,7 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
     // that can be silently rewritten is worthless as evidence.
     const sp = new Scratchpad();
     sp.seedAppendOnly('verification');
-    sp.appendTo('verification', 'entry from A', 'A');
+    sp.appendTo('verification', 'entry from A');
     expect(() => sp.set('verification', 'wiped', 'system')).toThrow(/append-only/);
     expect(() => sp.set('verification', 'wiped', 'A')).toThrow(/append-only/);
     expect(sp.get('verification')!.content).toBe('entry from A');
@@ -244,7 +244,7 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
     // append count and unbounded in payload size.
     const sp = new Scratchpad();
     sp.seedAppendOnly('verification');
-    for (let i = 0; i < MAX_APPEND_ONLY_ENTRIES + 25; i++) sp.appendTo('verification', `entry-${i}`, 'A');
+    for (let i = 0; i < MAX_APPEND_ONLY_ENTRIES + 25; i++) sp.appendTo('verification', `entry-${i}`);
     const lines = sp.get('verification')!.content.split('\n');
     expect(lines).toHaveLength(MAX_APPEND_ONLY_ENTRIES);
     expect(lines[0]).toBe('entry-25');
@@ -265,14 +265,181 @@ describe('Scratchpad — append-only shared section (verification ledger)', () =
   it('rejects appendTo on a section that was never seeded append-only', () => {
     const sp = new Scratchpad();
     sp.set('findings', 'from A', 'A');
-    expect(() => sp.appendTo('findings', 'sneak', 'B')).toThrow(/not an append-only section/);
-    expect(() => sp.appendTo('nope', 'sneak', 'B')).toThrow(/not an append-only section/);
+    expect(() => sp.appendTo('findings', 'sneak')).toThrow(/not an append-only section/);
+    expect(() => sp.appendTo('nope', 'sneak')).toThrow(/not an append-only section/);
   });
 
-  it('records the appending agent as having read the version it produced', () => {
+  it('leaves the appender still needing a full read of the entries it never saw', () => {
+    // The record tool echoes only the ledger tail, so an appender has seen its own entry and nothing
+    // else. Marking it as holding the whole ledger would hide every earlier run from it.
     const sp = new Scratchpad();
     sp.seedAppendOnly('verification');
-    sp.appendTo('verification', 'entry from A', 'A');
-    expect(sp.getReadVersion('A', 'verification')).toBe(2);
+    sp.appendTo('verification', 'entry from A');
+    sp.markRead('B', 'verification');
+    sp.appendTo('verification', 'entry from B');
+    expect(sp.hasCurrentRead('B', 'verification')).toBe(false);
+  });
+});
+
+describe('Scratchpad read outcome counters', () => {
+  it('reports zeros for a reader that has never read anything', () => {
+    const sp = new Scratchpad();
+    expect(sp.getReadStats('Nobody')).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  it('reports zeros in total on a fresh scratchpad', () => {
+    const sp = new Scratchpad();
+    expect(sp.getReadStats()).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  it('increments only the named counter', () => {
+    const sp = new Scratchpad();
+    sp.recordReadOutcome('Lead', 'full');
+    expect(sp.getReadStats('Lead')).toEqual({ markerHits: 0, fullReturns: 1 });
+    sp.recordReadOutcome('Lead', 'marker');
+    expect(sp.getReadStats('Lead')).toEqual({ markerHits: 1, fullReturns: 1 });
+  });
+
+  it('counts per section returned, so one all-sections read records several outcomes', () => {
+    const sp = new Scratchpad();
+    sp.recordReadOutcome('Lead', 'marker');
+    sp.recordReadOutcome('Lead', 'marker');
+    sp.recordReadOutcome('Lead', 'full');
+    expect(sp.getReadStats('Lead')).toEqual({ markerHits: 2, fullReturns: 1 });
+  });
+
+  it('keeps readers isolated and sums them for the team total', () => {
+    const sp = new Scratchpad();
+    sp.recordReadOutcome('Lead', 'marker');
+    sp.recordReadOutcome('Specialist', 'full');
+    sp.recordReadOutcome('Specialist', 'full');
+    expect(sp.getReadStats('Lead')).toEqual({ markerHits: 1, fullReturns: 0 });
+    expect(sp.getReadStats('Specialist')).toEqual({ markerHits: 0, fullReturns: 2 });
+    expect(sp.getReadStats()).toEqual({ markerHits: 1, fullReturns: 2 });
+  });
+
+  it('returns a snapshot a caller cannot mutate into the store', () => {
+    const sp = new Scratchpad();
+    sp.recordReadOutcome('Lead', 'full');
+    const stats = sp.getReadStats('Lead');
+    stats.fullReturns = 99;
+    expect(sp.getReadStats('Lead')).toEqual({ markerHits: 0, fullReturns: 1 });
+  });
+});
+
+/**
+ * `hasCurrentRead` is the marker predicate itself, so these tests exercise the same code the tool calls.
+ * Re-implementing the comparison here would pass even if the call site flipped it.
+ */
+describe('Scratchpad.hasCurrentRead, the predicate that drives the unchanged marker', () => {
+  it('is false for a section the reader has never read, so the first read is full', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'Specialist');
+    expect(sp.getReadVersion('Lead', 'findings')).toBe(0);
+    expect(sp.hasCurrentRead('Lead', 'findings')).toBe(false);
+  });
+
+  it('is false for a section that does not exist', () => {
+    const sp = new Scratchpad();
+    expect(sp.hasCurrentRead('Lead', 'never-written')).toBe(false);
+  });
+
+  it('is true after markRead, so the next read is a marker', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'Specialist');
+    sp.markRead('Lead', 'findings');
+    expect(sp.hasCurrentRead('Lead', 'findings')).toBe(true);
+  });
+
+  it('is true for the author of a full overwrite, who supplied the whole content', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'Specialist');
+    expect(sp.hasCurrentRead('Specialist', 'findings')).toBe(true);
+  });
+
+  it('reports every section version after markAllRead', () => {
+    const sp = new Scratchpad();
+    sp.set('a', 'body', 'X');
+    sp.set('b', 'body', 'X');
+    sp.markAllRead('Lead');
+    for (const entry of sp.getAll()) {
+      expect(sp.getReadVersion('Lead', entry.section)).toBe(entry.version);
+    }
+  });
+
+  it('falls behind again once a peer writes a new version', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'v1', 'Specialist');
+    sp.markRead('Lead', 'findings');
+    sp.set('findings', 'v2', 'Specialist');
+    expect(sp.hasCurrentRead('Lead', 'findings')).toBe(false);
+  });
+
+  it('leaves the recorded version correct after a marker read re-marks an already known section', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'v1', 'Specialist');
+    sp.markRead('Lead', 'findings');
+    sp.markRead('Lead', 'findings');
+    expect(sp.getReadVersion('Lead', 'findings')).toBe(1);
+  });
+
+  it('bumps the append-only ledger above a reader recorded version, so it reads full again', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.appendTo('verification', 'run 1');
+    sp.markRead('Lead', 'verification');
+    expect(sp.hasCurrentRead('Lead', 'verification')).toBe(true);
+
+    sp.appendTo('verification', 'run 2');
+    expect(sp.get('verification')!.version).toBe(3);
+    expect(sp.getReadVersion('Lead', 'verification')).toBe(2);
+    expect(sp.hasCurrentRead('Lead', 'verification')).toBe(false);
+  });
+
+  it('keeps the immutable mission-brief at version 1, so it reads full once then marker forever', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'THE SPEC');
+    expect(sp.getReadVersion('system', 'mission-brief')).toBe(1);
+    expect(sp.getReadVersion('Lead', 'mission-brief')).toBe(0);
+
+    sp.markRead('Lead', 'mission-brief');
+    expect(sp.get('mission-brief')!.version).toBe(1);
+    expect(sp.hasCurrentRead('Lead', 'mission-brief')).toBe(true);
+  });
+});
+
+describe('Scratchpad.clearReader', () => {
+  it('drops the reader read versions, so its next read of every section is full again', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'THE SPEC');
+    sp.set('findings', 'body', 'Specialist');
+    sp.markAllRead('A');
+    expect(sp.hasCurrentRead('A', 'mission-brief')).toBe(true);
+
+    sp.clearReader('A');
+
+    expect(sp.hasCurrentRead('A', 'mission-brief')).toBe(false);
+    expect(sp.hasCurrentRead('A', 'findings')).toBe(false);
+  });
+
+  it('drops the reader outcome counters', () => {
+    const sp = new Scratchpad();
+    sp.recordReadOutcome('A', 'marker');
+    sp.recordReadOutcome('A', 'full');
+    sp.clearReader('A');
+    expect(sp.getReadStats('A')).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  it('leaves every other reader untouched', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'Specialist');
+    sp.markRead('A', 'findings');
+    sp.markRead('B', 'findings');
+    sp.recordReadOutcome('B', 'full');
+
+    sp.clearReader('A');
+
+    expect(sp.hasCurrentRead('B', 'findings')).toBe(true);
+    expect(sp.getReadStats('B')).toEqual({ markerHits: 0, fullReturns: 1 });
   });
 });

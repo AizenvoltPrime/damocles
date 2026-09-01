@@ -2,6 +2,40 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.24.0] - 2026-09-01
+
+Team agents stop when they say they are stopping, stop re-reading what they already hold, and a cost shown on a flat subscription is labelled an estimate.
+
+### Changed
+
+- **`team_standby` actually parks the agent.** The tool set a flag and handed control back to the model, which carried on anyway: 771 of 826 recorded standby calls were followed by more work. The engine now ends the turn, so a waiting agent costs nothing until a teammate wakes it.
+
+- **`team_report_complete` carries the sign-off as an argument.** It took no parameters, so the closing summary needed a second full-context request, and 821 of 851 recorded calls paid for one. The summary is now the agent's final response and the turn ends there.
+
+- **Re-reading a scratchpad section you already hold returns a short marker** naming its version. A section a peer has changed still comes back in full.
+
+- **Each team role is registered only for the tools it can call**, 13 for a lead and 9 for a specialist. Each used to carry the other's, costing prompt space on every request.
+
+- **A team cost on a flat subscription reads `~$0.42 est.`** rather than a plain charge, labelled per agent by the model that agent ran on.
+
+### Fixed
+
+- **A re-dispatched specialist could never read the mission brief.** Its read record survived into the new session, so the first scratchpad read answered "unchanged" for text that session had never seen, and `mission-brief` has no other writer to clear it.
+
+- **A specialist told to revise and then cancelled kept its earlier sign-off**, so an unfinished run was recorded as complete on the card, in the log, and in what the lead synthesised from.
+
+- **Appending to the verification ledger no longer counts as reading it.** The appender saw the last 25 entries but was marked as holding all 200, so its next read withheld up to 175 it had never seen.
+
+- **A team reopened from history shows the numbers it showed live.** A re-dispatched agent's card counted tools and time across every attempt while the stored record held only the last. Work now reads per attempt on both, and tokens and cost sum across attempts.
+
+- **The account chip and cost labels no longer go stale.** Account state was published once, at a session's first message, so a session reopened from history had none and a model or auth change left the previous account showing.
+
+- **A team agent's cache-read total counts the whole run**, not just the most recent request.
+
+- **`team_get_status` no longer spends context on internal counters.**
+
+- **Greek: a cost estimate reads `(εκτίμηση)`.** `εκτ.` is the standard Greek abbreviation for millions.
+
 ## [2.23.0] - 2026-08-26
 
 Shell commands show their output while they run, one command can be stopped without ending the turn, and a team agent's tool calls are real cards you can open.
@@ -3891,6 +3925,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.24.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.23.0...v2.24.0
 [2.23.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.22.0...v2.23.0
 [2.22.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.2...v2.22.0
 [2.21.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.1...v2.21.2

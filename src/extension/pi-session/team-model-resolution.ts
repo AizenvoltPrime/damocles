@@ -3,6 +3,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel, TeamRole } from '../../shared/types/settings';
 import type { OpenAIAuthStatus } from './openai-auth';
 import { resolvePiModel, piModelToModelInfo, effortToPiThinking, type ModelLookup } from './pi-models';
+import { dollarBilled } from './account-billing';
 
 /**
  * Settings-driven team role model/effort resolution (Slice 1). The LEAD / IMPLEMENTOR / REVIEWER role
@@ -39,6 +40,9 @@ export interface ResolvedTeamModel {
   /** Reasoning depth for this agent's session, derived from the role's configured effort (coerced against
    *  the resolved model's supported levels); unset when no effort applies. */
   thinkingLevel?: ThinkingLevel;
+  /** Whether this role's model bills real dollars, so its cost is a charge rather than an estimate. A
+   *  role can run a metered model inside a flat-subscription panel, so the panel value does not answer it. */
+  dollarBilled: boolean;
   error?: string;
 }
 
@@ -48,6 +52,8 @@ export interface TeamModelDeps {
   preferApiKey: boolean;
   /** The active panel model value (the fail-soft target for unset slots). */
   activeModel: string;
+  /** The Claude auth mode (`PiRuntime.getClaudeAuthStatus().mode`). Decides billing for Anthropic models. */
+  claudeAuthMode: string;
   /** The curated model catalog — `piSupportedModels()`. Source of `supportedEffortLevels` per model. */
   supportedModels: readonly ModelInfo[];
   /** The user's per-role model/effort settings (read fresh from vscode config by the caller). */
@@ -79,7 +85,7 @@ function catalogLabel(value: string, supportedModels: readonly ModelInfo[]): str
  * return no `model` and let the caller degrade to the engine default instead (the label still reflects
  * the active model for the agent card).
  */
-function resolveActive(deps: TeamModelDeps): ResolvedTeamModel {
+function resolveActive(deps: TeamModelDeps): Omit<ResolvedTeamModel, 'dollarBilled'> {
   const res = resolvePiModel(deps.activeModel, deps.registry, deps.openai, deps.preferApiKey);
   if (res.model && res.authed) return { model: res.model, modelLabel: labelFor(res.model, deps.activeModel) };
   return { modelLabel: catalogLabel(deps.activeModel, deps.supportedModels) };
@@ -101,6 +107,17 @@ function resolveThinkingLevel(
   return effortToPiThinking(effort);
 }
 
+/** Whether a role's effective model bills dollars, decided by the same credential rule as the account chip. */
+function resolveDollarBilled(value: string, deps: TeamModelDeps): boolean {
+  return dollarBilled({
+    modelValue: value,
+    modelInfo: deps.supportedModels.find((m) => m.value === value),
+    claudeAuthMode: deps.claudeAuthMode,
+    openaiAuthStatus: deps.openai,
+    preferApiKey: deps.preferApiKey,
+  });
+}
+
 /** Compose a ResolvedTeamModel, attaching `thinkingLevel` only when non-undefined. */
 function withThinking(base: ResolvedTeamModel, thinkingLevel: ThinkingLevel | undefined): ResolvedTeamModel {
   return thinkingLevel === undefined ? base : { ...base, thinkingLevel };
@@ -114,6 +131,8 @@ function withThinking(base: ResolvedTeamModel, thinkingLevel: ThinkingLevel | un
  */
 export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedTeamModel {
   const setting = deps.roleSettings[role];
+  // Billing follows the model this role actually runs, which is its configured slot or the panel model.
+  const billed = resolveDollarBilled(setting.model !== '' ? setting.model : deps.activeModel, deps);
 
   if (setting.model !== '') {
     const res = resolvePiModel(setting.model, deps.registry, deps.openai, deps.preferApiKey);
@@ -124,14 +143,15 @@ export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedT
         ? 'that model is not available. Change the setting to a supported model.'
         : 'its provider is not signed in. Sign in to that provider or change the setting.';
       return {
+        dollarBilled: billed,
         error: `Team role "${role}" is configured to model "${setting.model}" (${ROLE_SETTING_KEY[role]}), but ${cause}`,
       };
     }
-    const base: ResolvedTeamModel = { model: res.model, modelLabel: labelFor(res.model, setting.model) };
+    const base: ResolvedTeamModel = { model: res.model, modelLabel: labelFor(res.model, setting.model), dollarBilled: billed };
     return withThinking(base, resolveThinkingLevel(setting.model, setting.effort, deps.supportedModels));
   }
 
-  const base = resolveActive(deps);
+  const base: ResolvedTeamModel = { ...resolveActive(deps), dollarBilled: billed };
   // Effort applies only when a model actually resolved (unset + unauthed → no model → no thinkingLevel).
   const resolvedValue = base.model ? deps.activeModel : undefined;
   return withThinking(base, resolveThinkingLevel(resolvedValue, setting.effort, deps.supportedModels));

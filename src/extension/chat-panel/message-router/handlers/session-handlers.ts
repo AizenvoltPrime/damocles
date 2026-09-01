@@ -54,7 +54,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type === "ready" && msg.savedSessionId) {
         ctx.session.setResumeSession(msg.savedSessionId);
         try {
-          await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host);
+          await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host, ctx.session);
           postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
         } catch (err) {
           if (err instanceof Error && err.name === 'AbortError') return;

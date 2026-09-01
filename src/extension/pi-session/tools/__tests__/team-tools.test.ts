@@ -43,6 +43,45 @@ describe('team_* tool catalog — team_redispatch_specialist registration (Slice
   });
 });
 
+/**
+ * `access` is where registration states the role, so the Tools panel derives its prefix from that field
+ * instead of a second copy in the blurb which can disagree with it.
+ */
+describe('TEAM_TOOL_CATALOG takes the role prefix from access', () => {
+  const byName = new Map(TEAM_TOOL_CATALOG.map((e) => [e.name, e]));
+  const PREFIX = { lead: 'Lead-only: ', specialist: 'Specialist-only: ', both: '' } as const;
+
+  it('prefixes every agent tool according to the role that may call it', () => {
+    for (const spec of TEAM_AGENT_SPECS) {
+      expect(byName.get(spec.name)!.description, spec.name).toBe(`${PREFIX[spec.access]}${spec.description}`);
+    }
+  });
+
+  it('marks team_standby and team_report_complete specialist-only, like every other specialist tool', () => {
+    expect(byName.get('team_standby')!.description).toMatch(/^Specialist-only: /);
+    expect(byName.get('team_report_complete')!.description).toMatch(/^Specialist-only: /);
+    expect(byName.get('team_flag_brief_conflict')!.description).toMatch(/^Specialist-only: /);
+  });
+
+  it('leaves the three main coordination tools unprefixed, since no role gates them', () => {
+    for (const name of ['create_team', 'get_team_status', 'cancel_team']) {
+      expect(byName.get(name)!.description, name).not.toMatch(/-only: /);
+    }
+  });
+
+  it('holds no hand-written role prefix in the registration blurbs themselves', () => {
+    const doubled = TEAM_AGENT_SPECS.filter((s) => /-only:/.test(s.description));
+    expect(doubled.map((s) => s.name)).toEqual([]);
+  });
+
+  it('keeps every registration blurb to the one-clause line the Tools panel renders', () => {
+    for (const spec of TEAM_AGENT_SPECS) {
+      expect(spec.description.length, spec.name).toBeLessThanOrEqual(100);
+      expect(spec.description.replace(/\.$/, ''), spec.name).not.toContain('. ');
+    }
+  });
+});
+
 describe('create_team — model-facing description', () => {
   const description = build().get('create_team')!.description;
 
@@ -72,7 +111,7 @@ describe('create_team — model-facing description', () => {
   it('directs authoritative intent into `brief`, keeping `title` a short label', () => {
     expect(description).toContain('Put the authoritative spec');
     expect(description).toContain('`brief`');
-    expect(description).toContain('keep `title` a short label');
+    expect(description).toContain('Keep `title` a short label');
   });
 });
 

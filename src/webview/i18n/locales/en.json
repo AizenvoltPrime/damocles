@@ -1026,6 +1026,8 @@
   "team": {
     "agentCount": "{n} agents",
     "toolCount": "{n} tools",
+    "costEstimate": "~{cost} est.",
+    "costEstimateTooltip": "Estimated at API rates. A subscription is not charged per call.",
     "agentActiveProgress": "Agent {active}/{total} active",
     "status": {
       "running": "running",

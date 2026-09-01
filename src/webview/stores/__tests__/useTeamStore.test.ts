@@ -345,3 +345,79 @@ describe('useTeamStore.handleAgentToolProgress after the result', () => {
     expect(call.liveOutputTruncated).toBe(true);
   });
 });
+
+/**
+ * A redispatch re-runs a specialist under the same agentId, so the card is told about it by an attempt
+ * that advanced and nothing else. Work counters describe the run in flight; usage describes the money.
+ */
+describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const TEAM = 'team-1';
+
+  function seedRunningAgent(store: TeamStore): void {
+    store.restoreTeamFromHistory({
+      teamId: TEAM,
+      toolUseId: 'toolu_1',
+      title: 'Team',
+      status: 'running',
+      phase: 'working',
+      agents: [{
+        agentId: AGENT, name: 'alpha', role: 'specialist', specialization: '', model: 'opus',
+        profileId: null, attempt: 0, status: 'running', startTime: 1000, endTime: 4000,
+        toolCount: 5, lastToolName: 'Bash',
+        totalInputTokens: 8, totalOutputTokens: 665, cacheReadTokens: 56_118, cacheCreationTokens: 19_628,
+        costUsd: 0.15659350000000002, dollarBilled: false, progressSummary: 'parked', result: 'ALPHA-READ-1: FULL',
+        logFilePath: null,
+      }],
+      messages: [],
+      scratchpad: [],
+      result: null,
+      startTime: 1000,
+      endTime: null,
+      totalToolCount: 5,
+    });
+  }
+
+  it('starts the work fields over when the attempt advances', () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, undefined, undefined, undefined, 1);
+
+    const agent = store.teams[TEAM]?.agents[0];
+    expect(agent?.attempt).toBe(1);
+    expect(agent?.toolCount).toBe(0);
+    expect(agent?.lastToolName).toBeNull();
+    expect(agent?.endTime).toBeNull();
+    expect(agent?.result).toBeNull();
+    expect(agent?.progressSummary).toBeNull();
+    expect(agent?.startTime).not.toBe(1000);
+    // The team total follows the agent counters down, or it keeps charging for a dead attempt.
+    expect(store.teams[TEAM]?.totalToolCount).toBe(0);
+  });
+
+  it('keeps the usage the dead attempt spent', () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, undefined, undefined, undefined, 1);
+
+    const agent = store.teams[TEAM]?.agents[0];
+    expect(agent?.costUsd).toBe(0.15659350000000002);
+    expect(agent?.totalOutputTokens).toBe(665);
+    expect(agent?.cacheReadTokens).toBe(56_118);
+  });
+
+  it('leaves the counters alone when an update carries no attempt', () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'standby', 'waiting for peer input');
+
+    const agent = store.teams[TEAM]?.agents[0];
+    expect(agent?.toolCount).toBe(5);
+    expect(agent?.result).toBe('ALPHA-READ-1: FULL');
+    expect(agent?.attempt).toBe(0);
+  });
+});

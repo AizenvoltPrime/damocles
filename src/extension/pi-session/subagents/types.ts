@@ -116,7 +116,9 @@ export interface AgentRecord {
   background?: boolean | undefined;
   /**
    * Lifetime usage breakdown, accumulated via `message_end` events. Survives compaction.
-   * Total = input + output + cacheWrite (cacheRead excluded). Initialized to zeros at spawn.
+   * Total = input + output + cacheWrite. It is a token total, so it excludes cacheRead, which
+   * re-reads the same cached prefix every call and would be counted N times. Summing per-request
+   * cacheRead answers a different question, what the API bills. Initialized to zeros at spawn.
    */
   lifetimeUsage: LifetimeUsage;
   /** Cumulative dollar cost reported by the subagent session, last seen (for budget rollup). */

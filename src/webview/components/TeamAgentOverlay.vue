@@ -12,10 +12,12 @@ import ToolCallCard from './ToolCallCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useVSCode } from '@/composables/useVSCode';
-import { getAgentColor, formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
+import { getAgentColor, formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
+import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
+const { costLabel, costTitle } = useCostLabel();
 const { postMessage } = useVSCode();
 const teamStore = useTeamStore();
 const uiStore = useUIStore();
@@ -34,6 +36,7 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value?.endTime ?? null,
 );
 
+// The cost renders in its own subtitle span, because the estimate marker needs a title of its own.
 const subtitle = computed(() => {
   if (!selectedAgent.value) return '';
   const a = selectedAgent.value;
@@ -42,7 +45,6 @@ const subtitle = computed(() => {
   parts.push(formatElapsed(elapsedMs.value));
   const totalTokens = a.totalInputTokens + a.totalOutputTokens;
   if (totalTokens > 0) parts.push(`${formatTokenCount(totalTokens)} tokens`);
-  if (a.costUsd > 0) parts.push(formatCost(a.costUsd));
   return parts.join(' | ');
 });
 
@@ -141,12 +143,18 @@ const AgentIcon = {
   <OverlayShell
     v-if="selectedAgent && isAgentOverlayOpen"
     :title="selectedAgent.name"
-    :subtitle="subtitle"
     :icon="AgentIcon"
     :icon-class="color.text"
     :status-badge="statusBadge"
     @close="close"
   >
+    <template #subtitle>
+      <span>{{ subtitle }}</span>
+      <span v-if="selectedAgent.costUsd > 0">&nbsp;|&nbsp;<span
+        :title="costTitle(selectedAgent.dollarBilled)"
+      >{{ costLabel(selectedAgent.costUsd, selectedAgent.dollarBilled) }}</span></span>
+    </template>
+
     <template #header-actions>
       <Button
         v-if="selectedAgent.logFilePath"

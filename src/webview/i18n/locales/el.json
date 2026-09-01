@@ -1026,6 +1026,8 @@
   "team": {
     "agentCount": "{n} πράκτορες",
     "toolCount": "{n} εργαλεία",
+    "costEstimate": "{cost} (εκτίμηση)",
+    "costEstimateTooltip": "Εκτίμηση με βάση τις τιμές API. Η συνδρομή δεν χρεώνεται ανά κλήση.",
     "agentActiveProgress": "Πράκτορας {active}/{total} ενεργός",
     "status": {
       "running": "σε εκτέλεση",

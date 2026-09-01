@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import { ensurePiSessionDir } from '../pi-session/session-store';
 import { MessageBus } from './message-bus';
-import { Scratchpad } from './scratchpad';
+import { Scratchpad, type ScratchpadReadStats } from './scratchpad';
 import { AgentRunner } from './agent-runner';
 import { TeamPersistence } from './persistence';
 import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
@@ -21,6 +21,7 @@ import type {
   TeamConfig,
   AgentResult,
   AgentMcpContext,
+  AgentUsageTotals,
   TeamAgent,
   TeamPhase,
   TeamStatus,
@@ -52,6 +53,7 @@ export const leadShouldDeliverMessage = (msg: { to: string | null }): boolean =>
  * `attempt` a concurrent redispatch has already bumped.
  */
 const browserScopeIdFor = (agent: TeamAgent): string => `${agent.agentId}#${agent.attempt}`;
+
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const CONFLICT_NUDGE_MAX = 2;
 const LEAD_REVIEW_STALL_MAX = 2;
@@ -73,6 +75,26 @@ const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
 const CONFLICT_NUDGE_SUFFIX =
   '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
   'team_resolve_brief_conflict (dismiss with a written rationale). This is a hard requirement.';
+
+/**
+ * Roll one attempt's usage into the agent's cumulative totals and hand them back for the webview.
+ * Money spent under a name is never unspent by a redispatch, so the running attempt's figures add to
+ * the finished attempts rather than replacing them.
+ */
+function applyAttemptUsage(agent: TeamAgent, attemptUsage: AgentUsageTotals): AgentUsageTotals {
+  agent.totalInputTokens = agent.carriedUsage.totalInputTokens + attemptUsage.totalInputTokens;
+  agent.totalOutputTokens = agent.carriedUsage.totalOutputTokens + attemptUsage.totalOutputTokens;
+  agent.cacheReadTokens = agent.carriedUsage.cacheReadTokens + attemptUsage.cacheReadTokens;
+  agent.cacheCreationTokens = agent.carriedUsage.cacheCreationTokens + attemptUsage.cacheCreationTokens;
+  agent.costUsd = agent.carriedUsage.costUsd + attemptUsage.costUsd;
+  return {
+    totalInputTokens: agent.totalInputTokens,
+    totalOutputTokens: agent.totalOutputTokens,
+    cacheReadTokens: agent.cacheReadTokens,
+    cacheCreationTokens: agent.cacheCreationTokens,
+    costUsd: agent.costUsd,
+  };
+}
 
 export class TeamRunner {
   private readonly config: TeamConfig;
@@ -101,6 +123,9 @@ export class TeamRunner {
   private reviewedSpecialists = new Set<string>();
   private pendingStandby = new Set<string>();
   private confirmedComplete = new Set<string>();
+  // Each specialist's latest team_report_complete sign-off, which becomes its finalResponse. Overwritten
+  // per call so a revision round's sign-off replaces the one it revised.
+  private reportedSummaries = new Map<string, string>();
   // A stranded standby is nudged once, then converted only after the nudge was DELIVERED and the agent
   // re-parked. `nudgeScheduled` dedups the microtask; `nudgeDelivered` (set inside the microtask) is the
   // classifier's `alreadyNudged` input, so `convert` cannot fire before the agent got its clean turn.
@@ -196,6 +221,10 @@ export class TeamRunner {
         totalOutputTokens: 0,
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
+        carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
+        // A specialist's slot is resolved at spawn. Until then bill as a charge, since understating a
+        // real cost is the worse error.
+        dollarBilled: spec.role === 'lead' ? lead.dollarBilled : true,
         costUsd: 0,
         finalResponse: null,
         error: null,
@@ -248,6 +277,8 @@ export class TeamRunner {
       role: 'lead',
       specialization: `Lead: ${this.config.title}`,
       model: leadAgent.model,
+      dollarBilled: leadAgent.dollarBilled,
+      attempt: leadAgent.attempt,
       timestamp: new Date().toISOString(),
     });
 
@@ -257,6 +288,7 @@ export class TeamRunner {
       agentId: leadAgent.agentId,
       status: 'running',
       logFilePath: leadAgent.logFilePath,
+      attempt: leadAgent.attempt,
       ...(leadAgent.model ? { model: leadAgent.model } : {}),
     });
 
@@ -322,20 +354,18 @@ export class TeamRunner {
         leadAgent.toolCallCount = count;
       },
       onUsageUpdate: (usage) => {
-        leadAgent.totalInputTokens = usage.inputTokens;
-        leadAgent.totalOutputTokens = usage.outputTokens;
-        leadAgent.cacheReadTokens = usage.cacheReadTokens;
-        leadAgent.cacheCreationTokens = usage.cacheCreationTokens;
-        leadAgent.costUsd = usage.costUsd;
-        this.onMessage({
-          type: 'teamAgentUsageUpdate',
-          teamId: this.config.teamId,
-          agentId: leadAgent.agentId,
+        const totals = applyAttemptUsage(leadAgent, {
           totalInputTokens: usage.inputTokens,
           totalOutputTokens: usage.outputTokens,
           cacheReadTokens: usage.cacheReadTokens,
           cacheCreationTokens: usage.cacheCreationTokens,
           costUsd: usage.costUsd,
+        });
+        this.onMessage({
+          type: 'teamAgentUsageUpdate',
+          teamId: this.config.teamId,
+          agentId: leadAgent.agentId,
+          ...totals,
         });
       },
       onCost: (delta) => this.config.engine.onAgentCost(delta),
@@ -357,11 +387,7 @@ export class TeamRunner {
       this.config.engine.cancelAgentDialogs(leadAgent.agentId);
       leadAgent.endTime = Date.now();
       leadAgent.toolCallCount = result.toolCallCount;
-      leadAgent.totalInputTokens = result.totalInputTokens;
-      leadAgent.totalOutputTokens = result.totalOutputTokens;
-      leadAgent.cacheReadTokens = result.cacheReadTokens;
-      leadAgent.cacheCreationTokens = result.cacheCreationTokens;
-      leadAgent.costUsd = result.costUsd;
+      applyAttemptUsage(leadAgent, result);
       leadAgent.finalResponse = result.finalResponse;
 
       this.persistence.appendTeamEntry({
@@ -635,6 +661,7 @@ export class TeamRunner {
     agent.profileId = profileId ?? null;
     agent.logFilePath = this.agentLogPath(agent.agentId);
     agent.model = resolution.modelLabel ?? '';
+    agent.dollarBilled = resolution.dollarBilled;
 
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
@@ -644,7 +671,9 @@ export class TeamRunner {
       role: 'specialist',
       specialization: task,
       model: agent.model,
+      dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
+      attempt: agent.attempt,
       timestamp: new Date().toISOString(),
     });
 
@@ -654,6 +683,8 @@ export class TeamRunner {
       agentId: agent.agentId,
       status: 'running',
       logFilePath: agent.logFilePath,
+      dollarBilled: agent.dollarBilled,
+      attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
     });
 
@@ -733,6 +764,7 @@ export class TeamRunner {
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
+      getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
       keepAlive: () => {
         if (this.completionResolved) return false;
         if (this.pendingStandby.has(name)) return true;
@@ -809,20 +841,18 @@ export class TeamRunner {
         agent.toolCallCount = count;
       },
       onUsageUpdate: (usage) => {
-        agent.totalInputTokens = usage.inputTokens;
-        agent.totalOutputTokens = usage.outputTokens;
-        agent.cacheReadTokens = usage.cacheReadTokens;
-        agent.cacheCreationTokens = usage.cacheCreationTokens;
-        agent.costUsd = usage.costUsd;
-        this.onMessage({
-          type: 'teamAgentUsageUpdate',
-          teamId: this.config.teamId,
-          agentId: agent.agentId,
+        const totals = applyAttemptUsage(agent, {
           totalInputTokens: usage.inputTokens,
           totalOutputTokens: usage.outputTokens,
           cacheReadTokens: usage.cacheReadTokens,
           cacheCreationTokens: usage.cacheCreationTokens,
           costUsd: usage.costUsd,
+        });
+        this.onMessage({
+          type: 'teamAgentUsageUpdate',
+          teamId: this.config.teamId,
+          agentId: agent.agentId,
+          ...totals,
         });
       },
       onCost: (delta) => this.config.engine.onAgentCost(delta),
@@ -842,13 +872,11 @@ export class TeamRunner {
       this.config.engine.cancelAgentDialogs(agent.agentId);
       agent.endTime = agent.endTime ?? Date.now();
       agent.toolCallCount = result.toolCallCount;
-      agent.totalInputTokens = result.totalInputTokens;
-      agent.totalOutputTokens = result.totalOutputTokens;
-      agent.cacheReadTokens = result.cacheReadTokens;
-      agent.cacheCreationTokens = result.cacheCreationTokens;
-      agent.costUsd = result.costUsd;
+      applyAttemptUsage(agent, result);
       agent.finalResponse = result.finalResponse;
 
+      // This entry carries one attempt's own usage, never the running total: the loader sums the
+      // entries per agent name, so a cumulative figure here would count the earlier attempts twice.
       this.persistence.appendTeamEntry({
         type: 'agent-completed',
         teamId: this.config.teamId,
@@ -973,6 +1001,7 @@ export class TeamRunner {
     this.specialistReviewRounds.delete(name);
     this.reviewedSpecialists.delete(name);
     this.confirmedComplete.delete(name);
+    this.reportedSummaries.delete(name);
     this.pendingStandby.delete(name);
     this.nudgeScheduled.delete(name);
     this.nudgeDelivered.delete(name);
@@ -981,6 +1010,8 @@ export class TeamRunner {
     this.terminalNudgeDelivered.delete(name);
     this.cancelAttempts.delete(name);
     this.cancellationTimestamps.delete(name);
+    // Scratchpad read state is keyed by name as well, and the re-run has seen none of it.
+    this.scratchpad.clearReader(name);
 
     // A specialist cancelled straight from `pending` never launched: initAgentFile was never called, so
     // this redispatch IS its first real launch — init the transcript (nothing to truncate). startTime is
@@ -1003,8 +1034,18 @@ export class TeamRunner {
     agent.error = null;
     agent.finalResponse = null;
     agent.toolCallCount = 0;
+    // Work restarts, spend does not: the dead attempt's tokens and dollars were really consumed under
+    // this name, so they carry into the totals the next attempt reports.
+    agent.carriedUsage = {
+      totalInputTokens: agent.totalInputTokens,
+      totalOutputTokens: agent.totalOutputTokens,
+      cacheReadTokens: agent.cacheReadTokens,
+      cacheCreationTokens: agent.cacheCreationTokens,
+      costUsd: agent.costUsd,
+    };
     agent.profileId = profileId ?? null;
     agent.model = resolution.modelLabel ?? '';
+    agent.dollarBilled = resolution.dollarBilled;
 
     // Transcript preservation: do NOT call initAgentFile (it truncates). Append an agent-spawned entry
     // carrying a `reattempt: true` marker — the loader's agent-spawned branch re-sets status/agentId and
@@ -1017,18 +1058,23 @@ export class TeamRunner {
       role: 'specialist',
       specialization: task,
       model: agent.model,
+      dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
+      attempt: agent.attempt,
       reattempt: true,
       timestamp: new Date().toISOString(),
     });
 
     // Emit a status update on the EXISTING agentId — no new webview message type (cards are keyed by id).
+    // `attempt` advances here, which is what tells the card to start its work fields over.
     this.onMessage({
       type: 'teamAgentStatusUpdate',
       teamId: this.config.teamId,
       agentId: agent.agentId,
       status: 'running',
       logFilePath: agent.logFilePath,
+      dollarBilled: agent.dollarBilled,
+      attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
     });
 
@@ -1120,6 +1166,17 @@ export class TeamRunner {
       messageCount: this.messageBus.getAllMessages().length,
       activeCount: agentStatuses.filter(a => a.status === 'running').length,
       completedCount: agentStatuses.filter(a => a.status === 'completed').length,
+    };
+  }
+
+  /**
+   * Marker-versus-full read counters for the webview and telemetry. Kept off `getTeamStatus`, whose
+   * result is serialized straight into an agent's context and holds only what an agent can act on.
+   */
+  getScratchpadReadStats(): { total: ScratchpadReadStats; byAgent: Array<{ name: string } & ScratchpadReadStats> } {
+    return {
+      total: this.scratchpad.getReadStats(),
+      byAgent: [...this.agents.values()].map(a => ({ name: a.name, ...this.scratchpad.getReadStats(a.name) })),
     };
   }
 
@@ -1247,6 +1304,8 @@ export class TeamRunner {
     this.briefConflicts.delete(specialistName);
     this.reviewedSpecialists.delete(specialistName);
     this.confirmedComplete.delete(specialistName);
+    // The revision supersedes the sign-off, so a specialist that dies mid-revision must not end carrying it.
+    this.reportedSummaries.delete(specialistName);
     // A new review round earns a fresh nudge: a standby during the revision is a legitimate wait, not a
     // re-park to convert. Clearing here (not in onKeepAliveResume, which the nudge itself triggers) avoids
     // an insta-convert of unfinished revision work.
@@ -1278,7 +1337,7 @@ export class TeamRunner {
     this.pendingStandby.add(agentName);
   }
 
-  reportComplete(agentName: string): void {
+  reportComplete(agentName: string, summary: string): void {
     const agent = this.agents.get(agentName);
     if (!agent || agent.role !== 'specialist' || agent.status !== 'running') {
       throw new Error(`Agent "${agentName}" cannot report complete`);
@@ -1294,6 +1353,7 @@ export class TeamRunner {
     // A legitimate terminal action discharges the owed hold (preserves owed/standby mutual exclusion).
     this.owedTerminalAction.delete(agentName);
     this.confirmedComplete.add(agentName);
+    this.reportedSummaries.set(agentName, summary);
   }
 
   approveSpecialist(name: string): void {
@@ -1691,7 +1751,7 @@ export class TeamRunner {
       // and gating on it would re-block the lead's approval every time any agent records any run —
       // including runs irrelevant to the specialist under review. The prompt's "check verification
       // against the ledger" is guidance backed by the tool returning the ledger on every record.
-      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry, agentName),
+      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry),
       readVerificationLedger: () => this.scratchpad.get(VERIFICATION_SECTION)?.content ?? '',
       resolveBriefConflict: (name, resolution) => this.resolveBriefConflict(name, resolution),
       getOpenBriefConflicts: () => this.getOpenBriefConflicts(),
@@ -1734,8 +1794,8 @@ export class TeamRunner {
       getNonSettledSpecialistDetails: () => [],
       getAllAgents: () => [...this.agents.values()],
       enterStandby: (n) => this.enterStandby(n),
-      reportComplete: (n) => this.reportComplete(n),
-      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry, agentName),
+      reportComplete: (n, summary) => this.reportComplete(n, summary),
+      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry),
       readVerificationLedger: () => this.scratchpad.get(VERIFICATION_SECTION)?.content ?? '',
       flagBriefConflict: (name, detail) => this.flagBriefConflict(name, detail),
       resolveBriefConflict: () => { throw new Error('Only the lead can resolve a brief conflict'); },
@@ -1771,6 +1831,7 @@ export class TeamRunner {
       specialization: a.specialization,
       model: a.model,
       profileId: a.profileId,
+      attempt: a.attempt,
       status: a.status,
       startTime: a.startTime,
       endTime: a.endTime,
@@ -1781,6 +1842,7 @@ export class TeamRunner {
       cacheReadTokens: a.cacheReadTokens,
       cacheCreationTokens: a.cacheCreationTokens,
       costUsd: a.costUsd,
+      dollarBilled: a.dollarBilled,
       progressSummary: null,
       result: null,
       logFilePath: a.logFilePath,

@@ -201,6 +201,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 specialization: '',
                 model: spec.model ?? '',
                 profileId: null,
+                attempt: 0,
                 status: 'pending',
                 startTime: null,
                 endTime: null,
@@ -211,6 +212,9 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 cacheReadTokens: 0,
                 cacheCreationTokens: 0,
                 costUsd: 0,
+                // Until the agent-spawned entry names the resolved model, bill as a charge, since
+                // understating a real cost is the worse error.
+                dollarBilled: true,
                 progressSummary: null,
                 result: null,
                 logFilePath: null,
@@ -222,9 +226,19 @@ export class TeamPersistence implements TeamPersistenceWriter {
               agent.agentId = entry['agentId'] as string;
               agent.specialization = (entry['specialization'] as string) ?? '';
               agent.model = (entry['model'] as string) ?? '';
+              if (typeof entry['dollarBilled'] === 'boolean') agent.dollarBilled = entry['dollarBilled'];
               agent.profileId = (entry['profileId'] as string) ?? null;
+              // A log written before the attempt counter existed carries no field, and every spawn it
+              // recorded belongs to the agent's first attempt.
+              agent.attempt = typeof entry['attempt'] === 'number' ? entry['attempt'] : 0;
+              // A launch restarts the work fields, so a dead attempt's count and result never outlive it.
               agent.status = 'running';
               agent.startTime = new Date(entry['timestamp'] as string).getTime();
+              agent.endTime = null;
+              agent.toolCount = 0;
+              agent.lastToolName = null;
+              agent.result = null;
+              agent.progressSummary = null;
               const sessionDir = await this.ensureDir();
               agent.logFilePath = this.getAgentFilePath(sessionDir, teamId, agent.agentId);
             }
@@ -261,11 +275,13 @@ export class TeamPersistence implements TeamPersistenceWriter {
               if (typeof entry['toolCallCount'] === 'number') {
                 agent.toolCount = entry['toolCallCount'];
               }
-              if (typeof entry['totalInputTokens'] === 'number') agent.totalInputTokens = entry['totalInputTokens'];
-              if (typeof entry['totalOutputTokens'] === 'number') agent.totalOutputTokens = entry['totalOutputTokens'];
-              if (typeof entry['cacheReadTokens'] === 'number') agent.cacheReadTokens = entry['cacheReadTokens'];
-              if (typeof entry['cacheCreationTokens'] === 'number') agent.cacheCreationTokens = entry['cacheCreationTokens'];
-              if (typeof entry['costUsd'] === 'number') agent.costUsd = entry['costUsd'];
+              // Each entry holds one attempt's own usage, so the totals add up over a redispatch while
+              // the fields above describe only the attempt that settled last.
+              if (typeof entry['totalInputTokens'] === 'number') agent.totalInputTokens += entry['totalInputTokens'];
+              if (typeof entry['totalOutputTokens'] === 'number') agent.totalOutputTokens += entry['totalOutputTokens'];
+              if (typeof entry['cacheReadTokens'] === 'number') agent.cacheReadTokens += entry['cacheReadTokens'];
+              if (typeof entry['cacheCreationTokens'] === 'number') agent.cacheCreationTokens += entry['cacheCreationTokens'];
+              if (typeof entry['costUsd'] === 'number') agent.costUsd += entry['costUsd'];
             }
           } else if (entryType === 'team-completed') {
             status = entry['status'] as typeof status;

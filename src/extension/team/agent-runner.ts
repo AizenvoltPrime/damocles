@@ -10,6 +10,9 @@ import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
 
+/** Tools whose whole point is that the agent stops here, so the engine ends the turn on their result. */
+const TURN_ENDING_TOOLS = new Set(['team_standby', 'team_report_complete']);
+
 /**
  * Pi-native team agent runner (US-024b). Each team agent is a nested `createSubagentSession` driven
  * here. The SDK `query()`/`inputStream()`/keep-alive-timer engine is gone: the runner subscribes to the
@@ -55,6 +58,21 @@ export class AgentRunner {
       return empty('cancelled', null);
     }
 
+    // A terminal tool only takes effect if the turn ends, and the model keeps working after calling one
+    // unless the engine ends the turn. Chained, because a session may already carry a stop hook.
+    const priorShouldStop = session.agent.shouldStopAfterTurn;
+    session.agent.shouldStopAfterTurn = async (stopContext, signal): Promise<boolean> => {
+      if (await priorShouldStop?.(stopContext, signal)) return true;
+      // pi drains its steering queue only after this check, so stopping now would strand a queued message.
+      if (session.pendingMessageCount > 0) return false;
+      // Keyed on the result, not the call: both tools throw for a lead and for a non-running specialist,
+      // and the agent needs that same turn to react to the error.
+      const terminalCallIds = new Set(
+        stopContext.message.content.flatMap((b) => (b.type === 'toolCall' && TURN_ENDING_TOOLS.has(b.name) ? [b.id] : [])),
+      );
+      return stopContext.toolResults.some((r) => terminalCallIds.has(r.toolCallId) && !r.isError);
+    };
+
     return this.runAgent(config, session, startTime);
   }
 
@@ -62,9 +80,9 @@ export class AgentRunner {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
-    // Lifetime consumption across all of this agent's turns (mirrors the subagent model): input/output/
-    // cacheWrite ACCUMULATE per `message_end`. cacheRead is NOT summed — each turn's cacheRead re-reads
-    // the whole cached prefix, so summing counts it N times; we keep the latest snapshot instead.
+    // Lifetime consumption across all of this agent's turns (mirrors the subagent model): every
+    // component accumulates per `message_end`. cacheRead re-reads the whole prefix on every request and
+    // is paid on every request, so the running total is what the cost reflects, not the last snapshot.
     const lifetime: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 };
     let cacheReadTokens = 0;
     let costUsd = 0;
@@ -99,10 +117,10 @@ export class AgentRunner {
         onAssistantText: (text) => { finalResponse = text; },
         getCost: () => session.getSessionStats().cost,
         onUsage: (u) => {
-          // u is the per-message usage from this `message_end`. Accumulate input/output/cacheWrite;
-          // cacheRead is a per-call snapshot of the cached prefix, so take the latest rather than sum.
+          // u is the per-message usage from this `message_end`, one request, so adding it here counts
+          // each request's cached prefix exactly once.
           addUsage(lifetime, { input: u.input, output: u.output, cacheWrite: u.cacheWrite });
-          cacheReadTokens = u.cacheRead;
+          cacheReadTokens += u.cacheRead;
           // u.cost is pi's cumulative session cost. Safe to take as-is (not summed) because team agent
           // sessions force-disable auto-compaction (pi-runtime.createSubagentSession), so the cost never
           // resets mid-run — it stays monotonic for the agent's whole lifetime.
@@ -178,6 +196,14 @@ export class AgentRunner {
       // Event-driven wait/re-prompt loop — no timers. After each turn: flush any pending messages and
       // re-prompt; else, if the agent must keep waiting, idle until a message arrives or it must abort.
       while (!config.abortSignal.aborted) {
+        // pi runs the stop hook before draining its queue, so a message steered in that window stays
+        // undelivered. It is already echoed to the overlay, hence `echoed: true`.
+        if (session.pendingMessageCount > 0) {
+          const queued = session.clearQueue();
+          for (const text of [...queued.steering, ...queued.followUp]) {
+            pendingMessages.push({ text, echoed: true });
+          }
+        }
         if (pendingMessages.length > 0) {
           await promptQueued(flushPending());
           continue;
@@ -215,7 +241,12 @@ export class AgentRunner {
       config.forgetSession(session);
     }
 
-    if (finalResponse === null) {
+    // The reported summary is the agent's own sign-off, so it outranks trailing assistant text, which
+    // the turn-ending hook means the agent no longer produces.
+    const reportedSummary = config.getReportedSummary?.() ?? null;
+    if (reportedSummary !== null) {
+      finalResponse = reportedSummary;
+    } else if (finalResponse === null) {
       const last = session.getLastAssistantText();
       if (last) finalResponse = last;
     }

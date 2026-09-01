@@ -4,6 +4,7 @@ import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
+import type { AccountInfo } from '../../../shared/types/settings';
 
 const H = vi.hoisted(() => {
   const seq: string[] = [];
@@ -248,11 +249,12 @@ import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
 import { computePlanFilePath } from '../../paths';
 import { PLAN_MODE_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
+import { buildAccountInfo } from '../account-billing';
 import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
-import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team-tools';
+import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES, teamAgentPiToolNamesForRole } from '../tools/team-tools';
 import { deferredToolNames } from '../tools/deferred-tools';
 import { CUSTOM_TOOL_NAMES, buildCustomTools } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
@@ -2392,9 +2394,9 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     const names = [...toolNames, ...mcp.names];
     expect(names).toContain(TOOL_TOOL_SEARCH);
     for (const n of [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES]) expect(names, n).toContain(n);
-    // The 16 coordination tools are present and — per deferredToolNames — never deferrable, so a
-    // specialist can post to the scratchpad from turn one.
-    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(names, n).toContain(n);
+    // The coordination tools this role carries are present, and per deferredToolNames never
+    // deferrable, so a specialist can post to the scratchpad from turn one.
+    for (const n of teamAgentPiToolNamesForRole('specialist')) expect(names, n).toContain(n);
     const deferrable = deferredToolNames(names, mcp.names);
     for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(deferrable, n).not.toContain(n);
     for (const n of COMPASS_PI_TOOL_NAMES) expect(deferrable, n).toContain(n);
@@ -2581,12 +2583,12 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     return { session, cfg, setDescriptors: (next: typeof descriptors) => { live = [...next]; } };
   }
 
-  const teamCtx = (agentId: string) => ({
+  const teamCtx = (agentId: string, role: 'lead' | 'specialist' = 'specialist') => ({
     agentId,
     browserScopeId: `${agentId}#1`,
-    agentName: 'specialist',
+    agentName: role,
     teamId: 'team-1',
-    role: 'specialist' as const,
+    role,
   }) as never;
 
   const mcpNamesOf = (names: readonly string[]): string[] => names.filter((n) => n.startsWith('mcp__')).sort();
@@ -2684,9 +2686,39 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
 
     // The baseline the runtime writes = eligible minus deferrable. Asserted as the real derivation.
     const baseline = eligible.filter((n) => !deferrable.includes(n));
-    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(baseline, n).toContain(n);
+    for (const n of teamAgentPiToolNamesForRole('specialist')) expect(baseline, n).toContain(n);
     for (const n of mcp.names) expect(baseline, n).not.toContain(n);
     expect(baseline).toContain(TOOL_TOOL_SEARCH);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  /**
+   * A spawn's `tools:` names and its `customTools` definitions must be the SAME team set: pi drops a
+   * name with no matching definition SILENTLY. The two halves are filtered in different modules
+   * (`teamAgentToolNames` here, `buildTeamAgentPiTools` in team-tools), which is exactly why the
+   * agreement is asserted through the real engine rather than read off either side.
+   */
+  it('registers exactly the team tools the agent ROLE may call, names and definitions alike', async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const teamOnly = (names: readonly string[]) => names.filter((n) => TEAM_AGENT_PI_TOOL_NAMES.includes(n)).sort();
+
+    for (const role of ['lead', 'specialist'] as const) {
+      const { toolNames, customTools } = engine.buildAgentToolset(teamCtx(`agent-${role}`, role));
+      const expected = [...teamAgentPiToolNamesForRole(role)].sort();
+      expect(teamOnly(toolNames), role).toEqual(expected);
+      expect(teamOnly(customTools.map((t) => t.name)), role).toEqual(expected);
+    }
+
+    // The point of the filter: a role never carries the other role's tools, whose execute bodies throw.
+    const forLead = new Set(teamAgentPiToolNamesForRole('lead'));
+    const forSpecialist = new Set(teamAgentPiToolNamesForRole('specialist'));
+    const specialistNames = engine.buildAgentToolset(teamCtx('agent-s', 'specialist')).toolNames;
+    const leadNames = engine.buildAgentToolset(teamCtx('agent-l', 'lead')).toolNames;
+    for (const n of [...forLead].filter((n) => !forSpecialist.has(n))) expect(specialistNames, n).not.toContain(n);
+    for (const n of [...forSpecialist].filter((n) => !forLead.has(n))) expect(leadNames, n).not.toContain(n);
 
     cfg.mockRestore();
     await session.dispose();
@@ -2893,7 +2925,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     expect(built.mcp.isReadOnly('mcp__git__status')).toBe(false);
     expect(mcpNamesOf(built.toolNames)).toEqual([]);
     // The team_* tools are still there — no MCP must never mean no team agent.
-    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(built.customTools.map((t) => t.name), n).toContain(n);
+    for (const n of teamAgentPiToolNamesForRole('specialist')) expect(built.customTools.map((t) => t.name), n).toContain(n);
 
     cfg.mockRestore();
     await session.dispose();
@@ -4003,6 +4035,165 @@ describe('the shell session job is scoped to the panel', () => {
     // The cancel store is panel-scoped for the same reason, so one Stop finds the call whoever ran it.
     expect(subagent?.shellCancel).toBe(main?.shellCancel);
     expect(team?.shellCancel).toBe(main?.shellCancel);
+    await session.dispose();
+  });
+});
+
+/**
+ * A team agent's cost label is decided by the credential its own model runs on, so the resolver needs
+ * the live Claude auth mode. Reading it here is the only place that mode reaches team resolution.
+ */
+describe('team role dollar billing', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.resetServices();
+  });
+
+  async function billingFor(mode: string): Promise<boolean> {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode } as never);
+    const resolved = session.resolveTeamRole('lead');
+    await session.dispose();
+    return resolved.dollarBilled;
+  }
+
+  it('bills an API-key session', async () => {
+    expect(await billingFor('apikey')).toBe(true);
+  });
+
+  it('does not bill a subscription session', async () => {
+    expect(await billingFor('allowance')).toBe(false);
+  });
+});
+
+/**
+ * Account state is derived from five inputs and has one publisher: the panel model, its catalog entry,
+ * the Claude auth mode, the OpenAI auth state and the prefer-API-key flag. These pin that the publisher
+ * runs on every input change, and that it always restates what the builder would produce right then.
+ */
+describe('PiSession account state publication', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.resetServices();
+    // Earlier suites leave auth spies on the runtime singleton, and these assert exact chip values.
+    vi.restoreAllMocks();
+    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'none' });
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  function published(messages: ExtensionToWebviewMessage[]): AccountInfo | undefined {
+    const last = messages.filter((m) => m.type === 'accountInfo').at(-1);
+    return last?.type === 'accountInfo' ? last.data : undefined;
+  }
+
+  /** What the builder produces from the session's live inputs, read through its public surface. */
+  function expectedFor(session: PiSession, preferApiKey = false): AccountInfo {
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    return buildAccountInfo({
+      modelValue: session.currentModel ?? '',
+      modelInfo: session.getModelInfo(),
+      claudeAuthMode: runtime.getClaudeAuthStatus().mode,
+      openaiAuthStatus: runtime.getOpenAIAuthStatus(),
+      preferApiKey,
+    });
+  }
+
+  /** Teach the fake registry the OpenAI provider, so a switch to a GPT model resolves. */
+  function registerOpenAIModel(): void {
+    const registry = H.getServices().modelRuntime;
+    const anthropicOnly = registry.getModel;
+    registry.getModel = (provider: string, id: string) =>
+      provider === 'openai' && id === 'gpt-5.6-sol'
+        ? { id, name: 'GPT-5.6 Sol', api: 'anthropic-messages', provider, contextWindow: 272_000 }
+        : anthropicOnly(provider, id);
+  }
+
+  it('publishes at start, so a panel has account state before its first turn', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    expect(published(messages)).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'none', dollarBilled: false });
+    await session.dispose();
+  });
+
+  it('republishes on a model switch, carrying the new model billing', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: false });
+    registerOpenAIModel();
+
+    session.setModel('gpt-5.6-sol');
+
+    // The panel model was a subscription-billed Claude one; the switch target is metered by the key.
+    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    await session.dispose();
+  });
+
+  it('does not republish when a model switch is refused, because nothing changed', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const before = messages.filter((m) => m.type === 'accountInfo').length;
+
+    session.setModel('gpt-5.6-sol'); // no OpenAI credential and no registry entry
+
+    expect(session.currentModel).toBe('claude-opus-4-8');
+    expect(messages.filter((m) => m.type === 'accountInfo')).toHaveLength(before);
+    await session.dispose();
+  });
+
+  it('republishes an auth change with the new credential', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' });
+
+    session.publishAccountInfo();
+
+    expect(published(messages)).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'apikey', dollarBilled: true });
+    await session.dispose();
+  });
+
+  it('republishes a prefer-API-key change with the new token source', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    let preferApiKey = false;
+    const session = new PiSession(makeOptions(messages, { getPreferOpenAIApiKey: () => preferApiKey }));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: true });
+    registerOpenAIModel();
+    session.setModel('gpt-5.6-sol');
+    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'codex-oauth', dollarBilled: false });
+
+    preferApiKey = true;
+    session.publishAccountInfo();
+
+    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    await session.dispose();
+  });
+
+  it('publishes what the builder produces from the same inputs, in every state it reaches', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    expect(published(messages)).toEqual(expectedFor(session));
+
+    vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'extra' });
+    session.publishAccountInfo();
+    expect(published(messages)).toEqual(expectedFor(session));
+
+    vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: false });
+    registerOpenAIModel();
+    session.setModel('gpt-5.6-sol');
+    expect(published(messages)).toEqual(expectedFor(session));
     await session.dispose();
   });
 });

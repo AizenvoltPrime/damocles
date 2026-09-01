@@ -98,6 +98,7 @@ export const useTeamStore = defineStore('team', () => {
       specialization: '',
       model: '',
       profileId: null,
+      attempt: 0,
       status: (historical ? 'completed' : 'pending') as TeamAgentStatus,
       startTime: null,
       endTime: null,
@@ -108,6 +109,9 @@ export const useTeamStore = defineStore('team', () => {
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
       costUsd: 0,
+      // A team registered from a tool call has no model resolution yet, and unknown billing renders as
+      // a charge because understating a real cost is the worse error.
+      dollarBilled: true,
       progressSummary: null,
       result: null,
       logFilePath: null,
@@ -150,15 +154,32 @@ export const useTeamStore = defineStore('team', () => {
     teams.value = { ...teams.value, [teamId]: { ...team, phase } };
   }
 
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string): void {
+  // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
+  // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number): void {
     const team = teams.value[teamId];
     if (!team) return;
-    const agents = team.agents.map(a =>
-      a.agentId === agentId
-        ? { ...a, status, ...(progressSummary !== undefined ? { progressSummary } : {}), ...(logFilePath !== undefined ? { logFilePath } : {}), ...(model ? { model } : {}), ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}), ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}) }
-        : a
-    );
-    teams.value = { ...teams.value, [teamId]: { ...team, agents } };
+    const agents = team.agents.map(a => {
+      if (a.agentId !== agentId) return a;
+      // A redispatch reuses the agentId, so the fields describing the current run start over while the
+      // usage totals keep every attempt's spend. Applied last: this reset outranks the deltas above it.
+      const relaunched = attempt !== undefined && attempt > a.attempt
+        ? { attempt, toolCount: 0, lastToolName: null, startTime: Date.now(), endTime: null, result: null, progressSummary: null }
+        : {};
+      return {
+        ...a,
+        status,
+        ...(progressSummary !== undefined ? { progressSummary } : {}),
+        ...(logFilePath !== undefined ? { logFilePath } : {}),
+        ...(model ? { model } : {}),
+        ...(dollarBilled !== undefined ? { dollarBilled } : {}),
+        ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}),
+        ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}),
+        ...relaunched,
+      };
+    });
+    const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);
+    teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount } };
   }
 
   function handleAgentUsageUpdate(teamId: string, agentId: string, usage: { totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }): void {

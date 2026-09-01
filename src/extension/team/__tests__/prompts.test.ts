@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from '../prompts';
 import type { AgentSpec } from '../types';
 import type { DomainProfile } from '../prompts';
+import { teamAgentPiToolNamesForRole } from '../../pi-session/tools/team-tools';
 
 const specialists: AgentSpec[] = [
   { name: 'Backend-Bot', role: 'specialist', specialization: 'backend work' },
@@ -630,7 +631,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
     it('mandates team_report_complete as the terminal action and forbids terminal standby', () => {
       expect(prompt).toContain('This is the MANDATED terminal action once your deliverable is complete and verified');
-      expect(prompt).toContain('It must be your final call; never end on `team_standby`.');
+      expect(prompt).toContain('It must be your final call. Do not sign off with `team_standby`, which is a wait and not a completion.');
+      // The same paragraph tells the agent to end on report_complete when done and standby when waiting,
+      // so a blanket prohibition on ending with standby would contradict it.
+      expect(prompt).not.toContain('never end on `team_standby`');
       expect(prompt).toContain('It is NOT a terminal "my work is done" state. When your work is complete and verified, call `team_report_complete`, never `team_standby`.');
     });
 
@@ -715,6 +719,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_write_scratchpad\` | Write your findings for the team to reference |
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives, instead of polling |
+        | \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
         | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
         | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
@@ -749,7 +754,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7: Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly, so do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
         ### Verification Budget
 
@@ -773,14 +778,14 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section, "Cross-Review: no interacting layer per contract", and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
 
-        If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response. Your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+        If you need a peer's section and it does not exist yet, call \`team_standby\`. The call ends your turn for you, and you stay parked until a teammate writes a scratchpad section or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
         - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - Send messages directly to other specialists when you have information they need, and don't only report to the lead
         - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
         ### Waiting for Peers: Use Standby
-        \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+        \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\`: the call ends your turn for you, so nothing has to follow it. You then wait at no cost until a teammate writes a scratchpad section or sends you a direct message. An append to the append-only \`verification\` ledger wakes nobody, so read that section yourself when you need it. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
         **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby. That is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 
@@ -874,7 +879,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
     it('mandates team_report_complete as the terminal action and forbids terminal standby (profiled variant)', () => {
       expect(prompt).toContain('This is the MANDATED terminal action once your deliverable is complete and verified');
-      expect(prompt).toContain('It must be your final call; never end on `team_standby`.');
+      expect(prompt).toContain('It must be your final call. Do not sign off with `team_standby`, which is a wait and not a completion.');
+      // The same paragraph tells the agent to end on report_complete when done and standby when waiting,
+      // so a blanket prohibition on ending with standby would contradict it.
+      expect(prompt).not.toContain('never end on `team_standby`');
       expect(prompt).toContain('It is NOT a terminal "my work is done" state. When your work is complete and verified, call `team_report_complete`, never `team_standby`.');
     });
 
@@ -969,6 +977,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_write_scratchpad\` | Write your findings for the team to reference |
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives, instead of polling |
+        | \`team_flag_brief_conflict\` | Hard-stop on a conflict with the \`mission-brief\`, which blocks synthesis until the lead reconciles it |
         | \`team_record_verification\` | Record a test-suite run in the shared verification ledger, and read what peers already verified |
         | \`team_report_complete\` | Signal work is done, entering awaiting-review for lead to review |
 
@@ -1003,7 +1012,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7: Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly, so do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
         ### Verification Budget
 
@@ -1027,14 +1036,14 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section, "Cross-Review: no interacting layer per contract", and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
 
-        If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response. Your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+        If you need a peer's section and it does not exist yet, call \`team_standby\`. The call ends your turn for you, and you stay parked until a teammate writes a scratchpad section or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
         - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - Send messages directly to other specialists when you have information they need, and don't only report to the lead
         - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
         ### Waiting for Peers: Use Standby
-        \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
+        \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state. When your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\`: the call ends your turn for you, so nothing has to follow it. You then wait at no cost until a teammate writes a scratchpad section or sends you a direct message. An append to the append-only \`verification\` ledger wakes nobody, so read that section yourself when you need it. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop. Use standby instead.
 
         **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby. That is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 
@@ -1106,4 +1115,98 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('Do NOT call Edit, Write, NotebookEdit');
     });
   });
+});
+
+/**
+ * The prompt tables and the spawn's registration are two hand-maintained lists of the same thing.
+ * `teamAgentPiToolNamesForRole` is what `pi-session.ts` puts in the agent's `tools:` and what
+ * `buildTeamAgentPiTools` defines, so pinning the tables to it is the only check that catches a prompt
+ * advertising a tool the agent cannot call, or hiding one it carries.
+ */
+describe('prompt tool tables match the role-filtered registration', () => {
+  const profile: DomainProfile = { name: 'Backend', identity: 'You are a backend specialist.', mission: 'APIs.', rules: '- Ship migrations first' };
+  const leadPrompt = buildLeadSystemPrompt(title, brief, specialists, undefined, undefined);
+  const plainPrompt = buildSpecialistSystemPrompt('Backend-Bot', title, 'work', 'Lead-Agent', undefined, undefined);
+  const profiledPrompt = buildSpecialistSystemPrompt('Backend-Bot', title, 'work', 'Lead-Agent', profile, undefined);
+
+  /** The `team_*` names the "Your Tools" table advertises, in table order. */
+  function toolTableNames(prompt: string, heading: string): string[] {
+    const start = prompt.indexOf(heading);
+    if (start < 0) throw new Error(`prompt has no "${heading}" section`);
+    const rest = prompt.slice(start + heading.length);
+    const end = rest.indexOf('\n## ');
+    const section = end < 0 ? rest : rest.slice(0, end);
+    const names = [...section.matchAll(/^\| `(team_[a-z_]+)` \|/gm)].map((m) => m[1]!);
+    if (names.length === 0) throw new Error(`no tool rows found under "${heading}"`);
+    return names;
+  }
+
+  const tables: Array<[string, string[], 'lead' | 'specialist']> = [
+    ['lead', toolTableNames(leadPrompt, '## 3. Your Tools'), 'lead'],
+    ['plain specialist', toolTableNames(plainPrompt, '## 3. Your Tools'), 'specialist'],
+    ['profiled specialist', toolTableNames(profiledPrompt, '## 5. Your Tools'), 'specialist'],
+  ];
+
+  it('the lead table lists exactly the 13 tools a lead is registered for', () => {
+    expect([...tables[0]![1]].sort()).toEqual([...teamAgentPiToolNamesForRole('lead')].sort());
+    // The one hand-written count in this suite, kept as a tripwire: a tool dropped from registration
+    // and from the table together still satisfies the comparison above.
+    expect(tables[0]![1]).toHaveLength(13);
+  });
+
+  it('both specialist tables list exactly the tools a specialist is registered for', () => {
+    const expected = [...teamAgentPiToolNamesForRole('specialist')].sort();
+    expect([...tables[1]![1]].sort()).toEqual(expected);
+    expect([...tables[2]![1]].sort()).toEqual(expected);
+  });
+
+  it('no table repeats a row, and the two specialist tables advertise the same set', () => {
+    for (const [label, names] of tables) {
+      expect(new Set(names).size, label).toBe(names.length);
+    }
+    expect([...tables[1]![1]].sort()).toEqual([...tables[2]![1]].sort());
+  });
+
+  it('no table advertises a tool of the other role, which the runtime guard would throw on', () => {
+    const forLead = new Set(teamAgentPiToolNamesForRole('lead'));
+    const forSpecialist = new Set(teamAgentPiToolNamesForRole('specialist'));
+    const leadOnly = [...forLead].filter((n) => !forSpecialist.has(n));
+    const specialistOnly = [...forSpecialist].filter((n) => !forLead.has(n));
+    // Non-empty, so the loop below is a real check rather than a vacuous one.
+    expect(leadOnly.length).toBeGreaterThan(0);
+    expect(specialistOnly.length).toBeGreaterThan(0);
+
+    for (const [label, names, role] of tables) {
+      const forbidden = role === 'lead' ? specialistOnly : leadOnly;
+      for (const name of forbidden) expect(names, `${label} advertises ${name}`).not.toContain(name);
+    }
+  });
+});
+
+describe('specialist prompts describe the terminal tools the way the engine behaves', () => {
+  const profile: DomainProfile = { name: 'Backend', identity: 'You are a backend specialist.', mission: 'APIs.', rules: '- Ship migrations first' };
+  const prompts = {
+    plain: buildSpecialistSystemPrompt('Backend-Bot', title, 'work', 'Lead-Agent', undefined, undefined),
+    profiled: buildSpecialistSystemPrompt('Backend-Bot', title, 'work', 'Lead-Agent', profile, undefined),
+  };
+
+  for (const [name, prompt] of Object.entries(prompts)) {
+    it(`the ${name} prompt drops the claim that any scratchpad write wakes a standby agent`, () => {
+      expect(prompt).not.toContain('resumes when any teammate writes to the scratchpad');
+      expect(prompt).toContain('You then wait at no cost until a teammate writes a scratchpad section or sends you a direct message.');
+      expect(prompt).toContain('An append to the append-only `verification` ledger wakes nobody');
+    });
+
+    it(`the ${name} prompt says the engine ends the turn rather than asking for it`, () => {
+      expect(prompt).toContain('call `team_standby`: the call ends your turn for you, so nothing has to follow it.');
+      expect(prompt).toContain('The call ends your turn for you and that summary becomes your final response');
+      expect(prompt).not.toContain('call `team_standby` and end your response');
+      expect(prompt).not.toContain('`team_report_complete` and end your response');
+    });
+
+    it(`the ${name} prompt sends the sign-off through the team_report_complete summary`, () => {
+      expect(prompt).toContain('Then call `team_report_complete` with your sign-off in its `summary`.');
+      expect(prompt).toContain('no separate completion message is needed');
+    });
+  }
 });

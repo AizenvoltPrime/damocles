@@ -28,7 +28,9 @@ function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
     agentId: `id-${name}`, teamId: 'team-1', name, role, attempt: 0, specialization: '',
     status: 'pending', model: 'test', profileId: null, startTime: null, endTime: null,
     toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
-    cacheCreationTokens: 0, costUsd: 0, finalResponse: null, error: null, logFilePath: null,
+    cacheCreationTokens: 0, costUsd: 0,
+    carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
+    dollarBilled: true, finalResponse: null, error: null, logFilePath: null,
   };
 }
 
@@ -74,7 +76,12 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
       { name: 'Lead', role: 'lead' as const },
       ...specialistNames.map((n) => ({ name: n, role: 'specialist' as const })),
     ],
-    resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
+    // Distinct per role, because that is the case the panel-level flag gets wrong: a specialist can run
+    // a metered model inside a flat-subscription panel.
+    resolveRoleModel: (role: TeamRole) => ({
+      modelLabel: role === 'lead' ? 'lead-model' : 'spec-model',
+      dollarBilled: role !== 'lead',
+    }),
     engine: {
       // Each spawn takes the next session the test queued via `useSession`, so the REAL AgentRunner
       // drives a real prompt loop against it.
@@ -366,7 +373,7 @@ describe('team wiring — the lead is never re-prompted with an identical [REVIE
     const a = startSpecialist(w, 'A');
     await w.settle();
 
-    w.runner.reportComplete('A');
+    w.runner.reportComplete('A', 'sign-off from A');
     const notify = (): void =>
       (w.runner as unknown as { notifyLeadIfReviewRoundReady: () => void }).notifyLeadIfReviewRoundReady();
 
@@ -387,7 +394,7 @@ describe('team wiring — the lead is never re-prompted with an identical [REVIE
     await w.settle();
 
     w.scratchpad.set('a-findings', 'body', 'A');
-    w.runner.reportComplete('A');
+    w.runner.reportComplete('A', 'sign-off from A');
     (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get('A')!.status = 'awaiting-review';
     const notify = (): void =>
       (w.runner as unknown as { notifyLeadIfReviewRoundReady: () => void }).notifyLeadIfReviewRoundReady();
@@ -425,7 +432,7 @@ describe('team wiring — the lead is never re-prompted with an identical [REVIE
     startSpecialist(w, 'A');
     await w.settle();
 
-    w.runner.reportComplete('A');
+    w.runner.reportComplete('A', 'sign-off from A');
     (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get('A')!.status = 'awaiting-review';
     const nudge = (): void =>
       (w.runner as unknown as { nudgeLeadOnOpenReviewRound: (n: string) => void }).nudgeLeadOnOpenReviewRound('Lead');
@@ -559,7 +566,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     const live = (w.runner as unknown as { scratchpad: Scratchpad }).scratchpad;
     expect(live.get(VERIFICATION_SECTION)).toBeDefined();
     expect(live.isAppendOnly(VERIFICATION_SECTION)).toBe(true);
-    expect(() => live.appendTo(VERIFICATION_SECTION, '- A | tree abc | full-suite | PASS', 'Lead')).not.toThrow();
+    expect(() => live.appendTo(VERIFICATION_SECTION, '- A | tree abc | full-suite | PASS')).not.toThrow();
 
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });
@@ -654,5 +661,368 @@ describe('team wiring: a user note reaches the live run, or says it did not', ()
     expect(deliverUserNote(w, 'A', 'too late')).toBe(false);
     expect(w.webviewMessages).toHaveLength(before);
     expect(deliveredPrompts(a).join('\n')).not.toContain('too late');
+  });
+});
+
+/**
+ * The engine-side standby park. Every other session in this file ends its turn on its own, so nothing
+ * here observed the `shouldStopAfterTurn` hook the AgentRunner installs. These drive a session that
+ * ends its turn ONLY when that hook says so, spawned through the real `startSpecialist` path.
+ */
+describe('team wiring: a team_standby call parks the specialist, which still wakes', () => {
+  interface StandbySpecialist { session: FakeSession; stops: boolean[] }
+
+  /**
+   * A specialist whose opening turn calls `team_standby` and would otherwise keep working: the fake
+   * resolves that prompt only if the hook stops the turn, and `stops` records what the hook answered.
+   */
+  function startStandbySpecialist(w: Wiring, name: string): StandbySpecialist {
+    const stops: boolean[] = [];
+    const session = new FakeSession({
+      onPrompt: (_t, s) => {
+        if (s.prompts.length > 1) { s.emit({ type: 'turn_end' }); return; }
+        // What the real tool does before returning its text result.
+        w.runner.enterStandby(name);
+        void s.runTurn([{ id: 'tc-1', name: 'team_standby' }]).then((stop) => { stops.push(stop); });
+      },
+    });
+    w.useSession(session);
+    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    return { session, stops };
+  }
+
+  it('ends the turn on team_standby and makes no further prompt', async () => {
+    const w = makeWiring(['A', 'B']);
+    startSpecialist(w, 'A');
+    const b = startStandbySpecialist(w, 'B');
+    await w.settle();
+
+    expect(b.stops).toEqual([true]);
+    expect(deliveredPrompts(b.session)).toEqual([]);
+  });
+
+  it('wakes the parked specialist on a direct message', async () => {
+    const w = makeWiring(['A', 'B']);
+    startSpecialist(w, 'A');
+    const b = startStandbySpecialist(w, 'B');
+    await w.settle();
+
+    expect(b.stops).toEqual([true]);
+
+    w.messageBus.send('A', 'B', 'my findings are posted');
+    await b.session.whenPrompted(2);
+
+    expect(deliveredPrompts(b.session).join('\n')).toContain('my findings are posted');
+  });
+
+  it('wakes the parked specialist on a peer scratchpad write', async () => {
+    const w = makeWiring(['A', 'B']);
+    startSpecialist(w, 'A');
+    const b = startStandbySpecialist(w, 'B');
+    await w.settle();
+
+    expect(b.stops).toEqual([true]);
+
+    w.scratchpad.set('a-findings', 'A posted findings', 'A');
+    await b.session.whenPrompted(2);
+
+    expect(noticePrompts(b.session)).toHaveLength(1);
+    expect(noticePrompts(b.session)[0]).toContain('"a-findings" updated by A');
+  });
+});
+
+/**
+ * The engine-side report_complete park, and where the sign-off it carries ends up. Measured across the
+ * team logs, 821 of 851 report_complete calls were followed by another request in the same turn, almost
+ * always one text-only message: the closing statement the tool gave the model nowhere to put. The
+ * summary parameter is that place, so it has to reach the card and the transcript, and the turn has to
+ * end at the call.
+ */
+describe('team wiring: a team_report_complete call parks the specialist with its sign-off', () => {
+  interface ReportingSpecialist { session: FakeSession; stops: boolean[] }
+
+  /** The specialist's REAL MCP context, so the path the tool takes is the path under test. */
+  function specialistContext(w: Wiring, name: string): { reportComplete: (n: string, summary: string) => void } {
+    return (w.runner as unknown as {
+      buildSpecialistContext: (id: string, scope: string, name: string) => { reportComplete: (n: string, summary: string) => void };
+    }).buildSpecialistContext(`id-${name}`, `id-${name}#0`, name);
+  }
+
+  function agentOf(w: Wiring, name: string): TeamAgent {
+    return (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
+  }
+
+  /** Flush microtasks until `predicate` holds, so no assertion depends on a tick count. */
+  async function until(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
+  }
+
+  /**
+   * A specialist that reports complete on each turn it has a summary for, and would otherwise keep
+   * working: the fake resolves that prompt only if the hook stops the turn, and `stops` records what the
+   * hook answered on each one.
+   */
+  function startReportingSpecialist(
+    w: Wiring,
+    name: string,
+    summaries: string[],
+    opts?: { trailingText?: string; duringTurn?: () => void },
+  ): ReportingSpecialist {
+    const remaining = [...summaries];
+    const stops: boolean[] = [];
+    const session = new FakeSession({
+      onPrompt: (_t, s) => {
+        const summary = remaining.shift();
+        if (summary === undefined) { s.emit({ type: 'turn_end' }); return; }
+        if (opts?.trailingText) {
+          s.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: opts.trailingText }] } });
+        }
+        // What the real tool does before returning its text result.
+        specialistContext(w, name).reportComplete(name, summary);
+        opts?.duringTurn?.();
+        void s.runTurn([{ id: `tc-${stops.length}`, name: 'team_report_complete' }]).then((stop) => { stops.push(stop); });
+      },
+    });
+    w.useSession(session);
+    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    return { session, stops };
+  }
+
+  it('ends the turn on team_report_complete and makes no further prompt', async () => {
+    const w = makeWiring(['A', 'B']);
+    startSpecialist(w, 'A');
+    const b = startReportingSpecialist(w, 'B', ['sign-off from B']);
+    await w.settle();
+
+    expect(b.stops).toEqual([true]);
+    expect(deliveredPrompts(b.session)).toEqual([]);
+  });
+
+  it('leaves the specialist alive in awaiting-review, still able to take a revision request', async () => {
+    const w = makeWiring(['A']);
+    const a = startReportingSpecialist(w, 'A', ['sign-off from A']);
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    expect(agentOf(w, 'A').status).toBe('awaiting-review');
+
+    w.runner.requestRevision('A', 'the second case is still unhandled');
+    await a.session.whenPrompted(2);
+
+    expect(deliveredPrompts(a.session).join('\n')).toContain('the second case is still unhandled');
+  });
+
+  it('leaves the specialist alive in awaiting-review, still able to be approved', async () => {
+    const w = makeWiring(['A']);
+    const a = startReportingSpecialist(w, 'A', ['sign-off from A']);
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    w.runner.approveSpecialist('A');
+    await until(() => agentOf(w, 'A').status === 'completed');
+
+    expect(agentOf(w, 'A').status).toBe('completed');
+    expect(a.stops).toEqual([true]);
+  });
+
+  it('still delivers a message that arrived during the report_complete turn', async () => {
+    const w = makeWiring(['A', 'B']);
+    startSpecialist(w, 'A');
+    const b = startReportingSpecialist(w, 'B', ['sign-off from B'], {
+      duringTurn: () => w.messageBus.send('A', 'B', 'one more thing before you park'),
+    });
+    await b.session.whenPrompted(2);
+
+    expect(deliveredPrompts(b.session).join('\n')).toContain('one more thing before you park');
+  });
+
+  it('carries the sign-off to the agent card and the agent-completed entry, over trailing assistant text', async () => {
+    const w = makeWiring(['A']);
+    const summary = 'shipped the parser, all four commands pass, nothing left open';
+    startReportingSpecialist(w, 'A', [summary], { trailingText: 'let me write that up for you' });
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    w.runner.approveSpecialist('A');
+    await until(() => w.teamEntries.some((e) => e['type'] === 'agent-completed'));
+
+    expect(agentOf(w, 'A').finalResponse).toBe(summary);
+    const completed = w.teamEntries.find((e) => e['type'] === 'agent-completed' && e['name'] === 'A');
+    expect(completed?.['result']).toBe(summary);
+  });
+
+  it('drops a sign-off the revision superseded, so a specialist that dies mid-revision carries none', async () => {
+    // The lead synthesizes from finalResponse. A confident pre-revision sign-off surviving the revision
+    // that rejected it would describe work the specialist never finished.
+    const w = makeWiring(['A']);
+    const a = startReportingSpecialist(w, 'A', ['first pass, one case unhandled']);
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    w.runner.requestRevision('A', 'handle the second case');
+    await a.session.whenPrompted(2);
+    w.runner.cancelSpecialist('A');
+    await until(() => w.teamEntries.some((e) => e['type'] === 'agent-completed'));
+
+    expect(agentOf(w, 'A').finalResponse).toBeNull();
+    const completed = w.teamEntries.find((e) => e['type'] === 'agent-completed' && e['name'] === 'A');
+    expect(completed?.['result']).toBeNull();
+  });
+
+  it('takes the newest sign-off when a revision round produces a second one', async () => {
+    const w = makeWiring(['A']);
+    const a = startReportingSpecialist(w, 'A', ['first pass, one case unhandled', 'second case handled, suites pass']);
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    w.runner.requestRevision('A', 'handle the second case');
+    await a.session.whenPrompted(2);
+    await until(() => agentOf(w, 'A').status === 'awaiting-review');
+
+    w.runner.approveSpecialist('A');
+    await until(() => w.teamEntries.some((e) => e['type'] === 'agent-completed'));
+
+    expect(a.stops).toEqual([true, true]);
+    expect(agentOf(w, 'A').finalResponse).toBe('second case handled, suites pass');
+  });
+});
+
+/**
+ * Per-attempt state a re-run must not inherit, and the per-agent billing flag a card labels its cost
+ * with. Both are set on the runner's spawn paths, so they are asserted through the real ones.
+ */
+describe('team wiring: a redispatch is a fresh attempt, and each agent carries its own billing flag', () => {
+  function agentOf(w: Wiring, name: string): TeamAgent {
+    return (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
+  }
+
+  /** Flush microtasks until `predicate` holds, so no assertion depends on a tick count. */
+  async function until(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
+  }
+
+  /** Cancel a running specialist and queue the session its re-run will take. */
+  async function cancelAndQueueRerun(w: Wiring, name: string): Promise<FakeSession> {
+    w.runner.cancelSpecialist(name);
+    await until(() => agentOf(w, name).status === 'cancelled');
+    const session = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    w.useSession(session);
+    return session;
+  }
+
+  it('gives a redispatched specialist a full first read, not the unchanged marker', async () => {
+    // The re-run is a new session with empty model context, so read state recorded by the failed
+    // attempt describes text this attempt has never seen.
+    const w = makeWiring(['A']);
+    w.scratchpad.seedImmutable('mission-brief', 'the authoritative spec');
+    startSpecialist(w, 'A');
+    await w.settle();
+    w.scratchpad.markAllRead('A');
+    w.scratchpad.recordReadOutcome('A', 'full');
+    expect(w.scratchpad.hasCurrentRead('A', 'mission-brief')).toBe(true);
+
+    await cancelAndQueueRerun(w, 'A');
+    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+
+    expect(w.scratchpad.hasCurrentRead('A', 'mission-brief')).toBe(false);
+    expect(w.scratchpad.getReadStats('A')).toEqual({ markerHits: 0, fullReturns: 0 });
+  });
+
+  it('leaves every other reader read state alone when one specialist is redispatched', async () => {
+    const w = makeWiring(['A', 'B']);
+    w.scratchpad.seedImmutable('mission-brief', 'the authoritative spec');
+    startSpecialist(w, 'A');
+    startSpecialist(w, 'B');
+    await w.settle();
+    w.scratchpad.markAllRead('A');
+    w.scratchpad.markAllRead('B');
+
+    await cancelAndQueueRerun(w, 'A');
+    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+
+    expect(w.scratchpad.hasCurrentRead('B', 'mission-brief')).toBe(true);
+  });
+
+  it('takes the specialist billing flag from its own role resolution, on spawn and on redispatch', async () => {
+    const w = makeWiring(['A']);
+    startSpecialist(w, 'A');
+    await w.settle();
+
+    expect(agentOf(w, 'A').dollarBilled).toBe(true);
+    const spawned = w.teamEntries.filter((e) => e['type'] === 'agent-spawned' && e['name'] === 'A');
+    expect(spawned.map((e) => e['dollarBilled'])).toEqual([true]);
+
+    agentOf(w, 'A').dollarBilled = false;
+    await cancelAndQueueRerun(w, 'A');
+    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+
+    expect(agentOf(w, 'A').dollarBilled).toBe(true);
+    expect(w.teamEntries.filter((e) => e['type'] === 'agent-spawned' && e['name'] === 'A')).toHaveLength(2);
+  });
+
+  it('sends the specialist billing flag to the webview on spawn and on redispatch', async () => {
+    // teamStarted goes out before any specialist spawns, so the card carries the unknown-billing
+    // placeholder until a status update corrects it.
+    const w = makeWiring(['A']);
+    startSpecialist(w, 'A');
+    await w.settle();
+
+    // The AgentRunner emits its own running update and knows nothing about billing, so the flag marks
+    // the spawn updates the runner sends.
+    const billed = (): Array<boolean | undefined> => w.webviewMessages
+      .filter((m) => m.type === 'teamAgentStatusUpdate' && 'dollarBilled' in m)
+      .map((m) => (m as { dollarBilled?: boolean }).dollarBilled);
+    expect(billed()).toEqual([true]);
+
+    await cancelAndQueueRerun(w, 'A');
+    w.runner.redispatchSpecialist('A', 'second attempt at the same task');
+
+    expect(billed()).toEqual([true, true]);
+  });
+
+  it('takes the lead billing flag from the lead resolution on the real run path', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'team-billing-'));
+    const leadSession = new FakeSession({ onPrompt: (_t, sess) => sess.emit({ type: 'turn_end' }) });
+    const w = makeWiring(['A'], { cwd });
+    w.useSession(leadSession);
+
+    void w.runner.run();
+    await leadSession.whenPrompted(1);
+
+    expect(agentOf(w, 'Lead').dollarBilled).toBe(false);
+    // A specialist has no resolution until it spawns, so it starts on the safe side of the label.
+    expect(agentOf(w, 'A').dollarBilled).toBe(true);
+
+    w.runner.cancel();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
+/**
+ * Usage totals are accumulated per `message_end` inside the AgentRunner and only reach a reopened team
+ * through the `agent-completed` entry, so the sum is asserted where the entry is written.
+ */
+describe('team wiring: the persisted usage totals are the run sum, not its last turn', () => {
+  async function until(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
+  }
+
+  it('sums every usage component across turns into the agent-completed entry', async () => {
+    const w = makeWiring(['A']);
+    const session = new FakeSession({
+      onPrompt: (_t, s) => {
+        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 1_000, cacheWrite: 2 });
+        s.emitAssistantUsage({ input: 20, output: 7, cacheRead: 3_000, cacheWrite: 4 });
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    w.useSession(session);
+    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await w.settle();
+
+    w.runner.cancelSpecialist('A');
+    await until(() => w.teamEntries.some((e) => e['type'] === 'agent-completed'));
+
+    const completed = w.teamEntries.find((e) => e['type'] === 'agent-completed' && e['name'] === 'A');
+    // Each request pays for its own cached prefix, so the charge is the sum and not the last reading.
+    expect(completed?.['cacheReadTokens']).toBe(4_000);
+    expect(completed?.['totalInputTokens']).toBe(30);
+    expect(completed?.['totalOutputTokens']).toBe(12);
+    expect(completed?.['cacheCreationTokens']).toBe(6);
   });
 });

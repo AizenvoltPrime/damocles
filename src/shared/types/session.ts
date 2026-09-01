@@ -6,7 +6,6 @@ export interface SystemInitData {
   mcpServers: { name: string; status: string }[];
   permissionMode: string;
   slashCommands: string[];
-  apiKeySource: string;
   cwd: string;
   outputStyle?: string;
 }

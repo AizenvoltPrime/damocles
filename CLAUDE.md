@@ -81,6 +81,9 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
 - Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
+- `team_standby` and `team_report_complete` end the turn from the engine's stop hook, keyed on a non-error result. Never trust the model to stop, and never block inside the tool.
+- A team agent's work fields are per attempt and its usage fields are cumulative. The runner, the persistence loader and the webview store must all agree, or a reopened team contradicts the live one.
+- Account state has one publisher, `PiSession.publishAccountInfo()`, called wherever its inputs change. Never publish it from a once-guarded session-start path.
 - The team profile catalog is generated: edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
 - A subagent's model is configuration, never the spawning model's choice (`Agent` has no `model` param).
 - Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom. Never hand-roll a `completeSimple` call, because that seam is what keeps untrusted content (transcripts, memories, queries) in data position instead of instruction position. Never mutate `process.env` for per-session config.

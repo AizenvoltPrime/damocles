@@ -38,7 +38,7 @@ export function apiKeySource(deps: AccountBillingDeps): string {
 
 /** The account chip: model + the active backend's credential/subscription source. */
 export function buildAccountInfo(deps: AccountBillingDeps): AccountInfo {
-  const info: AccountInfo = { model: deps.modelValue };
+  const info: AccountInfo = { model: deps.modelValue, dollarBilled: dollarBilled(deps) };
   const mi = deps.modelInfo;
   if (mi?.backend === 'openai') {
     info.tokenSource = openaiTokenSource(deps);

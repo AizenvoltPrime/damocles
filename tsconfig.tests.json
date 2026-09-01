@@ -40,6 +40,7 @@
     "src/webview",
     "src/extension/browser/__tests__",
     "src/extension/pi-session/__tests__/nested-mcp-elicitation.test.ts",
+    "src/extension/team/__tests__/redispatch-parity.test.ts",
     // Parser input, not project code: multi-language sample files read off disk as text by the
     // compass extraction suites, several of which import modules that intentionally do not exist.
     "src/extension/compass/__tests__/fixtures"

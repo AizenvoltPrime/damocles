@@ -44,6 +44,7 @@ const EVERY_INPUT_KEY: Record<string, unknown> = {
   detail: 'the task contradicts the brief',
   command: 'npm test',
   result: 'pass',
+  summary: 'the tokenizer is rewritten and the suite passes',
   since: 1,
 };
 
@@ -107,9 +108,14 @@ describe('TEAM_TOOL_PRESENTATION card summaries', () => {
   });
 
   it('renders no IN row for a tool that takes no meaningful input', () => {
-    for (const name of ['team_read_messages', 'team_get_status', 'team_standby', 'team_report_complete']) {
+    for (const name of ['team_read_messages', 'team_get_status', 'team_standby']) {
       expect(TEAM_TOOL_PRESENTATION[name]!.summarizeInput(EVERY_INPUT_KEY), `input summary for ${name}`).toBe('');
     }
+  });
+
+  it('shows the sign-off the terminal tool now carries', () => {
+    expect(TEAM_TOOL_PRESENTATION['team_report_complete']!.summarizeInput(EVERY_INPUT_KEY))
+      .toBe('the tokenizer is rewritten and the suite passes');
   });
 
   it('clips a long input rather than letting it grow the card', () => {

@@ -37,6 +37,8 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     costUsd: 0,
+    carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
+    dollarBilled: true,
     finalResponse: null,
     error: null,
     logFilePath: null,

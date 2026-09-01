@@ -17,14 +17,14 @@ import { execSafe } from '../checkpoints/exec';
  *
  * Two builders: `buildTeamMainPiTools` (the main coordination tools the PRIMARY agent calls) and
  * `buildTeamAgentPiTools` (the `team_*` tools each TEAM AGENT calls). Both classify as auto-allow
- * coordination tools — they perform no writes and no arbitrary shell; `team_record_verification` is the
- * one exception and is limited to read-only `git rev-parse`/`git status` plus file reads for
- * fingerprinting — via `TEAM_MAIN_PI_TOOL_NAMES`/`TEAM_AGENT_PI_TOOL_NAMES`,
- * added to the gate's `GATEABLE_MODULE_NAMES`. `TEAM_*_SPECS` are the single source of truth for the
- * names + the Tools-panel catalog.
+ * coordination tools via `TEAM_MAIN_PI_TOOL_NAMES`/`TEAM_AGENT_PI_TOOL_NAMES`, added to the gate's
+ * `GATEABLE_MODULE_NAMES`. They perform no writes and no arbitrary shell. `team_record_verification` is
+ * the one exception and is limited to read-only `git rev-parse`/`git status` plus file reads for
+ * fingerprinting. `TEAM_*_SPECS` are the single source of truth for the names + the Tools-panel catalog.
  */
 
 const MIN_TASK_LENGTH = 20;
+const MIN_SUMMARY_LENGTH = 20;
 const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
 const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
@@ -35,6 +35,17 @@ interface ToolSpec {
   label: string;
   /** One-line Tools-panel blurb. */
   description: string;
+}
+
+/** Which role may call a team agent tool, so registration and the name lists read one table. */
+type ToolAccess = 'lead' | 'specialist' | 'both';
+
+interface AgentToolSpec extends ToolSpec {
+  access: ToolAccess;
+}
+
+function admits(access: ToolAccess, role: 'lead' | 'specialist'): boolean {
+  return access === 'both' || access === role;
 }
 
 /** Labels come from the shared map, which the webview cards also read, so the two cannot drift apart. */
@@ -50,43 +61,80 @@ const TEAM_MAIN_SPECS: readonly ToolSpec[] = [
   { name: 'cancel_team', description: 'Cancel a running team, aborting all agents.' },
 ].map(toSpec);
 
-export const TEAM_AGENT_SPECS: readonly ToolSpec[] = [
-  { name: 'team_send_message', description: 'Send a direct message to a teammate.' },
-  { name: 'team_read_messages', description: 'Read messages sent to you from teammates.' },
-  { name: 'team_read_scratchpad', description: 'Read the shared scratchpad.' },
-  { name: 'team_write_scratchpad', description: 'Write to the shared scratchpad.' },
-  { name: 'team_get_status', description: 'Get the status of all team members.' },
-  { name: 'team_spawn_specialist', description: 'Lead-only: spawn a specialist with a task.' },
-  { name: 'team_redispatch_specialist', description: 'Lead-only: re-run a failed or cancelled specialist as a fresh attempt.' },
-  { name: 'team_cancel_specialist', description: 'Lead-only: cancel a running specialist.' },
-  { name: 'team_request_revision', description: 'Lead-only: send revision instructions.' },
-  { name: 'team_approve_specialist', description: 'Lead-only: approve a specialist\'s work.' },
-  { name: 'team_standby', description: 'Pause until peer content arrives.' },
-  { name: 'team_report_complete', description: 'Signal work is done, enter awaiting-review.' },
-  { name: 'team_flag_brief_conflict', description: 'Specialist-only: flag a hard conflict with the mission-brief.' },
-  { name: 'team_resolve_brief_conflict', description: 'Lead-only: reconcile or dismiss a brief-conflict flag.' },
-  { name: 'team_record_verification', description: 'Record a verification run (full-suite or scoped) against the current tree fingerprint.' },
-  { name: 'team_synthesize_result', description: 'Lead-only: submit the final team result.' },
-].map(toSpec);
+const TEAM_AGENT_ENTRIES: ReadonlyArray<{ name: string; access: ToolAccess; description: string }> = [
+  { name: 'team_send_message', access: 'both', description: 'Send a direct message to a teammate.' },
+  { name: 'team_read_messages', access: 'both', description: 'Read messages sent to you from teammates.' },
+  { name: 'team_read_scratchpad', access: 'both', description: 'Read the shared scratchpad, with an unchanged marker for sections you already hold.' },
+  { name: 'team_write_scratchpad', access: 'both', description: 'Write to the shared scratchpad.' },
+  { name: 'team_get_status', access: 'both', description: 'Get the status of all team members.' },
+  { name: 'team_spawn_specialist', access: 'lead', description: 'Spawn a specialist with a task.' },
+  { name: 'team_redispatch_specialist', access: 'lead', description: 'Re-run a failed or cancelled specialist as a fresh attempt.' },
+  { name: 'team_cancel_specialist', access: 'lead', description: 'Cancel a running specialist.' },
+  { name: 'team_request_revision', access: 'lead', description: 'Send revision instructions.' },
+  { name: 'team_approve_specialist', access: 'lead', description: 'Approve a specialist\'s work.' },
+  { name: 'team_standby', access: 'specialist', description: 'Pause until peer content arrives.' },
+  { name: 'team_report_complete', access: 'specialist', description: 'Signal work is done, enter awaiting-review.' },
+  { name: 'team_flag_brief_conflict', access: 'specialist', description: 'Flag a hard conflict with the mission-brief.' },
+  { name: 'team_resolve_brief_conflict', access: 'lead', description: 'Reconcile or dismiss a brief-conflict flag.' },
+  { name: 'team_record_verification', access: 'both', description: 'Record a verification run (full-suite or scoped) against the current tree fingerprint.' },
+  { name: 'team_synthesize_result', access: 'lead', description: 'Submit the final team result.' },
+];
+
+export const TEAM_AGENT_SPECS: readonly AgentToolSpec[] = TEAM_AGENT_ENTRIES.map((entry) => ({
+  ...toSpec(entry),
+  access: entry.access,
+}));
 
 export const TEAM_MAIN_PI_TOOL_NAMES: readonly string[] = TEAM_MAIN_SPECS.map((s) => s.name);
+/** The union of both roles: the consumers ask "is this a team tool at all", not "may this agent call it". */
 export const TEAM_AGENT_PI_TOOL_NAMES: readonly string[] = TEAM_AGENT_SPECS.map((s) => s.name);
 
-export const TEAM_TOOL_CATALOG: readonly ToolCatalogEntry[] = [...TEAM_MAIN_SPECS, ...TEAM_AGENT_SPECS].map((s) => ({
-  name: s.name,
-  label: s.label,
-  description: s.description,
-  group: 'team',
-  toggleable: true,
-}));
+const NAMES_BY_ROLE: Readonly<Record<'lead' | 'specialist', readonly string[]>> = {
+  lead: Object.freeze(TEAM_AGENT_SPECS.filter((s) => admits(s.access, 'lead')).map((s) => s.name)),
+  specialist: Object.freeze(TEAM_AGENT_SPECS.filter((s) => admits(s.access, 'specialist')).map((s) => s.name)),
+};
+
+export function teamAgentPiToolNamesForRole(role: 'lead' | 'specialist'): readonly string[] {
+  return NAMES_BY_ROLE[role];
+}
+
+/** The Tools panel shows role, and `access` is where registration already states it. */
+const ACCESS_PREFIX: Readonly<Record<ToolAccess, string>> = {
+  lead: 'Lead-only: ',
+  specialist: 'Specialist-only: ',
+  both: '',
+};
+
+function catalogEntry(spec: ToolSpec, prefix: string): ToolCatalogEntry {
+  return {
+    name: spec.name,
+    label: spec.label,
+    description: `${prefix}${spec.description}`,
+    group: 'team',
+    toggleable: true,
+  };
+}
+
+export const TEAM_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
+  ...TEAM_MAIN_SPECS.map((s) => catalogEntry(s, '')),
+  ...TEAM_AGENT_SPECS.map((s) => catalogEntry(s, ACCESS_PREFIX[s.access])),
+];
 
 function textResult(text: string): AgentToolResult<undefined> {
   return { content: [{ type: 'text', text }], details: undefined };
 }
 
+/** The runtime marker and the tool description both quote this, so a reword cannot make them disagree. */
+export const UNCHANGED_MARKER_PREFIX = 'unchanged since you last read it (version';
+
+/** Names the version and rules out "empty" and "not found", the two readings that would trigger a re-read loop. */
+function unchangedMarker(version: number): string {
+  return `${UNCHANGED_MARKER_PREFIX} ${version}). Content withheld to save context. This section is current, it is not empty and it is not missing.`;
+}
+
 /**
  * The SDK team tools returned `{ content, isError: true }` so the model read the error text and the
- * card rendered failed. pi has no result-level `isError` — a tool signals an error by THROWING (the
+ * card rendered failed. pi has no result-level `isError`. A tool signals an error by THROWING (the
  * runtime turns the thrown message into the error tool result the model reads). `TeamToolError` carries
  * the same message text; every error/validation branch throws it instead of returning a flagged result.
  */
@@ -123,7 +171,7 @@ export interface TeamServiceRef {
 const createTeamSchema = Type.Object(
   {
     title: Type.String({ minLength: 1, maxLength: 200, description: 'Short team label (≤200 chars). Detailed intent goes in `brief`, not here.' }),
-    brief: Type.String({ minLength: 1, maxLength: MAX_SCRATCHPAD_CONTENT_LENGTH, description: 'Authoritative specification for the team — the single source of truth (spec / acceptance criteria / architecture). Put ALL detailed intent HERE, never in title.' }),
+    brief: Type.String({ minLength: 1, maxLength: MAX_SCRATCHPAD_CONTENT_LENGTH, description: 'Authoritative specification for the team, the single source of truth (spec / acceptance criteria / architecture). Put ALL detailed intent HERE, never in title.' }),
     agents: Type.Array(
       Type.Object(
         {
@@ -135,7 +183,7 @@ const createTeamSchema = Type.Object(
         },
         { additionalProperties: false },
       ),
-      { minItems: 2, maxItems: 5, description: 'Team roster — 2-5 agents, exactly one lead' },
+      { minItems: 2, maxItems: 5, description: 'Team roster. 2-5 agents, exactly one lead' },
     ),
   },
   { additionalProperties: false },
@@ -160,7 +208,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       name: 'create_team',
       label: 'create_team',
       description:
-        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. Put the authoritative spec / acceptance criteria / architecture in `brief` (the team\'s single source of truth) — keep `title` a short label, never a place to smuggle detailed intent. Team agent models and reasoning effort are user-configured in settings (per role: lead, implementor, reviewer); you do not choose them. Blocks until team completes.',
+        'Create a collaborative team of specialist agents that work together on complex tasks. They message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. Put the authoritative spec / acceptance criteria / architecture in `brief` (the team\'s single source of truth). Keep `title` a short label, never a place to smuggle detailed intent. Team agent models and reasoning effort are user-configured in settings (per role: lead, implementor, reviewer); you do not choose them. Blocks until team completes.',
       parameters: createTeamSchema,
       execute: async (toolCallId, input, signal) => {
         const agents = input.agents as CreateTeamAgent[];
@@ -223,7 +271,7 @@ const teamSendMessageSchema = Type.Object(
 );
 
 const teamReadMessagesSchema = Type.Object(
-  { since: Type.Optional(Type.Number({ description: 'Timestamp — only return messages after this time' })) },
+  { since: Type.Optional(Type.Number({ description: 'Timestamp. Only return messages after this time' })) },
   { additionalProperties: false },
 );
 
@@ -248,7 +296,7 @@ const teamSpawnSpecialistSchema = Type.Object(
     task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
     // REQUIRED (not optional): the lead must consciously classify every specialist. An omitted `kind`
     // fails schema validation so the model self-corrects on retry. The resolver defaults to 'implementor'
-    // only as an internal safety net for non-tool call paths — do NOT relax this to optional.
+    // only as an internal safety net for non-tool call paths. Do NOT relax this to optional.
     kind: Type.Union(
       [Type.Literal('implementor'), Type.Literal('reviewer')],
       { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
@@ -263,7 +311,7 @@ const teamRedispatchSpecialistSchema = Type.Object(
     name: Type.String({ description: 'Specialist name from the team roster' }),
     task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
     // REQUIRED (not optional): re-dispatch is a conscious re-classification of the specialist. An omitted
-    // `kind` fails schema validation so the model self-corrects on retry — mirrors team_spawn_specialist.
+    // `kind` fails schema validation so the model self-corrects on retry. Mirrors team_spawn_specialist.
     kind: Type.Union(
       [Type.Literal('implementor'), Type.Literal('reviewer')],
       { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
@@ -293,7 +341,16 @@ const teamApproveSpecialistSchema = Type.Object(
 
 const teamStandbySchema = Type.Object({}, { additionalProperties: false });
 
-const teamReportCompleteSchema = Type.Object({}, { additionalProperties: false });
+const teamReportCompleteSchema = Type.Object(
+  {
+    summary: Type.String({
+      minLength: MIN_SUMMARY_LENGTH,
+      maxLength: MAX_MESSAGE_CONTENT_LENGTH,
+      description: 'Your sign-off: what you delivered, what you verified, and what you are leaving open. This is the last thing you say, not a restatement of your scratchpad section, which the lead reads on its own.',
+    }),
+  },
+  { additionalProperties: false },
+);
 
 const teamFlagBriefConflictSchema = Type.Object(
   {
@@ -319,7 +376,7 @@ const teamRecordVerificationSchema = Type.Object(
     ),
     // NO fingerprint field, deliberately: the tool computes the tree fingerprint itself from git state.
     // A self-reported fingerprint can be wrong or stale, and a wrong fingerprint makes a reused result
-    // unsound — turning the evidence back into the bare claim this ledger exists to replace.
+    // unsound, turning the evidence back into the bare claim this ledger exists to replace.
     failures: Type.Optional(Type.String({ maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Summary of failing tests when result is "fail" (names + assertion, not full output)' })),
   },
   { additionalProperties: false },
@@ -331,8 +388,8 @@ export const MAX_FINGERPRINTED_FILES = 2_000;
 
 /**
  * A fingerprint of the working tree: the HEAD commit plus a hash over every dirty path reported by
- * `git status` and the current content of each one. Any edit — tracked or untracked, staged
- * or not — changes it, which is what makes reusing a peer's recorded result safe rather than a
+ * `git status` and the current content of each one. Any edit, tracked or untracked, staged
+ * or not, changes it, which is what makes reusing a peer's recorded result safe rather than a
  * correctness bandaid: a pass recorded before an edit can never satisfy a check after it.
  *
  * Every git flag here is load-bearing, and each one guards against the SAME failure: a path the code
@@ -349,7 +406,7 @@ export const MAX_FINGERPRINTED_FILES = 2_000;
  * unreadable file is not silently indistinguishable from a directory entry.
  *
  * Fail-soft by contract: a non-git cwd or any git error yields `UNVERIFIABLE_FINGERPRINT` rather than
- * throwing, so recording never breaks an agent's turn. Fail-soft means VISIBLY degraded — exceeding
+ * throwing, so recording never breaks an agent's turn. Fail-soft means VISIBLY degraded. Exceeding
  * `MAX_FINGERPRINTED_FILES` also yields `UNVERIFIABLE_FINGERPRINT`, because a hash that silently
  * ignores everything past the cap looks exactly as authoritative as a complete one.
  */
@@ -411,7 +468,7 @@ const SCOPING_FLAGS = new Set(['-t', '--testNamePattern', '--project', '--dir', 
  *
  * Deliberately conservative: `scope` is the field a peer keys "this run is provably redundant, skip it"
  * on, so mislabelling a filtered run as full-suite lets the next agent skip the real suite on the
- * strength of ten tests — the ledger asserting something false. Only a BARE runner invocation counts as
+ * strength of ten tests, the ledger asserting something false. Only a BARE runner invocation counts as
  * full-suite; the leading runner tokens are consumed, and any positional left over is treated as a
  * filter regardless of shape, because a Vitest positional is a name pattern and need not look like a
  * path. A named script (`npm run test:unit`) is scoped too: its contents are unknowable from here.
@@ -426,18 +483,21 @@ function isFullSuiteCommand(command: string): boolean {
 
 const teamSynthesizeResultSchema = Type.Object(
   {
-    result: Type.String({ description: 'Summary of what was accomplished, files changed, decisions made, verification results, remaining work — cover each without padding' }),
+    result: Type.String({ description: 'Summary of what was accomplished, files changed, decisions made, verification results, remaining work. Cover each without padding' }),
   },
   { additionalProperties: false },
 );
 
 /**
- * Build the `team_*` tools each team agent calls, closing over its `AgentMcpContext`. `cwd` is passed
- * in (the `createEditTool(pi, cwd)` pattern) because `team_record_verification` computes its own tree
- * fingerprint from git state — the one team tool that needs to see the filesystem.
+ * Build every `team_*` tool a team agent can call, both roles, closing over its `AgentMcpContext`. `cwd`
+ * is passed in (the `createEditTool(pi, cwd)` pattern) because `team_record_verification` computes its
+ * own tree fingerprint from git state, the one team tool that needs to see the filesystem.
+ *
+ * Production calls `buildTeamAgentPiTools`, which filters this set by role. Keeping the two apart lets a
+ * caller supply the role it wants to test, and gives the registration guard one place to run.
  */
-export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
-  return [
+export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
+  const tools = [
     pi.defineTool<typeof teamSendMessageSchema, undefined>({
       name: 'team_send_message',
       label: 'team_send_message',
@@ -481,19 +541,38 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamReadScratchpadSchema, undefined>({
       name: 'team_read_scratchpad',
       label: 'team_read_scratchpad',
-      description: 'Read the shared scratchpad. Optionally read a specific section.',
+      description:
+        'Read the shared scratchpad. Optionally read a specific section. Sections you have not read, and sections a peer has ' +
+        'written since you last read them, come back in full. A section you already hold at its current version comes back with ' +
+        `its \`content\` field replaced by a marker beginning "${UNCHANGED_MARKER_PREFIX} N)". That marker means the ` +
+        'section exists, is current and is not empty: the full text is already earlier in your context, so scroll back to it. ' +
+        'Re-reading a marked section returns the same marker and gains you nothing. A section that is genuinely absent returns ' +
+        '"Section \'name\' not found." instead, and an untouched scratchpad returns "Scratchpad is empty.".',
       parameters: teamReadScratchpadSchema,
       execute: async (_id, input) => {
         if (input.section) {
           const entry = ctx.scratchpad.get(input.section);
           if (!entry) return textResult(`Section "${input.section}" not found.`);
+          // Read before markRead, which would raise the recorded version and erase the signal.
+          const known = ctx.scratchpad.hasCurrentRead(ctx.agentName, input.section);
           ctx.scratchpad.markRead(ctx.agentName, input.section);
-          return textResult(JSON.stringify({ section: entry.section, content: entry.content, author: entry.author, version: entry.version }));
+          ctx.scratchpad.recordReadOutcome(ctx.agentName, known ? 'marker' : 'full');
+          const content = known ? unchangedMarker(entry.version) : entry.content;
+          return textResult(JSON.stringify({ section: entry.section, content, author: entry.author, version: entry.version }));
         }
         const all = ctx.scratchpad.getAll();
         if (all.length === 0) return textResult('Scratchpad is empty.');
+        // Read before markAllRead, which would raise every recorded version and erase the signal.
+        const known = all.map((e) => ctx.scratchpad.hasCurrentRead(ctx.agentName, e.section));
         ctx.scratchpad.markAllRead(ctx.agentName);
-        return textResult(JSON.stringify(all.map((e) => ({ section: e.section, content: e.content, author: e.author, version: e.version }))));
+        for (const wasKnown of known) ctx.scratchpad.recordReadOutcome(ctx.agentName, wasKnown ? 'marker' : 'full');
+        const payload = all.map((e, i) => ({
+          section: e.section,
+          content: known[i] ? unchangedMarker(e.version) : e.content,
+          author: e.author,
+          version: e.version,
+        }));
+        return textResult(JSON.stringify(payload));
       },
     }),
 
@@ -522,7 +601,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamSpawnSpecialistSchema, undefined>({
       name: 'team_spawn_specialist',
       label: 'team_spawn_specialist',
-      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you. Each roster name can only be spawned once — to re-run a specialist that failed or was cancelled, use team_redispatch_specialist instead.`,
+      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria. Specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you. Each roster name can only be spawned once. To re-run a specialist that failed or was cancelled, use team_redispatch_specialist instead.`,
       parameters: teamSpawnSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -540,7 +619,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamRedispatchSpecialistSchema, undefined>({
       name: 'team_redispatch_specialist',
       label: 'team_redispatch_specialist',
-      description: `Re-run a \`failed\` or \`cancelled\` specialist as a fresh attempt. Lead-only. Reuses the same agentId and preserves the prior transcript, while per-attempt bookkeeping (review rounds, standby/nudge state) is reset so a full fresh review round can complete. Provide a self-contained task (it can differ from the original) and set \`kind\` as on team_spawn_specialist. A \`completed\` specialist is terminal — cover any gap with team_request_revision or a new task assignment, not a redispatch. The MAX_AGENTS concurrent-agent cap applies.`,
+      description: `Re-run a \`failed\` or \`cancelled\` specialist as a fresh attempt. Lead-only. Reuses the same agentId and preserves the prior transcript, while per-attempt bookkeeping (review rounds, standby/nudge state) is reset so a full fresh review round can complete. Provide a self-contained task (it can differ from the original) and set \`kind\` as on team_spawn_specialist. A \`completed\` specialist is terminal. Cover any gap with team_request_revision or a new task assignment, not a redispatch. The MAX_AGENTS concurrent-agent cap applies.`,
       parameters: teamRedispatchSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -574,7 +653,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
             throw new TeamToolError(
               `Specialist "${input.name}" is actively working (${target.toolCallCount} tool calls). ` +
                 `Call team_cancel_specialist again within 30 seconds to confirm cancellation. ` +
-                `Consider checking their scratchpad first — they may be about to post findings.`,
+                `Consider checking their scratchpad first. They may be about to post findings.`,
             );
           }
         }
@@ -614,7 +693,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
           suffix = ` All dispatched specialists reviewed. Pending (never dispatched): ${pending.join(', ')}. ` +
             `Either spawn them with team_spawn_specialist or cancel them with team_cancel_specialist before synthesizing.`;
         } else {
-          suffix = ' All specialists reviewed — you may now call team_synthesize_result.';
+          suffix = ' All specialists reviewed. You may now call team_synthesize_result.';
         }
         return textResult(`Specialist '${input.name}' approved and completed.${suffix}`);
       },
@@ -623,31 +702,31 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamStandbySchema, undefined>({
       name: 'team_standby',
       label: 'team_standby',
-      description: 'Enter standby mode ONLY while waiting for specific peer scratchpad sections or messages you are actively waiting on. Your session pauses and automatically resumes when any teammate writes to the scratchpad or sends you a message — standby is the ONLY state in which scratchpad update notifications wake you; while you are working you read shared state with team_read_scratchpad when you need it. This is NOT a terminal "my work is done" state — when your work is complete and verified, call team_report_complete instead, never team_standby. Use this instead of polling team_read_scratchpad or team_read_messages in a loop. End your response immediately after calling this tool.',
+      description: 'Enter standby ONLY while waiting for a specific peer scratchpad section or message. Calling this tool ends your turn, so it is the last thing you do in that turn. You then wait at zero cost until a teammate messages you or a scratchpad notice arrives. Standby is the only state in which scratchpad update notifications wake you. While you are working, read shared state with team_read_scratchpad instead. If a message is already queued when your turn ends, you keep running so you can handle it. This is NOT a terminal "my work is done" state. Call team_report_complete for that, never team_standby.',
       parameters: teamStandbySchema,
       execute: async () => {
         if (ctx.role === 'lead') throw new TeamToolError('Lead agents do not use standby');
         ctx.enterStandby(ctx.agentName);
-        return textResult('Entering standby. You will be resumed when new peer content arrives. End your response now.');
+        return textResult('Standby requested, so the turn ends here unless a message is already queued, and new peer content resumes you.');
       },
     }),
 
     pi.defineTool<typeof teamReportCompleteSchema, undefined>({
       name: 'team_report_complete',
       label: 'team_report_complete',
-      description: 'Signal that your work is done and enter awaiting-review state. This is the MANDATED terminal action once your deliverable is complete and verified — it must be your final call, never team_standby. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request. You MUST call this after sending your final report to the lead. End your response immediately after calling this tool.',
+      description: 'Signal that your work is done and enter awaiting-review state, passing your closing summary in `summary`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call, never team_standby. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request.',
       parameters: teamReportCompleteSchema,
-      execute: async () => {
+      execute: async (_id, input) => {
         if (ctx.role === 'lead') throw new TeamToolError('Lead agents do not report complete');
-        ctx.reportComplete(ctx.agentName);
-        return textResult('Entering awaiting-review. The lead will review your work. End your response now.');
+        ctx.reportComplete(ctx.agentName, input.summary);
+        return textResult('Entering awaiting-review. The lead will review your work.');
       },
     }),
 
     pi.defineTool<typeof teamFlagBriefConflictSchema, undefined>({
       name: 'team_flag_brief_conflict',
       label: 'team_flag_brief_conflict',
-      description: 'Specialist-only HARD STOP: raise a conflict between the authoritative `mission-brief` and the lead\'s contract, your task, or a peer\'s work. Records an open conflict that BLOCKS the lead from synthesizing until it is reconciled, and messages the lead. After calling this, message the lead and enter team_standby — do not proceed on the conflicting work and never bury the conflict in a report footnote.',
+      description: 'Specialist-only HARD STOP: raise a conflict between the authoritative `mission-brief` and the lead\'s contract, your task, or a peer\'s work. Records an open conflict that BLOCKS the lead from synthesizing until it is reconciled, and messages the lead. After calling this, message the lead and enter team_standby. Do not proceed on the conflicting work and never bury the conflict in a report footnote.',
       parameters: teamFlagBriefConflictSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'specialist') {
@@ -661,7 +740,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamResolveBriefConflictSchema, undefined>({
       name: 'team_resolve_brief_conflict',
       label: 'team_resolve_brief_conflict',
-      description: 'Lead-only: dismiss a specialist\'s brief-conflict flag with a written rationale (accountable record). Use this when the flag is a misunderstanding or an intentional deviation you are accepting. To reconcile by CHANGING the work instead, use team_request_revision — that also clears the flag. Independent of the specialist\'s current status.',
+      description: 'Lead-only: dismiss a specialist\'s brief-conflict flag with a written rationale (accountable record). Use this when the flag is a misunderstanding or an intentional deviation you are accepting. To reconcile by CHANGING the work instead, use team_request_revision, which also clears the flag. Independent of the specialist\'s current status.',
       parameters: teamResolveBriefConflictSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -677,14 +756,14 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
       label: 'team_record_verification',
       description:
         'Record a verification run in the shared `verification` ledger, and read back every entry recorded so far. ' +
-        'Call it AFTER any verification run, full-suite or scoped; the tool classifies which it was. The tool stamps each entry with a tree fingerprint it computes itself from git state — ' +
-        'you do not supply one, and cannot. Before starting a full-suite run, call this tool (or read the `verification` scratchpad section): ' +
-        'if a peer already recorded a FULL-SUITE result for the CURRENT fingerprint, that run is provably redundant — reuse their result instead of re-running. ' +
+        'Call it AFTER any verification run, full-suite or scoped; the tool classifies which it was. The tool stamps each entry with a tree fingerprint it computes itself from git state. ' +
+        'You do not supply one, and cannot. Before starting a full-suite run, call this tool (or read the `verification` scratchpad section): ' +
+        'if a peer already recorded a FULL-SUITE result for the CURRENT fingerprint, that run is provably redundant. Reuse their result instead of re-running. ' +
         'The fingerprint changes the moment anyone edits a file, so a result recorded before an edit can never satisfy a check after it.',
       parameters: teamRecordVerificationSchema,
       execute: async (_id, input) => {
         if (input.result === 'pass' && input.failures) {
-          throw new TeamToolError('`failures` is only valid when `result` is "fail" — a passing run has none. Drop the field, or record the run as "fail".');
+          throw new TeamToolError('`failures` is only valid when `result` is "fail". A passing run has none. Drop the field, or record the run as "fail".');
         }
         const fingerprint = await computeTreeFingerprint(cwd);
         const scope = isFullSuiteCommand(input.command) ? 'full-suite' : 'scoped';
@@ -702,7 +781,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamSynthesizeResultSchema, undefined>({
       name: 'team_synthesize_result',
       label: 'team_synthesize_result',
-      description: 'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis — spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis — wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Failed specialists (runner crash) pass through — read their scratchpad section if any and document the failure in your result. Include: summary, files changed, decisions made, test results, remaining work.',
+      description: 'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis. Spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis. Wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis. Approve or revise them first. Standby specialists are auto-released. Failed specialists (runner crash) pass through. Read their scratchpad section if any and document the failure in your result. Include: summary, files changed, decisions made, test results, remaining work.',
       parameters: teamSynthesizeResultSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -711,7 +790,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         const pending = ctx.getPendingSpecialistNames();
         if (pending.length > 0) {
           throw new TeamToolError(
-            `Cannot synthesize — these specialists were never dispatched: ${pending.join(', ')}. ` +
+            `Cannot synthesize. These specialists were never dispatched: ${pending.join(', ')}. ` +
               `Either spawn them with team_spawn_specialist or remove them with team_cancel_specialist before synthesizing.`,
           );
         }
@@ -725,14 +804,14 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         const unreviewed = ctx.getUnreviewedSpecialistNames();
         if (unreviewed.length > 0) {
           throw new TeamToolError(
-            `Cannot synthesize — these specialists have not been reviewed: ${unreviewed.join(', ')}. ` +
+            `Cannot synthesize. These specialists have not been reviewed: ${unreviewed.join(', ')}. ` +
               `Use team_approve_specialist (if work is satisfactory) or team_request_revision (if changes needed) for each.`,
           );
         }
         const recentlyCancelled = ctx.getRecentlyCancelledNames?.() ?? [];
         if (recentlyCancelled.length > 0) {
           throw new TeamToolError(
-            `Cannot synthesize yet — specialists were recently cancelled: ${recentlyCancelled.join(', ')}. ` +
+            `Cannot synthesize yet. Specialists were recently cancelled: ${recentlyCancelled.join(', ')}. ` +
               `Wait at least 30 seconds after cancellation or verify their scratchpad sections have findings before synthesizing.`,
           );
         }
@@ -744,7 +823,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         );
         if (specialists.length > 0 && !participated) {
           throw new TeamToolError(
-            `Cannot synthesize — no specialist contributed findings or reached review. ` +
+            `Cannot synthesize. No specialist contributed findings or reached review. ` +
               `Every dispatched specialist was cancelled before authoring a scratchpad section. ` +
               `Spawn fresh specialists with team_spawn_specialist or abort the team.`,
           );
@@ -753,7 +832,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         if (openConflicts.length > 0) {
           const list = openConflicts.map((c) => `${c.name} (${c.detail})`).join('; ');
           throw new TeamToolError(
-            `Cannot synthesize — unresolved brief conflicts: ${list}. ` +
+            `Cannot synthesize. Unresolved brief conflicts: ${list}. ` +
               `Reconcile each via team_request_revision (fix the task/contract) or ` +
               `team_resolve_brief_conflict (dismiss with a written rationale) first.`,
           );
@@ -771,4 +850,19 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
       },
     }),
   ];
+  const registered = new Set(TEAM_AGENT_PI_TOOL_NAMES);
+  const unlisted = tools.filter((tool) => !registered.has(tool.name)).map((tool) => tool.name);
+  if (unlisted.length > 0) {
+    throw new Error(`Team agent tool(s) ${unlisted.join(', ')} have no entry in TEAM_AGENT_ENTRIES, so no role would register them`);
+  }
+  return tools;
+}
+
+/**
+ * The `team_*` tools this agent's role can call. The role guards in the execute bodies stay as defence
+ * in depth, for any path that reaches a tool the builder did not hand out.
+ */
+export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
+  const allowed = new Set(teamAgentPiToolNamesForRole(ctx.role));
+  return buildAllTeamAgentPiTools(pi, ctx, cwd).filter((tool) => allowed.has(tool.name));
 }

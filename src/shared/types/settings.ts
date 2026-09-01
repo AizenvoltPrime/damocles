@@ -118,10 +118,11 @@ export interface AccountInfo {
   email?: string;
   organization?: string;
   subscriptionType?: string;
-  apiKeySource?: string;
   /** OpenAI auth path source label, e.g. "codex-oauth". Unset for Anthropic. */
   tokenSource?: string;
   model?: string;
+  /** False on a flat subscription, where a rendered dollar cost is an estimate rather than a charge. */
+  dollarBilled: boolean;
 }
 
 export interface BudgetWarningInfo {

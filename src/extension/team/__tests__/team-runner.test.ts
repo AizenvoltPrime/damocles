@@ -28,6 +28,8 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
     costUsd: 0,
+    carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
+    dollarBilled: true,
     finalResponse: null,
     error: null,
     logFilePath: null,
@@ -779,7 +781,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
     expect((runner as unknown as { agents: Map<string, TeamAgent> }).agents.get('A')!.status).toBe('standby');
 
     // B reports complete as its FINAL action → its onTurnEnd takes the awaiting-review branch.
-    runner.reportComplete('B');
+    runner.reportComplete('B', 'sign-off from B');
     b.config.onTurnEnd!();
 
     // Recovery must run from that branch: A is stranded (no running peer), so it is nudged.
@@ -945,7 +947,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
 
     // Wake, then the grace turn ends with a LEGITIMATE team_report_complete.
     cfg.onKeepAliveResume!();
-    runner.reportComplete('Solo');
+    runner.reportComplete('Solo', 'sign-off from Solo');
     // Discharge: the owed hold is gone; the nudge-tracking sets are untouched by resume/reportComplete.
     expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
     expect(setOf(runner, 'terminalNudgeScheduled').has('Solo')).toBe(true);
@@ -1012,7 +1014,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     setOf(runner, 'pendingStandby').delete('Solo');
     agentsOf(runner).get('Solo')!.status = 'running';
     setOf(runner, 'owedTerminalAction').add('Solo');
-    runner.reportComplete('Solo');
+    runner.reportComplete('Solo', 'sign-off from Solo');
     expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
     expect(setOf(runner, 'pendingStandby').has('Solo')).toBe(false);
 
@@ -1071,7 +1073,7 @@ describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
     expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(true);
 
     // BEFORE the microtask runs, Solo discharges via team_report_complete → owedTerminalAction cleared.
-    runner.reportComplete('Solo');
+    runner.reportComplete('Solo', 'sign-off from Solo');
     expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
 
     // The microtask guard sees owedTerminalAction gone → returns early: no nudge, no delivered flag.
@@ -1500,7 +1502,7 @@ describe('TeamRunner.redispatchSpecialist — review-round gate cycle', () => {
     await Promise.resolve();
     await Promise.resolve();
     const bRun = h.runs.get('B')!;
-    h.runner.reportComplete('B');
+    h.runner.reportComplete('B', 'sign-off from B');
     bRun.config.onTurnEnd!();
     expect(h.agents.get('B')!.status).toBe('awaiting-review');
     expect(api.getNonSettledSpecialistDetails()).toEqual([]);
@@ -1530,7 +1532,7 @@ describe('TeamRunner.redispatchSpecialist — end-to-end wiring', () => {
     const reRun = h.runs.get('A')!;
 
     // It reaches awaiting-review via the normal report_complete → onTurnEnd path.
-    h.runner.reportComplete('A');
+    h.runner.reportComplete('A', 'sign-off from A');
     reRun.config.onTurnEnd!();
     expect(h.agents.get('A')!.status).toBe('awaiting-review');
     expect(h.sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(true);
@@ -2241,5 +2243,55 @@ describe('TeamRunner — a revision round re-earns its notification', () => {
     const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]'));
     expect(rrr).toHaveLength(2);
     expect(rrr[0]).toBe(rrr[1]);
+  });
+});
+
+/**
+ * The counters are instrumentation for the webview and telemetry. `getTeamStatus()` is serialized
+ * straight into an agent's context, so they live on their own accessor and not in that payload.
+ */
+describe('TeamRunner.getScratchpadReadStats', () => {
+  it('reports zeros for every agent before any read happens', () => {
+    const h = makeHarness([
+      makeAgent({ name: 'Lead', role: 'lead' }),
+      makeAgent({ name: 'Backend', role: 'specialist' }),
+    ]);
+    const stats = h.runner.getScratchpadReadStats();
+    expect(stats.total).toEqual({ markerHits: 0, fullReturns: 0 });
+    expect(stats.byAgent).toEqual([
+      { name: 'Lead', markerHits: 0, fullReturns: 0 },
+      { name: 'Backend', markerHits: 0, fullReturns: 0 },
+    ]);
+    const status = h.runner.getTeamStatus() as { agents: Array<{ name: string }> };
+    expect(stats.byAgent.map(a => a.name)).toEqual(status.agents.map(a => a.name));
+  });
+
+  it('reports per-agent counts and the team total from the runner scratchpad', () => {
+    const h = makeHarness([
+      makeAgent({ name: 'Lead', role: 'lead' }),
+      makeAgent({ name: 'Backend', role: 'specialist' }),
+    ]);
+    const scratchpad = (h.runner as unknown as { scratchpad: Scratchpad }).scratchpad;
+    scratchpad.recordReadOutcome('Lead', 'marker');
+    scratchpad.recordReadOutcome('Lead', 'marker');
+    scratchpad.recordReadOutcome('Backend', 'full');
+
+    const stats = h.runner.getScratchpadReadStats();
+    expect(stats.total).toEqual({ markerHits: 2, fullReturns: 1 });
+    expect(stats.byAgent).toEqual([
+      { name: 'Lead', markerHits: 2, fullReturns: 0 },
+      { name: 'Backend', markerHits: 0, fullReturns: 1 },
+    ]);
+  });
+
+  it('keeps the counters out of the payload team_get_status serializes to the model', () => {
+    const h = makeHarness([makeAgent({ name: 'Lead', role: 'lead' })]);
+    const scratchpad = (h.runner as unknown as { scratchpad: Scratchpad }).scratchpad;
+    scratchpad.recordReadOutcome('Lead', 'marker');
+
+    const status = h.runner.getTeamStatus();
+
+    expect(Object.keys(status)).not.toContain('scratchpadReads');
+    expect(JSON.stringify(status)).not.toContain('markerHits');
   });
 });
