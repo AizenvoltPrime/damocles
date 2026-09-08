@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.24.0",
+  "version": "2.25.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -303,6 +303,11 @@
           "default": false,
           "description": "%configuration.showCacheMissNotices.description%"
         },
+        "damocles.showThinkingDroppedNotices": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.showThinkingDroppedNotices.description%"
+        },
         "damocles.worktreeBaseRef": {
           "type": "string",
           "default": "head",
@@ -563,7 +568,7 @@
           "type": "string",
           "enum": [
             "",
-            "claude-fable-5",
+            "claude-fable-5-1",
             "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
@@ -577,7 +582,7 @@
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
-            "Fable 5",
+            "Fable 5.1",
             "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
@@ -619,7 +624,7 @@
           "type": "string",
           "enum": [
             "",
-            "claude-fable-5",
+            "claude-fable-5-1",
             "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
@@ -633,7 +638,7 @@
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
-            "Fable 5",
+            "Fable 5.1",
             "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
@@ -675,7 +680,7 @@
           "type": "string",
           "enum": [
             "",
-            "claude-fable-5",
+            "claude-fable-5-1",
             "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
@@ -689,7 +694,7 @@
           ],
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
-            "Fable 5",
+            "Fable 5.1",
             "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
@@ -999,10 +1004,11 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.2",
-    "@earendil-works/pi-ai": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.2",
-    "@earendil-works/pi-tui": "^0.84.2",
+    "@earendil-works/pi-agent-core": "^0.85.0",
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-server": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "jiti": "^2.7.0",

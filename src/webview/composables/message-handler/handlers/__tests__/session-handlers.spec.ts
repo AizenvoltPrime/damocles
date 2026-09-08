@@ -104,3 +104,116 @@ describe('a session reset closing the open tool overlay', () => {
     expect(uiStore.expandedToolSource).toBeNull();
   });
 });
+
+describe('the webview reading sessionStateChanged', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it.each([
+    ['idle', false],
+    ['running', false],
+    ['requires_action', true],
+  ] as const)('writes %s into the session store unchanged', (state, awaiting) => {
+    const ctx = context();
+
+    dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+
+    expect(ctx.stores.sessionStore.sessionState).toBe(state);
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(awaiting);
+  });
+
+  it('replays a full parked-and-resumed turn onto the store in order', () => {
+    const ctx = context();
+    const seen: string[] = [];
+
+    for (const state of ['running', 'requires_action', 'running', 'requires_action', 'running', 'idle'] as const) {
+      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+      seen.push(ctx.stores.sessionStore.sessionState);
+    }
+
+    expect(seen).toEqual(['running', 'requires_action', 'running', 'requires_action', 'running', 'idle']);
+  });
+
+  it('leaves no parked state behind when idle follows requires_action directly', () => {
+    const ctx = context();
+
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
+    dispatch({ type: 'sessionStateChanged', state: 'idle', sessionId: 's-1' }, ctx);
+
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(false);
+  });
+
+  it('does not filter on the session id, which can arrive after the first running', () => {
+    const ctx = context();
+    ctx.stores.sessionStore.setCurrentSession('s-old');
+
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-new' }, ctx);
+
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
+  });
+});
+
+/**
+ * The seven sequences the extension publisher can produce, copied from the emitted-sequences contract.
+ * Each row lands the webview on `idle` with nothing parked, which is what a stuck indicator would break.
+ * Two rows are the ones a naive store gets wrong: a cancel jumps from `requires_action` straight to
+ * `idle`, and a dialog opened outside a turn starts at `requires_action` with no `running` at all.
+ */
+const PUBLISHED_SEQUENCES = [
+  ['clean turn, no prompts', ['running', 'idle']],
+  ['one prompt answered mid turn', ['running', 'requires_action', 'running', 'idle']],
+  ['permission dialog then a team agent elicitation', ['running', 'requires_action', 'running', 'requires_action', 'running', 'idle']],
+  ['two prompts open at once, answered one at a time', ['running', 'requires_action', 'running', 'idle']],
+  ['a ctx.ui dialog withdrawn by its abort signal', ['running', 'requires_action', 'running', 'idle']],
+  ['turn cancelled with a permission dialog open', ['running', 'requires_action', 'idle']],
+  ['a dialog opened with no turn in flight', ['requires_action', 'idle']],
+] as const;
+
+describe('every sequence the extension publisher can produce', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it.each(PUBLISHED_SEQUENCES)('%s replays onto the store in order', (_name, sequence) => {
+    const ctx = context();
+    const seen: string[] = [];
+
+    for (const state of sequence) {
+      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+      seen.push(ctx.stores.sessionStore.sessionState);
+    }
+
+    expect(seen).toEqual([...sequence]);
+  });
+
+  it.each(PUBLISHED_SEQUENCES)('%s ends idle with nothing parked', (_name, sequence) => {
+    const ctx = context();
+
+    for (const state of sequence) {
+      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+    }
+
+    expect(ctx.stores.sessionStore.sessionState).toBe('idle');
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(false);
+  });
+
+  it('parks on the very first message when a dialog opens on a fresh panel', () => {
+    // A dialog opened outside a turn publishes before any sessionStarted, so the store cannot wait for one.
+    const ctx = context();
+
+    expect(ctx.stores.sessionStore.sessionState).toBe('idle');
+
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
+
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
+  });
+
+  it('stays up when a turn settles under an open dialog and no message arrives', () => {
+    // The publisher suppresses the repeat, so the parked state has to survive the silence at turn end.
+    const ctx = context();
+
+    dispatch({ type: 'sessionStateChanged', state: 'running', sessionId: 's-1' }, ctx);
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
+    dispatch({ type: 'processing', isProcessing: false }, ctx);
+
+    expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
+    expect(ctx.stores.uiStore.isProcessing).toBe(false);
+  });
+});

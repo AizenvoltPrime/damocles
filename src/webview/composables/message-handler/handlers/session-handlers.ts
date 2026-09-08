@@ -18,6 +18,11 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
+    sessionStateChanged: (msg, ctx) => {
+      ctx.stores.sessionStore.setSessionState(msg.state);
+    },
+
     storedSessions: (msg, ctx): ScrollBehavior => {
       const { sessionStore } = ctx.stores;
       const isFirstPage = msg.isFirstPage ?? sessionStore.storedSessions.length === 0;

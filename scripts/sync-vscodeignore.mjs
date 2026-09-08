@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTENSION_EXTERNALS } from './extension-externals.mjs';
 
@@ -46,13 +46,24 @@ function pkgJson(dir) {
   }
 }
 
-/** Where `dep` (required from `fromDir`) lives: nested under the parent (covered by its `/**`) or hoisted. */
+/**
+ * Where `dep` (required from `fromDir`) lives, following Node's own resolution: the nearest
+ * `node_modules` walking up the ancestor chain, ending at the project root. Stopping at the parent and
+ * then jumping to the root skips the intermediate copies npm installs to satisfy a version conflict, and
+ * so reports a hoisted root package (possibly a devDependency) that Node would never load from there.
+ * `hoisted` means the match is a top-level package, which needs its own allowlist entry; a match deeper
+ * in the chain already ships under its ancestor's patterns.
+ */
 function resolveDep(fromDir, dep) {
-  const nested = join(fromDir, 'node_modules', dep);
-  if (existsSync(nested)) return { dir: nested, hoisted: false };
-  const top = join(NM, dep);
-  if (existsSync(top)) return { dir: top, hoisted: true };
-  return null;
+  let dir = fromDir;
+  for (;;) {
+    const candidate = join(dir, 'node_modules', dep);
+    if (existsSync(candidate)) return { dir: candidate, hoisted: dir === ROOT };
+    if (dir === ROOT) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 /**
@@ -69,6 +80,7 @@ function computeClosure() {
   const topLevel = new Set();
   const visited = new Set();
   const optional = optionalShipRoots();
+  const requirers = new Map(); // top-level package -> the shipped packages that declare it
 
   function walk(dir) {
     if (visited.has(dir)) return;
@@ -81,7 +93,11 @@ function computeClosure() {
     for (const dep of Object.keys(deps)) {
       const resolved = resolveDep(dir, dep);
       if (!resolved) continue; // optional/peer dep not installed (other platform / host-provided) — nothing to ship
-      if (resolved.hoisted) topLevel.add(dep);
+      if (resolved.hoisted) {
+        topLevel.add(dep);
+        if (!requirers.has(dep)) requirers.set(dep, new Set());
+        requirers.get(dep).add(`${json.name}@${deps[dep]}`);
+      }
       walk(resolved.dir);
     }
   }
@@ -100,7 +116,45 @@ function computeClosure() {
     topLevel.add(root);
     walk(dir);
   }
+  assertNoDevOnlyPackages(topLevel, requirers);
   return [...topLevel].sort();
+}
+
+/**
+ * Packages this project declares only in `devDependencies` that a shipped runtime package also requires,
+ * with a top-level copy satisfying both ranges. Each was checked against the requiring package's declared
+ * range: `@earendil-works/pi-agent-core` requires `diff@8.0.4`, `@google/genai` and `openai` require
+ * `ws@^8.18.0`, `@modelcontextprotocol/sdk` requires `cross-spawn@^7.0.5`, `protobufjs` requires
+ * `@types/node@>=13.7.0`. They ship because the runtime loads them, not because the build tooling does.
+ */
+const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'cross-spawn', 'diff', 'ws']);
+
+/**
+ * Fail loudly when a package this project declares only as a devDependency reaches the ship closure.
+ * A new one means a runtime package's dependency resolved to the hoisted build-time copy instead of the
+ * nested copy Node would load, which is how a 10 MB compiler binary gets into the VSIX.
+ */
+function assertNoDevOnlyPackages(topLevel, requirers) {
+  const json = pkgJson(ROOT) || {};
+  const runtime = new Set([
+    ...Object.keys(json.dependencies || {}),
+    ...Object.keys(json.optionalDependencies || {}),
+    ...Object.keys(json.peerDependencies || {}),
+  ]);
+  const devOnly = [...topLevel].filter(
+    (name) =>
+      Object.hasOwn(json.devDependencies || {}, name) &&
+      !runtime.has(name) &&
+      !DEV_DEPS_SHARED_WITH_RUNTIME.has(name),
+  );
+  if (devOnly.length) {
+    const detail = devOnly.sort().map((name) => `${name} (required by ${[...(requirers.get(name) || ['?'])].sort().join(', ')})`);
+    throw new Error(
+      `devDependencies-only package(s) in the VSIX closure: ${detail.join('; ')}. ` +
+      `Check whether the requiring package declares a version the top-level copy does not satisfy; if so ` +
+      `the resolution is wrong, not the allowlist.`,
+    );
+  }
 }
 
 /** Platform tokens used in npm native-binary package names (os · cpu · libc/abi). */
@@ -119,19 +173,24 @@ function isPlatformBinary(pkgName) {
 /**
  * Collapse a platform-binary package to a family glob by stripping trailing platform tokens, e.g.
  * `@vscode/ripgrep-win32-x64` → `@vscode/ripgrep-*`, `@scope/clipboard-linux-x64-musl` → `@scope/clipboard-*`.
+ * A name that is nothing but platform tokens (`@esbuild/win32-x64`) leaves no family stem, so the scope
+ * itself is the family and the glob becomes `@esbuild/*`.
  * The glob is platform-neutral, so a `.vscodeignore` generated on one OS still ships the right binary on
- * every other (matching the per-`--target` matrix release pipeline). Returns null when no token strips.
+ * every other (matching the per-`--target` matrix release pipeline). Returns null when no token strips,
+ * and null for an unscoped all-token name, which carries no family stem to collapse to.
  */
-function platformFamilyGlob(pkgName) {
+export function platformFamilyGlob(pkgName) {
   const slash = pkgName.lastIndexOf('/');
   const scope = slash >= 0 ? pkgName.slice(0, slash + 1) : '';
   const parts = (slash >= 0 ? pkgName.slice(slash + 1) : pkgName).split('-');
   let stripped = 0;
-  while (parts.length > 1 && PLATFORM_TOKENS.has(parts[parts.length - 1].toLowerCase())) {
+  while (parts.length > 0 && PLATFORM_TOKENS.has(parts[parts.length - 1].toLowerCase())) {
     parts.pop();
     stripped++;
   }
-  return stripped > 0 ? `${scope}${parts.join('-')}-*` : null;
+  if (stripped === 0) return null;
+  if (parts.length === 0) return scope ? `${scope}*` : null;
+  return `${scope}${parts.join('-')}-*`;
 }
 
 /**
@@ -176,6 +235,9 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-agent-core',
         '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
+        '@earendil-works/chord',
+        '@earendil-works/pi-protocol',
+        '@earendil-works/pi-server',
         'openai',
         '@anthropic-ai/sdk',
         '@modelcontextprotocol/sdk',
@@ -206,6 +268,9 @@ const DROP_EXTS = new Set([
   // web UIs (lib/vite/**) — served only by `show-trace`/`codegen`, which we never invoke; the
   // browser-launch driver (channel:'chrome' → open/navigate/screenshot) never loads them.
   'license', 'ttf', 'webmanifest',
+  // A narrowed package's .exe passes assertReviewed and is never negated, so a runtime-needed one would
+  // silently not ship; add such a binary to RUNTIME_KEEP_EXTS or a narrow allowlist instead.
+  'exe',
 ]);
 
 /**
@@ -232,6 +297,8 @@ const DROP_BASENAMES = new Set([
   // Patchright: Linux `xdg-open` shell shim (patchright-core/lib/xdg-open) — spawned only to open a URL
   // in the OS default app (openExternal / trace report), never on the browser-launch path. Dead weight.
   'xdg-open',
+  // esbuild's extensionless POSIX binaries and .bin shim pass assertReviewed inside a narrowed package.
+  'esbuild',
 ]);
 
 /** Recursively list file basenames under a directory (skips traversal errors). */
@@ -361,7 +428,7 @@ function consolidateScopes(patterns) {
     const simple = /^(@[^/]+)\/([^/]+)\/\*\*$/.exec(p); // @scope/sub/**
     if (simple) {
       const [, scope, sub] = simple;
-      if (sub.endsWith('-*')) { blockedScopes.add(scope); continue; } // platform-family glob — keep granular
+      if (sub.includes('*')) { blockedScopes.add(scope); continue; } // platform-family glob — keep granular
       if (!byScope.has(scope)) byScope.set(scope, new Set());
       byScope.get(scope).add(sub);
       continue;
@@ -424,19 +491,24 @@ function applyBlock(original, block) {
   return out.join(eol);
 }
 
-const check = process.argv.includes('--check');
-const original = readFileSync(IGNORE_FILE, 'utf8');
-const next = applyBlock(original, buildBlock());
+function main() {
+  const check = process.argv.includes('--check');
+  const original = readFileSync(IGNORE_FILE, 'utf8');
+  const next = applyBlock(original, buildBlock());
 
-if (next === original) {
-  console.log('.vscodeignore node_modules allowlist is up to date.');
-  process.exit(0);
+  if (next === original) {
+    console.log('.vscodeignore node_modules allowlist is up to date.');
+    process.exit(0);
+  }
+
+  if (check) {
+    console.error('.vscodeignore node_modules allowlist is STALE. Run: node scripts/sync-vscodeignore.mjs');
+    process.exit(1);
+  }
+
+  writeFileSync(IGNORE_FILE, next);
+  console.log('.vscodeignore node_modules allowlist updated.');
 }
 
-if (check) {
-  console.error('.vscodeignore node_modules allowlist is STALE. Run: node scripts/sync-vscodeignore.mjs');
-  process.exit(1);
-}
-
-writeFileSync(IGNORE_FILE, next);
-console.log('.vscodeignore node_modules allowlist updated.');
+// Gated so a test can import platformFamilyGlob without rewriting .vscodeignore as a side effect.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

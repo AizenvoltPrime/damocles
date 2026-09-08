@@ -71,8 +71,12 @@ function agentLabel(name: string): string {
  */
 export class WebviewExtensionUIContext implements ExtensionUIContext {
   private seq = 0;
-  /** requestId → its awaiter, tagged with the nested agent that opened it (absent ⇒ the panel's own). */
-  private readonly pending = new Map<string, { settle: (value: string | boolean | null) => void; agentId?: string }>();
+  /** requestId → its awaiter, tagged with the nested agent that opened it (absent ⇒ the panel's own),
+   *  and holding the exact message it was posted with so a re-post cannot drift from it. */
+  private readonly pending = new Map<
+    string,
+    { settle: (value: string | boolean | null) => void; message: UiRequestMessage; agentId?: string }
+  >();
   /**
    * Agents whose bridge has been closed. Sweeping `pending` at teardown is not enough on its own: the
    * `forAgent` wrapper outlives the sweep, and an MCP call can still be in flight when its agent's run
@@ -83,6 +87,8 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
    * a one-shot pass.
    */
   private readonly closedAgents = new Set<string>();
+  /** Fired on every set and every delete so a listener re-derives from the map, never from a count. */
+  private onPendingChanged: (() => void) | null = null;
   private readonly emit: (message: ExtensionToWebviewMessage) => void;
   private readonly sessionId: () => string;
 
@@ -91,11 +97,22 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
     this.sessionId = sessionId;
   }
 
+  /** Wire the session-state publisher to every pending-dialog change. Supplied by the owning PiSession. */
+  setPendingChangedListener(fn: (() => void) | null): void {
+    this.onPendingChanged = fn;
+  }
+
+  /** Whether any bridged dialog, the panel's own or a nested agent's, is still awaiting an answer. */
+  hasPendingDialogs(): boolean {
+    return this.pending.size > 0;
+  }
+
   /** Resolve a pending dialog with the value from a webview `extensionUiResponse`. */
   resolve(requestId: string, value: string | boolean | null): void {
     const entry = this.pending.get(requestId);
     if (entry) {
       this.pending.delete(requestId);
+      this.onPendingChanged?.();
       entry.settle(value);
     }
   }
@@ -109,8 +126,18 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
     const entry = this.pending.get(requestId);
     if (!entry) return;
     this.pending.delete(requestId);
+    this.onPendingChanged?.();
     this.emit({ type: 'extensionUiCancel', requestId });
     entry.settle(null);
+  }
+
+  /**
+   * Post every in-flight dialog again, in the order it was opened, for a webview that restarted and
+   * lost the modals while their awaiters stayed live here. Each entry replays the message it was first
+   * posted with, so a re-posted modal cannot ask something other than what its awaiter is waiting on.
+   */
+  repostPending(): void {
+    for (const entry of this.pending.values()) this.emit(entry.message);
   }
 
   /**
@@ -150,6 +177,7 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
     if (agentId !== undefined && this.closedAgents.has(agentId)) return Promise.resolve(null);
     if (signal?.aborted) return Promise.resolve(null);
     const requestId = `${this.sessionId()}:ui:${(this.seq += 1)}`;
+    const message: UiRequestMessage = { type: 'extensionUiRequest', requestId, ...payload };
     return new Promise((resolve) => {
       const onAbort = () => this.withdraw(requestId);
       this.pending.set(requestId, {
@@ -157,10 +185,12 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
           signal?.removeEventListener('abort', onAbort);
           resolve(value);
         },
+        message,
         ...(agentId !== undefined ? { agentId } : {}),
       });
+      this.onPendingChanged?.();
       signal?.addEventListener('abort', onAbort, { once: true });
-      this.emit({ type: 'extensionUiRequest', requestId, ...payload });
+      this.emit(message);
     });
   }
 

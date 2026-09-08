@@ -38,7 +38,7 @@ function harness(): Harness {
 
   const options = {
     cwd: '/cwd',
-    permissionHandler: { getPermissionMode: () => 'default' } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, hasPendingPrompts: () => false } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null, maxThinkingTokens: null }),
   } as unknown as SessionOptions;
@@ -129,6 +129,15 @@ describe('cancel note delivery targets the agent that ran the command', () => {
     const [text, opts] = h.sendUserMessage.mock.calls[0]!;
     expect(text).toBe('/compact now');
     expect(opts).toMatchObject({ expandPromptTemplates: false });
+  });
+
+  it('queues the note with template expansion off, because a leading slash in it must not dispatch as a slash command', async () => {
+    const h = harness();
+    deliveries(h.session, () => h.piSession).main()('/help with the failing spec');
+    await vi.waitFor(() => expect(h.sendUserMessage).toHaveBeenCalledTimes(1));
+
+    const [, opts] = h.sendUserMessage.mock.calls[0]!;
+    expect(opts).toEqual({ deliverAs: 'followUp', expandPromptTemplates: false });
   });
 
   it('reaches the session the tools were built against, not the one that replaced it', async () => {

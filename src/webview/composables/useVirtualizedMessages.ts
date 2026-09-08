@@ -1,7 +1,6 @@
 import { computed, type Ref } from 'vue';
-import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, ToolCall } from '@shared/types/session';
+import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice, ToolCall } from '@shared/types/session';
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
-import type { SubagentState } from '@shared/types/subagents';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
 import { isImageContentBlock } from '@/utils/imageUtils';
 
@@ -9,6 +8,8 @@ export type VirtualItemType =
   | 'user-message'
   | 'compact-marker'
   | 'cache-miss-notice'
+  | 'compaction-aborted-notice'
+  | 'thinking-dropped-notice'
   | 'thinking-block'
   | 'text-block'
   | 'tool-call'
@@ -28,6 +29,8 @@ export interface VirtualItem {
   toolCall?: ToolCall;
   marker?: CompactMarkerType;
   notice?: CacheMissNotice;
+  compactionAborted?: CompactionAbortedNotice;
+  thinkingDropped?: ThinkingDroppedNotice;
   block?: ContentBlock;
   imageBlocks?: ImageBlock[];
   isStreaming?: boolean;
@@ -55,47 +58,42 @@ function getMarkerPositionTimestamp(marker: CompactMarkerType): number {
   return marker.messageCutoffTimestamp ?? marker.timestamp;
 }
 
-export function useVirtualizedMessages(
-  messages: Ref<ChatMessage[]>,
-  compactMarkers: Ref<CompactMarkerType[] | undefined>,
-  cacheMissNotices: Ref<CacheMissNotice[] | undefined>,
-  streamingMessageId: Ref<string | null | undefined>,
-  _subagents: Ref<Record<string, SubagentState> | undefined>,
-) {
+export interface VirtualizedMessageSources {
+  messages: Ref<ChatMessage[]>;
+  compactMarkers: Ref<CompactMarkerType[] | undefined>;
+  cacheMissNotices: Ref<CacheMissNotice[] | undefined>;
+  compactionAbortedNotices: Ref<CompactionAbortedNotice[] | undefined>;
+  thinkingDroppedNotices: Ref<ThinkingDroppedNotice[] | undefined>;
+  streamingMessageId: Ref<string | null | undefined>;
+}
+
+interface TranscriptAnnotations {
+  markers: CompactMarkerType[];
+  cacheMisses: CacheMissNotice[];
+  aborts: CompactionAbortedNotice[];
+  drops: ThinkingDroppedNotice[];
+}
+
+export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
   const items = computed<VirtualItem[]>(() => {
     const result: VirtualItem[] = [];
-    const msgs = messages.value;
-    const markers = compactMarkers.value ?? [];
-    const notices = cacheMissNotices.value ?? [];
+    const msgs = sources.messages.value;
+    const streamingId = sources.streamingMessageId.value;
+    const annotations: TranscriptAnnotations = {
+      markers: sources.compactMarkers.value ?? [],
+      cacheMisses: sources.cacheMissNotices.value ?? [],
+      aborts: sources.compactionAbortedNotices.value ?? [],
+      drops: sources.thinkingDroppedNotices.value ?? [],
+    };
+
+    // A processed queue bubble keeps its older timestamp at the end of the array, so each cut runs from the highest timestamp seen so far.
+    let maxSeenTimestamp = 0;
 
     for (const [i, msg] of msgs.entries()) {
-      const isStreaming = !!streamingMessageId.value && msg.id === streamingMessageId.value;
+      const isStreaming = !!streamingId && msg.id === streamingId;
 
-      const markersBeforeThis = getMarkersBeforeMessage(markers, msgs, msg.timestamp, i);
-      for (const marker of markersBeforeThis) {
-        result.push({
-          id: `marker-${marker.id}`,
-          type: 'compact-marker',
-          message: msg,
-          originalMessageIndex: i,
-          sourceMessageId: msg.id,
-          spacingLevel: 0,
-          marker,
-        });
-      }
-
-      const noticesBeforeThis = getNoticesBeforeMessage(notices, msgs, msg.timestamp, i);
-      for (const notice of noticesBeforeThis) {
-        result.push({
-          id: `cache-miss-${notice.id}`,
-          type: 'cache-miss-notice',
-          message: msg,
-          originalMessageIndex: i,
-          sourceMessageId: msg.id,
-          spacingLevel: 0,
-          notice,
-        });
-      }
+      result.push(...collectAnnotations(annotations, maxSeenTimestamp, msg.timestamp, msg, i));
+      maxSeenTimestamp = Math.max(maxSeenTimestamp, msg.timestamp);
 
       if (msg.role === 'user') {
         const imageBlocks = msg.contentBlocks?.filter(isImageContentBlock);
@@ -169,7 +167,7 @@ export function useVirtualizedMessages(
       }
     }
 
-    // Trailing markers outlive the messages they were cut from, so when the list is empty they still
+    // Trailing annotations outlive the messages they were cut from, so when the list is empty they still
     // need an anchor. The empty id reproduces what consumers already saw and keeps them off undefined.
     const anchor: ChatMessage = msgs[msgs.length - 1] ?? {
       id: '',
@@ -178,31 +176,9 @@ export function useVirtualizedMessages(
       timestamp: 0,
     };
 
-    const trailingMarkers = getTrailingMarkers(markers, msgs);
-    for (const marker of trailingMarkers) {
-      result.push({
-        id: `marker-${marker.id}`,
-        type: 'compact-marker',
-        message: anchor,
-        originalMessageIndex: msgs.length - 1,
-        sourceMessageId: anchor.id,
-        spacingLevel: 0,
-        marker,
-      });
-    }
-
-    const trailingNotices = getTrailingNotices(notices, msgs);
-    for (const notice of trailingNotices) {
-      result.push({
-        id: `cache-miss-${notice.id}`,
-        type: 'cache-miss-notice',
-        message: anchor,
-        originalMessageIndex: msgs.length - 1,
-        sourceMessageId: anchor.id,
-        spacingLevel: 0,
-        notice,
-      });
-    }
+    result.push(
+      ...collectAnnotations(annotations, maxSeenTimestamp, Number.POSITIVE_INFINITY, anchor, msgs.length - 1),
+    );
 
     return result;
   });
@@ -308,39 +284,60 @@ function getTrailingStreamingText(message: ChatMessage): string {
   return message.content.slice(committedLength);
 }
 
-function getMarkersBeforeMessage(
-  markers: CompactMarkerType[],
-  messages: ChatMessage[],
-  messageTimestamp: number,
-  messageIndex: number,
-): CompactMarkerType[] {
-  if (!markers.length) return [];
-  const prevTimestamp = messageIndex > 0 ? messages[messageIndex - 1]?.timestamp ?? 0 : 0;
-  return markers.filter(m => {
-    const pos = getMarkerPositionTimestamp(m);
-    return pos > prevTimestamp && pos <= messageTimestamp;
-  });
-}
+// One pass owns every timestamp range, so an annotation cannot land in a message gap and in the trailing range both.
+function collectAnnotations(
+  annotations: TranscriptAnnotations,
+  afterTimestamp: number,
+  throughTimestamp: number,
+  anchor: ChatMessage,
+  anchorIndex: number,
+): VirtualItem[] {
+  const anchoring = {
+    message: anchor,
+    originalMessageIndex: anchorIndex,
+    sourceMessageId: anchor.id,
+    spacingLevel: 0 as const,
+  };
 
-function getTrailingMarkers(markers: CompactMarkerType[], messages: ChatMessage[]): CompactMarkerType[] {
-  if (!markers.length) return [];
-  const lastMsgTimestamp = messages[messages.length - 1]?.timestamp ?? 0;
-  return markers.filter(m => getMarkerPositionTimestamp(m) > lastMsgTimestamp);
-}
+  const inRange = (timestamp: number): boolean =>
+    timestamp > afterTimestamp && timestamp <= throughTimestamp;
 
-function getNoticesBeforeMessage(
-  notices: CacheMissNotice[],
-  messages: ChatMessage[],
-  messageTimestamp: number,
-  messageIndex: number,
-): CacheMissNotice[] {
-  if (!notices.length) return [];
-  const prevTimestamp = messageIndex > 0 ? messages[messageIndex - 1]?.timestamp ?? 0 : 0;
-  return notices.filter(n => n.timestamp > prevTimestamp && n.timestamp <= messageTimestamp);
-}
+  const placed: Array<{ timestamp: number; item: VirtualItem }> = [];
 
-function getTrailingNotices(notices: CacheMissNotice[], messages: ChatMessage[]): CacheMissNotice[] {
-  if (!notices.length) return [];
-  const lastMsgTimestamp = messages[messages.length - 1]?.timestamp ?? 0;
-  return notices.filter(n => n.timestamp > lastMsgTimestamp);
+  for (const marker of annotations.markers) {
+    const timestamp = getMarkerPositionTimestamp(marker);
+    if (!inRange(timestamp)) continue;
+    placed.push({
+      timestamp,
+      item: { id: `marker-${marker.id}`, type: 'compact-marker', ...anchoring, marker },
+    });
+  }
+
+  for (const notice of annotations.cacheMisses) {
+    if (!inRange(notice.timestamp)) continue;
+    placed.push({
+      timestamp: notice.timestamp,
+      item: { id: `cache-miss-${notice.id}`, type: 'cache-miss-notice', ...anchoring, notice },
+    });
+  }
+
+  for (const abort of annotations.aborts) {
+    if (!inRange(abort.timestamp)) continue;
+    placed.push({
+      timestamp: abort.timestamp,
+      item: { id: `compaction-aborted-${abort.id}`, type: 'compaction-aborted-notice', ...anchoring, compactionAborted: abort },
+    });
+  }
+
+  for (const drop of annotations.drops) {
+    if (!inRange(drop.timestamp)) continue;
+    placed.push({
+      timestamp: drop.timestamp,
+      item: { id: `thinking-dropped-${drop.id}`, type: 'thinking-dropped-notice', ...anchoring, thinkingDropped: drop },
+    });
+  }
+
+  // A gap holds at most a handful of annotations, and the sort is stable, so equal timestamps keep list order.
+  placed.sort((a, b) => a.timestamp - b.timestamp);
+  return placed.map(entry => entry.item);
 }

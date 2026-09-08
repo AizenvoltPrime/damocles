@@ -50,11 +50,14 @@ export function extractSlashCommandDisplay(content: string): string | null {
 export function formatModelDisplayName(modelId: string | undefined | null): string | null {
   if (!modelId) return null;
 
-  const versionMatch = modelId.match(/(\d+)-(\d+)/);
-  const version = versionMatch ? `${versionMatch[1]}.${versionMatch[2]}` : '';
+  const versionMatch = modelId.match(/-(\d+)(?:-(\d+))?/);
+  // Anthropic appends an 8-digit release date to every dated alias, so a segment of that shape is a date
+  // and never a version number.
+  const version = versionMatch
+    ? [versionMatch[1], versionMatch[2]].filter((segment) => segment && !/^\d{8}$/.test(segment)).join('.')
+    : '';
 
-  if (modelId.includes('fable')) return "Fable 5";
-  if (modelId.includes('sonnet-5')) return "Sonnet 5";
+  if (modelId.includes('fable')) return `Fable ${version}`.trim();
   if (modelId.includes('opus')) return `Opus ${version}`.trim();
   if (modelId.includes('sonnet')) return `Sonnet ${version}`.trim();
   if (modelId.includes('haiku')) return `Haiku ${version}`.trim();

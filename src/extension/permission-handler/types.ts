@@ -2,6 +2,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
 import type { FormValues } from '../../shared/types/forms';
+import type { ElicitationResult } from '../../shared/types/elicitation';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
@@ -38,6 +39,7 @@ export interface PendingApproval {
   resolve: (result: ApprovalResult) => void;
   reject: (error: Error) => void;
   cleanup: () => void;
+  request: ExtensionToWebviewMessage;
   diffId?: string;
   parentToolUseId?: string | null;
 }
@@ -51,6 +53,7 @@ export interface QuestionResult {
 export interface PendingQuestion {
   resolve: (result: QuestionResult) => void;
   cleanup: () => void;
+  request: ExtensionToWebviewMessage;
 }
 
 /**
@@ -70,6 +73,7 @@ export interface FormResolveResult {
 export interface PendingForm {
   resolve: (result: FormResolveResult) => void;
   cleanup: () => void;
+  request: ExtensionToWebviewMessage;
 }
 
 export interface PlanApprovalResult {
@@ -81,6 +85,7 @@ export interface PlanApprovalResult {
 export interface PendingPlanApproval {
   resolve: (result: PlanApprovalResult) => void;
   cleanup: () => void;
+  request: ExtensionToWebviewMessage;
 }
 
 export interface SkillApprovalResult {
@@ -94,6 +99,15 @@ export interface SkillApprovalResult {
 export interface PendingSkillApproval {
   resolve: (result: SkillApprovalResult) => void;
   cleanup: () => void;
+  request: ExtensionToWebviewMessage;
+}
+
+/** A pending MCP elicitation. Keyed by `elicitationId`, not by a tool use id: an elicitation is raised
+ *  by a server mid tool call and has no tool use of its own. */
+export interface PendingElicitation {
+  resolve: (result: ElicitationResult) => void;
+  cleanup: () => void;
+  request: ExtensionToWebviewMessage;
 }
 
 export type PostMessageFn = (msg: ExtensionToWebviewMessage) => void;

@@ -118,3 +118,50 @@ describe('useQuestionStore.compiledAnnotations', () => {
     expect(store.compiledAnnotations).toBeUndefined();
   });
 });
+
+describe('useQuestionStore against a re-posted question', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const withId = (id: string, questions: Question[]): PendingQuestionInfo => ({ toolUseId: id, questions });
+
+  it('keeps the answer the user has already typed for the question on screen', () => {
+    // The extension re-posts every pending prompt on webview ready, keeping the original toolUseId.
+    const store = useQuestionStore();
+    const q = multiSelectQuestion();
+    store.setQuestion(withId('t1', [q]));
+    store.toggleOption(q.question, 'X', true);
+    store.setCustomInput(q.question, 'my own answer', true);
+    store.setAnnotationNotes(q.question, 'a note');
+    store.nextTab();
+
+    store.setQuestion(withId('t1', [q]));
+
+    expect(store.compiledAnswers[q.question]).toBe('X, my own answer');
+    expect(store.compiledAnnotations?.[q.question]?.notes).toBe('a note');
+    expect(store.currentTabIndex).toBe(1);
+  });
+
+  it('clears the answer state when a different question takes the screen', () => {
+    const store = useQuestionStore();
+    const first = multiSelectQuestion();
+    store.setQuestion(withId('t1', [first]));
+    store.toggleOption(first.question, 'X', true);
+
+    const second = singleSelectQuestion();
+    store.setQuestion(withId('t2', [second]));
+
+    expect(store.compiledAnswers[second.question]).toBe('');
+    expect(store.currentTabIndex).toBe(0);
+  });
+
+  it('takes the re-posted question payload, so a withdrawn option cannot linger', () => {
+    const store = useQuestionStore();
+    const q = multiSelectQuestion();
+    store.setQuestion(withId('t1', [q]));
+
+    const narrowed = multiSelectQuestion({ options: [opt('X'), opt('Y')] });
+    store.setQuestion(withId('t1', [narrowed]));
+
+    expect(store.questions[0]!.options.map((o) => o.label)).toEqual(['X', 'Y']);
+  });
+});

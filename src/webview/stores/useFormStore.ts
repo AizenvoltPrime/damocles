@@ -17,6 +17,10 @@ export const useFormStore = defineStore('form', () => {
   const queue = ref<PendingFormInfo[]>([]);
 
   function setForm(info: PendingFormInfo) {
+    // The extension re-posts every pending prompt when the webview reports ready, so a form this store
+    // already holds must not be shown twice against one settled extension promise.
+    if (pendingForm.value?.toolUseId === info.toolUseId) return;
+    if (queue.value.some(f => f.toolUseId === info.toolUseId)) return;
     if (pendingForm.value) {
       queue.value = [...queue.value, info];
       return;

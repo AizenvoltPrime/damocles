@@ -15,6 +15,7 @@ import type {
   PartialMessage,
   ResultMessage,
   StoredSession,
+  CompactionTrigger,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
 import type { RunningSubagentInfo } from './subagents';
@@ -295,9 +296,11 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionCancelled" }
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
   | { type: "sessionEnd"; reason: string }
-  | { type: "preCompact"; trigger: "manual" | "auto" }
-  | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string }
+  | { type: "preCompact"; trigger: CompactionTrigger }
+  | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: CompactionTrigger; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string; billedTokens?: number; billedCost?: number }
+  | { type: "compactionAborted"; trigger: CompactionTrigger; willRetry: boolean; errorMessage?: string; timestamp: number }
   | { type: "cacheMissNotice"; missedTokens: number; missedCost: number; idleMs: number; modelChanged: boolean; timestamp: number }
+  | { type: "thinkingDroppedNotice"; count: number; reasons: string[]; timestamp: number }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "subscriptionUsage"; data: SubscriptionUsageData }
@@ -371,7 +374,7 @@ export type ExtensionToWebviewMessage =
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
   | { type: "contextWarning"; level: ContextWarningLevel }
-  | { type: "autoCompactTriggering"; percentUsed: number }
+  | { type: "autoCompactTriggering"; percentUsed: number; trigger: Exclude<CompactionTrigger, "manual"> }
   | { type: "autoCompactComplete" }
   | { type: "autoCompactConfigUpdate"; config: AutoCompactConfig }
   | { type: "memoriesUpdate"; memories: MemoryEntry[]; hasMoreObservations?: boolean; observationCursor: ObservationCursor | null }

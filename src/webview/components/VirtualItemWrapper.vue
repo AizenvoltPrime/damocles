@@ -12,6 +12,8 @@ import ThinkingIndicator from './ThinkingIndicator.vue';
 import MessageContent from './MessageContent.vue';
 import CompactMarker from './CompactMarker.vue';
 import CacheMissNotice from './CacheMissNotice.vue';
+import CompactionAbortedNotice from './CompactionAbortedNotice.vue';
+import ThinkingDroppedNotice from './ThinkingDroppedNotice.vue';
 import RefusalCard from './RefusalCard.vue';
 
 const { t } = useI18n();
@@ -96,6 +98,14 @@ onUnmounted(() => {
 
     <div v-else-if="item.type === 'cache-miss-notice' && item.notice">
       <CacheMissNotice :notice="item.notice" />
+    </div>
+
+    <div v-else-if="item.type === 'compaction-aborted-notice' && item.compactionAborted">
+      <CompactionAbortedNotice :notice="item.compactionAborted" />
+    </div>
+
+    <div v-else-if="item.type === 'thinking-dropped-notice' && item.thinkingDropped">
+      <ThinkingDroppedNotice :notice="item.thinkingDropped" />
     </div>
 
     <ThinkingIndicator

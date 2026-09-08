@@ -95,7 +95,6 @@ export interface ModelInfo {
   supportsEffort?: boolean;
   supportedEffortLevels?: EffortLevel[];
   supportsAdaptiveThinking?: boolean;
-  alwaysUses1mContext?: boolean;
   /** Backend dispatcher. Omitted defaults to "anthropic" for backwards compatibility. */
   backend?: "anthropic" | "openai";
   /** Literal model ID sent in the Codex request body; may differ from `value`. */

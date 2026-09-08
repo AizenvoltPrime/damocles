@@ -109,6 +109,32 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       }
     });
 
+    // The done-claim bullet on its own licenses a re-run at any moment, which is how a session ends up
+    // running the same suite repeatedly. The bound is that an unchanged tree returns the same answer.
+    it('bounds test cadence: narrowest command, one full-suite run, no repeat over an unchanged tree', () => {
+      expect(prompt).toContain('# Running tests and checks');
+      expect(prompt).toContain('Run a test, type check, linter, or build when its result can change what you do next.');
+      expect(prompt).toContain('Run the narrowest command that answers the question');
+      expect(prompt).toContain("Save the full suite for the end of a change set and run it once");
+      expect(prompt).toContain('One passing run is the evidence a done-claim needs.');
+      expect(prompt).toContain('returns the same answer, so cite that run instead of repeating it');
+      expect(prompt).toContain('re-run only what failed');
+      expect(prompt).toContain('Watch mode never exits and blocks the session.');
+    });
+
+    // The done-claim rule stays: the cadence section limits repeats, it does not license unverified claims.
+    it('keeps the evidence-before-done rule alongside the cadence rules', () => {
+      expect(prompt).toContain("Don't claim a task is done, fixed, or working until you have run something that shows it.");
+      expect(prompt.indexOf('# Doing tasks')).toBeLessThan(prompt.indexOf('# Running tests and checks'));
+      expect(prompt.indexOf('# Running tests and checks')).toBeLessThan(prompt.indexOf('# Comments'));
+    });
+
+    // "running tests are fine to take freely" was the licence the cadence section exists to remove.
+    it('scopes the freely-taken action to a scoped test, not tests in general', () => {
+      expect(prompt).toContain('Local, reversible actions (editing files, running a scoped test) are fine to take freely.');
+      expect(prompt).not.toContain('(editing files, running tests) are fine to take freely');
+    });
+
     it('does NOT restate the comment policy in Text output', () => {
       const occurrences = prompt.split('Never earns one: restating what the code does').length - 1;
       expect(occurrences).toBe(1);
@@ -343,6 +369,16 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Don't claim a task is done, fixed, or working until you have run something that shows it. If you could not verify it, name exactly what is unverified rather than leaving the claim to stand.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness. If you can't test the UI, say so.
 
+        # Running tests and checks
+        Run a test, type check, linter, or build when its result can change what you do next.
+         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
+         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
+         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
+         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
+         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
+         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+         - Use the project's single-run command. Watch mode never exits and blocks the session.
+
         # Comments
         A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
          - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
@@ -353,7 +389,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
 
         # Executing actions with care
-        Weigh reversibility and blast radius. Local, reversible actions (editing files, running tests) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
+        Weigh reversibility and blast radius. Local, reversible actions (editing files, running a scoped test) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
 
         Authorization is scoped, not blanket. Approving an action once doesn't authorize it in other contexts. Match your actions to what was requested, and unless durably authorized (e.g. CLAUDE.md), confirm first.
 
@@ -487,6 +523,16 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Don't claim a task is done, fixed, or working until you have run something that shows it. If you could not verify it, name exactly what is unverified rather than leaving the claim to stand.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness. If you can't test the UI, say so.
 
+        # Running tests and checks
+        Run a test, type check, linter, or build when its result can change what you do next.
+         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
+         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
+         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
+         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
+         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
+         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+         - Use the project's single-run command. Watch mode never exits and blocks the session.
+
         # Comments
         A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
          - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
@@ -497,7 +543,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
 
         # Executing actions with care
-        Weigh reversibility and blast radius. Local, reversible actions (editing files, running tests) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
+        Weigh reversibility and blast radius. Local, reversible actions (editing files, running a scoped test) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
 
         Authorization is scoped, not blanket. Approving an action once doesn't authorize it in other contexts. Match your actions to what was requested, and unless durably authorized (e.g. CLAUDE.md), confirm first.
 
@@ -599,18 +645,38 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
-  describe('with Fable 5 selected', () => {
+  describe('with Fable 5.1 selected', () => {
+    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5-1', compassEnabled: false });
+
+    it('reports the Fable 5.1 identity and June 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1.');
+      expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
+    });
+
+    it('tolerates the pi-side 1M suffix Damocles never constructs', () => {
+      const onemPrompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5-1[1m]', compassEnabled: false });
+      expect(onemPrompt).toContain('You are powered by the model named Fable 5.1. The exact model ID is claude-fable-5-1[1m].');
+      expect(onemPrompt).toContain('Assistant knowledge cutoff is June 2026.');
+    });
+  });
+
+  /**
+   * `LEGACY_MODEL_MAP` only rewrites the id where `migrateLegacyModelValue` runs, which is the
+   * `damocles.model` and `damocles.team.*Model` settings reads. A stored session file, a resumed panel
+   * and an Explore card all hand `buildSystemPrompt` the id verbatim, so the retired one still arrives
+   * here and must still name a model and a cutoff.
+   */
+  describe('with the retired bare claude-fable-5 id', () => {
     const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5', compassEnabled: false });
 
-    it('reports the Fable 5 identity and January 2026 cutoff', () => {
+    it('still reports the Fable 5 identity and its January 2026 cutoff', () => {
       expect(prompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
 
-    it('resolves the 1M-suffixed model id production actually passes', () => {
-      const onemPrompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5[1m]', compassEnabled: false });
-      expect(onemPrompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5[1m].');
-      expect(onemPrompt).toContain('Assistant knowledge cutoff is January 2026.');
+    it('does not claim to be Fable 5.1, whose cutoff and pricing differ', () => {
+      expect(prompt).not.toContain('Fable 5.1');
+      expect(prompt).not.toContain('June 2026');
     });
   });
 

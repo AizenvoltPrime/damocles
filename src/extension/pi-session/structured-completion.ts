@@ -101,10 +101,12 @@ function buildUserTurn(systemPrompt: string, userMessage: string, outputToolName
  * (API key or OAuth grant + headers) itself, so this core carries no auth — it stays pure for testability.
  *
  * The call is NOT forced — not because OAuth forbids it (`tool_choice` is honoured on the subscription
- * token, measured 10/10) but because it is unreachable from here: pi's `SimpleStreamOptions` has no
- * `toolChoice` field, and the `pi-anthropic-oauth` plugin serving all anthropic traffic never emits
- * `params.tool_choice`. Both are upstream. Until they land the tool call stays probabilistic, so the
- * miss logging below and the `extractJson` fallback are load-bearing, not decoration.
+ * token, measured 10/10) but because no value reaches here that names a tool: pi types
+ * `SimpleStreamOptions.toolChoice` as `ToolChoice`, and `ToolChoice` is `"auto" | "none"`
+ * (`@earendil-works/pi-ai@^0.85.0`, `packages/ai/src/types.ts:82` and `:316`). `"auto"` is already the
+ * provider default and `"none"` forbids tools outright, so neither forces the output tool. That union
+ * is upstream. Until it widens the tool call stays probabilistic, so the miss logging below and the
+ * `extractJson` fallback are load-bearing, not decoration.
  */
 export async function runStructuredCompletion<T>(
   complete: PiCompleteFn,

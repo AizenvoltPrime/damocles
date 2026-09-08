@@ -26,6 +26,7 @@ import { PI_AGENT_DIR } from "./agent-dir";
 import { dispatchObserveOnly } from "./hooks/dispatch";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
+import { deriveSessionState, type SessionState, type TurnState } from "./session-state";
 import {
   piSupportedModels,
   resolvePiModel,
@@ -165,6 +166,13 @@ export class PiSession implements ChatSession {
   private readonly checkpointUserIds = new Set<string>();
   /** Size of the last `checkpointInfo` broadcast, to suppress no-op re-emits. */
   private lastCheckpointBroadcast = -1;
+  /** The last `sessionStateChanged` sent, as `state:sessionId`, so a re-derivation that changed
+   *  nothing sends nothing. Only an identical message is ever dropped. */
+  private lastSessionState: string | null = null;
+  /** The turn's own lifecycle, the single value `publishSessionState` derives from. Written only by
+   *  `setTurnState`, never inferred from another flag: `processingFlag` is cleared a tick later than the
+   *  adapter reports idle, so reading it here republishes `running` after `idle` and latches the bar. */
+  private turnState: TurnState = "idle";
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
@@ -251,13 +259,19 @@ export class PiSession implements ChatSession {
       budgetLimit: () => this.budgetLimitForEnforcement(),
       showCacheMissNotices: () =>
         vscode.workspace.getConfiguration('damocles').get<boolean>('showCacheMissNotices', false),
+      showThinkingDroppedNotices: () =>
+        vscode.workspace.getConfiguration('damocles').get<boolean>('showThinkingDroppedNotices', true),
       sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
       onMidStreamBatchCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
+      onTurnStateChanged: (state) => this.setTurnState(state),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
+    // Wired here and not at bind time: a prompt outranks the turn lifecycle even before start().
+    this.uiContext.setPendingChangedListener(() => this.publishSessionState());
+    options.permissionHandler.setPendingPromptsListener(() => this.publishSessionState());
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -380,6 +394,10 @@ export class PiSession implements ChatSession {
       // A replacement session (reset/clear → newSession) carries a fresh sessionId; the consumer
       // re-arms the watcher and re-registers the session off this callback, so it must fire here too.
       this.options.onSessionIdChange?.(session.sessionId);
+      // Both paths that reach here, a reset/clear and a resume switch, make the webview reset its own
+      // store, so the cached key describes a state nothing on screen is showing any more.
+      this.lastSessionState = null;
+      this.publishSessionState();
     });
 
     const sid = this.runtime.session.sessionId;
@@ -723,6 +741,9 @@ export class PiSession implements ChatSession {
       }
     } finally {
       this.processingFlag = false;
+      // The turn is over however it ended. A rejection that never reached an agent run emits no pi
+      // event, so without this the lifecycle would stay `running` with nothing left to move it.
+      this.setTurnState("idle");
       this._aborting = false;
       this._budgetStopRequested = false;
     }
@@ -898,6 +919,9 @@ export class PiSession implements ChatSession {
   private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
     this._aborting = true;
     this.processingFlag = false;
+    // An abort during a long tool with no model stream open produces no aborted assistant event, so
+    // this is the only thing that tells the webview the turn is over.
+    this.setTurnState("idle");
     this._budgetStopRequested = false;
     this.adapter.markAborted();
     // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
@@ -961,7 +985,11 @@ export class PiSession implements ChatSession {
         await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (isNothingToCompact(message)) {
+        // pi emits `compaction_end` and then rethrows the same failure, so the adapter has usually
+        // already put a card on screen for it. Only what the adapter left unreported belongs here.
+        if (this.adapter.takeCompactionReported()) {
+          log("[PiSession] compact outcome already reported by the adapter: %s", message);
+        } else if (isNothingToCompact(message)) {
           log("[PiSession] compact skipped: nothing to compact (session too small)");
           this.emit({ type: "notification", message: "Nothing to compact yet — the conversation is too small.", notificationType: "info" });
         } else {
@@ -1026,6 +1054,8 @@ export class PiSession implements ChatSession {
 
   reset(): void {
     this.processingFlag = false;
+    // The replacement session disposes the old one, which aborts whatever turn it was running.
+    this.setTurnState("idle");
     this._budgetStopRequested = false;
     this.queuedInputs = [];
     // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
@@ -1103,6 +1133,10 @@ export class PiSession implements ChatSession {
     // The adapter outlives every session replacement, so its timers are released here and not in
     // bindSession's unsubscribe, which fires on a mere rebind.
     this.adapter.dispose();
+    // Both listeners close over this session, so a prompt map outliving the panel (the handler is
+    // supplied by the caller) would keep publishing into a webview that is gone.
+    this.options.permissionHandler.setPendingPromptsListener(null);
+    this.uiContext.setPendingChangedListener(null);
     this.uiContext.cancelAll();
     // Tear down any active team (aborts its agents + resolves the create_team tool) — the service is
     // owned by the panel, so the panel disposes it.
@@ -1336,16 +1370,21 @@ export class PiSession implements ChatSession {
 
   /**
    * The webview restarted (view recreation / "Developer: Reload Webviews"): its dialog queue is a fresh
-   * empty store, so every modal that was on screen is gone while `pending` here still holds their live
-   * awaiters. Left alone, a nested agent's MCP elicitation blocks its `callTool`, which blocks the tool
-   * call, which blocks the agent run — with no modal on screen to explain why it stopped, and no later
-   * sweep to release it (teardown only runs on the completion path the run never reaches).
+   * empty store, so every modal that was on screen is gone while the awaiters behind them are still
+   * live. Cancelling them answers a question the user never saw. Posting them again puts the same
+   * dialog back on screen, which is what the user expects a reload to do.
    *
    * `retainContextWhenHidden` means this is not routine hide/show, so it costs nothing in normal use.
-   * `cancelAll()` is idempotent and the cancels it emits are no-ops in a store that is already empty.
+   * Every re-post carries the exact message the prompt was first posted with, so nothing is rebuilt
+   * and nothing can drift from what the awaiter is waiting on.
    */
   onWebviewReady(): void {
-    this.uiContext.cancelAll();
+    this.options.permissionHandler.repostPendingPrompts();
+    this.uiContext.repostPending();
+    // The reloaded store starts at `idle`, so the cached key describes a webview that no longer exists
+    // and would suppress the resync as a duplicate. Cleared before the republish, never after.
+    this.lastSessionState = null;
+    this.publishSessionState();
   }
 
   setResumeSession(sessionId: string | null): void {
@@ -1469,6 +1508,10 @@ export class PiSession implements ChatSession {
     // cross-panel delete is not the one the user clicked in and would otherwise spin forever.
     this.emit({ type: "processing", isProcessing: false });
     this.emit({ type: "sessionCleared" });
+    // The webview drops its stored state on that message, so the cached key now describes a store that
+    // no longer holds it. Cleared before the republish, never after.
+    this.lastSessionState = null;
+    this.publishSessionState();
   }
 
   /**
@@ -2785,8 +2828,11 @@ export class PiSession implements ChatSession {
    * Overshoot is bounded to one round-trip OF THE PARENT LOOP, and that round-trip's own spend is not
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
-   * `abortAll()` never saw. Auto-compaction also still bills, because pi runs `prepareNextTurn` before
-   * `shouldStopAfterTurn`. And an in-flight TEAM keeps running to completion: unlike `beginAbort`, this
+   * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^0.85.0`,
+   * `agent-loop.ts:176-177`), and `shouldStopAfterTurn` returning true returns from the loop at `:252`
+   * before it. So the bound is the tool calls of the message that tripped the limit and nothing else.
+   * And an in-flight TEAM keeps running to completion: unlike `beginAbort`, this
    * deliberately does not `cancelActiveTeam()` (product decision), so a team can exceed the limit without
    * a bound. The pre-prompt budget block refuses the NEXT turn.
    */
@@ -2855,6 +2901,37 @@ export class PiSession implements ChatSession {
    */
   publishAccountInfo(): void {
     this.emit({ type: "accountInfo", data: this.buildAccountInfo() });
+  }
+
+  /**
+   * The only writer of the turn lifecycle. Every path that ends or starts a turn calls this, including
+   * the ones no pi event reaches (an abort with no model stream open, a session replacement, a
+   * `prompt()` that rejected before any agent run). `compacting` is deliberately not folded in: a
+   * manual compaction opens no prompt and the adapter reports no turn lifecycle for it.
+   */
+  private setTurnState(turn: TurnState): void {
+    this.turnState = turn;
+    this.publishSessionState();
+  }
+
+  /** Whether `PermissionState` or `WebviewExtensionUIContext` still holds an unanswered prompt. */
+  private hasPendingPrompts(): boolean {
+    return this.options.permissionHandler.hasPendingPrompts() || this.uiContext.hasPendingDialogs();
+  }
+
+  /**
+   * Publish the session state to the webview. Its two inputs, the turn lifecycle and the prompt maps
+   * owned by `PermissionState` and `WebviewExtensionUIContext`, change independently of each other, so
+   * every mutation of either calls this and nothing else emits `sessionStateChanged`. Rebuilt on each
+   * call, never cached.
+   */
+  private publishSessionState(): void {
+    const sessionId = this.runtime?.session.sessionId ?? "";
+    const state: SessionState = deriveSessionState(this.turnState, this.hasPendingPrompts());
+    const key = `${state}:${sessionId}`;
+    if (this.lastSessionState === key) return;
+    this.lastSessionState = key;
+    this.emit({ type: "sessionStateChanged", state, sessionId });
   }
 
   /** Whether the user opted to prefer the OpenAI API key over Codex OAuth when both are configured. */

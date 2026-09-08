@@ -101,19 +101,24 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
       if (!msg.isHistorical) {
         sessionStore.clearCompactMarkers();
-        // A live compaction truncates the transcript above the boundary; cache-miss notices anchored to
-        // now-removed messages would otherwise orphan-pile at the top. Clear them with the markers.
-        sessionStore.clearCacheMissNotices();
       }
       const compactMessage = [...streamingStore.messages]
         .reverse()
         .find((m) => m.role === "user" && m.content.trim().toLowerCase().startsWith("/compact"));
       const cutoffTimestamp = compactMessage?.timestamp;
-      sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp, msg.entryId);
+      sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp, msg.entryId, msg.billedTokens, msg.billedCost);
     },
 
     cacheMissNotice: (msg, ctx) => {
       ctx.stores.sessionStore.addCacheMissNotice(msg.missedTokens, msg.missedCost, msg.idleMs, msg.modelChanged, msg.timestamp);
+    },
+
+    compactionAborted: (msg, ctx) => {
+      ctx.stores.sessionStore.addCompactionAbortedNotice(msg.trigger, msg.willRetry, msg.timestamp, msg.errorMessage);
+    },
+
+    thinkingDroppedNotice: (msg, ctx) => {
+      ctx.stores.sessionStore.addThinkingDroppedNotice(msg.count, msg.reasons, msg.timestamp);
     },
 
     compactSummary: (msg, ctx) => {
@@ -121,8 +126,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       const markers = sessionStore.compactMarkers;
       const lastMarker = markers.length > 0 ? markers[markers.length - 1] : null;
       if (lastMarker) {
+        // The summary is the only point a compaction removes messages, so the notices anchored to them go here.
         const cutoff = lastMarker.messageCutoffTimestamp ?? lastMarker.timestamp;
         streamingStore.truncateMessagesBeforeTimestamp(cutoff);
+        sessionStore.dropTruncatedNotices(cutoff);
       }
       sessionStore.updateLastCompactMarkerSummary(msg.summary);
     },

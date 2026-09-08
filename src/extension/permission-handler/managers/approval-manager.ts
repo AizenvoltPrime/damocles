@@ -1,8 +1,9 @@
 import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
 import type { PermissionUpdate } from '../../../shared/types/permissions';
-import type { PermissionState } from '../state';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier } from '../types';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
@@ -130,7 +131,7 @@ export class ApprovalManager {
         const approved = !this.state.sessionAborting;
         log('[ApprovalManager] Abort signal on file approval: toolUseId=%s, approved=%s', toolUseId, approved);
         this.diffManager.closeDiffView(toolUseId);
-        this.state.pendingApprovals.delete(toolUseId);
+        this.state.removePendingApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
@@ -143,26 +144,8 @@ export class ApprovalManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingApproval(toolUseId, {
-        resolve,
-        reject: () => resolve({ approved: false }),
-        cleanup,
-        diffId: toolUseId,
-        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-      });
-
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      this.getNotifier()?.({
-        toolName,
-        toolInput: input as unknown as Record<string, unknown>,
-        message: `Damocles is waiting for your approval to ${toolName === TOOL_WRITE ? 'create' : 'edit'} ${filePath}`,
-        filePath,
-        ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
-      });
-
       const suggestions = generatePatternSuggestions(toolName, input as unknown as Record<string, unknown>);
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestPermission',
         toolUseId,
         toolName: toolName as 'Write' | 'Edit',
@@ -175,6 +158,32 @@ export class ApprovalManager {
         ...(suggestions.length ? { suggestions } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingApproval(toolUseId, {
+            resolve,
+            reject: () => resolve({ approved: false }),
+            cleanup,
+            request,
+            diffId: toolUseId,
+            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+          });
+
+          this.getNotifier()?.({
+            toolName,
+            toolInput: input as unknown as Record<string, unknown>,
+            message: `Damocles is waiting for your approval to ${toolName === TOOL_WRITE ? 'create' : 'edit'} ${filePath}`,
+            filePath,
+            ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
+          });
+
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }
@@ -200,7 +209,7 @@ export class ApprovalManager {
       const abortHandler = () => {
         const approved = !this.state.sessionAborting;
         log('[ApprovalManager] Abort signal on shell approval: toolUseId=%s, approved=%s', toolUseId, approved);
-        this.state.pendingApprovals.delete(toolUseId);
+        this.state.removePendingApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
@@ -213,25 +222,8 @@ export class ApprovalManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingApproval(toolUseId, {
-        resolve,
-        reject: () => resolve({ approved: false }),
-        cleanup,
-        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-      });
-
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      this.getNotifier()?.({
-        toolName,
-        toolInput: input,
-        message: `Damocles is waiting for your approval to run: ${command}`,
-        command,
-        ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
-      });
-
       const suggestions = generatePatternSuggestions(toolName, input);
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestPermission',
         toolUseId,
         toolName,
@@ -241,6 +233,31 @@ export class ApprovalManager {
         ...(suggestions.length ? { suggestions } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingApproval(toolUseId, {
+            resolve,
+            reject: () => resolve({ approved: false }),
+            cleanup,
+            request,
+            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+          });
+
+          this.getNotifier()?.({
+            toolName,
+            toolInput: input,
+            message: `Damocles is waiting for your approval to run: ${command}`,
+            command,
+            ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
+          });
+
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }
@@ -255,16 +272,21 @@ export class ApprovalManager {
       return;
     }
 
-    if (pending.diffId) {
-      await this.diffManager.closeDiffView(pending.diffId);
+    try {
+      // A tab the user already closed rejects here, and the awaiting tool call must not hang on it.
+      if (pending.diffId) {
+        await this.diffManager.closeDiffView(pending.diffId);
+      }
+    } catch (err) {
+      log('[ApprovalManager] closing the diff view for %s failed: %O', toolUseId, err);
+    } finally {
+      pending.cleanup();
+      pending.resolve({
+        approved,
+        userAnswered: true,
+        ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
+        ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
+      });
     }
-
-    pending.cleanup();
-    pending.resolve({
-      approved,
-      userAnswered: true,
-      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
-      ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
-    });
   }
 }

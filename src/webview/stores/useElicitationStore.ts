@@ -6,6 +6,9 @@ export const useElicitationStore = defineStore('elicitation', () => {
   const pendingElicitations = ref<ElicitationRequest[]>([]);
 
   function addElicitation(request: ElicitationRequest): void {
+    // The extension re-posts every pending prompt when the webview reports ready, so an id this queue
+    // already holds is that same request arriving again, not a second one.
+    if (pendingElicitations.value.some(e => e.elicitationId === request.elicitationId)) return;
     pendingElicitations.value = [...pendingElicitations.value, request];
   }
 

@@ -5,7 +5,34 @@
  */
 
 import { STEER_INSTRUCTION_PREFIX } from '../../../shared/steer';
+import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from '../code-rules';
+import { buildNarrationRule } from '../prose-rules';
 import type { AgentConfig, EnvInfo } from './types';
+
+/**
+ * Replace-mode agents that write code (the bundled profiles, a user agent with a write tool) inherit no
+ * comment policy and no test cadence, so they get the same bodies the panel carries. Capability-gated
+ * like `compassBlock`: Explore and Plan hold no write tool and would only be paying for rules they
+ * cannot act on.
+ */
+const codeRulesBlock = `# Comments
+${COMMENT_RULES_BODY}
+
+# Running tests and checks
+${TEST_RUN_RULES_BODY}`;
+
+/**
+ * An agent's narration is spent from the PARENT's context window, and the parent reads only the final
+ * result, so it is pure overhead here. Applied in both modes: replace-mode agents (Explore, Plan, the
+ * bundled profiles) have no tone rules of their own, and an append-mode agent inherits the panel's
+ * `# Text output` cadence, which asks for an opening sentence and per-step updates. The override line
+ * settles that conflict in favour of this section, which sits later in the prompt.
+ */
+const narrationBlock = `# Narration
+${buildNarrationRule('Your final result to the parent agent, and anything you write into a file')}`;
+
+const narrationBlockAppend = `${narrationBlock}
+- This section replaces any narration or progress-update cadence stated earlier in this prompt.`;
 
 /**
  * Steering protocol — injected into every subagent's system prompt (both modes). Authority is bound to
@@ -44,6 +71,12 @@ export interface PromptExtras {
    * inherited identity already carries a `<compass>` section drops it (see `buildAgentPrompt`).
    */
   compassBlock?: string;
+  /**
+   * True when the agent's RESOLVED toolset holds a write-category tool. The caller's to decide, for the
+   * same reason `compassBlock` is: only it has the resolved set. Append-mode agents already inherit both
+   * bodies from the panel prompt, so the block is emitted in replace mode only.
+   */
+  writesFiles?: boolean;
 }
 
 /**
@@ -110,7 +143,7 @@ You are operating as a sub-agent invoked to handle a specific task.
 
     // Place shared/stable content first so the LLM's KV cache can reuse the inherited prefix across
     // all subagent invocations. The <active_agent> tag and env block vary per call and follow it.
-    return identity + '\n\n' + bridge + '\n\n' + steeringBlock + '\n\n' + activeAgentTag + envBlock + customSection + extrasSuffix;
+    return identity + '\n\n' + bridge + '\n\n' + narrationBlockAppend + '\n\n' + steeringBlock + '\n\n' + activeAgentTag + envBlock + customSection + extrasSuffix;
   }
 
   // "replace" mode — env header + the config's full system prompt
@@ -119,7 +152,9 @@ You have been invoked to handle a specific task autonomously.
 
 ${envBlock}`;
 
-  return activeAgentTag + replaceHeader + '\n\n' + steeringBlock + '\n\n' + config.systemPrompt + extrasSuffix;
+  const codeRules = extras?.writesFiles ? codeRulesBlock + '\n\n' : '';
+
+  return activeAgentTag + replaceHeader + '\n\n' + narrationBlock + '\n\n' + codeRules + steeringBlock + '\n\n' + config.systemPrompt + extrasSuffix;
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

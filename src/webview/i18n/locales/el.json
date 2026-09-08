@@ -398,7 +398,8 @@
   "status": {
     "running": "Εκτέλεση {tool}...",
     "hook": "Hook: {event}",
-    "hooksCount": "{count} hooks"
+    "hooksCount": "{count} hooks",
+    "requiresAction": "Αναμονή για την απάντησή σας"
   },
   "subagent": {
     "running": "Εκτέλεση",
@@ -864,8 +865,13 @@
   "compactMarker": {
     "boundary": "όριο context",
     "title": "Το Context Συμπτύχθηκε",
-    "auto": "ΑΥΤΟΜΑΤΟ",
     "manual": "ΧΕΙΡΟΚΙΝΗΤΟ",
+    "threshold": "ΚΑΤΩΦΛΙ",
+    "overflow": "ΥΠΕΡΧΕΙΛΙΣΗ",
+    "triggerHintThreshold": "Το Damocles έκανε σύμπτυξη αφού η χρήση του context ξεπέρασε το ρυθμισμένο κατώφλι.",
+    "triggerHintOverflow": "Το Damocles έκανε σύμπτυξη αφού το context υπερχείλισε στη μέση της εκτέλεσης.",
+    "billed": "{tokens} tokens χρεώθηκαν",
+    "billedWithCost": "{tokens} tokens χρεώθηκαν (~{cost})",
     "summary": "Περίληψη",
     "summaryHeader": "Περίληψη Προηγούμενου Context",
     "noSummary": "Δεν υπάρχει διαθέσιμη περίληψη για αυτή τη σύμπτυξη",
@@ -884,6 +890,20 @@
     "detail": "~{tokens} tokens από cache χρεώθηκαν ξανά (≈{cost})",
     "detailTokensOnly": "~{tokens} tokens από cache χρεώθηκαν ξανά",
     "idleHint": "μετά από {minutes} λεπτά αδράνειας, η προσωρινή μνήμη prompt είχε λήξει"
+  },
+  "compactionAborted": {
+    "title": "Η σύμπτυξη σταμάτησε πριν ολοκληρωθεί",
+    "triggerManual": "Εσείς ξεκινήσατε αυτή τη σύμπτυξη.",
+    "triggerThreshold": "Το Damocles την ξεκίνησε αφού η χρήση του context ξεπέρασε το ρυθμισμένο κατώφλι.",
+    "triggerOverflow": "Το Damocles την ξεκίνησε αφού το context υπερχείλισε στη μέση της εκτέλεσης.",
+    "willRetry": "Το Damocles θα την επαναλάβει.",
+    "noRetry": "Το Damocles δεν θα την επαναλάβει· το context παραμένει αμετάβλητο.",
+    "reason": "Αιτία: {message}"
+  },
+  "thinkingDropped": {
+    "titleOne": "Η Anthropic απέρριψε ένα μπλοκ σκέψης",
+    "titleMany": "Η Anthropic απέρριψε {count} μπλοκ σκέψης",
+    "meaning": "Το μοντέλο έχασε μέρος της αλυσίδας συλλογισμού του σε αυτόν τον γύρο."
   },
   "refusal": {
     "title": "Η Απάντηση Απορρίφθηκε",

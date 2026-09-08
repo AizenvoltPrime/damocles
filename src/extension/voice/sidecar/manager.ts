@@ -27,10 +27,13 @@ import type {
 } from "./protocol";
 import { spawnSidecar } from "./spawn";
 import type { SpawnOptions, SpawnResult } from "./spawn";
+import type { ShellJob } from "../../pi-session/tools/process-tree";
 
 const DEFAULT_LOCK_DIR = join(homedir(), ".damocles", "voice", "sidecar.lock");
 const SHUTDOWN_GRACE_MS = 5_000;
 const TERM_TIMEOUT_MS = 1_000;
+/** How long after the force kill `stop()` still waits for an exit before it stops waiting. */
+const KILL_SETTLE_MS = 2_000;
 const ATTACHED_CLIENT_GRACE_MS = 30_000;
 const COLD_START_TIMEOUT_MS = 60_000;
 const PORT_PROBE_INTERVAL_MS = 250;
@@ -52,23 +55,54 @@ const FATAL_STDERR_PATTERNS: { name: ErrorCodeValue; re: RegExp }[] = [
   { name: ErrorCode.ModelLoadFailed, re: /ImportError|ModuleNotFoundError/ },
 ];
 
-function killChildTree(child: ChildProcess, force: boolean): void {
-  // child.kill() on Windows maps to TerminateProcess and only kills the
-  // wrapper — the python interpreter and any NeMo/torch worker
-  // subprocesses survive, leaking VRAM and reattaching to the next
-  // restart. taskkill /T walks the process tree from the root pid;
-  // /F sends a hard terminate (SIGKILL equivalent), without it the
-  // taskkill is the graceful (SIGTERM-equivalent) path.
+/**
+ * Kill the sidecar and, on the force path, everything it started.
+ *
+ * `child.kill()` on Windows maps to TerminateProcess and reaches only the wrapper: the python
+ * interpreter and any NeMo or torch workers survive, holding their VRAM and reattaching to the next
+ * restart. Terminating the job object reaches every one of them, because job membership is inherited,
+ * so the force path takes it whenever the spawn could create one. Without a job, `taskkill /T` walks
+ * the tree from the root pid and `/F` makes it a hard terminate; without `/F` it is the graceful path.
+ * A root-only `child.kill` is the last resort and orphans the workers, which is why it is logged.
+ */
+function killChildTree(child: ChildProcess, force: boolean, job: ShellJob | null): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === "win32") {
+    if (force && job !== null) {
+      job.terminate();
+      return;
+    }
     const args = ["/T", "/PID", String(pid)];
     if (force) args.unshift("/F");
+    // A graceful sweep must not fall back: child.kill on Windows is TerminateProcess, the force path.
+    let fellBack = !force;
+    const killRoot = (): void => {
+      if (fellBack) return;
+      fellBack = true;
+      log("[VoiceSidecar] falling back to a root-only kill of pid %d; its python workers are orphaned", pid);
+      try {
+        child.kill("SIGKILL");
+      } catch (killErr) {
+        log("[VoiceSidecar] child.kill error:", killErr);
+      }
+    };
     try {
       const proc = spawnProcess("taskkill", args, { stdio: "ignore", windowsHide: true });
-      proc.on("error", (err) => log("[VoiceSidecar] taskkill spawn error:", err));
+      // An unhandled 'error' event on a ChildProcess takes the extension host down with it.
+      proc.on("error", (err) => {
+        log("[VoiceSidecar] taskkill spawn error:", err);
+        killRoot();
+      });
+      // A taskkill that spawns and then fails, access denied for one, reports only through its exit code.
+      proc.on("exit", (code) => {
+        if (code === 0) return;
+        log("[VoiceSidecar] taskkill exited with code %s for pid %d", code, pid);
+        killRoot();
+      });
     } catch (err) {
       log("[VoiceSidecar] taskkill failed:", err);
+      killRoot();
     }
     return;
   }
@@ -128,6 +162,7 @@ type ManagerEvents = {
 export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
   private cfg: ManagerConfig;
   private child: ChildProcess | null = null;
+  private childJob: ShellJob | null = null;
   private ws: WebSocket | null = null;
   private spawnInfo: SpawnResult | null = null;
   private lockHandle: AcquireResult | null = null;
@@ -143,6 +178,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
   private ttsUnloadedEmittedThisSession = false;
   private hasReachedReady = false;
   private childExitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(cfg: ManagerConfig) {
     super();
@@ -186,7 +222,15 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     }
   }
 
+  /** Two concurrent stops would both reach `lockHandle.release()`, the second on a freed handle. */
   async stop(timeoutMs: number = SHUTDOWN_GRACE_MS): Promise<void> {
+    this.stopPromise ??= this.runStop(timeoutMs).finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
+  }
+
+  private async runStop(timeoutMs: number): Promise<void> {
     this.stopping = true;
     this.cancelGracefulStop();
     if (this.health !== null) {
@@ -208,6 +252,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     }
     if (this.child !== null) {
       const child = this.child;
+      const job = this.childJob;
       let exitedFlag = false;
       const exited = new Promise<void>((resolve) => {
         child.once("exit", () => {
@@ -217,16 +262,28 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
       });
       const termAfter = setTimeout(() => {
         if (exitedFlag || child.killed) return;
-        killChildTree(child, false);
+        killChildTree(child, false, job);
       }, TERM_TIMEOUT_MS);
       const killAfter = setTimeout(() => {
         if (exitedFlag || child.killed) return;
-        killChildTree(child, true);
+        killChildTree(child, true, job);
       }, timeoutMs);
-      await exited;
+      // A kill the OS refuses leaves nothing to wait for, and an unbounded wait here holds the lock
+      // handle and never lets dispose finish.
+      let settleAfter: NodeJS.Timeout | undefined;
+      const abandoned = new Promise<void>((resolve) => {
+        settleAfter = setTimeout(() => {
+          log("[VoiceSidecar] pid %s survived the force kill; giving up the wait after %dms", child.pid, KILL_SETTLE_MS);
+          resolve();
+        }, timeoutMs + KILL_SETTLE_MS);
+      });
+      await Promise.race([exited, abandoned]);
       clearTimeout(termAfter);
       clearTimeout(killAfter);
+      clearTimeout(settleAfter);
       this.child = null;
+      this.childJob?.dispose();
+      this.childJob = null;
     }
     if (this.lockHandle !== null && this.lockHandle.kind === "owned") {
       await this.lockHandle.release();
@@ -254,15 +311,30 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     const pid = child.pid;
     if (pid === undefined) return;
     if (process.platform === "win32") {
+      const job = this.childJob;
+      if (job !== null) {
+        job.terminate();
+        return;
+      }
       try {
-        spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
-          stdio: "ignore",
+        // spawnSync reports a missing taskkill through `error` and a failed one through `status`, so
+        // a catch alone sees neither.
+        const result = spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
+          stdio: ["ignore", "ignore", "pipe"],
+          encoding: "utf8",
           windowsHide: true,
         });
+        if (result.error === undefined && result.status === 0) return;
+        log(
+          "[VoiceSidecar] killChildSync taskkill failed for pid %d: error=%O status=%s stderr=%s",
+          pid,
+          result.error,
+          result.status,
+          (result.stderr ?? "").trim(),
+        );
       } catch (err) {
         log("[VoiceSidecar] killChildSync taskkill failed:", err);
       }
-      return;
     }
     try {
       child.kill("SIGKILL");
@@ -341,6 +413,7 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
     }
     this.spawnInfo = spawn;
     this.child = spawn.child;
+    this.childJob = spawn.job ?? null;
     this.attachStdio(spawn.child);
     this.attachExitHandler(spawn.child);
 
@@ -373,8 +446,17 @@ export class VoiceSidecarManager extends EventEmitter<ManagerEvents> {
   }
 
   private attachExitHandler(child: ChildProcess): void {
+    // child.kill reports EPERM by emitting 'error' rather than throwing, and an unhandled 'error'
+    // event on a ChildProcess takes the extension host down with it.
+    child.on("error", (err) => log("[VoiceSidecar] sidecar child process error:", err));
     child.once("exit", (code, signal) => {
       this.childExitInfo = { code, signal };
+      // A dead child must not be waited on again: stop() would await an 'exit' that already fired.
+      if (this.child === child) {
+        this.child = null;
+        this.childJob?.dispose();
+        this.childJob = null;
+      }
       this.emit("exit", { code, signal });
       if (this.stopping) return;
       if (this.health !== null) {

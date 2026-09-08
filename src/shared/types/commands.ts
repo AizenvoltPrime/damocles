@@ -36,14 +36,6 @@ export type SlashCommandItem =
   | BuiltinSlashCommandInfo
   | SkillInfo;
 
-export interface AgentDefinition {
-  description: string;
-  prompt: string;
-  tools?: string[];
-  disallowedTools?: string[];
-  model?: "sonnet" | "opus" | "haiku" | "fable" | "inherit";
-}
-
 export interface AgentConfig {
   id: string;
   name: string;

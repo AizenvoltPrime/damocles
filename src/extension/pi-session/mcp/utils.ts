@@ -52,6 +52,9 @@ export function resolveBearerToken(
  * only the root process, orphaning any workers it spawned; on Windows `taskkill /T` walks the tree
  * from the root pid (`/F` is a hard terminate). POSIX tree-killing needs a detached process group we
  * do not spawn, so there we SIGKILL the root only. Resolves once the kill has been dispatched.
+ *
+ * The Windows fallback is root-only: when taskkill cannot run or reports a failure, the SIGKILL below
+ * reaches the server process and orphans whatever it spawned. That is the best a pid alone allows.
  */
 export function killProcessTree(pid: number): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -61,7 +64,26 @@ export function killProcessTree(pid: number): Promise<void> {
           stdio: 'ignore',
           windowsHide: true,
         });
-        killer.once('error', () => resolve());
+        // taskkill reports a missing executable on `error` and a refusal (access denied, no such pid)
+        // on a non-zero `exit`, so both have to fall back, and one flag keeps them from doing it twice.
+        let fellBack = false;
+        const killRoot = () => {
+          if (fellBack) return;
+          fellBack = true;
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {
+            // Process already exited.
+          }
+        };
+        killer.once('error', () => {
+          killRoot();
+          resolve();
+        });
+        // `code === null` means taskkill was itself signalled, so it never reported on the target.
+        killer.once('exit', (code) => {
+          if (code !== 0) killRoot();
+        });
         killer.once('close', () => resolve());
       } catch {
         resolve();

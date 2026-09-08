@@ -12,11 +12,12 @@ import { DEFAULT_MODELS, TEAM_EFFORT_LEVELS } from '../../../shared/types/consta
  */
 const packageJsonUrl = new URL('../../../../package.json', import.meta.url);
 const pkg = JSON.parse(readFileSync(fileURLToPath(packageJsonUrl), 'utf8')) as {
-  contributes: { configuration: { properties: Record<string, { enum?: string[] }> } };
+  contributes: { configuration: { properties: Record<string, { enum?: string[]; enumItemLabels?: string[] }> } };
 };
 const properties = pkg.contributes.configuration.properties;
 
 const MODEL_VALUES = ['', ...DEFAULT_MODELS.map((m) => m.value)];
+const MODEL_LABELS = ['%configuration.team.modelDefault%', ...DEFAULT_MODELS.map((m) => m.displayName)];
 const EFFORT_VALUES = ['', ...TEAM_EFFORT_LEVELS];
 
 const MODEL_KEYS = [
@@ -36,6 +37,15 @@ describe('team role settings contributions — enum sync guard', () => {
     it(`${key} enum equals ['', ...DEFAULT_MODELS values]`, () => {
       expect(properties[key]).toBeDefined();
       expect(properties[key]!.enum).toEqual(MODEL_VALUES);
+    });
+  }
+
+  // VS Code pairs `enum[i]` with `enumItemLabels[i]` positionally, so an unpaired edit to either list
+  // silently relabels every model below it.
+  for (const key of MODEL_KEYS) {
+    it(`${key} enumItemLabels equals ['%configuration.team.modelDefault%', ...DEFAULT_MODELS displayNames]`, () => {
+      expect(properties[key]).toBeDefined();
+      expect(properties[key]!.enumItemLabels).toEqual(MODEL_LABELS);
     });
   }
 

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { Model, Api } from '@earendil-works/pi-ai';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { getSupportedThinkingLevels, type Model, type Api } from '@earendil-works/pi-ai';
 import {
   mapPiToolName,
   piModelToModelInfo,
@@ -8,6 +10,7 @@ import {
   providerDisplayName,
   isDollarBilled,
   effortToThinkingLevel,
+  effortToPiThinking,
   type ModelLookup,
 } from '../pi-models';
 import { DEFAULT_MODELS } from '../../../shared/types/constants';
@@ -163,6 +166,30 @@ describe('DEFAULT_MODELS — step-3.7-flash effort catalog (Slice 2)', () => {
     expect(step?.supportsAdaptiveThinking).toBe(true);
     expect(step?.supportsEffort).toBe(true);
     expect(step?.supportedEffortLevels).toEqual(['low', 'medium', 'high']);
+  });
+});
+
+describe('DEFAULT_MODELS: claude-fable-5-1 effort catalog agrees with the installed pi catalog', () => {
+  const anthropicJsonUrl = new URL(
+    '../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json',
+    import.meta.url,
+  );
+  const catalog = JSON.parse(readFileSync(fileURLToPath(anthropicJsonUrl), 'utf8')) as Record<
+    string,
+    Record<string, unknown>
+  >;
+  const fable51 = catalog['anthropic-messages']?.['claude-fable-5-1'] as Model<'anthropic-messages'> | undefined;
+
+  it('declares exactly what pi reports, modulo the minimal and ultracode mappings Damocles owns', () => {
+    expect(fable51).toBeDefined();
+    const piLevels = getSupportedThinkingLevels(fable51!);
+    // Damocles' EffortLevel union has no 'minimal' tier, and 'ultracode' is its own top tier with no pi
+    // analogue, so it only exists while pi still accepts 'max'.
+    expect(piLevels).toContain('max');
+    const expected = [...piLevels.filter((level) => level !== 'minimal'), 'ultracode'];
+
+    expect(DEFAULT_MODELS.find((m) => m.value === 'claude-fable-5-1')?.supportedEffortLevels).toEqual(expected);
+    expect(effortToPiThinking('ultracode')).toBe('max');
   });
 });
 

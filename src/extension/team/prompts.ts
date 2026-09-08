@@ -1,5 +1,34 @@
 import type { AgentSpec } from "./types";
-import { PROSE_RULES_BODY } from "../pi-session/prose-rules";
+import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
+import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
+
+/** Shared by all three team prompts, which run in replace mode and inherit no comment policy. */
+const COMMENTS_SUBSECTION = `### Comments
+
+${COMMENT_RULES_BODY}`;
+
+/**
+ * The ledger is the team-strength version of the shared cadence: a fingerprint makes "nothing changed
+ * since" a fact the extension computes rather than a judgement the agent makes. Stated as an addition
+ * so the two never contradict each other.
+ */
+const VERIFICATION_BUDGET = `${TEST_RUN_RULES_BODY}
+
+In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
+ - Scoped runs while you work are free. Take them.
+ - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running.
+ - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
+ - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.`;
+
+/** A lead's deliverables are the contracts it writes and the result it declares. */
+const LEAD_NARRATION = buildNarrationRule(
+  "Scratchpad contracts, specialist task prompts, messages to specialists and the `team_synthesize_result` output",
+);
+
+/** Shared by both specialist builders so the compressed register cannot drift between them. */
+const SPECIALIST_NARRATION = buildNarrationRule(
+  "Scratchpad sections, peer messages and your `team_report_complete` summary",
+);
 
 export interface DomainProfile {
   name: string;
@@ -187,6 +216,10 @@ When a specialist flags a conflict with the authoritative \`mission-brief\`, you
 - **No speculative abstractions.** Reject helpers, utilities, or configurable layers built for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
 - **No silent error swallowing.** Reject empty catch blocks, fallback return values that hide failures, or error handling that masks the real problem
 
+${COMMENTS_SUBSECTION}
+
+Judge a specialist's comments against that policy during review. Section 4 Phase 1b governs test runs: you judge the ledger, you do not run suites yourself.
+
 When \`[REVIEW ROUND READY]\` arrives, the notification lists each specialist with the sections they authored and your read status per section (UNREAD, STALE, or up to date). You MUST call \`team_read_scratchpad\` for every section marked UNREAD or STALE before calling \`team_approve_specialist\`. Specialists may have revised their work in response to peer messages or self-checks, so your earlier reads can be stale. The approval gate rejects \`team_approve_specialist\` when a specialist's section is newer than your last read; it is not advisory. If you find violations, send corrections via \`team_request_revision\`; after the next \`[REVIEW ROUND READY]\`, re-read and then approve.
 
 ## 8. Synthesis Guidelines
@@ -239,7 +272,11 @@ The system uses a **keep-alive mechanism** to pause your turn while specialists 
 
 ## 11. Writing
 
-${PROSE_RULES_BODY}${
+${PROSE_RULES_BODY}
+
+### Narration
+
+${LEAD_NARRATION}${
     profileCatalog
       ? `
 
@@ -336,13 +373,7 @@ Ensure your scratchpad section contains your full findings, peer input incorpora
 
 ### Verification Budget
 
-Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state. It changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
-
-- **While working, run SCOPED tests.** The files or suites your change touches. Fast feedback is yours to take freely.
-- **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
-- **Record every full-suite run** with \`team_record_verification\` : command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-- **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
-- Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+${VERIFICATION_BUDGET}
 
 ## 5. Peer Collaboration: Contract-Driven
 
@@ -390,6 +421,8 @@ If you encounter a blocker you cannot resolve:
 - **No speculative abstractions.** Do not build helpers, utilities, or configurable layers for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
 - **No silent error swallowing.** No empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem
 
+${COMMENTS_SUBSECTION}
+
 ## 8. Key Rules
 
 - **Peer collaboration follows the contract.** Cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
@@ -402,7 +435,11 @@ If you encounter a blocker you cannot resolve:
 
 ## 9. Writing
 
-${PROSE_RULES_BODY}`;
+${PROSE_RULES_BODY}
+
+### Narration
+
+${SPECIALIST_NARRATION}`;
 }
 
 function buildProfiledSpecialistPrompt(
@@ -488,13 +525,7 @@ Ensure your scratchpad section contains your full findings, peer input incorpora
 
 ### Verification Budget
 
-Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state. It changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
-
-- **While working, run SCOPED tests.** The files or suites your change touches. Fast feedback is yours to take freely.
-- **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
-- **Record every full-suite run** with \`team_record_verification\` : command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-- **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
-- Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+${VERIFICATION_BUDGET}
 
 ## 7. Peer Collaboration: Contract-Driven
 
@@ -546,7 +577,9 @@ function buildRulesSection(domainRules: string): string {
 - **No bandaid fixes.** Never implement workarounds, fallback logic, or backwards-compatibility shims that mask underlying issues. Address the root cause
 - **Root cause over symptoms.** Investigate WHY a problem occurs, not just WHAT is failing. A fix that doesn't address the root cause is not a fix
 - **No speculative abstractions.** Do not build helpers, utilities, or configurable layers for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
-- **No silent error swallowing.** No empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem`;
+- **No silent error swallowing.** No empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem
+
+${COMMENTS_SUBSECTION}`;
 
   const teamRules = `### Team Rules
 - **Peer collaboration follows the contract.** Cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
@@ -559,7 +592,11 @@ function buildRulesSection(domainRules: string): string {
 
   const writing = `### Writing
 
-${PROSE_RULES_BODY}`;
+${PROSE_RULES_BODY}
+
+### Narration
+
+${SPECIALIST_NARRATION}`;
 
   if (domainRules) {
     return `## 9. Rules

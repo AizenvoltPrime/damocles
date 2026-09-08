@@ -1,6 +1,7 @@
 import { ASK_USER_QUESTION_LIMITS, type Question, type QuestionAnnotations } from '../../../shared/types/permissions';
-import type { PermissionState } from '../state';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 export type ValidationResult =
   | { ok: true; questions: Question[] }
@@ -114,7 +115,7 @@ export class QuestionManager {
 
     return new Promise<QuestionResult>((resolve) => {
       const abortHandler = () => {
-        this.state.pendingQuestions.delete(toolUseId);
+        this.state.removePendingQuestion(toolUseId);
         resolve({ approved: false });
       };
 
@@ -122,14 +123,21 @@ export class QuestionManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingQuestion(toolUseId, { resolve, cleanup });
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestQuestion',
         toolUseId,
         questions,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingQuestion(toolUseId, { resolve, cleanup, request });
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }

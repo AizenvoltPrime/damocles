@@ -6,7 +6,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { IconChevronDown, IconChevronUp, IconRotateLeft } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
+
+// The card's figures follow the panel language, so a Greek reader gets Greek grouping, separators and units.
+const tokenFormat = computed(() => new Intl.NumberFormat(locale.value, { notation: 'compact' }));
+const costFormat = computed(() => new Intl.NumberFormat(locale.value, { style: 'currency', currency: 'USD' }));
 
 const props = defineProps<{
   marker: CompactMarkerType;
@@ -27,21 +31,34 @@ function requestRewind() {
 }
 
 const tokenReduction = computed(() => {
+  const format = tokenFormat.value;
   if (props.marker.postTokens) {
-    return `${formatTokenCount(props.marker.preTokens)}→${formatTokenCount(props.marker.postTokens)}`;
+    return `${format.format(props.marker.preTokens)}→${format.format(props.marker.postTokens)}`;
   }
-  return formatTokenCount(props.marker.preTokens);
+  return format.format(props.marker.preTokens);
 });
 
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1000000) {
-    return `${(tokens / 1000000).toFixed(1)}M`;
-  }
-  if (tokens >= 1000) {
-    return `${(tokens / 1000).toFixed(0)}k`;
-  }
-  return tokens.toString();
-}
+const triggerLabel = computed(() => {
+  if (props.marker.trigger === 'manual') return t('compactMarker.manual');
+  if (props.marker.trigger === 'overflow') return t('compactMarker.overflow');
+  return t('compactMarker.threshold');
+});
+
+// Manual gets no hint: the user started the compaction and already knows why it ran.
+const triggerHint = computed(() => {
+  if (props.marker.trigger === 'overflow') return t('compactMarker.triggerHintOverflow');
+  if (props.marker.trigger === 'threshold') return t('compactMarker.triggerHintThreshold');
+  return '';
+});
+
+const billedText = computed(() => {
+  const { billedTokens, billedCost } = props.marker;
+  if (billedTokens === undefined) return '';
+  const tokens = tokenFormat.value.format(billedTokens);
+  // Below a cent the dollar figure is noise, so state tokens alone. This mirrors pi's own notice.
+  if (billedCost === undefined || billedCost < 0.01) return t('compactMarker.billed', { tokens });
+  return t('compactMarker.billedWithCost', { tokens, cost: costFormat.value.format(billedCost) });
+});
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], {
@@ -86,21 +103,32 @@ function formatTimestamp(timestamp: number): string {
               <span class="text-sm font-semibold text-foreground">{{ t('compactMarker.title') }}</span>
               <div class="flex items-center gap-2 mt-0.5">
                 <span
-                  v-if="marker.trigger === 'auto'"
-                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-info/20 text-info border border-info/30"
+                  v-if="marker.trigger === 'manual'"
+                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-primary/20 text-primary border border-primary/30"
                 >
-                  {{ t('compactMarker.auto') }}
+                  {{ triggerLabel }}
+                </span>
+                <span
+                  v-else-if="marker.trigger === 'overflow'"
+                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-warning/20 text-warning border border-warning/30"
+                >
+                  {{ triggerLabel }}
                 </span>
                 <span
                   v-else
-                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-primary/20 text-primary border border-primary/30"
+                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-info/20 text-info border border-info/30"
                 >
-                  {{ t('compactMarker.manual') }}
+                  {{ triggerLabel }}
                 </span>
                 <span class="text-xs text-muted-foreground">{{ tokenReduction }} tokens</span>
                 <span class="text-xs text-muted-foreground">•</span>
                 <span class="text-xs text-muted-foreground">{{ formatTimestamp(marker.timestamp) }}</span>
+                <template v-if="billedText">
+                  <span class="text-xs text-muted-foreground">•</span>
+                  <span class="text-xs text-muted-foreground">{{ billedText }}</span>
+                </template>
               </div>
+              <span v-if="triggerHint" class="text-xs text-muted-foreground/80 mt-0.5 text-left">{{ triggerHint }}</span>
             </div>
           </div>
 

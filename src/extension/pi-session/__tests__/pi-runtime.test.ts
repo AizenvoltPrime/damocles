@@ -212,7 +212,7 @@ describe('unbound extension instances (B1)', () => {
         extendResources: () => undefined,
         getExtensions: () => ({ runtime: { pendingProviderRegistrations: [] } }),
       },
-      // 0.84's `refresh` resolves a `ModelsRefreshResult`, which `_hotReloadExtensions` now reads.
+      // 0.85's `refresh` resolves a `ModelsRefreshResult`, which `_hotReloadExtensions` now reads.
       modelRuntime: { registerProvider: () => undefined, refresh: async () => ({ aborted: false, errors: new Map() }) },
     };
     const internals = runtime as unknown as {

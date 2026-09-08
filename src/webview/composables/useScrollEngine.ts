@@ -67,6 +67,9 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
   if (item.type === 'thinking-block') return estimateThinkingHeight(item);
   if (item.type === 'compact-marker') return 36;
   if (item.type === 'cache-miss-notice') return 48;
+  // Both notice cards draw two text-xs lines in the same chrome, plus a third when the optional reason line renders.
+  if (item.type === 'compaction-aborted-notice') return item.compactionAborted?.errorMessage ? 86 : 68;
+  if (item.type === 'thinking-dropped-notice') return item.thinkingDropped?.reasons.length ? 86 : 68;
   if (item.type === 'error-message') return 32;
   if (item.type === 'refusal-message') return 110;
   if (item.type === 'background-label') return 32;

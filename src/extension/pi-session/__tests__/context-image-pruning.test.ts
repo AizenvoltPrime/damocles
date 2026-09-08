@@ -114,6 +114,35 @@ describe('pruneStaleImages — boundary policy', () => {
     expect(messages[2]).toBe(input[2]);
   });
 
+  /**
+   * pi replays a deterministic per-turn effort marker derived from each assistant message's persisted
+   * `providerThinkingLevel`, and a request whose marker is missing fails with `Invalid signature`. The
+   * pruner is Damocles' only outbound-context mutation, so identity on every non-`toolResult` message is
+   * what keeps that field on the wire. `toBe`, not `toEqual`: a `{ ...message }` spread passes structural
+   * equality while dropping nothing visible, and that is exactly the edit this rejects.
+   */
+  it('returns a thinking-carrying assistant message by identity across a real prune', () => {
+    const assistant = {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'planning' }],
+      api: 'anthropic',
+      provider: 'anthropic',
+      model: 'claude-fable-5-1',
+      usage: {} as never,
+      stopReason: 'stop' as const,
+      timestamp: 0,
+      providerThinkingLevel: 'low',
+    };
+    const input: AgentMessage[] = [assistant, ...toolResultsWithImages(10)];
+
+    const { messages, prunedCount } = pruneStaleImages(input);
+
+    // 10 images crosses the boundary, so this is a prune that really rewrote messages around it.
+    expect(prunedCount).toBe(6);
+    expect(messages[0]).toBe(assistant);
+    expect((messages[0] as { providerThinkingLevel?: string }).providerThinkingLevel).toBe('low');
+  });
+
   it('does not mutate the input array or message objects', () => {
     const input = toolResultsWithImages(7);
     const snapshot = JSON.parse(JSON.stringify(input));

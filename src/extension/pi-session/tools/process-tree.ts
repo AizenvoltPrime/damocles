@@ -263,8 +263,30 @@ export function killProcessTree(pid: number, job?: ShellJob): void {
       return;
     }
     const killer = spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', detached: true, windowsHide: true });
+    // One flag for both listeners, because a spawn failure reports an 'error' and an 'exit'.
+    let fellBack = false;
+    const killRoot = (): void => {
+      if (fellBack) return;
+      fellBack = true;
+      // The caller passes a pid rather than the handle, so a recycled pid would be signalled instead.
+      try {
+        process.kill(pid);
+        log('[ProcessTree] killed pid %d directly; anything it started is orphaned', pid);
+      } catch (error) {
+        log('[ProcessTree] pid %d was already gone, so nothing was killed: %O', pid, error);
+      }
+    };
     // An unhandled 'error' event on a ChildProcess takes the extension host down with it.
-    killer.on('error', (error) => log('[ProcessTree] taskkill failed: %O', error));
+    killer.on('error', (error) => {
+      log('[ProcessTree] taskkill could not be spawned for pid %d: %O', pid, error);
+      killRoot();
+    });
+    // A taskkill that spawns and then fails, access denied for one, reports only through its exit code.
+    killer.on('exit', (code) => {
+      if (code === 0) return;
+      log('[ProcessTree] taskkill exited with code %s for pid %d', code, pid);
+      killRoot();
+    });
     return;
   }
   try {

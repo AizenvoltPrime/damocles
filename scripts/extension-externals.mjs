@@ -25,6 +25,8 @@ export const EXTENSION_EXTERNALS = [
   '@earendil-works/pi-agent-core',
   '@earendil-works/pi-ai',
   '@earendil-works/pi-tui',
+  // pi-coding-agent imports this but does not declare it, so the closure walk cannot reach it.
+  '@earendil-works/pi-server',
   'jiti',
   'typebox',
   // MCP SDK — pure ESM ("type": "module") with deep subpath imports; kept external and loaded only via

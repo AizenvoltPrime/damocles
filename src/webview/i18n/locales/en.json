@@ -398,7 +398,8 @@
   "status": {
     "running": "Running {tool}...",
     "hook": "Hook: {event}",
-    "hooksCount": "{count} hooks"
+    "hooksCount": "{count} hooks",
+    "requiresAction": "Waiting for your answer"
   },
   "subagent": {
     "running": "Running",
@@ -864,8 +865,13 @@
   "compactMarker": {
     "boundary": "context boundary",
     "title": "Context Compacted",
-    "auto": "AUTO",
     "manual": "MANUAL",
+    "threshold": "THRESHOLD",
+    "overflow": "OVERFLOW",
+    "triggerHintThreshold": "Damocles compacted after context use crossed the configured threshold.",
+    "triggerHintOverflow": "Damocles compacted after the context overflowed mid-run.",
+    "billed": "{tokens} tokens billed",
+    "billedWithCost": "{tokens} tokens billed (~{cost})",
     "summary": "Summary",
     "summaryHeader": "Previous Context Summary",
     "noSummary": "No summary available for this compaction",
@@ -884,6 +890,20 @@
     "detail": "~{tokens} cached tokens re-billed (≈{cost})",
     "detailTokensOnly": "~{tokens} cached tokens re-billed",
     "idleHint": "after {minutes} min idle, the prompt cache had expired"
+  },
+  "compactionAborted": {
+    "title": "Compaction stopped before it finished",
+    "triggerManual": "You started this compaction.",
+    "triggerThreshold": "Damocles started it after context use crossed the configured threshold.",
+    "triggerOverflow": "Damocles started it after the context overflowed mid-run.",
+    "willRetry": "Damocles will retry it.",
+    "noRetry": "Damocles will not retry it, and the context is unchanged.",
+    "reason": "Reason: {message}"
+  },
+  "thinkingDropped": {
+    "titleOne": "Anthropic dropped a thinking block",
+    "titleMany": "Anthropic dropped {count} thinking blocks",
+    "meaning": "The model lost part of its reasoning chain on this turn."
   },
   "refusal": {
     "title": "Response Declined",

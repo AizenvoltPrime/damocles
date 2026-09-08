@@ -50,7 +50,7 @@ import {
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
- * under 0.84, so the only blocking I/O left is the `auth.json` / `models-store.json` locks — shared with
+ * under 0.85, so the only blocking I/O left is the `auth.json` / `models-store.json` locks, shared with
  * every other VS Code window and any `pi` CLI, while this gates all user input at startup. Not a user
  * setting: it is not a value anyone can reason about correctly.
  */
@@ -88,19 +88,6 @@ function assetResourceEntries(cwd: string, kind: 'skills' | 'commands'): AssetRe
 
 function assetResourcePaths(cwd: string, kind: 'skills' | 'commands'): string[] {
   return assetResourceEntries(cwd, kind).map((e) => e.path);
-}
-
-export interface PiCreateSessionOptions {
-  /** Working directory for the session. Defaults to the runtime's primary cwd. */
-  cwd?: string;
-  /** Model to run. When omitted, pi falls back to settings/first-available. */
-  model?: Model<Api>;
-  /** Damocles-supplied tools (Claude-Code-named), added to pi's built-ins. */
-  customTools?: ToolDefinition[];
-  /** pi built-in tool names to exclude (e.g. its lowercase bash/grep/find/ls). */
-  excludeTools?: string[];
-  /** When true, use an in-memory session store (no JSONL persistence). */
-  ephemeral?: boolean;
 }
 
 /**
@@ -179,7 +166,6 @@ export class PiRuntime {
   private _initPromise: Promise<void> | null = null;
   private _primaryCwd: string;
   private readonly _agentDir: string;
-  private readonly _sessions = new Set<AgentSession>();
   /** Live nested subagent sessions (Phase 5), disposed on completion or on runtime dispose. */
   private readonly _subagentSessions = new Set<AgentSession>();
   /** Per-panel gate context, keyed by pi sessionId. The shared Damocles extension routes through it. */
@@ -700,38 +686,6 @@ export class PiRuntime {
   }
 
   /**
-   * Create an `AgentSession` from the shared services. Auto-compaction is force-disabled at the
-   * session layer too (runtime half of B3, complementing the seeded settings.json).
-   *
-   * CALLERS MUST call `prepareSessionExtensions()` first — it is the only announcement that a bind is
-   * coming, and skipping it leaves the runtime claiming a now-live instance as unbound, so the next
-   * bare reload silently freezes that panel's ToolSearch menu. `PiSession`'s session factory calls it;
-   * nested subagent/team sessions need not, as `createSubagentSession` builds its own services.
-   */
-  async createSession(options: PiCreateSessionOptions = {}): Promise<AgentSession> {
-    await this.init();
-    const pi = getPiCodingAgent();
-    if (!pi || !this._services) throw new Error('PiRuntime.createSession: runtime not initialized');
-
-    const cwd = options.cwd ?? this._primaryCwd;
-    const sessionManager = options.ephemeral
-      ? pi.SessionManager.inMemory()
-      : pi.SessionManager.create(cwd);
-
-    const { session } = await pi.createAgentSessionFromServices({
-      services: this._services,
-      sessionManager,
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.customTools ? { customTools: options.customTools } : {}),
-      ...(options.excludeTools ? { excludeTools: options.excludeTools } : {}),
-    });
-
-    session.setAutoCompactionEnabled(false);
-    this._sessions.add(session);
-    return session;
-  }
-
-  /**
    * Create a nested subagent `AgentSession` (Phase 5, US-018.2). Builds per-subagent services that
    * REUSE the parent runtime's `modelRuntime` (so auth and the curated model list propagate; the
    * provider-registration pass inside `createAgentSessionServices` only re-upserts the already-present
@@ -770,7 +724,7 @@ export class PiRuntime {
         appendSystemPromptOverride: () => [],
         noContextFiles: true,
         // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:514-522), so an override would repopulate the list `noContextFiles`
+        // (resource-loader.ts:515-524), so an override would repopulate the list `noContextFiles`
         // just emptied and hand `prompt_mode: replace` agents the context they must not see.
         noSkills: true,
         noPromptTemplates: true,
@@ -800,7 +754,8 @@ export class PiRuntime {
 
     const { session } = await pi.createAgentSessionFromServices({
       services,
-      sessionManager: pi.SessionManager.inMemory(),
+      // Same cwd the services above were built with, so `getCwd()` and the agent's cwd agree.
+      sessionManager: pi.SessionManager.inMemory(opts.cwd),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
       tools: opts.tools,
@@ -941,7 +896,7 @@ export class PiRuntime {
       }
     }
     extensionsResult.runtime.pendingProviderRegistrations = [];
-    // 0.84 reports per-provider composition failures instead of throwing; unread, a provider whose
+    // 0.85 reports per-provider composition failures instead of throwing; unread, a provider whose
     // catalog silently fails to compose is invisible until a request against it fails.
     const refreshed = await modelRuntime.refresh({ allowNetwork: false });
     for (const [provider, err] of refreshed.errors) log('[PiRuntime] hot-reload refresh: provider %s failed: %s', provider, describeAuthError(err));
@@ -1280,13 +1235,6 @@ export class PiRuntime {
     }
   }
 
-  /** Stop tracking and dispose a session created by this runtime. */
-  forgetSession(session: AgentSession): void {
-    if (this._sessions.delete(session)) {
-      disposeSessionSafe(session);
-    }
-  }
-
   async dispose(): Promise<void> {
     this._disposed = true;
     // Cancel any in-flight credential sync so a closing window releases the auth.json lock at once.
@@ -1298,8 +1246,6 @@ export class PiRuntime {
         // init failure already surfaced to its own caller
       }
     }
-    for (const session of this._sessions) disposeSessionSafe(session);
-    this._sessions.clear();
     for (const session of this._subagentSessions) disposeSessionSafe(session);
     this._subagentSessions.clear();
     this._workspaceAgents?.dispose();

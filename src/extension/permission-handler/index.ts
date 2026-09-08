@@ -63,7 +63,7 @@ export class PermissionHandler {
       getPostMessage
     );
     this.evaluatorManager = new EvaluatorManager(this.state);
-    this.elicitationManager = new ElicitationManager(getPostMessage);
+    this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
 
     const config = vscode.workspace.getConfiguration('damocles');
     this.state.permissionMode = config.get<PermissionMode>('permissionMode', 'default');
@@ -103,6 +103,32 @@ export class PermissionHandler {
   /** Wire the `permission_required` notifier (US-009); supplied by PiSession with its sessionId + cwd. */
   setPermissionRequiredNotifier(fn: import('./types').PermissionRequiredNotifier | null): void {
     this.state.permissionRequiredNotifier = fn;
+  }
+
+  /** Wire the session-state publisher to every pending-prompt change. Supplied by PiSession. */
+  setPendingPromptsListener(fn: (() => void) | null): void {
+    this.state.onPendingChanged = fn;
+  }
+
+  /** Whether any prompt map on this panel's `PermissionState` still holds an unanswered prompt. */
+  hasPendingPrompts(): boolean {
+    return this.state.hasPendingPrompts();
+  }
+
+  /**
+   * Post every live prompt again, for a webview that restarted and came back with an empty dialog
+   * store while the awaiters behind those dialogs are still blocked.
+   *
+   * Each entry carries the exact message it was first posted with, so nothing is rebuilt and a
+   * re-posted prompt cannot drift from what its awaiter is waiting on. The dialogs go back in the
+   * order they were raised.
+   */
+  repostPendingPrompts(): void {
+    const postMessage = this.state.postMessageToWebview;
+    if (!postMessage) return;
+    for (const request of this.state.pendingPromptRequests.values()) {
+      postMessage(request);
+    }
   }
 
   /** Wire the canonical plan reader (the session's on-disk plan); used to source plan approval/handoff
@@ -247,7 +273,6 @@ export class PermissionHandler {
 
   async dispose(): Promise<void> {
     this.state.clearAll();
-    this.elicitationManager.clearAll();
     this.evaluatorManager.dispose();
     await this.diffManager.dispose();
   }

@@ -7,7 +7,7 @@ import { createBashToolDefinition, type ToolDefinition } from '@earendil-works/p
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { withPerCallCancel, SHELL_ABORTED_DETAIL_KEY } from '../cancellable-shell';
-import { ShellCancelStore, sanitizeCancelNote, MAX_CANCEL_NOTE_CHARS, type ShellCancelRegistry } from '../shell-cancel-registry';
+import { ShellCancelStore, sanitizeCancelNote, type ShellCancelRegistry } from '../shell-cancel-registry';
 import { createBashTool, type ShellOptions } from '../bash-tool';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../../shared/types/session';
 import { normalizeToolDetails } from '../../tool-normalization';
@@ -424,6 +424,22 @@ describe('ShellCancelStore: note delivery', () => {
     expect(delivered).toEqual(['wrong loop, use seq 1 5']);
   });
 
+  it('delivers a 5,000 character note whole, because the agent has to read what the user actually typed', async () => {
+    const { store, registry, delivered } = boundStore();
+    const note = 'a'.repeat(5_000);
+    const shell = abortingShell('partial', 'throws');
+    const wrapped = withPerCallCancel(shell.definition, registry);
+
+    const pending = wrapped.execute('call-12', { command: 'sleep 300' }, undefined, undefined, ctx);
+    await shell.started;
+    store.cancel('call-12', note);
+    await pending;
+
+    // Length first, so a truncation reports the count rather than dumping 5,000 characters.
+    expect(delivered[0]).toHaveLength(5_000);
+    expect(delivered[0]).toBe(note);
+  });
+
   it('ignores a second cancel for the same call, so a repeat Stop click queues no second user turn', async () => {
     const { store, registry, delivered } = boundStore();
     const shell = abortingShell('partial', 'throws');
@@ -559,18 +575,6 @@ describe('sanitizeCancelNote', () => {
 
   it('trims surrounding whitespace so a whitespace-only note counts as no note', () => {
     expect(sanitizeCancelNote('  \n  ')).toBe('');
-  });
-
-  it(`truncates at ${MAX_CANCEL_NOTE_CHARS} characters with an ellipsis`, () => {
-    expect(MAX_CANCEL_NOTE_CHARS).toBe(500);
-    expect(sanitizeCancelNote('a'.repeat(600))).toBe(`${'a'.repeat(500)}\u2026`);
-    // At the cap exactly, nothing is added.
-    expect(sanitizeCancelNote('a'.repeat(500))).toBe('a'.repeat(500));
-  });
-
-  it('caps a multi-line note by characters, counting the newlines it keeps', () => {
-    const note = `${'a'.repeat(300)}\n${'b'.repeat(300)}`;
-    expect(sanitizeCancelNote(note)).toBe(`${note.slice(0, 500)}\u2026`);
   });
 });
 

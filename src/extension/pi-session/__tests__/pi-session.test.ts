@@ -13,6 +13,9 @@ const H = vi.hoisted(() => {
   let bashExecute: (...a: never[]) => Promise<unknown> = async () => ({ content: [], details: undefined });
   let sessionCounter = 0;
   let lastSession: ReturnType<typeof makeSession> | null = null;
+  // The live adapter subscription, so a test can drive the real pi events a call emits before it
+  // settles — the only way to exercise a path where the adapter and the caller both see one failure.
+  let listener: ((event: unknown) => void) | null = null;
   // Opt-in: a test can swap the structural sessionManager fake for a REAL pi SessionManager on a
   // tmpdir, so the on-disk no-append-after-rm invariant is exercised rather than simulated.
   let sessionManagerFactory: (() => unknown) | null = null;
@@ -61,9 +64,10 @@ const H = vi.hoisted(() => {
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
       registryToolNames,
-      subscribe: vi.fn((_listener: unknown) => {
+      subscribe: vi.fn((listenerFn: unknown) => {
         seq.push('subscribe');
-        return () => seq.push('unsub');
+        listener = listenerFn as (event: unknown) => void;
+        return () => { listener = null; seq.push('unsub'); };
       }),
       setAutoCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
       compact: vi.fn(async () => ({ summary: 'summary', firstKeptEntryId: 'k1', tokensBefore: 100 })),
@@ -189,6 +193,7 @@ const H = vi.hoisted(() => {
     resetServices: () => { services = makeServices(); },
     getServices: () => services,
     getLastSession: () => lastSession,
+    fireEvent: (event: unknown) => { listener?.(event); },
     setSessionManagerFactory: (f: (() => unknown) | null) => { sessionManagerFactory = f; },
     setBashExecute: (fn: (...a: never[]) => Promise<unknown>) => { bashExecute = fn; },
   };
@@ -270,7 +275,7 @@ import * as realPi from '@earendil-works/pi-coding-agent';
 function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>): SessionOptions {
   return {
     cwd: '/cwd',
-    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {} } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, hasPendingPrompts: () => false } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -365,6 +370,32 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const fullNames = setActive.mock.calls.at(-1)?.[0] as string[];
     expect(fullNames).toContain('Edit');
     expect(fullNames).toContain('bash');
+    await session.dispose();
+  });
+
+  it('the authoritative active set never carries pi\'s lowercase `powershell`', async () => {
+    // pi 0.85.0 has its own `powershell` built-in (`tools/index.ts:95-104`, in `ToolName` and
+    // `allToolNames`), so it is eligible to be registered. Damocles' shell tool is `PowerShell`, and
+    // the two must not converge: `mapPiToolName`, the permission gate and the read-only-shell
+    // classifier all key off the exact spelling.
+    //
+    // What this pins is the set Damocles COMPUTES and writes through `setActiveToolsByName`, which is
+    // the last write and therefore authoritative. It goes red if someone adds `powershell` to
+    // `PI_NATIVE_ACTIVE_TOOLS`, or renames the custom `PowerShell` to pi's spelling. It does NOT
+    // observe pi's construction-time default set, which this write overrides regardless.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const setActive = H.getLastSession()!.setActiveToolsByName as ReturnType<typeof vi.fn>;
+
+    for (const mode of ['default', 'plan'] as const) {
+      setActive.mockClear();
+      await session.setPermissionMode(mode);
+      const names = setActive.mock.calls.at(-1)?.[0] as string[];
+      expect(names, `${mode} mode`).not.toContain('powershell');
+      // The other half of the same guarantee: the Damocles tool is present under its own spelling, so
+      // a rename to pi's name fails here rather than silently colliding with the built-in.
+      expect(names, `${mode} mode`).toContain('PowerShell');
+    }
     await session.dispose();
   });
 
@@ -1303,32 +1334,88 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  /**
+   * pi's manual `compact()` reports every outcome twice: once on its own `compaction_end` event, which
+   * the adapter translates, and once by rethrowing to the caller. These cases drive BOTH halves, so a
+   * de-duplication that only looks at the rethrow cannot pass them. The old fakes rejected without
+   * emitting `compaction_end`, which is a sequence pi never produces.
+   */
+  const compactFailing = (live: ReturnType<typeof H.getLastSession>, end: Record<string, unknown>, rethrow: Error): void => {
+    (live!.compact as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      H.fireEvent({ type: 'compaction_start', reason: 'manual' });
+      H.fireEvent({ type: 'compaction_end', reason: 'manual', result: undefined, willRetry: false, ...end });
+      throw rethrow;
+    });
+  };
+
+  const errorsOf = (messages: ExtensionToWebviewMessage[]): string[] =>
+    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error').map((m) => m.message);
+
   it('compact() surfaces a "nothing to compact" refusal as a friendly info notice, not an error', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
-    const live = H.getLastSession()!;
-    (live.compact as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Nothing to compact (session too small)'));
+    compactFailing(
+      H.getLastSession(),
+      { aborted: false, errorMessage: 'Compaction failed: Nothing to compact (session too small)' },
+      new Error('Nothing to compact (session too small)'),
+    );
 
     await session.compact();
 
-    expect(messages.some((m) => m.type === 'error')).toBe(false);
+    // The adapter deliberately reports nothing for this one, so `compact()` is still its only owner.
+    expect(errorsOf(messages)).toEqual([]);
     const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
     expect(notice?.notificationType).toBe('info');
     expect(notice?.message).toContain('Nothing to compact');
     await session.dispose();
   });
 
-  it('compact() still surfaces a genuine compaction failure as a red error', async () => {
+  it('compact() leaves a user-stopped compaction to the single compactionAborted card', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
-    const live = H.getLastSession()!;
-    (live.compact as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Compaction failed: Request failed: 500'));
+    compactFailing(H.getLastSession(), { aborted: true }, new Error('Compaction cancelled'));
 
     await session.compact();
 
-    expect(messages.some((m) => m.type === 'error')).toBe(true);
+    expect(messages.filter((m) => m.type === 'compactionAborted')).toHaveLength(1);
+    expect(errorsOf(messages)).toEqual([]);
+    expect(messages.some((m) => m.type === 'notification')).toBe(false);
+    await session.dispose();
+  });
+
+  it('compact() reads pi\'s own event, not the rethrown error shape, to know the abort was reported', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    // pi rethrows the original error, whose name and text vary with what raised it. Nothing here
+    // matches either, so a de-duplication built on the error shape would print a second card.
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    compactFailing(H.getLastSession(), { aborted: true }, abortError);
+
+    await session.compact();
+
+    expect(messages.filter((m) => m.type === 'compactionAborted')).toHaveLength(1);
+    expect(errorsOf(messages)).toEqual([]);
+    await session.dispose();
+  });
+
+  it('compact() surfaces a genuine compaction failure as exactly one red error', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    // pi prefixes its event message and rethrows the bare one, so the two cards never look alike.
+    compactFailing(
+      H.getLastSession(),
+      { aborted: false, errorMessage: 'Compaction failed: Request failed: 500' },
+      new Error('Request failed: 500'),
+    );
+
+    await session.compact();
+
+    expect(errorsOf(messages)).toEqual(['Compaction failed: Request failed: 500']);
     expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'info')).toBe(false);
     await session.dispose();
   });
@@ -2249,6 +2336,66 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     browserEnabled = false;
     session.refreshActiveTools();
     for (const n of BROWSER_PI_TOOL_NAMES) expect(lastActive(live), n).not.toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  /**
+   * Anthropic binds a thinking block's signature to the request prefix, and the tool NAME ARRAY is part
+   * of that prefix. Damocles recomputes the active set on settings toggles, MCP connects and
+   * permission-mode changes, so if any of those reordered the array it would invalidate thinking blocks
+   * on an event that changed nothing the user can see. Order, not membership, is what this pins.
+   */
+  it('applyActiveToolsForMode writes a byte-identical name array when nothing changed', async () => {
+    const cfg = subsystemsOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => ['mcp__ctx7__query_docs', 'mcp__ctx7__resolve_id'],
+      getServerStatuses: () => [],
+      getAllToolDescriptors: () => [],
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    const live = H.getLastSession()!;
+    // Put the MCP names in the registry so `reloadForMcpToolChange` takes its fast path and re-applies
+    // the set inline; the orphaned path defers the apply and would leave this event undriven.
+    live.registryToolNames.add('mcp__ctx7__query_docs');
+    live.registryToolNames.add('mcp__ctx7__resolve_id');
+
+    // A tool group loaded mid-conversation, because an array built from a Set union is where an ordering
+    // difference would actually show up.
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
+    const baseline = lastActive(live);
+    expect(baseline.length).toBeGreaterThan(0);
+
+    const applies = (): string[][] => (live.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]) as string[][];
+    const firstAfterActivation = applies().length;
+
+    // Each of the three real entry points, fired with every input unchanged. Counting applies before and
+    // after each one proves the event actually reached `applyActiveToolsForMode` rather than short-
+    // circuiting somewhere, which a plain total would not distinguish.
+    const beforeToggle = applies().length;
+    session.refreshActiveTools();
+    expect(applies().length).toBeGreaterThan(beforeToggle);
+
+    const beforeMcp = applies().length;
+    session.reloadForMcpToolChange();
+    expect(applies().length).toBeGreaterThan(beforeMcp);
+
+    const beforeMode = applies().length;
+    await session.setPermissionMode('default');
+    expect(applies().length).toBeGreaterThan(beforeMode);
+
+    // `toEqual` on an array compares element ORDER as well as membership, which is the whole point: a
+    // reordered active set still contains every name.
+    for (const names of applies().slice(firstAfterActivation)) expect(names).toEqual(baseline);
+
+    // Entering plan mode is a real prefix change and must still subtract, so the assertion above is not
+    // passing because every call is trivially the same array.
+    await session.setPermissionMode('plan');
+    expect(lastActive(live)).not.toEqual(baseline);
+    expect(lastActive(live)).not.toContain(TOOL_ENTER_PLAN_MODE);
 
     cfg.mockRestore();
     await session.dispose();

@@ -2,6 +2,42 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.25.0] - 2026-09-05
+
+Damocles runs on pi 0.85.0, and Claude Fable 5.1 replaces Fable 5. The transcript now reports a failed compaction and dropped reasoning, a Stop note arrives whole, and a session parked on a prompt reads as parked.
+
+### Added
+
+- **The transcript reports thinking blocks Anthropic dropped**, naming how many and why. Fable 5.1 binds each thinking block to the conversation prefix that produced it, so toggling plan mode or activating a tool group mid-conversation invalidates every block after it and the model loses part of its reasoning chain. New setting `damocles.showThinkingDroppedNotices`, on by default, because lost reasoning changes the answer rather than only the bill.
+
+- **A compaction boundary card states what the compaction billed**, in tokens and in dollars once the amount reaches a cent. Behind `damocles.showCacheMissNotices`, off by default.
+
+- **A session waiting on you reads as waiting, not as working.** A run parked on a tool approval, an `AskUserQuestion`, a browser input request, a plan approval, a skill approval, or an MCP elicitation shows a pulsing warning indicator instead of the working spinner, and returns to working the moment you answer. This covers a dialog raised by a team agent, which used to look like ninety seconds of progress.
+
+### Changed
+
+- **The pi runtime moves to 0.85.0** from 0.84.2, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. Damocles also declares `@earendil-works/pi-server` directly, because `pi-coding-agent` imports it without declaring it. That fifth package brings `@earendil-works/pi-protocol`, `chord`, `@stablelib/base64`, `fast-sha256` and `standardwebhooks` into the packaged extension.
+
+- **Claude Fable 5.1 replaces Claude Fable 5** in the model picker, the three team role settings, and both locales. A stored `claude-fable-5` migrates at activation and carries its reasoning effort across. Fable 5.1 reports a June 2026 knowledge cutoff against Fable 5's January 2026, and its cache reads cost a quarter as much.
+
+- **A Stop note has no length cap.** Damocles truncated it at 500 characters and appended an ellipsis. It still strips bidi controls and trims surrounding whitespace, so a whitespace-only note still counts as no note.
+
+- **A compaction that ran because context overflowed mid-run is distinguishable from one that ran because context use crossed the configured threshold.** Both used to report as `AUTO`.
+
+### Fixed
+
+- **A compaction that aborted said nothing, and one that failed said everything twice.** An abort cleared its own banner and left no transcript entry, so giving up looked identical to succeeding. A genuine failure printed two error cards, because pi reports the failure on its own event and then rethrows it. The transcript now states the trigger and whether a retry is coming, and the stream adapter is the only reporter of a compaction outcome. That also covers automatic compaction, where nothing catches a rethrow at all.
+
+- **A model id carrying a date rendered the date as a version.** `claude-opus-5` rendered as `Opus` with no version at all, and a dated `claude-opus-5-20260101` would have rendered as `Opus 5.20260101`. Session cards now read a version only where one exists.
+
+- **A stopped shell command, an MCP server, and the voice sidecar each survived shutdown when `taskkill.exe` was missing from `PATH` or refused the kill.** All three logged the failure and killed nothing. A taskkill that spawns and then exits non-zero reports only through its exit code, and none of the three read it. Damocles now puts the sidecar in a Windows job object at spawn and terminates that job on a forced stop, so its Python interpreter, NeMo workers and their VRAM go with it. That job needs Windows and koffi. Without it the sidecar falls back to `taskkill /F /T`, then to killing the root process alone, which orphans the workers and says so in the log. The shell and MCP paths fall back to killing the root process.
+
+- **A permission dialog could hang a turn forever.** A prompt raised on an already-cancelled turn registered an abort listener that could never fire, so the tool call never settled and the session stayed parked. A diff tab that refused to close stranded an approval the same way. Reloading the webview with a dialog open now re-posts that dialog instead of leaving the indicator pointing at one that is gone.
+
+- **Voice could not restart after the sidecar crashed.** Stopping it waited on an exit that had already happened, so the lock was never released and voice stayed dead until you reloaded the window.
+
+- **An in-memory session reported the extension host's working directory as its own.** Damocles now passes the workspace directory when it creates one. No tool path resolution changes: pi's filesystem tools take their directory from the session config, which subagent and team-agent sessions already built from the workspace.
+
 ## [2.24.0] - 2026-09-01
 
 Team agents stop when they say they are stopping, stop re-reading what they already hold, and a cost shown on a flat subscription is labelled an estimate.
@@ -3925,6 +3961,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.25.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.24.0...v2.25.0
 [2.24.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.23.0...v2.24.0
 [2.23.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.22.0...v2.23.0
 [2.22.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.21.2...v2.22.0

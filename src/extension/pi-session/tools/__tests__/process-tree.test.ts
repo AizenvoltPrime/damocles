@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { createShellJob, createShellSessionJob, killProcessTree } from '../process-tree';
 import { startShellSentinel } from '../shell-sentinel-client';
@@ -211,12 +212,75 @@ describe('platform dispatch', () => {
 
   it('falls back to the tree sweep on Windows when no job could be created', () => {
     setPlatform('win32');
+    // A bare emitter that never fires, or a passthrough spawn reaches the real taskkill: absent on a
+    // POSIX host, whose ENOENT would then send the fallback kill at a pid that host is free to own.
+    spawnMock.mockImplementationOnce(() => new EventEmitter() as unknown as ReturnType<typeof spawn>);
+    const kill = vi.spyOn(process, 'kill');
 
     killProcessTree(999_999, undefined);
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(spawnMock.mock.calls[0]?.[0]).toBe('taskkill');
     expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/F', '/T', '/PID', '999999']);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it('kills the root when taskkill cannot be spawned, so Stop still ends the shell', async () => {
+    setPlatform('win32');
+    const enoent: NodeJS.ErrnoException = new Error('spawn taskkill ENOENT');
+    enoent.code = 'ENOENT';
+    const killer = new EventEmitter();
+    // spawn reports a missing taskkill on a later tick as an 'error' event, never by throwing, so a
+    // stub that throws would pass against code that only logs.
+    spawnMock.mockImplementationOnce(() => {
+      setImmediate(() => killer.emit('error', enoent));
+      return killer as unknown as ReturnType<typeof spawn>;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    killProcessTree(4242, undefined);
+    await settle(0);
+
+    expect(kill).toHaveBeenCalledWith(4242);
+  });
+
+  it('kills the root when taskkill spawns and then exits non-zero, which emits no error event', async () => {
+    setPlatform('win32');
+    const killer = new EventEmitter();
+    // Access denied is the live case: taskkill starts, prints to stderr and exits 128, so the exit
+    // code is the only report of the failure.
+    spawnMock.mockImplementationOnce(() => {
+      setImmediate(() => killer.emit('exit', 128, null));
+      return killer as unknown as ReturnType<typeof spawn>;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    killProcessTree(4242, undefined);
+    await settle(0);
+
+    expect(kill).toHaveBeenCalledWith(4242);
+  });
+
+  it('kills the root once when a failed taskkill reports both an error and an exit', async () => {
+    setPlatform('win32');
+    const enoent: NodeJS.ErrnoException = new Error('spawn taskkill ENOENT');
+    enoent.code = 'ENOENT';
+    const killer = new EventEmitter();
+    // A spawn failure emits both events, so two independent listeners would kill the pid twice, and
+    // the second kill lands after the pid is free to be reused.
+    spawnMock.mockImplementationOnce(() => {
+      setImmediate(() => {
+        killer.emit('error', enoent);
+        killer.emit('exit', null, 'SIGTERM');
+      });
+      return killer as unknown as ReturnType<typeof spawn>;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+
+    killProcessTree(4242, undefined);
+    await settle(0);
+
+    expect(kill).toHaveBeenCalledTimes(1);
   });
 });
 

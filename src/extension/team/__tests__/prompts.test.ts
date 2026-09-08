@@ -256,6 +256,18 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **No speculative abstractions.** Reject helpers, utilities, or configurable layers built for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing.** Reject empty catch blocks, fallback return values that hide failures, or error handling that masks the real problem
 
+        ### Comments
+
+        A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
+         - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
+         - Never earns one: restating what the code does; change history ("used to say", "tried and removed"); arguments against alternatives you rejected; worked derivation tables; commented-out code; decorative banners; meta-commentary about the comment itself. Describe the code as it is now. Git holds the history.
+         - Never reference the current task, fix, or callers. That rots.
+         - Long derivations live in the project's design doc. Code carries a bare pointer to the section, never a paragraph summarising it, because a summary is a second copy that drifts.
+         - In source: no warning glyphs, no ALL-CAPS shouting, no rhetorical framing ("the trap is", "which is exactly why").
+         - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
+
+        Judge a specialist's comments against that policy during review. Section 4 Phase 1b governs test runs: you judge the ledger, you do not run suites yourself.
+
         When \`[REVIEW ROUND READY]\` arrives, the notification lists each specialist with the sections they authored and your read status per section (UNREAD, STALE, or up to date). You MUST call \`team_read_scratchpad\` for every section marked UNREAD or STALE before calling \`team_approve_specialist\`. Specialists may have revised their work in response to peer messages or self-checks, so your earlier reads can be stale. The approval gate rejects \`team_approve_specialist\` when a specialist's section is newer than your last read; it is not advisory. If you find violations, send corrections via \`team_request_revision\`; after the next \`[REVIEW ROUND READY]\`, re-read and then approve.
 
         ## 8. Synthesis Guidelines
@@ -318,7 +330,17 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - Cut the adverb or pick a stronger verb. "Runs quickly" becomes "is fast", or the measured number. An adverb propping up a weak verb means the verb is wrong.
         - No em dashes. Use a period or a comma, and do not substitute parentheses, an en dash, or a hyphen. If a thought needs separation, end the sentence.
         - Colons introduce a list or an example. They never join two clauses mid-sentence.
-        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale."
+        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale.
+
+        ### Narration
+
+        Narration is what you stream between tool calls. Nobody acts on it, so spend the fewest tokens that keep a reader oriented.
+        - Fragments. Drop articles and filler. One word where one word does. Each fact once.
+        - One short line per step at most, and none when the tool call speaks for itself. No preamble, no "now I will", no restating the plan, no recap of a result already on screen.
+        - Exact and unabbreviated: code, paths, symbols, error strings, tool names, numbers, units. Never invent abbreviations; a clipped word costs the same tokens and reads worse.
+        - Never drop not, never, no, only, or except. A flipped meaning costs more than every token it saved.
+        - Full sentences for a security warning, a destructive or irreversible action, or a question you need answered.
+        - Scratchpad contracts, specialist task prompts, messages to specialists and the \`team_synthesize_result\` output are deliverables, not narration. Write those in full prose."
       `);
     });
   });
@@ -469,6 +491,18 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **No speculative abstractions.** Reject helpers, utilities, or configurable layers built for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing.** Reject empty catch blocks, fallback return values that hide failures, or error handling that masks the real problem
 
+        ### Comments
+
+        A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
+         - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
+         - Never earns one: restating what the code does; change history ("used to say", "tried and removed"); arguments against alternatives you rejected; worked derivation tables; commented-out code; decorative banners; meta-commentary about the comment itself. Describe the code as it is now. Git holds the history.
+         - Never reference the current task, fix, or callers. That rots.
+         - Long derivations live in the project's design doc. Code carries a bare pointer to the section, never a paragraph summarising it, because a summary is a second copy that drifts.
+         - In source: no warning glyphs, no ALL-CAPS shouting, no rhetorical framing ("the trap is", "which is exactly why").
+         - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
+
+        Judge a specialist's comments against that policy during review. Section 4 Phase 1b governs test runs: you judge the ledger, you do not run suites yourself.
+
         When \`[REVIEW ROUND READY]\` arrives, the notification lists each specialist with the sections they authored and your read status per section (UNREAD, STALE, or up to date). You MUST call \`team_read_scratchpad\` for every section marked UNREAD or STALE before calling \`team_approve_specialist\`. Specialists may have revised their work in response to peer messages or self-checks, so your earlier reads can be stale. The approval gate rejects \`team_approve_specialist\` when a specialist's section is newer than your last read; it is not advisory. If you find violations, send corrections via \`team_request_revision\`; after the next \`[REVIEW ROUND READY]\`, re-read and then approve.
 
         ## 8. Synthesis Guidelines
@@ -533,6 +567,16 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - Colons introduce a list or an example. They never join two clauses mid-sentence.
         - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale.
 
+        ### Narration
+
+        Narration is what you stream between tool calls. Nobody acts on it, so spend the fewest tokens that keep a reader oriented.
+        - Fragments. Drop articles and filler. One word where one word does. Each fact once.
+        - One short line per step at most, and none when the tool call speaks for itself. No preamble, no "now I will", no restating the plan, no recap of a result already on screen.
+        - Exact and unabbreviated: code, paths, symbols, error strings, tool names, numbers, units. Never invent abbreviations; a clipped word costs the same tokens and reads worse.
+        - Never drop not, never, no, only, or except. A flipped meaning costs more than every token it saved.
+        - Full sentences for a security warning, a destructive or irreversible action, or a question you need answered.
+        - Scratchpad contracts, specialist task prompts, messages to specialists and the \`team_synthesize_result\` output are deliverables, not narration. Write those in full prose.
+
         ## PLAN MODE: READ-ONLY SESSION
 
         **The session is in PLAN mode.** This team exists to research, analyze, and deliver a plan, NOT to implement changes.
@@ -574,7 +618,71 @@ describe('plain-writing rules reach every team prompt', () => {
     it(`the ${name} prompt contains no em dash of its own`, () => {
       expect(prompt).not.toContain('—');
     });
+
+    // Narration is the one output class no consumer acts on, so it is the only one compressed. The
+    // exempt list is what keeps the compression off the work itself.
+    it(`the ${name} prompt compresses narration and exempts the deliverables`, () => {
+      expect(prompt).toContain('### Narration');
+      expect(prompt).toContain('Narration is what you stream between tool calls.');
+      expect(prompt).toContain('Fragments. Drop articles and filler.');
+      expect(prompt).toContain('No preamble, no "now I will", no restating the plan');
+      expect(prompt).toContain('are deliverables, not narration. Write those in full prose.');
+    });
   }
+
+  it('names the lead its own deliverables, and a specialist theirs', () => {
+    expect(prompts.lead).toContain(
+      'Scratchpad contracts, specialist task prompts, messages to specialists and the `team_synthesize_result` output are deliverables',
+    );
+    for (const prompt of [prompts.specialist, prompts.profiled]) {
+      expect(prompt).toContain(
+        'Scratchpad sections, peer messages and your `team_report_complete` summary are deliverables',
+      );
+    }
+  });
+
+  // Compression that flips a negation costs more than every token it saves, and these prompts are
+  // built out of negations (never poll, never sign off with standby, do NOT re-run at this fingerprint).
+  it('protects the negations from the compression it just asked for', () => {
+    for (const prompt of Object.values(prompts)) {
+      expect(prompt).toContain('Never drop not, never, no, only, or except.');
+    }
+  });
+
+  // Team prompts run in replace mode, so a policy the panel states reaches them only by being copied in.
+  it('every team prompt carries the comment policy the panel states', () => {
+    for (const prompt of Object.values(prompts)) {
+      expect(prompt).toContain('### Comments');
+      expect(prompt).toContain('A comment states a constraint the next editor would otherwise violate, then stops.');
+      expect(prompt).toContain('Earns a comment: coupled constants that must stay equal');
+      expect(prompt).toContain('Never earns one: restating what the code does');
+    }
+  });
+
+  // The specialists run the tests; the lead judges the ledger and would otherwise be told to run suites
+  // it is explicitly instructed not to run.
+  it('gives the specialists the test cadence and points the lead at the ledger instead', () => {
+    for (const prompt of [prompts.specialist, prompts.profiled]) {
+      expect(prompt).toContain('Run a test, type check, linter, or build when its result can change what you do next.');
+      expect(prompt).toContain('Run the narrowest command that answers the question');
+      expect(prompt).toContain('Watch mode never exits and blocks the session.');
+    }
+    expect(prompts.lead).not.toContain('Run the narrowest command that answers the question');
+    expect(prompts.lead).toContain('Section 4 Phase 1b governs test runs: you judge the ledger, you do not run suites yourself.');
+  });
+
+  // The shared cadence and the ledger say the same thing at different strengths, so the ledger is
+  // phrased as an addition. Two independent full-suite policies is how they drift into contradiction.
+  it('states the ledger as an addition to the shared cadence, not a second policy', () => {
+    for (const prompt of [prompts.specialist, prompts.profiled]) {
+      expect(prompt.indexOf('Run a test, type check, linter, or build')).toBeLessThan(
+        prompt.indexOf('In a team, verification is shared through the append-only'),
+      );
+      expect(prompt).toContain("A peer's entry at the CURRENT fingerprint makes your run provably redundant");
+      expect(prompt).toContain('Record every full-suite run with `team_record_verification`');
+      expect(prompt).toContain('Scoped runs while you work are free. Take them.');
+    }
+  });
 });
 
 describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
@@ -687,8 +795,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
     it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
       expect(prompt).toContain('### Verification Budget');
-      expect(prompt).toContain('**Before any full-suite run, check the ledger**');
-      expect(prompt).toContain('**Never re-run to re-confirm an unchanged tree.**');
+      expect(prompt).toContain('Before any full-suite run, check the ledger');
+      expect(prompt).toContain('The same command over a tree you have not changed since returns the same answer');
       expect(prompt).toContain('`team_record_verification`');
     });
 
@@ -758,13 +866,20 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Verification Budget
 
-        Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state. It changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
+        Run a test, type check, linter, or build when its result can change what you do next.
+         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
+         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
+         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
+         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
+         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
+         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+         - Use the project's single-run command. Watch mode never exits and blocks the session.
 
-        - **While working, run SCOPED tests.** The files or suites your change touches. Fast feedback is yours to take freely.
-        - **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
-        - **Record every full-suite run** with \`team_record_verification\` : command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-        - **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
-        - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+        In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
+         - Scoped runs while you work are free. Take them.
+         - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running.
+         - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
+         - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
 
         ## 5. Peer Collaboration: Contract-Driven
 
@@ -812,6 +927,16 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - **No speculative abstractions.** Do not build helpers, utilities, or configurable layers for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing.** No empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem
 
+        ### Comments
+
+        A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
+         - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
+         - Never earns one: restating what the code does; change history ("used to say", "tried and removed"); arguments against alternatives you rejected; worked derivation tables; commented-out code; decorative banners; meta-commentary about the comment itself. Describe the code as it is now. Git holds the history.
+         - Never reference the current task, fix, or callers. That rots.
+         - Long derivations live in the project's design doc. Code carries a bare pointer to the section, never a paragraph summarising it, because a summary is a second copy that drifts.
+         - In source: no warning glyphs, no ALL-CAPS shouting, no rhetorical framing ("the trap is", "which is exactly why").
+         - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
+
         ## 8. Key Rules
 
         - **Peer collaboration follows the contract.** Cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
@@ -834,7 +959,17 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - Cut the adverb or pick a stronger verb. "Runs quickly" becomes "is fast", or the measured number. An adverb propping up a weak verb means the verb is wrong.
         - No em dashes. Use a period or a comma, and do not substitute parentheses, an en dash, or a hyphen. If a thought needs separation, end the sentence.
         - Colons introduce a list or an example. They never join two clauses mid-sentence.
-        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale."
+        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale.
+
+        ### Narration
+
+        Narration is what you stream between tool calls. Nobody acts on it, so spend the fewest tokens that keep a reader oriented.
+        - Fragments. Drop articles and filler. One word where one word does. Each fact once.
+        - One short line per step at most, and none when the tool call speaks for itself. No preamble, no "now I will", no restating the plan, no recap of a result already on screen.
+        - Exact and unabbreviated: code, paths, symbols, error strings, tool names, numbers, units. Never invent abbreviations; a clipped word costs the same tokens and reads worse.
+        - Never drop not, never, no, only, or except. A flipped meaning costs more than every token it saved.
+        - Full sentences for a security warning, a destructive or irreversible action, or a question you need answered.
+        - Scratchpad sections, peer messages and your \`team_report_complete\` summary are deliverables, not narration. Write those in full prose."
       `);
     });
   });
@@ -935,8 +1070,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
     it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
       expect(prompt).toContain('### Verification Budget');
-      expect(prompt).toContain('**Before any full-suite run, check the ledger**');
-      expect(prompt).toContain('**Never re-run to re-confirm an unchanged tree.**');
+      expect(prompt).toContain('Before any full-suite run, check the ledger');
+      expect(prompt).toContain('The same command over a tree you have not changed since returns the same answer');
       expect(prompt).toContain('`team_record_verification`');
     });
 
@@ -1016,13 +1151,20 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Verification Budget
 
-        Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state. It changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
+        Run a test, type check, linter, or build when its result can change what you do next.
+         - Run the narrowest command that answers the question: the one file or test name you touched, not the whole suite.
+         - Save the full suite for the end of a change set and run it once, or when the project's workflow expects it before a commit.
+         - One passing run is the evidence a done-claim needs. The same command over a tree you have not changed since returns the same answer, so cite that run instead of repeating it.
+         - Editing comments, docs, or unrelated config cannot change a result. Don't re-run to confirm it.
+         - When a run fails, fix the cause and re-run only what failed. Return to the wider command once, after it passes.
+         - Read the code to learn how it behaves. A run tells you whether it still passes, not what it does.
+         - Use the project's single-run command. Watch mode never exits and blocks the session.
 
-        - **While working, run SCOPED tests.** The files or suites your change touches. Fast feedback is yours to take freely.
-        - **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
-        - **Record every full-suite run** with \`team_record_verification\` : command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
-        - **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
-        - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
+        In a team, verification is shared through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state, and it changes the instant anyone edits a file, so an entry vouches for exactly the tree it was recorded against.
+         - Scoped runs while you work are free. Take them.
+         - Before any full-suite run, check the ledger (\`team_record_verification\` returns it, or read the \`verification\` section). A peer's entry at the CURRENT fingerprint makes your run provably redundant: cite it instead of re-running.
+         - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
+         - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.
 
         ## 7. Peer Collaboration: Contract-Driven
 
@@ -1075,6 +1217,16 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - **No speculative abstractions.** Do not build helpers, utilities, or configurable layers for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing.** No empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem
 
+        ### Comments
+
+        A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
+         - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
+         - Never earns one: restating what the code does; change history ("used to say", "tried and removed"); arguments against alternatives you rejected; worked derivation tables; commented-out code; decorative banners; meta-commentary about the comment itself. Describe the code as it is now. Git holds the history.
+         - Never reference the current task, fix, or callers. That rots.
+         - Long derivations live in the project's design doc. Code carries a bare pointer to the section, never a paragraph summarising it, because a summary is a second copy that drifts.
+         - In source: no warning glyphs, no ALL-CAPS shouting, no rhetorical framing ("the trap is", "which is exactly why").
+         - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.
+
         ### Team Rules
         - **Peer collaboration follows the contract.** Cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
         - **Work within your assigned file boundaries.** Check the scratchpad for ownership; boundaries keep parallel work safe.
@@ -1096,7 +1248,17 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - Cut the adverb or pick a stronger verb. "Runs quickly" becomes "is fast", or the measured number. An adverb propping up a weak verb means the verb is wrong.
         - No em dashes. Use a period or a comma, and do not substitute parentheses, an en dash, or a hyphen. If a thought needs separation, end the sentence.
         - Colons introduce a list or an example. They never join two clauses mid-sentence.
-        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale."
+        - Use the natural count, never a forced three. Pick one term for a thing and repeat it rather than cycling synonyms. Write "from X to Y" only when X and Y sit on a real scale.
+
+        ### Narration
+
+        Narration is what you stream between tool calls. Nobody acts on it, so spend the fewest tokens that keep a reader oriented.
+        - Fragments. Drop articles and filler. One word where one word does. Each fact once.
+        - One short line per step at most, and none when the tool call speaks for itself. No preamble, no "now I will", no restating the plan, no recap of a result already on screen.
+        - Exact and unabbreviated: code, paths, symbols, error strings, tool names, numbers, units. Never invent abbreviations; a clipped word costs the same tokens and reads worse.
+        - Never drop not, never, no, only, or except. A flipped meaning costs more than every token it saved.
+        - Full sentences for a security warning, a destructive or irreversible action, or a question you need answered.
+        - Scratchpad sections, peer messages and your \`team_report_complete\` summary are deliverables, not narration. Write those in full prose."
       `);
     });
   });

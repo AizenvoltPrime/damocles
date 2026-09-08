@@ -1,10 +1,11 @@
-import type { PermissionState } from '../state';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type {
   CanUseToolContext,
   PermissionResult,
   PlanApprovalResult,
   PostMessageFn,
 } from '../types';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
 
 export class PlanManager {
@@ -90,7 +91,7 @@ export class PlanManager {
       const abortHandler = () => {
         const approved = !this.state.sessionAborting;
         log('[PlanManager] Abort signal on plan approval: toolUseId=%s, approved=%s', toolUseId, approved);
-        this.state.pendingPlanApprovals.delete(toolUseId);
+        this.state.removePendingPlanApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
@@ -103,14 +104,21 @@ export class PlanManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingPlanApproval(toolUseId, { resolve, cleanup });
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestPlanApproval',
         toolUseId,
         planContent,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingPlanApproval(toolUseId, { resolve, cleanup, request });
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+import { fileURLToPath } from 'url';
 import {
   CONTEXT_FILE_CANDIDATES,
   resolveGlobalContextFile,
@@ -9,8 +11,8 @@ import {
 } from '../context-files';
 
 /**
- * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:70-71`
- * (`loadContextFileFromDir`) at the pinned version `^0.84.2`. It is a literal, not an import,
+ * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:71-72`
+ * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^0.85.0`. It is a literal, not an import,
  * so a pi upgrade that changes the candidate order fails here instead of silently diverging.
  */
 const PI_CONTEXT_FILE_CANDIDATES = [
@@ -20,6 +22,55 @@ const PI_CONTEXT_FILE_CANDIDATES = [
   'CLAUDE.md',
   'CLAUDE.MD',
 ];
+
+/**
+ * The repo's only automated pin on the pi version. Three artifacts must agree: the range
+ * `context-files.ts` says it tracks, the range this file's candidate-list comment says it copied from,
+ * and the version actually installed. Editing any one alone goes red, which is the point: the prose
+ * ranges are the claim, and an unchecked claim is what let the 0.84.2 pin outlive its bump.
+ */
+describe('pi version pin', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const readRange = (file: string): string => {
+    const source = fs.readFileSync(file, 'utf8');
+    const match = /@earendil-works\/pi-coding-agent@([^`]+)`/.exec(source);
+    if (!match?.[1]) throw new Error(`no pi-coding-agent version range found in ${file}`);
+    return match[1];
+  };
+
+  /**
+   * Handles the caret form both comments use, and rejects anything else rather than guessing. Damocles
+   * declares no semver dependency, and inventing a general range parser to avoid one would be worse
+   * than refusing the forms this pin does not need.
+   */
+  const satisfiesCaret = (version: string, range: string): boolean => {
+    const parsed = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
+    if (!parsed) throw new Error(`unsupported range "${range}": this pin understands only ^X.Y.Z`);
+    const [major, minor, patch] = parsed.slice(1).map(Number) as [number, number, number];
+    const actual = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+    if (!actual) throw new Error(`unparseable installed version "${version}"`);
+    const [vMajor, vMinor, vPatch] = actual.slice(1).map(Number) as [number, number, number];
+    // npm widens a caret only up to the leftmost non-zero component, so ^0.85.0 is <0.86.0.
+    const upper: [number, number, number] = major === 0 ? [0, minor + 1, 0] : [major + 1, 0, 0];
+    const rank = ([a, b, c]: [number, number, number]): number => a * 1e12 + b * 1e6 + c;
+    const actualRank = rank([vMajor, vMinor, vPatch]);
+    return actualRank >= rank([major, minor, patch]) && actualRank < rank(upper);
+  };
+
+  it('the installed pi-coding-agent satisfies the range both comments name', () => {
+    const sourceRange = readRange(path.join(here, '..', 'context-files.ts'));
+    const testRange = readRange(fileURLToPath(import.meta.url));
+    expect(testRange).toBe(sourceRange);
+
+    // Read the manifest as a file: pi's `exports` map does not expose `./package.json`.
+    const manifest = path.join(here, '..', '..', '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json');
+    const installed = JSON.parse(fs.readFileSync(manifest, 'utf8')) as { version: string };
+    expect(
+      satisfiesCaret(installed.version, sourceRange),
+      `installed pi-coding-agent ${installed.version} does not satisfy ${sourceRange}`,
+    ).toBe(true);
+  });
+});
 
 describe('context-files', () => {
   let home: string;

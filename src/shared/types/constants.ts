@@ -41,14 +41,13 @@ export const MODEL_SUBSTITUTES: Readonly<Record<string, readonly string[]>> = {
 
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
-    value: "claude-fable-5",
-    displayName: "Fable 5",
+    value: "claude-fable-5-1",
+    displayName: "Fable 5.1",
     description: "Anthropic's most capable model for the most demanding work",
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    alwaysUses1mContext: true,
   },
   {
     value: "claude-opus-5",
@@ -58,7 +57,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    alwaysUses1mContext: true,
   },
   {
     value: "claude-opus-4-8",
@@ -68,7 +66,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    alwaysUses1mContext: true,
   },
   {
     value: "claude-sonnet-5",
@@ -78,7 +75,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    alwaysUses1mContext: true,
   },
   {
     value: "claude-haiku-4-5-20251001",
@@ -159,8 +155,8 @@ export const DEFAULT_MODELS: ModelInfo[] = [
 ];
 
 /**
- * Maps retired GPT model ids to their GPT-5.6 successors. Used to transparently migrate stored
- * `damocles.model` values (write-back at activation + read-mapping defense-in-depth).
+ * Maps retired model ids to their successors, across every provider. Used to transparently migrate
+ * stored `damocles.model` values (write-back at activation + read-mapping defense-in-depth).
  */
 export const LEGACY_MODEL_MAP: Record<string, string> = {
   'gpt-5.5': 'gpt-5.6-sol',
@@ -168,9 +164,10 @@ export const LEGACY_MODEL_MAP: Record<string, string> = {
   'gpt-5.4': 'gpt-5.6-terra',
   'gpt-5.4-mini': 'gpt-5.6-luna',
   'gpt-5.2': 'gpt-5.6-luna',
+  'claude-fable-5': 'claude-fable-5-1',
 };
 
-/** Returns the GPT-5.6 successor for a legacy model id, or the value unchanged if not legacy. */
+/** Returns the successor for a retired model id, or the value unchanged if not retired. */
 export function migrateLegacyModelValue(value: string): string {
   // Own-property lookup guards against inherited keys ("toString", "constructor") resolving to
   // prototype members instead of a real mapping.

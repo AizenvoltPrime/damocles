@@ -4,6 +4,7 @@ import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
 import { TOOL_OUTPUT_COALESCE_MS, ToolOutputCoalescer } from '../tool-output-coalescer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
+import type { TurnState } from '../session-state';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
@@ -50,6 +51,8 @@ function makeAdapter(
     modelValue?: () => string;
     defaultModelValue?: () => string;
     showCacheMissNotices?: () => boolean;
+    showThinkingDroppedNotices?: () => boolean;
+    onTurnStateChanged?: (state: TurnState) => void;
   },
 ): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
@@ -65,15 +68,17 @@ function makeAdapter(
     budgetLimit: () => null,
     sessionCost: () => 0,
     showCacheMissNotices: hooks?.showCacheMissNotices ?? (() => false),
+    showThinkingDroppedNotices: hooks?.showThinkingDroppedNotices ?? (() => true),
     onBudgetStop: () => undefined,
     onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
     onMidStreamBatchCommitted: hooks?.onMidStreamBatchCommitted ?? (() => undefined),
+    onTurnStateChanged: hooks?.onTurnStateChanged ?? (() => undefined),
     onAssistantTextFinal: vi.fn(),
   });
 }
 
 /** Adapter wired with a dollar budget limit + abort spy for the US-008 budget tests. */
-function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onStop: () => void): PiStreamAdapter {
+function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onStop: () => void, turns?: TurnState[]): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
   return new PiStreamAdapter({
     onMessage: (m) => out.push(m),
@@ -87,9 +92,11 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     budgetLimit: () => limit,
     sessionCost: () => 0,
     showCacheMissNotices: () => false,
+    showThinkingDroppedNotices: () => true,
     onBudgetStop: onStop,
     onUserMessageDelivered: () => false,
     onMidStreamBatchCommitted: () => undefined,
+    onTurnStateChanged: (state) => { turns?.push(state); },
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -156,7 +163,8 @@ function normalize(messages: ExtensionToWebviewMessage[]): unknown[] {
 describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   it('emits the SDK-equivalent logical sequence with tool renames and final text', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out);
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (s) => { turns.push(s); } });
     const session = fakeSession(PI_EVENTS);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-1');
@@ -164,7 +172,6 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 
     expect(normalize(out)).toEqual([
       { type: 'processing' },
-      { type: 'sessionStateChanged' },
       { type: 'systemInit' },
       { type: 'availableModels' },
       { type: 'modelUpdate' },
@@ -179,9 +186,10 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'tokenUsageUpdate', inputTokens: 100, outputTokens: undefined, cacheReadTokens: 5, cacheCreationTokens: 3 },
       { type: 'done', total_output_tokens: 42, hasCost: true },
       { type: 'processing' },
-      { type: 'sessionStateChanged' },
       { type: 'stopInfo' },
     ]);
+    // The adapter reports the turn lifecycle to its host instead of emitting sessionStateChanged.
+    expect(turns).toEqual(['running', 'idle']);
   });
 
   it('session-start modelUpdate reports the true workspace default, not the active panel model', () => {
@@ -247,13 +255,15 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 
   it('endTurnWithoutAgentRun releases the spinner (processing:false + idle) with no result card', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out);
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (s) => { turns.push(s); } });
     adapter.beginTurn('c'); // arms processing:true + running, as an extension command would
     out.length = 0;
+    turns.length = 0;
 
     adapter.endTurnWithoutAgentRun();
     expect(out.find((m) => m.type === 'processing' && m.isProcessing === false)).toBeDefined();
-    expect(out.find((m) => m.type === 'sessionStateChanged' && m.state === 'idle')).toBeDefined();
+    expect(turns).toEqual(['idle']);
     expect(out.find((m) => m.type === 'done')).toBeUndefined(); // no phantom result for a no-run turn
   });
 
@@ -443,7 +453,8 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 describe('PiStreamAdapter refusals (US-023)', () => {
   it('routes a model refusal (stopReason error + errorMessage) to a clean error, not authFailure', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out);
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (s) => { turns.push(s); } });
     const session = fakeSession([
       { type: 'message_start', message: { role: 'assistant', content: [] } },
       { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: "I'm sorry, but I can't help with that request." } } },
@@ -451,6 +462,7 @@ describe('PiStreamAdapter refusals (US-023)', () => {
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-refusal');
     out.length = 0;
+    turns.length = 0;
     session.play();
 
     const error = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error');
@@ -458,7 +470,7 @@ describe('PiStreamAdapter refusals (US-023)', () => {
     expect(out.some((m) => m.type === 'authFailure')).toBe(false);
     // Turn ends clean: processing stops and the session returns to idle.
     expect(out.some((m) => m.type === 'processing' && m.isProcessing === false)).toBe(true);
-    expect(out.some((m) => m.type === 'sessionStateChanged' && m.state === 'idle')).toBe(true);
+    expect(turns).toEqual(['idle']);
   });
 
   it('still routes a genuine auth error to authFailure (the heuristic is intact)', () => {
@@ -645,16 +657,17 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     // The host's real onBudgetStop is graceful: it never calls markAborted, so agent_end must settle
     // the turn exactly like a natural completion. This is the claim the US-008 tests never asserted.
-    const adapter = makeBudgetAdapter(out, 1.0, () => undefined);
+    const turns: TurnState[] = [];
+    const adapter = makeBudgetAdapter(out, 1.0, () => undefined, turns);
     const session = fakeSessionWithCost(turn(), () => 1.2);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     session.play();
 
     const tail = out.slice(out.findIndex((m) => m.type === 'done'));
-    expect(tail.map((m) => m.type)).toEqual(['done', 'processing', 'sessionStateChanged', 'stopInfo']);
+    expect(tail.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
     expect(tail[1]).toMatchObject({ isProcessing: false });
-    expect(tail[2]).toMatchObject({ state: 'idle' });
+    expect(turns).toEqual(['running', 'idle']);
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(false);
   });
 
@@ -675,9 +688,11 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
       budgetLimit: () => limit,
       sessionCost: () => cost,
       showCacheMissNotices: () => false,
+      showThinkingDroppedNotices: () => true,
       onBudgetStop: onStop,
       onUserMessageDelivered: () => false,
       onMidStreamBatchCommitted: () => undefined,
+      onTurnStateChanged: () => undefined,
       onAssistantTextFinal: vi.fn(),
     });
     const session = fakeSessionWithCost(turn(), () => cost);
@@ -858,10 +873,11 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
 
   it('a malformed entry (missing usage) does not throw out of the listener or block agent_end', () => {
     // getEntries returns a corrupt assistant entry with no `usage`; detectCacheMiss would throw on it.
-    // The cosmetic block must swallow it so the turn still settles (agent_end → sessionStateChanged idle).
+    // The cosmetic block must swallow it so the turn still settles (agent_end reports the idle turn state).
     const corruptPrior = { type: 'message', message: { role: 'assistant', provider: 'anthropic', model: 'x', timestamp: 0 } };
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { showCacheMissNotices: () => true, onTurnStateChanged: (s) => { turns.push(s); } });
     const session = fakeSession(missTurn(), {
       entries: [corruptPrior],
       modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
@@ -869,10 +885,11 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     out.length = 0;
+    turns.length = 0;
     expect(() => session.play()).not.toThrow();
     // No notice (detection failed), but the turn still settled to idle.
     expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
-    expect(out.some((m) => m.type === 'sessionStateChanged')).toBe(true);
+    expect(turns).toEqual(['idle']);
   });
 
   it('a healthy cache-hit turn (prompt served from cache) emits no notice even with the setting on', () => {

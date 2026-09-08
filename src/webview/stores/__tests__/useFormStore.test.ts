@@ -47,3 +47,38 @@ describe('useFormStore queue', () => {
     expect(s.queue).toHaveLength(0);
   });
 });
+
+describe('useFormStore against a re-posted form', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('ignores a form whose id it already shows', () => {
+    // The extension re-posts every pending prompt on webview ready, keeping the original toolUseId.
+    const s = useFormStore();
+    s.setForm(info('t1'));
+    s.setForm(info('t1'));
+
+    expect(s.pendingForm?.toolUseId).toBe('t1');
+    expect(s.queue).toHaveLength(0);
+  });
+
+  it('ignores a form whose id it already holds in the queue', () => {
+    const s = useFormStore();
+    s.setForm(info('t1'));
+    s.setForm(info('t2'));
+    s.setForm(info('t2'));
+
+    expect(s.queue.map((q) => q.toolUseId)).toEqual(['t2']);
+  });
+
+  it('does not resurrect a form the user already answered', () => {
+    const s = useFormStore();
+    s.setForm(info('t1'));
+    s.setForm(info('t2'));
+    s.setForm(info('t1'));
+    s.clearForm();
+
+    expect(s.pendingForm?.toolUseId).toBe('t2');
+    s.clearForm();
+    expect(s.pendingForm).toBeNull();
+  });
+});

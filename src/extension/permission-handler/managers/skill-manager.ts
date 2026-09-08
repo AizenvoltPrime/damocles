@@ -1,6 +1,7 @@
 import { loadSkillDescription } from '../../skills/utils';
-import type { PermissionState } from '../state';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMessageFn } from '../types';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 
 const ABORTED_BEFORE_ANSWER = 'The session was aborted before this skill approval was answered';
@@ -68,7 +69,7 @@ export class SkillManager {
 
     return new Promise<SkillApprovalResult>((resolve) => {
       const abortHandler = () => {
-        this.state.pendingSkillApprovals.delete(toolUseId);
+        this.state.removePendingSkillApproval(toolUseId);
         resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
@@ -76,15 +77,22 @@ export class SkillManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingSkillApproval(toolUseId, { resolve, cleanup });
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestSkillApproval',
         toolUseId,
         skillName,
         ...(skillDescription !== undefined ? { skillDescription } : {}),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingSkillApproval(toolUseId, { resolve, cleanup, request });
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }

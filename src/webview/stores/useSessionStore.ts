@@ -1,8 +1,12 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, SessionStats } from '@shared/types/session';
+import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, SessionStats } from '@shared/types/session';
+import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
+
+// Derived from the message union so a fourth state added there fails this file rather than reaching the UI as a string.
+export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>['state'];
 
 const DEFAULT_SESSION_STATS: SessionStats = {
   totalCostUsd: 0,
@@ -29,10 +33,17 @@ export const useSessionStore = defineStore('session', () => {
   const checkpointMessages = ref<Set<string>>(new Set());
   const compactMarkers = ref<CompactMarker[]>([]);
   const cacheMissNotices = ref<CacheMissNotice[]>([]);
+  const compactionAbortedNotices = ref<CompactionAbortedNotice[]>([]);
+  const thinkingDroppedNotices = ref<ThinkingDroppedNotice[]>([]);
   // Monotonic counter so two cache-miss notices sharing a timestamp still get distinct ids.
   let cacheMissSeq = 0;
+  // Two aborts inside one retry loop can land on the same millisecond, so the id needs its own counter.
+  let compactionAbortedSeq = 0;
+  // The notice timestamp is the assistant message's, so two drops on one turn would collide without this.
+  let thinkingDroppedSeq = 0;
   const sessionStats = ref<SessionStats>({ ...DEFAULT_SESSION_STATS });
   const lastAssistantMessage = ref<string | null>(null);
+  const sessionState = ref<SessionState>('idle');
 
   const selectedSession = computed(() => {
     if (!selectedSessionId.value) return null;
@@ -53,6 +64,8 @@ export const useSessionStore = defineStore('session', () => {
     const files = Object.values(accessedFiles.value);
     return files[files.length - 1]?.path;
   });
+
+  const isAwaitingUserAction = computed(() => sessionState.value === 'requires_action');
 
   function setCurrentSession(id: string | null) {
     currentSessionId.value = id;
@@ -118,7 +131,7 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages.value = new Set(messageIds);
   }
 
-  function addCompactMarker(trigger: 'manual' | 'auto', preTokens: number, postTokens?: number, summary?: string, timestamp?: number, messageCutoffTimestamp?: number, entryId?: string) {
+  function addCompactMarker(trigger: CompactionTrigger, preTokens: number, postTokens?: number, summary?: string, timestamp?: number, messageCutoffTimestamp?: number, entryId?: string, billedTokens?: number, billedCost?: number) {
     const ts = timestamp ?? Date.now();
     const marker: CompactMarker = {
       id: `compact-${ts}`,
@@ -129,6 +142,8 @@ export const useSessionStore = defineStore('session', () => {
       ...(summary !== undefined && { summary }),
       ...(messageCutoffTimestamp !== undefined && { messageCutoffTimestamp }),
       ...(entryId !== undefined && { entryId }),
+      ...(billedTokens !== undefined && { billedTokens }),
+      ...(billedCost !== undefined && { billedCost }),
     };
     compactMarkers.value = [...compactMarkers.value, marker];
   }
@@ -162,8 +177,35 @@ export const useSessionStore = defineStore('session', () => {
     cacheMissNotices.value = [...cacheMissNotices.value, notice];
   }
 
-  function clearCacheMissNotices() {
-    cacheMissNotices.value = [];
+
+  function addCompactionAbortedNotice(trigger: CompactionTrigger, willRetry: boolean, timestamp: number, errorMessage?: string) {
+    const notice: CompactionAbortedNotice = {
+      // Prefix-free, like the cache-miss id: the virtualizer adds its own `compaction-aborted-` prefix.
+      id: `${timestamp}-${compactionAbortedSeq++}`,
+      trigger,
+      willRetry,
+      timestamp,
+      ...(errorMessage !== undefined && { errorMessage }),
+    };
+    compactionAbortedNotices.value = [...compactionAbortedNotices.value, notice];
+  }
+
+
+  function addThinkingDroppedNotice(count: number, reasons: string[], timestamp: number) {
+    const notice: ThinkingDroppedNotice = {
+      // Prefix-free, like the cache-miss id: the virtualizer adds its own `thinking-dropped-` prefix.
+      id: `${timestamp}-${thinkingDroppedSeq++}`,
+      count,
+      reasons,
+      timestamp,
+    };
+    thinkingDroppedNotices.value = [...thinkingDroppedNotices.value, notice];
+  }
+
+  // These two notices annotate messages, so they go when a compaction removes the messages they sit against.
+  function dropTruncatedNotices(cutoffTimestamp: number) {
+    cacheMissNotices.value = cacheMissNotices.value.filter(n => n.timestamp > cutoffTimestamp);
+    thinkingDroppedNotices.value = thinkingDroppedNotices.value.filter(n => n.timestamp > cutoffTimestamp);
   }
 
   function updateStats(updates: Partial<SessionStats>) {
@@ -179,11 +221,18 @@ export const useSessionStore = defineStore('session', () => {
     lastAssistantMessage.value = message;
   }
 
+  // The extension derives this from its own pending-prompt maps, so the webview stores it as sent and never infers it.
+  function setSessionState(state: SessionState) {
+    sessionState.value = state;
+  }
+
   function clearSessionData() {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
     cacheMissNotices.value = [];
+    compactionAbortedNotices.value = [];
+    thinkingDroppedNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -201,6 +250,8 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
     cacheMissNotices.value = [];
+    compactionAbortedNotices.value = [];
+    thinkingDroppedNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -218,11 +269,15 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages,
     compactMarkers,
     cacheMissNotices,
+    compactionAbortedNotices,
+    thinkingDroppedNotices,
     sessionStats,
     lastAssistantMessage,
+    sessionState,
     selectedSession,
     selectedSessionDisplayName,
     lastAccessedFile,
+    isAwaitingUserAction,
     setCurrentSession,
     setSelectedSession,
     setResumedSession,
@@ -234,10 +289,13 @@ export const useSessionStore = defineStore('session', () => {
     updateLastCompactMarkerSummary,
     clearCompactMarkers,
     addCacheMissNotice,
-    clearCacheMissNotices,
+    addCompactionAbortedNotice,
+    addThinkingDroppedNotice,
+    dropTruncatedNotices,
     updateStats,
     clearContextStats,
     setLastAssistantMessage,
+    setSessionState,
     clearSessionData,
     $reset,
   };

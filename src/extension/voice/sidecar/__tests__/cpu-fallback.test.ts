@@ -44,6 +44,8 @@ vi.mock("../spawn", () => {
         child: child as unknown as SpawnResult["child"],
         port: 65000 + spawnedChildren.length,
         token: "test-token",
+        // The fake sidecar never reaches the kill path, so it needs no job to terminate.
+        job: undefined,
       };
     },
     pickEphemeralPort: async (): Promise<number> => 65000,

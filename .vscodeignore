@@ -11,6 +11,8 @@ node_modules/**
 !node_modules/@aws-sdk/**
 !node_modules/@aws/lambda-invoke-store/**
 !node_modules/@babel/runtime/**
+!node_modules/@earendil-works/chord/**/*.js
+!node_modules/@earendil-works/chord/**/*.json
 !node_modules/@earendil-works/pi-agent-core/**/*.js
 !node_modules/@earendil-works/pi-agent-core/**/*.json
 !node_modules/@earendil-works/pi-ai/**/*.js
@@ -34,6 +36,10 @@ node_modules/**
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.proto
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.svg
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.wasm
+!node_modules/@earendil-works/pi-protocol/**/*.js
+!node_modules/@earendil-works/pi-protocol/**/*.json
+!node_modules/@earendil-works/pi-server/**/*.js
+!node_modules/@earendil-works/pi-server/**/*.json
 !node_modules/@earendil-works/pi-telemetry/**/*.js
 !node_modules/@earendil-works/pi-telemetry/**/*.json
 !node_modules/@earendil-works/pi-tui/**/*.js
@@ -48,9 +54,9 @@ node_modules/**
 !node_modules/@koromix/koffi-*/**
 !node_modules/@modelcontextprotocol/sdk/**/*.js
 !node_modules/@modelcontextprotocol/sdk/**/*.json
-!node_modules/@opentelemetry/api/**
 !node_modules/@protobufjs/**
 !node_modules/@smithy/**
+!node_modules/@stablelib/base64/**
 !node_modules/@types/node/**
 !node_modules/@types/retry/**
 !node_modules/@vscode/ripgrep-*/**
@@ -59,12 +65,10 @@ node_modules/**
 !node_modules/agent-base/**
 !node_modules/ajv-formats/**
 !node_modules/ajv/**
-!node_modules/balanced-match/**
 !node_modules/base64-js/**
 !node_modules/bignumber.js/**
 !node_modules/body-parser/**
 !node_modules/bowser/**
-!node_modules/brace-expansion/**
 !node_modules/buffer-equal-constant-time/**
 !node_modules/bytes/**
 !node_modules/call-bind-apply-helpers/**
@@ -94,6 +98,7 @@ node_modules/**
 !node_modules/express/**
 !node_modules/extend/**
 !node_modules/fast-deep-equal/**
+!node_modules/fast-sha256/**
 !node_modules/fast-uri/**
 !node_modules/fetch-blob/**
 !node_modules/finalhandler/**
@@ -109,7 +114,6 @@ node_modules/**
 !node_modules/google-auth-library/**
 !node_modules/google-logging-utils/**
 !node_modules/gopd/**
-!node_modules/graceful-fs/**
 !node_modules/has-symbols/**
 !node_modules/hasown/**
 !node_modules/hono/**
@@ -117,7 +121,6 @@ node_modules/**
 !node_modules/http-proxy-agent/**
 !node_modules/https-proxy-agent/**
 !node_modules/iconv-lite/**
-!node_modules/ignore/**
 !node_modules/inherits/**
 !node_modules/ip-address/**
 !node_modules/ipaddr.js/**
@@ -133,15 +136,11 @@ node_modules/**
 !node_modules/jws/**
 !node_modules/koffi/**
 !node_modules/long/**
-!node_modules/lru-cache/**
-!node_modules/marked/**
 !node_modules/math-intrinsics/**
 !node_modules/media-typer/**
 !node_modules/merge-descriptors/**
 !node_modules/mime-db/**
 !node_modules/mime-types/**
-!node_modules/minimatch/**
-!node_modules/minipass/**
 !node_modules/ms/**
 !node_modules/negotiator/**
 !node_modules/node-domexception/**
@@ -167,7 +166,6 @@ node_modules/**
 !node_modules/patchright/**/*.json
 !node_modules/patchright/**/*.mjs
 !node_modules/path-key/**
-!node_modules/path-scurry/**
 !node_modules/path-to-regexp/**
 !node_modules/pkce-challenge/**
 !node_modules/protobufjs/**
@@ -189,7 +187,7 @@ node_modules/**
 !node_modules/side-channel-map/**
 !node_modules/side-channel-weakmap/**
 !node_modules/side-channel/**
-!node_modules/signal-exit/**
+!node_modules/standardwebhooks/**
 !node_modules/statuses/**
 !node_modules/toidentifier/**
 !node_modules/ts-algebra/**

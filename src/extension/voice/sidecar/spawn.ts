@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { delimiter } from "node:path";
+import { createShellJob, type ShellJob } from "../../pi-session/tools/process-tree";
 
 const SDK_STRIPPED_ENV_KEYS: readonly string[] = [
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -22,6 +23,8 @@ export type SpawnResult = {
   child: ChildProcess;
   port: number;
   token: string;
+  /** The Windows job holding the sidecar and its workers. Absent off win32 and when koffi is unusable. */
+  job: ShellJob | undefined;
 };
 
 export async function pickEphemeralPort(): Promise<number> {
@@ -81,5 +84,8 @@ export async function spawnSidecar(opts: SpawnOptions): Promise<SpawnResult> {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
-  return { child, port, token };
+  // Must stay the first statement after spawn: a worker forked before the assignment is outside the
+  // job permanently, and python starts loading torch immediately.
+  const job = child.pid === undefined ? undefined : createShellJob(child.pid, undefined);
+  return { child, port, token, job };
 }

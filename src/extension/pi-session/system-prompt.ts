@@ -1,4 +1,5 @@
 import { COMPASS_SYSTEM_PROMPT } from "../compass/system-prompt";
+import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "./code-rules";
 import { PROSE_RULE_BULLETS } from "./prose-rules";
 
 interface SystemPromptOptions {
@@ -15,6 +16,9 @@ interface SystemPromptOptions {
 
 export function getKnowledgeCutoff(model: string): string | null {
   const m = model.toLowerCase();
+  if (m.includes("claude-fable-5-1")) return "June 2026";
+  // A stored `claude-fable-5` only migrates where `migrateLegacyModelValue` runs, so the retired id
+  // still reaches here from a session file, a team role, or an un-migrated Explore card.
   if (m.includes("claude-fable-5")) return "January 2026";
   if (m.includes("claude-opus-5")) return "May 2026";
   if (m.includes("claude-opus-4-8")) return "January 2026";
@@ -27,6 +31,7 @@ export function getKnowledgeCutoff(model: string): string | null {
 
 function getModelDisplayName(model: string): string | null {
   const m = model.toLowerCase();
+  if (m.includes("claude-fable-5-1")) return "Fable 5.1";
   if (m.includes("claude-fable-5")) return "Fable 5";
   if (m.includes("claude-opus-5")) return "Opus 5";
   if (m.includes("claude-opus-4-8")) return "Opus 4.8";
@@ -81,23 +86,18 @@ function buildDoingTasksSection(webSearchEnabled: boolean): string {
 }
 
 /**
- * Its own section rather than a bullet in Doing tasks: the earns/never-earns enumeration is what makes
- * the rule actionable, and it does not compress into one bullet without losing the cases.
- *
- * The design-doc pointer is stated generically because the file name varies by project. A project that
- * wants its doc named literally says so in its own context file.
+ * Counterweight to the done-claim bullet in Doing tasks, which reads on its own as a licence to re-run
+ * anything at any time. The team prompts already bound this with a fingerprinted ledger; a panel session
+ * has no ledger, so the bound has to come from the rule that an unchanged tree returns the same answer.
  */
+const TEST_EXECUTION_SECTION = `# Running tests and checks
+${TEST_RUN_RULES_BODY}`;
+
 const COMMENTS_SECTION = `# Comments
-A comment states a constraint the next editor would otherwise violate, then stops. One line by default; two or three only when the constraint genuinely needs them. This standard is absolute: a heavily-commented file is not licence to add more, and existing walls of text are not a pattern to match.
- - Earns a comment: coupled constants that must stay equal, ordering requirements, platform or engine gotchas, ownership and authority rules, units and coordinate conventions, a bug workaround, what a magic number means, what a non-obvious test guards.
- - Never earns one: restating what the code does; change history ("used to say", "tried and removed"); arguments against alternatives you rejected; worked derivation tables; commented-out code; decorative banners; meta-commentary about the comment itself. Describe the code as it is now. Git holds the history.
- - Never reference the current task, fix, or callers. That rots.
- - Long derivations live in the project's design doc. Code carries a bare pointer to the section, never a paragraph summarising it, because a summary is a second copy that drifts.
- - In source: no warning glyphs, no ALL-CAPS shouting, no rhetorical framing ("the trap is", "which is exactly why").
- - When a premise becomes false, correct it everywhere it is asserted (source comments, rules files, design docs) in the same change.`;
+${COMMENT_RULES_BODY}`;
 
 const EXECUTING_WITH_CARE_SECTION = `# Executing actions with care
-Weigh reversibility and blast radius. Local, reversible actions (editing files, running tests) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
+Weigh reversibility and blast radius. Local, reversible actions (editing files, running a scoped test) are fine to take freely. Confirm with the user before anything destructive, hard to reverse, or visible beyond your local environment: deleting files/branches, dropping tables, rm -rf, force-push, git reset --hard, removing dependencies, editing CI/CD, pushing code, PR/issue activity, sending messages, or uploading content to third-party services (which may be cached even after deletion).
 
 Authorization is scoped, not blanket. Approving an action once doesn't authorize it in other contexts. Match your actions to what was requested, and unless durably authorized (e.g. CLAUDE.md), confirm first.
 
@@ -243,6 +243,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
     IDENTITY_SECTION,
     SYSTEM_SECTION,
     buildDoingTasksSection(!!options.webSearchEnabled),
+    TEST_EXECUTION_SECTION,
     COMMENTS_SECTION,
     EXECUTING_WITH_CARE_SECTION,
     TOOL_USAGE_SECTION,

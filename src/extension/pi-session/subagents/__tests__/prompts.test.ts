@@ -27,6 +27,46 @@ describe('buildAgentPrompt', () => {
     expect(out).toContain('<agent_instructions>\nEXTRA\n</agent_instructions>');
   });
 
+  // An agent's narration is billed to the parent's context window and the parent reads only the final
+  // result, so both modes carry the rule. Replace-mode agents have no tone rules of their own.
+  it('both modes carry the narration rule, exempting the final result and written files', () => {
+    for (const mode of ['replace', 'append'] as const) {
+      const out = buildAgentPrompt(cfg({ systemPrompt: 'BODY', promptMode: mode }), '/ws', ENV, 'PARENT PROMPT');
+      expect(out).toContain('# Narration');
+      expect(out).toContain('Narration is what you stream between tool calls.');
+      expect(out).toContain('Your final result to the parent agent, and anything you write into a file are deliverables');
+      expect(out).toContain('Never drop not, never, no, only, or except.');
+    }
+  });
+
+  // Append mode inherits the panel's `# Text output` cadence, which asks for an opening sentence and
+  // per-step updates. Without the override line the agent holds two contradictory cadences.
+  it('append mode alone declares the narration rule the winner over the inherited cadence', () => {
+    const append = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT PROMPT');
+    expect(append).toContain('This section replaces any narration or progress-update cadence stated earlier in this prompt.');
+    expect(append.indexOf('PARENT PROMPT')).toBeLessThan(append.indexOf('# Narration'));
+
+    const replace = buildAgentPrompt(cfg({ promptMode: 'replace', systemPrompt: 'BODY' }), '/ws', ENV);
+    expect(replace).not.toContain('This section replaces any narration');
+  });
+
+  // Capability gate, like compassBlock: Explore and Plan hold no write tool, so a comment policy and a
+  // test cadence would be tokens they cannot act on. Append-mode agents inherit both from the panel.
+  it('replace mode carries the comment and test rules only for an agent that writes files', () => {
+    const writer = buildAgentPrompt(cfg({ systemPrompt: 'BODY' }), '/ws', ENV, undefined, { writesFiles: true });
+    expect(writer).toContain('# Comments');
+    expect(writer).toContain('A comment states a constraint the next editor would otherwise violate, then stops.');
+    expect(writer).toContain('# Running tests and checks');
+    expect(writer).toContain('Run the narrowest command that answers the question');
+
+    const readOnly = buildAgentPrompt(cfg({ systemPrompt: 'BODY' }), '/ws', ENV);
+    expect(readOnly).not.toContain('# Comments');
+    expect(readOnly).not.toContain('# Running tests and checks');
+
+    const appendMode = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT', { writesFiles: true });
+    expect(appendMode).not.toContain('# Running tests and checks');
+  });
+
   it('append mode with no parent prompt falls back to the generic base', () => {
     const out = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV);
     expect(out).toContain('general-purpose coding agent');

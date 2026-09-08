@@ -21,7 +21,7 @@
  * and deletes any stored credential) — this both makes secret deletion take effect immediately and
  * sweeps legacy plaintext keys that Damocles ≤2.6 wrote into auth.json.
  *
- * pi 0.84 credential semantics: `setRuntimeApiKey` / `removeRuntimeApiKey` / `logout` serialize per
+ * pi 0.85 credential semantics: `setRuntimeApiKey` / `removeRuntimeApiKey` / `logout` serialize per
  * provider, and after committing the credential run an OFFLINE single-provider refresh plus an
  * availability probe that reads `auth.json` under a file lock — not 0.83's whole-runtime networked
  * refresh. All three honor `AuthOperationOptions.signal`, which truly cancels rather than orphaning an
@@ -159,7 +159,7 @@ export interface SyncCustomProvidersResult {
 
 /**
  * Last key applied per provider, so an unchanged key skips the re-apply. That re-apply no longer
- * refreshes the whole runtime under 0.84, but still enqueues a credential operation taking the
+ * refreshes the whole runtime under 0.85, but still enqueues a credential operation taking the
  * cross-process `auth.json` lock and re-probing availability — so the cache still earns its place, and
  * must NOT be deleted on the grounds that "the refresh is gone now". Keyed by runtime (WeakMap) so a
  * recreated runtime re-syncs from scratch.

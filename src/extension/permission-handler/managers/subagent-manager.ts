@@ -27,7 +27,7 @@ export class SubagentManager {
         }
         pending.cleanup();
         pending.resolve({ approved: true });
-        this.state.pendingApprovals.delete(toolUseId);
+        this.state.removePendingApproval(toolUseId);
 
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',

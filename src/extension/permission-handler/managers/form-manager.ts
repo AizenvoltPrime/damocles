@@ -1,6 +1,7 @@
 import type { FormSchema, FormFieldType, FormValues } from '../../../shared/types/forms';
-import type { PermissionState } from '../state';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, FormResolveResult, PostMessageFn } from '../types';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 export type FormValidationResult =
   | { ok: true; form: FormSchema }
@@ -179,15 +180,8 @@ export class FormManager {
     }
 
     return new Promise<FormResolveResult>((resolve) => {
-      // A signal already aborted before we subscribe will never fire 'abort' again, which would strand
-      // the form pending forever. Deny immediately.
-      if (context.signal.aborted) {
-        resolve({ approved: false });
-        return;
-      }
-
       const abortHandler = () => {
-        this.state.pendingForms.delete(toolUseId);
+        this.state.removePendingForm(toolUseId);
         resolve({ approved: false });
       };
 
@@ -195,14 +189,21 @@ export class FormManager {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      this.state.addPendingForm(toolUseId, { resolve, cleanup });
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
+      const request: ExtensionToWebviewMessage = {
         type: 'requestForm',
         toolUseId,
         form,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingForm(toolUseId, { resolve, cleanup, request });
+          postMessage(request);
+        },
+        onAborted: abortHandler,
       });
     });
   }

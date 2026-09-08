@@ -85,6 +85,12 @@ export const useQuestionStore = defineStore('question', () => {
   }
 
   function setQuestion(info: PendingQuestionInfo) {
+    // The extension re-posts every pending prompt when the webview reports ready, and the answer the
+    // user has already typed for this same prompt outlives that replay.
+    if (pendingQuestion.value?.toolUseId === info.toolUseId) {
+      pendingQuestion.value = info;
+      return;
+    }
     pendingQuestion.value = info;
     currentTabIndex.value = 0;
     selectedOptions.value = new Map();

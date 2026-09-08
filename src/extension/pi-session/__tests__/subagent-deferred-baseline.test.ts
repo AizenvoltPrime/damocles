@@ -354,7 +354,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:134-136):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:141-144):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,

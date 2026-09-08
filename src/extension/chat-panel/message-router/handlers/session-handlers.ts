@@ -18,8 +18,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
   return {
     ready: async (msg, ctx) => {
-      // The webview's dialog queue starts empty, so anything this side is still awaiting can no longer
-      // be answered. Released here, before any state is pushed back, so a reload cannot deadlock a
+      // The webview's dialog queue starts empty, so every modal this side is still awaiting is gone
+      // from screen. Posted again here, before any state is pushed back, so a reload cannot deadlock a
       // nested agent on a modal that no longer exists.
       ctx.session.onWebviewReady();
       try {

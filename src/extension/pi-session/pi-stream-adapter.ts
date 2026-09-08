@@ -10,6 +10,7 @@ import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
 import { joinResultText } from './tool-result-text';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
+import type { TurnState } from './session-state';
 
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
@@ -26,6 +27,10 @@ export interface PiStreamAdapterDeps {
   /** Whether to surface prompt-cache-miss transcript notices. The adapter is deliberately vscode-free
    *  and test-friendly, so the `damocles.showCacheMissNotices` setting is threaded as a per-call dep. */
   showCacheMissNotices: () => boolean;
+  /** Whether to surface dropped-thinking transcript notices. Separate from `showCacheMissNotices`, which
+   *  defaults to false: a dropped thinking block is a correctness event, not a cost curiosity, so
+   *  `damocles.showThinkingDroppedNotices` defaults to true and is threaded as its own per-call dep. */
+  showThinkingDroppedNotices: () => boolean;
   /** The parent session's current cumulative cost (USD) — used to combine with subagent cost (Phase 5). */
   sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
@@ -38,6 +43,9 @@ export interface PiStreamAdapterDeps {
   /** A delivered queued batch's pi user entry id is now committed to the tree (resolved at the next
    *  assistant message_start). Persist the mid-stream marker keyed to it. */
   onMidStreamBatchCommitted: (userEntryId: string) => void;
+  /** The turn's own lifecycle moved. PiSession derives and emits `sessionStateChanged` from it, so
+   *  the adapter never emits that message itself and a pending prompt can outrank this. */
+  onTurnStateChanged: (state: TurnState) => void;
   onAssistantTextFinal?: (text: string) => void;
 }
 
@@ -75,6 +83,26 @@ export function isNothingToCompact(message: string): boolean {
   return message.includes('Nothing to compact') || message.includes('Already compacted');
 }
 
+/**
+ * Anthropic sends the four binding-check codes below in a `thinking_dropped` transformation's `reason`.
+ * Rendering the raw code makes the user look up an API enum to read their own transcript, so each one
+ * gets a sentence. An unrecognized code falls through as itself rather than being hidden.
+ */
+function explainThinkingDroppedReason(reason: string): string {
+  switch (reason) {
+    case 'model_binding_mismatch':
+      return 'a different model wrote the reasoning, and the requested model may not read it';
+    case 'prefix_binding_mismatch':
+      return 'the conversation changed since the reasoning was written';
+    case 'organization_binding_mismatch':
+      return 'the reasoning was written under a different organization';
+    case 'end_user_binding_mismatch':
+      return 'the reasoning was written for a different end user';
+    default:
+      return reason;
+  }
+}
+
 /** The id of the last user-role message entry on the active branch — the turn's stable user entry id. */
 function lastUserEntryId(session: AgentSession): string | null {
   const sm = session.sessionManager;
@@ -94,7 +122,7 @@ function lastUserEntryId(session: AgentSession): string | null {
  * pi's `getLatestCompactionEntry`, scanned locally so this module never statically loads the ESM-only
  * pi package (it is `external` and reached via the dynamic loader; a static value import crashes tests).
  */
-function latestCompactionEntryId(session: AgentSession): string | null {
+export function latestCompactionEntryId(session: AgentSession): string | null {
   const sm = session.sessionManager;
   const branch = sm.getBranch(sm.getLeafId() ?? undefined);
   for (let i = branch.length - 1; i >= 0; i--) {
@@ -142,6 +170,9 @@ export class PiStreamAdapter {
   private _midStreamMarkerPending = false;
   /** Set by the keep-alive hold so the next `agent_end` does not emit idle/done (the turn continues). */
   private _holdNextAgentEnd = false;
+  /** Whether this adapter has already told the user how the running compaction ended. `PiSession.compact()`
+   *  reads it so pi's rethrow does not stack a second card on the one emitted from `compaction_end`. */
+  private _compactionReported = false;
   /** Whether a real agent run (LLM turn) was observed since `beginTurn`. An extension command handled
    *  inside `prompt()` runs synchronously and starts no run, so it emits no terminal event to settle the
    *  turn — the host uses this to release the spinner itself (see `endTurnWithoutAgentRun`). */
@@ -249,7 +280,7 @@ export class PiStreamAdapter {
 
     this._agentRunObserved = false;
     this.emit({ type: 'processing', isProcessing: true });
-    this.emit({ type: 'sessionStateChanged', state: 'running', sessionId: sid });
+    this.deps.onTurnStateChanged('running');
     this.emitSessionStartOnce();
 
     // Defer userMessageIdAssigned until the real pi user entry id is known (resolved on the first
@@ -297,13 +328,25 @@ export class PiStreamAdapter {
    *  idle without a phantom result card. */
   endTurnWithoutAgentRun(): void {
     this.emit({ type: 'processing', isProcessing: false });
-    this.emit({ type: 'sessionStateChanged', state: 'idle', sessionId: this.deps.sessionId() });
+    this.deps.onTurnStateChanged('idle');
   }
 
   /** Mark that the next `agent_end` is a keep-alive hold continuation — suppress its idle/done so the
    *  turn's "processing" state persists while the parent does another (synthesis) round. */
   holdNextAgentEnd(): void {
     this._holdNextAgentEnd = true;
+  }
+
+  /**
+   * Whether the adapter reported the compaction that just ended, clearing the flag as it answers. The
+   * adapter is the only reporter of a compaction outcome because it is the only one that sees an
+   * AUTOMATIC compaction, which pi drives internally with no `compact()` call to catch its rethrow.
+   * `PiSession.compact()` calls this in its rejection handler and reports only what the adapter did not.
+   */
+  takeCompactionReported(): boolean {
+    const reported = this._compactionReported;
+    this._compactionReported = false;
+    return reported;
   }
 
   /** A `sendMessage` arriving while a turn is active (mirrors the SDK in-flight guard). */
@@ -396,6 +439,7 @@ export class PiStreamAdapter {
           this.emitUsage(event.message.usage);
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
+          this.maybeEmitThinkingDroppedNotice(event.message);
           this.enforceBudgetInFlight(session);
         } else if (event.message.role === 'user' && !this._aborted) {
           // A user message delivered mid-run is a queued injection: the initial prompt lives in the
@@ -455,25 +499,47 @@ export class PiStreamAdapter {
         }
         break;
       case 'compaction_start': {
-        const trigger = event.reason === 'manual' ? 'manual' : 'auto';
+        // Scoped to the compaction that is starting, so an outcome reported for an earlier one cannot
+        // silence this one's rethrow.
+        this._compactionReported = false;
+        // `threshold` (the configured percentage was crossed) and `overflow` (pi hit the context ceiling
+        // mid-run) are different events, so the trigger reaches the webview as pi reports it.
+        const trigger = event.reason;
         this.emit({ type: 'preCompact', trigger });
         this.emit({ type: 'statusUpdate', status: 'compacting' });
-        if (trigger === 'auto') {
-          this.emit({ type: 'autoCompactTriggering', percentUsed: session.getContextUsage()?.percent ?? 0 });
+        if (trigger !== 'manual') {
+          this.emit({ type: 'autoCompactTriggering', percentUsed: session.getContextUsage()?.percent ?? 0, trigger });
         }
         break;
       }
       case 'compaction_end': {
-        const trigger = event.reason === 'manual' ? 'manual' : 'auto';
-        if (!event.aborted && event.errorMessage && !event.result) {
+        const trigger = event.reason;
+        if (event.aborted) {
+          // An abort clears both banners, so without this the user sees compaction start, stop, and
+          // learns nothing. `errorMessage` is optional on the event, `willRetry` is not.
+          // pi 0.85.0 hard-codes `willRetry: false` and omits `errorMessage` at all three abort sites;
+          // both are passed through so a later pi that varies them reaches the card without a code change.
+          this.emit({
+            type: 'compactionAborted',
+            trigger,
+            willRetry: event.willRetry,
+            ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+            timestamp: Date.now(),
+          });
+          this._compactionReported = true;
+        } else if (event.errorMessage && !event.result) {
           if (!isNothingToCompact(event.errorMessage)) {
             this.emit({ type: 'error', message: event.errorMessage });
+            this._compactionReported = true;
           }
-        } else if (!event.aborted && event.result) {
+        } else if (event.result) {
           const result = event.result;
           // Resolve the just-appended compaction entry id so the boundary card can branch the tree at
           // its parent (rewind-to-before-compaction). Conditionally included — never fabricated.
           const compactionEntryId = latestCompactionEntryId(session);
+          // What the summarizing call itself billed is a cost signal, so it rides the same opt-in gate
+          // as the cache-miss notice. The webview owns the threshold below which the dollar figure hides.
+          const usage = this.deps.showCacheMissNotices() ? result.usage : undefined;
           this.emit({
             type: 'compactBoundary',
             preTokens: result.tokensBefore,
@@ -482,11 +548,17 @@ export class PiStreamAdapter {
             ...(result.summary ? { summary: result.summary } : {}),
             timestamp: Date.now(),
             ...(compactionEntryId ? { entryId: compactionEntryId } : {}),
+            ...(usage
+              ? {
+                  billedTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+                  billedCost: usage.cost.total,
+                }
+              : {}),
           });
           if (result.summary) this.emit({ type: 'compactSummary', summary: result.summary });
         }
         this.emit({ type: 'statusUpdate', status: 'ready' });
-        if (trigger === 'auto') this.emit({ type: 'autoCompactComplete' });
+        if (trigger !== 'manual') this.emit({ type: 'autoCompactComplete' });
         break;
       }
       default:
@@ -688,6 +760,46 @@ export class PiStreamAdapter {
     }
   }
 
+  /**
+   * Emit a transcript notice when Anthropic dropped thinking blocks from this turn's request. Wrapped in
+   * try/catch for the same reason as the cache-miss notice above: a cosmetic notice runs in the
+   * message_end hot path and must NOT throw out of the listener, which would break pi's subscription
+   * chain AND skip the caller's enforceBudgetInFlight. The notice is keyed to the message's own
+   * timestamp so its id is stable and it sorts correctly.
+   */
+  private maybeEmitThinkingDroppedNotice(message: AssistantMessage): void {
+    try {
+      // The setting read lives inside the try too, so a config-read failure cannot break the listener.
+      if (!this.deps.showThinkingDroppedNotices()) return;
+      for (const diagnostic of message.diagnostics ?? []) {
+        if (diagnostic.type !== 'anthropic_input_transformations') continue;
+        const transformations = diagnostic.details?.['transformations'];
+        if (!Array.isArray(transformations)) continue;
+        // Anthropic returns `thinking_dropped` in the transformation's own `type` field and pi passes the
+        // diagnostic through untouched, so every field here is `unknown` and each one is narrowed.
+        // `path` is deliberately dropped: it indexes the wire request (`messages.4.content.0`), not the
+        // transcript, so it names nothing the reader of this card can find.
+        const dropped = transformations.flatMap((transformation): string[] => {
+          if (typeof transformation !== 'object' || transformation === null) return [];
+          const details = transformation as Record<string, unknown>;
+          if (details['type'] !== 'thinking_dropped') return [];
+          const reason = details['reason'];
+          return [typeof reason === 'string' ? explainThinkingDroppedReason(reason) : 'unknown reason'];
+        });
+        if (dropped.length === 0) continue;
+        log('[PiStreamAdapter] anthropic dropped %d thinking block(s): %s', dropped.length, dropped.join('; '));
+        this.emit({
+          type: 'thinkingDroppedNotice',
+          count: dropped.length,
+          reasons: dropped,
+          timestamp: message.timestamp,
+        });
+      }
+    } catch {
+      // Cosmetic hint only, so a malformed diagnostic must never disrupt the turn.
+    }
+  }
+
   private onAgentEnd(session: AgentSession): void {
     this._agentRunObserved = true;
     // Keep cost accounting accurate even for an aborted turn, but stop before the user-facing
@@ -715,7 +827,7 @@ export class PiStreamAdapter {
     };
     this.emit({ type: 'done', data: result });
     this.emit({ type: 'processing', isProcessing: false });
-    this.emit({ type: 'sessionStateChanged', state: 'idle', sessionId: sid });
+    this.deps.onTurnStateChanged('idle');
     this.emit({ type: 'stopInfo', ...(finalText ? { lastAssistantMessage: finalText } : {}) });
   }
 
@@ -782,7 +894,7 @@ export class PiStreamAdapter {
       this.emit({ type: 'error', message });
     }
     this.emit({ type: 'processing', isProcessing: false });
-    this.emit({ type: 'sessionStateChanged', state: 'idle', sessionId: this.deps.sessionId() });
+    this.deps.onTurnStateChanged('idle');
   }
 
   private elapsed(toolCallId: string): number {

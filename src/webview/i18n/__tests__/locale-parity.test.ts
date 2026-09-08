@@ -98,3 +98,18 @@ describe('MCP copy', () => {
     expect(EL.get('mcp.form.errors.nameShadowedByProject')).not.toContain(' server ');
   });
 });
+
+describe('session status copy', () => {
+  it('names the parked run in both locales', () => {
+    expect(EN.get('status.requiresAction')).toBeTruthy();
+    expect(EL.get('status.requiresAction')).toBeTruthy();
+  });
+
+  it('translates the parked label into Greek rather than shipping the English through', () => {
+    // A copied English string passes the key-parity check above and still reads as English in the bar.
+    const value = EL.get('status.requiresAction')!;
+
+    expect(value).not.toBe(EN.get('status.requiresAction'));
+    expect(value).toMatch(/^[\u0370-\u03ff\u1f00-\u1fff\s.,:!\u037e\u00b7]+$/);
+  });
+});

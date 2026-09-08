@@ -176,7 +176,10 @@ const {
   checkpointMessages,
   compactMarkers,
   cacheMissNotices,
+  compactionAbortedNotices,
+  thinkingDroppedNotices,
   sessionStats,
+  isAwaitingUserAction,
 } = storeToRefs(sessionStore);
 
 const taskStore = useTaskStore();
@@ -272,6 +275,10 @@ const { pinToBottom } = useAutoScroll(messageContainerRef, shouldAutoScroll);
 const compactMarkersList = computed(() => compactMarkers.value);
 
 const cacheMissNoticesList = computed(() => cacheMissNotices.value);
+
+const compactionAbortedNoticesList = computed(() => compactionAbortedNotices.value);
+
+const thinkingDroppedNoticesList = computed(() => thinkingDroppedNotices.value);
 
 useMessageHandler({
   messageContainerRef,
@@ -1213,6 +1220,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"
           :cache-miss-notices="cacheMissNoticesList"
+          :compaction-aborted-notices="compactionAbortedNoticesList"
+          :thinking-dropped-notices="thinkingDroppedNoticesList"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
           @rewind="handleBubbleRewind"
@@ -1289,6 +1298,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <!-- Status Bar with witty phrases (above input) -->
     <StatusBar
       :is-processing="isProcessing"
+      :awaiting-user-action="isAwaitingUserAction"
       :current-tool-name="currentRunningTool ?? undefined"
       :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
       :active-hooks="uiStore.activeHooks"

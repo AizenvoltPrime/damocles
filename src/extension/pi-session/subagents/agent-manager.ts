@@ -391,6 +391,7 @@ export class AgentManager {
     // while Explore/Plan's allowlist excludes it even when enabled, so a flag check would brief two
     // agents on tools they cannot call. Membership also self-maintains — no second list to sync.
     if (toolset.names.some((n) => COMPASS_PI_TOOL_NAMES.includes(n))) extras.compassBlock = COMPASS_AGENT_PROMPT;
+    if (!toolset.readOnly) extras.writesFiles = true;
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
     // Bind this subagent's browser tools to its OWN tab scope (keyed by record.id) so concurrent
     // subagents never clobber one another or the primary/main tab.

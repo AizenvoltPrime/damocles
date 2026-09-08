@@ -105,7 +105,6 @@ function submit(): void {
         ref="noteInput"
         v-model="note"
         rows="1"
-        maxlength="500"
         :placeholder="t('toolCall.cancelNotePlaceholder')"
         :aria-label="t('toolCall.cancelNotePlaceholder')"
         :style="{ maxHeight: `${MAX_NOTE_HEIGHT}px` }"

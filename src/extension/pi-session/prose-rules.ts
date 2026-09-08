@@ -32,6 +32,24 @@ const RULES: readonly string[] = [
 export const PROSE_RULE_BULLETS: string = RULES.map((rule) => ` - ${rule}`).join('\n');
 
 /**
+ * Narration is the only output class no consumer acts on: the user skims it, peers read the scratchpad,
+ * and a parent agent reads the final result. Compressing it costs nothing in work quality, which is why
+ * it gets a harder register than the prose rules above. Each surface names its own exempt artifacts,
+ * because compressing THOSE would change what other agents do.
+ *
+ * Headingless, like `PROSE_RULES_BODY`: the caller supplies the heading level its outline uses.
+ */
+export function buildNarrationRule(exemptArtifacts: string): string {
+  return `Narration is what you stream between tool calls. Nobody acts on it, so spend the fewest tokens that keep a reader oriented.
+- Fragments. Drop articles and filler. One word where one word does. Each fact once.
+- One short line per step at most, and none when the tool call speaks for itself. No preamble, no "now I will", no restating the plan, no recap of a result already on screen.
+- Exact and unabbreviated: code, paths, symbols, error strings, tool names, numbers, units. Never invent abbreviations; a clipped word costs the same tokens and reads worse.
+- Never drop not, never, no, only, or except. A flipped meaning costs more than every token it saved.
+- Full sentences for a security warning, a destructive or irreversible action, or a question you need answered.
+- ${exemptArtifacts} are deliverables, not narration. Write those in full prose.`;
+}
+
+/**
  * Headingless so each replace-mode prompt can supply the heading level its own outline uses. The
  * agent prompts are top-level `#`, the team prompts are numbered `##`.
  */

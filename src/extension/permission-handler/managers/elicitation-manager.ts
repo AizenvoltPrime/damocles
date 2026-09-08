@@ -1,16 +1,14 @@
 import type { ElicitationRequest, ElicitationResult } from '../../../shared/types/elicitation';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { PostMessageFn } from '../types';
 
-interface PendingElicitation {
-  resolve: (result: ElicitationResult) => void;
-  cleanup: () => void;
-}
-
 export class ElicitationManager {
-  private pendingElicitations: Map<string, PendingElicitation> = new Map();
+  private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
 
-  constructor(getPostMessage: () => PostMessageFn | null) {
+  constructor(state: PermissionState, getPostMessage: () => PostMessageFn | null) {
+    this.state = state;
     this.getPostMessage = getPostMessage;
   }
 
@@ -22,7 +20,7 @@ export class ElicitationManager {
 
     return new Promise<ElicitationResult>((resolve) => {
       const abortHandler = () => {
-        this.pendingElicitations.delete(request.elicitationId);
+        this.state.removePendingElicitation(request.elicitationId);
         resolve({ action: 'cancel' });
       };
 
@@ -30,10 +28,7 @@ export class ElicitationManager {
         signal.removeEventListener('abort', abortHandler);
       };
 
-      this.pendingElicitations.set(request.elicitationId, { resolve, cleanup });
-      signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
+      const message: ExtensionToWebviewMessage = {
         type: 'requestElicitation',
         elicitationId: request.elicitationId,
         serverName: request.serverName,
@@ -41,24 +36,25 @@ export class ElicitationManager {
         mode: request.mode,
         ...(request.url !== undefined ? { url: request.url } : {}),
         ...(request.requestedSchema !== undefined ? { requestedSchema: request.requestedSchema } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal,
+        toolUseId: request.elicitationId,
+        register: () => {
+          this.state.addPendingElicitation(request.elicitationId, { resolve, cleanup, request: message });
+          postMessage(message);
+        },
+        onAborted: abortHandler,
       });
     });
   }
 
   resolveElicitation(elicitationId: string, result: ElicitationResult): void {
-    const pending = this.pendingElicitations.get(elicitationId);
+    const pending = this.state.removePendingElicitation(elicitationId);
     if (!pending) return;
 
-    this.pendingElicitations.delete(elicitationId);
     pending.cleanup();
     pending.resolve(result);
-  }
-
-  clearAll(): void {
-    for (const [, pending] of this.pendingElicitations) {
-      pending.cleanup();
-      pending.resolve({ action: 'cancel' });
-    }
-    this.pendingElicitations.clear();
   }
 }

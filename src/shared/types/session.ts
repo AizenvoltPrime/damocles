@@ -23,15 +23,20 @@ export interface IdeContextDisplayInfo {
   lineCount?: number;
 }
 
+/** What started a compaction. The webview branches its trigger hint on all three. */
+export type CompactionTrigger = "manual" | "threshold" | "overflow";
+
 export interface CompactMarker {
   id: string;
   timestamp: number;
-  trigger: "manual" | "auto";
+  trigger: CompactionTrigger;
   preTokens: number;
   postTokens?: number;
   summary?: string;
   messageCutoffTimestamp?: number;
   entryId?: string;
+  billedTokens?: number;
+  billedCost?: number;
 }
 
 export interface CacheMissNotice {
@@ -40,6 +45,21 @@ export interface CacheMissNotice {
   missedCost: number;
   idleMs: number;
   modelChanged: boolean;
+  timestamp: number;
+}
+
+export interface CompactionAbortedNotice {
+  id: string;
+  trigger: CompactionTrigger;
+  willRetry: boolean;
+  errorMessage?: string;
+  timestamp: number;
+}
+
+export interface ThinkingDroppedNotice {
+  id: string;
+  count: number;
+  reasons: string[];
   timestamp: number;
 }
 

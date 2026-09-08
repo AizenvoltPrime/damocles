@@ -1,12 +1,8 @@
 import { stripBidiControls } from '../untrusted-text';
 
-/** Mirrored by `maxlength` on the webview note textarea; this one is the cap that actually holds. */
-export const MAX_CANCEL_NOTE_CHARS = 500;
-
-/** Newlines are meaningful in the note box and must survive; only bidi controls are stripped, and the cap is applied last so it counts what survives. */
+/** Newlines are meaningful in the note box and must survive, so only bidi controls are stripped. */
 export function sanitizeCancelNote(note: string): string {
-  const stripped = stripBidiControls(note).trim();
-  return stripped.length > MAX_CANCEL_NOTE_CHARS ? `${stripped.slice(0, MAX_CANCEL_NOTE_CHARS)}…` : stripped;
+  return stripBidiControls(note).trim();
 }
 
 /** A user cancellation of one shell call. `note` is absent when the user sent none. */
