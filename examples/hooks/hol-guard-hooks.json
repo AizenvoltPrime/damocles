@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "tool_call": [
+      {
+        "match": "Bash",
+        "command": [
+          "node",
+          "${workspaceFolder}/examples/hooks/hol-guard-pretool.mjs"
+        ],
+        "timeoutMs": 12000,
+        "description": "HOL Guard"
+      }
+    ]
+  }
+}
