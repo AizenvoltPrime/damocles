@@ -296,7 +296,7 @@ print(json.dumps({"session_title": "Investigating the flaky test"}))
     "tool_call": [
       {
         "match": "Bash",
-        "command": ["python", "${userHome}/.damocles/hooks/hol_guard_pretool.py"],
+        "command": ["uv", "run", "${userHome}/.damocles/hooks/hol_guard_pretool.py"],
         "timeoutMs": 12000,
         "description": "HOL Guard"
       }
@@ -305,7 +305,7 @@ print(json.dumps({"session_title": "Investigating the flaky test"}))
 }
 ```
 
-The adapter fails closed. It returns no override only when Guard reports `classification.explicitly_benign: true` with `minimum_action: "allow"`; review, risky, malformed, unavailable, or timed-out Guard results deny the call.
+The adapter fails closed. It steps aside only when Guard reports `classification.explicitly_benign: true` with `minimum_action: "allow"`. Review, risky, malformed, unavailable, and timed-out Guard results all deny the call.
 
 ---
 
