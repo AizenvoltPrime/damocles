@@ -274,7 +274,7 @@ print(json.dumps({"decision": "deny", "terminate": True, "reason": "policy: this
 ```
 
 **Rewrite a tool's input** — return the uniform tool shape; Damocles maps it to the engine's native shape
-before it runs:
+before the tool runs:
 
 ```python
 print(json.dumps({"updated_input": {"file_path": "/safe/redirect.txt"}}))
