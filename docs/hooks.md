@@ -286,6 +286,27 @@ print(json.dumps({"updated_input": {"file_path": "/safe/redirect.txt"}}))
 print(json.dumps({"session_title": "Investigating the flaky test"}))
 ```
 
+### Third-party guards
+
+[HOL Guard](https://github.com/hashgraph-online/hol-guard) can inspect `Bash` calls before they run. Install `hol-guard` on `PATH`, copy the maintained [Damocles adapter](https://github.com/kantorcodes/hol-guard/blob/distribution/damocles-hook-adapter/examples/integrations/damocles/hol_guard_pretool.py), and point a global hook at it:
+
+```jsonc
+{
+  "hooks": {
+    "tool_call": [
+      {
+        "match": "Bash",
+        "command": ["python", "${userHome}/.damocles/hooks/hol_guard_pretool.py"],
+        "timeoutMs": 12000,
+        "description": "HOL Guard"
+      }
+    ]
+  }
+}
+```
+
+The adapter fails closed. It returns no override only when Guard reports `classification.explicitly_benign: true` with `minimum_action: "allow"`; review, risky, malformed, unavailable, or timed-out Guard results deny the call.
+
 ---
 
 ## Cross-platform notes
