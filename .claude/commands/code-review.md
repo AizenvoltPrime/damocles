@@ -8,6 +8,6 @@ Report **every** issue each reviewer found — never summarise to "the notable o
 
 Structure the final answer as one section per reviewer group, and within each group order findings by severity (Blocker → High → Medium → Low → Nit). For each finding keep the reviewer's `file:line`, the concrete problem, why it matters, and the suggested fix. Also carry over each group's "verified clean" notes and its verdict, and close with the total count per severity band.
 
-Where two groups found the same underlying defect, report it in both places and note the link rather than deduplicating it away.
+Where two groups found the same underlying defect, report it once, under the group whose scope owns it, and drop the duplicate.
 
 $ARGUMENTS
