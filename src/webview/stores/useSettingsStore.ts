@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, ContextWarningLevel, PanelThinkingState } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState } from '@shared/types/settings';
 import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -10,7 +10,7 @@ import {
   DEFAULT_END_OF_TURN_MS,
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
-import { DEFAULT_MODELS } from '@shared/types/constants';
+import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
 
 /**
  * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
@@ -46,6 +46,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   enableFileCheckpointing: true,
   sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
+  cacheWarming: DEFAULT_CACHE_WARMING,
   dangerouslySkipPermissions: false,
   defaultDangerouslySkipPermissions: false,
   ideContextEnabled: true,
@@ -309,6 +310,10 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.autoCompact = config;
   }
 
+  function setCacheWarmingMode(mode: CacheWarmingMode) {
+    currentSettings.value.cacheWarming = mode;
+  }
+
   function setModelState(active: string, newDefault: string) {
     activeModel.value = active;
     defaultModel.value = newDefault;
@@ -471,6 +476,7 @@ export const useSettingsStore = defineStore('settings', () => {
     clearAutoCompactTriggered,
     dismissContextWarning,
     updateAutoCompactConfig,
+    setCacheWarmingMode,
     setModelState,
     voiceConfig,
     voiceHasApiKey,

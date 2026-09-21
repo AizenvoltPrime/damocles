@@ -10,6 +10,7 @@
   "Failed to delete session: {0}": "Failed to delete session: {0}",
   "Failed to save team role model: {0}": "Failed to save team role model: {0}",
   "Failed to save team role effort: {0}": "Failed to save team role effort: {0}",
+  "Failed to save cache warming setting: {0}": "Failed to save cache warming setting: {0}",
   "Back": "Back",
   "Forward": "Forward",
   "Reload": "Reload",

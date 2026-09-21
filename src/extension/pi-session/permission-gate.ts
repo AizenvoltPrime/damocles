@@ -70,6 +70,8 @@ export interface PanelGateContext {
   postMessage: (message: ExtensionToWebviewMessage) => void;
   /** The current 0-based user-prompt index, to key per-prompt injection messages. */
   currentPromptIndex: () => number;
+  /** True once the hard budget limit stopped the turn; a cache-warming refresh bills against that cap. */
+  budgetStopRequested: () => boolean;
   /** Called from the `agent_end` hook (awaited before the turn settles): coordinates the background
    *  keep-alive (hold the turn until subagents finish and inject their results) and the plan-mode hold
    *  (nudge the model to call ExitPlanMode if a plan-mode turn ended without it). Receives the turn's
@@ -155,15 +157,15 @@ export interface PreToolUseHookGate {
 }
 
 /**
- * Fail-closed fallback for when the permission gate itself throws (a bug in the gate or the handler).
- * A gate that errors must NOT silently grant a state-mutating tool, so anything in the write/shell
+ * The fail-closed answer for a tool call the gate cannot decide.
+ * An undecided call must NOT silently grant a state-mutating tool, so anything in the write/shell
  * category — and any unknown ('other') tool that would otherwise hit the full approval flow — is
  * blocked. Read-only tools are let through: they are auto-allowed on the normal path and cannot mutate
- * state, so blocking them would only break harmless reads on an already-degraded gate.
+ * state, so blocking them would only break harmless reads.
  */
 export function gateErrorFallback(piToolName: string): ToolCallEventResult | undefined {
   if (toolCategory(mapPiToolName(piToolName)) === 'read') return undefined;
-  return { block: true, reason: 'The permission system failed to evaluate this tool, so it was blocked by default for safety.' };
+  return { block: true, reason: 'This tool could not be approved, so it was blocked by default for safety.' };
 }
 
 /**

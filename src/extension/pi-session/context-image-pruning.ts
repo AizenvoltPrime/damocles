@@ -58,6 +58,8 @@ export function pruneStaleImages(messages: AgentMessage[]): { messages: AgentMes
 /** Register the outbound-context image pruner on pi's `context` seam. Fail-soft: a pruning bug must
  *  never block a turn, so on error the handler logs and returns `undefined` (turn proceeds unpruned). */
 export function registerContextImagePruning(pi: ExtensionAPI): void {
+  // Routed by nothing: this reads only the event it is handed, and every factory registers it, including
+  // for sessions that have no panel entry, whose requests would then go out unpruned over the byte cap.
   pi.on('context', (event) => {
     try {
       const { messages, prunedCount } = pruneStaleImages(event.messages);

@@ -25,6 +25,7 @@ export function getKnowledgeCutoff(model: string): string | null {
   if (m.includes("claude-sonnet-5")) return "January 2026";
   if (m.includes("claude-haiku-4")) return "February 2025";
   if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
+  if (m.startsWith("gpt-6-astra")) return "April 2026";
   if (m.startsWith("gpt-5.6-")) return "February 2026";
   return null;
 }
@@ -39,6 +40,7 @@ function getModelDisplayName(model: string): string | null {
   if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
   if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
   if (m.includes("claude-haiku-4")) return "Haiku 4";
+  if (m.startsWith("gpt-6-astra")) return "GPT-6 Astra";
   if (m.startsWith("gpt-5.6-sol")) return "GPT-5.6 Sol";
   if (m.startsWith("gpt-5.6-terra")) return "GPT-5.6 Terra";
   if (m.startsWith("gpt-5.6-luna")) return "GPT-5.6 Luna";
@@ -199,11 +201,10 @@ When you use a tool, you may say a brief sentence first. If no tool can express 
 /**
  * Restates the tone rules, which sit thousands of tokens earlier once memory, plan-mode guidance,
  * context files and skills are appended. Owned by `assembleDamoclesSystemPrompt` because it must be the
- * LAST text in the assembled prompt, after everything `buildSystemPrompt` emits.
+ * last text in the assembled prompt, after everything `buildSystemPrompt` emits. Body only: pi wraps it
+ * in its section tag, so a tag here would nest one wrapper inside another.
  */
-export const TONE_REMINDER_SECTION = `<tone_preference>
-Keep outputs reasonably concise.
-</tone_preference>`;
+export const TONE_REMINDER_SECTION = 'Keep outputs reasonably concise.';
 
 export function buildEnvironmentSection(options: SystemPromptOptions): string {
   const { cwd, model, isGitRepo, platform, shell, osVersion } = options;

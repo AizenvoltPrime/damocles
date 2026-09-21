@@ -171,9 +171,13 @@ export function createDamoclesExtensionFactory(
       log('[DamoclesExtension] ToolSearch registration failed: %O', err);
     }
 
+    // The republisher is the only thing this instance owns outright, so it is the only thing retired
+    // here. The event handlers stay registered: this instance is process-global and a session shutdown
+    // says nothing about the other sessions bound to it, or about the one that binds it next.
+    //
     // Retire on EVERY shutdown reason, `'reload'` INCLUDED — a deliberate divergence from the
     // observe-only handlers in `hooks/index.ts`, which skip `'reload'`. Do not "unify" them: skipping a
-    // user's hook for an internal rebuild is right, but `AgentSession.reload()` genuinely retires THIS
+    // user's hook for an internal rebuild is right, but `resourceLoader.reload()` supersedes this
     // instance without invalidating it, so its republisher would keep succeeding into an extension
     // object no session references — never throwing, never prunable, invoked on every toggle forever.
     //
@@ -190,7 +194,9 @@ export function createDamoclesExtensionFactory(
 
     pi.on('tool_call', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
-      if (!panel) return undefined;
+      // A closing panel unregisters while its agent can still reach this handler, and no other session
+      // kind dispatches here, so a missing entry is an absent approval authority, not an ungated kind.
+      if (!panel) return gateErrorFallback(event.toolName);
       const preToolUse =
         hookDispatch && hookDispatch.config.hasEntries('tool_call')
           ? buildPreToolUseGate(hookDispatch, ctx, panel, preToolUseContextStash)
@@ -213,6 +219,17 @@ export function createDamoclesExtensionFactory(
         log('[DamoclesExtension] before_agent_start failed: %O', err);
         return undefined;
       }
+    });
+
+    // A warm refresh bills against the same budget cap the user set, so a budget stop cancels it too.
+    //
+    // pi 0.86.1 does not carry the upstream fix for late idle refreshes (pi commit 3390bd936), so a
+    // refresh armed near expiry can still rebuild an already-expired cache. Remove this when pi ships it.
+    pi.on('cache_warming_decision', (_event, ctx) => {
+      const panel = registry.get(ctx.sessionManager.getSessionId());
+      // No registered panel means the session's panel was disposed; pi keeps warming until told to stop.
+      if (!panel || panel.budgetStopRequested()) return { action: 'stop' };
+      return undefined;
     });
 
     // Keep-alive: hold the parent turn until its background subagents finish, then inject their results

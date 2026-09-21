@@ -2,10 +2,10 @@ import * as vscode from "vscode";
 import type { ChatSession } from "../../../chat-session";
 import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
-import type { ExtensionSettings, PermissionMode, AutoCompactConfig, EffortLevel, TeamRoleSettings } from "../../../../shared/types/settings";
+import type { ExtensionSettings, PermissionMode, AutoCompactConfig, CacheWarmingMode, EffortLevel, TeamRoleSettings } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, assertEffortSupported, coerceEffortForModel } from "../utils";
-import { migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../../../shared/types/constants";
+import { migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel, parseCacheWarmingMode, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../../../shared/types/constants";
 import type { TeamRole } from "../../../pi-session/team-model-resolution";
 
 export class ConfigManager {
@@ -71,6 +71,7 @@ export class ConfigManager {
       enableFileCheckpointing: config.get<boolean>("enableFileCheckpointing", true),
       sandbox: config.get<{ enabled: boolean }>("sandbox", { enabled: false }),
       autoCompact: config.get<AutoCompactConfig>("autoCompact", defaultAutoCompact),
+      cacheWarming: parseCacheWarmingMode(config.get("cacheWarming")),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
       defaultDangerouslySkipPermissions: config.get<boolean>("dangerouslySkipPermissions", false),
       ideContextEnabled: config.get<boolean>("ideContext.enabled", true),
@@ -158,6 +159,16 @@ export class ConfigManager {
 
   async handleSetAutoCompact(config: AutoCompactConfig): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "autoCompact", config);
+  }
+
+  /** Warming spends money, so the mode is user-level only and never follows the effective scope: a repo's
+   *  `.vscode/settings.json` must not be able to turn billed background requests on. */
+  async handleSetCacheWarming(mode: CacheWarmingMode): Promise<void> {
+    await vscode.workspace.getConfiguration("damocles").update(
+      "cacheWarming",
+      mode,
+      vscode.ConfigurationTarget.Global,
+    );
   }
 
   async handleSetPermissionMode(

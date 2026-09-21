@@ -57,6 +57,16 @@ const msgEntry = (message: AssistantMessage): SessionEntry =>
   ({ type: 'message', message }) as unknown as SessionEntry;
 const compactionEntry = (): SessionEntry => ({ type: 'compaction' }) as unknown as SessionEntry;
 const branchSummaryEntry = (): SessionEntry => ({ type: 'branch_summary' }) as unknown as SessionEntry;
+/** The entry shape pi's cache warmer appends (`dist/core/session-manager.js:819-832`). */
+const cacheWarmEntry = (message: AssistantMessage): SessionEntry =>
+  ({
+    type: 'usage',
+    kind: 'cache_warm',
+    provider: message.provider,
+    model: message.model,
+    timestamp: new Date(message.timestamp).toISOString(),
+    usage: message.usage,
+  }) as unknown as SessionEntry;
 
 // A fake ModelPriceSource with a fixed cacheRead price ($/million tokens), used for the
 // fallback-pricing path (when the missing turn reports zero cacheRead so no per-token rate exists).
@@ -277,6 +287,40 @@ describe('detectCacheMiss — multi-turn baseline behaviour', () => {
     // min(prev 10_000, current 100_000) - cacheRead(0) = 10_000 — the 90_000 tokens of NEW content
     // are not counted as a cache miss.
     expect(miss!.missedTokens).toBe(10_000);
+  });
+});
+
+describe('cache_warm usage entries', () => {
+  // A warm refresh never runs the agent loop: pi calls `models.streamSimple` and records the spend with
+  // `sessionManager.appendUsage("cache_warm", ...)`, so it lands as a `usage` entry, never as an
+  // assistant message. The scan only inspects `message`, `compaction` and `branch_summary`, which is
+  // what keeps a refresh from reading as a turn that paid for a miss.
+  it('produce no cache-miss notice of their own', () => {
+    const warm = makeMessage({
+      timestamp: 0,
+      usage: { input: 0, cacheRead: 50_000, cacheWrite: 0, cost: { cacheRead: 0.025 } },
+    });
+    expect(detectCacheMiss([cacheWarmEntry(warm)], warm, noPrice)).toBeUndefined();
+  });
+
+  it('do not disturb the baseline the next real turn is measured against', () => {
+    const prev = makeMessage({
+      timestamp: 0,
+      usage: { input: 100, cacheRead: 0, cacheWrite: 50_000 },
+    });
+    const warm = makeMessage({
+      timestamp: 1_000,
+      usage: { input: 0, cacheRead: 50_100, cacheWrite: 0, cost: { cacheRead: 0.025 } },
+    });
+    const message = makeMessage({
+      timestamp: 2_000,
+      usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },
+    });
+
+    const withWarm = detectCacheMiss([msgEntry(prev), cacheWarmEntry(warm)], message, noPrice);
+    const withoutWarm = detectCacheMiss([msgEntry(prev)], message, noPrice);
+    expect(withWarm).toEqual(withoutWarm);
+    expect(withWarm!.missedTokens).toBe(50_000);
   });
 });
 

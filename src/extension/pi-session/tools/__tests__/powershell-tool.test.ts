@@ -1,19 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { join } from 'node:path';
-// The REAL pi truncation helper: a stub would make the truncated/tail assertions below vacuous.
-// Test files may value-import the ESM pi package (mission F1); extension source may not.
-import { truncateTail, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES, defineTool } from '@earendil-works/pi-coding-agent';
+// The REAL pi shell definition, because every status string asserted below is pi's and a stub would
+// pin nothing but the stub. Test files may value-import the ESM pi package; extension source may not.
+import { createPowerShellToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { createShellOutputBuffer, createPowerShellTool, POWERSHELL_UPDATE_THROTTLE_MS } from '../powershell-tool';
+import { createPowerShellTool, createTrackedPowerShellOperations } from '../powershell-tool';
 import { createShellJob, killProcessTree } from '../process-tree';
 
 const jobState = vi.hoisted(() => ({ created: 0, terminated: 0, disposed: 0 }));
 
 /** Set only by the cases that drive a fake shell; a null hook leaves the real `spawn` in place for the Windows cases. */
-const spawnControl = vi.hoisted(() => ({ fake: null as ((exe: string, options: unknown) => unknown) | null, calls: [] as string[] }));
+const spawnControl = vi.hoisted(() => ({
+  fake: null as ((exe: string, args: string[], options: Record<string, unknown>) => unknown) | null,
+  calls: [] as Array<{ exe: string; args: string[]; options: Record<string, unknown> }>,
+}));
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
@@ -21,19 +24,19 @@ vi.mock('child_process', async (importOriginal) => {
     ...actual,
     spawn: (command: string, args: string[], options: import('child_process').SpawnOptions) => {
       if (!spawnControl.fake) return actual.spawn(command, args, options);
-      spawnControl.calls.push(command);
-      return spawnControl.fake(command, options);
+      spawnControl.calls.push({ exe: command, args, options: options as Record<string, unknown> });
+      return spawnControl.fake(command, args, options as Record<string, unknown>);
     },
   };
 });
 
-// `killProcessTree` calls through, so the abort case below still really kills its shell.
+// `killProcessTree` calls through, so the Windows abort case below still really kills its shell.
 vi.mock('../process-tree', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../process-tree')>();
   return {
     ...actual,
     killProcessTree: vi.fn(actual.killProcessTree),
-    createShellJob: vi.fn((pid: number, session: import("../process-tree").ShellSessionJob | undefined) => {
+    createShellJob: vi.fn((pid: number, session: import('../process-tree').ShellSessionJob | undefined) => {
       jobState.created += 1;
       const real = actual.createShellJob(pid, session);
       return {
@@ -50,109 +53,95 @@ vi.mock('../process-tree', async (importOriginal) => {
   };
 });
 
-/**
- * `createShellOutputBuffer` mirrors pi's rolling tail from `bash-executor.ts:50-105`. It is exported
- * precisely so its bounding can be proven without spawning PowerShell: the defect it fixes is an
- * unbounded `output +=` that grows the extension host heap for as long as a command keeps printing.
- */
-describe('createShellOutputBuffer', () => {
-  const build = (maxLines = DEFAULT_MAX_LINES, maxBytes = DEFAULT_MAX_BYTES) =>
-    createShellOutputBuffer(truncateTail, maxLines, maxBytes);
+/** pi's own literal, mirrored because `powershell.js` keeps it module-local. */
+const UTF8_OUTPUT_PREFIX = 'try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n';
 
-  it('caps the retained buffer at 2 * maxBytes and drops the OLDEST chunks', () => {
-    const maxBytes = 1_000;
-    const buffer = createShellOutputBuffer(truncateTail, DEFAULT_MAX_LINES, maxBytes);
-    // 200 chunks of ~100 bytes = ~20KB appended against a 2KB cap.
-    const chunk = (i: number): string => `#${i} ${'x'.repeat(90)}\n`;
-    for (let i = 0; i < 200; i++) buffer.append(chunk(i));
+const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command'];
 
-    // `totalBytes` is the size of what the buffer still holds, i.e. what it handed to truncateTail.
-    const { content, truncation } = buffer.snapshot();
-    expect(truncation.totalBytes).toBeLessThanOrEqual(2 * maxBytes);
-    // Not vacuous: the cap must be near-full, not an empty or single-chunk buffer.
-    expect(truncation.totalBytes).toBeGreaterThan(maxBytes);
-    // A buffer that evicted the NEWEST chunk instead would satisfy the cap while losing what matters.
-    expect(content).toContain('#199 ');
-    expect(content).not.toContain('#0 ');
-  });
+const CWD = process.cwd();
 
-  it('never drops a single oversized chunk, so the buffer can exceed the cap by one chunk', () => {
-    // pi's `while (outputBytes > max && outputChunks.length > 1)` guard keeps the last chunk whatever
-    // its size. Damocles mirrors that rather than "fixing" it, so assert the real behaviour.
-    const maxBytes = 1_000;
-    const buffer = createShellOutputBuffer(truncateTail, DEFAULT_MAX_LINES, maxBytes);
-    buffer.append('a'.repeat(5_000));
+/** pi's `ExtensionContext`; the shell definition reads only `cwd` off it, which the tool already has. */
+const ctx = undefined as never;
 
-    expect(buffer.snapshot().truncation.totalBytes).toBe(5_000);
-  });
+const pi = { createPowerShellToolDefinition } as unknown as PiCodingAgentModule;
 
-  it('reports truncated past maxLines and not at the limit', () => {
-    // pi pops the trailing empty line when counting, so exactly maxLines newline-terminated lines fit.
-    const atLimit = build();
-    for (let i = 0; i < DEFAULT_MAX_LINES; i++) atLimit.append(`line ${i}\n`);
-    const fits = atLimit.snapshot();
-    expect(fits.truncation.totalLines).toBe(DEFAULT_MAX_LINES);
-    expect(fits.truncation.truncated).toBe(false);
+/** A stand-in for the spawned shell, so the exit, timeout and abort paths run on every platform. */
+interface FakeStream extends EventEmitter {
+  destroy: () => void;
+}
 
-    const over = build();
-    for (let i = 0; i <= DEFAULT_MAX_LINES; i++) over.append(`line ${i}\n`);
-    const spilled = over.snapshot();
-    expect(spilled.truncation.totalLines).toBe(DEFAULT_MAX_LINES + 1);
-    expect(spilled.truncation.truncated).toBe(true);
-    expect(spilled.truncation.truncatedBy).toBe('lines');
-  });
-
-  it('keeps the tail and drops the head once past maxLines', () => {
-    const buffer = build();
-    const total = DEFAULT_MAX_LINES + 500;
-    for (let i = 0; i < total; i++) buffer.append(`line ${i}\n`);
-
-    const { content } = buffer.snapshot();
-    // The newest line survives AND an early one is gone: head-keeping truncation fails both halves.
-    expect(content).toContain(`line ${total - 1}`);
-    expect(content).not.toContain('line 0\n');
-    expect(content.split('\n')[0]).toBe(`line ${total - DEFAULT_MAX_LINES}`);
-  });
-
-  it('interleaves appends in call order, since stdout and stderr share one buffer', () => {
-    const buffer = build();
-    buffer.append('out-1\n');
-    buffer.append('err-1\n');
-    buffer.append('out-2\n');
-
-    expect(buffer.snapshot().content).toBe('out-1\nerr-1\nout-2\n');
-  });
-});
-
-/** A stand-in for the spawned shell, so the streaming, throttle and abort paths run on every platform. */
 interface FakeChild extends EventEmitter {
   pid: number | undefined;
-  stdout: EventEmitter;
-  stderr: EventEmitter;
+  stdout: FakeStream;
+  stderr: FakeStream;
+}
+
+/** `destroy` is required: the exit wait tears the pipes down itself once the shell has settled. */
+function fakeStream(): FakeStream {
+  const stream = new EventEmitter() as FakeStream;
+  stream.destroy = (): void => undefined;
+  return stream;
 }
 
 function fakeChild(pid: number | undefined = 4242): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.pid = pid;
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
+  child.stdout = fakeStream();
+  child.stderr = fakeStream();
   return child;
 }
 
-/** The leading text of a tool result or an update frame, asserting it is text rather than reading `undefined`. */
+function enoent(exe: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`spawn ${exe} ENOENT`), { code: 'ENOENT' });
+}
+
+/**
+ * Install a fake shell and expose the moment the implementation reaches `spawn`. Resolving off the
+ * spawn itself, rather than off a timer, is what lets the cases below drive the child with no wait.
+ */
+function armFakeShell(pid?: number): { child: FakeChild; spawned: Promise<void> } {
+  const child = fakeChild(pid);
+  let markSpawned!: () => void;
+  const spawned = new Promise<void>((resolve) => {
+    markSpawned = resolve;
+  });
+  spawnControl.fake = () => {
+    markSpawned();
+    return child;
+  };
+  return { child, spawned };
+}
+
+/** The message a rejected tool call carries, failing loudly when the call resolved instead. */
+async function messageOf(pending: Promise<unknown>): Promise<string> {
+  try {
+    await pending;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('the tool returned a result where it had to throw');
+}
+
+/** The leading text of a tool result, asserting it is text rather than reading `undefined`. */
 function textOf(result: AgentToolResult<unknown>): string {
   const first = result.content[0];
   if (first?.type !== 'text') throw new Error('result did not start with a text block');
   return first.text;
 }
 
-/**
- * The streaming path around a fake shell. `emitUpdate`, `scheduleUpdate` and `clearUpdateTimer` decide
- * what the card shows while a command runs, and none of it is reachable through a real PowerShell run
- * on a non-Windows machine.
- */
-describe('PowerShell streaming and throttle', () => {
-  const pi = { truncateTail, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES, defineTool } as unknown as PiCodingAgentModule;
+/** Marking the rejection handled here keeps a pending failure off the unhandled-rejection reporter. */
+function start(
+  params: { command: string; timeout?: number },
+  options: { signal?: AbortSignal; onUpdate?: (partial: AgentToolResult<unknown>) => void; cwd?: string } = {},
+): Promise<AgentToolResult<unknown>> {
+  const tool = createPowerShellTool(pi, options.cwd ?? CWD, undefined);
+  const pending = tool.execute('ps-call', params, options.signal, options.onUpdate, ctx) as Promise<AgentToolResult<unknown>>;
+  void pending.catch(() => undefined);
+  return pending;
+}
+
+/** Restores the module-level fakes the fake-shell describes install, so the Windows cases get the real ones back. */
+function useFakeShellEnvironment(): void {
   const realCreateShellJob = vi.mocked(createShellJob).getMockImplementation();
   const realKillProcessTree = vi.mocked(killProcessTree).getMockImplementation();
 
@@ -161,6 +150,8 @@ describe('PowerShell streaming and throttle', () => {
     // The fake pid names no real process, so neither the job object nor the kill may run for real.
     vi.mocked(createShellJob).mockImplementation(() => undefined);
     vi.mocked(killProcessTree).mockImplementation(() => undefined);
+    vi.mocked(killProcessTree).mockClear();
+    vi.mocked(createShellJob).mockClear();
   });
 
   afterEach(() => {
@@ -169,145 +160,295 @@ describe('PowerShell streaming and throttle', () => {
     if (realKillProcessTree) vi.mocked(killProcessTree).mockImplementation(realKillProcessTree);
     vi.useRealTimers();
   });
+}
 
-  it('emits an initial empty frame, coalesces bursts into one frame per 100 ms, and forces a final frame with the complete output', async () => {
-    vi.useFakeTimers();
-    const child = fakeChild();
-    spawnControl.fake = () => child;
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
-    const onUpdate = vi.fn();
+/**
+ * The operations layer on its own. It is the half that owns the spawn, the executable fallback and the
+ * exit-code mapping; pi's shell definition owns everything downstream of the number it returns.
+ */
+describe('createTrackedPowerShellOperations', () => {
+  useFakeShellEnvironment();
+  const ops = createTrackedPowerShellOperations(undefined);
 
-    const pending = tool.execute('ps-stream', { command: 'Get-Process' }, undefined, onUpdate, undefined as never);
-    // The working-directory check is real I/O, so yield until the shell has actually been spawned.
-    await vi.waitFor(() => expect(spawnControl.calls.length).toBe(1));
+  it('maps a shell killed by a signal onto 128 + the signal number', async () => {
+    const shell = armFakeShell();
+    const settled = ops.exec('Start-Sleep 30', CWD, { onData: () => undefined, env: process.env });
+    await shell.spawned;
 
-    // The empty frame is emitted before the spawn, so the card is not blank while the shell starts.
-    expect(onUpdate).toHaveBeenCalledTimes(1);
-    expect(onUpdate.mock.calls[0]?.[0]).toEqual({ content: [{ type: 'text', text: '' }], details: undefined });
+    shell.child.emit('close', null, 'SIGKILL');
 
-    // `lastUpdateAt` starts at zero, so the first chunk is already past the window and emits at once.
-    child.stdout.emit('data', Buffer.from('chunk-0\n'));
-    expect(onUpdate).toHaveBeenCalledTimes(2);
-
-    for (let i = 1; i <= 50; i++) child.stdout.emit('data', Buffer.from(`chunk-${i}\n`));
-    expect(onUpdate).toHaveBeenCalledTimes(2);
-
-    await vi.advanceTimersByTimeAsync(POWERSHELL_UPDATE_THROTTLE_MS);
-    expect(onUpdate).toHaveBeenCalledTimes(3);
-
-    for (let i = 51; i <= 100; i++) child.stdout.emit('data', Buffer.from(`chunk-${i}\n`));
-    expect(onUpdate).toHaveBeenCalledTimes(3);
-
-    child.emit('close', 0);
-    const result = await pending;
-
-    // 101 chunks, four frames: the throttle is what keeps the card off the render path per chunk.
-    expect(onUpdate).toHaveBeenCalledTimes(4);
-    // The forced last frame carries what the throttle had not flushed yet, not just the output up to it.
-    const lastFrame = onUpdate.mock.calls[3]?.[0] as AgentToolResult<unknown>;
-    expect(textOf(lastFrame)).toContain('chunk-0\n');
-    expect(textOf(lastFrame)).toContain('chunk-100\n');
-    expect(textOf(result)).toContain('chunk-100');
-
-    // A timer still armed here would fire a frame after the tool already settled.
-    expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(onUpdate).toHaveBeenCalledTimes(4);
+    expect(osConstants.signals.SIGKILL).toBe(9);
+    await expect(settled).resolves.toEqual({ exitCode: 128 + osConstants.signals.SIGKILL });
   });
 
-  it('forces a final frame even when the throttle already flushed everything, so the card never keeps a stale snapshot', async () => {
-    vi.useFakeTimers();
-    const child = fakeChild();
-    spawnControl.fake = () => child;
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
-    const onUpdate = vi.fn();
+  it('maps a close carrying neither a code nor a signal onto exit code 1, never onto null', async () => {
+    const shell = armFakeShell();
+    const settled = ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env });
+    await shell.spawned;
 
-    const pending = tool.execute('ps-final', { command: 'Get-Process' }, undefined, onUpdate, undefined as never);
-    await vi.waitFor(() => expect(spawnControl.calls.length).toBe(1));
+    shell.child.emit('close', null, null);
 
-    child.stdout.emit('data', Buffer.from('only line\n'));
-    await vi.advanceTimersByTimeAsync(POWERSHELL_UPDATE_THROTTLE_MS);
-    // Nothing is dirty any more, so only a forced frame can follow and a dropped force shows up as a missing call.
-    const beforeClose = onUpdate.mock.calls.length;
-    expect(beforeClose).toBe(2);
-
-    child.emit('close', 0);
-    await pending;
-
-    expect(onUpdate).toHaveBeenCalledTimes(beforeClose + 1);
-    expect(textOf(onUpdate.mock.calls[beforeClose]?.[0] as AgentToolResult<unknown>)).toContain('only line');
+    // A null here is what makes pi report "Command terminated without an exit code", which this
+    // implementation can therefore never produce.
+    await expect(settled).resolves.toEqual({ exitCode: 1 });
   });
 
-  it('passes windowsHide so no console window flashes for a command', async () => {
+  it('prepends the UTF-8 console encoding line to the command it spawns', async () => {
+    const shell = armFakeShell();
+    const settled = ops.exec('Get-ChildItem', CWD, { onData: () => undefined, env: process.env });
+    await shell.spawned;
+    shell.child.emit('close', 0);
+    await settled;
+
+    expect(spawnControl.calls[0]?.args).toEqual([...POWERSHELL_ARGS, `${UTF8_OUTPUT_PREFIX}Get-ChildItem`]);
+  });
+
+  it('falls through to powershell.exe when spawning pwsh throws synchronously', async () => {
     const child = fakeChild();
-    let seen: Record<string, unknown> | undefined;
-    spawnControl.fake = (_exe, options) => {
-      seen = options as Record<string, unknown>;
+    spawnControl.fake = (exe) => {
+      if (exe === 'pwsh') throw enoent('pwsh');
       setImmediate(() => child.emit('close', 0));
       return child;
     };
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
 
-    await tool.execute('ps-hide', { command: 'Write-Output ok' }, undefined, undefined, undefined as never);
+    await expect(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env })).resolves.toEqual({ exitCode: 0 });
 
-    expect(seen?.['windowsHide']).toBe(true);
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
   });
 
-  it('kills nothing once the child has been reaped, since that pid is free to be reused', async () => {
-    const child = fakeChild();
-    spawnControl.fake = () => child;
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
-    const controller = new AbortController();
-
-    const pending = tool.execute('ps-latch', { command: 'Start-Sleep 30' }, controller.signal, undefined, undefined as never);
-    await vi.waitFor(() => expect(spawnControl.calls.length).toBe(1));
-
-    // The gap the latch closes: the child is reaped, but 'close' has not landed and the listeners are live.
-    child.emit('exit', 0, null);
-    controller.abort();
-    child.emit('close', 0);
-    await pending;
-
-    expect(killProcessTree).not.toHaveBeenCalled();
-  });
-
-  it('stops the fallback executable from starting once the user has already aborted', async () => {
-    const child = fakeChild();
+  it("falls through to powershell.exe when pwsh reports ENOENT on the child's error event", async () => {
     spawnControl.fake = (exe) => {
-      if (exe === 'pwsh') setImmediate(() => child.emit('error', Object.assign(new Error('spawn pwsh ENOENT'), { code: 'ENOENT' })));
+      const child = fakeChild();
+      if (exe === 'pwsh') setImmediate(() => child.emit('error', enoent('pwsh')));
       else setImmediate(() => child.emit('close', 0));
       return child;
     };
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
 
-    const result = await tool.execute('ps-aborted', { command: 'Get-Process', timeout: 50 }, AbortSignal.abort(), undefined, undefined as never);
+    await expect(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env })).resolves.toEqual({ exitCode: 0 });
 
-    // Neither executable may be started, and the answer must be the abort rather than "PowerShell not found".
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
+  });
+
+  it('throws naming both candidates when neither executable exists', async () => {
+    spawnControl.fake = (exe) => {
+      const child = fakeChild();
+      setImmediate(() => child.emit('error', enoent(exe)));
+      return child;
+    };
+
+    const message = await messageOf(ops.exec('Write-Output ok', CWD, { onData: () => undefined, env: process.env }));
+
+    // Named candidates, because a bare "PowerShell not found" reads to a model as a command it may retry.
+    expect(message).toContain('pwsh');
+    expect(message).toContain('powershell.exe');
+    expect(spawnControl.calls.map((call) => call.exe)).toEqual(['pwsh', 'powershell.exe']);
+  });
+
+  it('refuses to spawn a shell when no environment was supplied', async () => {
+    // Omitting it makes spawn inherit the extension host environment, which holds provider credentials.
+    await expect(ops.exec('Write-Output leak', CWD, { onData: () => undefined })).rejects.toThrow(
+      'PowerShell exec requires an explicit environment',
+    );
+
     expect(spawnControl.calls).toEqual([]);
-    expect(textOf(result)).toBe('PowerShell command aborted.');
   });
 
   it('reports a missing working directory instead of blaming a missing PowerShell', async () => {
     const missing = join(tmpdir(), 'damocles-no-such-dir-7c2e40');
     spawnControl.fake = () => fakeChild();
-    const tool = createPowerShellTool(pi, missing, undefined);
 
-    await expect(tool.execute('ps-cwd', { command: 'Write-Output ok' }, undefined, undefined, undefined as never)).rejects.toThrow(
-      /Working directory does not exist/,
+    const message = await messageOf(ops.exec('Write-Output ok', missing, { onData: () => undefined, env: process.env }));
+
+    expect(message).toContain('Working directory does not exist');
+    expect(message).toContain('Cannot execute PowerShell commands.');
+    expect(spawnControl.calls).toEqual([]);
+  });
+
+  it('starts no shell at all once the user has already aborted', async () => {
+    spawnControl.fake = () => fakeChild();
+
+    await expect(ops.exec('Get-Process', CWD, { onData: () => undefined, env: process.env, signal: AbortSignal.abort() })).rejects.toThrow(
+      'aborted',
     );
+
     expect(spawnControl.calls).toEqual([]);
   });
 });
 
 /**
- * PowerShell used to carry its own `killTree`, which reached descendants on Windows only, left POSIX with
- * a bare SIGTERM to the direct process, and was never reached on abort at all. It now goes through the
- * shared helper and gets a real job object, the same contract the bash operations meet. Windows-only
- * because a real shell has to be spawned.
+ * pi's shell definition owns the result. Every non-zero outcome reaches the model as a thrown error
+ * carrying the partial output, which is what stops three lines of a build log reading as a finished
+ * build. The status wording is pi's, from `dist/core/tools/bash.js`.
+ */
+describe('the PowerShell tool result', () => {
+  useFakeShellEnvironment();
+
+  it('returns the output as a normal result for exit code 0', async () => {
+    const shell = armFakeShell();
+    const settled = start({ command: 'Write-Output ok' });
+    await shell.spawned;
+
+    shell.child.stdout.emit('data', Buffer.from('ok\n'));
+    shell.child.emit('close', 0);
+
+    expect(textOf(await settled)).toContain('ok');
+  });
+
+  it('THROWS "Command exited with code 42" for a non-zero exit instead of returning a success', async () => {
+    const shell = armFakeShell();
+    const settled = start({ command: 'exit 42' });
+    await shell.spawned;
+
+    shell.child.stdout.emit('data', Buffer.from('build failed\n'));
+    shell.child.emit('close', 42);
+
+    const message = await messageOf(settled);
+    expect(message).toContain('build failed');
+    expect(message.endsWith('Command exited with code 42')).toBe(true);
+    // The trailing `[exit code 42]` note of a success-shaped result is not an error to the agent loop.
+    expect(message).not.toContain('[exit code');
+  });
+
+  it('throws "Command exited with code 137" for a shell killed by SIGKILL', async () => {
+    const shell = armFakeShell();
+    const settled = start({ command: 'Start-Sleep 30' });
+    await shell.spawned;
+
+    shell.child.emit('close', null, 'SIGKILL');
+
+    const message = await messageOf(settled);
+    // 128 + SIGKILL, the shell convention the operations layer reports in place of a null exit code.
+    expect(128 + osConstants.signals.SIGKILL).toBe(137);
+    expect(message.endsWith('Command exited with code 137')).toBe(true);
+  });
+
+  it('throws "Command exited with code 1", not "terminated without an exit code", for a close with no code and no signal', async () => {
+    const shell = armFakeShell();
+    const settled = start({ command: 'Write-Output ok' });
+    await shell.spawned;
+
+    shell.child.emit('close', null, null);
+
+    const message = await messageOf(settled);
+    expect(message.endsWith('Command exited with code 1')).toBe(true);
+    // pi reaches that wording only for an `exitCode: null`, which the operations layer never returns.
+    expect(message).not.toContain('terminated without an exit code');
+  });
+
+  it('throws the timeout status BEHIND the partial output, and reads the timeout parameter as seconds', async () => {
+    vi.useFakeTimers();
+    const shell = armFakeShell();
+    const settled = start({ command: 'npm run build', timeout: 1 });
+    await shell.spawned;
+
+    shell.child.stdout.emit('data', Buffer.from('Compiling 1 of 400\n'));
+
+    // A timeout read as milliseconds would have fired the kill inside this window.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(killProcessTree).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(killProcessTree).toHaveBeenCalledTimes(1);
+
+    shell.child.emit('close', null, 'SIGKILL');
+
+    const message = await messageOf(settled);
+    expect(message).toContain('Compiling 1 of 400');
+    // Partial output alone, returned as a success, reads to a model as a build that finished.
+    expect(message.endsWith('Command timed out after 1 seconds')).toBe(true);
+  });
+
+  it('throws "Command aborted" behind the partial output when the run signal fires mid-command', async () => {
+    const shell = armFakeShell();
+    const controller = new AbortController();
+    const settled = start({ command: 'Start-Sleep 30' }, { signal: controller.signal });
+    await shell.spawned;
+
+    shell.child.stdout.emit('data', Buffer.from('two lines in\n'));
+    controller.abort();
+    expect(killProcessTree).toHaveBeenCalledTimes(1);
+
+    shell.child.emit('close', null, 'SIGTERM');
+
+    const message = await messageOf(settled);
+    expect(message).toContain('two lines in');
+    expect(message.endsWith('Command aborted')).toBe(true);
+  });
+
+  it('throws a bare "Command aborted" when the signal was already aborted, so no fallback shell starts', async () => {
+    spawnControl.fake = () => fakeChild();
+
+    const message = await messageOf(start({ command: 'Get-Process', timeout: 50 }, { signal: AbortSignal.abort() }));
+
+    expect(message).toBe('Command aborted');
+    expect(spawnControl.calls).toEqual([]);
+  });
+
+  it('kills nothing once the child has been reaped, since that pid is free to be reused', async () => {
+    const shell = armFakeShell();
+    const controller = new AbortController();
+    const settled = start({ command: 'Start-Sleep 30' }, { signal: controller.signal });
+    await shell.spawned;
+
+    // The gap the latch closes: the child is reaped, but 'close' has not landed and the listeners are live.
+    shell.child.emit('exit', 0, null);
+    controller.abort();
+    shell.child.emit('close', 0);
+    await messageOf(settled);
+
+    expect(killProcessTree).not.toHaveBeenCalled();
+  });
+
+  it('passes windowsHide so no console window flashes for a command', async () => {
+    const shell = armFakeShell();
+    const settled = start({ command: 'Write-Output ok' });
+    await shell.spawned;
+    shell.child.emit('close', 0);
+    await settled;
+
+    expect(spawnControl.calls[0]?.options['windowsHide']).toBe(true);
+  });
+
+  it('reports a missing working directory instead of blaming a missing PowerShell', async () => {
+    const missing = join(tmpdir(), 'damocles-no-such-dir-7c2e40');
+    spawnControl.fake = () => fakeChild();
+
+    const message = await messageOf(start({ command: 'Write-Output ok' }, { cwd: missing }));
+
+    expect(message).toContain('Working directory does not exist');
+    expect(spawnControl.calls).toEqual([]);
+  });
+});
+
+describe('the PowerShell tool identity', () => {
+  it('registers under the capitalised PowerShell, which pi\'s own lowercase built-in must never become', () => {
+    const tool = createPowerShellTool(pi, '/cwd', undefined);
+
+    expect(tool.name).toBe('PowerShell');
+    expect(tool.label).toBe('PowerShell');
+    // `mapPiToolName`, the permission gate and the read-only-shell classifier all key off the spelling.
+    expect(createPowerShellToolDefinition('/cwd').name).toBe('powershell');
+  });
+
+  it("carries pi's own shell parameters, whose timeout is documented in seconds, plus the card summary", () => {
+    const tool = createPowerShellTool(pi, '/cwd', undefined);
+
+    const upstream = (createPowerShellToolDefinition('/cwd').parameters as { properties: Record<string, { description?: string }> }).properties;
+    const shipped = (tool.parameters as { properties: Record<string, unknown> }).properties;
+    // Non-vacuous: both sides must be a real object schema, not two undefineds comparing equal.
+    expect(Object.keys(upstream)).toEqual(expect.arrayContaining(['command', 'timeout']));
+    expect(upstream['timeout']?.description).toBe('Timeout in seconds (optional, no default timeout)');
+    for (const [name, schema] of Object.entries(upstream)) expect(shipped[name]).toEqual(schema);
+    // `ToolOverlay` renders this as the card summary; pi's schema has no field for it.
+    expect(Object.keys(shipped)).toEqual([...Object.keys(upstream), 'description']);
+  });
+});
+
+/**
+ * The shared process-lifetime helper, against a real shell. Windows-only because a PowerShell has to
+ * actually be spawned for a job object to exist.
  */
 describe.runIf(process.platform === 'win32')('PowerShell process lifetime', () => {
-  const pi = { truncateTail, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES, defineTool } as unknown as PiCodingAgentModule;
-
   beforeEach(() => {
     jobState.created = 0;
     jobState.terminated = 0;
@@ -317,13 +458,13 @@ describe.runIf(process.platform === 'win32')('PowerShell process lifetime', () =
   });
 
   it('gets its own job object and terminates it when a command is aborted', async () => {
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
+    const tool = createPowerShellTool(pi, CWD, undefined);
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 700);
 
-    const result = await tool.execute('ps-1', { command: 'Start-Sleep -Seconds 30' }, controller.signal, undefined, undefined as never);
+    const message = await messageOf(tool.execute('ps-1', { command: 'Start-Sleep -Seconds 30' }, controller.signal, undefined, ctx));
 
-    expect(JSON.stringify(result.content)).toContain('aborted');
+    expect(message).toContain('Command aborted');
     expect(jobState.created).toBe(1);
     expect(killProcessTree).toHaveBeenCalledWith(expect.any(Number), expect.objectContaining({ terminate: expect.any(Function) }));
     expect(jobState.terminated).toBeGreaterThan(0);
@@ -331,12 +472,21 @@ describe.runIf(process.platform === 'win32')('PowerShell process lifetime', () =
   }, 30_000);
 
   it('releases the job on the normal exit path', async () => {
-    const tool = createPowerShellTool(pi, process.cwd(), undefined);
+    const tool = createPowerShellTool(pi, CWD, undefined);
 
-    await tool.execute('ps-2', { command: 'Write-Output ok' }, undefined, undefined, undefined as never);
+    const result = await tool.execute('ps-2', { command: 'Write-Output ok' }, undefined, undefined, ctx);
 
+    expect(textOf(result as AgentToolResult<unknown>)).toContain('ok');
     expect(jobState.created).toBe(1);
     expect(jobState.disposed).toBeGreaterThan(0);
     expect(killProcessTree).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it('throws the exit code of a real failing command', async () => {
+    const tool = createPowerShellTool(pi, CWD, undefined);
+
+    const message = await messageOf(tool.execute('ps-3', { command: 'exit 42' }, undefined, undefined, ctx));
+
+    expect(message.endsWith('Command exited with code 42')).toBe(true);
   }, 30_000);
 });

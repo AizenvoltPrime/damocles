@@ -1,3 +1,7 @@
+// These handlers live on the process-global Damocles extension instance, which outlives any one
+// session, so ownership is decided per dispatch by `deps.registry.get(sessionId)`. Retiring them from a
+// session event would silence them for every other session bound to the same instance.
+
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
@@ -266,7 +270,8 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
   pi.on('agent_end', async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     // Turn boundary: sweep this session's orphaned PreToolUse context (a tool that proceeded but whose
-    // tool_result never arrived). Unconditional — runs even when no agent_end hook is configured.
+    // tool_result never arrived). Unconditional: runs even when no agent_end hook is configured, and
+    // even when no panel owns the session, since only a sweep can reach those entries.
     if (deps.preToolUseContextStash) clearSessionPreToolUseContext(deps.preToolUseContextStash, sessionId);
     if (!deps.registry.get(sessionId) || !config.hasEntries('agent_end')) return;
     try {
@@ -290,6 +295,8 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     }
   });
 
+  // A closing panel unregisters before pi emits this, so the guard below drops the hook there: it is
+  // owed for a session replacement (new, resume, fork), not for a panel the user has closed.
   pi.on('session_shutdown', async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     // Final orphan sweep: a panel closed mid-turn (before agent_end) would otherwise leak its entries in
@@ -298,6 +305,10 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     // `reason: 'reload'` is an internal rebuild, not a user-meaningful stop — skip the hook (keep the
     // sweep above). Mirrors the session_start skip.
     if (event.reason === 'reload') return;
+    // A session that ends between `input` and its next `before_agent_start` leaves its stashed context
+    // undrainable. Below the reload guard, unlike the sweep above: an internal rebuild keeps the same
+    // session, so its pending context is still owed to the turn that follows.
+    contextStash.delete(sessionId);
     if (!deps.registry.get(sessionId) || !config.hasEntries('session_shutdown')) return;
     try {
       await dispatchObserveOnly(deps.dispatch, 'session_shutdown', ctx.cwd, buildSessionEndPayload(buildHookCommon(ctx), event.reason));
@@ -339,7 +350,10 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
   // --- Tier-2 observe-only (US-007) -----------------------------------------
   // Registered via a name-keyed cast because pi.on's overloads are per-literal; the handler reads only
   // ctx (never event-specific fields), so one generic handler serves every Tier-2 key.
-  const onAny = pi.on as unknown as (event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => void;
+  const onAny = pi.on as unknown as (
+    event: string,
+    handler: (event: unknown, ctx: ExtensionContext) => Promise<void>,
+  ) => () => void;
   for (const eventKey of TIER2_EVENTS) {
     onAny(eventKey, async (_event, ctx) => {
       const sessionId = ctx.sessionManager.getSessionId();

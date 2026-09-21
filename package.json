@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.25.0",
+  "version": "2.26.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -389,6 +389,12 @@
         "damocles.openai.modelPricing": {
           "type": "object",
           "default": {
+            "gpt-6-astra": {
+              "input": 10,
+              "cachedInput": 1,
+              "output": 50,
+              "reasoning": 50
+            },
             "gpt-5.6-sol": {
               "input": 5,
               "cachedInput": 0.5,
@@ -573,6 +579,7 @@
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
+            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -587,6 +594,7 @@
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
+            "GPT-6 Astra",
             "GPT-5.6 Sol",
             "GPT-5.6 Terra",
             "GPT-5.6 Luna",
@@ -629,6 +637,7 @@
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
+            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -643,6 +652,7 @@
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
+            "GPT-6 Astra",
             "GPT-5.6 Sol",
             "GPT-5.6 Terra",
             "GPT-5.6 Luna",
@@ -685,6 +695,7 @@
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
+            "gpt-6-astra",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -699,6 +710,7 @@
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
+            "GPT-6 Astra",
             "GPT-5.6 Sol",
             "GPT-5.6 Terra",
             "GPT-5.6 Luna",
@@ -901,8 +913,47 @@
               "minimum": 50,
               "maximum": 95,
               "description": "%configuration.autoCompact.triggerPercent.description%"
+            },
+            "modelOverrides": {
+              "type": "object",
+              "default": {},
+              "description": "%configuration.autoCompact.modelOverrides.description%",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "triggerPercent": {
+                    "type": "number",
+                    "minimum": 50,
+                    "maximum": 95,
+                    "description": "%configuration.autoCompact.modelOverrides.triggerPercent.description%"
+                  },
+                  "keepRecentPercent": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "%configuration.autoCompact.modelOverrides.keepRecentPercent.description%"
+                  }
+                }
+              }
             }
           }
+        },
+        "damocles.cacheWarming": {
+          "type": "string",
+          "scope": "application",
+          "default": "streaming",
+          "enum": [
+            "off",
+            "streaming",
+            "idle"
+          ],
+          "enumDescriptions": [
+            "%configuration.cacheWarming.off%",
+            "%configuration.cacheWarming.streaming%",
+            "%configuration.cacheWarming.idle%"
+          ],
+          "description": "%configuration.cacheWarming.description%"
         },
         "damocles.pi.webSearch.enabled": {
           "type": "boolean",
@@ -1004,17 +1055,16 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.85.0",
-    "@earendil-works/pi-ai": "^0.85.0",
-    "@earendil-works/pi-coding-agent": "^0.85.0",
-    "@earendil-works/pi-server": "^0.85.0",
-    "@earendil-works/pi-tui": "^0.85.0",
+    "@earendil-works/pi-agent-core": "^0.86.1",
+    "@earendil-works/pi-ai": "^0.86.1",
+    "@earendil-works/pi-coding-agent": "^0.86.1",
+    "@earendil-works/pi-tui": "^0.86.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "jiti": "^2.7.0",
     "patchright": "^1.61.1",
     "smol-toml": "^1.8.0",
-    "typebox": "1.3.7",
+    "typebox": "1.3.27",
     "web-tree-sitter": "^0.24.7",
     "zod": "^4.0.0"
   },

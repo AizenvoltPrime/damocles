@@ -3,7 +3,7 @@ import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
-import type { PermissionMode, EffortLevel, AutoCompactConfig } from "../../../shared/types/settings";
+import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
@@ -319,6 +319,10 @@ export class SettingsManager {
 
   async handleSetAutoCompact(config: AutoCompactConfig): Promise<void> {
     return this.configManager.handleSetAutoCompact(config);
+  }
+
+  async handleSetCacheWarming(mode: CacheWarmingMode): Promise<void> {
+    return this.configManager.handleSetCacheWarming(mode);
   }
 
   async handleSetPermissionMode(

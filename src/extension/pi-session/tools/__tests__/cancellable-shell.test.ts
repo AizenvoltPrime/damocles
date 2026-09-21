@@ -6,7 +6,7 @@ import { Type } from 'typebox';
 import { createBashToolDefinition, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { withPerCallCancel, SHELL_ABORTED_DETAIL_KEY } from '../cancellable-shell';
+import { withPerCallCancel } from '../cancellable-shell';
 import { ShellCancelStore, sanitizeCancelNote, type ShellCancelRegistry } from '../shell-cancel-registry';
 import { createBashTool, type ShellOptions } from '../bash-tool';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../../shared/types/session';
@@ -18,8 +18,8 @@ import { reconstructMessages } from '../../session-store/history-loader';
  * implementation: a user cancel produces a non-error result, it leaves the run-level controller
  * unaborted so stopping one command never ends the turn, and it marks the result so the card can be
  * told from a success both live and after a reload.
- * Both upstream shapes are exercised because the two shell tools disagree, pi's bash throwing its
- * partial inside the error message while `powershell-tool.ts` returns it.
+ * Both shell tools report an abort by throwing their partial inside the error message, so a result that
+ * comes back as a return value is a command that completed and must survive the wrapper untouched.
  * The note is deliberately not asserted in the result text, because it is delivered as a real user
  * message and the case below asserting the old `[User note: ...]` line is gone keeps it that way.
  */
@@ -47,8 +47,8 @@ function boundStore(): { store: ShellCancelStore; registry: ShellCancelRegistry;
  * A shell whose `execute` settles only once the signal it was handed aborts, so a test drives the
  * timing with the abort itself and never with a wall-clock wait. `started` resolves after the abort
  * listener is installed, which is what makes a cancel from the test unable to land too early. The
- * returning shape carries the abort marker `powershell-tool.ts` sets, or it would model a tool that
- * finished normally rather than one that saw the abort.
+ * `returns` shape models the command that completed in the same instant the signal fired, which is a
+ * complete result and carries no abort of its own.
  */
 function abortingShell(
   partial: string,
@@ -56,8 +56,8 @@ function abortingShell(
   thrown?: Error,
 ): { definition: ToolDefinition; started: Promise<void>; upstreamReturn: AgentToolResult<unknown> } {
   const upstreamReturn: AgentToolResult<unknown> = {
-    content: [{ type: 'text', text: `PowerShell command aborted.\n${partial}` }],
-    details: { [SHELL_ABORTED_DETAIL_KEY]: true },
+    content: [{ type: 'text', text: `${partial}\nand the rest of it` }],
+    details: { fullOutputPath: '/tmp/full.log' },
   };
   let markStarted!: () => void;
   const started = new Promise<void>((resolve) => {
@@ -136,10 +136,10 @@ describe('withPerCallCancel: user cancel', () => {
     expect(onUpdate).toHaveBeenCalledWith({ content: [{ type: 'text', text: 'line 1\nline 2' }], details: { truncation: { truncated: true }, fullOutputPath: '/tmp/full.log' } });
   });
 
-  it('composes the same result when the upstream RETURNS its partial instead of throwing it', async () => {
+  it('composes the trailer with no follow-up promise when the user sent no note', async () => {
     vi.useFakeTimers();
     const { store, registry } = boundStore();
-    const shell = abortingShell('Get-ChildItem output', 'returns');
+    const shell = abortingShell('Get-ChildItem output', 'throws');
     const wrapped = withPerCallCancel(shell.definition, registry);
     const run = new AbortController();
 
@@ -150,13 +150,31 @@ describe('withPerCallCancel: user cancel', () => {
 
     const result = await pending;
     const text = textOf(result);
-    expect(text).toContain('PowerShell command aborted.\nGet-ChildItem output');
+    expect(text).toContain('Get-ChildItem output');
     // No note was sent, so the trailer must promise no follow-up message that will never arrive.
     expect(text).toContain('[Command cancelled by the user after 3.0s. The output above is partial.]');
     expect(text).not.toContain('follows in their next message');
     expect(run.signal.aborted).toBe(false);
     // The marker rides on details even when no partial ever arrived to merge onto.
     expect(result.details).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true });
+  });
+
+  it('returns a tool that RETURNED unchanged, so a cancel a completed command outran relabels nothing', async () => {
+    const { store, registry } = boundStore();
+    const shell = abortingShell('Get-ChildItem output', 'returns');
+    const wrapped = withPerCallCancel(shell.definition, registry);
+    const run = new AbortController();
+
+    const pending = wrapped.execute('call-2b', { command: 'sleep 300' }, run.signal, undefined, ctx);
+    await shell.started;
+    expect(store.cancel('call-2b')).toBe(true);
+
+    const result = await pending;
+    // Identity: the complete output and its overflow path reach the model exactly as the shell built them.
+    expect(result).toBe(shell.upstreamReturn);
+    expect(textOf(result)).not.toContain('The output above is partial');
+    expect(result.details).toEqual({ fullOutputPath: '/tmp/full.log' });
+    expect(run.signal.aborted).toBe(false);
   });
 
   it('runs with no run-level signal at all, since the per-call controller is the only one required', async () => {
@@ -220,7 +238,7 @@ describe('withPerCallCancel: run-level abort', () => {
     const result = await pending;
     expect(result).toBe(shell.upstreamReturn);
     // A run abort is not a user cancel, so the marker must be absent or the card would read cancelled.
-    expect(result.details).toEqual({ [SHELL_ABORTED_DETAIL_KEY]: true });
+    expect(result.details).toEqual({ fullOutputPath: '/tmp/full.log' });
     expect((result.details as Record<string, unknown>)[CANCELLED_TOOL_DETAIL_KEY]).toBeUndefined();
   });
 
@@ -284,9 +302,9 @@ describe('withPerCallCancel: a cancel that lands after the command finished', ()
 });
 
 /**
- * `details` is `unknown` upstream and `typeof [] === 'object'`, so both places that inspect it have to
- * exclude arrays by hand. No shell tool returns an array today, which is exactly why nothing else here
- * would notice if either check stopped doing it.
+ * `details` is `unknown` upstream and `typeof [] === 'object'`, so the partial's details have to exclude
+ * arrays by hand. No shell tool emits an array today, which is exactly why nothing else here would
+ * notice if that check stopped doing it.
  */
 describe('withPerCallCancel: details that are an array', () => {
   /** A shell that emits one array-valued partial and then throws its partial the way pi's bash does. */
@@ -333,45 +351,6 @@ describe('withPerCallCancel: details that are an array', () => {
     expect(result.details).not.toHaveProperty('0');
   });
 
-  it('never reads an array as the marker a returning tool sets to report an abort', async () => {
-    const { store, registry } = boundStore();
-    // The property has to be on the array itself: a plain array answers `undefined` for it either way,
-    // so only this shape tells the array check apart from the property read that follows it.
-    const details = ['out'] as string[] & Record<string, unknown>;
-    details[SHELL_ABORTED_DETAIL_KEY] = true;
-    const upstreamReturn: AgentToolResult<unknown> = { content: [{ type: 'text', text: 'complete output' }], details };
-    let markStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    const definition: ToolDefinition = {
-      name: 'bash',
-      label: 'Bash',
-      description: 'a shell that returns array details on abort',
-      parameters: shellSchema,
-      async execute(_toolCallId, _params, signal) {
-        const aborted = new Promise<void>((resolve) => {
-          if (signal?.aborted) {
-            resolve();
-            return;
-          }
-          signal?.addEventListener('abort', () => resolve(), { once: true });
-        });
-        markStarted();
-        await aborted;
-        return upstreamReturn;
-      },
-    };
-    const wrapped = withPerCallCancel(definition, registry);
-
-    const pending = wrapped.execute('call-array-marker', { command: 'sleep 300' }, undefined, undefined, ctx);
-    await started;
-    store.cancel('call-array-marker');
-
-    // Returned untouched: an array is not the details object a shell tool reports an abort through, so
-    // the wrapper must not compose the cancelled shape off it.
-    expect(await pending).toBe(upstreamReturn);
-  });
 });
 
 describe('withPerCallCancel: registry lifetime', () => {
@@ -590,14 +569,17 @@ describe('createBashTool', () => {
     expect(tool.name).toBe('bash');
   });
 
-  it("keeps pi's own bash parameter schema, so a pi upgrade cannot leave a stale copy shipping", () => {
+  it("carries pi's own bash parameters plus the card summary, so a pi upgrade cannot leave a stale copy shipping", () => {
     const pi = { createBashToolDefinition } as unknown as PiCodingAgentModule;
     const tool = createBashTool(pi, '/cwd', deps(() => ({})));
 
-    const upstream = createBashToolDefinition('/cwd', {}).parameters;
+    const upstream = (createBashToolDefinition('/cwd', {}).parameters as { properties: Record<string, unknown> }).properties;
+    const shipped = (tool.parameters as { properties: Record<string, unknown> }).properties;
     // Non-vacuous: both sides must be a real object schema, not two undefineds comparing equal.
-    expect(Object.keys((upstream as { properties: Record<string, unknown> }).properties)).toContain('command');
-    expect(tool.parameters).toEqual(upstream);
+    expect(Object.keys(upstream)).toContain('command');
+    for (const [name, schema] of Object.entries(upstream)) expect(shipped[name]).toEqual(schema);
+    // `ToolOverlay` renders this as the card summary; pi's schema has no field for it.
+    expect(Object.keys(shipped)).toEqual([...Object.keys(upstream), 'description']);
   });
 
   it('builds the delegate with the CURRENT shell settings, rebuilding only when they change', async () => {

@@ -167,6 +167,61 @@ describe.each(implementations)('BashOperations parity: %s', (_name, ops) => {
 });
 
 /**
+ * The shell's own OS pid. Under Git Bash `$$` is an MSYS pid the OS cannot signal and which can name an
+ * unrelated live Windows process, so win32 reads the Windows pid from /proc and has no fallback: an
+ * unreadable winpid must leave the shell alive and fail the case, never signal a guessed number.
+ */
+const PRINT_SHELL_PID = process.platform === 'win32' ? 'cat /proc/$$/winpid' : 'echo $$';
+
+interface KillResult extends RunResult {
+  /** The pid signalled, so a case can prove the shell reported one instead of nothing being killed. */
+  killedPid: number | undefined;
+}
+
+/** Kill the shell from outside the operations, so neither the abort nor the timeout branch is involved. */
+async function runUntilKilledFromOutside(ops: BashOperations): Promise<KillResult> {
+  let output = '';
+  let killedPid: number | undefined;
+  try {
+    const result = await ops.exec(`${PRINT_SHELL_PID}; sleep 5`, CWD, {
+      onData: (data) => {
+        output += data.toString();
+        // The pid line is only complete once its newline has arrived.
+        if (killedPid !== undefined || !output.includes('\n')) return;
+        const pid = Number(output.split('\n')[0]!.trim());
+        if (!Number.isInteger(pid) || pid <= 0) return;
+        killedPid = pid;
+        process.kill(pid, 'SIGKILL');
+      },
+      env: process.env,
+    });
+    return { exitCode: result.exitCode, output, error: undefined, killedPid };
+  } catch (error) {
+    return { exitCode: null, output, error: error instanceof Error ? error.message : String(error), killedPid };
+  }
+}
+
+/**
+ * A shell killed from outside reports what the platform gives it: POSIX reports the 128+SIGKILL
+ * convention, win32 reports the terminating exit code 1. Parity with pi is the primary assertion, and
+ * the absolute pins the number itself, which parity alone would let drift. pi's bash tool now rejects a
+ * null exit code, so neither may return one.
+ */
+describe('an externally killed shell', () => {
+  it('reports the exit code pi reports for the same kill', async () => {
+    const piRun = await runUntilKilledFromOutside(createLocalBashOperations());
+    const damoclesRun = await runUntilKilledFromOutside(createTrackedBashOperations(pi, () => ({}), undefined));
+
+    expect(piRun.error).toBeUndefined();
+    expect(damoclesRun.error).toBeUndefined();
+    expect(piRun.killedPid).toBeGreaterThan(0);
+    expect(damoclesRun.killedPid).toBeGreaterThan(0);
+    expect(damoclesRun.exitCode).toBe(piRun.exitCode);
+    expect(damoclesRun.exitCode).toBe(process.platform === 'win32' ? 1 : 137);
+  }, 30_000);
+});
+
+/**
  * pi's bash tool always supplies the environment, so an absent one means a caller reached past it. The
  * extension host's own environment holds the provider credentials, which is what `spawn` would inherit.
  */

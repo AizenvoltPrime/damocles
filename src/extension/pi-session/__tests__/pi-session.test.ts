@@ -4,9 +4,10 @@ import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
-import type { AccountInfo } from '../../../shared/types/settings';
+import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
 
 const H = vi.hoisted(() => {
+  const CACHE_WARMING_MODES = ['off', 'streaming', 'idle'];
   const seq: string[] = [];
   const captured: { services: unknown[]; customTools: Array<{ name: string; execute: (...a: never[]) => Promise<unknown> }> } = { services: [], customTools: [] };
   // The bash delegate's body, swappable per test so a case can hold a command open across a Stop click.
@@ -101,12 +102,23 @@ const H = vi.hoisted(() => {
   }
 
   function makeServices() {
+    // pi's settings manager has a field asymmetry this fake reproduces on purpose: `applyOverrides`
+    // writes the effective `settings` object (dist/core/settings-manager.js:323) while
+    // `setCacheWarmingMode`/`getCacheWarmingMode` write and read `globalSettings` (:637-643). A mode
+    // routed through `applyOverrides` is therefore invisible to the getter pi's CacheWarmer calls.
+    const globalSettings: { cacheWarming?: string } = {};
+    let effectiveSettings: Record<string, unknown> = {};
     return {
       cwd: '/cwd',
       agentDir: '/fake/agent',
       settingsManager: {
         setCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
-        applyOverrides: vi.fn(),
+        applyOverrides: vi.fn((overrides: Record<string, unknown>) => { effectiveSettings = { ...effectiveSettings, ...overrides }; }),
+        setCacheWarmingMode: vi.fn((mode: string) => { globalSettings.cacheWarming = mode; }),
+        getCacheWarmingMode: vi.fn((): string => {
+          const mode = globalSettings.cacheWarming;
+          return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : 'streaming';
+        }),
         getCompactionSettings: vi.fn(() => ({ enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 })),
         getGlobalSettings: vi.fn(() => ({})),
         getProjectSettings: vi.fn(() => ({})),
@@ -184,6 +196,7 @@ const H = vi.hoisted(() => {
     // The bash override spreads its metadata from a delegate built at construction, so this must answer
     // with a whole definition, not just an `execute`.
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: (...a: never[]) => bashExecute(...a) })),
+    createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn() })),
   };
 
   return {
@@ -232,7 +245,10 @@ vi.mock('../tools', async (importOriginal) => {
   return { ...actual, buildCustomTools: vi.fn(actual.buildCustomTools) };
 });
 
-vi.mock('../agent-dir', () => ({
+// Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
+// travels the production path.
+vi.mock('../agent-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-dir')>()),
   ensurePiAgentDir: (dir: string) => dir,
   PI_AGENT_DIR: '/fake/agent',
 }));
@@ -1063,9 +1079,24 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const msg = messages.find((m) => m.type === 'contextUsage');
     const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
     expect(data).not.toBeNull();
-    expect(data!.systemPromptSections?.length).toBeGreaterThan(0);
-    expect(data!.systemPromptSections![0]!.tokens).toBeGreaterThan(0);
-    expect(data!.systemPromptSections![0]!.name).toBe('Damocles system prompt');
+    // One row per prompt piece, named by the section key, preamble first. Memory is off and no plan
+    // file exists in this panel, so only the always-on pieces are present.
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_tone']);
+    expect(data!.systemPromptSections!.every((s) => s.tokens > 0)).toBe(true);
+    await session.dispose();
+  });
+
+  it('/context gains a damocles_memory row when memory is on, and keeps map order', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const opts = makeOptions(messages);
+    opts.memoryService = { isEnabled: true } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+
+    await session.requestContextUsage();
+    const msg = messages.find((m) => m.type === 'contextUsage');
+    const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
+    expect(data!.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_memory', 'damocles_tone']);
     await session.dispose();
   });
 
@@ -4341,6 +4372,156 @@ describe('PiSession account state publication', () => {
     registerOpenAIModel();
     session.setModel('gpt-5.6-sol');
     expect(published(messages)).toEqual(expectedFor(session));
+    await session.dispose();
+  });
+});
+
+describe('cache-warming mode reaches pi (US-slice3)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    vscode.__configEmitter.clear();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Stub `damocles.cacheWarming` with a value the test can change between reads. */
+  function stubCacheWarming(read: () => string): void {
+    vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(((section?: string) => ({
+      get: (key: string, fallback?: unknown) => (section === 'damocles' && key === 'cacheWarming' ? read() : fallback),
+      update: async () => undefined,
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+  }
+
+  // The assertion the slice turns on: the mode must READ BACK through `getCacheWarmingMode()`, the
+  // getter pi's CacheWarmer calls. The fake reads `globalSettings`, which `applyOverrides` never
+  // writes, so routing the mode through `applyOverrides` would leave this at the "streaming" default.
+  it('reads back through getCacheWarmingMode at session start', async () => {
+    stubCacheWarming(() => 'idle');
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(H.getServices().settingsManager.getCacheWarmingMode()).toBe('idle');
+    await session.dispose();
+  });
+
+  it('re-applies the mode when damocles.cacheWarming changes mid-session, with no reload', async () => {
+    let mode = 'streaming';
+    stubCacheWarming(() => mode);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const sm = H.getServices().settingsManager;
+    expect(sm.getCacheWarmingMode()).toBe('streaming');
+
+    mode = 'off';
+    vscode.__configEmitter.fire('damocles.cacheWarming');
+
+    expect(sm.getCacheWarmingMode()).toBe('off');
+    expect(sm.setCacheWarmingMode).toHaveBeenLastCalledWith('off');
+    await session.dispose();
+  });
+
+  it('ignores a config change to an unrelated damocles setting', async () => {
+    let mode = 'streaming';
+    stubCacheWarming(() => mode);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const sm = H.getServices().settingsManager;
+    const callsAtStart = sm.setCacheWarmingMode.mock.calls.length;
+
+    mode = 'off';
+    vscode.__configEmitter.fire('damocles.team.enabled');
+
+    expect(sm.setCacheWarmingMode.mock.calls.length).toBe(callsAtStart);
+    expect(sm.getCacheWarmingMode()).toBe('streaming');
+    await session.dispose();
+  });
+});
+
+describe('per-model auto-compact budgets reach pi', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    vscode.__configEmitter.clear();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Stub `damocles.autoCompact` with a value the test can change between reads. */
+  function stubAutoCompact(read: () => AutoCompactConfig): void {
+    vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(((section?: string) => ({
+      get: (key: string, fallback?: unknown) => (section === 'damocles' && key === 'autoCompact' ? read() : fallback),
+      update: async () => undefined,
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+  }
+
+  /** The `compaction` override last written to the settings manager. */
+  function lastCompaction(): Record<string, unknown> {
+    const calls = H.getServices().settingsManager.applyOverrides.mock.calls;
+    return (calls.at(-1)?.[0] as { compaction: Record<string, unknown> }).compaction;
+  }
+
+  // The session model is claude-opus-4-8 and the fake resolves its window to 1_000_000.
+  it('applies the plain trigger percent when no model override exists', async () => {
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80 }));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(lastCompaction()).toEqual({ enabled: true, reserveTokens: 200_000 });
+    await session.dispose();
+  });
+
+  it('honours an override for the active model', async () => {
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } }));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(lastCompaction().reserveTokens).toBe(450_000);
+    await session.dispose();
+  });
+
+  it('ignores an override keyed to a model other than the active one', async () => {
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'gpt-5.6-sol': { triggerPercent: 55 } } }));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(lastCompaction().reserveTokens).toBe(200_000);
+    await session.dispose();
+  });
+
+  it('leaves keepRecentTokens out when the override sets only triggerPercent', async () => {
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 60 } } }));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(lastCompaction()).toEqual({ enabled: true, reserveTokens: 400_000 });
+    await session.dispose();
+  });
+
+  it('passes keepRecentTokens and the plain reserve when the override sets only keepRecentPercent', async () => {
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { keepRecentPercent: 10 } } }));
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    expect(lastCompaction()).toEqual({ enabled: true, reserveTokens: 200_000, keepRecentTokens: 100_000 });
+    await session.dispose();
+  });
+
+  it('re-asserts the override when damocles.autoCompact changes mid-session', async () => {
+    let cfg: AutoCompactConfig = { enabled: true, triggerPercent: 80 };
+    stubAutoCompact(() => cfg);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    expect(lastCompaction().reserveTokens).toBe(200_000);
+
+    cfg = { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } };
+    vscode.__configEmitter.fire('damocles.autoCompact');
+
+    expect(lastCompaction().reserveTokens).toBe(450_000);
     await session.dispose();
   });
 });

@@ -40,8 +40,10 @@ jobs:
       - name: Test
         run: npm test
 
-      # Imports pi at runtime and asserts @earendil-works/pi-ai/compat exports a callable `complete`
-      # (the contract pi-runtime.ts depends on). Fails loudly if a future pi release removes it.
+      # Imports pi for real with no auth and no network, and asserts three things: every pi subpath the
+      # extension resolves is reachable, ModelRuntime.prototype.completeSimple is a function, and an agent
+      # dir seeded with compaction.enabled=false yields a session with auto-compaction off.
+      # See "The verify job" in docs/release.md.
       - name: Smoke test pi runtime contract
         run: npm run smoke:pi
 

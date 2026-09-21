@@ -62,6 +62,7 @@ function deps(overrides: Partial<ContextUsageDeps>): ContextUsageDeps {
     mcpClientManager: null,
     agentRegistry: null,
     eligibleToolNames: [],
+    autoCompact: { enabled: true, triggerPercent: 80 },
     ...overrides,
   };
 }
@@ -69,7 +70,7 @@ function deps(overrides: Partial<ContextUsageDeps>): ContextUsageDeps {
 describe('buildContextUsage — headline math', () => {
   it('uses getContextUsage tokens and computes the percentage against maxTokens', () => {
     const session = fakeSession({ contextUsage: { tokens: 250 } });
-    const data = buildContextUsage(session, '', deps({ maxTokens: 1000 }));
+    const data = buildContextUsage(session, undefined, deps({ maxTokens: 1000 }));
     expect(data.totalTokens).toBe(250);
     expect(data.maxTokens).toBe(1000);
     expect(data.percentage).toBe(25);
@@ -81,7 +82,7 @@ describe('buildContextUsage — headline math', () => {
       contextUsage: { tokens: null },
       stats: { tokens: { input: 100, output: 5, cacheRead: 50, cacheWrite: 50 } },
     });
-    const data = buildContextUsage(session, '', deps({ maxTokens: 1000 }));
+    const data = buildContextUsage(session, undefined, deps({ maxTokens: 1000 }));
     // occupied = input + cacheRead + cacheWrite = 200
     expect(data.totalTokens).toBe(200);
     expect(data.apiUsage).toEqual({
@@ -99,29 +100,123 @@ describe('buildContextUsage — headline math', () => {
       },
       stats: { tokens: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 } },
     });
-    const data = buildContextUsage(session, '', deps({}));
+    const data = buildContextUsage(session, undefined, deps({}));
     expect(data.totalTokens).toBe(10);
   });
 
   it('percentage is 0 when maxTokens is 0', () => {
     const session = fakeSession({ contextUsage: { tokens: 100 } });
-    expect(buildContextUsage(session, '', deps({ maxTokens: 0 })).percentage).toBe(0);
+    expect(buildContextUsage(session, undefined, deps({ maxTokens: 0 })).percentage).toBe(0);
   });
 });
 
 describe('buildContextUsage — system prompt + categories', () => {
-  it('estimates the system prompt at chars/4 and exposes it as a section', () => {
-    const session = fakeSession({ contextUsage: { tokens: 0 } });
-    const data = buildContextUsage(session, 'a'.repeat(40), deps({}));
-    const sysCategory = data.categories.find((c) => c.name === 'System prompt')!;
-    expect(sysCategory.tokens).toBe(10);
-    expect(data.systemPromptSections).toEqual([{ name: 'Damocles system prompt', tokens: 10 }]);
+  const session = (): AgentSession => fakeSession({ contextUsage: { tokens: 0 } });
+
+  /** A section's cost as it actually reaches the model: pi's `<name>\n{content}\n</name>` wrapper. */
+  const wrapped = (name: string, content: string): number => Math.ceil(`<${name}>\n${content}\n</${name}>`.length / 4);
+
+  /** Memory on, plan mode off, with project context and skills discovered. */
+  const memoryOnPlanOff = {
+    preamble: 'a'.repeat(40),
+    sections: {
+      damocles_memory: 'm'.repeat(40),
+      project_context: 'c'.repeat(40),
+      skills: 's'.repeat(40),
+      damocles_tone: 't'.repeat(40),
+    },
+  };
+
+  it('counts the System prompt category from the whole rendered text', () => {
+    const data = buildContextUsage(session(), { preamble: 'a'.repeat(40), sections: { damocles_tone: 't'.repeat(40) } }, deps({}));
+    // 40-char preamble + '\n\n' + the 73-char wrapped tone section = 115 chars at chars/4.
+    expect(data.categories.find((c) => c.name === 'System prompt')!.tokens).toBe(29);
   });
 
-  it('omits the system-prompt section when the prompt is empty', () => {
-    const session = fakeSession({ contextUsage: { tokens: 0 } });
-    const data = buildContextUsage(session, '', deps({}));
+  it('emits one row per prompt piece, in map order, preamble first', () => {
+    const data = buildContextUsage(session(), memoryOnPlanOff, deps({}));
+    expect(data.systemPromptSections).toEqual([
+      { name: 'preamble', tokens: 10 },
+      { name: 'damocles_memory', tokens: wrapped('damocles_memory', 'm'.repeat(40)) },
+      { name: 'project_context', tokens: wrapped('project_context', 'c'.repeat(40)) },
+      { name: 'skills', tokens: wrapped('skills', 's'.repeat(40)) },
+      { name: 'damocles_tone', tokens: wrapped('damocles_tone', 't'.repeat(40)) },
+    ]);
+  });
+
+  it('gives no row to a section absent from the map', () => {
+    const withPlanMode = buildContextUsage(
+      session(),
+      { preamble: 'a', sections: { damocles_plan_mode: 'p'.repeat(40), damocles_tone: 't' } },
+      deps({}),
+    );
+    expect(withPlanMode.systemPromptSections!.map((s) => s.name)).toContain('damocles_plan_mode');
+
+    const data = buildContextUsage(session(), memoryOnPlanOff, deps({}));
+    expect(data.systemPromptSections!.map((s) => s.name)).not.toContain('damocles_plan_mode');
+  });
+
+  it('gives no row to an empty-valued section, which pi drops from the prompt entirely', () => {
+    const data = buildContextUsage(session(), { preamble: 'a', sections: { skills: '', damocles_tone: 't' } }, deps({}));
+    expect(data.systemPromptSections!.map((s) => s.name)).toEqual(['preamble', 'damocles_tone']);
+  });
+
+  it('emits no rows and a zero category when no prompt map is available', () => {
+    const data = buildContextUsage(session(), undefined, deps({}));
     expect(data.systemPromptSections).toBeUndefined();
+    expect(data.categories.find((c) => c.name === 'System prompt')!.tokens).toBe(0);
+  });
+});
+
+describe('buildContextUsage: auto-compact badge fields', () => {
+  const session = () => fakeSession({ contextUsage: { tokens: 0 } });
+
+  it('publishes the plain trigger percent and the enabled flag', () => {
+    const data = buildContextUsage(session(), undefined, deps({ autoCompact: { enabled: true, triggerPercent: 80 } }));
+    expect(data.autoCompactThreshold).toBe(80);
+    expect(data.isAutoCompactEnabled).toBe(true);
+  });
+
+  it('still publishes the threshold when auto-compaction is off, since the overlay keys its badge on it', () => {
+    const data = buildContextUsage(session(), undefined, deps({ autoCompact: { enabled: false, triggerPercent: 75 } }));
+    expect(data.autoCompactThreshold).toBe(75);
+    expect(data.isAutoCompactEnabled).toBe(false);
+  });
+
+  it('publishes the active model override in place of the plain percent', () => {
+    const data = buildContextUsage(
+      session(),
+      undefined,
+      deps({
+        modelValue: 'claude-opus-4-8',
+        autoCompact: { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } },
+      }),
+    );
+    expect(data.autoCompactThreshold).toBe(55);
+  });
+
+  it('ignores an override keyed to another model', () => {
+    const data = buildContextUsage(
+      session(),
+      undefined,
+      deps({
+        modelValue: 'claude-opus-4-8',
+        autoCompact: { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-sonnet-5': { triggerPercent: 55 } } },
+      }),
+    );
+    expect(data.autoCompactThreshold).toBe(80);
+  });
+
+  it('leaves the threshold at the plain percent when the override sets only keepRecentPercent', () => {
+    const data = buildContextUsage(
+      session(),
+      undefined,
+      deps({
+        modelValue: 'claude-opus-4-8',
+        autoCompact: { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { keepRecentPercent: 20 } } },
+      }),
+    );
+    expect(data.autoCompactThreshold).toBe(80);
   });
 });
 
@@ -138,7 +233,7 @@ describe('buildContextUsage — message breakdown', () => {
         toolResultEntry('cccccccc'), // 8 chars → 2 tokens
       ],
     });
-    const data = buildContextUsage(session, '', deps({}));
+    const data = buildContextUsage(session, undefined, deps({}));
     const breakdown = data.messageBreakdown!;
     expect(breakdown.userMessageTokens).toBe(1);
     expect(breakdown.assistantMessageTokens).toBe(1);
@@ -149,14 +244,14 @@ describe('buildContextUsage — message breakdown', () => {
 
   it('omits messageBreakdown when the branch has no token-bearing messages', () => {
     const session = fakeSession({ contextUsage: { tokens: 0 }, branch: [] });
-    expect(buildContextUsage(session, '', deps({})).messageBreakdown).toBeUndefined();
+    expect(buildContextUsage(session, undefined, deps({})).messageBreakdown).toBeUndefined();
   });
 });
 
 describe('buildContextUsage — independent section degradation', () => {
   it('loader null → empty skills/commands sections', () => {
     const session = fakeSession({ contextUsage: { tokens: 0 } });
-    const data = buildContextUsage(session, '', deps({ resourceLoader: null }));
+    const data = buildContextUsage(session, undefined, deps({ resourceLoader: null }));
     expect(data.skills).toBeUndefined();
     expect(data.slashCommands).toBeUndefined();
   });
@@ -170,7 +265,7 @@ describe('buildContextUsage — independent section degradation', () => {
         prompts: [{ name: 'review', description: 'rev', content: 'body', sourceInfo: { scope: 'project' }, filePath: '/c/review.md' }],
       }),
     } as unknown as ResourceLoader;
-    const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), '', deps({ resourceLoader: loader }));
+    const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), undefined, deps({ resourceLoader: loader }));
     expect(data.skills?.totalSkills).toBe(1);
     expect(data.skills?.includedSkills).toBe(1);
     expect(data.slashCommands?.totalCommands).toBe(1);
@@ -178,7 +273,7 @@ describe('buildContextUsage — independent section degradation', () => {
 
   it('mcp disabled → empty mcpTools even when a manager is present', () => {
     const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }] } as unknown as McpClientManager;
-    const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), '', deps({ mcpEnabled: false, mcpClientManager: manager }));
+    const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), undefined, deps({ mcpEnabled: false, mcpClientManager: manager }));
     expect(data.mcpTools).toEqual([]);
   });
 
@@ -190,13 +285,13 @@ describe('buildContextUsage — independent section degradation', () => {
     // ADAPTATION: the tool is now also listed in `allTools`, because an ACTIVE tool is by definition a
     // registered one; the previous fixture described a state pi cannot produce.
     const session = fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['mcp__s__a'], allTools: [tool('mcp__s__a', 'dddd')] });
-    const data = buildContextUsage(session, '', deps({ mcpEnabled: true, mcpClientManager: manager }));
+    const data = buildContextUsage(session, undefined, deps({ mcpEnabled: true, mcpClientManager: manager }));
     expect(data.mcpTools).toEqual([{ name: 'mcp__s__a', serverName: 's', tokens: 2, isLoaded: true }]);
   });
 
   it('registry null → empty agents; populated → non-default agents mapped', () => {
     const session = fakeSession({ contextUsage: { tokens: 0 } });
-    expect(buildContextUsage(session, '', deps({ agentRegistry: null })).agents).toEqual([]);
+    expect(buildContextUsage(session, undefined, deps({ agentRegistry: null })).agents).toEqual([]);
 
     const registry = {
       getAvailableConfigs: () => [
@@ -204,7 +299,7 @@ describe('buildContextUsage — independent section degradation', () => {
         { name: 'custom', isDefault: false, source: 'global', systemPrompt: 'xxxx', filePath: '/a/custom.md' },
       ],
     } as unknown as AgentRegistry;
-    const agents = buildContextUsage(session, '', deps({ agentRegistry: registry })).agents;
+    const agents = buildContextUsage(session, undefined, deps({ agentRegistry: registry })).agents;
     expect(agents).toEqual([{ agentType: 'custom', source: 'user', tokens: 1, filePath: '/a/custom.md' }]);
   });
 
@@ -216,7 +311,7 @@ describe('buildContextUsage — independent section degradation', () => {
         { name: 'planner', isDefault: false, source: 'project-pi', systemPrompt: 'xxxx', filePath: '/w/.pi/agents/planner.md' },
       ],
     } as unknown as AgentRegistry;
-    const agents = buildContextUsage(session, '', deps({ agentRegistry: registry })).agents;
+    const agents = buildContextUsage(session, undefined, deps({ agentRegistry: registry })).agents;
     expect(agents).toEqual([
       { agentType: 'reviewer', source: 'project', tokens: 1, filePath: '/w/.damocles/agents/reviewer.md' },
       { agentType: 'planner', source: 'project', tokens: 1, filePath: '/w/.pi/agents/planner.md' },
@@ -278,7 +373,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
     });
 
   it('rows the active non-MCP, non-deferrable tools with their real per-tool cost', () => {
-    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
+    const data = buildContextUsage(session(), undefined, deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
     expect(data.systemTools).toEqual([
       { name: 'Read', tokens: 8 },
       { name: 'Bash', tokens: 10 },
@@ -293,7 +388,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
         activeTools: ['Read', 'mcp__srv__thing'],
         allTools: [tool('Read', 'Read a file', { path: 'string' }), tool('mcp__srv__thing', 'Thing')],
       }),
-      '',
+      undefined,
       deps({}),
     );
     expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);
@@ -306,7 +401,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
         activeTools: ['Read', BROWSER_A],
         allTools: [tool('Read', 'Read a file', { path: 'string' }), tool(BROWSER_A, 'Open a URL', { url: 'string' })],
       }),
-      '',
+      undefined,
       deps({ eligibleToolNames: [BROWSER_A] }),
     );
     expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);
@@ -314,7 +409,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
   });
 
   it('lists only the deferrable built-ins this panel is ELIGIBLE for', () => {
-    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
+    const data = buildContextUsage(session(), undefined, deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
     expect(data.deferredBuiltinTools).toEqual([
       { name: BROWSER_A, tokens: 7, isLoaded: false },
       { name: COMPASS_A, tokens: 10, isLoaded: false },
@@ -333,7 +428,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
 
     const before = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['Read'], allTools }),
-      '',
+      undefined,
       deps({ eligibleToolNames: eligible }),
     );
     expect(before.deferredBuiltinTools).toEqual([
@@ -345,7 +440,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
 
     const after = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['Read', COMPASS_A], allTools }),
-      '',
+      undefined,
       deps({ eligibleToolNames: eligible }),
     );
     expect(after.deferredBuiltinTools).toEqual([
@@ -361,7 +456,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
   });
 
   it('marks the deferred category isDeferred, in the fixed 6-entry legend order', () => {
-    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A] }));
+    const data = buildContextUsage(session(), undefined, deps({ eligibleToolNames: [BROWSER_A] }));
     expect(data.categories.find((c) => c.name === 'Tools (deferred)')!.isDeferred).toBe(true);
     expect(data.categories.find((c) => c.name === 'Tools')!.isDeferred).toBeUndefined();
     expect(data.categories.map((c) => c.name)).toEqual([
@@ -386,7 +481,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
         activeTools: [],
         allTools: names.map((n) => tool(n, 'A deferrable tool', { arg: 'string' })),
       }),
-      '',
+      undefined,
       deps({ eligibleToolNames: names }),
     );
     expect(data.deferredBuiltinTools).toHaveLength(38);
@@ -414,7 +509,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         activeTools: ['mcp__s__loaded'],
         allTools: [tool('mcp__s__loaded', 'Alpha'), tool('mcp__s__deferred', 'Beta')],
       }),
-      '',
+      undefined,
       deps({ mcpEnabled: true, mcpClientManager: manager }),
     );
 
@@ -445,7 +540,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         activeTools: ['mcp__s__loaded'],
         allTools: [tool('mcp__s__loaded', 'Alpha')],
       }),
-      '',
+      undefined,
       deps({ mcpEnabled: true, mcpClientManager: manager }),
     );
 
@@ -463,7 +558,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         activeTools: ['mcp__s__loaded'],
         allTools: () => { throw new Error('registry unavailable'); },
       }),
-      '',
+      undefined,
       deps({ mcpEnabled: true, mcpClientManager: manager }),
     );
 
@@ -506,7 +601,7 @@ describe('buildContextUsage — the no-double-count invariant (§D)', () => {
           tool('mcp__s__off', 'Deferred thing'),
         ],
       }),
-      '',
+      undefined,
       deps({
         eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A, WEB_A],
         mcpEnabled: true,
@@ -572,7 +667,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
   it('omits both sections entirely when getAllTools() throws', () => {
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: ['Read'] }),
-      '',
+      undefined,
       deps({ eligibleToolNames: [BROWSER_A] }),
     );
     // Not `[]`, not rows-with-0 — a fabricated zero reads as "this costs nothing".
@@ -587,7 +682,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
         activeTools: throwing,
         allTools: [tool('Read', 'Read a file', { path: 'string' })],
       }),
-      '',
+      undefined,
       deps({ eligibleToolNames: [BROWSER_A] }),
     );
     expect(data.systemTools).toBeUndefined();
@@ -599,7 +694,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
   it('still badges MCP rows and still defers their tokens when only getAllTools() throws', () => {
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: ['mcp__s__on'] }),
-      '',
+      undefined,
       deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
     );
     const on = data.mcpTools.find((t) => t.name === 'mcp__s__on')!;
@@ -615,7 +710,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
   it('counts MCP tokens as consumed, not deferred, when the active-set read fails', () => {
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: [], activeTools: throwing }),
-      '',
+      undefined,
       deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
     );
     expect(data.mcpTools.every((t) => t.isLoaded === undefined)).toBe(true);
@@ -626,7 +721,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
   it('keeps the fixed 6-category legend shape even when both reads fail', () => {
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: throwing }),
-      '',
+      undefined,
       deps({ eligibleToolNames: [BROWSER_A] }),
     );
     expect(data.categories.map((c) => c.name)).toEqual([
@@ -650,7 +745,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
         activeTools: ['Read', 'Ghost'],
         allTools: [tool('Read', 'Read a file', { path: 'string' })],
       }),
-      '',
+      undefined,
       deps({ eligibleToolNames: [BROWSER_A] }),
     );
     expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);

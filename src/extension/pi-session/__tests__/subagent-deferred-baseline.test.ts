@@ -103,7 +103,10 @@ vi.mock('../pi-loader', () => ({
   nodeSupportsPi: () => true,
 }));
 
-vi.mock('../agent-dir', () => ({
+// Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
+// travels the production path.
+vi.mock('../agent-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-dir')>()),
   ensurePiAgentDir: (dir: string) => dir,
   PI_AGENT_DIR: '/fake/agent',
 }));
@@ -328,6 +331,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       getSteeringMode: () => 'immediate',
       getFollowUpMode: () => 'immediate',
       setCompactionEnabled: () => {},
+      setCacheWarmingMode: () => {},
     } as never;
     const resourceLoader = {
       getExtensions: () => ({
@@ -643,6 +647,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       getSteeringMode: () => 'immediate',
       getFollowUpMode: () => 'immediate',
       setCompactionEnabled: () => {},
+      setCacheWarmingMode: () => {},
     } as never;
     const resourceLoader = {
       getExtensions: () => ({

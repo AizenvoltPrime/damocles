@@ -1,6 +1,8 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
+import { constants as osConstants } from 'node:os';
 import { spawn, type ChildProcess } from 'child_process';
+import { Type } from 'typebox';
 import type { BashOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { withPerCallCancel } from './cancellable-shell';
@@ -30,7 +32,20 @@ export interface BashToolDeps {
   shellJob: ShellSessionJob | undefined;
 }
 
-function resolveTimeoutMs(timeout: number | undefined): number | undefined {
+/**
+ * Add the written command summary both shell tool cards render (`ToolOverlay.vue`), which pi's shell
+ * schema has no field for. Safe to append: pi's shell `execute` reads only `command` and `timeout`.
+ * Shared with `powershell-tool.ts` so the two shell tools present one schema.
+ */
+export function withCommandDescription(parameters: { properties: Record<string, unknown> }): ReturnType<typeof Type.Object> {
+  return Type.Object({
+    ...parameters.properties,
+    description: Type.Optional(Type.String({ description: 'Clear, concise description of what this command does in active voice' })),
+  });
+}
+
+/** Shared with `powershell-tool.ts` so both shell tools read the `timeout` parameter as the same unit. */
+export function resolveTimeoutMs(timeout: number | undefined): number | undefined {
   if (timeout === undefined) return undefined;
   if (!Number.isFinite(timeout) || timeout <= 0) {
     throw new Error('Invalid timeout: must be a finite number of seconds');
@@ -42,6 +57,12 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
   return timeoutMs;
 }
 
+/** How a shell terminated. `code` is null exactly when `signal` names the signal that killed it. */
+export interface ShellExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
 /**
  * Wait for a shell to terminate without hanging on stdio a descendant still holds.
  *
@@ -49,11 +70,12 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
  * open past the shell's exit, so on Windows the event never fires. A fixed deadline from `exit` loses
  * output still being written past it, so the grace timer is re-armed on every chunk instead.
  */
-export function waitForShellExit(child: ChildProcess): Promise<number | null> {
+export function waitForShellExit(child: ChildProcess): Promise<ShellExit> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let exited = false;
     let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
     let idleTimer: NodeJS.Timeout | undefined;
     let stdoutEnded = child.stdout === null;
     let stderrEnded = child.stderr === null;
@@ -69,22 +91,22 @@ export function waitForShellExit(child: ChildProcess): Promise<number | null> {
       child.stderr?.removeListener('data', onData);
     };
 
-    const finalize = (code: number | null): void => {
+    const finalize = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
       cleanup();
       child.stdout?.destroy();
       child.stderr?.destroy();
-      resolve(code);
+      resolve({ code, signal });
     };
 
     const armIdleTimer = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => finalize(exitCode), EXIT_STDIO_GRACE_MS);
+      idleTimer = setTimeout(() => finalize(exitCode, exitSignal), EXIT_STDIO_GRACE_MS);
     };
 
     const finalizeIfStreamsEnded = (): void => {
-      if (exited && !settled && stdoutEnded && stderrEnded) finalize(exitCode);
+      if (exited && !settled && stdoutEnded && stderrEnded) finalize(exitCode, exitSignal);
     };
 
     function onData(): void {
@@ -104,14 +126,15 @@ export function waitForShellExit(child: ChildProcess): Promise<number | null> {
       cleanup();
       reject(error);
     }
-    function onExit(code: number | null): void {
+    function onExit(code: number | null, signal: NodeJS.Signals | null): void {
       exited = true;
       exitCode = code;
+      exitSignal = signal;
       finalizeIfStreamsEnded();
       if (!settled) armIdleTimer();
     }
-    function onClose(code: number | null): void {
-      finalize(code);
+    function onClose(code: number | null, signal: NodeJS.Signals | null): void {
+      finalize(code, signal);
     }
 
     child.stdout?.once('end', onStdoutEnd);
@@ -194,10 +217,12 @@ export function createTrackedBashOperations(
           if (signal.aborted) killShell();
           else signal.addEventListener('abort', killShell, { once: true });
         }
-        const exitCode = await waitForShellExit(child);
+        const { code, signal: exitSignal } = await waitForShellExit(child);
         if (signal?.aborted) throw new Error('aborted');
         if (timedOut) throw new Error(`timeout:${timeout}`);
-        return { exitCode };
+        // A signal-killed shell has no exit code, and pi's bash tool rejects a null one, so the shell
+        // convention stands in for it.
+        return { exitCode: code ?? (exitSignal ? 128 + (osConstants.signals[exitSignal] ?? 0) : 1) };
       } finally {
         job?.dispose();
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -243,7 +268,9 @@ export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashT
 
   return withPerCallCancel(
     {
+      // `constrainedSampling` comes in with this spread, so declaring it here would shadow pi's own setting.
       ...metadata,
+      parameters: withCommandDescription(metadata.parameters),
       execute: (toolCallId, params, signal, onUpdate, ctx) => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx),
     },
     cancelRegistry,

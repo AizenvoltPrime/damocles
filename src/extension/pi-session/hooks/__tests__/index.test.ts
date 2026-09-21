@@ -13,9 +13,18 @@ function nodeEntry(script: string, extra: Partial<HookEntry> = {}): HookEntry {
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
 
+/** `on` hands back a real unsubscribe that drops the entry it just set, as pi's does. A no-op stub would
+ *  make every retirement assertion in this file vacuous. */
 function fakePi(): { pi: unknown; handlers: Map<string, Handler> } {
   const handlers = new Map<string, Handler>();
-  const pi = { on: (event: string, handler: Handler) => handlers.set(event, handler) };
+  const pi = {
+    on: (event: string, handler: Handler) => {
+      handlers.set(event, handler);
+      return () => {
+        if (handlers.get(event) === handler) handlers.delete(event);
+      };
+    },
+  };
   return { pi, handlers };
 }
 
@@ -267,6 +276,21 @@ describe('registerConfiguredHooks — Tier-2 + exclusions (US-007)', () => {
     } finally {
       fs.rmSync(outFile, { force: true });
     }
+  });
+
+  it('drops undrained UserPromptSubmit context when the session ends, but keeps it across a reload', async () => {
+    const { pi, handlers } = fakePi();
+    const { deps } = mkDeps({ input: [nodeEntry('process.stdout.write("inject me")')] });
+    registerConfiguredHooks(pi as never, deps);
+
+    await handlers.get('input')!({ source: 'interactive', text: 'hi' }, fakeCtx('s1'));
+    await handlers.get('session_shutdown')!({ reason: 'reload' }, fakeCtx('s1'));
+    const afterReload = (await handlers.get('before_agent_start')!({}, fakeCtx('s1'))) as { message?: { content: string } };
+    expect(afterReload?.message?.content).toBe('inject me');
+
+    await handlers.get('input')!({ source: 'interactive', text: 'hi' }, fakeCtx('s1'));
+    await handlers.get('session_shutdown')!({ reason: 'new' }, fakeCtx('s1'));
+    expect(await handlers.get('before_agent_start')!({}, fakeCtx('s1'))).toBeUndefined();
   });
 
   // A hook that dumps its stdin to a temp file, so the test can assert the exact payload the handler

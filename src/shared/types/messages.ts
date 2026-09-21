@@ -3,7 +3,7 @@ import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErro
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
 import type { FormSchema, FormValues } from './forms';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, PanelThinkingState, TeamRole } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -60,6 +60,7 @@ export type WebviewToExtensionMessage =
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }
+  | { type: "setCacheWarming"; mode: CacheWarmingMode }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
   | { type: "setWorktreeBaseRef"; baseRef: 'fresh' | 'head' }

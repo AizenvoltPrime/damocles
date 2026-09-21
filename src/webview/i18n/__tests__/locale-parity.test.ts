@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import en from '../locales/en.json';
 import el from '../locales/el.json';
+import nlsEn from '../../../../package.nls.json';
+import nlsEl from '../../../../package.nls.el.json';
+import l10nEn from '../../../../l10n/bundle.l10n.json';
+import l10nEl from '../../../../l10n/bundle.l10n.el.json';
 
 /**
  * Both locale bundles checked as data rather than through a rendered component.
@@ -29,6 +33,16 @@ function flatten(bundle: unknown): Map<string, string> {
 const EN = flatten(en);
 const EL = flatten(el);
 
+/** package.nls.*.json holds the strings VS Code itself renders (setting titles, command names). They
+ *  are a second pair of bundles with the same failure mode, so they get the same checks. */
+const NLS_EN = flatten(nlsEn);
+const NLS_EL = flatten(nlsEl);
+
+/** `vscode.l10n.t` falls back to the message literal, so a key missing here shows a Greek user English
+ *  rather than failing. Same checks again. */
+const L10N_EN = flatten(l10nEn);
+const L10N_EL = flatten(l10nEl);
+
 describe('locale parity', () => {
   it('carries the same key set in both locales', () => {
     const missingFromEl = [...EN.keys()].filter((key) => !EL.has(key));
@@ -50,6 +64,35 @@ describe('locale parity', () => {
 
   it.each([['en', EN], ['el', EL]] as const)('has no em dash anywhere in %s', (_locale, strings) => {
     const offenders = [...strings].filter(([, value]) => value.includes('\u2014')).map(([key]) => key);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe.each([
+  ['package.nls', NLS_EN, NLS_EL],
+  ['l10n bundle', L10N_EN, L10N_EL],
+])('%s parity', (_name, english, greek) => {
+  it('carries the same key set in both locales', () => {
+    const missingFromEl = [...english.keys()].filter((key) => !greek.has(key));
+    const missingFromEn = [...greek.keys()].filter((key) => !english.has(key));
+
+    expect({ missingFromEl, missingFromEn }).toEqual({ missingFromEl: [], missingFromEn: [] });
+  });
+
+  it('keeps every numbered placeholder identical between the two locales', () => {
+    // These bundles interpolate by position (`{0}`), so a dropped index drops the error text with it.
+    const placeholders = (value: string): string[] => (value.match(/\{\d+\}/g) ?? []).sort();
+
+    const mismatched = [...english]
+      .filter(([key, value]) => String(placeholders(value)) !== String(placeholders(greek.get(key) ?? '')))
+      .map(([key]) => key);
+
+    expect(mismatched).toEqual([]);
+  });
+
+  it('has no em dash in either locale', () => {
+    const offenders = [...english, ...greek].filter(([, value]) => value.includes('\u2014')).map(([key]) => key);
 
     expect(offenders).toEqual([]);
   });

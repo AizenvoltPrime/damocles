@@ -19,7 +19,15 @@ const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth'
 
 // Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
 // fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@96126a022ff30bd80fb94703ad76381edc130311`;
+//
+// The plugin replaces pi's built-in anthropic provider, so it builds the outbound request itself and
+// must satisfy pi's current provider contract. Since pi 0.86 that means reading the prompt and the
+// tool loadout off the transcript's system messages; a commit older than this one reads the removed
+// `context.systemPrompt`/`context.tools` and ships requests with no tools and no prompt.
+//
+// Nothing in CI clones this sha, so whether the commit it names honours that contract is verified by
+// reading the plugin, not by a test. Re-read it before bumping.
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@b80d0f131fd1ca38f78cf8d893bcc50a4fa717ef`;
 
 /**
  * Whether a persisted pi package entry names the subscription plugin at anything other than the

@@ -10,6 +10,7 @@
   "Failed to delete session: {0}": "Αποτυχία διαγραφής συνεδρίας: {0}",
   "Failed to save team role model: {0}": "Αποτυχία αποθήκευσης μοντέλου ρόλου ομάδας: {0}",
   "Failed to save team role effort: {0}": "Αποτυχία αποθήκευσης συλλογισμού ρόλου ομάδας: {0}",
+  "Failed to save cache warming setting: {0}": "Αποτυχία αποθήκευσης ρύθμισης προθέρμανσης cache: {0}",
   "Back": "Πίσω",
   "Forward": "Εμπρός",
   "Reload": "Επαναφόρτωση",

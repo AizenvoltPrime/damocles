@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getSupportedThinkingLevels, type Model, type Api } from '@earendil-works/pi-ai';
 import {
@@ -13,7 +14,7 @@ import {
   effortToPiThinking,
   type ModelLookup,
 } from '../pi-models';
-import { DEFAULT_MODELS } from '../../../shared/types/constants';
+import { DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
 
 function model(provider: string, id: string, api: Api = 'openai-responses'): Model<Api> {
   return { id, name: id, api, provider, contextWindow: 200_000 } as unknown as Model<Api>;
@@ -190,6 +191,137 @@ describe('DEFAULT_MODELS: claude-fable-5-1 effort catalog agrees with the instal
 
     expect(DEFAULT_MODELS.find((m) => m.value === 'claude-fable-5-1')?.supportedEffortLevels).toEqual(expected);
     expect(effortToPiThinking('ultracode')).toBe('max');
+  });
+});
+
+describe('DEFAULT_MODELS: gpt-6-astra agrees with both installed OpenAI catalogs', () => {
+  const astra = DEFAULT_MODELS.find((m) => m.value === 'gpt-6-astra');
+
+  function catalogEntry(file: string, api: string): Model<Api> | undefined {
+    const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${file}`, import.meta.url);
+    const catalog = JSON.parse(readFileSync(fileURLToPath(url), 'utf8')) as Record<string, Record<string, unknown>>;
+    return catalog[api]?.['gpt-6-astra'] as Model<Api> | undefined;
+  }
+
+  const apiKeyEntry = catalogEntry('openai.json', 'openai-responses');
+  const codexEntry = catalogEntry('openai-codex.json', 'openai-codex-responses');
+
+  it('declares the API-key provider levels exactly', () => {
+    expect(apiKeyEntry).toBeDefined();
+    expect(astra?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(apiKeyEntry!));
+  });
+
+  it('declares the Codex provider levels modulo the minimal tier EffortLevel has no name for', () => {
+    expect(codexEntry).toBeDefined();
+    const piLevels = getSupportedThinkingLevels(codexEntry!);
+    expect(piLevels).toContain('minimal');
+    expect(astra?.supportedEffortLevels).toEqual(piLevels.filter((level) => level !== 'minimal'));
+  });
+
+  it('carries the context window both catalogs report', () => {
+    expect(apiKeyEntry?.contextWindow).toBe(astra?.contextWindow);
+    expect(codexEntry?.contextWindow).toBe(astra?.contextWindow);
+  });
+
+  it('routes to the id both catalogs key it by, on either auth mode', () => {
+    expect(astra?.backend).toBe('openai');
+    expect(astra?.openaiAuthMode).toBe('any');
+    expect(astra?.openaiModelId).toBe(apiKeyEntry?.id);
+    expect(astra?.openaiModelId).toBe(codexEntry?.id);
+  });
+});
+
+/** One shipped provider catalog file: `{ [api]: { [modelId]: entry } }`. */
+type ProviderCatalog = Record<string, Record<string, { compat?: { allowedFallbackModels?: unknown[] } }>>;
+
+const catalogDirUrl = new URL('../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/', import.meta.url);
+
+function loadShippedCatalogs(): Record<string, ProviderCatalog> {
+  const dir = fileURLToPath(catalogDirUrl);
+  const catalogs: Record<string, ProviderCatalog> = {};
+  // `.manifest.json` records how the catalogs were generated; it is not itself a catalog.
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.'))) {
+    catalogs[file] = JSON.parse(readFileSync(join(dir, file), 'utf8')) as ProviderCatalog;
+  }
+  return catalogs;
+}
+
+/** Every model id a session can be seated on: an offered value, its OpenAI id, or a substitution target. */
+function reachableModelIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const m of DEFAULT_MODELS) {
+    ids.add(m.value);
+    if (m.openaiModelId) ids.add(m.openaiModelId);
+  }
+  for (const targets of Object.values(MODEL_SUBSTITUTES)) {
+    for (const target of targets) ids.add(target);
+  }
+  return ids;
+}
+
+/** Catalog entries a session can be seated on, each with the fallback list it declares. */
+function reachableCatalogEntries(
+  catalogs: Record<string, ProviderCatalog>,
+): { where: string; fallbacks: unknown[] }[] {
+  const reachable = reachableModelIds();
+  const found: { where: string; fallbacks: unknown[] }[] = [];
+  for (const [file, catalog] of Object.entries(catalogs)) {
+    for (const [api, models] of Object.entries(catalog)) {
+      for (const [id, entry] of Object.entries(models)) {
+        if (reachable.has(id)) {
+          found.push({ where: `${file} ${api}/${id}`, fallbacks: entry?.compat?.allowedFallbackModels ?? [] });
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function assertNoServerSideFallback(catalogs: Record<string, ProviderCatalog>): void {
+  const offenders = reachableCatalogEntries(catalogs)
+    .filter((e) => e.fallbacks.length > 0)
+    .map((e) => e.where);
+  if (offenders.length === 0) return;
+  throw new Error(
+    'Damocles must never be server-side downgraded to a less capable model. These catalog entries are ' +
+      `reachable from DEFAULT_MODELS and now carry compat.allowedFallbackModels: ${offenders.join(', ')}. ` +
+      'A fallback list on a model Damocles offers is a decision to take, not a test to update.',
+  );
+}
+
+describe('no model Damocles offers carries a server-side fallback list', () => {
+  it('holds across every catalog pi ships', () => {
+    const catalogs = loadShippedCatalogs();
+    // A broken path or id derivation would pass vacuously, so prove the guard is looking at something.
+    expect(Object.keys(catalogs).length).toBeGreaterThan(1);
+    expect(reachableCatalogEntries(catalogs).length).toBeGreaterThan(0);
+    expect(() => assertNoServerSideFallback(catalogs)).not.toThrow();
+  });
+
+  it('rejects a fallback list attached to a model DEFAULT_MODELS offers', () => {
+    const offered = DEFAULT_MODELS[0]!.value;
+    const synthetic: Record<string, ProviderCatalog> = {
+      'anthropic.json': {
+        'anthropic-messages': {
+          [offered]: { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-4-8' }] } },
+        },
+      },
+    };
+    expect(() => assertNoServerSideFallback(synthetic)).toThrow(
+      /never be server-side downgraded to a less capable model/,
+    );
+    expect(() => assertNoServerSideFallback(synthetic)).toThrow(new RegExp(`anthropic-messages/${offered}`));
+  });
+
+  it('ignores a fallback list on a model DEFAULT_MODELS does not offer', () => {
+    const unreachable: Record<string, ProviderCatalog> = {
+      'anthropic.json': {
+        'anthropic-messages': {
+          'claude-fable-5': { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5' }] } },
+        },
+      },
+    };
+    expect(() => assertNoServerSideFallback(unreachable)).not.toThrow();
   });
 });
 

@@ -187,6 +187,8 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
       continue;
     }
 
+    // Drops mid-conversation system entries with every other non-assistant role: a pi 0.86 system entry
+    // patches prompt sections rather than carrying chat, so rendering it shows text the user never saw.
     if (role !== 'assistant') continue;
 
     if (message?.usage) {

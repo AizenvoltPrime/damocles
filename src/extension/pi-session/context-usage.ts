@@ -1,7 +1,10 @@
 import type { AgentSession, ResourceLoader, ToolInfo } from '@earendil-works/pi-coding-agent';
 import type { ContextUsageData } from '../../shared/types/session';
+import type { AutoCompactConfig } from '../../shared/types/settings';
 import { log } from '../logger';
+import { renderSections, type DamoclesPromptSections } from './agent-start';
 import { piMessageText } from './branch-text';
+import { resolveCompactionBudget } from './compaction-budget';
 import { isMcpToolName } from './mcp/naming';
 import type { McpClientManager } from './mcp/mcp-client-manager';
 import type { AgentRegistry } from './subagents/agent-types';
@@ -30,6 +33,8 @@ export interface ContextUsageDeps {
   agentRegistry: AgentRegistry | null;
   /** The eligible tool universe for this panel (`PiSession.fullActiveToolNames()`). */
   eligibleToolNames: string[];
+  /** The live `damocles.autoCompact` config (`PiSession.autoCompactConfig()`). */
+  autoCompact: AutoCompactConfig;
 }
 
 /** chars/4 token estimate (pi's own heuristic), conservative — used for every estimated section. */
@@ -48,7 +53,7 @@ export function estimateToolTokens(description: string | undefined, parameters: 
 /** Assemble the `ContextUsageData` for `/context`; all sub-sections degrade independently. */
 export function buildContextUsage(
   session: AgentSession,
-  systemPromptText: string,
+  systemPrompt: DamoclesPromptSections | undefined,
   deps: ContextUsageDeps,
 ): ContextUsageData {
   const maxTokens = deps.maxTokens;
@@ -61,7 +66,8 @@ export function buildContextUsage(
   const percentage = maxTokens > 0 ? Math.round((totalTokens / maxTokens) * 100) : 0;
 
   const breakdown = messageBreakdown(session);
-  const systemPromptTokens = estimateTextTokens(systemPromptText);
+  const systemPromptTokens = systemPrompt ? estimateTextTokens(renderSections(systemPrompt)) : 0;
+  const systemPromptSections = promptSectionRows(systemPrompt);
   const skills = skillsSection(deps.resourceLoader);
   const commands = slashCommandsSection(deps.resourceLoader);
   const agents = agentsSection(deps.agentRegistry);
@@ -135,14 +141,34 @@ export function buildContextUsage(
     mcpTools,
     agents,
     apiUsage,
+    // Resolved through the same function the compaction path uses, so the badge and pi's reserve agree.
+    autoCompactThreshold: resolveCompactionBudget(deps.autoCompact, deps.modelValue, maxTokens).triggerPercent,
+    isAutoCompactEnabled: deps.autoCompact.enabled,
   };
   if (systemTools) data.systemTools = systemTools;
   if (deferredBuiltinTools) data.deferredBuiltinTools = deferredBuiltinTools;
-  if (systemPromptTokens > 0) data.systemPromptSections = [{ name: 'Damocles system prompt', tokens: systemPromptTokens }];
+  if (systemPromptSections.length > 0) data.systemPromptSections = systemPromptSections;
   if (skills.skillFrontmatter.length > 0) data.skills = skills;
   if (commands) data.slashCommands = commands;
   if (breakdown.hasMessages) data.messageBreakdown = breakdown.value;
   return data;
+}
+
+/**
+ * One row per prompt piece, in map order with `preamble` first, named by the section key so a row names
+ * exactly what appears in the prompt. Tokens are of each piece's RENDERED form, so the rows sum to
+ * approximately the `System prompt` category total rather than exactly; do not reconcile them.
+ */
+function promptSectionRows(prompt: DamoclesPromptSections | undefined): { name: string; tokens: number }[] {
+  if (!prompt) return [];
+  const rows = [{ name: 'preamble', tokens: estimateTextTokens(prompt.preamble) }];
+  for (const [name, content] of Object.entries(prompt.sections)) {
+    // Wrapper must stay `<name>\n{content}\n</name>`, which is what pi charges for; an empty-valued
+    // section pi drops entirely, so it costs nothing and gets no row.
+    if (!content) continue;
+    rows.push({ name, tokens: estimateTextTokens(`<${name}>\n${content}\n</${name}>`) });
+  }
+  return rows.filter((row) => row.tokens > 0);
 }
 
 /** pi's per-model context usage, or undefined when unavailable (degrades to the stats snapshot). */

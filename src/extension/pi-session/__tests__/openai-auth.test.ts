@@ -22,7 +22,10 @@ vi.mock('../pi-loader', () => ({
   nodeSupportsPi: () => true,
 }));
 
-vi.mock('../agent-dir', () => ({
+// Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
+// travels the production path.
+vi.mock('../agent-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-dir')>()),
   ensurePiAgentDir: (dir: string) => dir,
   PI_AGENT_DIR: '/fake/agent',
 }));

@@ -14,13 +14,20 @@ type EditToolExecute = ReturnType<PiCodingAgentModule['createEditToolDefinition'
 
 const editExec = vi.fn<EditToolExecute>(async () => ({ content: [{ type: 'text', text: 'edited' }], details: { diff: 'd', patch: 'p' } }));
 
+/** pi's shell schema, which both shell tools extend rather than replace. */
+function shellParameters(): unknown {
+  return { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } };
+}
+
 function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
     createEditToolDefinition: vi.fn(() => ({ execute: editExec })),
-    // The bash override spreads its metadata from a delegate built at construction, so this stub must
-    // answer with a whole definition, not just an `execute`.
-    createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn() })),
+    // The shell tools spread their metadata from a delegate built at construction and append the card
+    // summary to its parameters, so these stubs must answer with a whole definition carrying pi's own
+    // `command`/`timeout` properties, not just an `execute`.
+    createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: shellParameters(), execute: vi.fn() })),
+    createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: shellParameters(), execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
 

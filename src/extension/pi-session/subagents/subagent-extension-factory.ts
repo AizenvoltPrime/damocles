@@ -181,6 +181,10 @@ function registerSubagentHooks(
 /** Build a per-subagent extension factory whose `tool_call` hook inherits the parent's gate + mode. */
 export function createSubagentExtensionFactory(ctx: SubagentGateContext): ExtensionFactory {
   return (pi) => {
+    // Nothing here is retired: `createSubagentSession` gives each spawn its own services and resource
+    // loader, so this instance serves exactly one session and dies with it. A nested session is also
+    // disposed directly, never through an `AgentSessionRuntime`, so pi never emits its shutdown event.
+
     // PreToolUse `additionalContext` awaiting delivery on its tool's result (keyed by toolCallId).
     const preToolUseContextStash = createPreToolUseContextStash();
 

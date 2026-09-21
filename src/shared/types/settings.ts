@@ -1,3 +1,5 @@
+import type { CACHE_WARMING_MODES } from "./constants";
+
 export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
@@ -23,7 +25,12 @@ export interface AutoCompactConfig {
   enabled: boolean;
   /** Compact when context usage crosses this percentage of the window (maps to pi's reserveTokens). */
   triggerPercent: number;
+  /** Per-model budgets keyed by `DEFAULT_MODELS[].value`, the same key `damocles.model` uses. */
+  modelOverrides?: Record<string, { triggerPercent?: number; keepRecentPercent?: number }>;
 }
+
+/** Derived from the runtime tuple so a mode added to one is a compile error in the other. */
+export type CacheWarmingMode = (typeof CACHE_WARMING_MODES)[number];
 
 export type ContextWarningLevel = 'none' | 'warning' | 'soft' | 'critical';
 
@@ -42,6 +49,7 @@ export interface ExtensionSettings {
   enableFileCheckpointing: boolean;
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
+  cacheWarming: CacheWarmingMode;
   dangerouslySkipPermissions: boolean;
   /** Workspace default seeded into each new panel's YOLO state; per-panel toggle overrides it. */
   defaultDangerouslySkipPermissions: boolean;

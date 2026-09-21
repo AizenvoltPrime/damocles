@@ -2,6 +2,42 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.26.0] - 2026-09-21
+
+Damocles runs on pi 0.86.1 and GPT-6 Astra joins the model picker. The prompt cache is refreshed before the provider drops it, auto-compact takes a budget per model, the system prompt is patched section by section instead of replaced whole, and the PowerShell tool now reports a failure as a failure.
+
+### Added
+
+- **Prompt cache warming, `damocles.cacheWarming`.** Shortly before the provider drops the cached prompt, Damocles re-sends the last request with a one-token output budget, so the next real request is a cache read instead of a full rebuild. It only fires when the expected saving clears pi's threshold, which small contexts and cheap models often miss. A warm request bills as a cache read of the full context plus one output token, never enters the conversation, and adds no turn to the per-turn cost display while still counting in the session total. `streaming` (the default) warms only while a run is in flight, `idle` also warms for up to 30 minutes after the last request, `off` lets the cache expire. Warming stops when the panel closes or the session's budget cap fires, because it bills against that same cap. Application-scoped, so it lives in user settings and a repository cannot turn it on from `.vscode/settings.json`.
+
+- **GPT-6 Astra**, at the head of the OpenAI group in the model picker and in all three team role settings. It runs on an OpenAI API key and on ChatGPT OAuth, with a 272,000 token context window. Its effort levels are low, medium, high, xhigh and max; `minimal` is not offered. Default pricing is $10 input, $1 cached input, $50 output and $50 reasoning per million tokens. It reports an April 2026 knowledge cutoff.
+
+- **`damocles.autoCompact.modelOverrides` gives one model its own compaction budget**, keyed by the model value the picker uses. `triggerPercent` (50 to 95) falls back to the plain `damocles.autoCompact.triggerPercent` when an entry omits it. `keepRecentPercent` (1 to 50) has no top-level setting, so omitting it leaves pi's default in place. Out-of-range and non-numeric values are clamped, because VS Code validates nothing inside an object-typed setting.
+
+- **`/context` breaks the system prompt down by section**, one row per section rather than a single lumped row. Each row estimates that section's rendered text, so the rows sum to approximately the total and not exactly.
+
+### Changed
+
+- **The pi runtime moves to 0.86.1** from 0.85.0, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. `typebox` moves from the exact pin `1.3.7` to `1.3.27`, matching pi's own. `@earendil-works/pi-server` is no longer a direct dependency and leaves the extension bundle's external list, because 0.86.1 imports it from no file `pi-coding-agent` publishes. `pi-coding-agent` also dropped `@earendil-works/pi-client`, `@earendil-works/pi-protocol` and its optional `@mariozechner/clipboard` dependency, which carried ten per-platform native packages; pi-tui now carries the clipboard code. One package is new, `proxy-agent-negotiate` 1.1.0, a dependency of the `http-proxy-agent` and `https-proxy-agent` 9.1.0 copies `pi-ai` and `pi-coding-agent` now resolve. It replaces the top-level `http-proxy-agent` entry in the `.vscodeignore` allowlist, because that 7.0.2 copy has left the extension's dependency closure, and it ships twice, at `extension/node_modules/proxy-agent-negotiate/` and nested under `pi-coding-agent`. Transitive version moves: `chalk` 5.6.2 to 6.0.0, `undici` 8.9.0 to 8.10.2, `semver` 7.8.0 to 7.8.5, `ignore` 7.0.5 to 7.0.8, `minimatch` 10.2.5 to 10.2.6, `grok-mermaid` 0.2.2 to 0.2.3, and pi's bundled `@anthropic-ai/sdk` 0.123.0 to 0.124.0.
+
+- **The PowerShell tool runs on pi's own shell tool instead of a separate implementation**, so it behaves like Bash. A non-zero exit, a shell that ends with no exit code, and a timeout are now failures rather than successes carrying a trailer; a timeout keeps the partial output and says it timed out, where before it returned that output alone and a model could read a killed build as a finished one. Long output truncates to a temp file whose path is in the result, and `PI_*` environment variables are available. **Two breaking changes**: the `timeout` parameter is seconds, not milliseconds, and there is no longer a 120-second default, matching Bash. Both shell tools also take an optional `description` that the tool card shows as a summary; Bash had no such field before.
+
+- **Damocles writes the system prompt as named sections instead of replacing it whole.** Its base prompt becomes pi's `customPrompt`, and every independently toggleable piece is its own section: `damocles_memory`, `damocles_plan_mode`, `damocles_plan_file`, `damocles_team_directive`, `project_context`, `skills` and `damocles_tone`. pi patches only what changed, so on a model that accepts a mid-conversation system message the cached prefix survives a prompt change. Turning memory on, entering plan mode and activating a skill each used to cost a full cache miss. The `skills` section now appears for a toolset carrying `bash` as well as one carrying `read`, matching how pi gates its own, and names whichever of the two that session actually has.
+
+- **The Edit and PowerShell tools ask the provider to constrain the model's arguments to their schema**, `strict: "prefer"`, which degrades to unconstrained sampling on a provider without strict mode rather than throwing. pi's own built-in tools hardcode the same setting.
+
+### Fixed
+
+- **On a Claude Pro/Max subscription, the model had no tools and no Damocles system prompt.** The subscription plugin replaces pi's built-in Anthropic provider and builds the request itself, reading the prompt and the tool loadout from `context.systemPrompt` and `context.tools`. pi 0.86 removed both: a provider now receives the transcript alone, and the prompt and tool declarations travel on its system messages. Every request went out with no `tools` array and a system block holding only the Claude Code identity, about 30,000 tokens short, and the model answered that it had no tools or imitated tool calls as text. The plugin pin moves to `b80d0f131fd1`, which replays both from the transcript and carries upstream 0.2.4. API-key users were never affected, because their requests go through pi's own provider.
+
+- **A shell killed from outside VS Code reported success.** Both shell tools returned a null exit code when a signal ended the shell, and a null read as success. Each now reports `128 + <signal number>` when a signal named the termination and `1` when none is named, the convention pi's own bash tool follows and what 0.86.1 requires, since it rejects a null exit code outright. Cancel and timeout still precede the mapping, so a cancelled command reports no exit code and a timed-out one reads `Command timed out after <n> seconds` with none appended.
+
+- **A tool call could run unapproved on a session whose panel had just closed.** Closing a panel unregisters it before the runtime finishes draining, so a turn still in flight reached the permission gate with no approval surface and was allowed through. It is now blocked by the same fail-closed path that covers a gate error.
+
+- **The `/context` auto-compact badge rendered nothing.** The overlay read a threshold no extension code ever sent. It now shows the threshold in force for the active model, resolved through the same function that sets pi's compaction reserve, so the badge and the reserve cannot disagree.
+
+- **A model Damocles offers cannot gain a server-side fallback list unnoticed.** A new test reads every provider catalog pi ships off disk and fails when a model reachable from the picker, through its OpenAI id or through a substitution target, declares `compat.allowedFallbackModels`. Such a list lets the provider answer a request with a less capable model.
+
 ## [2.25.0] - 2026-09-05
 
 Damocles runs on pi 0.85.0, and Claude Fable 5.1 replaces Fable 5. The transcript now reports a failed compaction and dropped reasoning, a Stop note arrives whole, and a session parked on a prompt reads as parked.
@@ -16,7 +52,7 @@ Damocles runs on pi 0.85.0, and Claude Fable 5.1 replaces Fable 5. The transcrip
 
 ### Changed
 
-- **The pi runtime moves to 0.85.0** from 0.84.2, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. Damocles also declares `@earendil-works/pi-server` directly, because `pi-coding-agent` imports it without declaring it. That fifth package brings `@earendil-works/pi-protocol`, `chord`, `@stablelib/base64`, `fast-sha256` and `standardwebhooks` into the packaged extension.
+- **The pi runtime moves to 0.85.0** from 0.84.2, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. Damocles also declared `@earendil-works/pi-server` directly, because `pi-coding-agent` at 0.85.0 imported it without declaring it. That fifth package brought `@earendil-works/pi-protocol`, `chord`, `@stablelib/base64`, `fast-sha256` and `standardwebhooks` into the packaged extension.
 
 - **Claude Fable 5.1 replaces Claude Fable 5** in the model picker, the three team role settings, and both locales. A stored `claude-fable-5` migrates at activation and carries its reasoning effort across. Fable 5.1 reports a June 2026 knowledge cutoff against Fable 5's January 2026, and its cache reads cost a quarter as much.
 
@@ -3961,6 +3997,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.26.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.25.0...v2.26.0
 [2.25.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.24.0...v2.25.0
 [2.24.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.23.0...v2.24.0
 [2.23.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.22.0...v2.23.0

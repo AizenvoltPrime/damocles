@@ -7,8 +7,33 @@ import type { PanelGateContext } from '../permission-gate';
 
 type Handlers = Record<string, (event: unknown, ctx: unknown) => unknown>;
 
+/** Every `on` stub in this file hands back a real unsubscribe that drops the handler it just recorded,
+ *  as pi's does. A no-op stub would leave the retirement assertions unable to fail. */
 function fakePi(handlers: Handlers): unknown {
-  return { on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; } };
+  return { on: (event: string, handler: (e: unknown, c: unknown) => unknown) => recordHandler(handlers, event, handler) };
+}
+
+/** Record one handler per event and return its unsubscribe. */
+function recordHandler(handlers: Handlers, event: string, handler: (e: unknown, c: unknown) => unknown): () => void {
+  handlers[event] = handler;
+  return () => {
+    if (handlers[event] === handler) delete handlers[event];
+  };
+}
+
+/** Record a handler in registration order and return its unsubscribe. */
+function pushHandler(
+  ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>>,
+  event: string,
+  handler: (e: unknown, c: unknown) => unknown,
+): () => void {
+  (ordered[event] ??= []).push(handler);
+  return () => {
+    const list = ordered[event];
+    if (!list) return;
+    const index = list.indexOf(handler);
+    if (index !== -1) list.splice(index, 1);
+  };
 }
 
 /**
@@ -20,9 +45,7 @@ function fakePi(handlers: Handlers): unknown {
 function fakePiMulti(): { pi: unknown; emit: (event: string, e: unknown, ctx: unknown) => Promise<void> } {
   const ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>> = {};
   const pi = {
-    on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
-      (ordered[event] ??= []).push(handler);
-    },
+    on: (event: string, handler: (e: unknown, c: unknown) => unknown) => pushHandler(ordered, event, handler),
     appendEntry: () => undefined,
   };
   const emit = async (event: string, e: unknown, ctx: unknown): Promise<void> => {
@@ -42,6 +65,7 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
     } as unknown as PanelGateContext['permissionHandler'],
     isPlanMode: () => plan,
+    budgetStopRequested: () => false,
     getSessionModel: () => 'claude-opus-4-8',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
@@ -106,24 +130,79 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('missing'))).toBeUndefined();
   });
 
-  it('returns the Damocles system prompt (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
+  it('writes the Damocles system prompt into the event options (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
     const handlers: Handlers = {};
     const planning = new Map<string, PanelGateContext>([['A', panel('allow', true)], ['B', panel('allow', false)]]);
     createDamoclesExtensionFactory(reader(planning), noCheckpoints())(fakePi(handlers) as never);
 
-    const baseEvent = { type: 'before_agent_start', prompt: 'hi', systemPrompt: 'PI BASE', systemPromptOptions: { cwd: '/repo' } };
+    // `sections` and `selectedTools` mirror pi's normalized options, which always supply both; the
+    // handler rewrites the first in place and reads the second.
+    const eventFor = (): { systemPromptOptions: { customPrompt?: string; sections: Record<string, string> } } => ({
+      type: 'before_agent_start',
+      prompt: 'hi',
+      systemPrompt: 'PI BASE',
+      systemPromptOptions: { cwd: '/repo', selectedTools: ['read', 'bash', 'edit', 'write'], sections: {} },
+    }) as never;
 
-    const inPlan = (await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('A'))) as { systemPrompt: string };
-    expect(inPlan.systemPrompt).not.toContain('operating inside pi');
-    expect(inPlan.systemPrompt).not.toContain('PI BASE');
-    expect(inPlan.systemPrompt).toContain('AI coding agent');
-    expect(inPlan.systemPrompt).toContain('Plan mode is active');
+    const planEvent = eventFor();
+    const inPlan = await handler(handlers, 'before_agent_start')(planEvent, ctxFor('A'));
+    // A returned `systemPrompt` would set pi's `forceSystemPrompt` and drop every section.
+    expect(inPlan).not.toHaveProperty('systemPrompt');
+    expect(planEvent.systemPromptOptions.customPrompt).not.toContain('operating inside pi');
+    expect(planEvent.systemPromptOptions.customPrompt).not.toContain('PI BASE');
+    expect(planEvent.systemPromptOptions.customPrompt).toContain('AI coding agent');
+    expect(planEvent.systemPromptOptions.sections['damocles_plan_mode']).toContain('Plan mode is active');
 
-    const notPlan = (await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('B'))) as { systemPrompt: string };
-    expect(notPlan.systemPrompt).toContain('AI coding agent');
-    expect(notPlan.systemPrompt).not.toContain('Plan mode is active');
+    const plainEvent = eventFor();
+    await handler(handlers, 'before_agent_start')(plainEvent, ctxFor('B'));
+    expect(plainEvent.systemPromptOptions.customPrompt).toContain('AI coding agent');
+    expect('damocles_plan_mode' in plainEvent.systemPromptOptions.sections).toBe(false);
 
-    expect(await handler(handlers, 'before_agent_start')({ ...baseEvent }, ctxFor('missing'))).toBeUndefined();
+    const missingEvent = eventFor();
+    expect(await handler(handlers, 'before_agent_start')(missingEvent, ctxFor('missing'))).toBeUndefined();
+    expect(missingEvent.systemPromptOptions.customPrompt).toBeUndefined();
+  });
+});
+
+describe('cache_warming_decision (budget + disposal policy)', () => {
+  const warmEvent = { type: 'cache_warming_decision', warmCost: 0.075, missCost: 1.5, continuationProbability: 1, action: 'warm' };
+
+  /** A panel whose budget guard answers `stopped`, everything else as the shared fixture. */
+  function panelWithBudget(stopped: boolean): PanelGateContext {
+    return { ...panel('allow'), budgetStopRequested: () => stopped };
+  }
+
+  it("leaves pi's own decision alone while the panel is live and under budget", async () => {
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(panelWithBudget(false)), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'cache_warming_decision')(warmEvent, ctxFor('A'))).toBeUndefined();
+    expect(await handler(handlers, 'cache_warming_decision')({ ...warmEvent, action: 'stop' }, ctxFor('A'))).toBeUndefined();
+  });
+
+  it('stops the refresh once the budget guard tripped, because a warm request bills against the cap', async () => {
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(panelWithBudget(true)), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'cache_warming_decision')(warmEvent, ctxFor('A'))).toEqual({ action: 'stop' });
+  });
+
+  it('stops the refresh when no panel is registered for the session', async () => {
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'cache_warming_decision')(warmEvent, ctxFor('missing'))).toEqual({ action: 'stop' });
+  });
+
+  it('keeps deciding for a panel still bound to the instance after another session shut down', async () => {
+    // `session_shutdown` carries no session id, so an instance-wide response to it would stop cache
+    // warming for every panel sharing the instance, not just the one that ended.
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(panelWithBudget(false)), noCheckpoints())(fakePi(handlers) as never);
+
+    await handler(handlers, 'session_shutdown')({ type: 'session_shutdown', reason: 'quit' }, ctxFor('A'));
+
+    expect(await handler(handlers, 'cache_warming_decision')(warmEvent, ctxFor('A'))).toBeUndefined();
   });
 });
 
@@ -256,7 +335,7 @@ describe('session_compact checkpoint hook', () => {
   function fakePiRecording(handlers: Handlers): { pi: unknown; appended: Array<{ type: string; entry: unknown }> } {
     const appended: Array<{ type: string; entry: unknown }> = [];
     const pi = {
-      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; },
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => recordHandler(handlers, event, handler),
       appendEntry: (type: string, entry: unknown) => { appended.push({ type, entry }); },
     };
     return { pi, appended };
@@ -336,9 +415,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     const pi = {
       // Records handlers so the lifecycle tests can drive `session_shutdown` through the SAME stub that
       // owns `registerTool` — publish and retirement are two halves of one flow.
-      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
-        (ordered[event] ??= []).push(handler);
-      },
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => pushHandler(ordered, event, handler),
       getAllTools,
       // Faithful to `wrapToolDefinition`: `description` is READ ONCE here and stored as a plain string.
       // A fake that kept the live definition would make a frozen description indistinguishable from a
@@ -596,7 +673,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       // the life of the window, and the per-call catch in `republishToolSearch` would log it every time.
       const seam = republisherSeam();
       const pi = {
-        on: () => undefined,
+        on: () => () => undefined,
         getAllTools: () => [],
         registerTool: () => { throw new Error('extension ctx is stale'); },
       };

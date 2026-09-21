@@ -9,7 +9,7 @@ import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
 import { useVSCode } from '@/composables/useVSCode';
 
-const { t, locale } = useI18n();
+const { t, te, locale } = useI18n();
 const store = useContextUsageStore();
 const { postMessage } = useVSCode();
 
@@ -27,6 +27,12 @@ function sortByName<T extends { name: string }>(items: readonly T[]): T[] {
 
 function openFile(filePath?: string): void {
   if (filePath) postMessage({ type: 'openFile', filePath });
+}
+
+/** Falls back to the raw key so a section added upstream still names itself rather than rendering blank. */
+function promptSectionLabel(name: string): string {
+  const key = `context.promptSection.${name}`;
+  return te(key) ? t(key) : name;
 }
 
 defineEmits<{
@@ -66,7 +72,7 @@ interface DetailSection {
   key: string;
   label: string;
   badge?: string;
-  items: { name: string; detail: string; tokens: number; badge?: string; filePath?: string; onOpen?: () => void }[];
+  items: { name: string; detail: string; tokens: number; badge?: string; filePath?: string; title?: string; onOpen?: () => void }[];
 }
 
 const detailSections = computed((): DetailSection[] => {
@@ -105,7 +111,7 @@ const detailSections = computed((): DetailSection[] => {
     sections.push({
       key: 'systemPromptSections',
       label: t('context.systemPromptSections'),
-      items: d.systemPromptSections.map(i => ({ name: i.name, detail: '', tokens: i.tokens, onOpen: () => postMessage({ type: 'openSystemPrompt' }) })),
+      items: d.systemPromptSections.map(i => ({ name: promptSectionLabel(i.name), detail: '', tokens: i.tokens, title: i.name, onOpen: () => postMessage({ type: 'openSystemPrompt' }) })),
     });
   }
   if (d.systemTools && d.systemTools.length > 0) {
@@ -398,7 +404,7 @@ function toggleSection(key: string): void {
                 :key="idx"
                 class="flex items-center gap-2 text-xs py-0.5"
                 :class="(item.onOpen || item.filePath) ? 'cursor-pointer hover:text-foreground' : ''"
-                :title="item.filePath ?? item.name"
+                :title="item.title ?? item.filePath ?? item.name"
                 @click="item.onOpen ? item.onOpen() : openFile(item.filePath)"
               >
                 <span class="text-foreground truncate flex-1">{{ item.name }}</span>

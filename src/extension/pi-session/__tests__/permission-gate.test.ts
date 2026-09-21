@@ -29,6 +29,7 @@ function makePanel(opts: {
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
+    budgetStopRequested: () => false,
     ...(opts.readOnlyShell ? { readOnlyShell: true } : {}),
     ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
     getSessionModel: () => 'claude-opus-4-8',

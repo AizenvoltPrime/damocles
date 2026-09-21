@@ -51,26 +51,36 @@ function teamPlanDirective(): string {
 }
 
 /**
- * Render pi's discovered project-context files into the `<project_context>` block, byte-identical to
- * pi's own `buildSystemPrompt`, so dropping pi's boilerplate doesn't drop CLAUDE.md/AGENTS.md (US-007).
+ * Render pi's discovered project-context files into the body of the `project_context` section, so
+ * dropping pi's boilerplate doesn't drop CLAUDE.md/AGENTS.md (US-007). Must stay byte-identical to pi's
+ * own `renderProjectContext`, and must not carry a `<project_context>` wrapper: pi wraps every section.
  */
 function renderContextFiles(contextFiles: BuildSystemPromptOptions['contextFiles']): string {
   if (!contextFiles || contextFiles.length === 0) return '';
-  let out = '\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n';
-  for (const { path: filePath, content } of contextFiles) {
-    out += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
-  }
-  out += '</project_context>\n';
-  return out;
+  return [
+    'Project-specific instructions and guidelines:',
+    ...contextFiles.map(({ path: filePath, content }) => `<project_instructions path="${filePath}">\n${content}\n</project_instructions>`),
+  ].join('\n\n');
 }
 
-/** Render pi's discovered skills via pi's own formatter (kept identical, no format drift — US-007). */
-function renderSkills(skills: BuildSystemPromptOptions['skills'], hasReadTool: boolean): string {
+/** The tool pi's skills prose tells the model to load a skill file with. */
+export type SkillFileReadTool = 'read' | 'bash';
+
+/** Resolve the skills prose's tool with pi's own precedence: `read` when it is selected, else `bash`,
+ *  else undefined, which is also pi's gate for emitting the section at all. The formatter writes
+ *  "Use the read tool" or "Use bash" from this, so a bash-only session must resolve `bash` or the
+ *  prose names a tool the session does not have. */
+export function resolveSkillFileReadTool(selectedTools: readonly string[]): SkillFileReadTool | undefined {
+  return (['read', 'bash'] as const).find((tool) => selectedTools.includes(tool));
+}
+
+/** Render pi's discovered skills via pi's own formatter, trimmed as pi trims it, so the Damocles
+ *  `skills` section is byte-identical to the one it overwrites (US-007). */
+function renderSkills(skills: BuildSystemPromptOptions['skills'], fileReadTool: SkillFileReadTool | undefined): string {
   const list = skills ?? [];
-  if (list.length === 0) return '';
-  if (!hasReadTool) return '';
+  if (list.length === 0 || !fileReadTool) return '';
   const format = getPiCodingAgent()?.formatSkillsForPrompt;
-  return format ? format(list) : '';
+  return format ? format(list, fileReadTool).trim() : '';
 }
 
 /** The inputs the Damocles system prompt is a pure function of — all available outside a running turn,
@@ -96,30 +106,55 @@ export interface DamoclesSystemPromptInputs {
   existingPlanFile: string | undefined;
   contextFiles: BuildSystemPromptOptions['contextFiles'];
   skills: BuildSystemPromptOptions['skills'];
-  hasReadTool: boolean;
+  /** The tool the skills prose names, or undefined when the session has neither `read` nor `bash` and
+   *  pi emits no skills section. Produce it with `resolveSkillFileReadTool`, never by hand. */
+  skillFileReadTool: SkillFileReadTool | undefined;
+}
+
+/** The Damocles-owned pieces of the system prompt. `preamble` becomes pi's `customPrompt`, which pi
+ *  emits untagged and which suppresses its identity, tool-prose, rules and docs blocks. */
+export interface DamoclesPromptSections {
+  preamble: string;
+  /** Insertion-ordered. A key whose content would be empty is absent, never present with an empty value. */
+  sections: Record<string, string>;
 }
 
 /**
  * Assemble the Damocles system prompt (US-007), the single source of truth for both the turn path and
- * the `/context` preview/estimate: `buildSystemPrompt` (model-aware, per session) + the static memory
- * instructions (when memory is enabled) + the plan-mode instruction (when plan mode is active) or the
- * one-line plan reminder (outside plan mode, when a plan file exists), then re-append pi's discovered
- * project-context files and skills, and close on the tail conciseness reminder. pi's identity /
- * tool-prose / pi-docs / guidelines are dropped. The result is stable across turns for a given model,
- * so the prompt cache holds.
+ * the `/context` preview/estimate: `buildSystemPrompt` (model-aware, per session) as the preamble, then
+ * one named section per independently toggleable piece, so flipping one input repatches one section.
+ * `project_context` and `skills` reuse pi's own section names, which makes the Damocles entry overwrite
+ * pi's natively built one instead of the prompt carrying that content twice.
  */
-export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): string {
-  const parts: string[] = [buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled })];
-  if (i.memoryEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
+export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): DamoclesPromptSections {
+  const preamble = buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled });
+  const sections: Record<string, string> = {};
+  if (i.memoryEnabled) sections['damocles_memory'] = MEMORY_SYSTEM_PROMPT;
   if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
-    parts.push(buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled }));
+    sections['damocles_plan_mode'] = buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled });
   } else if (i.existingPlanFile) {
-    parts.push(planFileReminder(i.existingPlanFile));
-    if (i.teamEnabled) parts.push(teamPlanDirective());
+    sections['damocles_plan_file'] = planFileReminder(i.existingPlanFile);
+    if (i.teamEnabled) sections['damocles_team_directive'] = teamPlanDirective();
   }
-  const body = parts.join('\n\n') + renderContextFiles(i.contextFiles) + renderSkills(i.skills, i.hasReadTool);
-  return body + '\n\n' + TONE_REMINDER_SECTION;
+  const projectContext = renderContextFiles(i.contextFiles);
+  if (projectContext) sections['project_context'] = projectContext;
+  const skills = renderSkills(i.skills, i.skillFileReadTool);
+  if (skills) sections['skills'] = skills;
+  // Inserted last so it stays the final section of the assembled prompt.
+  sections['damocles_tone'] = TONE_REMINDER_SECTION;
+  return { preamble, sections };
+}
+
+/** Flatten the section map the way pi renders the same pieces (preamble untagged, every other section
+ *  wrapped in a tag of its own name, joined by a blank line). Two pieces of the live prompt are pi's
+ *  own and absent here: the `cwd` section pi always emits, and the `addendum` section it emits for a
+ *  loader append-prompt, so the `/context` estimate under-counts by both. Order differs too: pi holds
+ *  `project_context` and `skills` in their native slots ahead of `cwd` and appends the `damocles_*`
+ *  keys after it, while this renders the map in insertion order. */
+export function renderSections(p: DamoclesPromptSections): string {
+  const parts = [p.preamble, ...Object.entries(p.sections).map(([name, content]) => `<${name}>\n${content}\n</${name}>`)];
+  return parts.filter((part) => part.length > 0).join('\n\n');
 }
 
 /** Assemble the Damocles system prompt for this turn from the `before_agent_start` event + panel. */
@@ -127,9 +162,8 @@ async function buildDamoclesSystemPrompt(
   event: BeforeAgentStartEvent,
   panel: PanelGateContext,
   sessionId: string,
-): Promise<string> {
+): Promise<DamoclesPromptSections> {
   const planMode = panel.isPlanMode();
-  const selectedTools = event.systemPromptOptions.selectedTools;
   return assembleDamoclesSystemPrompt({
     env: panel.getSystemPromptEnv(),
     memoryEnabled: !!panel.memoryService?.isEnabled,
@@ -140,7 +174,7 @@ async function buildDamoclesSystemPrompt(
     existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(sessionId))[0],
     contextFiles: event.systemPromptOptions.contextFiles,
     skills: event.systemPromptOptions.skills,
-    hasReadTool: !selectedTools || selectedTools.includes('read'),
+    skillFileReadTool: resolveSkillFileReadTool(event.systemPromptOptions.selectedTools),
   });
 }
 
@@ -205,23 +239,32 @@ function buildCompassContext(panel: PanelGateContext): string {
 }
 
 /**
- * The single `before_agent_start` handler for the pi path (US-005 + US-007). Returns the Damocles
- * system prompt (replacing pi's boilerplate, preserving project context) plus — as a NON-displayed
- * custom message — the dynamic memory catalog + compass status for this prompt. Dynamic context goes
- * in the message, never the system prompt, so the cached system prefix stays stable per model.
+ * The single `before_agent_start` handler for the pi path (US-005 + US-007). Writes the Damocles
+ * prompt into `event.systemPromptOptions` (replacing pi's boilerplate, preserving project context) and
+ * returns the dynamic memory catalog + compass status for this prompt as a NON-displayed custom
+ * message. Dynamic context goes in the message, never a section, so the cached prefix stays stable.
  */
 export async function buildAgentStartResult(
   event: BeforeAgentStartEvent,
   panel: PanelGateContext,
   sessionId: string,
 ): Promise<BeforeAgentStartEventResult | undefined> {
-  const systemPrompt = await buildDamoclesSystemPrompt(event, panel, sessionId);
+  const prompt = await buildDamoclesSystemPrompt(event, panel, sessionId);
+  const options = event.systemPromptOptions;
+  // Returning `systemPrompt` from this handler would set pi's `forceSystemPrompt` and kill every section.
+  options.customPrompt = prompt.preamble;
+  // pi removes a section by its absence and drops empty values instead of removing them, so a key this
+  // build did not produce must be deleted. Rewriting the whole map also keeps the built order, and
+  // discards any section an earlier handler wrote, which `extensionsOverride` in `pi-runtime.ts` makes
+  // safe by leaving the Damocles extension as the only one pi dispatches events to.
+  for (const name of Object.keys(options.sections)) delete options.sections[name];
+  Object.assign(options.sections, prompt.sections);
 
   const dynamicParts = [await buildMemoryContext(panel, sessionId, event.prompt), buildCompassContext(panel)].filter(
     (part) => part.length > 0,
   );
 
-  const result: BeforeAgentStartEventResult = { systemPrompt };
+  const result: BeforeAgentStartEventResult = {};
   if (dynamicParts.length > 0) {
     result.message = { customType: CONTEXT_INJECTION_CUSTOM_TYPE, content: dynamicParts.join('\n\n'), display: false };
   }

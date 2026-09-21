@@ -72,6 +72,7 @@ const H = vi.hoisted(() => {
       agentDir: '/fake/agent',
       settingsManager: {
         setCompactionEnabled: vi.fn(),
+        setCacheWarmingMode: vi.fn(),
         applyOverrides: vi.fn(),
         getCompactionSettings: vi.fn(() => ({ enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 })),
         getGlobalSettings: vi.fn(() => ({})),
@@ -130,6 +131,7 @@ const H = vi.hoisted(() => {
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn(async () => ({ content: [], details: undefined })) })),
+    createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn(async () => ({ content: [], details: undefined })) })),
   };
 
   return {
@@ -155,7 +157,10 @@ vi.mock('../tools/process-tree', () => ({
   killProcessTree: () => undefined,
 }));
 
-vi.mock('../agent-dir', () => ({
+// Only the fs-touching seed is stubbed; `cacheWarmingSetting` stays real so the mode a test configures
+// travels the production path.
+vi.mock('../agent-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-dir')>()),
   ensurePiAgentDir: (dir: string) => dir,
   PI_AGENT_DIR: '/fake/agent',
 }));

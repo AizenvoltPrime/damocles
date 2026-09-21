@@ -17,8 +17,10 @@ const editSchema = Type.Object(
     new_string: Type.String({ description: 'The text to replace it with (must be different from old_string)' }),
     replace_all: Type.Optional(Type.Boolean({ description: 'Replace all occurrences of old_string (default false)' })),
   },
-  // No `additionalProperties: false` (pi #6278): models occasionally add stray extra fields and strict
-  // mode rejected the otherwise-valid edit. Mirror pi's upstream relaxation of its native edit schema.
+  // No `additionalProperties: false` (pi #6278): models occasionally add a stray extra field, and a
+  // schema that forbids it turns an otherwise-valid edit into a rejection. `constrainedSampling` below
+  // re-imposes the closed shape while decoding on providers with strict mode, so this relaxation
+  // governs only the providers without it. Mirrors pi's own edit schema.
   {},
 );
 
@@ -73,6 +75,8 @@ export function createEditTool(pi: PiCodingAgentModule, cwd: string): ToolDefini
     label: 'Edit',
     description: 'Performs exact string replacement in a file. The old_string must uniquely identify the text to replace, unless replace_all is set. To create a new file, use the Write tool instead — Edit cannot create files.',
     parameters: editSchema,
+    // `prefer` degrades to unconstrained sampling on providers without strict mode, where `require` throws.
+    constrainedSampling: { type: 'json_schema', strict: 'prefer' },
     execute: async (toolCallId, params, signal, onUpdate, ctx) =>
       piEdit.execute(toolCallId, await buildPiEditInput(params, cwd), signal, onUpdate, ctx),
   });

@@ -221,10 +221,11 @@ const NARROW_ALLOWLIST = {};
  * compiled JS module formats, JSON, native/wasm binaries, and the static assets the pi harness reads via
  * fs (`template.html`/`template.css` for HTML export, `clankolas.png`, `photon_rs_bg.wasm`, protobuf
  * `.proto`, plus svg/gif/jpg images). DROP_EXTS is the reviewed set of definitely-dead extensions
- * (TS source, sourcemaps, docs/markdown, lint/editor/CI configs, shell shims, rust/c sources, man pages,
- * tsbuildinfo). Anything in a narrowed package whose extension is in NEITHER set — or an extensionless
- * file that is not a known license/ownership/shim file — trips assertReviewed() and fails the run, so a
- * future dependency bump can never silently drop a brand-new runtime asset type.
+ * (TS source, sourcemaps, docs/markdown, lint/editor/CI configs, shell shims, native build sources and
+ * headers in rust, C and Objective-C, man pages, tsbuildinfo). Anything in a narrowed package whose
+ * extension is in NEITHER set, or an extensionless file that is not a known license/ownership/shim
+ * file, trips assertReviewed() and fails the run, so a future dependency bump can never silently drop
+ * a brand-new runtime asset type.
  */
 const RUNTIME_NARROW_PKGS = new Set(
   (process.env.NARROW_PKGS
@@ -236,6 +237,8 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
         '@earendil-works/chord',
+        // Not in the current closure. pi-coding-agent pulled pi-server (and pi-protocol under it) in
+        // 0.85.0 and stopped importing it in 0.86.1, so a later pi release can pull them back.
         '@earendil-works/pi-protocol',
         '@earendil-works/pi-server',
         'openai',
@@ -261,7 +264,7 @@ const RUNTIME_KEEP_EXTS = new Set([
 
 const DROP_EXTS = new Set([
   'ts', 'mts', 'cts', 'map', 'tsbuildinfo', // TS source + declarations + sourcemaps + incremental cache
-  'md', 'scss', 'rs', 'c', 'bnf', 'jsdoc', 'toml', 'sh', 'ps1', 'cmd', '1', 'yml', 'txt', // docs/source/scripts/man/CI/test-data
+  'md', 'scss', 'rs', 'c', 'h', 'm', 'bnf', 'jsdoc', 'toml', 'sh', 'ps1', 'cmd', '1', 'yml', 'txt', // docs/source/scripts/man/CI/test-data
   'npmignore', 'keep', 'prettierrc', 'prettierignore', 'nvmrc', 'eslintrc', 'eslintignore', 'editorconfig', // tooling configs
   // Patchright driver dead weight (Slice 1). `license` = esbuild `<name>.js.LICENSE` legal sidecars.
   // `ttf`/`webmanifest` = codicon fonts + PWA manifest for the bundled trace-viewer/recorder/dashboard

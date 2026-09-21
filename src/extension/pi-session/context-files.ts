@@ -8,7 +8,7 @@ import * as path from 'path';
  * per-directory candidate order and the linked-worktree shadow suppression stay pi's, so project
  * discovery is unchanged. An untrusted workspace contributes no context file at all.
  *
- * Tracks pi `@earendil-works/pi-coding-agent@^0.85.0`,
+ * Tracks pi `@earendil-works/pi-coding-agent@^0.86.1`,
  * `packages/coding-agent/src/core/resource-loader.ts`: `:71-72` candidate names,
  * `:119-157` `loadProjectContextFiles` (global entry first, then ancestors root-first),
  * `:515-524` where `agentsFilesOverride` is applied. Recheck these on a pi upgrade.

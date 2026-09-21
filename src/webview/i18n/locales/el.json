@@ -176,6 +176,8 @@
     "thisPanel": "Αυτό το panel",
     "defaultForNewPanels": "Προεπιλογή για νέα panels",
     "workspace": "Χώρος εργασίας",
+    "application": "Όλα τα παράθυρα",
+    "applicationDescription": "Αποθηκεύονται στις ρυθμίσεις χρήστη και ισχύουν για κάθε παράθυρο VS Code. Ένας χώρος εργασίας δεν μπορεί να τις ορίσει.",
     "teamSection": "Ομάδα",
     "teamSectionDescription": "Μοντέλα και προσπάθεια συλλογισμού για κάθε ρόλο της ομάδας πρακτόρων.",
     "teamLead": "Επικεφαλής",
@@ -206,6 +208,11 @@
     "autoCompactEnabled": "Αυτόματη σύμπτυξη context",
     "autoCompactTriggerSuffix": "% του context",
     "autoCompactDescription": "Όταν είναι ενεργό, η συνομιλία συνοψίζεται μόλις η χρήση ξεπεράσει αυτό το ποσοστό του παραθύρου context του μοντέλου.",
+    "cacheWarming": "Προθέρμανση prompt cache",
+    "cacheWarmingOff": "Ανενεργή",
+    "cacheWarmingStreaming": "Κατά την εκτέλεση του agent",
+    "cacheWarmingIdle": "Κατά την εκτέλεση και σε αδράνεια",
+    "cacheWarmingDescription": "Λίγο πριν ο πάροχος απορρίψει την prompt cache, το Damocles ξαναστέλνει το τελευταίο αίτημα με όριο εξόδου ενός token, όποτε το αναμενόμενο όφελος αξίζει το κόστος, που μηδενίζει τον χρόνο λήξης της cache ώστε το επόμενο αίτημα να είναι ανάγνωση cache αντί για αναδημιουργία cache. Σε μικρά context και σε φθηνά μοντέλα το όφελος συχνά δεν φτάνει αυτό το όριο, οπότε δεν στέλνεται κανένα αίτημα προθέρμανσης. Ένα αίτημα προθέρμανσης χρεώνεται ως ανάγνωση cache ολόκληρου του context συν ένα token εξόδου και δεν προστίθεται ποτέ στη συνομιλία. Η αδράνεια συνεχίζει την προθέρμανση έως 30 λεπτά μετά το τελευταίο αίτημα.",
     "extendedThinking": "Εκτεταμένη Σκέψη",
     "reasoningEffort": "Επίπεδο Συλλογισμού",
     "effortNone": "Καμία, χωρίς συλλογισμό",
@@ -620,6 +627,16 @@
       "customAgents": "Agents",
       "systemTools": "Εργαλεία Συστήματος",
       "slashCommands": "Εντολές Slash"
+    },
+    "promptSection": {
+      "preamble": "Προοίμιο",
+      "damocles_memory": "Μνήμη",
+      "damocles_plan_mode": "Λειτουργία σχεδίου",
+      "damocles_plan_file": "Αρχείο σχεδίου",
+      "damocles_team_directive": "Οδηγία ομάδας",
+      "project_context": "Πλαίσιο έργου",
+      "skills": "Δεξιότητες",
+      "damocles_tone": "Ύφος"
     }
   },
   "diff": {

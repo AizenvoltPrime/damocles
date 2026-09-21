@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
+import { parseCacheWarmingMode } from "../../../../shared/types/constants";
 import { McpWriteError } from "../../settings-manager/managers/mcp-config-write";
 import { log } from "../../../logger";
 
@@ -238,6 +239,22 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save auto-compact settings: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
+    setCacheWarming: async (msg, ctx) => {
+      if (msg.type !== "setCacheWarming") return;
+      try {
+        await settingsManager.handleSetCacheWarming(parseCacheWarmingMode(msg.mode));
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      } catch (err) {
+        log("[MessageRouter] Error setting cache warming:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save cache warming setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);

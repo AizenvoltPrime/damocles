@@ -176,6 +176,8 @@
     "thisPanel": "This panel",
     "defaultForNewPanels": "Default for new panels",
     "workspace": "Workspace",
+    "application": "All windows",
+    "applicationDescription": "Saved in your user settings and shared by every VS Code window. A workspace cannot set these.",
     "teamSection": "Team",
     "teamSectionDescription": "Models and reasoning effort for each agent team role.",
     "teamLead": "Lead",
@@ -206,6 +208,11 @@
     "autoCompactEnabled": "Compact context automatically",
     "autoCompactTriggerSuffix": "% of context",
     "autoCompactDescription": "When enabled, the conversation is summarized once usage crosses this percentage of the model's context window.",
+    "cacheWarming": "Prompt cache warming",
+    "cacheWarmingOff": "Off",
+    "cacheWarmingStreaming": "While an agent run is in flight",
+    "cacheWarmingIdle": "While a run is in flight and while idle",
+    "cacheWarmingDescription": "Shortly before the provider drops the prompt cache, Damocles re-sends the last request with a one-token output budget whenever the expected saving is worth the cost, which resets the cache clock so the next request is a cache read instead of a cache rebuild. Small contexts and cheap models often miss that bar, so no warm request goes out. A warm request is billed as a cache read of the full context plus one output token and never enters the conversation. Idle keeps warming for up to 30 minutes after the last request.",
     "extendedThinking": "Extended Thinking",
     "reasoningEffort": "Reasoning Effort",
     "effortNone": "None, no reasoning",
@@ -620,6 +627,16 @@
       "customAgents": "Agents",
       "systemTools": "System Tools",
       "slashCommands": "Slash Commands"
+    },
+    "promptSection": {
+      "preamble": "Preamble",
+      "damocles_memory": "Memory",
+      "damocles_plan_mode": "Plan mode",
+      "damocles_plan_file": "Plan file",
+      "damocles_team_directive": "Team directive",
+      "project_context": "Project context",
+      "skills": "Skills",
+      "damocles_tone": "Tone"
     }
   },
   "diff": {

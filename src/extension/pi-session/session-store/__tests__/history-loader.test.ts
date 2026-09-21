@@ -25,6 +25,14 @@ function userMsg(id: string, text: string): SessionEntry {
 function assistantMsg(id: string, text: string): SessionEntry {
   return { id, type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
 }
+/** A pi 0.86 mid-conversation system message: an ordinary `message` entry carrying `role: "system"`. */
+function systemMsg(id: string, sections: Record<string, string | null>): SessionEntry {
+  return {
+    id,
+    type: 'message',
+    message: { role: 'system', content: '', sections, timestamp: 1_750_000_000_000 },
+  } as unknown as SessionEntry;
+}
 function originalInput(userEntryId: string, original: string): SessionEntry {
   return { id: `c-${userEntryId}`, type: 'custom', customType: DAMOCLES_ORIGINAL_INPUT_ENTRY, data: { userEntryId, original } } as unknown as SessionEntry;
 }
@@ -166,6 +174,55 @@ describe('reconstructMessages — steer chip (Slice 3)', () => {
 
     const emptyAgentId = reconstructMessages([userMsg('u1', 'hi'), steerEntry('', 'msg', { data: { agentId: '', message: 'msg' } })]);
     expect(emptyAgentId.messages.map((m) => m.kind)).toEqual(['user']);
+  });
+});
+
+describe('reconstructMessages — mid-conversation system message', () => {
+  it('produces no message for a role:"system" entry and keeps the surrounding messages in order', () => {
+    const branch = [
+      userMsg('u1', 'turn on plan mode'),
+      systemMsg('s1', { damocles_plan_mode: 'Plan mode guidance.', damocles_tone: null }),
+      assistantMsg('a1', 'plan mode is on'),
+    ];
+    const { messages } = reconstructMessages(branch);
+    expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+    expect((messages[0] as { content: string }).content).toBe('turn on plan mode');
+    expect((messages[1] as { content: string }).content).toBe('plan mode is on');
+  });
+
+  it('does not throw on a system entry whose sections patch is only removals', () => {
+    expect(() => reconstructMessages([systemMsg('s1', { damocles_plan_mode: null })])).not.toThrow();
+    expect(reconstructMessages([systemMsg('s1', { damocles_plan_mode: null })]).messages).toEqual([]);
+  });
+});
+
+describe('loadPiSessionHistory — mid-conversation system message', () => {
+  beforeEach(() => {
+    hoisted.branch = [];
+  });
+
+  it('replays a transcript containing a system entry with no gap and no error', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'first prompt'),
+      assistantMsg('a1', 'first answer'),
+      systemMsg('s1', { damocles_plan_mode: 'Plan mode guidance.' }),
+      userMsg('u2', 'second prompt'),
+      assistantMsg('a2', 'second answer'),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-sys', (m) => posts.push(m));
+
+    expect(posts.some((p) => p.type === 'errorReplay')).toBe(false);
+    // Replay order is unbroken and the system entry consumes no prompt index.
+    expect(posts.filter((p) => p.type === 'userReplay' || p.type === 'assistantReplay').map((p) => p.type)).toEqual([
+      'userReplay',
+      'assistantReplay',
+      'userReplay',
+      'assistantReplay',
+    ]);
+    const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+    expect(replays.map((r) => r.promptIndex)).toEqual([0, 1]);
+    expect(replays.map((r) => r.content)).toEqual(['first prompt', 'second prompt']);
   });
 });
 

@@ -720,6 +720,20 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
+  describe('with GPT-6 Astra selected', () => {
+    const prompt = buildSystemPrompt({ ...baseOptions, model: 'gpt-6-astra', compassEnabled: false });
+
+    it('reports the GPT-6 Astra identity and April 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named GPT-6 Astra. The exact model ID is gpt-6-astra.');
+      expect(prompt).toContain('Assistant knowledge cutoff is April 2026.');
+    });
+
+    it('does not report the GPT-5.6 identity or cutoff', () => {
+      expect(prompt).not.toContain('GPT-5.6');
+      expect(prompt).not.toContain('February 2026');
+    });
+  });
+
   describe('with a GPT-5.6 model selected', () => {
     it.each([
       ['gpt-5.6-sol', 'GPT-5.6 Sol'],

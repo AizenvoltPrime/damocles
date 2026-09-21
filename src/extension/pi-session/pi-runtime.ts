@@ -13,7 +13,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { log } from '../logger';
 import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
-import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
+import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { CONTEXT_FILE_CANDIDATES, overrideGlobalContextFile } from './context-files';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
 import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-sources';
@@ -536,7 +536,7 @@ export class PiRuntime {
   private async _doInit(): Promise<void> {
     const pi = await initPiLoader();
     if (!pi) throw new Error('PiRuntime.init: pi coding-agent failed to load');
-    ensurePiAgentDir(this._agentDir);
+    ensurePiAgentDir(this._agentDir, cacheWarmingSetting());
 
     // Phase 6: the process/workspace-scoped MCP client + its tool registrar. Created before services so
     // the shared extension factory can register MCP tools on every runtime (reload-safe). The manager

@@ -1,18 +1,16 @@
 # Development folders
 .vscode/**
 .vscode-test/**
+.github/**
 node_modules/**
 # >>> AUTO-GENERATED node_modules allowlist (scripts/sync-vscodeignore.mjs) — do not edit by hand
 !node_modules/@anthropic-ai/sdk/**/*.js
 !node_modules/@anthropic-ai/sdk/**/*.json
 !node_modules/@anthropic-ai/sdk/**/*.mjs
 !node_modules/@anthropic-ai/sdk/**/*.svg
-!node_modules/@aws-crypto/**
 !node_modules/@aws-sdk/**
 !node_modules/@aws/lambda-invoke-store/**
 !node_modules/@babel/runtime/**
-!node_modules/@earendil-works/chord/**/*.js
-!node_modules/@earendil-works/chord/**/*.json
 !node_modules/@earendil-works/pi-agent-core/**/*.js
 !node_modules/@earendil-works/pi-agent-core/**/*.json
 !node_modules/@earendil-works/pi-ai/**/*.js
@@ -36,10 +34,6 @@ node_modules/**
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.proto
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.svg
 !node_modules/@earendil-works/pi-coding-agent/node_modules/**/*.wasm
-!node_modules/@earendil-works/pi-protocol/**/*.js
-!node_modules/@earendil-works/pi-protocol/**/*.json
-!node_modules/@earendil-works/pi-server/**/*.js
-!node_modules/@earendil-works/pi-server/**/*.json
 !node_modules/@earendil-works/pi-telemetry/**/*.js
 !node_modules/@earendil-works/pi-telemetry/**/*.json
 !node_modules/@earendil-works/pi-tui/**/*.js
@@ -118,7 +112,6 @@ node_modules/**
 !node_modules/hasown/**
 !node_modules/hono/**
 !node_modules/http-errors/**
-!node_modules/http-proxy-agent/**
 !node_modules/https-proxy-agent/**
 !node_modules/iconv-lite/**
 !node_modules/inherits/**
@@ -170,6 +163,7 @@ node_modules/**
 !node_modules/pkce-challenge/**
 !node_modules/protobufjs/**
 !node_modules/proxy-addr/**
+!node_modules/proxy-agent-negotiate/**
 !node_modules/qs/**
 !node_modules/range-parser/**
 !node_modules/raw-body/**
@@ -218,8 +212,10 @@ docs/**
 .mcp.json
 .gitignore
 .eslintrc*
+eslint.config.mjs
 tsconfig*.json
 vite.config.ts
+vitest.config.ts
 esbuild.config.mjs
 tailwind.config.js
 postcss.config.js

@@ -1,4 +1,4 @@
-import type { EffortLevel, ModelInfo } from './settings';
+import type { CacheWarmingMode, EffortLevel, ModelInfo } from './settings';
 
 /** Sentinel marking a block the HUMAN made at an approval prompt. The text after it is their reason. */
 export const FEEDBACK_MARKER = "The user provided the following reason for the rejection:";
@@ -81,6 +81,19 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     displayName: "Haiku 4.5",
     description: "Fastest model",
     contextWindow: 200_000,
+  },
+  {
+    value: "gpt-6-astra",
+    displayName: "GPT-6 Astra",
+    description: "Most capable OpenAI model, superseding the GPT-5.6 line",
+    contextWindow: 272_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    backend: "openai",
+    openaiModelId: "gpt-6-astra",
+    openaiAuthMode: "any",
+    openaiReasoningEffort: "medium",
   },
   {
     value: "gpt-5.6-sol",
@@ -202,6 +215,21 @@ export const TEAM_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'hig
  *  Replaces unchecked `as EffortLevel` casts on raw config reads. */
 export function parseEffortLevel(value: string): EffortLevel | null {
   return (EFFORT_LEVELS as readonly string[]).includes(value) ? (value as EffortLevel) : null;
+}
+
+/** The prompt-cache warming modes, in the order the settings UI offers them. `CacheWarmingMode` is
+ *  derived from this tuple, so the union and the runtime list cannot drift. */
+export const CACHE_WARMING_MODES: readonly ['off', 'streaming', 'idle'] = ['off', 'streaming', 'idle'];
+
+/** pi coerces any out-of-enum cache-warming mode to `"streaming"`, so every extension-side fallback must
+ *  be this value or the seed file on disk disagrees with what pi does. The package.json contribution
+ *  default is the one copy outside TypeScript, pinned by cache-warming.test.ts. */
+export const DEFAULT_CACHE_WARMING: CacheWarmingMode = 'streaming';
+
+/** Validate an arbitrary stored or posted value as a `CacheWarmingMode`, falling back to the default.
+ *  Replaces unchecked `as CacheWarmingMode` casts on config reads and webview input. */
+export function parseCacheWarmingMode(value: unknown): CacheWarmingMode {
+  return (CACHE_WARMING_MODES as readonly unknown[]).includes(value) ? (value as CacheWarmingMode) : DEFAULT_CACHE_WARMING;
 }
 
 /** The reasoning-effort levels the Explore-section selection advertises, resolved by the same catalog

@@ -1,21 +1,11 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
-import { joinResultText } from '../tool-result-text';
 import type { ShellCancellation, ShellCancelRegistry } from './shell-cancel-registry';
 
-/** The two shell tools disagree on how they surface a partial: bash throws it, PowerShell returns it. */
+/** Both shell tools surface a partial by throwing it, so the body is only ever read off an error. */
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** A shell tool that returns rather than throws on an abort has to set this on `details`, because the wrapper never parses the body. */
-export const SHELL_ABORTED_DETAIL_KEY = 'shellAborted';
-
-/** Whether the tool itself saw the abort, which is what separates an interrupted command from one that had already finished when the Stop click landed. */
-function observedAbort(details: unknown): boolean {
-  if (details === null || typeof details !== 'object' || Array.isArray(details)) return false;
-  return (details as Record<string, unknown>)[SHELL_ABORTED_DETAIL_KEY] === true;
 }
 
 /**
@@ -69,14 +59,9 @@ export function withPerCallCancel(definition: ToolDefinition, registry: ShellCan
 
       registry.register(toolCallId, perCall);
       try {
-        const result = await definition.execute(toolCallId, params, linked, captureUpdate, ctx);
-        const cancellation = registry.takeCancellation(toolCallId);
-        // A Stop click can land after the command finished but before the tool settles, and that output is complete.
-        if (!cancellation || !observedAbort(result.details)) return result;
-        return {
-          content: [{ type: 'text', text: composeCancelledText(joinResultText(result), cancellation, Date.now() - startedAt) }],
-          details: cancelledDetails(lastPartial),
-        };
+        // A shell tool that returns rather than throws saw no abort: a Stop click can land after the
+        // command finished but before the tool settles, and that output is complete.
+        return await definition.execute(toolCallId, params, linked, captureUpdate, ctx);
       } catch (error) {
         const cancellation = registry.takeCancellation(toolCallId);
         if (!cancellation) throw error;

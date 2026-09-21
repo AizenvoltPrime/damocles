@@ -96,7 +96,7 @@ import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconGlobe, IconClock } from "@/components/icons";
-import type { PermissionMode, EffortLevel, AutoCompactConfig, TeamRole } from "@shared/types/settings";
+import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types/session";
@@ -579,6 +579,11 @@ function handleSetTaskBudget(budget: number | null) {
 function handleSetAutoCompact(config: AutoCompactConfig) {
   settingsStore.updateAutoCompactConfig(config);
   postMessage({ type: "setAutoCompact", config });
+}
+
+function handleSetCacheWarming(mode: CacheWarmingMode) {
+  settingsStore.setCacheWarmingMode(mode);
+  postMessage({ type: "setCacheWarming", mode });
 }
 
 function handleSetPermissionMode(mode: PermissionMode) {
@@ -1352,6 +1357,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-budget-limit="handleSetBudgetLimit"
       @set-task-budget="handleSetTaskBudget"
       @set-auto-compact="handleSetAutoCompact"
+      @set-cache-warming="handleSetCacheWarming"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
       @set-ide-context-enabled="handleSetIdeContextEnabled"

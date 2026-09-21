@@ -22,7 +22,7 @@ import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
-import { PI_AGENT_DIR } from "./agent-dir";
+import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
 import { dispatchObserveOnly } from "./hooks/dispatch";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
@@ -81,7 +81,7 @@ import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
-import { assembleDamoclesSystemPrompt } from "./agent-start";
+import { assembleDamoclesSystemPrompt, renderSections, resolveSkillFileReadTool, type DamoclesPromptSections } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isMcpToolName } from "./mcp/naming";
 import { buildNestedMcpToolset, type NestedMcpToolset } from "./tools/mcp-tools";
@@ -106,6 +106,7 @@ import {
 import { BTW_SYSTEM_PROMPT, buildBtwContextBlock } from "./btw-context";
 import { registerContextImagePruning } from "./context-image-pruning";
 import { buildContextUsage } from "./context-usage";
+import { resolveCompactionBudget } from "./compaction-budget";
 import { generateSessionTitle } from "./session-title";
 import {
   buildAccountInfo as buildAccountInfoFrom,
@@ -425,6 +426,7 @@ export class PiSession implements ChatSession {
     // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
     // (see PiRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
     this.applyCompactionConfig();
+    this.applyCacheWarmingConfig();
 
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const sessionId = session.sessionId;
@@ -453,6 +455,7 @@ export class PiSession implements ChatSession {
       isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
+      budgetStopRequested: () => this._budgetStopRequested,
       onAgentEnd: (event) => this.onParentAgentEnd(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
       deferrableTools: () => this.deferrableToolsSnapshot(),
@@ -1024,6 +1027,17 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * Apply `damocles.cacheWarming` to the shared pi settings manager. pi's `CacheWarmer` reads the mode
+   * through `getCacheWarmingMode()`, which reads `globalSettings.cacheWarming`. That is a different
+   * field from the one `applyOverrides` writes, so only `setCacheWarmingMode` has any effect here.
+   */
+  private applyCacheWarmingConfig(): void {
+    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
+    if (!sm) return;
+    sm.setCacheWarmingMode(cacheWarmingSetting());
+  }
+
+  /**
    * Refresh pi's compaction `reserveTokens` for the current model. pi auto-compacts when
    * `contextTokens > contextWindow − reserveTokens`, so a trigger at N% means reserving the remaining
    * (100−N)% of the window. Applied via `applyOverrides` (effective-only); re-applied at each turn start
@@ -1035,9 +1049,15 @@ export class PiSession implements ChatSession {
     if (!cfg.enabled) return;
     const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
     if (!sm) return;
-    const window = this.contextWindowForCurrentModel();
-    const reserveTokens = Math.max(1, Math.round(window * (1 - cfg.triggerPercent / 100)));
-    sm.applyOverrides({ compaction: { enabled: true, reserveTokens } });
+    const budget = resolveCompactionBudget(cfg, this.modelValue, this.contextWindowForCurrentModel());
+    sm.applyOverrides({
+      compaction: {
+        enabled: true,
+        reserveTokens: budget.reserveTokens,
+        // Omitted when unset so pi's own keepRecentTokens default stands.
+        ...(budget.keepRecentTokens !== undefined ? { keepRecentTokens: budget.keepRecentTokens } : {}),
+      },
+    });
   }
 
   /** Read per call, never cached, so a settings edit lands without a reload. The shared manager is right
@@ -1850,6 +1870,9 @@ export class PiSession implements ChatSession {
       if (e.affectsConfiguration("damocles.autoCompact")) {
         this.applyCompactionConfig();
       }
+      if (e.affectsConfiguration("damocles.cacheWarming")) {
+        this.applyCacheWarmingConfig();
+      }
     });
   }
 
@@ -2379,12 +2402,13 @@ export class PiSession implements ChatSession {
       return;
     }
     try {
-      const systemPromptText = (await this.buildEffectiveSystemPrompt()) ?? "";
+      const systemPrompt = await this.buildEffectiveSystemPrompt();
       this.emit({
         type: "contextUsage",
-        data: buildContextUsage(session, systemPromptText, {
+        data: buildContextUsage(session, systemPrompt, {
           maxTokens: this.contextWindowForCurrentModel(),
           modelValue: this.modelValue,
+          autoCompact: this.autoCompactConfig(),
           resourceLoader: this.resourceLoader(),
           mcpEnabled: this.isMcpEnabled(),
           mcpClientManager: this.mcpClientManager(),
@@ -2400,24 +2424,27 @@ export class PiSession implements ChatSession {
 
   /** The live effective system prompt, for the clickable `/context` system-prompt preview (US-021). */
   async getSystemPromptText(): Promise<string | undefined> {
-    return (await this.buildEffectiveSystemPrompt()) || undefined;
+    const sections = await this.buildEffectiveSystemPrompt();
+    return sections ? renderSections(sections) || undefined : undefined;
   }
 
   /**
    * Reconstruct the effective Damocles system prompt from live state via the SAME assembly function the
-   * `before_agent_start` turn path uses (US-021). pi only writes the swapped prompt into its mutable
-   * per-turn `agent.state.systemPrompt`, so reading `session.systemPrompt` outside a turn returns pi's
-   * boilerplate — the `/context` preview/estimate must rebuild it instead of reading that field.
+   * `before_agent_start` turn path uses (US-021). pi holds the swapped prompt only in its per-turn
+   * `_runSystemPromptOptions`, cleared when the run settles, so reading `session.systemPrompt` outside
+   * a turn returns pi's boilerplate, so the `/context` preview/estimate must rebuild it instead of
+   * reading that field.
    *
    * Lazily starts the session read-only first (mirrors `requestContextUsage`/`getSupportedCommands`) so
    * View Details on a never-started panel shows the real prompt; sends nothing to the model. Returns
-   * undefined when the start failed (no live session) or — honoring the `Promise<string | undefined>`
-   * contract its sole caller (`openSystemPrompt`, no local try/catch) relies on — if a live-state read
-   * throws (`getActiveToolNames`/`getPlanFilePath` reach into pi's session tree). It NEVER falls back to
-   * `session.systemPrompt`: that would reintroduce the pi-boilerplate bug this fixes. The loader reads
-   * and `findSessionPlanFiles` degrade to `[]` internally; the outer guard covers the remaining throws.
+   * undefined when the start failed (no live session), and also when a live-state read throws
+   * (`getActiveToolNames`/`getPlanFilePath` reach into pi's session tree). Both callers rely on that
+   * undefined arm: `getSystemPromptText`, which backs `openSystemPrompt` and has no local try/catch,
+   * and the `/context` estimate. It NEVER falls back to `session.systemPrompt`: that would reintroduce
+   * the pi-boilerplate bug this fixes. The loader reads and `findSessionPlanFiles` degrade to `[]`
+   * internally; the outer guard covers the remaining throws.
    */
-  private async buildEffectiveSystemPrompt(): Promise<string | undefined> {
+  private async buildEffectiveSystemPrompt(): Promise<DamoclesPromptSections | undefined> {
     await this.ensureStarted().catch(() => undefined);
     const session = this.runtime?.session;
     if (!session) return undefined;
@@ -2439,10 +2466,9 @@ export class PiSession implements ChatSession {
           skills = [];
         }
       }
-      // `getActiveToolNames()` always returns the concrete active set (pi's `agent.state.tools` names),
-      // so `includes('read')` matches the turn path exactly. The turn path's extra `!selectedTools` arm
-      // only covers pi's "undefined ⇒ default tool set" case, which a live, concrete list never hits.
-      const hasReadTool = session.getActiveToolNames().includes("read");
+      // pi gates its own `<skills>` section on `read` OR `bash` and names the resolved tool in the
+      // section's prose, so this preview must resolve it the same way the turn path does.
+      const skillFileReadTool = resolveSkillFileReadTool(session.getActiveToolNames());
 
       return assembleDamoclesSystemPrompt({
         env: this.systemPromptEnv(),
@@ -2454,7 +2480,7 @@ export class PiSession implements ChatSession {
         existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(this.memorySessionId))[0],
         contextFiles,
         skills,
-        hasReadTool,
+        skillFileReadTool,
       });
     } catch (err) {
       log("[PiSession] buildEffectiveSystemPrompt failed: %O", err);
@@ -2522,7 +2548,7 @@ export class PiSession implements ChatSession {
         tools: [],
         customTools: [],
         excludeTools: [],
-        extensionFactory: (pi) => registerContextImagePruning(pi),
+        extensionFactory: (pi) => { registerContextImagePruning(pi); },
       });
     } catch (err) {
       this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });

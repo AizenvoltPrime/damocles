@@ -4,8 +4,8 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, exploreSupportedEffortLevels } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, TeamRole } from "@shared/types/settings";
+import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, exploreSupportedEffortLevels, parseCacheWarmingMode } from "@shared/types/constants";
+import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -54,6 +54,7 @@ const emit = defineEmits<{
   (e: "setBudgetLimit", budgetUsd: number | null): void;
   (e: "setTaskBudget", budget: number | null): void;
   (e: "setAutoCompact", config: AutoCompactConfig): void;
+  (e: "setCacheWarming", mode: CacheWarmingMode): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
   (e: "setDefaultDangerouslySkipPermissions", enabled: boolean): void;
   (e: "setIdeContextEnabled", enabled: boolean): void;
@@ -230,6 +231,10 @@ function handleAutoCompactTriggerChange(event: Event) {
   const parsed = raw ? parseInt(raw, 10) : NaN;
   const triggerPercent = Math.min(95, Math.max(50, isNaN(parsed) ? 80 : parsed));
   emit("setAutoCompact", { ...props.settings.autoCompact, triggerPercent });
+}
+
+function handleCacheWarmingChange(mode: string) {
+  emit("setCacheWarming", parseCacheWarmingMode(mode));
 }
 
 function clampThinkingTokens(raw: string): number {
@@ -795,6 +800,44 @@ function handleDeleteExploreApiKey() {
         <p class="text-xs text-muted-foreground mt-2 text-center">
           {{ t("settings.settingsInfo") }}
         </p>
+      </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3a: Application                                     -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.application") }}
+        </h3>
+        <p class="text-xs text-muted-foreground mb-3">
+          {{ t("settings.applicationDescription") }}
+        </p>
+
+        <!-- Prompt cache warming -->
+        <div class="mb-5">
+          <Label id="cache-warming-label" for="cache-warming-trigger" class="block mb-2 text-primary font-medium">{{ t("settings.cacheWarming") }}</Label>
+          <Select :model-value="props.settings.cacheWarming" @update:model-value="handleCacheWarmingChange">
+            <SelectTrigger id="cache-warming-trigger" aria-labelledby="cache-warming-label" class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem value="off">
+                {{ t("settings.cacheWarmingOff") }}
+              </SelectItem>
+              <SelectItem value="streaming">
+                {{ t("settings.cacheWarmingStreaming") }}
+              </SelectItem>
+              <SelectItem value="idle">
+                {{ t("settings.cacheWarmingIdle") }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.cacheWarmingDescription") }}
+          </p>
+        </div>
       </section>
 
       <Separator class="my-4 bg-border" />
