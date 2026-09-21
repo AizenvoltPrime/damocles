@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.27.0] - 2026-09-21
+
+### Changed
+
+- **A plan picks a delivery mechanism per slice instead of a team for every slice.** Plan mode marks each slice direct, specialist or team, with a one-line reason. The plan states that those marks are a recommendation, and the implementer that changes one says which slice, which mechanism and why. Every prompt that states the choice now reads the same sentences from one module, and each names the team option only when `create_team` is in that agent's toolset. The main system prompt gained the choice as a bullet of its own, so an agent reads it whether or not a plan is bound.
+
+- **The `damocles_team_directive` prompt section is now `damocles_plan_execution`.** The `/context` section list shows the new name, labelled "Plan execution". It is emitted for any session with a bound plan file, where before it needed the Team feature on as well, because a plan can assign a specialist subagent with teams off.
+
+### Fixed
+
+- **A subagent no longer carries a team tool it cannot call.** An agent that inherits the parent's whole toolset took `create_team`, `get_team_status` and `cancel_team` with it whenever the Team feature was on. No definition is built for them on a subagent, so pi dropped the names with no error and no log. They are now stripped where the subagent tools are, and the subagent's prompt says it cannot spawn subagents or start teams.
+
 ## [2.26.0] - 2026-09-21
 
 Damocles runs on pi 0.86.1 and GPT-6 Astra joins the model picker. The prompt cache is refreshed before the provider drops it, auto-compact takes a budget per model, the system prompt is patched section by section instead of replaced whole, and the PowerShell tool now reports a failure as a failure.
@@ -3997,6 +4009,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.27.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.26.0...v2.27.0
 [2.26.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.25.0...v2.26.0
 [2.25.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.24.0...v2.25.0
 [2.24.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.23.0...v2.24.0

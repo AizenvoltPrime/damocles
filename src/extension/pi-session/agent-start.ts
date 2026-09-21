@@ -10,6 +10,7 @@ import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance } from './plan-mode-guidance';
+import { mechanismLabels } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
 import type { PanelGateContext, SystemPromptEnv } from './permission-gate';
 
@@ -32,21 +33,36 @@ function planFileReminder(planFilePath: string): string {
 }
 
 /**
- * Execution-time team directive (gated on `teamEnabled && !planMode && existingPlanFile`). When a bound
- * plan specifies team runs, the solo/surgical default would otherwise let the agent rationalize doing the
- * work itself ("not parallelizable → skip team"). This makes the plan's orchestration directives binding
- * and self-gates in its wording, so it is harmless for plans that specify no team run.
+ * Execution-time plan directive (gated on `!planMode && existingPlanFile`). A plan assigns each slice a
+ * delivery mechanism; the solo/surgical default would otherwise let the agent rationalize doing a
+ * delegated slice itself ("not parallelizable → skip it"). `teamEnabled` selects only whether the team
+ * rung appears: with the feature off, `create_team` is not in the agent's toolset. The wording self-gates
+ * per slice, so it is harmless for a plan that assigns direct work throughout.
  */
-function teamPlanDirective(): string {
+function planExecutionDirective(teamEnabled: boolean): string {
+  // The labels are the ones `MECHANISM_RECORD_RULE` tells the planner to write, so the directive reads
+  // back exactly what the plan records.
+  const actions = [
+    'implement a slice marked direct yourself',
+    'spawn one specialist subagent (the Agent tool) for a slice marked specialist',
+  ];
+  if (teamEnabled) {
+    actions.push(
+      'start a team with create_team for a slice marked team, passing that slice\'s spec and ' +
+        'acceptance criteria as the create_team `brief` argument (per that tool\'s description)',
+    );
+  }
+  const actionList = `${actions.slice(0, -1).join(', ')}${actions.length > 2 ? ',' : ''} and ${actions.at(-1)}`;
+  const delegationValue = teamEnabled
+    ? 'a specialist and a team both add value for independent review on sequential, high-stakes work'
+    : 'a specialist adds value for independent review on sequential, high-stakes work too';
   return (
-    'When following this plan, treat its orchestration directives as binding: if the plan specifies that ' +
-    'a step or slice runs as a team (the create_team tool) with specialists, you MUST start that team with ' +
-    'create_team rather than doing the work yourself. Teams add value for collaboration and independent ' +
-    'review — including sequential, high-stakes work, not only parallelizable tasks — so do not skip a team ' +
-    'run on the grounds that the work "isn\'t parallelizable." Pass the slice\'s spec / acceptance criteria ' +
-    'as the create_team `brief` argument (per that tool\'s description). If you genuinely believe a step should not be ' +
-    'a team run, raise it with the user and get agreement before proceeding solo; never silently substitute ' +
-    'solo work for a team run the plan specifies.'
+    'When following this plan, treat the delivery mechanism it assigns each slice as the default. ' +
+    `Each slice is marked ${mechanismLabels(teamEnabled)}: ${actionList}. Do not substitute solo work for a ` +
+    'delegated slice on the grounds that the work "isn\'t parallelizable", because ' +
+    `${delegationValue}. You may pick a different mechanism for a slice when the work turns out ` +
+    'different from what the plan assumed. Say which slice, which mechanism, and why, in your next ' +
+    'message, when you do.'
   );
 }
 
@@ -89,9 +105,9 @@ export interface DamoclesSystemPromptInputs {
   env: SystemPromptEnv;
   memoryEnabled: boolean;
   planMode: boolean;
-  /** Whether the multi-agent Team feature is enabled. In plan mode it shapes the implementation-phase
-   *  directive (team-per-slice when on, sequential slices when off); outside plan mode with a bound plan
-   *  file it gates the execution-time team directive that makes the plan's team runs binding. */
+  /** Whether the multi-agent Team feature is enabled. It selects whether the team rung appears in the
+   *  delivery-mechanism ladder, both in the plan-mode implementation directive and in the execution-time
+   *  directive a bound plan file carries; the other two rungs are emitted either way. */
   teamEnabled: boolean;
   /** Whether the native web tools are enabled (`damocles.pi.webSearch.enabled`, off by default). While
    *  off they are not in the session's eligible set at all, so both the version-verification bullet in
@@ -127,7 +143,7 @@ export interface DamoclesPromptSections {
  * pi's natively built one instead of the prompt carrying that content twice.
  */
 export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): DamoclesPromptSections {
-  const preamble = buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled });
+  const preamble = buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled, teamEnabled: i.teamEnabled });
   const sections: Record<string, string> = {};
   if (i.memoryEnabled) sections['damocles_memory'] = MEMORY_SYSTEM_PROMPT;
   if (i.planMode) {
@@ -135,7 +151,7 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
     sections['damocles_plan_mode'] = buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled });
   } else if (i.existingPlanFile) {
     sections['damocles_plan_file'] = planFileReminder(i.existingPlanFile);
-    if (i.teamEnabled) sections['damocles_team_directive'] = teamPlanDirective();
+    sections['damocles_plan_execution'] = planExecutionDirective(i.teamEnabled);
   }
   const projectContext = renderContextFiles(i.contextFiles);
   if (projectContext) sections['project_context'] = projectContext;

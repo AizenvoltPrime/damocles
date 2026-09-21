@@ -80,14 +80,15 @@ describe('system prompt sections — plan mode toggles exactly one section', () 
   });
 
   it('a session with a bound plan file swaps the plan-file reminder for the plan-mode guidance and nothing else', () => {
-    // The reminder and the guidance are mutually exclusive by design, so this toggle moves two keys. The
-    // one-section case above is the cache-stability claim and must keep `existingPlanFile` undefined.
+    // The reminder and the guidance are mutually exclusive by design, so this toggle moves three keys:
+    // the bound plan file carries the execution directive alongside the reminder. The one-section case
+    // above is the cache-stability claim and must keep `existingPlanFile` undefined.
     const off = assembleDamoclesSystemPrompt(inputs({ planMode: false, existingPlanFile: '/repo/.damocles/plans/plan-abc.md' }));
     const on = assembleDamoclesSystemPrompt(inputs({ planMode: true, existingPlanFile: undefined }));
 
     expect(diffSections(off.sections, on.sections)).toEqual({
       added: ['damocles_plan_mode'],
-      removed: ['damocles_plan_file'],
+      removed: ['damocles_plan_file', 'damocles_plan_execution'],
       changed: [],
     });
     expect(on.preamble).toBe(off.preamble);

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildPlanModeGuidance } from '../plan-mode-guidance';
+import { mechanismRecordRule, sliceMechanismRungs } from '../delivery-mechanisms';
+import { buildPlanMechanismBlock } from '../subagents/prompts';
 
 /**
  * Count occurrences so the ordering assertions can insist the load step appears EXACTLY once — a stray
@@ -133,49 +135,79 @@ describe('buildPlanModeGuidance', () => {
     }
   });
 
-  it('mandates a team run per slice ONLY when teams are enabled', () => {
+  // The mechanism is a per-slice judgment, not a fixed answer. The old "every slice is a team run"
+  // directive must not come back: it told the implementer to spend a team on edits it could make itself.
+  it('names all three delivery mechanisms when teams are enabled', () => {
     const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
-    expect(teamOn).toContain('deliver each slice as its own team run');
-    expect(teamOn).toContain('one specialist per layer');
-    expect(teamOn).toContain('per-slice spawn instruction in the plan');
-  });
-
-  it('routes each slice spec through the create_team brief (teams on)', () => {
-    const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
+    expect(teamOn).toContain('pick the smallest one that fits');
+    for (const rung of sliceMechanismRungs(true)) expect(teamOn).toContain(rung);
     expect(teamOn).toContain('create_team `brief` argument');
+    expect(teamOn).not.toContain('MUST call the team tool');
+    expect(teamOn).not.toContain('each slice as its own team run');
   });
 
-  it('omits the brief-routing instruction when teams are disabled', () => {
+  // With teams off the team tools are absent from the session, so naming them points the model at a
+  // tool it cannot call. The two cheaper rungs still apply.
+  it('offers the two-way choice and names no team tool when teams are disabled (the default)', () => {
     for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance('/p/x.md', { teamEnabled: false })]) {
-      expect(out).not.toContain('create_team `brief` argument');
+      expect(out).toContain('pick the smallest one that fits');
+      for (const rung of sliceMechanismRungs(false)) expect(out).toContain(rung);
+      expect(out).toContain('`Frontend Developer`, `Backend Architect`, `Test Automation Engineer`');
+      expect(out).not.toContain('create_team');
+      expect(out).not.toContain('A team (');
     }
   });
 
-  it('tells the implementer not to silently downgrade a team-run slice to solo work', () => {
-    const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
-    expect(teamOn).toContain('must not silently downgrade');
-    expect(teamOn).toContain('raises that with the user');
+  // The labels offered track the rungs offered: a teams-off planner must not be told to mark a slice
+  // `team`, because the implementer it writes for cannot start one.
+  it('records a mechanism plus a reason per slice and marks the assignments a recommendation', () => {
+    for (const teamEnabled of [true, false]) {
+      const out = buildPlanModeGuidance('/p/x.md', { teamEnabled });
+      expect(out).toContain(mechanismRecordRule(teamEnabled));
+      expect(out).toContain('may pick a different mechanism');
+      expect(out).toContain('which slice, which mechanism, and why, in its next message');
+    }
+    expect(buildPlanModeGuidance('/p/x.md')).toContain('as one of direct or specialist');
+    expect(buildPlanModeGuidance('/p/x.md', { teamEnabled: true })).toContain('as one of direct, specialist or team');
   });
 
-  it('directs sequential slices (no team framing) when teams are disabled (the default)', () => {
-    for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance('/p/x.md', { teamEnabled: false })]) {
-      expect(out).toContain('implement the slices sequentially in dependency order');
-      expect(out).not.toContain('team run');
-      expect(out).not.toContain('specialist per layer');
+  // The Plan agent drafts the plan and the main agent refines it, so the two must describe the same
+  // rungs in the same words. One module supplies both; this fails if either stops reading it.
+  it('states the rungs in the same words as the Plan agent block', () => {
+    for (const teamEnabled of [true, false]) {
+      const guidance = buildPlanModeGuidance('/p/x.md', { teamEnabled });
+      const block = buildPlanMechanismBlock(teamEnabled);
+      for (const rung of sliceMechanismRungs(teamEnabled)) {
+        expect(guidance).toContain(rung);
+        expect(block).toContain(rung);
+      }
+      expect(block).toContain(mechanismRecordRule(teamEnabled));
     }
   });
 
   it('routes complex tasks through the Plan subagent for the first draft as a hard rule', () => {
-    const out = buildPlanModeGuidance('/p/x.md');
-    expect(out).toContain('first draft');
-    expect(out).toContain('Plan subagent');
-    // Binding, not advisory: the main prompt's "keep spawn counts low" must not be read as licence to
-    // skip the Explore→Plan handoff.
-    expect(out).toContain('This is a hard rule, not a suggestion');
-    expect(out).toContain('you MUST produce the first draft of the plan through the Plan subagent');
-    // Research is delegated SEEDED, not cold: orienting first is what lets the Explore prompt carry
-    // known facts, so the subagent spends its turn on depth instead of re-deriving the obvious.
-    expect(out).toContain('Orient yourself first');
-    expect(out).toContain('not re-derive');
+    for (const out of [
+      buildPlanModeGuidance('/p/x.md'),
+      buildPlanModeGuidance('/p/x.md', { teamEnabled: true }),
+    ]) {
+      expect(out).toContain('first draft');
+      expect(out).toContain('Plan subagent');
+      // Binding, not advisory: the main prompt's "keep spawn counts low" must not be read as licence to
+      // skip the Explore→Plan handoff.
+      // The precedence sits on the hard rule, which is the instruction "keep spawn counts low" pulls
+      // against. Putting it on the exemption inverted it: an exemption from spawning cannot outrank a
+      // bullet that also says don't spawn.
+      expect(out).toContain('This is a hard rule, not a suggestion, and it outranks the main prompt\'s "keep spawn counts low"');
+      expect(out).toContain('you MUST produce the first draft of the plan through the Plan subagent');
+      // Both exemptions in one list, so the text never says "only X is exempt" and then names a second.
+      expect(out).toContain('Two things exempt a task: a genuinely small, well-understood, single-file change');
+      expect(out).toContain('a change where you have already read in full every file it touches, which you plan directly and say so in your first message');
+      expect(out).toContain('Nothing else exempts a complex task');
+      expect(out).not.toContain('Only a genuinely small, well-understood, single-file change is exempt');
+      // Research is delegated SEEDED, not cold: orienting first is what lets the Explore prompt carry
+      // known facts, so the subagent spends its turn on depth instead of re-deriving the obvious.
+      expect(out).toContain('Orient yourself first');
+      expect(out).toContain('not re-derive');
+    }
   });
 });

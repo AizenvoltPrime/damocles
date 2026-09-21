@@ -1,6 +1,7 @@
 import { COMPASS_SYSTEM_PROMPT } from "../compass/system-prompt";
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "./code-rules";
 import { PROSE_RULE_BULLETS } from "./prose-rules";
+import { sessionMechanismBullet } from "./delivery-mechanisms";
 
 interface SystemPromptOptions {
   cwd: string;
@@ -11,6 +12,10 @@ interface SystemPromptOptions {
   osVersion: string;
   compassEnabled?: boolean;
   webSearchEnabled?: boolean;
+  /** Whether the multi-agent Team feature is live. It feeds the preamble rather than a section of its
+   *  own, so toggling it mid-session repatches the whole base prompt instead of one small section. That
+   *  matches `compassEnabled` and `webSearchEnabled`, and the toggle is rare. */
+  teamEnabled?: boolean;
   thinkingDisabled?: boolean;
 }
 
@@ -143,13 +148,18 @@ function buildCompassSection(compassEnabled: boolean): string {
   return COMPASS_SYSTEM_PROMPT;
 }
 
-function buildSessionGuidanceSection(compassEnabled: boolean): string {
+function buildSessionGuidanceSection(compassEnabled: boolean, teamEnabled: boolean): string {
   const searchLine = compassEnabled
     ? ""
     : `
  - For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.`;
+  // The two cheaper rungs are unconditional: every agent reads this section in every configuration,
+  // and it is the only surface `.claude/commands/check.md` can point at. Only the team rung is gated,
+  // because with the feature off `create_team` is not in the session's toolset.
+  const mechanismLine = `
+${sessionMechanismBullet(teamEnabled)}`;
   return `# Session-specific guidance
- - Use the Agent tool with a specialized subagent when the task matches its description, either to fan out across independent items or to protect the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low. One subagent that can do the job beats several. Don't duplicate searches you've delegated.${searchLine}
+ - Use the Agent tool with a specialized subagent when the task matches its description, either to fan out across independent items or to protect the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low. One subagent that can do the job beats several. Don't duplicate searches you've delegated.${searchLine}${mechanismLine}
  - When the user types \`/<skill-name>\`, invoke it via Skill, and only skills listed in the user-invocable skills section, never guessed.`;
 }
 
@@ -251,7 +261,7 @@ export function buildSystemPrompt(options: SystemPromptOptions): string {
     buildCompassSection(!!options.compassEnabled),
     TONE_AND_STYLE_SECTION,
     REFERENCE_POINTS_SECTION,
-    buildSessionGuidanceSection(!!options.compassEnabled),
+    buildSessionGuidanceSection(!!options.compassEnabled, !!options.teamEnabled),
     TEXT_OUTPUT_SECTION,
     WRITTEN_ARTIFACTS_SECTION,
     RESPONSE_EXAMPLES_SECTION,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildSystemPrompt } from '../system-prompt';
 import { PROSE_RULES_BODY } from '../prose-rules';
+import { sessionMechanismBullet } from '../delivery-mechanisms';
 
 const baseOptions = {
   cwd: '/tmp/test',
@@ -161,6 +162,36 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
     it('emits the non-Compass broad-exploration fallback bullet', () => {
       expect(prompt).toContain("For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.");
+    });
+
+    // The two cheaper rungs are unconditional: this section is the only ladder a plain session (no plan
+    // mode, no bound plan file) carries, and `.claude/commands/check.md` points at it. Only the team
+    // rung is gated, because with the feature off `create_team` is not in the session's toolset.
+    it('carries the two cheaper rungs in every configuration and the team rung only when teams are live', () => {
+      const guidanceOf = (p: string) => p.slice(p.indexOf('# Session-specific guidance'), p.indexOf('# Text output'));
+
+      const teamOn = buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: true });
+      expect(guidanceOf(teamOn)).toContain(sessionMechanismBullet(true).trimStart());
+      expect(guidanceOf(teamOn)).toContain('Start a team (`create_team`) only when a job genuinely needs several perspectives at once or an independent reviewer');
+      expect(teamOn.split('Start a team (`create_team`)').length - 1).toBe(1);
+
+      for (const off of [
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: true, teamEnabled: false }),
+      ]) {
+        expect(guidanceOf(off)).toContain('Pick the smallest delivery mechanism that fits the job.');
+        expect(guidanceOf(off)).toContain('one specialist subagent is the cheaper answer for a focused one');
+        expect(off).not.toContain('create_team');
+      }
+    });
+
+    // The flag's only effect is the team clause, so omitting it and disabling it must agree byte for
+    // byte. The two golden full-prompt snapshots pin what the teams-off prompt is.
+    it('treats an unset Team flag as off, byte for byte', () => {
+      const unset = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
+      const off = buildSystemPrompt({ ...baseOptions, compassEnabled: false, teamEnabled: false });
+      expect(off).toBe(unset);
     });
 
     it('does NOT contain the removed Git section', () => {
@@ -436,6 +467,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
         # Session-specific guidance
          - Use the Agent tool with a specialized subagent when the task matches its description, either to fan out across independent items or to protect the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low. One subagent that can do the job beats several. Don't duplicate searches you've delegated.
          - For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.
+         - Pick the smallest delivery mechanism that fits the job. Your own edits are the cheapest for a small job, and one specialist subagent is the cheaper answer for a focused one.
          - When the user types \`/<skill-name>\`, invoke it via Skill, and only skills listed in the user-invocable skills section, never guessed.
 
         # Text output (does not apply to tool calls)
@@ -603,6 +635,7 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
 
         # Session-specific guidance
          - Use the Agent tool with a specialized subagent when the task matches its description, either to fan out across independent items or to protect the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low. One subagent that can do the job beats several. Don't duplicate searches you've delegated.
+         - Pick the smallest delivery mechanism that fits the job. Your own edits are the cheapest for a small job, and one specialist subagent is the cheaper answer for a focused one.
          - When the user types \`/<skill-name>\`, invoke it via Skill, and only skills listed in the user-invocable skills section, never guessed.
 
         # Text output (does not apply to tool calls)

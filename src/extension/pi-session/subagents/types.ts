@@ -16,6 +16,11 @@ export type { ThinkingLevel };
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
 
+/** The planning agent's name. A user agent of the same name (in any case, as `AgentRegistry` resolves
+ *  a spawn) takes the planning role, which is why planning prompt blocks key off the name, not the
+ *  source. Compare with `toLowerCase()` on both sides. */
+export const PLAN_AGENT_NAME = 'Plan';
+
 /** Names of the three embedded default agents. */
 export const DEFAULT_AGENT_NAMES = ['general-purpose', 'Explore', 'Plan'] as const;
 

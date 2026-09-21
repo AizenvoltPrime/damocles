@@ -87,7 +87,7 @@ export interface CustomToolDeps {
    */
   teamService?: TeamServiceRef;
   /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
-   *  Shapes the EnterPlanMode plan-mode guidance (team-per-slice vs sequential slices). */
+   *  Selects whether the team rung appears in the EnterPlanMode guidance's delivery-mechanism ladder. */
   isTeamEnabled?: () => boolean;
 }
 

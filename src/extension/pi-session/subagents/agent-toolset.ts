@@ -34,7 +34,14 @@
  * (Edit, PowerShell, Task tools, memory/compass/browser) are built and passed separately by the caller.
  */
 
-import { TOOL_EDIT, TOOL_TOOL_SEARCH, SUBAGENT_TOOLS, PLAN_MODE_TOOLS } from '../../../shared/tool-names';
+import {
+  TOOL_EDIT,
+  TOOL_TOOL_SEARCH,
+  SUBAGENT_TOOLS,
+  PLAN_MODE_TOOLS,
+  TEAM_CREATE_TOOL,
+  TEAM_MANAGEMENT_TOOLS,
+} from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
 import type { AgentConfig } from './types';
 
@@ -107,8 +114,11 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
   const denied = new Set((config.disallowedTools ?? []).map(mapName));
   if (denied.size) names = names.filter((n) => !denied.has(n));
 
-  // No recursion: a subagent can never spawn subagents.
-  names = names.filter((n) => !SUBAGENT_TOOLS.has(n));
+  // No recursion: a subagent can never spawn subagents, and can never start a team. Team tools reach a
+  // `tools: *` agent through the parent set whenever the feature is on, and `buildSubagentCustomTools`
+  // builds no definition for them, so without this filter the name travels to pi with nothing behind it
+  // and pi drops it silently, which is the same divergence the MCP filter below exists to prevent.
+  names = names.filter((n) => !SUBAGENT_TOOLS.has(n) && n !== TEAM_CREATE_TOOL && !TEAM_MANAGEMENT_TOOLS.has(n));
 
   // Plan mode is a top-level panel concern owned by the primary session; a subagent must never enter
   // or exit plan mode, so strip these even when the parent inherits them (e.g. while the panel is in

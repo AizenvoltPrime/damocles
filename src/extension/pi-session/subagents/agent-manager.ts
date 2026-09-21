@@ -16,6 +16,7 @@ import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { RunningSubagentInfo } from '../../../shared/types/subagents';
 import { wrapSteerMessage } from '../../../shared/steer';
+import { TEAM_CREATE_TOOL } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
@@ -25,7 +26,7 @@ import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT } from '../../compass/system-prompt';
 import { AgentRegistry } from './agent-types';
-import { buildAgentPrompt, type PromptExtras } from './prompts';
+import { buildAgentPrompt, buildPlanMechanismBlock, type PromptExtras } from './prompts';
 import { detectEnv } from './env';
 import { preloadSkills } from './skill-loader';
 import { resolveAgentToolset } from './agent-toolset';
@@ -35,7 +36,7 @@ import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-br
 import { runSubagent, getAgentConversation } from './subagent-runner';
 import { getStatusNote } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
-import type { AgentConfig, AgentRecord, SubagentType, ThinkingLevel } from './types';
+import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type SubagentType, type ThinkingLevel } from './types';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -379,7 +380,8 @@ export class AgentManager {
     // Resolve the toolset BEFORE building the prompt: the prompt is capability-gated on what the agent
     // actually ends up holding, so the resolved set is an input to the prompt and not the other way
     // round. Nothing between them reads the prompt, so the order is free to be this way.
-    const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
+    const parentNames = this.engine.parentFullToolNames();
+    const toolset = resolveAgentToolset(config, parentNames);
     const extras: PromptExtras = {};
     if (Array.isArray(config.skills)) {
       const loaded = preloadSkills(config.skills, this.engine.cwd, {
@@ -392,6 +394,13 @@ export class AgentManager {
     // agents on tools they cannot call. Membership also self-maintains — no second list to sync.
     if (toolset.names.some((n) => COMPASS_PI_TOOL_NAMES.includes(n))) extras.compassBlock = COMPASS_AGENT_PROMPT;
     if (!toolset.readOnly) extras.writesFiles = true;
+    // The Plan agent assigns mechanisms the PARENT will execute, so the team rung is gated on the
+    // parent's capability, not this agent's: no subagent can call `create_team` itself. Matched
+    // case-insensitively because `AgentRegistry` resolves a spawn that way, so a user `plan.md` takes
+    // the role and must take the block with it.
+    if (config.name.toLowerCase() === PLAN_AGENT_NAME.toLowerCase()) {
+      extras.planMechanismBlock = buildPlanMechanismBlock(parentNames.includes(TEAM_CREATE_TOOL));
+    }
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
     // Bind this subagent's browser tools to its OWN tab scope (keyed by record.id) so concurrent
     // subagents never clobber one another or the primary/main tab.

@@ -1,8 +1,8 @@
 /**
  * plan-mode-guidance.ts: single source of truth for the plan-mode directive.
  *
- * Leaf module (no other pi-session imports) so both consumers can share it without an
- * `agent-start ↔ tools/` import cycle:
+ * Imports only leaf text modules, never a pi-session module with behavior, so both consumers can share
+ * it without an `agent-start ↔ tools/` import cycle:
  *  - `agent-start.ts` appends it to the system prompt when a turn STARTS in plan mode (the path is
  *    known, so it is named concretely).
  *  - `tools/plan-mode-tools.ts` returns it as the `EnterPlanMode` tool result when the model enters
@@ -12,6 +12,8 @@
  * Both paths emit identical guidance; only the plan-file clause differs by whether the path is known.
  * The text is cache-stable per session (no per-turn-varying content beyond the plan path).
  */
+
+import { mechanismRecordRule, sliceMechanismRungs } from './delivery-mechanisms';
 
 /**
  * Build the adaptive plan-mode guidance. When `planFilePath` is provided it is named concretely;
@@ -29,12 +31,14 @@ export function buildPlanModeGuidance(
     ? `write and continuously maintain your plan, as markdown, at ${planFilePath}`
     : 'write and continuously maintain your plan, as markdown, at the plan file named in your system prompt';
 
-  // The implementation-phase bullet depends on whether the multi-agent Team feature is enabled. With
-  // teams on, the plan must explicitly direct the implementer to spawn a team per slice; with teams off
-  // (the default), `create_team` isn't in the implementer's toolset, so slices are done sequentially.
-  const implementationBullet = opts.teamEnabled
-    ? `   - For the implementation phase, write an explicit, binding directive INTO the plan to deliver each slice as its own team run: the implementing agent MUST call the team tool once per slice, in dependency order, and within each slice spawn one specialist per layer the slice touches (backend / frontend / devops), each owning its own files and coordinating through the slice's shared scratchpad contract. Direct the implementer to pass each slice's spec / acceptance criteria as the create_team \`brief\` argument (per that tool's description). State this per-slice spawn instruction in the plan itself so the implementer acts on it, and state that the implementer must not silently downgrade a team-run slice to solo work. If it believes a slice should not be a team run, it raises that with the user and gets agreement before proceeding rather than quietly doing it alone.`
-    : `   - For the implementation phase, implement the slices sequentially in dependency order; within each slice deliver its own layers (its data/types/contract before the code that consumes them) before moving to the next slice.`;
+  // The rungs come from `delivery-mechanisms.ts` so this surface and the Plan agent's block state them
+  // in the same words. The team rung is absent with the feature off: `create_team` is not in the
+  // implementer's toolset then, and naming it points the model at a tool it does not have.
+  const teamEnabled = opts.teamEnabled ?? false;
+  const rungs = sliceMechanismRungs(teamEnabled)
+    .map((rung) => `\n     - ${rung}`)
+    .join('');
+  const implementationBullet = `   - For the implementation phase, give every slice a delivery mechanism in the plan and pick the smallest one that fits:${rungs}\n     ${mechanismRecordRule(teamEnabled)}`;
 
   // `damocles.pi.webSearch.enabled` is off by default, and while it is off the web tools are not in the
   // session's eligible set at all. `ToolSearch({tools:["web"]})` answers "Not available in this
@@ -62,11 +66,11 @@ How to work in plan mode:
 
 2. Design to industry standards, with no bandaids and no cut corners. Every decision in the plan must be the correct, durable solution, not the expedient one. Apply established best practices for the domain (OWASP for security, REST/GraphQL conventions for APIs, SOLID for OOP, 12-factor for services, idiomatic patterns for the language/framework) unless the codebase already commits to a different approach. When you depart from a norm, say so and justify it. Plan to fix root causes, never to mask symptoms: no workarounds, fallback shims, swallowed errors, or backwards-compatibility hacks that paper over a design flaw. Reach for the current standard rather than your training-data default.${webVerificationClause} If the only acceptable solution is larger than the user expected, surface that via AskUserQuestion rather than quietly choosing a lesser shortcut.
 
-3. Delegate the first draft for complex tasks. This is a hard rule, not a suggestion. If the task is complex (touches multiple files, spans modules, or is architecturally involved), you MUST produce the first draft of the plan through the Plan subagent before you write anything to the plan file:
+3. Delegate the first draft for complex tasks. This is a hard rule, not a suggestion, and it outranks the main prompt's "keep spawn counts low". If the task is complex (touches multiple files, spans modules, or is architecturally involved), you MUST produce the first draft of the plan through the Plan subagent before you write anything to the plan file:
    - Orient yourself first with a few targeted greps/reads, then send the Explore subagent after the depth you still lack, stating what you already established as known facts it must build on, not re-derive. A seeded delegation comes back with the specifics you need; a cold "go research X" comes back with the summary you already had.
    - Then hand those findings to the Plan subagent and have it design the approach and write the first draft of the plan.
    - Then take that draft as your starting point: write it to the plan file, and refine it yourself. Run AskUserQuestion for any decision the subagents surfaced that is the user's to make, reconcile their findings, fill gaps, and finalize. The subagent makes the FIRST draft; you own the plan file and the final plan.
-   Only a genuinely small, well-understood, single-file change is exempt, so plan it directly and don't over-research. When in doubt about whether a task is complex, treat it as complex and delegate the first draft.
+   Two things exempt a task: a genuinely small, well-understood, single-file change, which you plan directly without over-researching, and a change where you have already read in full every file it touches, which you plan directly and say so in your first message. Nothing else exempts a complex task. When in doubt about whether a task is complex, treat it as complex and delegate the first draft.
 
 4. Right-size the plan to the task. Scale rigor to scope:
    - Decompose the work into **vertical slices, not horizontal layers**. A vertical slice cuts end-to-end through every layer it needs (data → API / business logic → UI) to deliver one small, complete, independently testable and demoable piece of behavior. Do NOT decompose horizontally. Do not build a whole layer (all data models, then all endpoints, then all UI) before any behavior works end-to-end. Example: for "user profile editing", slice by behavior, so "edit display name" end-to-end, then "edit avatar" end-to-end, not "all DB columns", then "all endpoints", then "all UI". The only horizontal work allowed is a minimal shared foundation (a thin walking skeleton) when a slice genuinely cannot stand alone without it. Keep it as thin as the first consuming slice requires; never pre-build a full layer ahead of the slices that use it.

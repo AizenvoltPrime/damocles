@@ -19,7 +19,7 @@
  * is the never-name-a-deferred-tool-without-a-load-step invariant working as designed.
  */
 
-import type { AgentConfig } from './types';
+import { PLAN_AGENT_NAME, type AgentConfig } from './types';
 import { PROSE_RULES_BODY } from '../prose-rules';
 import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT } from '../../../shared/tool-names';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
@@ -110,10 +110,10 @@ ${PROSE_RULES_BODY}`,
     },
   ],
   [
-    'Plan',
+    PLAN_AGENT_NAME,
     {
-      name: 'Plan',
-      displayName: 'Plan',
+      name: PLAN_AGENT_NAME,
+      displayName: PLAN_AGENT_NAME,
       description:
         'Software architect agent for designing implementation plans. Use this when you need to plan the implementation strategy for a task. Returns step-by-step plans, identifies critical files, and considers architectural trade-offs.',
       builtinToolNames: EXPLORE_TOOL_NAMES,

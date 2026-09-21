@@ -96,10 +96,11 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
 export const PLAN_MODE_EXCLUDED_TOOLS: readonly string[] = [
   // Already in plan mode — calling it again is a no-op that wastes a turn.
   TOOL_ENTER_PLAN_MODE,
-  // `create_team` starts a multi-agent run that writes code; the plan-mode directive tells the model to
-  // spawn teams per slice AFTER the plan is approved. `get_team_status`/`cancel_team` are harmless on
-  // their own, but the whole subsystem is already absent from plan mode and this keeps that behavior —
-  // relaxing it is a separate decision, made on its own merits.
+  // `create_team` starts a multi-agent run that writes code; the plan-mode directive has the model
+  // assign teams to the slices that need one, to be started AFTER the plan is approved.
+  // `get_team_status`/`cancel_team` are harmless on their own, but the whole subsystem is already
+  // absent from plan mode and this keeps that behavior. Relaxing it is a separate decision, made on
+  // its own merits.
   ...TEAM_MAIN_PI_TOOL_NAMES,
 ];
 

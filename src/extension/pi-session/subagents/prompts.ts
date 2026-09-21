@@ -7,6 +7,7 @@
 import { STEER_INSTRUCTION_PREFIX } from '../../../shared/steer';
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from '../code-rules';
 import { buildNarrationRule } from '../prose-rules';
+import { mechanismRecordRule, sliceMechanismRungs } from '../delivery-mechanisms';
 import type { AgentConfig, EnvInfo } from './types';
 
 /**
@@ -77,6 +78,30 @@ export interface PromptExtras {
    * bodies from the panel prompt, so the block is emitted in replace mode only.
    */
   writesFiles?: boolean;
+  /**
+   * The delivery-mechanism ladder the Plan agent assigns from. Set by the caller, for the same reason
+   * `compassBlock` is: the team rung belongs in it only when the PARENT can call `create_team`, and only
+   * the caller knows that. Emitted in both prompt modes, unlike `writesFiles`: an append-mode agent
+   * inherits guidance about delegating its OWN work, which is a different question from which mechanism
+   * a plan should assign to a slice the parent will implement later.
+   */
+  planMechanismBlock?: string;
+}
+
+/**
+ * The ladder the Plan agent assigns from, worded for an agent writing a plan rather than executing one:
+ * it names the mechanisms the IMPLEMENTER will use, not tools this agent holds. The rungs come from
+ * `delivery-mechanisms.ts`, so this block and the plan-mode guidance state them in the same words.
+ */
+export function buildPlanMechanismBlock(teamEnabled: boolean): string {
+  const rungs = sliceMechanismRungs(teamEnabled)
+    .map((rung) => `- ${rung}`)
+    .join('\n');
+  return `# Delivery mechanisms
+Give every slice in the plan a delivery mechanism, and pick the smallest one that fits:
+${rungs}
+
+${mechanismRecordRule(teamEnabled)}`;
 }
 
 /**
@@ -116,6 +141,7 @@ Platform: ${env.platform}`;
 
   const extraSections: string[] = [];
   if (compassBlock) extraSections.push(`\n${compassBlock}`);
+  if (extras?.planMechanismBlock) extraSections.push(`\n${extras.planMechanismBlock}`);
   if (extras?.skillBlocks?.length) {
     for (const skill of extras.skillBlocks) {
       extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`);
@@ -135,6 +161,7 @@ You are operating as a sub-agent invoked to handle a specific task.
 - Use absolute file paths
 - Do not use emojis
 - Be concise but complete
+- You cannot spawn subagents or start teams. Do the work yourself, or report back what is out of scope
 </sub_agent_context>`;
 
     const customSection = config.systemPrompt?.trim()

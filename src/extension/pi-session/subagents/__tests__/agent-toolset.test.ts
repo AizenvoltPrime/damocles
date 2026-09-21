@@ -65,6 +65,20 @@ describe('resolveAgentToolset', () => {
     expect(explicit.names).toEqual(['read']);
   });
 
+  // A subagent gets no team-tool DEFINITIONS (`buildSubagentCustomTools` is built without the team
+  // service), so a name that survives here reaches pi with nothing behind it and is dropped with no
+  // error and no log. Stripping it keeps `tools:` and the definitions in agreement.
+  it('strips the main team tools whether inherited ("all") or named explicitly', () => {
+    const TEAM = ['create_team', 'get_team_status', 'cancel_team'];
+    const inherited = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, ...TEAM]);
+    for (const name of TEAM) expect(inherited.names, name).not.toContain(name);
+    // Still holds what it should: stripping is scoped to the team names.
+    expect(inherited.names).toContain('Edit');
+
+    const explicit = resolveAgentToolset(cfg({ builtinToolNames: ['read', ...TEAM] }), [...PARENT, ...TEAM]);
+    expect(explicit.names).toEqual(['read']);
+  });
+
   it('keeps mcp__ names OUT of `names` — MCP arrives via the frozen per-spawn snapshot, not this list', () => {
     // The reason changed, the exclusion did not. Nested sessions DO get MCP tools now, but they arrive
     // as `customTools` built from one `getAllToolDescriptors()` read per spawn (Slice 1 §3.2), and the

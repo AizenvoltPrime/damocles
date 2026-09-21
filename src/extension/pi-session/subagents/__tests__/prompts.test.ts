@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAgentPrompt } from '../prompts';
+import { buildAgentPrompt, buildPlanMechanismBlock } from '../prompts';
 import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
 import type { AgentConfig, EnvInfo } from '../types';
 
@@ -25,6 +25,42 @@ describe('buildAgentPrompt', () => {
     expect(out).toContain('<sub_agent_context>');
     expect(out).toContain('<active_agent name="gp"/>');
     expect(out).toContain('<agent_instructions>\nEXTRA\n</agent_instructions>');
+  });
+
+  // The inherited `# Session-specific guidance` tells the reader to spawn subagents and (with teams on)
+  // to start teams, both of which `resolveAgentToolset` strips from a subagent. The bridge exists to
+  // correct inherited assumptions, so the correction goes there and only there.
+  it('append mode alone states that a subagent cannot delegate', () => {
+    const append = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT PROMPT');
+    expect(append).toContain('- You cannot spawn subagents or start teams. Do the work yourself, or report back what is out of scope');
+
+    const replace = buildAgentPrompt(cfg({ promptMode: 'replace', systemPrompt: 'BODY' }), '/ws', ENV);
+    expect(replace).not.toContain('You cannot spawn subagents or start teams');
+  });
+
+  // The Plan agent's prompt is `replace`, so it inherits no mechanism guidance; the block is the only
+  // way its draft arrives with a mechanism per slice. The team rung tracks the PARENT's capability.
+  it('renders the plan mechanism block in both prompt modes, and only when asked for', () => {
+    for (const mode of ['replace', 'append'] as const) {
+      const withBlock = buildAgentPrompt(cfg({ promptMode: mode, systemPrompt: 'BODY' }), '/ws', ENV, 'PARENT', {
+        planMechanismBlock: buildPlanMechanismBlock(true),
+      });
+      expect(withBlock).toContain('# Delivery mechanisms');
+      expect(withBlock).toContain('One specialist subagent');
+      expect(withBlock).toContain('A team (`create_team`');
+
+      const teamsOff = buildAgentPrompt(cfg({ promptMode: mode, systemPrompt: 'BODY' }), '/ws', ENV, 'PARENT', {
+        planMechanismBlock: buildPlanMechanismBlock(false),
+      });
+      expect(teamsOff).toContain('# Delivery mechanisms');
+      expect(teamsOff).toContain('One specialist subagent');
+      expect(teamsOff).not.toContain('create_team');
+
+      // An agent that asked for no block gets exactly the prompt it got before the field existed.
+      const none = buildAgentPrompt(cfg({ promptMode: mode, systemPrompt: 'BODY' }), '/ws', ENV, 'PARENT', {});
+      expect(none).toBe(buildAgentPrompt(cfg({ promptMode: mode, systemPrompt: 'BODY' }), '/ws', ENV, 'PARENT'));
+      expect(none).not.toContain('# Delivery mechanisms');
+    }
   });
 
   // An agent's narration is billed to the parent's context window and the parent reads only the final

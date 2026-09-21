@@ -45,6 +45,9 @@ import { computePlanFilePath, DAMOCLES_PLANS_DIR } from '../../paths';
 import type { PanelGateContext } from '../permission-gate';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
+/** The opening of the execution-time plan directive, used for both its presence and its absence. */
+const PLAN_EXECUTION_MARKER = 'treat the delivery mechanism it assigns each slice as the default';
+
 /** Mirrors what `normalizeBuildSystemPromptOptions` hands a handler, defaults included: every
  *  collection field is present, and `selectedTools` defaults to pi's four built-ins. */
 function promptOptions(over: Partial<NormalizedBuildSystemPromptOptions> = {}): NormalizedBuildSystemPromptOptions {
@@ -184,7 +187,7 @@ describe('assembleDamoclesSystemPrompt — section map', () => {
 
     expect(
       Object.keys(assembleDamoclesSystemPrompt(inputs({ existingPlanFile: '/p/plan.md', teamEnabled: true })).sections),
-    ).toEqual(['damocles_plan_file', 'damocles_team_directive', 'damocles_tone']);
+    ).toEqual(['damocles_plan_file', 'damocles_plan_execution', 'damocles_tone']);
 
     expect(
       Object.keys(
@@ -359,43 +362,71 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(text).not.toContain('Plan mode is active');
   });
 
-  it('outside plan mode with teams enabled + a bound plan, injects the binding team directive', async () => {
+  it('outside plan mode with teams enabled + a bound plan, names all three delivery mechanisms', async () => {
     const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
     fs.writeFileSync(planFilePath, '# Plan');
     const ev = event();
     const text = await promptTextFor(ev, makePanel({ teamEnabled: true }).panel);
     expect(text).toContain(planFilePath); // existing reminder still present
-    expect(text).toContain('binding');
-    expect(text).toContain('create_team');
-    expect(text).toContain("isn't parallelizable");
+    expect(text).toContain(PLAN_EXECUTION_MARKER);
+    // The labels are the ones the planner is told to write, so the two surfaces cannot disagree.
+    expect(text).toContain('Each slice is marked direct, specialist or team');
+    expect(text).toContain('implement a slice marked direct yourself');
+    expect(text).toContain('spawn one specialist subagent (the Agent tool) for a slice marked specialist');
+    expect(text).toContain('and start a team with create_team for a slice marked team');
     // Routes intent through `brief`; the title/brief mechanics live in the create_team description.
     expect(text).toContain('create_team `brief` argument');
+    // The mechanism is the plan's call, not a fixed answer, and a deviation is announced, not approved.
+    expect(text).toContain('You may pick a different mechanism for a slice');
+    expect(text).toContain('which slice, which mechanism, and why, in your next message');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
       'damocles_plan_file',
-      'damocles_team_directive',
+      'damocles_plan_execution',
       'damocles_tone',
     ]);
   });
 
-  it('outside plan mode with teams disabled + a bound plan, emits the reminder but NOT the team directive', async () => {
+  // A plan can assign a specialist subagent with the team feature off, so the directive is needed there
+  // too; only the team rung drops, because `create_team` is not in that session's toolset.
+  it('outside plan mode with teams disabled + a bound plan, emits the directive without the team rung', async () => {
     const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
     fs.writeFileSync(planFilePath, '# Plan');
-    const text = await promptTextFor(event(), makePanel({ teamEnabled: false }).panel);
+    const ev = event();
+    const text = await promptTextFor(ev, makePanel({ teamEnabled: false }).panel);
     expect(text).toContain(planFilePath);
-    expect(text).not.toContain('treat its orchestration directives as binding');
+    expect(text).toContain(PLAN_EXECUTION_MARKER);
+    // No `team` label offered here: the planner writing for this session was not offered that rung.
+    expect(text).toContain('Each slice is marked direct or specialist');
+    // Two clauses joined by "and", not a comma splice, which is what the team clause supplied before.
+    expect(text).toContain('implement a slice marked direct yourself and spawn one specialist subagent (the Agent tool) for a slice marked specialist.');
+    expect(text).toContain('You may pick a different mechanism for a slice');
+    expect(text).not.toContain('create_team');
+    expect(Object.keys(ev.systemPromptOptions.sections)).toEqual([
+      'damocles_plan_file',
+      'damocles_plan_execution',
+      'damocles_tone',
+    ]);
   });
 
-  it('outside plan mode with teams enabled but NO plan file, injects no team directive (raw-paste boundary)', async () => {
-    const text = await promptTextFor(event(), makePanel({ teamEnabled: true }).panel, 'sess-never-planned');
-    expect(text).not.toContain('treat its orchestration directives as binding');
+  it('outside plan mode but with NO plan file, injects no execution directive (raw-paste boundary)', async () => {
+    for (const teamEnabled of [true, false]) {
+      const ev = event();
+      const text = await promptTextFor(ev, makePanel({ teamEnabled }).panel, 'sess-never-planned');
+      expect(text).not.toContain(PLAN_EXECUTION_MARKER);
+      expect('damocles_plan_execution' in ev.systemPromptOptions.sections).toBe(false);
+    }
   });
 
-  it('in plan mode with teams enabled, emits plan-mode guidance but NOT the execution-time team directive', async () => {
+  it('in plan mode, emits plan-mode guidance but NOT the execution-time directive', async () => {
     const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
     fs.writeFileSync(planFilePath, '# Plan');
-    const text = await promptTextFor(event(), makePanel({ plan: true, teamEnabled: true }).panel);
-    expect(text).toContain('Plan mode is active');
-    expect(text).not.toContain('treat its orchestration directives as binding');
+    for (const teamEnabled of [true, false]) {
+      const ev = event();
+      const text = await promptTextFor(ev, makePanel({ plan: true, teamEnabled }).panel);
+      expect(text).toContain('Plan mode is active');
+      expect(text).not.toContain(PLAN_EXECUTION_MARKER);
+      expect('damocles_plan_execution' in ev.systemPromptOptions.sections).toBe(false);
+    }
   });
 
   it('finds the plan by id suffix even when the slug differs (drift-proof — the bug this fixes)', async () => {

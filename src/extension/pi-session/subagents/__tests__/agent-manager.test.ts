@@ -10,7 +10,7 @@ import { buildAgentPrompt } from '../prompts';
 import { createSubagentExtensionFactory, type SubagentGateContext } from '../subagent-extension-factory';
 import { buildNestedMcpToolset, type NestedMcpToolset } from '../../tools/mcp-tools';
 import { fullActiveToolNames } from '../../tool-status';
-import { TOOL_TOOL_SEARCH } from '../../../../shared/tool-names';
+import { TOOL_TOOL_SEARCH, TEAM_CREATE_TOOL } from '../../../../shared/tool-names';
 import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -835,7 +835,7 @@ describe('AgentManager → subagent gate context', () => {
   });
 });
 
-describe('AgentManager → capability-gated Compass guidance', () => {
+describe('AgentManager → capability-gated prompt blocks', () => {
   /**
    * Spawn `type` against a parent panel holding `parentFullToolNames` and return the system prompt
    * `AgentManager` actually handed to `createSession`.
@@ -925,6 +925,59 @@ describe('AgentManager → capability-gated Compass guidance', () => {
     const prompt = await capturePrompt('general-purpose', ['read', 'bash', 'grep', 'Write', 'ToolSearch']);
     expect(prompt).not.toContain(COMPASS_AGENT_PROMPT);
     expect(prompt).not.toContain('CompassSearch');
+  });
+
+  // The Plan agent's draft is where each slice first gets a delivery mechanism, and its prompt is
+  // `replace`, so the block is the only guidance it has. The team rung is gated on the PARENT's
+  // `create_team`, because the parent is what executes the plan; no subagent can call it.
+  const PARENT_READONLY = ['read', 'bash', 'grep', 'find', 'ls', 'Write'];
+
+  it('gives the Plan agent all three mechanisms when the parent can start teams', async () => {
+    const prompt = await capturePrompt('Plan', [...PARENT_READONLY, TEAM_CREATE_TOOL, 'get_team_status']);
+    expect(prompt).toContain('# Delivery mechanisms');
+    expect(prompt).toContain('One specialist subagent');
+    expect(prompt).toContain('A team (`create_team`');
+    expect(prompt).toContain('the assignments are a recommendation');
+  });
+
+  it('drops the team rung for the Plan agent when the parent cannot start teams', async () => {
+    const prompt = await capturePrompt('Plan', PARENT_READONLY);
+    expect(prompt).toContain('# Delivery mechanisms');
+    expect(prompt).toContain('One specialist subagent');
+    expect(prompt).not.toContain(TEAM_CREATE_TOOL);
+  });
+
+  // `AgentRegistry` resolves a spawn case-insensitively, so a user `plan.md` registers as `plan`, takes
+  // over the planning role and must take the block with it.
+  it('gives the block to a user planning agent registered in another case', async () => {
+    const { engine } = makeEngine();
+    engine.registry.register(
+      new Map([
+        ['plan', { name: 'plan', description: 'user planner', extensions: true, skills: true, systemPrompt: 'PLAN BODY', promptMode: 'replace' as const }],
+      ]),
+    );
+    engine.parentFullToolNames = () => [...PARENT_READONLY, TEAM_CREATE_TOOL];
+    let captured: string | undefined;
+    const createSession = engine.createSession;
+    engine.createSession = (opts) => {
+      captured = opts.systemPrompt;
+      return createSession(opts);
+    };
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn({ ...spec(0), type: 'plan' });
+    await flush();
+    mgr.dispose();
+    expect(captured).toContain('PLAN BODY');
+    expect(captured).toContain('# Delivery mechanisms');
+    expect(captured).toContain('A team (`create_team`');
+  });
+
+  it('gives no mechanism block to an agent that does not plan', async () => {
+    for (const type of ['Explore', 'general-purpose']) {
+      for (const parent of [PARENT_READONLY, [...PARENT_READONLY, TEAM_CREATE_TOOL]]) {
+        expect(await capturePrompt(type, parent), type).not.toContain('# Delivery mechanisms');
+      }
+    }
   });
 });
 
