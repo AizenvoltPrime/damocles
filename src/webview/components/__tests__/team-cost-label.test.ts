@@ -74,7 +74,7 @@ function team(agents: TeamAgent[]): TeamState {
 
 /** The panel account, which the agent flag overrides on a card and an agent overlay. */
 function panelBilling(dollarBilled: boolean): void {
-  useSettingsStore().setAccountInfo({ model: 'claude-opus-5', dollarBilled });
+  useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', dollarBilled });
 }
 
 function mountCard(a: TeamAgent) {

@@ -159,7 +159,7 @@ describe('TeamRunner.run — seeds the immutable mission-brief section', () => {
     (config as unknown as { resolveRoleModel: (role: TeamRole) => { error?: string; modelLabel?: string } }).resolveRoleModel =
       (role: TeamRole) =>
         role === 'lead'
-          ? { error: 'Team role "lead" is configured to model "gpt-5.6-sol" (damocles.team.leadModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+          ? { error: 'Team role "lead" is configured to model "gpt-6-sol" (damocles.team.leadModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
           : { modelLabel: 'spec-model' };
     const runner = new TeamRunner(config, () => undefined);
 

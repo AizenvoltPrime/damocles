@@ -20,7 +20,7 @@ describe('resolveCompactionBudget', () => {
     const withOverride = cfg({ modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } });
     expect(resolveCompactionBudget(withOverride, 'claude-opus-4-8', WINDOW).reserveTokens).toBe(90_000);
 
-    const otherModel = cfg({ modelOverrides: { 'gpt-5.6-sol': { triggerPercent: 55 } } });
+    const otherModel = cfg({ modelOverrides: { 'gpt-6-sol': { triggerPercent: 55 } } });
     expect(resolveCompactionBudget(otherModel, 'claude-opus-4-8', WINDOW).reserveTokens).toBe(40_000);
   });
 

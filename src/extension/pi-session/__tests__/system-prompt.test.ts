@@ -5,7 +5,7 @@ import { sessionMechanismBullet } from '../delivery-mechanisms';
 
 const baseOptions = {
   cwd: '/tmp/test',
-  model: 'claude-opus-5',
+  model: 'claude-opus-5-5',
   isGitRepo: false,
   platform: 'linux',
   shell: '/bin/bash',
@@ -223,12 +223,6 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     it('renames the section heading to Text output', () => {
       expect(prompt).toContain('# Text output (does not apply to tool calls)');
       expect(prompt).not.toContain('# Communication style');
-    });
-
-    it('preserves the Environment section wording for Opus 4.8', () => {
-      const p = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-4-8', compassEnabled: false });
-      expect(p).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
-      expect(p).toContain('Assistant knowledge cutoff is January 2026.');
     });
 
     it('includes the curated behavioral nuggets in Tone and style', () => {
@@ -504,8 +498,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
-         - Assistant knowledge cutoff is May 2026."
+         - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+         - Assistant knowledge cutoff is June 2026."
       `);
     });
   });
@@ -672,8 +666,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
-         - Assistant knowledge cutoff is May 2026."
+         - You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.
+         - Assistant knowledge cutoff is June 2026."
       `);
     });
   });
@@ -713,12 +707,39 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
-  describe('with Opus 5 selected', () => {
-    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5', compassEnabled: false });
+  describe('with Opus 5.5 selected', () => {
+    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5-5', compassEnabled: false });
 
-    it('reports the Opus 5 identity and May 2026 cutoff', () => {
+    it('reports the Opus 5.5 identity and June 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.');
+      expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
+    });
+
+    it('does not claim to be Opus 5, whose cutoff and pricing differ', () => {
+      expect(prompt).not.toContain('The exact model ID is claude-opus-5.');
+      expect(prompt).not.toContain('May 2026');
+    });
+
+    // The subagent turn-ending block is written for a parent that never replies; a human reads this panel.
+    it('carries no subagent turn-ending block', () => {
+      expect(prompt).not.toContain('# Ending your turn');
+      expect(prompt).not.toContain('turn has run long');
+    });
+  });
+
+  // Same reason the retired `claude-fable-5` case above exists: these two ids only migrate where
+  // `migrateLegacyModelValue` runs, so a session file or an Explore card still hands one over verbatim.
+  describe('with a retired Opus id', () => {
+    it('still reports the Opus 5 identity and May 2026 cutoff', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5', compassEnabled: false });
       expect(prompt).toContain('You are powered by the model named Opus 5. The exact model ID is claude-opus-5.');
       expect(prompt).toContain('Assistant knowledge cutoff is May 2026.');
+    });
+
+    it('still reports the Opus 4.8 identity and January 2026 cutoff', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-4-8', compassEnabled: false });
+      expect(prompt).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
+      expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
   });
 
@@ -767,12 +788,24 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
-  describe('with a GPT-5.6 model selected', () => {
+  describe('with GPT-6 Sol or Luna selected', () => {
+    it.each([
+      ['gpt-6-sol', 'GPT-6 Sol', 'April 2026'],
+      ['gpt-6-luna', 'GPT-6 Luna', 'May 2026'],
+    ])('reports the %s identity and its own cutoff', (model, displayName, cutoff) => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
+      expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
+      expect(prompt).not.toContain('GPT-5.6');
+    });
+  });
+
+  // Same reason as the retired Opus ids: these only migrate where `migrateLegacyModelValue` runs.
+  describe('with a retired GPT-5.6 id', () => {
     it.each([
       ['gpt-5.6-sol', 'GPT-5.6 Sol'],
-      ['gpt-5.6-terra', 'GPT-5.6 Terra'],
       ['gpt-5.6-luna', 'GPT-5.6 Luna'],
-    ])('reports the %s identity and February 2026 cutoff', (model, displayName) => {
+    ])('still reports the %s identity and February 2026 cutoff', (model, displayName) => {
       const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain('Assistant knowledge cutoff is February 2026.');

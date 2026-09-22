@@ -223,6 +223,7 @@
     "effortMax": "Max, deepest analysis",
     "effortUltracode": "Ultracode, maximum effort",
     "disableThinking": "Disable thinking",
+    "thinkingAlwaysOn": "This model always thinks. Use reasoning effort to control how much.",
     "voice": {
       "title": "Voice Input",
       "provider": "Provider",

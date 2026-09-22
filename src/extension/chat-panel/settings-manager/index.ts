@@ -278,8 +278,8 @@ export class SettingsManager {
     this.thinkingManager.copyPanelStateTo(sourcePanelId, targetPanelId);
   }
 
-  resolveThinkingDisabled(panelId: string, config: vscode.WorkspaceConfiguration): boolean {
-    return this.thinkingManager.resolveDisabled(panelId, config);
+  resolveThinkingDisabled(panelId: string, model: string, config: vscode.WorkspaceConfiguration): boolean {
+    return this.thinkingManager.resolveDisabled(panelId, model, config);
   }
 
   resolveThinkingEffort(panelId: string, model: string, config: vscode.WorkspaceConfiguration): EffortLevel | null {

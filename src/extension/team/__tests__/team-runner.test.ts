@@ -1159,10 +1159,10 @@ function makeModelWiringRunner(
 
 describe('TeamRunner role-model resolution wiring', () => {
   it('resolves the reviewer slot on a kind:reviewer spawn — session opts carry the reviewer model + thinkingLevel', async () => {
-    const reviewerModel = { id: 'gpt-5.6-sol' };
+    const reviewerModel = { id: 'gpt-6-sol' };
     const { runner, sessionOpts } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { model: reviewerModel, modelLabel: 'GPT-5.6 Sol', thinkingLevel: 'max' }
+        ? { model: reviewerModel, modelLabel: 'GPT-6 Sol', thinkingLevel: 'max' }
         : { modelLabel: role === 'lead' ? 'lead-model' : 'impl-model' },
     );
 
@@ -1176,13 +1176,13 @@ describe('TeamRunner role-model resolution wiring', () => {
     expect(opts!.thinkingLevel).toBe('max');
     // The agent card label reflects the reviewer slot.
     const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
-    expect(agents.get('Rev')!.model).toBe('GPT-5.6 Sol');
+    expect(agents.get('Rev')!.model).toBe('GPT-6 Sol');
   });
 
   it('throws at spawn time when the resolved role slot returns a blocking .error', () => {
     const { runner } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { error: 'Team role "reviewer" is configured to model "gpt-5.6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        ? { error: 'Team role "reviewer" is configured to model "gpt-6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
         : { modelLabel: 'ok' },
     );
 
@@ -1193,7 +1193,7 @@ describe('TeamRunner role-model resolution wiring', () => {
   it('leaves the agent pending (no ghost running agent) when the role slot resolution throws', () => {
     const { runner } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { error: 'Team role "reviewer" is configured to model "gpt-5.6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        ? { error: 'Team role "reviewer" is configured to model "gpt-6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
         : { modelLabel: 'ok' },
     );
 

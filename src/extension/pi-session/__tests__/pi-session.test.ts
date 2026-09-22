@@ -137,12 +137,12 @@ const H = vi.hoisted(() => {
         getShellPath: vi.fn(() => undefined),
       },
       modelRuntime: {
-        getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
-        getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-4-8'
+        getAvailableSnapshot: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+        getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-5-5'
           ? { id, name: 'Opus', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
           : undefined),
         hasConfiguredAuth: () => true,
-        getModels: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+        getModels: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         refresh: vi.fn(),
       },
       resourceLoader: {
@@ -304,7 +304,7 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     cwd: '/cwd',
     permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, hasPendingPrompts: () => false } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
     ...extra,
   };
@@ -1011,7 +1011,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // synchronous methods
     s.getPlanFilePath();
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
-    s.setModel('claude-opus-4-8'); s.setMcpServers({});
+    s.setModel('claude-opus-5-5'); s.setMcpServers({});
     s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
@@ -1890,9 +1890,9 @@ describe('PiSession — subagent model resolution', () => {
    *  there is no spawn-time model argument, which is the point of the precedence. */
   // "Game Designer" deliberately, never "Explore" — that name takes the Explore-settings branch and
   // would silently bypass the precedence these tests pin.
-  type Cfg = { name: string; description: string; model?: string; filePath?: string };
+  type Cfg = { name: string; description: string; model?: string; filePath?: string; thinking?: string };
   function resolve(session: PiSession, cfg: Cfg) {
-    return (session as unknown as { resolveSubagentModel: (c: Cfg) => { model?: unknown; modelLabel?: string; error?: string } })
+    return (session as unknown as { resolveSubagentModel: (c: Cfg) => { model?: unknown; modelLabel?: string; thinkingLevel?: string; error?: string } })
       .resolveSubagentModel(cfg);
   }
 
@@ -1901,16 +1901,35 @@ describe('PiSession — subagent model resolution', () => {
     await session.initializeEarly();
     const res = resolve(session, { name: 'Game Designer', description: 'd' });
     expect(res.error).toBeUndefined();
-    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
+    await session.dispose();
+  });
+
+  // Without an explicit level pi uses the default it last persisted, which differs between machines.
+  it("carries the panel's resolved effort along with the inherited model", async () => {
+    const session = new PiSession(makeOptions([], {
+      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh', maxThinkingTokens: null }),
+    }));
+    await session.initializeEarly();
+    expect(resolve(session, { name: 'Game Designer', description: 'd' }).thinkingLevel).toBe('xhigh');
+    await session.dispose();
+  });
+
+  it("lets a template's own thinking field beat the panel effort", async () => {
+    const session = new PiSession(makeOptions([], {
+      resolveThinking: () => ({ thinkingDisabled: false, effort: 'xhigh', maxThinkingTokens: null }),
+    }));
+    await session.initializeEarly();
+    expect(resolve(session, { name: 'Game Designer', description: 'd', thinking: 'low' }).thinkingLevel).toBe('low');
     await session.dispose();
   });
 
   it('honors the template `model:` over the session model', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-4-8' });
+    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-5-5' });
     expect(res.error).toBeUndefined();
-    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
     await session.dispose();
   });
 
@@ -1929,7 +1948,7 @@ describe('PiSession — subagent model resolution', () => {
   it('rejects a resolvable-but-unauthed template model rather than spawning a session that fails at first request', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-4-8' }));
+    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-5-5' }));
     expect(res.model).toBeUndefined();
     // Branched cause: the model exists, so the fix is signing in — not editing the template.
     expect(res.error).toContain('not signed in');
@@ -1941,7 +1960,7 @@ describe('PiSession — subagent model resolution', () => {
     await session.initializeEarly();
     // The direct-lookup fallback skips resolvePiModel entirely, so without its own auth check this
     // form silently re-admits a model auth just rejected.
-    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-4-8' }));
+    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' }));
     expect(res.model).toBeUndefined();
     expect(res.error).toContain('not available');
     await session.dispose();
@@ -1950,9 +1969,9 @@ describe('PiSession — subagent model resolution', () => {
   it('accepts the `provider/modelId` form when its provider IS authed', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-4-8' });
+    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' });
     expect(res.error).toBeUndefined();
-    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
     await session.dispose();
   });
 });
@@ -4030,7 +4049,7 @@ describe('PiSession custom-provider fallback warning', () => {
     // Display names, never the raw pi ids the user has never seen (`deepseek` / `deepseek-v4-flash`).
     expect(message).toContain('DeepSeek');
     expect(message).toContain('DeepSeek V4 Flash');
-    expect(message).toContain('Opus 4.8');
+    expect(message).toContain('Opus 5.5');
     expect(message).not.toContain('deepseek-v4-flash');
     expect(action).toBe('Reload Window');
     await session.dispose();
@@ -4062,7 +4081,7 @@ describe('PiSession custom-provider fallback warning', () => {
   });
 
   it('says nothing for a first-party model (no piProvider), even on a timeout', async () => {
-    const { session, warn } = startWith('claude-opus-4-8', { wired: [], notWired: ['deepseek'], timedOut: true });
+    const { session, warn } = startWith('claude-opus-5-5', { wired: [], notWired: ['deepseek'], timedOut: true });
     await session.initializeEarly();
     await settle();
 
@@ -4455,8 +4474,8 @@ describe('PiSession account state publication', () => {
     const registry = H.getServices().modelRuntime;
     const anthropicOnly = registry.getModel;
     registry.getModel = (provider: string, id: string) =>
-      provider === 'openai' && id === 'gpt-5.6-sol'
-        ? { id, name: 'GPT-5.6 Sol', api: 'anthropic-messages', provider, contextWindow: 272_000 }
+      provider === 'openai' && id === 'gpt-6-sol'
+        ? { id, name: 'GPT-6 Sol', api: 'anthropic-messages', provider, contextWindow: 272_000 }
         : anthropicOnly(provider, id);
   }
 
@@ -4465,7 +4484,7 @@ describe('PiSession account state publication', () => {
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
 
-    expect(published(messages)).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'none', dollarBilled: false });
+    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', subscriptionType: 'none', dollarBilled: false });
     await session.dispose();
   });
 
@@ -4477,10 +4496,10 @@ describe('PiSession account state publication', () => {
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: false });
     registerOpenAIModel();
 
-    session.setModel('gpt-5.6-sol');
+    session.setModel('gpt-6-sol');
 
     // The panel model was a subscription-billed Claude one; the switch target is metered by the key.
-    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
     await session.dispose();
   });
 
@@ -4490,9 +4509,9 @@ describe('PiSession account state publication', () => {
     await session.initializeEarly();
     const before = messages.filter((m) => m.type === 'accountInfo').length;
 
-    session.setModel('gpt-5.6-sol'); // no OpenAI credential and no registry entry
+    session.setModel('gpt-6-sol'); // no OpenAI credential and no registry entry
 
-    expect(session.currentModel).toBe('claude-opus-4-8');
+    expect(session.currentModel).toBe('claude-opus-5-5');
     expect(messages.filter((m) => m.type === 'accountInfo')).toHaveLength(before);
     await session.dispose();
   });
@@ -4506,7 +4525,7 @@ describe('PiSession account state publication', () => {
 
     session.publishAccountInfo();
 
-    expect(published(messages)).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'apikey', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', subscriptionType: 'apikey', dollarBilled: true });
     await session.dispose();
   });
 
@@ -4518,13 +4537,13 @@ describe('PiSession account state publication', () => {
     const runtime = PiRuntime.get('/cwd', '/fake/agent');
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: true });
     registerOpenAIModel();
-    session.setModel('gpt-5.6-sol');
-    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'codex-oauth', dollarBilled: false });
+    session.setModel('gpt-6-sol');
+    expect(published(messages)).toEqual({ model: 'gpt-6-sol', tokenSource: 'codex-oauth', dollarBilled: false });
 
     preferApiKey = true;
     session.publishAccountInfo();
 
-    expect(published(messages)).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
     await session.dispose();
   });
 
@@ -4541,7 +4560,7 @@ describe('PiSession account state publication', () => {
 
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: false });
     registerOpenAIModel();
-    session.setModel('gpt-5.6-sol');
+    session.setModel('gpt-6-sol');
     expect(published(messages)).toEqual(expectedFor(session));
     await session.dispose();
   });
@@ -4636,7 +4655,7 @@ describe('per-model auto-compact budgets reach pi', () => {
     return (calls.at(-1)?.[0] as { compaction: Record<string, unknown> }).compaction;
   }
 
-  // The session model is claude-opus-4-8 and the fake resolves its window to 1_000_000.
+  // The session model is claude-opus-5-5 and the fake resolves its window to 1_000_000.
   it('applies the plain trigger percent when no model override exists', async () => {
     stubAutoCompact(() => ({ enabled: true, triggerPercent: 80 }));
     const session = new PiSession(makeOptions([]));
@@ -4647,7 +4666,7 @@ describe('per-model auto-compact budgets reach pi', () => {
   });
 
   it('honours an override for the active model', async () => {
-    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } }));
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-5-5': { triggerPercent: 55 } } }));
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
 
@@ -4656,7 +4675,7 @@ describe('per-model auto-compact budgets reach pi', () => {
   });
 
   it('ignores an override keyed to a model other than the active one', async () => {
-    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'gpt-5.6-sol': { triggerPercent: 55 } } }));
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'gpt-6-sol': { triggerPercent: 55 } } }));
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
 
@@ -4665,7 +4684,7 @@ describe('per-model auto-compact budgets reach pi', () => {
   });
 
   it('leaves keepRecentTokens out when the override sets only triggerPercent', async () => {
-    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 60 } } }));
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-5-5': { triggerPercent: 60 } } }));
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
 
@@ -4674,7 +4693,7 @@ describe('per-model auto-compact budgets reach pi', () => {
   });
 
   it('passes keepRecentTokens and the plain reserve when the override sets only keepRecentPercent', async () => {
-    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { keepRecentPercent: 10 } } }));
+    stubAutoCompact(() => ({ enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-5-5': { keepRecentPercent: 10 } } }));
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
 
@@ -4689,7 +4708,7 @@ describe('per-model auto-compact budgets reach pi', () => {
     await session.initializeEarly();
     expect(lastCompaction().reserveTokens).toBe(200_000);
 
-    cfg = { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-4-8': { triggerPercent: 55 } } };
+    cfg = { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-opus-5-5': { triggerPercent: 55 } } };
     vscode.__configEmitter.fire('damocles.autoCompact');
 
     expect(lastCompaction().reserveTokens).toBe(450_000);

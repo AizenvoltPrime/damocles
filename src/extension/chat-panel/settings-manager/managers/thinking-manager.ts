@@ -2,7 +2,12 @@ import * as vscode from "vscode";
 import type { EffortLevel, PanelThinkingState } from "../../../../shared/types/settings";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
-import { assertEffortSupported, coerceEffortForModel } from "../utils";
+import {
+  assertEffortSupported,
+  coerceEffortForModel,
+  defaultEffortForModel,
+  thinkingDisableAppliesToModel,
+} from "../utils";
 
 /**
  * ThinkingManager owns per-panel reasoning controls (disabled toggle, effort
@@ -51,8 +56,16 @@ export class ThinkingManager {
     }
   }
 
-  /** Resolve thinking-disabled with the per-panel override layered above the workspace default. */
-  resolveDisabled(panelId: string, config: vscode.WorkspaceConfiguration): boolean {
+  /**
+   * Resolve thinking-disabled with the per-panel override layered above the workspace default.
+   *
+   * The model gates the whole resolution: a stored `true` counts only where the settings panel shows the
+   * switch (`thinkingDisableApplies`). Anywhere else it would send a level the UI does not show and append
+   * the prompt's no-thinking section. One gate here, because a second place to apply it is a second place
+   * to forget it.
+   */
+  resolveDisabled(panelId: string, model: string, config: vscode.WorkspaceConfiguration): boolean {
+    if (!thinkingDisableAppliesToModel(model)) return false;
     const override = this.perPanelDisabled.get(panelId);
     if (override !== undefined) return override;
     return config.get<boolean>("thinkingDisabled", false);
@@ -60,18 +73,20 @@ export class ThinkingManager {
 
   /**
    * Resolve effort with the per-(panel, model) override layered above
-   * `damocles.effortByModel[model]`. Capability regressions (a stored value no
-   * longer in the model's `supportedEffortLevels`) resolve to null so they
-   * never leak into SDK options.
+   * `damocles.effortByModel[model]`, then the model's catalog `defaultEffort`.
+   * Capability regressions (a stored value no longer in the model's
+   * `supportedEffortLevels`) resolve to null so they never leak into SDK
+   * options. The catalog default is resolved per request and never written
+   * back, so `damocles.effortByModel` stays empty until the user sets a level.
    */
   resolveEffort(panelId: string, model: string, config: vscode.WorkspaceConfiguration): EffortLevel | null {
     const panelMap = this.perPanelEffortByModel.get(panelId);
     const panelOverride = panelMap?.[model];
     if (panelOverride !== undefined) {
-      return coerceEffortForModel(model, panelOverride);
+      return coerceEffortForModel(model, panelOverride) ?? defaultEffortForModel(model);
     }
     const defaults = config.get<Record<string, EffortLevel | null>>("effortByModel", {}) ?? {};
-    return coerceEffortForModel(model, defaults[model] ?? null);
+    return coerceEffortForModel(model, defaults[model] ?? null) ?? defaultEffortForModel(model);
   }
 
   /** Resolve max thinking tokens with the per-(panel, model) override above the workspace default. */
@@ -137,16 +152,21 @@ export class ThinkingManager {
     config: vscode.WorkspaceConfiguration,
   ): void {
     const panel: PanelThinkingState = {
-      thinkingDisabled: this.resolveDisabled(panelId, config),
+      thinkingDisabled: this.resolveDisabled(panelId, activeModel, config),
       effort: this.resolveEffort(panelId, activeModel, config),
       maxThinkingTokens: this.resolveMaxTokens(panelId, activeModel, config),
     };
+    // The defaults column reads the workspace scope directly rather than through the panel resolvers,
+    // so both the disable gate and the catalog default must be applied again here or the column
+    // disagrees with what a new panel on the default model actually sends.
     const defaults: PanelThinkingState = {
-      thinkingDisabled: config.get<boolean>("thinkingDisabled", false),
+      thinkingDisabled: thinkingDisableAppliesToModel(defaultModel)
+        ? config.get<boolean>("thinkingDisabled", false)
+        : false,
       effort: coerceEffortForModel(
         defaultModel,
         (config.get<Record<string, EffortLevel | null>>("effortByModel", {}) ?? {})[defaultModel] ?? null,
-      ),
+      ) ?? defaultEffortForModel(defaultModel),
       maxThinkingTokens: config.get<number | null>("maxThinkingTokens", null),
     };
     this.postMessage(host, {

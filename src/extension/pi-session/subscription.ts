@@ -27,7 +27,7 @@ const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth'
 //
 // Nothing in CI clones this sha, so whether the commit it names honours that contract is verified by
 // reading the plugin, not by a test. Re-read it before bumping.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@b80d0f131fd1ca38f78cf8d893bcc50a4fa717ef`;
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@8f82a2d207e12bfd313092d78333c594554f26fb`;
 
 /**
  * Whether a persisted pi package entry names the subscription plugin at anything other than the

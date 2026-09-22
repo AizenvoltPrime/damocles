@@ -44,7 +44,7 @@ describe('sdkAnthropicModels', () => {
     const models = sdkAnthropicModels();
     expect(models.length).toBeGreaterThan(0);
     expect(models.every((m) => m.backend !== 'openai')).toBe(true);
-    expect(models.some((m) => m.value === 'claude-opus-4-8')).toBe(true);
+    expect(models.some((m) => m.value === 'claude-opus-5-5')).toBe(true);
     expect(models.some((m) => m.value.startsWith('gpt-'))).toBe(false);
   });
 
@@ -58,14 +58,14 @@ describe('sdkAnthropicModels', () => {
 
 describe('piModelToModelInfo', () => {
   it('inherits rich display from DEFAULT_MODELS for a known anthropic model', () => {
-    const info = piModelToModelInfo(model('anthropic', 'claude-opus-4-8', 'anthropic-messages'));
-    expect(info.value).toBe('claude-opus-4-8');
-    expect(info.displayName).toBe('Opus 4.8');
+    const info = piModelToModelInfo(model('anthropic', 'claude-opus-5-5', 'anthropic-messages'));
+    expect(info.value).toBe('claude-opus-5-5');
+    expect(info.displayName).toBe('Opus 5.5');
   });
 
   it('reconciles a codex model id back to its Damocles value', () => {
-    const info = piModelToModelInfo(model('openai-codex', 'gpt-5.6-terra'));
-    expect(info.value).toBe('gpt-5.6-terra');
+    const info = piModelToModelInfo(model('openai-codex', 'gpt-6-sol'));
+    expect(info.value).toBe('gpt-6-sol');
     expect(info.backend).toBe('openai');
   });
 
@@ -92,44 +92,41 @@ describe('effortToThinkingLevel', () => {
 });
 
 describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
-  it('codex-only: a seeded 5.6 id resolves to openai-codex; a catalog id absent from the codex seed is unavailable', () => {
-    // Only sol + terra are registered on the codex namespace here; luna is a real catalog id that the
+  it('codex-only: a seeded GPT id resolves to openai-codex; a catalog id absent from the codex seed is unavailable', () => {
+    // Only sol is registered on the codex namespace here; luna is a real catalog id that the
     // subscription hasn't provisioned. With codex auth and no api key, that gap must surface as
     // authRequired (the bare {authRequired:true} branch), NOT a soft {} — preserving auth-gate coverage.
-    const reg = registry([
-      ['openai-codex', 'gpt-5.6-sol'],
-      ['openai-codex', 'gpt-5.6-terra'],
-    ]);
+    const reg = registry([['openai-codex', 'gpt-6-sol']]);
     const status = { apiKey: false, codex: true };
 
-    expect(resolvePiModel('gpt-5.6-terra', reg, status).model?.provider).toBe('openai-codex');
-    expect(resolvePiModel('gpt-5.6-luna', reg, status)).toEqual({ authRequired: true });
+    expect(resolvePiModel('gpt-6-sol', reg, status).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-6-luna', reg, status)).toEqual({ authRequired: true });
   });
 
   it('api-key: every GPT value resolves to the openai provider', () => {
     const reg = registry([
-      ['openai', 'gpt-5.6-sol'],
-      ['openai', 'gpt-5.6-terra'],
-      ['openai', 'gpt-5.6-luna'],
+      ['openai', 'gpt-6-astra'],
+      ['openai', 'gpt-6-sol'],
+      ['openai', 'gpt-6-luna'],
     ]);
     const status = { apiKey: true, codex: false };
 
-    for (const value of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    for (const value of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
       expect(resolvePiModel(value, reg, status).model?.provider).toBe('openai');
     }
   });
 
   it('prefers codex over api-key when both are configured and the id exists in codex', () => {
     const reg = registry([
-      ['openai', 'gpt-5.6-terra'],
-      ['openai-codex', 'gpt-5.6-terra'],
+      ['openai', 'gpt-6-sol'],
+      ['openai-codex', 'gpt-6-sol'],
     ]);
-    expect(resolvePiModel('gpt-5.6-terra', reg, { apiKey: true, codex: true }).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-6-sol', reg, { apiKey: true, codex: true }).model?.provider).toBe('openai-codex');
   });
 
   it('resolves an anthropic value by model id', () => {
-    const reg = registry([['anthropic', 'claude-opus-4-8', 'anthropic-messages']]);
-    expect(resolvePiModel('claude-opus-4-8', reg, { apiKey: false, codex: false }).model?.id).toBe('claude-opus-4-8');
+    const reg = registry([['anthropic', 'claude-opus-5-5', 'anthropic-messages']]);
+    expect(resolvePiModel('claude-opus-5-5', reg, { apiKey: false, codex: false }).model?.id).toBe('claude-opus-5-5');
   });
 });
 
@@ -194,40 +191,112 @@ describe('DEFAULT_MODELS: claude-fable-5-1 effort catalog agrees with the instal
   });
 });
 
-describe('DEFAULT_MODELS: gpt-6-astra agrees with both installed OpenAI catalogs', () => {
-  const astra = DEFAULT_MODELS.find((m) => m.value === 'gpt-6-astra');
+describe('MODEL_SUBSTITUTES', () => {
+  it('names only curated targets, so `isCurated` cannot drop a substitution silently', () => {
+    const curated = new Set(DEFAULT_MODELS.map((m) => m.value));
+    for (const [requested, targets] of Object.entries(MODEL_SUBSTITUTES)) {
+      expect(curated.has(requested), `${requested} is not a catalog entry`).toBe(true);
+      for (const target of targets) expect(curated.has(target), `${target} is not a catalog entry`).toBe(true);
+    }
+  });
+
+  it('sends an unresolvable Opus 5.5 to Sonnet 5, never to the costlier catalog head', () => {
+    // Without this the generic walk starts at DEFAULT_MODELS[0], which is Fable 5.1 at $10/$50.
+    expect(MODEL_SUBSTITUTES['claude-opus-5-5']).toEqual(['claude-sonnet-5']);
+    expect(DEFAULT_MODELS[0]!.value).toBe('claude-fable-5-1');
+  });
+});
+
+describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata', () => {
+  /** The two shipped fields that decide whether a "disable thinking" request can reach the wire. */
+  interface ThinkingEntry {
+    compat?: { supportsMidConvoEffort?: boolean };
+    thinkingLevelMap?: Record<string, string | null>;
+  }
+  const anthropicJsonUrl = new URL(
+    '../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json',
+    import.meta.url,
+  );
+  const entries = (
+    JSON.parse(readFileSync(fileURLToPath(anthropicJsonUrl), 'utf8')) as Record<string, Record<string, ThinkingEntry>>
+  )['anthropic-messages'] ?? {};
+
+  /**
+   * pi forces adaptive thinking on for these, so `thinkingLevel: "off"` buys high effort instead of no
+   * thinking: `buildParams` sets `thinking: { type: "adaptive" }` for any model with
+   * `supportsMidConvoEffort`, and the `disabled` branch is separately blocked by `thinkingLevelMap.off`
+   * being explicitly null.
+   */
+  function forcesThinking(entry: ThinkingEntry): boolean {
+    return entry.compat?.supportsMidConvoEffort === true || entry.thinkingLevelMap?.off === null;
+  }
+
+  const covered = DEFAULT_MODELS.filter((m) => !m.backend && !m.piProvider && entries[m.value]);
+
+  it('is not vacuous: it covers several shipped entries and the predicate separates them', () => {
+    expect(covered.length).toBeGreaterThan(2);
+    expect(forcesThinking(entries['claude-fable-5-1']!)).toBe(true);
+    expect(forcesThinking(entries['claude-sonnet-5']!)).toBe(false);
+    expect(forcesThinking(entries['claude-haiku-4-5-20251001']!)).toBe(false);
+  });
+
+  it.each(covered.map((m) => m.value))('%s carries the flag exactly when pi forces thinking', (value) => {
+    const info = DEFAULT_MODELS.find((m) => m.value === value)!;
+    expect(info.thinkingAlwaysOn === true).toBe(forcesThinking(entries[value]!));
+  });
+
+  // `defaultEffort` is a Damocles decision, not pi metadata, so the loop above cannot check it: pi
+  // ships no default and Anthropic documents `medium`. High is deliberate (see CHANGELOG), and the
+  // levels either side of it must exist for the settings picker to offer a way back.
+  it('runs Opus 5.5 at high effort by default, on a level pi supports', () => {
+    const opus = DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5');
+    expect(opus?.defaultEffort).toBe('high');
+    expect(getSupportedThinkingLevels(entries['claude-opus-5-5'] as unknown as Model<Api>)).toContain('high');
+  });
+});
+
+// `minimal` has no EffortLevel name, and pi's `off` (sent as `none`) is deliberately not offered on any
+// GPT model: the team effort enums exclude it, and a stored `none` clamps up to `low` on migration.
+describe.each(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
+  const info = DEFAULT_MODELS.find((m) => m.value === id);
 
   function catalogEntry(file: string, api: string): Model<Api> | undefined {
     const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${file}`, import.meta.url);
     const catalog = JSON.parse(readFileSync(fileURLToPath(url), 'utf8')) as Record<string, Record<string, unknown>>;
-    return catalog[api]?.['gpt-6-astra'] as Model<Api> | undefined;
+    return catalog[api]?.[id] as Model<Api> | undefined;
   }
 
   const apiKeyEntry = catalogEntry('openai.json', 'openai-responses');
   const codexEntry = catalogEntry('openai-codex.json', 'openai-codex-responses');
+  const offered = (levels: readonly string[]) => levels.filter((level) => level !== 'minimal' && level !== 'off');
 
-  it('declares the API-key provider levels exactly', () => {
+  it('declares the API-key provider levels, minus the tiers Damocles does not offer', () => {
     expect(apiKeyEntry).toBeDefined();
-    expect(astra?.supportedEffortLevels).toEqual(getSupportedThinkingLevels(apiKeyEntry!));
+    expect(info?.supportedEffortLevels).toEqual(offered(getSupportedThinkingLevels(apiKeyEntry!)));
   });
 
-  it('declares the Codex provider levels modulo the minimal tier EffortLevel has no name for', () => {
+  it('declares the Codex provider levels, minus the tiers Damocles does not offer', () => {
     expect(codexEntry).toBeDefined();
-    const piLevels = getSupportedThinkingLevels(codexEntry!);
-    expect(piLevels).toContain('minimal');
-    expect(astra?.supportedEffortLevels).toEqual(piLevels.filter((level) => level !== 'minimal'));
+    expect(info?.supportedEffortLevels).toEqual(offered(getSupportedThinkingLevels(codexEntry!)));
   });
 
   it('carries the context window both catalogs report', () => {
-    expect(apiKeyEntry?.contextWindow).toBe(astra?.contextWindow);
-    expect(codexEntry?.contextWindow).toBe(astra?.contextWindow);
+    expect(apiKeyEntry?.contextWindow).toBe(info?.contextWindow);
+    expect(codexEntry?.contextWindow).toBe(info?.contextWindow);
   });
 
   it('routes to the id both catalogs key it by, on either auth mode', () => {
-    expect(astra?.backend).toBe('openai');
-    expect(astra?.openaiAuthMode).toBe('any');
-    expect(astra?.openaiModelId).toBe(apiKeyEntry?.id);
-    expect(astra?.openaiModelId).toBe(codexEntry?.id);
+    expect(info?.backend).toBe('openai');
+    expect(info?.openaiAuthMode).toBe('any');
+    expect(info?.openaiModelId).toBe(apiKeyEntry?.id);
+    expect(info?.openaiModelId).toBe(codexEntry?.id);
+  });
+
+  // With `off` null, pi clamps a requested off up to the lowest real level, so the model always thinks.
+  it('carries thinkingAlwaysOn exactly when neither catalog can turn thinking off', () => {
+    const cannotTurnOff = (entry: Model<Api>) => entry.thinkingLevelMap?.off === null;
+    expect(cannotTurnOff(apiKeyEntry!)).toBe(cannotTurnOff(codexEntry!));
+    expect(info?.thinkingAlwaysOn === true).toBe(cannotTurnOff(apiKeyEntry!));
   });
 });
 
@@ -303,7 +372,7 @@ describe('no model Damocles offers carries a server-side fallback list', () => {
     const synthetic: Record<string, ProviderCatalog> = {
       'anthropic.json': {
         'anthropic-messages': {
-          [offered]: { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-4-8' }] } },
+          [offered]: { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-sonnet-5' }] } },
         },
       },
     };
@@ -317,7 +386,7 @@ describe('no model Damocles offers carries a server-side fallback list', () => {
     const unreachable: Record<string, ProviderCatalog> = {
       'anthropic.json': {
         'anthropic-messages': {
-          'claude-fable-5': { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5' }] } },
+          'claude-fable-5': { compat: { allowedFallbackModels: [{ provider: 'anthropic', model: 'claude-opus-5-5' }] } },
         },
       },
     };
@@ -327,10 +396,10 @@ describe('no model Damocles offers carries a server-side fallback list', () => {
 
 describe('providerDisplayName', () => {
   it('maps each backend/piProvider to its display name', () => {
-    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-5.6-sol'))).toBe('OpenAI');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-6-sol'))).toBe('OpenAI');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash'))).toBe('StepFun');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
-    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-4-8'))).toBe('Anthropic');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'))).toBe('Anthropic');
     expect(providerDisplayName(undefined)).toBe('Anthropic');
   });
 });
@@ -349,10 +418,10 @@ describe('isDollarBilled', () => {
   });
 
   it('classifies first-party credentials by their source label', () => {
-    expect(isDollarBilled(find('claude-opus-4-8'), 'apikey')).toBe(true);
-    expect(isDollarBilled(find('claude-opus-4-8'), 'extra')).toBe(true);
-    expect(isDollarBilled(find('claude-opus-4-8'), 'allowance')).toBe(false);
-    expect(isDollarBilled(find('gpt-5.6-sol'), 'openai-api-key')).toBe(true);
-    expect(isDollarBilled(find('gpt-5.6-sol'), 'codex-oauth')).toBe(false);
+    expect(isDollarBilled(find('claude-opus-5-5'), 'apikey')).toBe(true);
+    expect(isDollarBilled(find('claude-opus-5-5'), 'extra')).toBe(true);
+    expect(isDollarBilled(find('claude-opus-5-5'), 'allowance')).toBe(false);
+    expect(isDollarBilled(find('gpt-6-sol'), 'openai-api-key')).toBe(true);
+    expect(isDollarBilled(find('gpt-6-sol'), 'codex-oauth')).toBe(false);
   });
 });

@@ -90,20 +90,20 @@ describe("ConfigManager — team role settings", () => {
     });
 
     it("writes empty string for a null effort", async () => {
-      record["team.leadModel"] = "gpt-5.6-sol";
+      record["team.leadModel"] = "gpt-6-sol";
       await manager.handleSetTeamRoleEffort("lead", null);
       expect(record["team.leadEffort"]).toBe("");
     });
 
     it("writes the effort string for a supported (model, effort) pair", async () => {
-      record["team.leadModel"] = "gpt-5.6-sol"; // supports xhigh
+      record["team.leadModel"] = "gpt-6-sol"; // supports xhigh
       await manager.handleSetTeamRoleEffort("lead", "xhigh");
       expect(record["team.leadEffort"]).toBe("xhigh");
     });
 
     it("falls back to the active panel model when the role model is empty", async () => {
-      record["model"] = "gpt-5.6-sol";
-      // role model empty → effective model is the active panel model (gpt-5.6-sol, supports high)
+      record["model"] = "gpt-6-sol";
+      // role model empty → effective model is the active panel model (gpt-6-sol, supports high)
       await manager.handleSetTeamRoleEffort("implementor", "high");
       expect(record["team.implementorEffort"]).toBe("high");
     });
@@ -134,8 +134,8 @@ describe("ConfigManager — team role settings", () => {
 
   describe("sendCurrentSettings", () => {
     it("migrates a legacy stored model and coerces an invalid stored effort to null", async () => {
-      record["team.leadModel"] = "gpt-5.5"; // legacy → gpt-5.6-sol
-      record["team.leadEffort"] = "ultracode"; // gpt-5.6-sol does NOT support ultracode
+      record["team.leadModel"] = "gpt-5.5"; // legacy → gpt-6-sol
+      record["team.leadEffort"] = "ultracode"; // gpt-6-sol does NOT support ultracode
 
       await manager.sendCurrentSettings(hostStub, permStub);
 
@@ -143,7 +143,7 @@ describe("ConfigManager — team role settings", () => {
       const [, msg] = postMessage.mock.calls[0]!;
       expect(msg.type).toBe("settingsUpdate");
       const team = (msg.settings as ExtensionSettings).team;
-      expect(team.leadModel).toBe("gpt-5.6-sol");
+      expect(team.leadModel).toBe("gpt-6-sol");
       expect(team.leadEffort).toBeNull();
     });
 

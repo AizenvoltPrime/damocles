@@ -115,7 +115,7 @@ export class ChatPanelProvider {
       resolveThinkingForPanel: (panelId, model) => {
         const config = vscode.workspace.getConfiguration("damocles");
         return {
-          thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, config),
+          thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, model, config),
           effort: this.settingsManager.resolveThinkingEffort(panelId, model, config),
           maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, config),
         };

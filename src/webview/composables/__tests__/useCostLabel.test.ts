@@ -44,7 +44,7 @@ describe('useCostLabel', () => {
     const wrapper = mountProbe(26.45);
     expect(wrapper.text()).toBe('$26.45');
 
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'allowance', dollarBilled: false });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'allowance', dollarBilled: false });
     await nextTick();
 
     expect(wrapper.text()).toBe('~$26.45 est.');
@@ -52,28 +52,28 @@ describe('useCostLabel', () => {
   });
 
   it('renders a bare charge on API-key auth', () => {
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'apikey', dollarBilled: true });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'apikey', dollarBilled: true });
     const wrapper = mountProbe(26.45);
     expect(wrapper.text()).toBe('$26.45');
     expect(wrapper.attributes('title')).toBeUndefined();
   });
 
   it('marks an agent an estimate when its own model is not dollar billed inside an API-key panel', () => {
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'apikey', dollarBilled: true });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'apikey', dollarBilled: true });
     const wrapper = mountProbe(26.45, { dollarBilled: false });
     expect(wrapper.text()).toBe('~$26.45 est.');
     expect(wrapper.attributes('title')).toBe('Estimated at API rates. A subscription is not charged per call.');
   });
 
   it('charges an agent on a metered model inside a subscription panel', () => {
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'allowance', dollarBilled: false });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'allowance', dollarBilled: false });
     const wrapper = mountProbe(26.45, { dollarBilled: true });
     expect(wrapper.text()).toBe('$26.45');
     expect(wrapper.attributes('title')).toBeUndefined();
   });
 
   it('falls back to the panel value when no agent flag is supplied', () => {
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'allowance', dollarBilled: false });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'allowance', dollarBilled: false });
     const wrapper = mountProbe(26.45);
     expect(wrapper.text()).toBe('~$26.45 est.');
     expect(wrapper.attributes('title')).toBe('Estimated at API rates. A subscription is not charged per call.');

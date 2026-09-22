@@ -36,6 +36,28 @@ const narrationBlockAppend = `${narrationBlock}
 - This section replaces any narration or progress-update cadence stated earlier in this prompt.`;
 
 /**
+ * Emitted last in both modes so it wins over the agent's own instructions, and static so it costs the
+ * cache prefix nothing. Every mode ends on `turnEndingConfirmation`, the one check-in the rules must not remove.
+ */
+const turnEndingRules = `# Ending your turn
+A message with no tool call ends your turn, and its text is returned to the parent as your final result. Three endings are correct: the task is done, nothing can advance without the parent, or what blocks you is deliberately out of your reach, such as a permission gate or a credential you do not hold.
+- Do not stop on a progress report. A summary that closes by announcing your next step is not an ending.
+- Do not stop on an offer to carry on, such as "I'll carry on unless you'd prefer otherwise." The parent was not going to answer it.
+- Do not stop on a list of decisions for the parent when, by your own account, none of them blocks the remaining work.
+- Do not stop because the turn has run long or a milestone is done. Neither is a stopping condition.
+- Put status notes and recommendations in the same message as your next tool call, and carry on with whatever does not depend on the parent's answer.
+- If you catch yourself inviting the parent to redirect you, or offering to wait, delete it and do the next thing.`;
+
+const turnEndingConfirmation = 'None of this overrides the confirmation a risky or destructive action needs.';
+
+const turnEndingBlock = `${turnEndingRules}
+${turnEndingConfirmation}`;
+
+const turnEndingBlockAppend = `${turnEndingRules}
+This section overrides any turn-ending cadence stated earlier in this prompt.
+${turnEndingConfirmation}`;
+
+/**
  * Steering protocol — injected into every subagent's system prompt (both modes). Authority is bound to
  * the CHANNEL (a user message delivered mid-task by the operator), not to the marker string: the marker
  * only identifies a genuine steer among user turns. The closing paragraph is the injection guard — the
@@ -170,7 +192,7 @@ You are operating as a sub-agent invoked to handle a specific task.
 
     // Place shared/stable content first so the LLM's KV cache can reuse the inherited prefix across
     // all subagent invocations. The <active_agent> tag and env block vary per call and follow it.
-    return identity + '\n\n' + bridge + '\n\n' + narrationBlockAppend + '\n\n' + steeringBlock + '\n\n' + activeAgentTag + envBlock + customSection + extrasSuffix;
+    return identity + '\n\n' + bridge + '\n\n' + narrationBlockAppend + '\n\n' + steeringBlock + '\n\n' + activeAgentTag + envBlock + customSection + extrasSuffix + '\n\n' + turnEndingBlockAppend;
   }
 
   // "replace" mode — env header + the config's full system prompt
@@ -181,7 +203,7 @@ ${envBlock}`;
 
   const codeRules = extras?.writesFiles ? codeRulesBlock + '\n\n' : '';
 
-  return activeAgentTag + replaceHeader + '\n\n' + narrationBlock + '\n\n' + codeRules + steeringBlock + '\n\n' + config.systemPrompt + extrasSuffix;
+  return activeAgentTag + replaceHeader + '\n\n' + narrationBlock + '\n\n' + codeRules + steeringBlock + '\n\n' + config.systemPrompt + extrasSuffix + '\n\n' + turnEndingBlock;
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

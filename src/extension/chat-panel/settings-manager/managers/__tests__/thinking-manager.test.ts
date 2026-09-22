@@ -20,7 +20,9 @@ function makeConfig(overrides: {
 }
 
 const SONNET = "claude-sonnet-5";
-const OPUS = "claude-opus-4-8";
+// Opus 5.5 is the catalog's `thinkingAlwaysOn` + `defaultEffort: high` entry; Sonnet 5 has neither.
+const OPUS = "claude-opus-5-5";
+const GPT = "gpt-6-sol";
 
 describe("ThinkingManager", () => {
   let manager: ThinkingManager;
@@ -34,25 +36,50 @@ describe("ThinkingManager", () => {
   describe("resolveDisabled", () => {
     it("returns workspace default when no per-panel override", () => {
       const config = makeConfig({ thinkingDisabled: true });
-      expect(manager.resolveDisabled("panel-A", config as never)).toBe(true);
+      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(true);
     });
 
     it("returns false default when nothing configured", () => {
       const config = makeConfig({});
-      expect(manager.resolveDisabled("panel-A", config as never)).toBe(false);
+      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
     });
 
     it("per-panel override beats workspace default", () => {
       const config = makeConfig({ thinkingDisabled: true });
       manager.setPanelDisabled("panel-A", false);
-      expect(manager.resolveDisabled("panel-A", config as never)).toBe(false);
+      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
+    });
+
+    it("stays false on a model that always thinks, whatever is stored", () => {
+      const config = makeConfig({ thinkingDisabled: true });
+      manager.setPanelDisabled("panel-A", true);
+      expect(manager.resolveDisabled("panel-A", OPUS, config as never)).toBe(false);
+    });
+
+    // The settings panel shows no disable switch for OpenAI models, so a value stored on Sonnet must not reach them.
+    it("stays false on an OpenAI model, whatever is stored", () => {
+      const config = makeConfig({ thinkingDisabled: true });
+      manager.setPanelDisabled("panel-A", true);
+      expect(manager.resolveDisabled("panel-A", GPT, config as never)).toBe(false);
     });
   });
 
   describe("resolveEffort", () => {
-    it("returns null when neither panel nor workspace has a value", () => {
+    it("returns null when neither panel nor workspace has a value and the model has no catalog default", () => {
       const config = makeConfig({});
       expect(manager.resolveEffort("panel-A", SONNET, config as never)).toBeNull();
+    });
+
+    it("falls back to the model's catalog defaultEffort when nothing is stored", () => {
+      const config = makeConfig({});
+      expect(manager.resolveEffort("panel-A", OPUS, config as never)).toBe("high");
+    });
+
+    it("a stored level still beats the catalog default", () => {
+      const config = makeConfig({ effortByModel: { [OPUS]: "low" } });
+      expect(manager.resolveEffort("panel-A", OPUS, config as never)).toBe("low");
+      manager.setPanelEffort("panel-A", OPUS, "max");
+      expect(manager.resolveEffort("panel-A", OPUS, config as never)).toBe("max");
     });
 
     it("falls back to workspace default per-model map", () => {
@@ -139,7 +166,7 @@ describe("ThinkingManager", () => {
 
       manager.copyPanelStateTo("panel-A", "panel-B");
 
-      expect(manager.resolveDisabled("panel-B", config as never)).toBe(true);
+      expect(manager.resolveDisabled("panel-B", SONNET, config as never)).toBe(true);
       expect(manager.resolveEffort("panel-B", SONNET, config as never)).toBe("max");
       expect(manager.resolveEffort("panel-B", OPUS, config as never)).toBe("high");
       expect(manager.resolveMaxTokens("panel-B", SONNET, config as never)).toBe(24000);
@@ -163,7 +190,7 @@ describe("ThinkingManager", () => {
 
       manager.cleanupPanelThinking("panel-A");
 
-      expect(manager.resolveDisabled("panel-A", config as never)).toBe(false);
+      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
       expect(manager.resolveEffort("panel-A", SONNET, config as never)).toBeNull();
       expect(manager.resolveMaxTokens("panel-A", SONNET, config as never)).toBeNull();
     });
@@ -188,6 +215,31 @@ describe("ThinkingManager", () => {
         defaults: { thinkingDisabled: false, effort: "max", maxThinkingTokens: 32000 },
         defaultsModel: OPUS,
       });
+    });
+
+    it("defaults column applies the disable gate and the catalog default for the default model", () => {
+      const host = { webview: { postMessage: vi.fn() } } as never;
+      const config = makeConfig({ thinkingDisabled: true, effortByModel: {} });
+
+      manager.sendThinkingForPanel(host, "panel-A", SONNET, OPUS, config as never);
+      expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
+        defaults: { thinkingDisabled: false, effort: "high", maxThinkingTokens: null },
+      }));
+
+      manager.sendThinkingForPanel(host, "panel-A", OPUS, SONNET, config as never);
+      expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
+        defaults: { thinkingDisabled: true, effort: null, maxThinkingTokens: null },
+      }));
+    });
+
+    it("defaults column falls back to the catalog default when the stored level is unsupported", () => {
+      const host = { webview: { postMessage: vi.fn() } } as never;
+      const config = makeConfig({ effortByModel: { [OPUS]: "none" } });
+
+      manager.sendThinkingForPanel(host, "panel-A", SONNET, OPUS, config as never);
+      expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
+        defaults: expect.objectContaining({ effort: "high" }),
+      }));
     });
 
     it("defaults effort tracks the workspace default model independently of activeModel", () => {

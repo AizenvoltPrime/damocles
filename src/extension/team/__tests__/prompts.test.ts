@@ -105,6 +105,11 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toContain('**Waiting is for OPEN work, not open review rounds.**');
       expect(prompt).toContain('force-synthesizes with a SUSPECT banner and partial results');
       expect(prompt).toContain('When a round is open, review it. Do not park.');
+      // The lead's stall is shape one: a synthesis-shaped summary announcing the review, then a stop.
+      expect(prompt).toContain('The stall usually looks like a synthesis-shaped summary that announces the review you are about to run, and then stops.');
+      expect(prompt).toContain('Each one ends your turn with the round still open.');
+      expect(prompt).toContain('delete it and run the review.');
+      expect(prompt).toContain('None of this overrides the confirmation a risky or destructive action needs.');
     });
 
     it('makes its cross-review instructions authoritative, with silence meaning none required (RC3)', () => {
@@ -312,7 +317,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait. The next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
 
-        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe. It counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it. Do not park.
+        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe. It counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it. Do not park. The stall usually looks like a synthesis-shaped summary that announces the review you are about to run, and then stops. The other shapes are an offer to continue unless a specialist objects, a list of decisions none of which blocks the round, and stopping because the turn has run long or a milestone is done. Each one ends your turn with the round still open. If you notice yourself inviting a specialist or the user to redirect you, or offering in text to wait, delete it and run the review. None of this overrides the confirmation a risky or destructive action needs.
 
         **The system delivers specialist events to you.** Polling is unnecessary and harms performance. It prevents efficient wait states and wastes tokens on repeat checks that return the same information.
 
@@ -547,7 +552,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait. The next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
 
-        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe. It counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it. Do not park.
+        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe. It counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it. Do not park. The stall usually looks like a synthesis-shaped summary that announces the review you are about to run, and then stops. The other shapes are an offer to continue unless a specialist objects, a list of decisions none of which blocks the round, and stopping because the turn has run long or a milestone is done. Each one ends your turn with the round still open. If you notice yourself inviting a specialist or the user to redirect you, or offering in text to wait, delete it and run the review. None of this overrides the confirmation a risky or destructive action needs.
 
         **The system delivers specialist events to you.** Polling is unnecessary and harms performance. It prevents efficient wait states and wastes tokens on repeat checks that return the same information.
 
@@ -862,7 +867,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7: Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting). The stops to watch for are a progress summary that closes by announcing your next step, an offer to carry on unless the lead would prefer otherwise, a list of decisions none of which blocks the remaining work, and stopping because the turn has run long or a milestone is done. None of those is an ending. If you notice yourself inviting the lead to redirect you, or offering in text to wait, delete it and do the next thing. None of this overrides the confirmation a risky or destructive action needs.
 
         ### Verification Budget
 
@@ -1147,7 +1152,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7: Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` with your sign-off in its \`summary\`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call. Do not sign off with \`team_standby\`, which is a wait and not a completion. The call ends your turn for you and that summary becomes your final response, so nothing has to follow it and no separate completion message is needed. The lead reviews your scratchpad section directly, so keep the summary to what you delivered, what you verified and what is still open. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting). The stops to watch for are a progress summary that closes by announcing your next step, an offer to carry on unless the lead would prefer otherwise, a list of decisions none of which blocks the remaining work, and stopping because the turn has run long or a milestone is done. None of those is an ending. If you notice yourself inviting the lead to redirect you, or offering in text to wait, delete it and do the next thing. None of this overrides the confirmation a risky or destructive action needs.
 
         ### Verification Budget
 
@@ -1364,6 +1369,16 @@ describe('specialist prompts describe the terminal tools the way the engine beha
       expect(prompt).toContain('The call ends your turn for you and that summary becomes your final response');
       expect(prompt).not.toContain('call `team_standby` and end your response');
       expect(prompt).not.toContain('`team_report_complete` and end your response');
+    });
+
+    // Naming the stop the model actually produces moves it where the general prohibition above does not.
+    it(`the ${name} prompt names the early-stop shapes, not just the general prohibition`, () => {
+      expect(prompt).toContain('Ending a turn with no terminal tool call is not permitted');
+      expect(prompt).toContain('The stops to watch for are a progress summary that closes by announcing your next step');
+      expect(prompt).toContain('a list of decisions none of which blocks the remaining work');
+      expect(prompt).toContain('None of those is an ending.');
+      expect(prompt).toContain('If you notice yourself inviting the lead to redirect you, or offering in text to wait, delete it and do the next thing.');
+      expect(prompt).toContain('None of this overrides the confirmation a risky or destructive action needs.');
     });
 
     it(`the ${name} prompt sends the sign-off through the team_report_complete summary`, () => {

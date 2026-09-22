@@ -73,8 +73,8 @@ function labelFor(model: Model<Api> | undefined, value: string): string {
 }
 
 /** The catalog display name for a model value (falls back to the raw value when it is not curated). Used
- *  for the agent-card label when no pi `Model` resolved (an unauthed slot), so the card shows "Opus 4.8"
- *  rather than the raw "claude-opus-4-8". */
+ *  for the agent-card label when no pi `Model` resolved (an unauthed slot), so the card shows "Opus 5.5"
+ *  rather than the raw "claude-opus-5-5". */
 function catalogLabel(value: string, supportedModels: readonly ModelInfo[]): string {
   return supportedModels.find((m) => m.value === value)?.displayName ?? value;
 }
@@ -93,18 +93,22 @@ function resolveActive(deps: TeamModelDeps): Omit<ResolvedTeamModel, 'dollarBill
 
 /**
  * The pi thinking level for a slot's stored effort, coerced against the RESOLVED model's supported
- * levels. Returns `undefined` (no thinkingLevel) when: no model resolved, no effort set, or the model
- * does not support the effort (silent coercion by design).
+ * levels. A slot that is unset, or holds a level the model does not support, takes the model's catalog
+ * `defaultEffort`, the same fallback the panel applies. Returns `undefined` (no thinkingLevel) when no
+ * model resolved or neither level is supported.
  */
 function resolveThinkingLevel(
   resolvedValue: string | undefined,
   effort: EffortLevel | null,
   supportedModels: readonly ModelInfo[],
 ): ThinkingLevel | undefined {
-  if (resolvedValue === undefined || effort === null) return undefined;
+  if (resolvedValue === undefined) return undefined;
   const info = supportedModels.find((m) => m.value === resolvedValue);
-  if (!info?.supportedEffortLevels?.includes(effort)) return undefined;
-  return effortToPiThinking(effort);
+  const supported = (level: EffortLevel | null | undefined): EffortLevel | null =>
+    level && info?.supportedEffortLevels?.includes(level) ? level : null;
+  const level = supported(effort) ?? supported(info?.defaultEffort);
+  if (level === null) return undefined;
+  return effortToPiThinking(level);
 }
 
 /** Whether a role's effective model bills dollars, decided by the same credential rule as the account chip. */

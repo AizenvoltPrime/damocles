@@ -15,7 +15,7 @@ describe('useSettingsStore.setAccountInfo', () => {
 
   it('drops the previous backend field when the model moves to another backend', () => {
     const store = useSettingsStore();
-    const claude: AccountInfo = { model: 'claude-opus-5', subscriptionType: 'max', dollarBilled: false };
+    const claude: AccountInfo = { model: 'claude-opus-5-5', subscriptionType: 'max', dollarBilled: false };
     const openai: AccountInfo = { model: 'gpt-5.6', tokenSource: 'openai-api-key', dollarBilled: true };
 
     store.setAccountInfo(claude);
@@ -27,7 +27,7 @@ describe('useSettingsStore.setAccountInfo', () => {
 
   it('clears the account entirely on a null payload', () => {
     const store = useSettingsStore();
-    store.setAccountInfo({ model: 'claude-opus-5', subscriptionType: 'max', dollarBilled: false });
+    store.setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'max', dollarBilled: false });
     store.setAccountInfo(null);
     expect(store.accountInfo).toBeNull();
   });

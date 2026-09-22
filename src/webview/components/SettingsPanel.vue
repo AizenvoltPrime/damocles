@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, exploreSupportedEffortLevels, parseCacheWarmingMode } from "@shared/types/constants";
+import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL, exploreSupportedEffortLevels, parseCacheWarmingMode, thinkingDisableApplies } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
@@ -149,6 +149,13 @@ const defaultsModelInfo = computed(() =>
 
 const panelIsAdaptiveCapable = computed(() => panelModelInfo.value?.supportsAdaptiveThinking ?? false);
 const defaultsIsAdaptiveCapable = computed(() => defaultsModelInfo.value?.supportsAdaptiveThinking ?? false);
+
+// The extension ignores a stored `thinkingDisabled` wherever this hides the switch, so both read one predicate.
+const panelDisableApplies = computed(() => thinkingDisableApplies(panelModelInfo.value));
+const defaultsDisableApplies = computed(() => thinkingDisableApplies(defaultsModelInfo.value));
+
+const panelThinkingAlwaysOn = computed(() => panelModelInfo.value?.thinkingAlwaysOn === true);
+const defaultsThinkingAlwaysOn = computed(() => defaultsModelInfo.value?.thinkingAlwaysOn === true);
 
 const panelIsOpenAIBackend = computed(() => panelModelInfo.value?.backend === "openai");
 const defaultsIsOpenAIBackend = computed(() => defaultsModelInfo.value?.backend === "openai");
@@ -306,7 +313,7 @@ const modelOptions = computed(() => {
 });
 
 const currentModelDisplayName = computed(() => {
-  if (!props.activeModel) return "Opus 4.8";
+  if (!props.activeModel) return modelOptions.value.find((m) => m.value === DEFAULT_FALLBACK_MODEL)?.displayName ?? DEFAULT_FALLBACK_MODEL;
   const model = modelOptions.value.find((m) => m.value === props.activeModel);
   return model?.displayName || props.activeModel;
 });
@@ -476,7 +483,7 @@ function handleDeleteExploreApiKey() {
         <div v-if="panelThinking" class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
 
-          <div v-if="!panelIsOpenAIBackend" class="flex items-center gap-2 mb-3">
+          <div v-if="panelDisableApplies" class="flex items-center gap-2 mb-3">
             <Switch
               id="panel-disable-thinking"
               :checked="panelThinking.thinkingDisabled"
@@ -484,6 +491,8 @@ function handleDeleteExploreApiKey() {
             />
             <Label for="panel-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
           </div>
+
+          <p v-if="panelThinkingAlwaysOn" class="mb-3 text-sm text-muted-foreground">{{ t("settings.thinkingAlwaysOn") }}</p>
 
           <div v-if="(!panelThinking.thinkingDisabled || panelIsOpenAIBackend) && panelIsAdaptiveCapable" class="mb-2">
             <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
@@ -546,7 +555,7 @@ function handleDeleteExploreApiKey() {
         <div v-if="defaultThinking" class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
 
-          <div v-if="!defaultsIsOpenAIBackend" class="flex items-center gap-2 mb-3">
+          <div v-if="defaultsDisableApplies" class="flex items-center gap-2 mb-3">
             <Switch
               id="default-disable-thinking"
               :checked="defaultThinking.thinkingDisabled"
@@ -554,6 +563,8 @@ function handleDeleteExploreApiKey() {
             />
             <Label for="default-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
           </div>
+
+          <p v-if="defaultsThinkingAlwaysOn" class="mb-3 text-sm text-muted-foreground">{{ t("settings.thinkingAlwaysOn") }}</p>
 
           <div v-if="(!defaultThinking.thinkingDisabled || defaultsIsOpenAIBackend) && defaultsIsAdaptiveCapable" class="mb-2">
             <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>

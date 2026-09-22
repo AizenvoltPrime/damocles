@@ -17,8 +17,8 @@ import {
  * against the resolved model's supported levels (unsupported → none).
  */
 
-const ANTHROPIC_ACTIVE = 'claude-opus-4-8';
-const OPENAI_ACTIVE = 'gpt-5.6-terra';
+const ANTHROPIC_ACTIVE = 'claude-opus-5-5';
+const OPENAI_ACTIVE = 'gpt-6-luna';
 
 function fakeModel(provider: string, id: string): Model<Api> {
   return { provider, id, name: id } as unknown as Model<Api>;
@@ -71,27 +71,27 @@ describe('resolveRoleModel — configured slots', () => {
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
       openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
       activeModel: OPENAI_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'gpt-5.6-sol', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'gpt-6-sol', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
     expect(res.error).toBeUndefined();
-    expect(res.model?.id).toBe('gpt-5.6-sol');
+    expect(res.model?.id).toBe('gpt-6-sol');
     expect(res.model?.provider).toBe('openai-codex');
-    expect(res.modelLabel).toBe('GPT-5.6 Sol');
+    expect(res.modelLabel).toBe('GPT-6 Sol');
   });
 
   it('(b) blocks with an error naming the setting key + model when configured but its provider is unauthed', () => {
     const d = deps({
-      // openai does not resolve at all → gpt-5.6-sol is unavailable.
+      // openai does not resolve at all → gpt-6-sol is unavailable.
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'gpt-5.6-sol', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'gpt-6-sol', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
     expect(res.model).toBeUndefined();
     expect(res.error).toBeDefined();
     expect(res.error).toContain('damocles.team.reviewerModel');
-    expect(res.error).toContain('gpt-5.6-sol');
+    expect(res.error).toContain('gpt-6-sol');
     expect(res.error).toContain('reviewer');
   });
 
@@ -116,7 +116,7 @@ describe('resolveRoleModel — unset slots (active model fail-soft)', () => {
     const res = resolveRoleModel('implementor', d);
     expect(res.error).toBeUndefined();
     expect(res.model?.id).toBe(ANTHROPIC_ACTIVE);
-    expect(res.modelLabel).toBe('Opus 4.8');
+    expect(res.modelLabel).toBe('Opus 5.5');
   });
 
   it('(c) unset → no model but label = active model display name when the active model is unauthed', () => {
@@ -127,8 +127,8 @@ describe('resolveRoleModel — unset slots (active model fail-soft)', () => {
     const res = resolveRoleModel('lead', d);
     expect(res.error).toBeUndefined();
     expect(res.model).toBeUndefined();
-    // The agent card shows the curated display name ("Opus 4.8"), not the raw value ("claude-opus-4-8").
-    expect(res.modelLabel).toBe('Opus 4.8');
+    // The agent card shows the curated display name ("Opus 4.8"), not the raw value ("claude-opus-5-5").
+    expect(res.modelLabel).toBe('Opus 5.5');
     expect(res.thinkingLevel).toBeUndefined();
   });
 });
@@ -156,6 +156,33 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     expect(res.thinkingLevel).toBe('xhigh');
   });
 
+  it('(d3) an unset effort takes the resolved model catalog default', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
+      activeModel: ANTHROPIC_ACTIVE,
+      roleSettings: roles({ implementor: { model: ANTHROPIC_ACTIVE, effort: null } }),
+    });
+    // Opus 5.5 carries `defaultEffort: 'high'`; Sonnet 5 carries none, so its slot stays unset.
+    expect(resolveRoleModel('implementor', d).thinkingLevel).toBe('high');
+
+    const sonnet = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
+      activeModel: ANTHROPIC_ACTIVE,
+      roleSettings: roles({ implementor: { model: 'claude-sonnet-5', effort: null } }),
+    });
+    expect(resolveRoleModel('implementor', sonnet).thinkingLevel).toBeUndefined();
+  });
+
+  // Matches the panel: an unsupported stored level falls back to the catalog default, not to pi's own.
+  it('(d4) an unsupported stored effort takes the resolved model catalog default', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
+      activeModel: ANTHROPIC_ACTIVE,
+      roleSettings: roles({ implementor: { model: ANTHROPIC_ACTIVE, effort: 'none' } }),
+    });
+    expect(resolveRoleModel('implementor', d).thinkingLevel).toBe('high');
+  });
+
   it('(e) unsupported effort coerces to null (no thinkingLevel) — xhigh on deepseek', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, deepseekResolves: true }),
@@ -173,11 +200,11 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
       openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
       activeModel: OPENAI_ACTIVE,
-      // gpt-5.6-sol supportedEffortLevels lacks 'none'.
-      roleSettings: roles({ implementor: { model: 'gpt-5.6-sol', effort: 'none' } }),
+      // gpt-6-sol supportedEffortLevels lacks 'none'.
+      roleSettings: roles({ implementor: { model: 'gpt-6-sol', effort: 'none' } }),
     });
     const res = resolveRoleModel('implementor', d);
-    expect(res.model?.id).toBe('gpt-5.6-sol');
+    expect(res.model?.id).toBe('gpt-6-sol');
     expect(res.thinkingLevel).toBeUndefined();
   });
 

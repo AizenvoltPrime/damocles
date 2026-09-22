@@ -86,6 +86,53 @@ describe('buildAgentPrompt', () => {
     expect(replace).not.toContain('This section replaces any narration');
   });
 
+  // A turn that ends on a progress report ends the agent, and neither mode stops that on its own.
+  it('both modes name the early-stop shapes that would end the turn on a progress report', () => {
+    for (const mode of ['replace', 'append'] as const) {
+      const out = buildAgentPrompt(cfg({ systemPrompt: 'BODY', promptMode: mode }), '/ws', ENV, 'PARENT PROMPT');
+      expect(out).toContain('# Ending your turn');
+      expect(out).toContain('Do not stop on a progress report.');
+      expect(out).toContain(`Do not stop on an offer to carry on, such as "I'll carry on unless you'd prefer otherwise."`);
+      expect(out).toContain('Do not stop on a list of decisions for the parent when, by your own account, none of them blocks the remaining work.');
+      expect(out).toContain('Do not stop because the turn has run long or a milestone is done.');
+      expect(out).toContain('Put status notes and recommendations in the same message as your next tool call');
+      expect(out).toContain('If you catch yourself inviting the parent to redirect you');
+    }
+  });
+
+  // Guards the one check-in the block must not push the agent past.
+  it('both modes keep the confirmation a risky action needs, and name the stops that are wanted', () => {
+    for (const mode of ['replace', 'append'] as const) {
+      const out = buildAgentPrompt(cfg({ systemPrompt: 'BODY', promptMode: mode }), '/ws', ENV, 'PARENT PROMPT');
+      expect(out).toContain('None of this overrides the confirmation a risky or destructive action needs.');
+      expect(out).toContain('what blocks you is deliberately out of your reach, such as a permission gate');
+    }
+  });
+
+  // A section after the block would argue with it from the last word, and the confirmation line must close it.
+  it('both modes emit the block last, after the agent body and every extra', () => {
+    for (const mode of ['replace', 'append'] as const) {
+      const out = buildAgentPrompt(cfg({ systemPrompt: 'BODY', promptMode: mode }), '/ws', ENV, 'PARENT PROMPT', {
+        planMechanismBlock: buildPlanMechanismBlock(true),
+        skillBlocks: [{ name: 'skill-a', content: 'SKILL BODY' }],
+      });
+      const ending = mode === 'append'
+        ? 'This section overrides any turn-ending cadence stated earlier in this prompt.\nNone of this overrides the confirmation a risky or destructive action needs.'
+        : 'delete it and do the next thing.\nNone of this overrides the confirmation a risky or destructive action needs.';
+      expect(out.slice(-ending.length)).toBe(ending);
+      expect(out.indexOf('# Ending your turn')).toBeGreaterThan(out.indexOf('SKILL BODY'));
+      expect(out.indexOf('# Ending your turn')).toBeGreaterThan(out.indexOf('# Delivery mechanisms'));
+    }
+  });
+
+  it('append mode alone declares the turn-ending block the winner over the inherited cadence', () => {
+    const append = buildAgentPrompt(cfg({ promptMode: 'append', systemPrompt: '' }), '/ws', ENV, 'PARENT PROMPT');
+    expect(append).toContain('This section overrides any turn-ending cadence stated earlier in this prompt.');
+
+    const replace = buildAgentPrompt(cfg({ promptMode: 'replace', systemPrompt: 'BODY' }), '/ws', ENV);
+    expect(replace).not.toContain('This section overrides any turn-ending cadence');
+  });
+
   // Capability gate, like compassBlock: Explore and Plan hold no write tool, so a comment policy and a
   // test cadence would be tokens they cannot act on. Append-mode agents inherit both from the panel.
   it('replace mode carries the comment and test rules only for an agent that writes files', () => {

@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { log } from "../../logger";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
-import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from "../../../shared/types/constants";
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW, thinkingDisableApplies } from "../../../shared/types/constants";
 import type { EffortLevel } from "../../../shared/types/settings";
 
 const settingsWriteQueue = new Map<string, Promise<void>>();
@@ -58,6 +58,19 @@ export function coerceEffortForModel(model: string, effort: EffortLevel | null):
   const modelInfo = DEFAULT_MODELS.find(m => m.value === model);
   if (!modelInfo?.supportedEffortLevels?.includes(effort)) return null;
   return effort;
+}
+
+/**
+ * The catalog effort for a model the user has set no effort for, validated the same way a stored value
+ * is so a catalog typo cannot ship a level the model does not advertise. `null` when the model has no
+ * catalog default, which leaves the level unset and lets pi apply its own.
+ */
+export function defaultEffortForModel(model: string): EffortLevel | null {
+  return coerceEffortForModel(model, DEFAULT_MODELS.find(m => m.value === model)?.defaultEffort ?? null);
+}
+
+export function thinkingDisableAppliesToModel(model: string): boolean {
+  return thinkingDisableApplies(DEFAULT_MODELS.find(m => m.value === model));
 }
 
 export function getContextWindowForModel(modelId: string): number {

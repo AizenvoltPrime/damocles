@@ -57,26 +57,36 @@ async function migrateLegacyEffortSetting(): Promise<void> {
   }
 }
 
+const TEAM_MODEL_KEYS = ["team.leadModel", "team.implementorModel", "team.reviewerModel"] as const;
+
 export async function migrateLegacyModelSetting(): Promise<void> {
   const config = vscode.workspace.getConfiguration("damocles");
-  const modelInspect = config.inspect<string>("model");
   const mapInspect = config.inspect<Record<string, EffortLevel | null>>("effortByModel");
-  if (!modelInspect && !mapInspect) return;
-  // damocles.model / damocles.effortByModel are window-scoped, so VS Code never surfaces a
-  // WorkspaceFolder value for them — only Global and Workspace scopes can hold migratable values.
+  const modelInspects = (["model", ...TEAM_MODEL_KEYS] as const).map((key) => ({ key, inspect: config.inspect<string>(key) }));
+  // damocles.model, damocles.team.*Model and damocles.effortByModel are window-scoped, so VS Code never
+  // surfaces a WorkspaceFolder value for them — only Global and Workspace scopes can hold migratable values.
   const scopes = [
-    { target: vscode.ConfigurationTarget.Global, model: modelInspect?.globalValue, map: mapInspect?.globalValue },
-    { target: vscode.ConfigurationTarget.Workspace, model: modelInspect?.workspaceValue, map: mapInspect?.workspaceValue },
+    {
+      target: vscode.ConfigurationTarget.Global,
+      models: modelInspects.map(({ key, inspect }) => ({ key, value: inspect?.globalValue })),
+      map: mapInspect?.globalValue,
+    },
+    {
+      target: vscode.ConfigurationTarget.Workspace,
+      models: modelInspects.map(({ key, inspect }) => ({ key, value: inspect?.workspaceValue })),
+      map: mapInspect?.workspaceValue,
+    },
   ];
-  for (const { target, model, map } of scopes) {
-    // Migrate the model value when it is a legacy id at this scope. Independent of the effort re-key
+  for (const { target, models, map } of scopes) {
+    // Migrate each model value that is a legacy id at this scope. Independent of the effort re-key
     // below: a scope can hold legacy effort entries with no model value set (or vice versa).
     // Own-property lookups guard against inherited keys ("toString", "constructor") on a stored value
     // resolving to a prototype member instead of a real mapping.
-    const mappedModel = model != null && Object.hasOwn(LEGACY_MODEL_MAP, model) ? LEGACY_MODEL_MAP[model] : undefined;
-    if (mappedModel) {
-      await config.update("model", mappedModel, target);
-      log(`[Migration] damocles.model=${model} → ${mappedModel} (scope=${target})`);
+    for (const { key, value } of models) {
+      const mapped = value != null && Object.hasOwn(LEGACY_MODEL_MAP, value) ? LEGACY_MODEL_MAP[value] : undefined;
+      if (!mapped) continue;
+      await config.update(key, mapped, target);
+      log(`[Migration] damocles.${key}=${value} → ${mapped} (scope=${target})`);
     }
     // Re-key effortByModel entries stored under a legacy id to the mapped id at the same scope.
     const currentMap = map ?? {};
@@ -90,7 +100,7 @@ export async function migrateLegacyModelSetting(): Promise<void> {
       mapChanged = true;
       // Non-clobber: keep an existing entry for the mapped id — whether it was present in the stored
       // map OR already written by an earlier legacy id this pass. Two legacy ids can map to the same
-      // successor (gpt-5.5 + gpt-5.3-codex → gpt-5.6-sol); testing nextMap makes that first-wins and
+      // successor (gpt-5.5 + gpt-5.3-codex → gpt-6-sol); testing nextMap makes that first-wins and
       // deterministic (testing currentMap would let the later id clobber the earlier, last-wins).
       if (Object.hasOwn(nextMap, mappedId)) continue;
       nextMap[mappedId] = clampEffortToModel(carried, mappedId);
@@ -111,14 +121,14 @@ export async function migrateLegacyModelSetting(): Promise<void> {
     }
     if (mapChanged) {
       await config.update("effortByModel", nextMap, target);
-      log(`[Migration] Migrated damocles.effortByModel legacy entries (GPT-5.6 re-key / renamed effort levels) (scope=${target})`);
+      log(`[Migration] Migrated damocles.effortByModel legacy entries (retired-model re-key / renamed effort levels) (scope=${target})`);
     }
   }
 }
 
 /**
  * Clamps a carried effort level to a target model's supported set. Legacy GPT entries allowed
- * `'none'`, but the GPT-5.6 trio is codex-strict `['low','medium','high','xhigh','max']`, so an
+ * `'none'`, but the current GPT models are codex-strict `['low','medium','high','xhigh','max']`, so an
  * unsupported level (`'none'`) clamps up to the model's lowest supported level (`'low'`).
  */
 function clampEffortToModel(effort: EffortLevel | null, modelId: string): EffortLevel | null {

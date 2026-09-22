@@ -24,19 +24,20 @@ export const DEFAULT_THINKING_TOKENS = 63999;
  */
 export const CACHE_TTL_MS: number = 5 * 60 * 1000;
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
-export const DEFAULT_FALLBACK_MODEL = "claude-opus-5";
+export const DEFAULT_FALLBACK_MODEL = "claude-opus-5-5";
 
 /**
  * Ordered substitutes tried when a requested model does not resolve against pi's model registry.
  *
- * pi ships a bundled catalog and refreshes it from the network; a model released after the pinned pi
- * version is absent from the bundle, so a fresh install that is offline or has not refreshed yet cannot
- * resolve it. Without this, resolution walks {@link DEFAULT_MODELS} from the top — which is ordered by
- * capability, not price — and silently seats the user on a costlier model than they asked for. These
- * keep such a session on the closest comparable model instead.
+ * pi ships a bundled catalog and refreshes it from the network, so a catalog entry can be unresolvable
+ * on an install that is offline or has not refreshed yet. Without this, resolution walks
+ * {@link DEFAULT_MODELS} from the top — which is ordered by capability, not price — and silently seats
+ * the user on a costlier model than they asked for: an Anthropic user who cannot reach Opus 5.5 would
+ * land on Fable 5.1 at $10/$50 rather than Sonnet 5 at $2/$10. Every substitute must itself be a
+ * {@link DEFAULT_MODELS} entry; `pi-session.ts` only tries substitutes that pass `isCurated`.
  */
 export const MODEL_SUBSTITUTES: Readonly<Record<string, readonly string[]>> = {
-  "claude-opus-5": ["claude-opus-4-8"],
+  "claude-opus-5-5": ["claude-sonnet-5"],
 };
 
 export const DEFAULT_MODELS: ModelInfo[] = [
@@ -48,24 +49,18 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    thinkingAlwaysOn: true,
   },
   {
-    value: "claude-opus-5",
-    displayName: "Opus 5",
+    value: "claude-opus-5-5",
+    displayName: "Opus 5.5",
     description: "Most capable model for agentic work",
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-  },
-  {
-    value: "claude-opus-4-8",
-    displayName: "Opus 4.8",
-    description: "Most capable model for agentic work",
-    contextWindow: 1_000_000,
-    supportsAdaptiveThinking: true,
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    defaultEffort: 'high',
+    thinkingAlwaysOn: true,
   },
   {
     value: "claude-sonnet-5",
@@ -85,7 +80,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
   {
     value: "gpt-6-astra",
     displayName: "GPT-6 Astra",
-    description: "Most capable OpenAI model, superseding the GPT-5.6 line",
+    description: "Most capable OpenAI model",
     contextWindow: 272_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
@@ -93,44 +88,32 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     backend: "openai",
     openaiModelId: "gpt-6-astra",
     openaiAuthMode: "any",
+    thinkingAlwaysOn: true,
     openaiReasoningEffort: "medium",
   },
   {
-    value: "gpt-5.6-sol",
-    displayName: "GPT-5.6 Sol",
-    description: "Smartest GPT-5.6 model for the most demanding work",
+    value: "gpt-6-sol",
+    displayName: "GPT-6 Sol",
+    description: "GPT-6 model for complex coding and agentic work",
     contextWindow: 272_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     backend: "openai",
-    openaiModelId: "gpt-5.6-sol",
+    openaiModelId: "gpt-6-sol",
     openaiAuthMode: "any",
     openaiReasoningEffort: "medium",
   },
   {
-    value: "gpt-5.6-terra",
-    displayName: "GPT-5.6 Terra",
-    description: "Balanced GPT-5.6 model for everyday coding",
+    value: "gpt-6-luna",
+    displayName: "GPT-6 Luna",
+    description: "Fast, cost-efficient GPT-6 model",
     contextWindow: 272_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
     backend: "openai",
-    openaiModelId: "gpt-5.6-terra",
-    openaiAuthMode: "any",
-    openaiReasoningEffort: "medium",
-  },
-  {
-    value: "gpt-5.6-luna",
-    displayName: "GPT-5.6 Luna",
-    description: "Fast, cost-efficient GPT-5.6 model",
-    contextWindow: 272_000,
-    supportsAdaptiveThinking: true,
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
-    backend: "openai",
-    openaiModelId: "gpt-5.6-luna",
+    openaiModelId: "gpt-6-luna",
     openaiAuthMode: "any",
     openaiReasoningEffort: "medium",
   },
@@ -170,17 +153,29 @@ export const DEFAULT_MODELS: ModelInfo[] = [
 /**
  * Maps retired model ids to their successors, across every provider. Used to transparently migrate
  * stored `damocles.model` values (write-back at activation + read-mapping defense-in-depth).
+ * Resolved in a single lookup, so every value must be a {@link DEFAULT_MODELS} entry, never another
+ * retired id.
  */
 export const LEGACY_MODEL_MAP: Record<string, string> = {
-  'gpt-5.5': 'gpt-5.6-sol',
-  'gpt-5.3-codex': 'gpt-5.6-sol',
-  'gpt-5.4': 'gpt-5.6-terra',
-  'gpt-5.4-mini': 'gpt-5.6-luna',
-  'gpt-5.2': 'gpt-5.6-luna',
+  'gpt-5.5': 'gpt-6-sol',
+  'gpt-5.3-codex': 'gpt-6-sol',
+  'gpt-5.4': 'gpt-6-sol',
+  'gpt-5.4-mini': 'gpt-6-luna',
+  'gpt-5.2': 'gpt-6-luna',
+  'gpt-5.6-sol': 'gpt-6-sol',
+  'gpt-5.6-luna': 'gpt-6-luna',
   'claude-fable-5': 'claude-fable-5-1',
+  'claude-opus-5': 'claude-opus-5-5',
+  'claude-opus-4-8': 'claude-opus-5-5',
 };
 
 /** Returns the successor for a retired model id, or the value unchanged if not retired. */
+/** Whether the disable-thinking switch has any effect on this model. OpenAI models are driven by effort
+ *  alone, and pi thinks on a `thinkingAlwaysOn` model whatever level is requested. */
+export function thinkingDisableApplies(info: ModelInfo | undefined): boolean {
+  return info?.backend !== "openai" && info?.thinkingAlwaysOn !== true;
+}
+
 export function migrateLegacyModelValue(value: string): string {
   // Own-property lookup guards against inherited keys ("toString", "constructor") resolving to
   // prototype members instead of a real mapping.

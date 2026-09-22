@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.29.0] - 2026-09-23
+
+### Changed
+
+- **Opus 5.5 replaces both Opus entries in the model picker.** `claude-opus-5-5` is the only Opus Damocles offers; `claude-opus-5` and `claude-opus-4-8` are gone. A stored `damocles.model` or `damocles.team.*Model` set to either retired id is rewritten to `claude-opus-5-5` at startup, and an entry in `damocles.effortByModel` keyed by one is re-keyed to it (first id wins if both are present, and a level the new model does not support clamps to its lowest). `damocles.autoCompact.modelOverrides` keys are matched exactly and are never mapped to a successor, so an override keyed by a retired id stops applying and has to be re-keyed by hand. Opus 5.5 reports a June 2026 knowledge cutoff. When a session cannot resolve it, resolution now falls to Sonnet 5 rather than walking the catalog into Fable 5.1, which costs five times as much.
+
+- **Reasoning effort defaults to High on Opus 5.5.** With nothing stored for the model, the panel, the defaults column and every team role all send High rather than leaving the level unset. Anything you have set still wins, and a stored level Opus 5.5 does not support falls back to High on the panel and on a team role alike. The default is resolved per request and never written back, so `damocles.effortByModel` stays empty until you set a level yourself. Anthropic's own default for Opus 5.5 is Medium, so High is a deliberate departure from it. Opus 5.5 thinks more per turn than Opus 5 did at the same level name, so a level carried over from Opus 5 buys more thinking than it used to. Keep Extra High and Max for work where you have measured a quality gain.
+
+- **The disable-thinking control is gone on models that cannot disable thinking.** pi forces adaptive thinking on Opus 5.5 and Fable 5.1, so the switch had no effect on either: the request went out thinking at high effort while the system prompt was told there was no thinking. The settings panel now hides the switch for those two models and says effort is the control, and the prompt's no-thinking section is no longer emitted to them. GPT-6 Astra cannot disable thinking either, and now shows the same note. The switch was already hidden on every OpenAI model, but a disable set on a Claude model still reached them: GPT-6 Sol and Luna ran with no reasoning while the panel showed an effort level, and Astra thought at Low. A stored disable now applies only where the switch is shown. Sonnet 5 and Haiku 4.5 keep the switch. A test pins the catalog flag against pi's own model metadata, so a pi release that changes which models force thinking fails the build instead of quietly desyncing the UI.
+
+- **GPT-6 Sol and GPT-6 Luna replace the GPT-5.6 models.** The model picker and every team role menu now offer GPT-6 Astra, Sol and Luna. A stored `gpt-5.6-sol` or `gpt-5.6-luna` moves to its GPT-6 counterpart at startup, in `damocles.model`, the team role settings and `damocles.effortByModel` alike. The older GPT ids that pointed at them move straight to GPT-6 as well. GPT-5.6 Terra is removed with no successor, because OpenAI released no GPT-6 Terra. A workspace set to Terra opens on the first model you are signed in for, which is Fable 5.1 or GPT-6 Astra, so pick a model again after upgrading. A team role set to Terra makes team creation fail with an error naming that role's setting until you choose another model for it. On an OpenAI panel, Explore and Plan now fall back to GPT-6 Luna as their cheap model. The default rates in `damocles.openai.modelPricing` now cover GPT-6 Sol ($2 input, $10 output per million tokens) and GPT-6 Luna ($0.10 and $0.50). If you set that object yourself, it replaces the defaults, and a GPT-6 model missing from it shows the cost pi computes instead.
+
+- **The pi runtime moves to 0.87.1** from 0.87.0, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. That release puts `claude-opus-5-5`, `gpt-6-sol` and `gpt-6-luna` in the bundled model catalog, so the picker entries above resolve rather than falling back. It also fixes compaction summaries being refused by Fable 5.1 on a split turn, and an Anthropic OAuth request reporting an outdated Claude Code version.
+
+- **A subagent on the panel's model now runs at the panel's reasoning effort.** Plan, general-purpose and any agent without its own `model:` used to pass no effort at all, so pi fell back to whatever default it had last saved, which could be Low on one machine and Medium on another. They now take the effort the panel resolved, including the High default on Opus 5.5. An agent file's `thinking:` field wins over it, and that field now applies even when the file names no `model:`, which it previously did not.
+
+- **Subagent, team specialist and team lead prompts name the ways Opus 5.5 ends a turn early.** On a long task it writes a user-facing progress report, and some of those end the turn with text and no tool call. A human in the panel just replies; a subagent returns the half-finished note to its parent as the final result, and a team lead burns a review round or trips the stall path. All three prompts now name the four shapes: a summary that closes by announcing the next step, an offer to carry on, a list of decisions that block nothing, and stopping because the turn has run long. Each also states that a risky or destructive action still needs its confirmation. The panel prompt is deliberately unchanged, because you are watching it.
+
 ## [2.28.0] - 2026-09-22
 
 ### Added
@@ -4043,6 +4061,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.29.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.28.0...v2.29.0
 [2.28.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.27.0...v2.28.0
 [2.27.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.26.0...v2.27.0
 [2.26.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.25.0...v2.26.0

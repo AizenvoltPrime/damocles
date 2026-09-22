@@ -67,10 +67,10 @@ function panelStub(): PanelGateContext {
     permissionHandler: {} as PanelGateContext['permissionHandler'],
     isPlanMode: () => false,
     budgetStopRequested: () => false,
-    getSessionModel: () => 'claude-opus-5',
+    getSessionModel: () => 'claude-opus-5-5',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
-      model: 'claude-opus-5',
+      model: 'claude-opus-5-5',
       isGitRepo: true,
       platform: 'linux',
       shell: 'bash',
@@ -161,7 +161,7 @@ describe('tool schemas reach the provider', () => {
     } as never);
     await resourceLoader.reload();
 
-    const model = modelRuntime.getModel('anthropic', 'claude-opus-5');
+    const model = modelRuntime.getModel('anthropic', 'claude-opus-5-5');
     const { session } = await createAgentSession({
       cwd,
       agentDir,

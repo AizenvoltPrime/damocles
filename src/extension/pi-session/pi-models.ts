@@ -10,11 +10,11 @@ export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } fro
 
 /**
  * The small/fast model values (Damocles `DEFAULT_MODELS` entries) for internal LLM sub-calls — a
- * Haiku-class model on Anthropic, GPT-5.6 Luna on OpenAI. Both resolve through
+ * Haiku-class model on Anthropic, GPT-6 Luna on OpenAI. Both resolve through
  * `resolvePiModel` to their canonical provider.
  */
 export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-4-5-20251001';
-export const PI_SMALL_FAST_OPENAI = 'gpt-5.6-luna';
+export const PI_SMALL_FAST_OPENAI = 'gpt-6-luna';
 
 /**
  * Damocles effort levels → pi thinking levels. pi gained a native `max` level in 0.80.6 (above

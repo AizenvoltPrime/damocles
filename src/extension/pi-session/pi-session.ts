@@ -2130,9 +2130,13 @@ export class PiSession implements ChatSession {
     }
 
     // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
+    //    Its effort comes with it, or pi falls back to whatever default it last persisted, which varies
+    //    by machine. A template's own `thinking:` still wins, and a per-spawn `thinking` beats both.
     if (this.desiredModel) {
       const err = scopeError(this.desiredModel);
-      return err ? { error: err } : { model: this.desiredModel, modelLabel: label(this.desiredModel) };
+      if (err) return { error: err };
+      const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
+      return { model: this.desiredModel, modelLabel: label(this.desiredModel), thinkingLevel };
     }
     return {};
   }
@@ -2804,10 +2808,9 @@ export class PiSession implements ChatSession {
 
   private contextWindowForCurrentModel(): number {
     // Prefer the RESOLVED pi model's window: it is provider-accurate, whereas the curated catalog
-    // carries one value per model id. GPT-5.6 spans two providers with different windows — as of pi
-    // 0.80.6 codex (subscription) serves 372k, the API-key provider 272k — so trusting the catalog
-    // would skew context-% and mistime auto-compaction on whichever provider it doesn't match. Catalog
-    // value is the fallback for a not-yet-resolved model (its 272k is the conservative floor).
+    // carries one value per model id, and a GPT model is served by two providers (API key and Codex
+    // subscription) whose windows pi has set differently before. Catalog value is the fallback for a
+    // not-yet-resolved model (its 272k is the conservative floor).
     return this.desiredModel?.contextWindow ?? this.getModelInfo(this.modelValue)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   }
 

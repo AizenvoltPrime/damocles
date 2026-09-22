@@ -103,6 +103,13 @@ export interface ModelInfo {
   supportsEffort?: boolean;
   supportedEffortLevels?: EffortLevel[];
   supportsAdaptiveThinking?: boolean;
+  /** Effort applied when the user has set none for this model. Unset models fall through to pi's own
+   *  default. Must be a member of `supportedEffortLevels`. */
+  defaultEffort?: EffortLevel;
+  /** pi thinks on this model whatever level is requested, so the disable-thinking control is a no-op.
+   *  True exactly when pi's metadata has `compat.supportsMidConvoEffort` or `thinkingLevelMap.off: null`
+   *  in every catalog serving the model (drift-guarded by pi-models.test.ts). */
+  thinkingAlwaysOn?: boolean;
   /** Backend dispatcher. Omitted defaults to "anthropic" for backwards compatibility. */
   backend?: "anthropic" | "openai";
   /** Literal model ID sent in the Codex request body; may differ from `value`. */
