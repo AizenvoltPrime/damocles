@@ -1,5 +1,8 @@
-// Ported from pi-coding-agent core/cache-stats.ts @0.82.0 — not exported upstream; keep in sync on pi
-// upgrades. Damocles ports ONLY the live-notice detection path (detectCacheMiss + its helpers).
+// Ported from pi-coding-agent `dist/core/cache-stats.js` @0.87.0 — not exported upstream; keep in sync
+// on pi upgrades. Damocles ports ONLY the live-notice detection path (detectCacheMiss + its helpers).
+// One intentional divergence a re-sync must preserve: the `context_edit` baseline reset below, which
+// upstream has no counterpart for (`dist/core/cache-stats.js:59` resets on compaction/branch_summary
+// only). Without it every prune raises a false "unexplained cache miss" notice.
 // pi's collectCacheMisses/computeCacheWaste (resume re-derivation, cumulative-waste totals) are
 // deliberately NOT ported: Damocles cache-miss notices are ephemeral (live-run only), so there is no
 // resume rebuild or /waste consumer to serve. Re-port them from pi if that changes.
@@ -107,18 +110,29 @@ function asPreviousRequest(message: AssistantMessage, reportedCache: boolean): P
 /**
  * Walk the session entries to find the LAST request state before the just-completed message — the
  * baseline the next turn's prompt should have been cached against. Baseline resets on
- * compaction/branch_summary (the following prompt is new content, not re-billed content); a model
- * switch is NOT exempt (it re-bills the full prompt and should be counted).
+ * compaction/branch_summary (the following prompt is new content, not re-billed content) and on
+ * context_edit, which rewrites the prefix from the edited entry onward; a model switch is NOT exempt
+ * (it re-bills the full prompt and should be counted).
  */
 function lastRequestBefore(entries: SessionEntry[]): PreviousRequest | undefined {
 	let prev: PreviousRequest | undefined;
+	// Sticky across a context_edit reset: whether a provider reports cache activity at all is a
+	// provider fact, not a prefix fact, so dropping it would suppress the next total-miss detection on
+	// a cache-read-only provider. Cleared on compaction/branch_summary to match pi's own scan.
+	let reportedCache = false;
 	for (const entry of entries) {
 		if (entry.type === 'compaction' || entry.type === 'branch_summary') {
+			prev = undefined;
+			reportedCache = false;
+			continue;
+		}
+		if (entry.type === 'context_edit') {
 			prev = undefined;
 			continue;
 		}
 		if (entry.type === 'message' && entry.message.role === 'assistant') {
-			prev = asPreviousRequest(entry.message, prev?.reportedCache ?? false) ?? prev;
+			prev = asPreviousRequest(entry.message, reportedCache) ?? prev;
+			reportedCache = prev?.reportedCache ?? reportedCache;
 		}
 	}
 	return prev;

@@ -81,7 +81,6 @@ function ctxFor(sessionId: string): unknown {
 
 /** Every event either factory registers a handler for, so a post-shutdown sweep can dispatch them all. */
 const ALL_EVENTS = [
-  'context',
   'cache_warming_decision',
   'session_shutdown',
   'session_start',
@@ -95,6 +94,8 @@ const ALL_EVENTS = [
   'turn_start',
   'turn_end',
   'agent_start',
+  'agent_before_settle',
+  'agent_settled',
   'session_compact',
   'session_before_compact',
   'session_before_switch',
@@ -117,12 +118,12 @@ const PAYLOADS: Record<string, unknown> = {
     systemPromptOptions: { selectedTools: ['read', 'bash', 'edit', 'write'], sections: {} },
   },
   agent_end: { type: 'agent_end', messages: [] },
+  agent_before_settle: { type: 'agent_before_settle', entries: [], continue: false },
   message_start: { type: 'message_start', message: { role: 'assistant', content: [] } },
   session_start: { type: 'session_start', reason: 'new' },
   session_shutdown: { type: 'session_shutdown', reason: 'quit' },
   session_compact: { type: 'session_compact', compactionEntry: { id: 'c1' }, reason: 'manual', willRetry: false, fromExtension: false },
   session_before_compact: { type: 'session_before_compact', reason: 'manual', willRetry: false },
-  context: { type: 'context', messages: [] },
   cache_warming_decision: { type: 'cache_warming_decision', warmCost: 0.07, missCost: 1.5, continuationProbability: 1, action: 'warm' },
 };
 
@@ -140,7 +141,7 @@ async function sweep(
   return ran;
 }
 
-function fakePanel(): PanelGateContext & { onAgentEnd: ReturnType<typeof vi.fn> } {
+function fakePanel(): PanelGateContext & { onBeforeSettle: ReturnType<typeof vi.fn> } {
   return {
     permissionHandler: {
       evaluatePermission: vi.fn(async () => 'allow'),
@@ -162,7 +163,7 @@ function fakePanel(): PanelGateContext & { onAgentEnd: ReturnType<typeof vi.fn> 
     postMessage: vi.fn(),
     currentPromptIndex: () => 0,
     budgetStopRequested: () => false,
-    onAgentEnd: vi.fn(async () => undefined),
+    onBeforeSettle: vi.fn(async () => undefined),
   };
 }
 
@@ -276,11 +277,11 @@ describe('the shared extension instance outlives the sessions bound to it', () =
     pi.panels.delete('session-A');
 
     await pi.emitToolCall(payloadFor('tool_call'), ctxFor('session-B'));
-    await pi.emit('agent_end', payloadFor('agent_end'), ctxFor('session-B'));
+    await pi.emit('agent_before_settle', payloadFor('agent_before_settle'), ctxFor('session-B'));
 
     expect(b.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
-    expect(b.onAgentEnd).toHaveBeenCalledTimes(1);
-    expect(a.onAgentEnd).not.toHaveBeenCalled();
+    expect(b.onBeforeSettle).toHaveBeenCalledTimes(1);
+    expect(a.onBeforeSettle).not.toHaveBeenCalled();
   });
 
   it('leaves every handler registered through a shutdown, whatever the reason', async () => {
@@ -348,22 +349,23 @@ describe('mid-dispatch shutdown', () => {
   });
 
   it('still mints the turn checkpoint for a session the shutdown did not belong to', async () => {
-    // The keep-alive `agent_end` runs ahead of the checkpoint `agent_end` in the same snapshot. A
-    // shutdown raised from inside it belongs to whichever session is being replaced, and must not stop
-    // the checkpoint handler behind it from finishing the turn it was dispatched for.
+    // A shutdown raised from inside the continuation hold belongs to whichever session is being
+    // replaced, and must not stop the checkpoint handler from finishing the turn it was dispatched for.
     const pi = buildPanelExtension();
     const panel = fakePanel();
-    const checkpoint = { onAgentEnd: vi.fn(async () => []) } as unknown as CheckpointService;
+    const checkpoint = { onSettled: vi.fn(async () => []) } as unknown as CheckpointService;
     pi.panels.set('session-A', panel);
     pi.checkpointServices.set('session-A', checkpoint);
-    panel.onAgentEnd.mockImplementation(async () => {
+    panel.onBeforeSettle.mockImplementation(async () => {
       await pi.emit('session_shutdown', { type: 'session_shutdown', reason: 'new' }, ctxFor('session-A'));
+      return undefined;
     });
 
-    await pi.emit('agent_end', payloadFor('agent_end'), ctxFor('session-A'));
+    await pi.emit('agent_before_settle', payloadFor('agent_before_settle'), ctxFor('session-A'));
+    await pi.emit('agent_settled', payloadFor('agent_settled'), ctxFor('session-A'));
 
-    expect(panel.onAgentEnd).toHaveBeenCalledTimes(1);
-    expect(checkpoint.onAgentEnd).toHaveBeenCalledTimes(1);
+    expect(panel.onBeforeSettle).toHaveBeenCalledTimes(1);
+    expect(checkpoint.onSettled).toHaveBeenCalledTimes(1);
   });
 });
 

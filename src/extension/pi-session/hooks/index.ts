@@ -57,8 +57,12 @@ export interface ToolResultLike {
 /**
  * Tier-2 observe-only events (US-007): cheap notify/logging points whose return value is ignored. The
  * HIGH-FREQUENCY/mutation-heavy events (`message_update`, `tool_execution_*`, `context`,
- * `before_provider_request`, `after_provider_response`, `user_bash`, `project_trust`) are deliberately
- * NOT here — they are never spawned (US-007 exclusion list).
+ * `context_with_system`, `before_provider_request`, `after_provider_response`, `user_bash`,
+ * `project_trust`) are deliberately NOT here — they are never spawned (US-007 exclusion list).
+ *
+ * `agent_before_settle` and `turn_end` are boundary events, so their handlers return a value pi reads.
+ * Dispatching them observe-only is safe because the handler resolves to `undefined` and pi's
+ * `emitBoundary` leaves the accumulated entries and continuation flag alone for an undefined result.
  */
 const TIER2_EVENTS: readonly string[] = [
   'model_select',
@@ -69,6 +73,7 @@ const TIER2_EVENTS: readonly string[] = [
   'turn_start',
   'turn_end',
   'agent_start',
+  'agent_before_settle',
   'message_start',
   'message_end',
   'resources_discover',
@@ -266,16 +271,27 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     }
   });
 
-  // --- Stop (agent_end) — observe-only --------------------------------------
-  pi.on('agent_end', async (event, ctx) => {
+  // --- PreToolUse orphan sweep (agent_end) ----------------------------------
+  // Sweeps this session's orphaned PreToolUse context (a tool that proceeded but whose tool_result never
+  // arrived). Kept on the per-segment event rather than moved to `agent_settled` with the Stop dispatch
+  // below: the sweep is idempotent, so the earlier cadence reclaims sooner and costs nothing.
+  // Unconditional, because only a sweep can reach those entries when no hook and no panel exist.
+  pi.on('agent_end', async (_event, ctx) => {
+    if (deps.preToolUseContextStash) clearSessionPreToolUseContext(deps.preToolUseContextStash, ctx.sessionManager.getSessionId());
+  });
+
+  // --- Stop (agent_settled, observe-only) -----------------------------------
+  // `agent_end` fires once per run segment, so a boundary continuation or a pi retry would notify the
+  // user several times for one turn. `agent_settled` fires once, after the last of both. It carries no
+  // messages, so the transcript comes from the session projection.
+  pi.on('agent_settled', async (_event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
-    // Turn boundary: sweep this session's orphaned PreToolUse context (a tool that proceeded but whose
-    // tool_result never arrived). Unconditional: runs even when no agent_end hook is configured, and
-    // even when no panel owns the session, since only a sweep can reach those entries.
-    if (deps.preToolUseContextStash) clearSessionPreToolUseContext(deps.preToolUseContextStash, sessionId);
     if (!deps.registry.get(sessionId) || !config.hasEntries('agent_end')) return;
     try {
-      await dispatchObserveOnly(deps.dispatch, 'agent_end', ctx.cwd, buildAgentEndPayload(buildHookCommon(ctx), event.messages));
+      // The projection is the retained window of the whole session, hidden `display: false` customs
+      // (plan-mode nudges, hook context, memory catalog, subagent results) included.
+      const { messages } = ctx.sessionManager.buildSessionProjection();
+      await dispatchObserveOnly(deps.dispatch, 'agent_end', ctx.cwd, buildAgentEndPayload(buildHookCommon(ctx), messages));
     } catch (err) {
       log('[Hooks] agent_end (Stop) handler failed: %O', err);
     }

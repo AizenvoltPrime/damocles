@@ -5,6 +5,7 @@ import type { AgentRunConfig } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { FakeSession } from './fake-session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
+import type { AgentTurnContext, AgentTurnDecision } from '@earendil-works/pi-agent-core';
 
 /**
  * The pi-native team agent runner (US-024b). These tests drive a FAKE pi `AgentSession` to assert the
@@ -350,7 +351,7 @@ describe('AgentRunner (pi-native team agent)', () => {
   });
 
   it('reclaims a message pi still holds when the turn ends, instead of ending with it undelivered', async () => {
-    // pi runs shouldStopAfterTurn before it drains the queue, so a message steered in that window is
+    // pi runs finishTurn before it drains the queue, so a message steered in that window is
     // still held when the loop comes back around. The bus subscriber already echoed it to the overlay.
     const messages: ExtensionToWebviewMessage[] = [];
     const fake = new FakeSession({
@@ -938,11 +939,12 @@ describe('AgentRunner tool result persistence', () => {
 /**
  * `team_standby` and `team_report_complete` both promise the agent stops here, but each only records
  * state and hands control back to the model, which keeps working unless the engine ends the turn. The
- * runner installs pi's `shouldStopAfterTurn` hook so it does. These tests drive the hook the runner
- * installed on the session's `agent`, which is the object pi consults after each turn.
+ * runner installs a `finishTurn` decider so it does. These tests drive the hook the runner installed
+ * on the session's `agent`, which is the object pi consults after each turn.
  */
 
-type StopHook = NonNullable<FakeSession['agent']['shouldStopAfterTurn']>;
+/** Answers the decider chain the way pi's loop reads it: `{ action: 'end' }` is the only stop. */
+type StopHook = (turn: AgentTurnContext) => Promise<boolean>;
 
 /** A session whose turns end only when the test says so, so a run can be held open mid-flight. */
 function heldSession(): FakeSession {
@@ -960,8 +962,12 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
     keepAlive: () => false,
   }));
   await fake.whenPrompted(1);
-  const hook = fake.agent.shouldStopAfterTurn;
-  if (!hook) throw new Error('the runner installed no shouldStopAfterTurn hook');
+  const finishTurn = fake.agent.finishTurn;
+  if (!finishTurn) throw new Error('the runner installed no finishTurn decider');
+  const hook: StopHook = async (turn) => {
+    const decision = (await finishTurn(turn)) as AgentTurnDecision | undefined;
+    return decision?.action === 'end';
+  };
   await body(hook, fake);
   // pi drains its queue once the turn ends, so leave nothing held that would re-prompt this session.
   fake.clearQueue();
@@ -971,15 +977,15 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`agent-loop.js:534` keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:620-626`, keys the result to the call id and carries `isError`).
  */
-function turnWith(...names: string[]): Parameters<StopHook>[0] {
+function turnWith(...names: string[]): AgentTurnContext {
   return {
     message: { role: 'assistant', content: names.map((name, i) => ({ type: 'toolCall', id: `tc-${i}`, name, arguments: {} })) },
     toolResults: names.map((name, i) => ({ role: 'toolResult', toolCallId: `tc-${i}`, toolName: name, content: [], isError: false })),
     context: {},
     newMessages: [],
-  } as unknown as Parameters<StopHook>[0];
+  } as unknown as AgentTurnContext;
 }
 
 describe('AgentRunner terminal-tool turn stop', () => {
@@ -994,6 +1000,16 @@ describe('AgentRunner terminal-tool turn stop', () => {
     // the message stranded in the queue.
     await withStopHook(async (hook, fake) => {
       fake.holdSteeredMessage('[Message from Lead]: one more thing');
+      expect(await hook(turnWith('team_standby'))).toBe(false);
+    });
+  });
+
+  it('does not stop the turn for a queued message the session mirror cannot see', async () => {
+    // `sendCustomMessage` enqueues straight onto the agent, so `pendingMessageCount` reads 0 while pi
+    // still holds the message. Reading the agent's queue is what keeps the guard honest.
+    await withStopHook(async (hook, fake) => {
+      fake.holdCustomMessage('[Background results]');
+      expect(fake.pendingMessageCount).toBe(0);
       expect(await hook(turnWith('team_standby'))).toBe(false);
     });
   });
@@ -1048,11 +1064,14 @@ describe('AgentRunner terminal-tool turn stop', () => {
     });
   });
 
-  it('chains to a hook the session already carried instead of replacing it', async () => {
+  it('defers to a hook the session already carried instead of replacing it', async () => {
     const fake = heldSession();
     let priorCalls = 0;
     let priorStops = false;
-    fake.agent.shouldStopAfterTurn = () => { priorCalls++; return priorStops; };
+    fake.agent.finishTurn = (): AgentTurnDecision | undefined => {
+      priorCalls++;
+      return priorStops ? { action: 'end' } : undefined;
+    };
 
     await withStopHook(async (hook) => {
       expect(await hook(turnWith('read'))).toBe(false);

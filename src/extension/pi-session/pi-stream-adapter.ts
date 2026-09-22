@@ -168,8 +168,6 @@ export class PiStreamAdapter {
    *  to the tree. Resolved one-shot at the next assistant message_start, where the entry is committed —
    *  the same boundary `emitUserMessageIdOnce` and the checkpoint engine use to key the turn's entry. */
   private _midStreamMarkerPending = false;
-  /** Set by the keep-alive hold so the next `agent_end` does not emit idle/done (the turn continues). */
-  private _holdNextAgentEnd = false;
   /** Whether this adapter has already told the user how the running compaction ended. `PiSession.compact()`
    *  reads it so pi's rethrow does not stack a second card on the one emitted from `compaction_end`. */
   private _compactionReported = false;
@@ -218,7 +216,7 @@ export class PiStreamAdapter {
   /**
    * Seed the cost baseline from a resumed session's loaded total (US-010b) so the budget meter and
    * `getAccumulatedCost` continue from there, and the first post-resume turn's delta (computed in
-   * `onAgentEnd` as `stats.cost - _lastCumulativeCost`) stays correct.
+   * `onSettled` as `stats.cost - _lastCumulativeCost`) stays correct.
    */
   seedResumedUsage(loadedCost: number): void {
     this._lastCumulativeCost = loadedCost;
@@ -327,14 +325,14 @@ export class PiStreamAdapter {
    *  inside `prompt()`, which emits no terminal event. Releases the spinner and returns the session to
    *  idle without a phantom result card. */
   endTurnWithoutAgentRun(): void {
-    this.emit({ type: 'processing', isProcessing: false });
-    this.deps.onTurnStateChanged('idle');
+    this.lowerSpinner();
   }
 
-  /** Mark that the next `agent_end` is a keep-alive hold continuation — suppress its idle/done so the
-   *  turn's "processing" state persists while the parent does another (synthesis) round. */
-  holdNextAgentEnd(): void {
-    this._holdNextAgentEnd = true;
+  /** The one lifecycle transition every turn-ending path owes the webview, kept in one place so
+   *  "lower the spinner exactly once" is greppable rather than restated per path. */
+  private lowerSpinner(): void {
+    this.emit({ type: 'processing', isProcessing: false });
+    this.deps.onTurnStateChanged('idle');
   }
 
   /**
@@ -355,15 +353,12 @@ export class PiStreamAdapter {
   }
 
   /**
-   * Mark the in-flight turn as user-aborted. The host emits `sessionCancelled` itself; this flag tells
-   * `onAgentEnd` to skip the `done`/`stopInfo` it would otherwise emit when pi's aborted run finishes,
-   * so the webview never sees a "completed" result stacked on top of a cancelled turn.
-   */
-  /**
    * Mark the turn aborted and give every still-running tool card a terminal state. pi's `abort()` stops
    * the agent but a long in-flight tool (e.g. BrowserOpen) may not emit `tool_execution_end` promptly —
    * without this its card would spin forever. We emit `toolAbandoned` for each running tool; the
    * `_aborted` guard in `onToolEnd` then suppresses any late completion so it cannot resurrect the card.
+   * `_aborted` also tells `onSettled` to skip the `done`/`stopInfo`, so a cancelled turn never gets a
+   * completed result stacked on top of it.
    */
   markAborted(): void {
     this._aborted = true;
@@ -489,14 +484,10 @@ export class PiStreamAdapter {
         this._outputCoalescer.cancel(event.toolCallId);
         this.onToolEnd(event.toolCallId, event.toolName, event.result, event.isError);
         break;
-      case 'agent_end':
-        // A keep-alive hold (background subagents) injected a follow-up in the awaited agent_end hook, so
-        // the same turn continues with another round — suppress the idle/done that would settle it here.
-        if (this._holdNextAgentEnd) {
-          this._holdNextAgentEnd = false;
-        } else if (!event.willRetry) {
-          this.onAgentEnd(session);
-        }
+      // pi emits `agent_end` once per run segment, so a boundary continuation or an internal retry
+      // produces several of them for one logical turn. `agent_settled` fires once, after the last one.
+      case 'agent_settled':
+        this.onSettled(session);
         break;
       case 'compaction_start': {
         // Scoped to the compaction that is starting, so an outcome reported for an earlier one cannot
@@ -517,8 +508,8 @@ export class PiStreamAdapter {
         if (event.aborted) {
           // An abort clears both banners, so without this the user sees compaction start, stop, and
           // learns nothing. `errorMessage` is optional on the event, `willRetry` is not.
-          // pi 0.85.0 hard-codes `willRetry: false` and omits `errorMessage` at all three abort sites;
-          // both are passed through so a later pi that varies them reaches the card without a code change.
+          // pi hard-codes `willRetry: false` at both sites that can report an abort; both fields are
+          // passed through so a later pi that varies them reaches the card without a code change.
           this.emit({
             type: 'compactionAborted',
             trigger,
@@ -702,7 +693,7 @@ export class PiStreamAdapter {
   private emitUsage(usage: Usage): void {
     // pi's Usage is per-message; emitting per-message `outputTokens` here would snap the webview's
     // running total to the last message of a multi-message turn. Output tokens are reported once,
-    // cumulatively, via onAgentEnd's `done` result — matching the SDK path, which omits them here too.
+    // cumulatively, via onSettled's `done` result — matching the SDK path, which omits them here too.
     this.emit({
       type: 'tokenUsageUpdate',
       inputTokens: usage.input,
@@ -800,15 +791,25 @@ export class PiStreamAdapter {
     }
   }
 
-  private onAgentEnd(session: AgentSession): void {
+  /**
+   * The turn's single terminal state. This is the only place the adapter lowers the spinner for a turn
+   * that ran an agent, so every path out of a run — completion, abort, provider error, budget stop —
+   * ends here exactly once. A host-initiated abort lowers it a second time from `PiSession.beginAbort`,
+   * which is harmless because the webview handler is idempotent, and the branch below stays because a
+   * stream-originated abort reaches no such host path. The card that explains WHY (cancelled/error/auth)
+   * is emitted where it is detected; only the lifecycle transition belongs here.
+   */
+  private onSettled(session: AgentSession): void {
     this._agentRunObserved = true;
-    // Keep cost accounting accurate even for an aborted turn, but stop before the user-facing
-    // completion signals — a user abort already emitted sessionCancelled + idle.
+    // Cost accounting is owed even for an aborted turn, so it runs before the abort early-return.
     const stats = session.getSessionStats();
     const turnCost = Math.max(0, stats.cost - this._lastCumulativeCost);
     this._lastCumulativeCost = stats.cost;
     this._accumulatedCost += turnCost;
-    if (this._aborted) return;
+    if (this._aborted) {
+      this.lowerSpinner();
+      return;
+    }
 
     this.checkBudgetAtTurnEnd(stats.cost + this._externalCost);
 
@@ -835,7 +836,7 @@ export class PiStreamAdapter {
    * In-flight budget enforcement (US-008): a single agentic turn can chain many model/tool calls, so
    * the moment the session's cumulative cost crosses the hard limit mid-turn we emit `budgetExceeded`
    * and ask the session to stop gracefully (via `onBudgetStop`) — the turn is NOT aborted, it runs to
-   * the end of the current model round-trip and settles through the normal `agent_end` path. Fires at
+   * the end of the current model round-trip and settles when the run does, on `agent_settled`. Fires at
    * most once per turn (re-armed in `beginTurn`), so every turn is bounded even after the user raises
    * the limit. No-op when no dollar limit applies (subscription/allowance).
    */
@@ -880,6 +881,9 @@ export class PiStreamAdapter {
    * path as a calm inline notice (no refusal-specific card, no text-matching) — US-023. The only edge
    * is a refusal whose text trips the auth heuristic (e.g. mentions "oauth"); that is the documented
    * low-risk corner of the pre-existing `isAuthError` heuristic, not a refusal-specific behavior.
+   *
+   * Emits the explanatory card only. This fires per assistant message, and pi decides whether to retry
+   * the message after emitting it, so settling here would flash idle in the middle of a retry.
    */
   private onAssistantError(reason: 'aborted' | 'error', message: string): void {
     this._agentRunObserved = true;
@@ -893,8 +897,6 @@ export class PiStreamAdapter {
     } else {
       this.emit({ type: 'error', message });
     }
-    this.emit({ type: 'processing', isProcessing: false });
-    this.deps.onTurnStateChanged('idle');
   }
 
   private elapsed(toolCallId: string): number {

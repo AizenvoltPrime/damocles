@@ -129,7 +129,7 @@ const PI_EVENTS: unknown[] = [
   { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'read', args: { path: '/a.ts' } },
   { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'read', result: { content: [{ type: 'text', text: 'file contents' }], details: { lines: 10 } }, isError: false },
   { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Let me think' }, { type: 'text', text: 'Hello there!' }], usage: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, totalTokens: 150, cost: {} } } },
-  { type: 'agent_end', messages: [], willRetry: false },
+  { type: 'agent_settled' },
 ];
 
 /** Collapse consecutive `partial`s of the same phase and redact volatile fields → a logical trace. */
@@ -200,7 +200,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       modelValue: () => 'step-3.7-flash',
       defaultModelValue: () => 'claude-opus-4-8',
     });
-    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    const session = fakeSession([{ type: 'agent_settled' }]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-default');
 
@@ -212,38 +212,152 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     });
   });
 
-  it('holdNextAgentEnd suppresses the idle/done for the held agent_end, but only once', () => {
+  it('a normal completion settles the turn with done + idle + stopInfo', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out);
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
+    const session = fakeSession([{ type: 'agent_settled' }]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    turns.length = 0;
+    session.play();
+    expect(out.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
+    expect(turns).toEqual(['idle']);
+  });
+
+  it('a continuation round emits no terminal state: agent_end alone never settles the turn', () => {
+    // The boundary keeps the run going for one more request. pi emits `agent_end` per run segment, so
+    // settling on it would flash idle mid-turn.
+    const out: ExtensionToWebviewMessage[] = [];
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
     const session = fakeSession([
-      { type: 'agent_end', messages: [], willRetry: false },
-      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_end', messages: [] },
+      { type: 'agent_end', messages: [] },
+      { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     out.length = 0;
-    adapter.holdNextAgentEnd();
-    session.play(); // first agent_end is the held one (continuation), second settles the turn
+    turns.length = 0;
+    session.play();
+
     expect(out.filter((m) => m.type === 'done')).toHaveLength(1);
     expect(out.filter((m) => m.type === 'stopInfo')).toHaveLength(1);
+    expect(out.filter((m) => m.type === 'processing')).toHaveLength(1);
+    expect(turns).toEqual(['idle']);
   });
 
-  it('a normal agent_end (no hold) settles the turn with done + idle + stopInfo', () => {
+  it('an internally retried turn produces no intermediate idle', () => {
+    // pi decides the retry AFTER the failed assistant message has already emitted its error event, so
+    // the error card must not carry the turn-state transition with it.
     const out: ExtensionToWebviewMessage[] = [];
-    const adapter = makeAdapter(out);
-    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
+    const session = fakeSession([
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'overloaded' } } },
+      { type: 'agent_end', messages: [] },
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'agent_settled' },
+    ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     out.length = 0;
+    turns.length = 0;
     session.play();
-    expect(out.find((m) => m.type === 'done')).toBeDefined();
-    expect(out.find((m) => m.type === 'stopInfo')).toBeDefined();
+
+    expect(out.some((m) => m.type === 'error')).toBe(true);
+    // One idle for the whole turn, and it arrives at the settle rather than before the retry.
+    expect(turns).toEqual(['idle']);
+    expect(out.filter((m) => m.type === 'processing')).toHaveLength(1);
+    expect(out.findIndex((m) => m.type === 'error')).toBeLessThan(out.findIndex((m) => m.type === 'done'));
   });
 
-  it('observedAgentRun is false for a command-only turn and true once an agent_end settles', () => {
+  it('a terminal provider error settles once, with the error card ahead of the result', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
+    const session = fakeSession([
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'boom' } } },
+      { type: 'agent_settled' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    turns.length = 0;
+    session.play();
+
+    expect(out.map((m) => m.type)).toEqual(['error', 'done', 'processing', 'stopInfo']);
+    expect(turns).toEqual(['idle']);
+  });
+
+  it('an abort emits the cancel sequence exactly once and no completed result', () => {
+    // markAborted is the host's own cancel path; the stream then delivers the aborted assistant error
+    // and the settle. Neither may re-announce the cancel or stack a `done` on top of it.
+    const out: ExtensionToWebviewMessage[] = [];
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
+    const session = fakeSession([
+      { type: 'agent_end', messages: [] },
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+      { type: 'agent_settled' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    adapter.markAborted();
+    out.length = 0;
+    turns.length = 0;
+    session.play();
+
+    expect(out.filter((m) => m.type === 'sessionCancelled')).toHaveLength(0); // the host already emitted it
+    expect(out.some((m) => m.type === 'done')).toBe(false);
+    expect(out.some((m) => m.type === 'stopInfo')).toBe(false);
+    expect(out.filter((m) => m.type === 'processing')).toHaveLength(1);
+    expect(turns).toEqual(['idle']);
+  });
+
+  it('a stream-originated abort emits sessionCancelled once and still lowers the spinner at the settle', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const turns: TurnState[] = [];
+    const adapter = makeAdapter(out, { onTurnStateChanged: (t) => { turns.push(t); } });
+    const session = fakeSession([
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+      { type: 'agent_settled' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    turns.length = 0;
+    session.play();
+
+    expect(out.map((m) => m.type)).toEqual(['sessionCancelled', 'processing']);
+    expect(turns).toEqual(['idle']);
+  });
+
+  it('a turn aborted mid-run does not leak its suppression into the next turn', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
-    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    const aborted = fakeSession([{ type: 'agent_settled' }]);
+    adapter.subscribe(aborted as never);
+    adapter.beginTurn('c1');
+    adapter.markAborted();
+    aborted.play();
+    expect(out.some((m) => m.type === 'done')).toBe(false);
+
+    out.length = 0;
+    const next = fakeSession([{ type: 'agent_settled' }]);
+    adapter.subscribe(next as never);
+    adapter.beginTurn('c2');
+    out.length = 0;
+    next.play();
+    expect(out.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
+  });
+
+  it('observedAgentRun is false for a command-only turn and true once the run settles', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([{ type: 'agent_settled' }]);
     adapter.subscribe(session as never);
 
     adapter.beginTurn('c');
@@ -304,7 +418,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const session = fakeSession([
       { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'pondering' } },
       { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: 'Final answer' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } },
-      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
@@ -458,6 +572,7 @@ describe('PiStreamAdapter refusals (US-023)', () => {
     const session = fakeSession([
       { type: 'message_start', message: { role: 'assistant', content: [] } },
       { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: "I'm sorry, but I can't help with that request." } } },
+      { type: 'agent_settled' },
     ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-refusal');
@@ -620,7 +735,7 @@ describe('PiStreamAdapter compaction no-op classification', () => {
 describe('PiStreamAdapter budget enforcement (US-008)', () => {
   const turn = (): unknown[] => [
     { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } },
-    { type: 'agent_end', messages: [], willRetry: false },
+    { type: 'agent_settled' },
   ];
 
   it('emits budgetWarning at ≥80% on natural turn end', () => {
@@ -653,9 +768,9 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it('settles a budget-stopped turn through the normal agent_end path — done/processing/idle/stopInfo, never sessionCancelled', () => {
+  it('settles a budget-stopped turn like a natural completion — done/processing/idle/stopInfo, never sessionCancelled', () => {
     const out: ExtensionToWebviewMessage[] = [];
-    // The host's real onBudgetStop is graceful: it never calls markAborted, so agent_end must settle
+    // The host's real onBudgetStop is graceful: it never calls markAborted, so the settle must finish
     // the turn exactly like a natural completion. This is the claim the US-008 tests never asserted.
     const turns: TurnState[] = [];
     const adapter = makeBudgetAdapter(out, 1.0, () => undefined, turns);
@@ -751,7 +866,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
         usage: { input: 50_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0.15, output: 0, cacheRead: 0, cacheWrite: 0 } },
       },
     },
-    { type: 'agent_end', messages: [], willRetry: false },
+    { type: 'agent_settled' },
   ];
 
   it('emits cacheMissNotice when the setting is on and a miss is detectable', () => {
@@ -795,7 +910,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
         usage: { input: 50_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0.15, output: 0, cacheRead: 0, cacheWrite: 0 } },
       },
     },
-    { type: 'agent_end', messages: [], willRetry: false },
+    { type: 'agent_settled' },
   ];
 
   // `'pending'` is pi 0.83.0's initial value for a streaming assistant message. `message_end` carries
@@ -858,7 +973,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
           usage: { input: 10_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10_010, cost: { input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0 } },
         },
       },
-      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_settled' },
     ];
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
@@ -871,9 +986,9 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
   });
 
-  it('a malformed entry (missing usage) does not throw out of the listener or block agent_end', () => {
+  it('a malformed entry (missing usage) does not throw out of the listener or block the settle', () => {
     // getEntries returns a corrupt assistant entry with no `usage`; detectCacheMiss would throw on it.
-    // The cosmetic block must swallow it so the turn still settles (agent_end reports the idle turn state).
+    // The cosmetic block must swallow it so the turn still settles (the settle reports the idle turn state).
     const corruptPrior = { type: 'message', message: { role: 'assistant', provider: 'anthropic', model: 'x', timestamp: 0 } };
     const out: ExtensionToWebviewMessage[] = [];
     const turns: TurnState[] = [];
@@ -908,7 +1023,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
           usage: { input: 100, output: 10, cacheRead: 49_900, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0, output: 0, cacheRead: 0.005, cacheWrite: 0 } },
         },
       },
-      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_settled' },
     ];
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });

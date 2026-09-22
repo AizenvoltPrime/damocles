@@ -29,6 +29,19 @@ function userEntry(id: string): SessionEntry {
   return { type: 'message', id, parentId: null, timestamp: '', message: { role: 'user', content: [] } } as unknown as SessionEntry;
 }
 
+/** The entry a boundary continuation appends mid-run (`dist/core/session-manager.js:947-960`). */
+function customMessageEntry(id: string): SessionEntry {
+  return {
+    type: 'custom_message',
+    id,
+    parentId: null,
+    timestamp: '',
+    customType: 'damocles-continuation',
+    content: [{ type: 'text', text: 'continue' }],
+    display: false,
+  } as unknown as SessionEntry;
+}
+
 function treeReader(entries: SessionEntry[]): CheckpointTreeReader {
   return {
     getBranch: () => entries,
@@ -147,13 +160,13 @@ describe('CheckpointService.onSessionCompact', () => {
     expect(compactEntries[0]!.beforeCommit).toBe('commit-2');
 
     // The pending turn is intact: finalize still returns u1 anchored to its ORIGINAL pre-turn commit.
-    const endEntries = await svc.onAgentEnd(sm);
+    const endEntries = await svc.onSettled(sm);
     expect(endEntries).toHaveLength(1);
     expect(endEntries[0]!.userEntryId).toBe('u1');
     expect(endEntries[0]!.beforeCommit).toBe('commit-1');
   });
 
-  it('SAFETY: does not drop or re-anchor a pending turn — onAgentEnd finalizes against the original pre-turn commit', async () => {
+  it('SAFETY: does not drop or re-anchor a pending turn — onSettled finalizes against the original pre-turn commit', async () => {
     const ready: string[] = [];
     const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
     const repo = makeStubRepo();
@@ -167,7 +180,7 @@ describe('CheckpointService.onSessionCompact', () => {
     expect(compactEntries[0]!.beforeCommit).toBe('commit-2');
     // 3) The turn truly ends — finalize must still resolve u1 against its ORIGINAL beforeCommit (commit-1),
     //    proving the compaction commit did not disturb the in-flight turn (finalizeRun diffs the stored HASH).
-    const endEntries = await svc.onAgentEnd(sm);
+    const endEntries = await svc.onSettled(sm);
     expect(endEntries).toHaveLength(1);
     expect(endEntries[0]!.userEntryId).toBe('u1');
     expect(endEntries[0]!.beforeCommit).toBe('commit-1');
@@ -175,28 +188,20 @@ describe('CheckpointService.onSessionCompact', () => {
   });
 });
 
-describe('CheckpointService.deferNextFinalize (held-continuation turns)', () => {
-  it('skips exactly one agent_end finalize, never touching the producer, then re-arms for the next', async () => {
+describe('CheckpointService.onSettled (continuation turns)', () => {
+  it('no-ops with no producer bound', async () => {
     const ready: string[] = [];
     const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
     const sm = treeReader([]);
 
-    // A held continuation (plan-mode nudge / background keep-alive) defers this agent_end's finalize.
-    // With no producer ever bound, a finalize attempt would still be a no-op — but the point is that the
-    // ONE-SHOT flag is consumed here and not on the next (real) end. We assert the one-shot semantics via
-    // the flag's effect on a bound producer below; here we cover the no-producer early path.
-    svc.deferNextFinalize();
-    expect(await svc.onAgentEnd(sm)).toEqual([]);
-    expect(ready).toEqual([]);
-
-    // The flag is one-shot: a SECOND agent_end with no defer falls through to the normal (no-producer) path.
-    expect(await svc.onAgentEnd(sm)).toEqual([]);
+    expect(await svc.onSettled(sm)).toEqual([]);
     expect(ready).toEqual([]);
   });
 
-  it('keeps the single pending checkpoint across a deferred end, finalizing once when the turn truly ends', async () => {
-    // Drive the real lifecycle through a stub repo so we can prove ONE checkpoint per logical turn even
-    // when the turn is held across a continuation round (two agent_end events, one real prompt).
+  it('mints one checkpoint per logical turn however many continuation rounds it ran', async () => {
+    // Drive the real lifecycle through a stub repo. A boundary continuation is a SECOND assistant
+    // message_start inside the same run, so this runs one: the turn must still reach exactly one
+    // pre-turn snapshot and one finalized checkpoint for u1.
     const ready: string[] = [];
     const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
 
@@ -205,7 +210,7 @@ describe('CheckpointService.deferNextFinalize (held-continuation turns)', () => 
       calls: [] as string[],
       async withLock<T>(fn: () => Promise<T>): Promise<T> { return fn(); },
       async ensureReady(): Promise<void> { this.calls.push('ensureReady'); },
-      async checkpoint(): Promise<string> { return `commit-${++commitSeq}`; },
+      async checkpoint(entryId: string): Promise<string> { this.calls.push(`checkpoint:${entryId}`); return `commit-${++commitSeq}`; },
       async stageAll(): Promise<void> { this.calls.push('stageAll'); },
       async diffAgainst(): Promise<string> { return ''; }, // no file changes this turn
     };
@@ -220,22 +225,26 @@ describe('CheckpointService.deferNextFinalize (held-continuation turns)', () => 
     (svc as unknown as { producer: unknown; gitAvailable: boolean }).producer = producer;
     (svc as unknown as { gitAvailable: boolean }).gitAvailable = true;
 
-    const sm = treeReader([userEntry('u1')]);
-    // turnStart for the user entry (fires on assistant message_start).
-    await svc.onMessageStart({ role: 'assistant', content: [] }, sm);
+    const branch = [userEntry('u1')];
+    const sm = treeReader(branch);
+    // Round 1: turnStart for the user entry (fires on assistant message_start).
+    expect(await svc.onMessageStart({ role: 'assistant', content: [] }, sm)).toEqual([]);
 
-    // First agent_end is a HELD continuation → deferred: no finalize, pending checkpoint survives.
-    svc.deferNextFinalize();
-    expect(await svc.onAgentEnd(sm)).toEqual([]);
-    expect(ready).toEqual([]);
+    // A boundary continuation appends a custom_message before resuming. `findLastUserEntry` skips it
+    // (it is not a `message` entry), so round 2 resolves to u1 again and turnStart dedups to a no-op.
+    branch.push(customMessageEntry('c1'));
+    expect(await svc.onMessageStart({ role: 'assistant', content: [] }, sm)).toEqual([]);
+    expect(repo.calls.filter((call) => call.startsWith('checkpoint:'))).toEqual(['checkpoint:u1']);
 
-    // Real end of the turn → finalize exactly once for u1.
-    const entries = await svc.onAgentEnd(sm);
+    // The run settles once, however many continuation rounds it took → finalize exactly once for u1.
+    const entries = await svc.onSettled(sm);
     expect(entries).toHaveLength(1);
     expect(entries[0]!.userEntryId).toBe('u1');
     expect(ready).toEqual(['u1']);
 
-    // No second checkpoint was produced for the same user entry (the bug this fixes).
-    expect(await svc.onAgentEnd(sm)).toEqual([]);
+    // A second settle for the same user entry produces no second checkpoint.
+    expect(await svc.onSettled(sm)).toEqual([]);
+    expect(ready).toEqual(['u1']);
+    expect(repo.calls.filter((call) => call.startsWith('checkpoint:'))).toEqual(['checkpoint:u1']);
   });
 });

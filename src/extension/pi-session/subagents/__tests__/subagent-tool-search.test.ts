@@ -93,7 +93,7 @@ describe('subagent ToolSearch registration (Slice 3 §3.3)', () => {
     (h.pi.registerTool as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => { throw new Error('boom'); });
     expect(() => createSubagentExtensionFactory(ctxWith(BROWSER_PI_TOOL_NAMES))(h.pi)).not.toThrow();
     expect(h.handlers.has('tool_call')).toBe(true);
-    expect(h.handlers.has('context')).toBe(true);
+    expect(h.handlers.has('turn_end')).toBe(true);
   });
 
   it('reports the agent\'s deferrable universe as its inventory total', async () => {

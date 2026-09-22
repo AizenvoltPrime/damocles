@@ -1,4 +1,4 @@
-import type { ToolCallEvent, ToolCallEventResult, AgentEndEvent } from '@earendil-works/pi-coding-agent';
+import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
@@ -72,11 +72,11 @@ export interface PanelGateContext {
   currentPromptIndex: () => number;
   /** True once the hard budget limit stopped the turn; a cache-warming refresh bills against that cap. */
   budgetStopRequested: () => boolean;
-  /** Called from the `agent_end` hook (awaited before the turn settles): coordinates the background
-   *  keep-alive (hold the turn until subagents finish and inject their results) and the plan-mode hold
-   *  (nudge the model to call ExitPlanMode if a plan-mode turn ended without it). Receives the turn's
-   *  `agent_end` event so the plan-mode hold can scan its messages. */
-  onAgentEnd?: (event: AgentEndEvent) => Promise<void>;
+  /** Called from the `agent_before_settle` boundary: coordinates the background keep-alive (wait for
+   *  running subagents and carry their results into one more request) and the plan-mode hold (nudge the
+   *  model to call ExitPlanMode if a plan-mode turn ended without it). Returns the entry to append and
+   *  continue the run with, or undefined to let the run settle. */
+  onBeforeSettle?: (event: AgentBeforeSettleEvent) => Promise<SessionBoundaryDraft | undefined>;
   /**
    * Whether an `mcp__…` tool is annotated read-only (US-014.4). The panel reads it live off the MCP
    * client; a nested subagent/team agent supplies the FROZEN classifier from its per-spawn

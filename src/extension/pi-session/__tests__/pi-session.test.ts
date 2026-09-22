@@ -5,6 +5,7 @@ import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
 import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
+import type { Agent, AgentTurnContext, AgentTurnDecision, FinishTurn } from '@earendil-works/pi-agent-core';
 
 const H = vi.hoisted(() => {
   const CACHE_WARMING_MODES = ['off', 'streaming', 'idle'];
@@ -20,6 +21,8 @@ const H = vi.hoisted(() => {
   // Opt-in: a test can swap the structural sessionManager fake for a REAL pi SessionManager on a
   // tmpdir, so the on-disk no-append-after-rm invariant is exercised rather than simulated.
   let sessionManagerFactory: (() => unknown) | null = null;
+  // Opt-in: runs against each freshly built fake session before PiSession binds it.
+  let sessionSetup: ((session: { agent: { finishTurn?: unknown } }) => void) | null = null;
 
   function makeSession() {
     const id = `sess-${++sessionCounter}`;
@@ -58,9 +61,11 @@ const H = vi.hoisted(() => {
     const session = {
       sessionId: id,
       // pi's Agent. `readonly` upstream and NOT plumbed through the session factory, so `bindSession`
-      // installs the graceful budget-stop predicate onto it per bind — a replacement session brings a
+      // installs the graceful budget-stop decider onto it per bind — a replacement session brings a
       // new Agent, which is what the re-installation test pins.
-      agent: {} as { shouldStopAfterTurn?: () => boolean },
+      // `peekQueuedMessages` is pi's own steering/follow-up queue, which the plan-mode hold reads, so it
+      // has to answer on every fake session rather than only in the tests that queue something.
+      agent: { peekQueuedMessages: () => [] } as { finishTurn?: FinishTurn; peekQueuedMessages: () => unknown[] },
       isStreaming: false,
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
@@ -98,6 +103,9 @@ const H = vi.hoisted(() => {
       messages: [],
     };
     lastSession = session;
+    // pi installs its own `agent.finishTurn` during session construction, before Damocles binds, so a
+    // test that needs a prior hook has to get it on here rather than after the bind.
+    sessionSetup?.(session as { agent: { finishTurn?: unknown } });
     return session;
   }
 
@@ -208,6 +216,7 @@ const H = vi.hoisted(() => {
     getLastSession: () => lastSession,
     fireEvent: (event: unknown) => { listener?.(event); },
     setSessionManagerFactory: (f: (() => unknown) | null) => { sessionManagerFactory = f; },
+    setSessionSetup: (f: ((session: { agent: { finishTurn?: unknown } }) => void) | null) => { sessionSetup = f; },
     setBashExecute: (fn: (...a: never[]) => Promise<unknown>) => { bashExecute = fn; },
   };
 });
@@ -275,10 +284,12 @@ import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
+import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../finish-turn';
 import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES, teamAgentPiToolNamesForRole } from '../tools/team-tools';
 import { deferredToolNames } from '../tools/deferred-tools';
 import { CUSTOM_TOOL_NAMES, buildCustomTools } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
+import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mode-hold';
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
@@ -1627,62 +1638,66 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await PiRuntime.disposeInstance();
   });
 
-  type AgentEndEvt = { type: 'agent_end'; messages: unknown[] };
+  type SettleEvt = { type: 'agent_before_settle'; entries: unknown[]; continue: boolean; context: { contextMessages: unknown[] } };
+  const userMsg = (): unknown => ({ role: 'user', content: [{ type: 'text', text: 'plan it' }] });
   const assistant = (stopReason: string): unknown => ({ role: 'assistant', stopReason, content: [{ type: 'text', text: 'here is the plan' }] });
   const exitResult = (isError: boolean): unknown => ({ role: 'toolResult', toolName: 'ExitPlanMode', isError, toolCallId: 'tc1', content: [] });
-  const evt = (messages: unknown[]): AgentEndEvt => ({ type: 'agent_end', messages });
+  /** An already-injected nudge as the projection holds it: role 'custom', never role 'user'. */
+  const nudgeMsg = (): unknown => ({ role: 'custom', customType: 'damocles-plan-mode-nudge', content: 'x', display: false });
+  /** The boundary carries the session projection, so every turn under test opens with a user message. */
+  const evt = (messages: unknown[]): SettleEvt =>
+    ({ type: 'agent_before_settle', entries: [], continue: false, context: { contextMessages: [userMsg(), ...messages] } });
 
-  /** Drive the `agent_end` coordinator through the registered panel context (the real dispatch path). */
-  async function fireAgentEnd(event: AgentEndEvt): Promise<void> {
+  /** Drive the pre-settlement coordinator through the registered panel context (the real dispatch path). */
+  async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
     const live = H.getLastSession()!;
     const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
-      _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
+      _panelRegistry: Map<string, { onBeforeSettle?: (e: SettleEvt) => Promise<unknown> }>;
     })._panelRegistry.get(live.sessionId as string)!;
-    await panel.onAgentEnd!(event);
+    return panel.onBeforeSettle!(event);
   }
 
-  /** The live session's sendCustomMessage spy + the session's adapter holdNextAgentEnd spy + the
-   *  checkpoint service deferNextFinalize spy (held continuations must not mint a duplicate checkpoint). */
-  function spies(session: PiSession): { send: ReturnType<typeof vi.fn>; hold: ReturnType<typeof vi.spyOn>; defer: ReturnType<typeof vi.spyOn> } {
-    const live = H.getLastSession()!;
-    const adapter = (session as unknown as { adapter: { holdNextAgentEnd: () => void } }).adapter;
-    const checkpoint = (session as unknown as { checkpointService: { deferNextFinalize: () => void } | null }).checkpointService!;
-    return {
-      send: live.sendCustomMessage as ReturnType<typeof vi.fn>,
-      hold: vi.spyOn(adapter, 'holdNextAgentEnd'),
-      defer: vi.spyOn(checkpoint, 'deferNextFinalize'),
-    };
-  }
+  const NUDGE = { type: 'custom_message', customType: 'damocles-plan-mode-nudge', display: false };
 
-  it('plan mode + clean stop + no ExitPlanMode result ⇒ injects hidden nudge once and holds', async () => {
+  it('plan mode + clean stop + no ExitPlanMode result ⇒ returns the hidden nudge draft', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const { send, hold, defer } = spies(session);
 
-    await fireAgentEnd(evt([assistant('stop')]));
+    const draft = await fireBeforeSettle(evt([assistant('stop')]));
 
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]![0]).toMatchObject({ customType: 'damocles-plan-mode-nudge', display: false });
-    expect(send.mock.calls[0]![1]).toMatchObject({ deliverAs: 'followUp', triggerTurn: true });
-    expect(hold).toHaveBeenCalledTimes(1);
-    // The held continuation must defer the checkpoint finalize so the plan turn keeps ONE checkpoint
-    // (no duplicate Rewind rows per nudge round).
-    expect(defer).toHaveBeenCalledTimes(1);
+    expect(draft).toMatchObject(NUDGE);
+    // The draft is committed by the boundary, so no follow-up is queued and nothing re-prompts.
+    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
     await session.dispose();
   });
 
-  it('plan mode + an APPROVED (non-error) ExitPlanMode result ⇒ no inject, no hold', async () => {
+  it('plan mode + an APPROVED (non-error) ExitPlanMode result ⇒ no draft', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const { send, hold, defer } = spies(session);
 
-    await fireAgentEnd(evt([assistant('stop'), exitResult(false)]));
+    expect(await fireBeforeSettle(evt([assistant('stop'), exitResult(false)]))).toBeUndefined();
+    await session.dispose();
+  });
 
-    expect(send).not.toHaveBeenCalled();
-    expect(hold).not.toHaveBeenCalled();
-    expect(defer).not.toHaveBeenCalled();
+  it('an approved ExitPlanMode in an EARLIER turn does not silence the nudge in this one', async () => {
+    // The boundary event carries the whole session projection, not one turn's messages. Scanning all of
+    // it would let a single approved exit disable the funnel for the rest of the session.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const priorTurn = [assistant('stop'), exitResult(false)];
+    const thisTurn = [userMsg(), assistant('stop')];
+    const draft = await fireBeforeSettle({
+      type: 'agent_before_settle',
+      entries: [],
+      continue: false,
+      context: { contextMessages: [userMsg(), ...priorTurn, ...thisTurn] },
+    });
+
+    expect(draft).toMatchObject(NUDGE);
     await session.dispose();
   });
 
@@ -1690,55 +1705,108 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const { send, hold } = spies(session);
 
-    await fireAgentEnd(evt([exitResult(true), assistant('stop')]));
-
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(hold).toHaveBeenCalledTimes(1);
+    expect(await fireBeforeSettle(evt([exitResult(true), assistant('stop')]))).toMatchObject(NUDGE);
     await session.dispose();
   });
 
-  it('not in plan mode ⇒ no inject, no hold', async () => {
-    const session = new PiSession(makeOptions([]));
-    await session.initializeEarly();
-    // default mode (never entered plan)
-    const { send, hold } = spies(session);
-
-    await fireAgentEnd(evt([assistant('stop')]));
-
-    expect(send).not.toHaveBeenCalled();
-    expect(hold).not.toHaveBeenCalled();
-    await session.dispose();
-  });
-
-  // `'pending'` is pi 0.83.0's initial value for a streaming assistant message, resolved before
-  // `agent_end`. The hold gates on an allowlist (`=== 'stop'`), so an unresolved reason cannot nudge —
-  // pinned here so the allowlist is stated rather than assumed by whoever reads the guard next.
-  it.each(['error', 'aborted', 'length', 'pending'])('plan mode + last-assistant stopReason %s ⇒ no inject, no hold', async (reason) => {
+  it('plan mode + clean stop + a queued user message ⇒ no draft', async () => {
+    // The nudge would be appended immediately ahead of the user's own message, so the model would read
+    // "call ExitPlanMode now" just before a human instruction that may want something else.
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const { send, hold } = spies(session);
+    H.getLastSession()!.agent.peekQueuedMessages = () => [{ role: 'user', content: 'actually, do X first' }];
 
-    await fireAgentEnd(evt([assistant(reason)]));
-
-    expect(send).not.toHaveBeenCalled();
-    expect(hold).not.toHaveBeenCalled();
+    expect(await fireBeforeSettle(evt([assistant('stop')]))).toBeUndefined();
     await session.dispose();
   });
 
-  it('_aborting === true ⇒ no inject, no hold', async () => {
+  it('not in plan mode ⇒ no draft', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // default mode (never entered plan)
+
+    expect(await fireBeforeSettle(evt([assistant('stop')]))).toBeUndefined();
+    await session.dispose();
+  });
+
+  // `'pending'` is pi's initial value for a streaming assistant message, resolved before the settle.
+  // The hold gates on an allowlist (`=== 'stop'`), so an unresolved reason cannot nudge — pinned here so
+  // the allowlist is stated rather than assumed by whoever reads the guard next.
+  it.each(['error', 'aborted', 'length', 'pending'])('plan mode + last-assistant stopReason %s ⇒ no draft', async (reason) => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    expect(await fireBeforeSettle(evt([assistant(reason)]))).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('_aborting === true ⇒ no draft', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
     (session as unknown as { _aborting: boolean })._aborting = true;
-    const { send, hold } = spies(session);
 
-    await fireAgentEnd(evt([assistant('stop')]));
+    expect(await fireBeforeSettle(evt([assistant('stop')]))).toBeUndefined();
+    await session.dispose();
+  });
 
-    expect(send).not.toHaveBeenCalled();
-    expect(hold).not.toHaveBeenCalled();
+  it('the first nudge of a turn carries the BASE text', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const draft = (await fireBeforeSettle(evt([assistant('stop')]))) as { content: string };
+
+    expect(draft.content).toBe(PLAN_MODE_NUDGE_TEXT);
+    await session.dispose();
+  });
+
+  it('a turn that already nudged gets the ESCALATED text on the next one', async () => {
+    // The "Holding." loop: the model answers in prose, the funnel re-fires, and repeating the base text
+    // never changes the answer. The escalation is the only convergence pressure, since the funnel is
+    // deliberately uncapped and pi 0.87.0 offers no way to force a tool call at the provider.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const draft = (await fireBeforeSettle(evt([assistant('stop'), nudgeMsg(), assistant('stop')]))) as { content: string };
+
+    expect(draft.content).toBe(PLAN_MODE_NUDGE_ESCALATED_TEXT);
+    await session.dispose();
+  });
+
+  it('a turn that already nudged several times still gets a draft', async () => {
+    // The funnel has no retry cap by design: leaving plan mode is the user's decision, so the nudge
+    // count picks the text and never decides whether a nudge goes out.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const looped = [assistant('stop'), nudgeMsg(), assistant('stop'), nudgeMsg(), assistant('stop'), nudgeMsg(), assistant('stop')];
+    const draft = (await fireBeforeSettle(evt(looped))) as { content: string };
+
+    expect(draft).toMatchObject(NUDGE);
+    expect(draft.content).toBe(PLAN_MODE_NUDGE_ESCALATED_TEXT);
+    await session.dispose();
+  });
+
+  it('a new turn after a nudged turn starts again at the BASE text', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const priorTurn = [assistant('stop'), nudgeMsg(), assistant('stop')];
+    const draft = (await fireBeforeSettle({
+      type: 'agent_before_settle',
+      entries: [],
+      continue: false,
+      context: { contextMessages: [userMsg(), ...priorTurn, userMsg(), assistant('stop')] },
+    })) as { content: string };
+
+    expect(draft.content).toBe(PLAN_MODE_NUDGE_TEXT);
     await session.dispose();
   });
 
@@ -1746,15 +1814,12 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const { send, hold } = spies(session);
 
     // A prose "what should I do?" stop is still a clean stop with no ExitPlanMode — intended: redirect
     // the model to AskUserQuestion via the nudge rather than letting it stall on an unanswerable prose Q.
     const proseQuestion = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Which database should I use?' }] };
-    await fireAgentEnd(evt([proseQuestion]));
 
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(hold).toHaveBeenCalledTimes(1);
+    expect(await fireBeforeSettle(evt([proseQuestion]))).toMatchObject(NUDGE);
     await session.dispose();
   });
 
@@ -1770,15 +1835,30 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     mgr.waitForBackground = vi.fn(async () => undefined);
     mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
 
-    const { send, hold, defer } = spies(session);
-    await fireAgentEnd(evt([assistant('stop')]));
+    const draft = await fireBeforeSettle(evt([assistant('stop')]));
 
-    // Exactly one inject (the background results), with the background custom type — NOT the plan nudge.
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]![0]).toMatchObject({ customType: 'damocles-subagent-results' });
-    expect(hold).toHaveBeenCalledTimes(1);
-    // The background keep-alive also defers the checkpoint finalize (its synthesis round is the same turn).
-    expect(defer).toHaveBeenCalledTimes(1);
+    // Exactly one draft, carrying the background results — NOT the plan nudge.
+    expect(draft).toMatchObject({ type: 'custom_message', customType: 'damocles-subagent-results', display: false });
+    await session.dispose();
+  });
+
+  it('the settle after the continuation drains the background and lets the plan-mode hold through', async () => {
+    // pi re-enters the boundary after each continuation, so precedence needs no state of its own.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    let pending = true;
+    const mgr = (session as unknown as { subagentManager: unknown }).subagentManager as Record<string, unknown>;
+    mgr.hasUnconsumedBackground = vi.fn(() => pending);
+    mgr.waitForBackground = vi.fn(async () => undefined);
+    mgr.takeCompletedBackgroundResults = vi.fn(() => { pending = false; return [{ type: 'Explore', description: 'd', result: 'r' }]; });
+
+    const first = await fireBeforeSettle(evt([assistant('stop')]));
+    expect(first).toMatchObject({ customType: 'damocles-subagent-results' });
+
+    const second = await fireBeforeSettle(evt([assistant('stop')]));
+    expect(second).toMatchObject({ customType: 'damocles-plan-mode-nudge' });
     await session.dispose();
   });
 });
@@ -3426,32 +3506,51 @@ describe('PiSession graceful budget stop (US-008)', () => {
     H.seq.length = 0;
     H.captured.services.length = 0;
     H.resetServices();
+    H.setSessionSetup(null);
   });
   afterEach(async () => {
+    H.setSessionSetup(null);
     await PiRuntime.disposeInstance();
     vi.restoreAllMocks();
   });
 
-  type AgentEndEvt = { type: 'agent_end'; messages: unknown[] };
+  type SettleEvt = { type: 'agent_before_settle'; entries: unknown[]; continue: boolean; context: { contextMessages: unknown[] } };
   type Priv = {
     processingFlag: boolean;
     _budgetStopRequested: boolean;
     stopForBudget: () => void;
-    tryBackgroundKeepAlive: () => Promise<boolean>;
-    tryPlanModeHold: (event: AgentEndEvt) => Promise<void>;
+    tryBackgroundKeepAlive: () => Promise<unknown>;
+    tryPlanModeHold: (event: SettleEvt) => unknown;
     adapter: { endTurnWithoutAgentRun: () => void; markAborted: () => void; addExternalCost: (deltaUsd: number) => void };
     subagentManager: Record<string, unknown>;
   };
   const priv = (s: PiSession): Priv => s as unknown as Priv;
-  const cleanStop: AgentEndEvt = {
-    type: 'agent_end',
-    messages: [{ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'p' }] }],
+  const cleanStop: SettleEvt = {
+    type: 'agent_before_settle',
+    entries: [],
+    continue: false,
+    context: {
+      contextMessages: [
+        { role: 'user', content: [{ type: 'text', text: 'go' }] },
+        { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'p' }] },
+      ],
+    },
   };
 
   /** Cross the hard limit mid-turn exactly as the adapter's `onBudgetStop` dep does. */
   function budgetStop(session: PiSession): void {
     priv(session).processingFlag = true;
     priv(session).stopForBudget();
+  }
+
+  type FakeAgent = { finishTurn?: FinishTurn };
+
+  /** pi's completed-turn context. The budget decider reads none of it, so an empty one is enough. */
+  const anyTurn = {} as AgentTurnContext;
+
+  /** One model round-trip boundary, the only state pi consults the installed deciders in. */
+  async function decideTurn(agent: FakeAgent): Promise<AgentTurnDecision | undefined> {
+    return (await agent.finishTurn?.(anyTurn)) as AgentTurnDecision | undefined;
   }
 
   /** Arm dollar enforcement: a `maxBudgetUsd` setting AND a dollar-metered credential (the gate is a
@@ -3464,30 +3563,30 @@ describe('PiSession graceful budget stop (US-008)', () => {
     })) as unknown as typeof vscode.workspace.getConfiguration);
   }
 
-  /** Drive `onParentAgentEnd` through the registered panel context (the real dispatch path). */
-  async function fireAgentEnd(event: AgentEndEvt): Promise<void> {
+  /** Drive `onBeforeSettle` through the registered panel context (the real dispatch path). */
+  async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
     const live = H.getLastSession()!;
     const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
-      _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
+      _panelRegistry: Map<string, { onBeforeSettle?: (e: SettleEvt) => Promise<unknown> }>;
     })._panelRegistry.get(live.sessionId as string)!;
-    await panel.onAgentEnd!(event);
+    return panel.onBeforeSettle!(event);
   }
 
-  it('a budget stop makes shouldStopAfterTurn return true and does NOT abort the agent', async () => {
+  it('a budget stop makes the turn decider answer end and does NOT abort the agent', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const live = H.getLastSession()!;
     const markAborted = vi.spyOn(priv(session).adapter, 'markAborted');
 
-    // Installed at bind time, and false while under budget.
-    expect(typeof live.agent.shouldStopAfterTurn).toBe('function');
-    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+    // Installed at bind time, and silent while under budget.
+    expect(typeof live.agent.finishTurn).toBe('function');
+    expect(await decideTurn(live.agent)).toBeUndefined();
 
     budgetStop(session);
 
-    // The predicate reads the field live — pi snapshots the FUNCTION at run start, then calls it once
+    // The decider reads the field live — pi snapshots the FUNCTION at run start, then calls it once
     // per model round-trip, so a boolean captured into the closure would freeze at the run's value.
-    expect(live.agent.shouldStopAfterTurn!()).toBe(true);
+    expect(await decideTurn(live.agent)).toEqual({ action: 'end' });
     // Graceful: the in-flight assistant message and its tool results must finish, so nothing tears
     // the stream and no sessionCancelled is emitted.
     expect(live.abort).not.toHaveBeenCalled();
@@ -3522,21 +3621,19 @@ describe('PiSession graceful budget stop (US-008)', () => {
   // Sites 2-4 are driven directly: the coordinator's own check (site 1) would otherwise mask them, so
   // a regression in any one of the three would hide behind a passing coordinator test.
 
-  it('turn-hold site 1/4: onParentAgentEnd declines to extend a budget-stopped turn', async () => {
+  it('turn-hold site 1/4: onBeforeSettle declines to extend a budget-stopped turn', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
-    const live = H.getLastSession()!;
-    // Assert the coordinator's OWN check, not just the absence of an inject: the two downstream holds
+    // Assert the coordinator's OWN check, not just the absence of a draft: the two downstream holds
     // bail on a budget stop themselves, so they would mask a regression here. A held parent turn that
     // resumes spends again, so the coordinator must not even reach them.
-    const keepAlive = vi.spyOn(session as unknown as { tryBackgroundKeepAlive: () => Promise<boolean> }, 'tryBackgroundKeepAlive');
+    const keepAlive = vi.spyOn(session as unknown as { tryBackgroundKeepAlive: () => Promise<unknown> }, 'tryBackgroundKeepAlive');
     budgetStop(session);
 
-    await fireAgentEnd(cleanStop);
+    expect(await fireBeforeSettle(cleanStop)).toBeUndefined();
 
     expect(keepAlive).not.toHaveBeenCalled();
-    expect(live.sendCustomMessage).not.toHaveBeenCalled();
     await session.dispose();
   });
 
@@ -3549,11 +3646,10 @@ describe('PiSession graceful budget stop (US-008)', () => {
     mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
     budgetStop(session);
 
-    expect(await priv(session).tryBackgroundKeepAlive()).toBe(false);
+    expect(await priv(session).tryBackgroundKeepAlive()).toBeUndefined();
 
-    // Bailed at the entry check — it never looked for pending work, so no synthesis round is injected.
+    // Bailed at the entry check — it never looked for pending work, so no continuation is requested.
     expect(mgr.hasUnconsumedBackground).not.toHaveBeenCalled();
-    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
     await session.dispose();
   });
 
@@ -3567,10 +3663,24 @@ describe('PiSession graceful budget stop (US-008)', () => {
     mgr.waitForBackground = vi.fn(async () => { budgetStop(session); });
     mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
 
-    expect(await priv(session).tryBackgroundKeepAlive()).toBe(false);
+    expect(await priv(session).tryBackgroundKeepAlive()).toBeUndefined();
 
     expect(mgr.waitForBackground).toHaveBeenCalledTimes(1);
-    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('queueInput refuses a steer once the budget stop is pending, even while the run is still streaming', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    live.isStreaming = true;
+    expect(session.queueInput('before the limit', 'q1')).toBe('queued');
+
+    budgetStop(session);
+
+    // pi's settle boundary continues the run on a non-empty queue whatever the decider answered, so an
+    // accepted steer here is one more billed round trip past a limit the user set as hard.
+    expect(session.queueInput('after the limit', 'q2')).toBe(false);
     await session.dispose();
   });
 
@@ -3580,9 +3690,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.setPermissionMode('plan');
     budgetStop(session);
 
-    await priv(session).tryPlanModeHold(cleanStop);
-
-    expect(H.getLastSession()!.sendCustomMessage).not.toHaveBeenCalled();
+    expect(priv(session).tryPlanModeHold(cleanStop)).toBeUndefined();
     await session.dispose();
   });
 
@@ -3638,29 +3746,92 @@ describe('PiSession graceful budget stop (US-008)', () => {
     live.prompt = vi.fn(async () => { budgetStop(session); });
     await session.sendMessage('again', undefined, 'c2', { content: 'again' });
     expect(priv(session)._budgetStopRequested).toBe(false);
-    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+    expect(await decideTurn(live.agent)).toBeUndefined();
     await session.dispose();
   });
 
-  it('re-installs shouldStopAfterTurn on the NEW Agent after a session replacement (/clear), not left stuck', async () => {
+  it('re-installs the turn decider on the NEW Agent after a session replacement (/clear), not left stuck', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const first = H.getLastSession()!;
     budgetStop(session);
-    expect(first.agent.shouldStopAfterTurn!()).toBe(true);
+    expect(await decideTurn(first.agent)).toEqual({ action: 'end' });
 
     session.reset(); // -> runtime.newSession() -> setRebindSession -> bindSession
     await new Promise((r) => setTimeout(r, 0));
 
     const replacement = H.getLastSession()!;
     expect(replacement).not.toBe(first);
-    // A replacement session brings a NEW Agent, so the predicate must be installed again per bind.
-    expect(typeof replacement.agent.shouldStopAfterTurn).toBe('function');
+    // A replacement session brings a NEW Agent, so the decider must be installed again per bind.
+    expect(typeof replacement.agent.finishTurn).toBe('function');
     // reset() clears the flag, so the new Agent is not born already refusing to run — the next send is
     // NOT what clears it. `resteerQueuedInputs` and `sendCustomMessage(triggerTurn:true)` start work
     // outside sendMessage's try/finally, so a flag left set here truncates whichever runs first.
     expect(priv(session)._budgetStopRequested).toBe(false);
-    expect(replacement.agent.shouldStopAfterTurn!()).toBe(false);
+    expect(await decideTurn(replacement.agent)).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('keeps the hook pi already installed, and adds one wrapper however many deciders and rebinds there are', async () => {
+    // pi's AgentSession dispatches every extension `turn_end` through `agent.finishTurn`, so a decider
+    // that replaced the field instead of deferring to it would silently drop the checkpoint handler.
+    let priorCalls = 0;
+    let priorDecision: AgentTurnDecision | undefined = { action: 'continue' };
+    H.setSessionSetup((s) => {
+      s.agent.finishTurn = (): AgentTurnDecision | undefined => { priorCalls++; return priorDecision; };
+    });
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+
+    expect(await decideTurn(live.agent)).toEqual({ action: 'continue' });
+    expect(priorCalls).toBe(1);
+
+    budgetStop(session);
+    expect(await decideTurn(live.agent)).toEqual({ action: 'end' });
+    expect(priorCalls).toBe(2);
+
+    // A second decider plus a rebind: one wrapper, so the prior hook still runs once per turn rather
+    // than once per layer, and each decider is still consulted. The rebind goes through a replacement
+    // session, the only shape pi ever rebinds with, so this agent's wrapper must survive untouched.
+    priv(session)._budgetStopRequested = false;
+    const wrapper = live.agent.finishTurn;
+    let teamCalls = 0;
+    installTurnDecider(live.agent as unknown as Agent, TEAM_TERMINAL_HOOK, () => { teamCalls++; return undefined; });
+    session.reset();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(H.getLastSession()!).not.toBe(live);
+    expect(live.agent.finishTurn).toBe(wrapper);
+    priorCalls = 0;
+    priorDecision = undefined;
+
+    expect(await decideTurn(live.agent)).toBeUndefined();
+    expect(priorCalls).toBe(1);
+    expect(teamCalls).toBe(1);
+
+    budgetStop(session);
+    expect(await decideTurn(live.agent)).toEqual({ action: 'end' });
+    expect(priorCalls).toBe(2);
+    expect(teamCalls).toBe(2);
+    await session.dispose();
+  });
+
+  it('a throwing decider holds no opinion, leaving the other decider and pi\'s own hook intact', async () => {
+    // pi awaits `finishTurn` unguarded, so an escaping throw makes it replace the completed turn's
+    // outcome with a synthetic error and re-emit turn_end: the checkpoint handler runs twice and the
+    // user sees an error card for a turn that finished.
+    let priorCalls = 0;
+    H.setSessionSetup((s) => {
+      s.agent.finishTurn = (): AgentTurnDecision | undefined => { priorCalls++; return undefined; };
+    });
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    installTurnDecider(live.agent as unknown as Agent, TEAM_TERMINAL_HOOK, () => { throw new Error('decider exploded'); });
+    budgetStop(session);
+
+    expect(await decideTurn(live.agent)).toEqual({ action: 'end' });
+    expect(priorCalls).toBe(1);
     await session.dispose();
   });
 
@@ -3673,7 +3844,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.interrupt();
 
     expect(priv(session)._budgetStopRequested).toBe(false);
-    expect(live.agent.shouldStopAfterTurn!()).toBe(false);
+    expect(await decideTurn(live.agent)).toBeUndefined();
     await session.dispose();
   });
 

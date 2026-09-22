@@ -81,6 +81,7 @@ function computeClosure() {
   const visited = new Set();
   const optional = optionalShipRoots();
   const requirers = new Map(); // top-level package -> the shipped packages that declare it
+  const esbuildDependents = new Set();
 
   function walk(dir) {
     if (visited.has(dir)) return;
@@ -90,6 +91,7 @@ function computeClosure() {
     // Include peerDependencies: when actually installed (resolveDep gates on existence), a peer the
     // package require()s at runtime must ship too. Uninstalled peers (host-provided) resolve to null.
     const deps = { ...(json.dependencies || {}), ...(json.optionalDependencies || {}), ...(json.peerDependencies || {}) };
+    if (Object.hasOwn(deps, 'esbuild')) esbuildDependents.add(json.name);
     for (const dep of Object.keys(deps)) {
       const resolved = resolveDep(dir, dep);
       if (!resolved) continue; // optional/peer dep not installed (other platform / host-provided) — nothing to ship
@@ -117,7 +119,21 @@ function computeClosure() {
     walk(dir);
   }
   assertNoDevOnlyPackages(topLevel, requirers);
+  assertEsbuildDependentsReviewed(esbuildDependents);
   return [...topLevel].sort();
+}
+
+/** Fail loudly when a package outside the reviewed set brings esbuild into the ship closure. */
+function assertEsbuildDependentsReviewed(dependents) {
+  const unreviewed = [...dependents].filter((name) => !ESBUILD_DEPENDENTS_REVIEWED.has(name)).sort();
+  if (unreviewed.length) {
+    throw new Error(
+      `Shipped package(s) newly depending on esbuild: ${unreviewed.join(', ')}. ` +
+      `EXCLUDED_NESTED_DEPS keeps esbuild out of the VSIX on the grounds that only chord's unreachable ` +
+      `./bundler export used it. Re-check whether the new dependent can reach esbuild at runtime, then ` +
+      `either add it to ESBUILD_DEPENDENTS_REVIEWED or stop excluding esbuild.`,
+    );
+  }
 }
 
 /**
@@ -238,7 +254,7 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-tui',
         '@earendil-works/chord',
         // Not in the current closure. pi-coding-agent pulled pi-server (and pi-protocol under it) in
-        // 0.85.0 and stopped importing it in 0.86.1, so a later pi release can pull them back.
+        // 0.85.0 and declares neither at 0.87.0, so a later pi release can pull them back.
         '@earendil-works/pi-protocol',
         '@earendil-works/pi-server',
         'openai',
@@ -271,9 +287,6 @@ const DROP_EXTS = new Set([
   // web UIs (lib/vite/**) — served only by `show-trace`/`codegen`, which we never invoke; the
   // browser-launch driver (channel:'chrome' → open/navigate/screenshot) never loads them.
   'license', 'ttf', 'webmanifest',
-  // A narrowed package's .exe passes assertReviewed and is never negated, so a runtime-needed one would
-  // silently not ship; add such a binary to RUNTIME_KEEP_EXTS or a narrow allowlist instead.
-  'exe',
 ]);
 
 /**
@@ -292,6 +305,29 @@ const NARROW_DROP_DIRS = {
   '@earendil-works/pi-coding-agent': new Set(['docs', 'examples']),
 };
 
+/**
+ * Nested dependency directories a narrowed package must never re-include.
+ *
+ * esbuild enters the closure only through `@earendil-works/chord`, which declares it for its
+ * `./bundler` export. `dist/node/bundle.js` holds the sole `import { build } from "esbuild"` in any
+ * shipped package, and it is reachable only from `./bundler` and `dist/node/package.js`. pi imports
+ * chord's `.`, `./context` and `./delta` entrypoints only, none of which reach it, and pi loads
+ * extensions through jiti rather than chord's bundler, so no shipped code path can call esbuild.
+ * It cost 40 MB across 42 files, 40 MB of that Android/OpenHarmony `.wasm` builds that cannot run on
+ * any target in scripts/release-targets.mjs, with no host binary shipping at all.
+ *
+ * Targeted at esbuild rather than at `.wasm`, because `photon_rs_bg.wasm` and `web-tree-sitter` are
+ * real runtime wasm that must keep shipping.
+ */
+const EXCLUDED_NESTED_DEPS = new Set(['@esbuild', 'esbuild']);
+
+/**
+ * Packages allowed to declare esbuild while EXCLUDED_NESTED_DEPS keeps it out of the VSIX. A dependent
+ * outside this set means something new pulled esbuild in, so the reachability argument above has to be
+ * re-checked before the exclusion can stand.
+ */
+const ESBUILD_DEPENDENTS_REVIEWED = new Set(['@earendil-works/chord']);
+
 /** Extensionless files that are safe to drop from a narrowed package (license/ownership/build/CLI-shim). */
 const DROP_BASENAMES = new Set([
   'LICENSE', 'license', 'License', 'LICENSE-MIT', 'CODEOWNERS', 'Makefile',
@@ -300,18 +336,22 @@ const DROP_BASENAMES = new Set([
   // Patchright: Linux `xdg-open` shell shim (patchright-core/lib/xdg-open) — spawned only to open a URL
   // in the OS default app (openExternal / trace report), never on the browser-launch path. Dead weight.
   'xdg-open',
-  // esbuild's extensionless POSIX binaries and .bin shim pass assertReviewed inside a narrowed package.
+  // `node_modules/.bin/esbuild` shim. The esbuild package itself is dropped via EXCLUDED_NESTED_DEPS,
+  // but `.bin` is not a dependency directory and is still walked.
   'esbuild',
 ]);
 
-/** Recursively list file basenames under a directory (skips traversal errors). */
-function listFiles(dir, acc = []) {
+/** Recursively list file basenames under a directory, skipping excluded nested deps (and traversal errors). */
+function listFiles(dir, acc = [], inNodeModules = false) {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
   for (const e of entries) {
     const full = join(dir, e.name);
-    if (e.isDirectory()) listFiles(full, acc);
-    else acc.push(e.name);
+    if (e.isDirectory()) {
+      // Excluded deps never ship, so their file types need no review and must not force a DROP_EXTS entry.
+      if (inNodeModules && EXCLUDED_NESTED_DEPS.has(e.name)) continue;
+      listFiles(full, acc, e.name === 'node_modules');
+    } else acc.push(e.name);
   }
   return acc;
 }
@@ -342,10 +382,24 @@ function assertReviewed(pkgName, dir) {
   }
 }
 
+/**
+ * The re-include base for one top-level dir of a narrowed package. A nested `node_modules` is emitted as
+ * an extglob so the excluded deps are never negated: vsce keeps a file when no ignore matches OR any
+ * negate matches (out/package.js), so routing around them here is the only way to drop them.
+ */
+function prefixBase(pkgName, prefix) {
+  if (prefix !== 'node_modules') return prefix ? `${pkgName}/${prefix}` : pkgName;
+  return `${pkgName}/node_modules/!(${[...EXCLUDED_NESTED_DEPS].sort().join('|')})`;
+}
+
 /** The runtime keep-extension globs for a narrowed package — only for extensions actually present. */
 function runtimeKeepPatterns(pkgName, dir) {
   assertReviewed(pkgName, dir);
-  const dropDirs = NARROW_DROP_DIRS[pkgName];
+  const dropDirs = NARROW_DROP_DIRS[pkgName] || new Set();
+  // A nested excluded dep forces the same per-top-level-dir scoping the dead doc/example dirs use, so the
+  // package's globs can route around `node_modules` instead of spanning it with a single `**`.
+  const nestsExcluded = [...EXCLUDED_NESTED_DEPS].some((d) => existsSync(join(dir, 'node_modules', d)));
+  const perDir = dropDirs.size > 0 || nestsExcluded;
 
   // Collect the keep-extensions actually present, per top-level dir (so a package with dead doc/example
   // dirs can scope its globs to just the runtime dirs). `roots` keys: '' = package root files, else the
@@ -364,11 +418,20 @@ function runtimeKeepPatterns(pkgName, dir) {
       roots.get(prefix).add(ext);
     }
   }
-  if (dropDirs) {
+  if (perDir) {
     // Scan each top-level entry under its own prefix; skip the dead doc/example dirs entirely.
     for (const top of readdirSync(dir, { withFileTypes: true })) {
       if (top.isDirectory()) {
         if (dropDirs.has(top.name)) continue;
+        if (top.name === 'node_modules') {
+          // Scan the nested deps one by one so an extension present only inside an excluded dep never
+          // produces a glob, which would otherwise re-include nothing and merely cost a pattern.
+          for (const dep of readdirSync(join(dir, 'node_modules'), { withFileTypes: true })) {
+            if (!dep.isDirectory() || EXCLUDED_NESTED_DEPS.has(dep.name)) continue;
+            scan(join(dir, 'node_modules', dep.name), 'node_modules');
+          }
+          continue;
+        }
         scan(join(dir, top.name), top.name);
       } else {
         const dot = top.name.lastIndexOf('.');
@@ -385,12 +448,12 @@ function runtimeKeepPatterns(pkgName, dir) {
   const globs = [];
   for (const [prefix, exts] of roots) {
     // prefix '' = package-root files: match a single level (`pkg/*.ext`) so the recursive `**` can't
-    // pull keep-ext assets back out of a dropped docs/examples dir. A non-drop-dir package keeps the
+    // pull keep-ext assets back out of a dropped dir. A package needing no per-dir scoping keeps the
     // cheaper whole-tree `pkg/**/*.ext` form (its '' prefix came from scan(dir,'') over the whole tree).
-    if (prefix === '' && dropDirs) {
+    if (prefix === '' && perDir) {
       for (const ext of [...exts].sort()) globs.push(`${pkgName}/*.${ext}`);
     } else {
-      const base = prefix ? `${pkgName}/${prefix}` : pkgName;
+      const base = prefixBase(pkgName, prefix);
       for (const ext of [...exts].sort()) globs.push(`${base}/**/*.${ext}`);
     }
   }

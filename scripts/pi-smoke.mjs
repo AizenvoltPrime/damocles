@@ -4,7 +4,9 @@
 //   B2 — every pi subpath the extension (and pi's own loader) resolves must be reachable from
 //        the installed node_modules, including the `@earendil-works/pi-ai/oauth` subpath.
 //   B3 — a Damocles-owned agent dir seeded with `compaction.enabled=false` must yield a session
-//        whose auto-compaction is OFF, both from the seed and after the runtime toggle.
+//        whose auto-compaction is OFF, both from the seed and after the runtime toggle. B3 also pins
+//        the three live-session surfaces the extension installs onto or reads off, since a rename in
+//        pi clears the typecheck and surfaces nowhere else.
 //
 // Exits non-zero on any failure.
 
@@ -111,6 +113,14 @@ if (pi) {
     assert(session.autoCompactionEnabled === false, 'session.autoCompactionEnabled === false (from seed)');
     session.setAutoCompactionEnabled(false);
     assert(session.autoCompactionEnabled === false, 'session.autoCompactionEnabled === false (after toggle)');
+
+    // The three runtime surfaces the extension installs onto or reads off a live session. A rename in
+    // pi passes the typecheck (the Agent field is optional) and shows up only here.
+    // Must be callable, not merely present: `installTurnDecider` captures it as the prior hook, so pi
+    // dropping its constructor-time install would silently unhook checkpointing.
+    assert(typeof session.agent.finishTurn === 'function', 'session.agent.finishTurn is a function');
+    assert(typeof session.agent.peekQueuedMessages === 'function', 'session.agent.peekQueuedMessages is a function');
+    assert(typeof sessionManager.appendContextEdit === 'function', 'sessionManager.appendContextEdit is a function');
     session.dispose();
   } catch (err) {
     bad(`B3 integration — ${err?.stack ?? err}`);

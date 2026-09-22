@@ -5,6 +5,7 @@ import type { AgentRunConfig, AgentResult } from './types';
 import type { TeamAgentContentBlock } from '../../shared/types/team';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
+import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../pi-session/finish-turn';
 import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
 import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
@@ -59,19 +60,20 @@ export class AgentRunner {
     }
 
     // A terminal tool only takes effect if the turn ends, and the model keeps working after calling one
-    // unless the engine ends the turn. Chained, because a session may already carry a stop hook.
-    const priorShouldStop = session.agent.shouldStopAfterTurn;
-    session.agent.shouldStopAfterTurn = async (stopContext, signal): Promise<boolean> => {
-      if (await priorShouldStop?.(stopContext, signal)) return true;
-      // pi drains its steering queue only after this check, so stopping now would strand a queued message.
-      if (session.pendingMessageCount > 0) return false;
+    // unless the engine ends the turn.
+    installTurnDecider(session.agent, TEAM_TERMINAL_HOOK, (turn) => {
+      // Reads the agent's own queue, not `session.pendingMessageCount`: that counts a mirror which
+      // `sendCustomMessage` bypasses, so a queued follow-up reads as zero there. Ending on a stale count
+      // costs an extra continuation request, since pi continues on `hasQueuedMessages()` regardless.
+      if (session.agent.peekQueuedMessages().length > 0) return undefined;
       // Keyed on the result, not the call: both tools throw for a lead and for a non-running specialist,
       // and the agent needs that same turn to react to the error.
       const terminalCallIds = new Set(
-        stopContext.message.content.flatMap((b) => (b.type === 'toolCall' && TURN_ENDING_TOOLS.has(b.name) ? [b.id] : [])),
+        turn.message.content.flatMap((b) => (b.type === 'toolCall' && TURN_ENDING_TOOLS.has(b.name) ? [b.id] : [])),
       );
-      return stopContext.toolResults.some((r) => terminalCallIds.has(r.toolCallId) && !r.isError);
-    };
+      const parked = turn.toolResults.some((r) => terminalCallIds.has(r.toolCallId) && !r.isError);
+      return parked ? { action: 'end' } : undefined;
+    });
 
     return this.runAgent(config, session, startTime);
   }
@@ -196,8 +198,8 @@ export class AgentRunner {
       // Event-driven wait/re-prompt loop — no timers. After each turn: flush any pending messages and
       // re-prompt; else, if the agent must keep waiting, idle until a message arrives or it must abort.
       while (!config.abortSignal.aborted) {
-        // pi runs the stop hook before draining its queue, so a message steered in that window stays
-        // undelivered. It is already echoed to the overlay, hence `echoed: true`.
+        // Reclaims a message pi never delivered because the run ended on an abort or a provider error,
+        // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
         if (session.pendingMessageCount > 0) {
           const queued = session.clearQueue();
           for (const text of [...queued.steering, ...queued.followUp]) {

@@ -38,9 +38,8 @@ function pushHandler(
 
 /**
  * A pi stub that records EVERY handler per event in registration order and emits them sequentially —
- * mirroring the real `ExtensionRunner.emit` (await each handler in order). Needed for the agent_end
- * ordering test, where two handlers (keep-alive then checkpoint) are registered for the same event and
- * the order is load-bearing. `appendEntry` is a no-op sink for the checkpoint hook's persistence call.
+ * mirroring the real `ExtensionRunner.emit` (await each handler in order). `appendEntry` is a no-op
+ * sink for the checkpoint hook's persistence call.
  */
 function fakePiMulti(): { pi: unknown; emit: (event: string, e: unknown, ctx: unknown) => Promise<void> } {
   const ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>> = {};
@@ -206,9 +205,9 @@ describe('cache_warming_decision (budget + disposal policy)', () => {
   });
 });
 
-describe('agent_end hook ordering (held-continuation dedup invariant)', () => {
+describe('agent_before_settle continuation and agent_settled finalize', () => {
   /** Build a CheckpointService with a producer bound to a stub repo and an in-flight turn for `u1`, so
-   *  the next `onAgentEnd` would finalize a checkpoint unless a hold deferred it. */
+   *  the next `onSettled` finalizes a checkpoint. */
   async function serviceWithPendingTurn(ready: string[]): Promise<{ service: CheckpointService; sm: CheckpointTreeReader }> {
     const service = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
     let seq = 0;
@@ -241,92 +240,174 @@ describe('agent_end hook ordering (held-continuation dedup invariant)', () => {
     return { service, sm };
   }
 
-  /**
-   * The load-bearing invariant: the keep-alive `agent_end` hook is registered BEFORE the checkpoint
-   * `agent_end` hook, so a `deferNextFinalize()` set during the hold is consumed by the checkpoint hook
-   * in the SAME emit. A real emit through the factory (both hooks present) must finalize ZERO checkpoints
-   * when the keep-alive hold defers. Swapping the two `pi.on('agent_end')` blocks would finalize before
-   * the defer lands and break dedup — this test fails loudly if that ordering ever regresses.
-   */
-  it('keep-alive hook runs before the checkpoint hook, so a held turn defers finalize in the same emit', async () => {
+  const draft = { type: 'custom_message', customType: 'damocles-plan-mode-nudge', content: 'nudge', display: false };
+  const settleEvent = (entries: unknown[]): unknown => ({ type: 'agent_before_settle', entries, continue: false });
+
+  it('merges the panel draft onto the running accumulator and asks for one more request', async () => {
+    const holdPanel = { ...panel('allow'), onBeforeSettle: vi.fn(async () => draft) } as unknown as PanelGateContext;
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(holdPanel), noCheckpoints())(fakePi(handlers) as never);
+
+    const prior = { type: 'context_edit', targetId: 'e1', replacement: { content: [] } };
+    const result = await handler(handlers, 'agent_before_settle')(settleEvent([prior]), ctxFor('S'));
+
+    // The spread is the protocol: pi replaces the accumulator wholesale, so a bare `[draft]` would
+    // discard the image-pruning drafts an earlier handler already contributed.
+    expect(result).toEqual({ entries: [prior, draft], continue: true });
+  });
+
+  it('leaves the accumulator alone when the panel returns no draft', async () => {
+    const idlePanel = { ...panel('allow'), onBeforeSettle: vi.fn(async () => undefined) } as unknown as PanelGateContext;
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(idlePanel), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'agent_before_settle')(settleEvent([]), ctxFor('S'))).toBeUndefined();
+  });
+
+  it('fails soft when the panel handler throws, so the boundary keeps every other draft', async () => {
+    const angryPanel = {
+      ...panel('allow'),
+      onBeforeSettle: vi.fn(async () => { throw new Error('hold exploded'); }),
+    } as unknown as PanelGateContext;
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory(readerOf(angryPanel), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'agent_before_settle')(settleEvent([]), ctxFor('S'))).toBeUndefined();
+  });
+
+  it('routes by session id, so another panel\'s settle never reaches this one', async () => {
+    const holdPanel = { ...panel('allow'), onBeforeSettle: vi.fn(async () => draft) } as unknown as PanelGateContext;
+    const handlers: Handlers = {};
+    const registry: PanelRegistryReader = { get: (id) => (id === 'S' ? holdPanel : undefined), values: () => [holdPanel] };
+    createDamoclesExtensionFactory(registry, noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'agent_before_settle')(settleEvent([]), ctxFor('other'))).toBeUndefined();
+    expect(holdPanel.onBeforeSettle).not.toHaveBeenCalled();
+  });
+
+  it('finalizes exactly one checkpoint per settle', async () => {
     const ready: string[] = [];
     const { service, sm } = await serviceWithPendingTurn(ready);
 
-    // A panel whose onAgentEnd holds the turn ONCE (as tryBackgroundKeepAlive / tryPlanModeHold do for a
-    // single continuation round) by deferring the checkpoint finalize for that agent_end, then lets the
-    // next agent_end settle normally.
-    let holds = 1;
-    const heldPanel = {
-      ...panel('allow'),
-      onAgentEnd: vi.fn(async () => { if (holds-- > 0) service.deferNextFinalize(); }),
-    } as unknown as PanelGateContext;
-
     const { pi, emit } = fakePiMulti();
-    createDamoclesExtensionFactory(
-      readerOf(heldPanel),
-      { get: () => service },
-    )(pi as never);
+    createDamoclesExtensionFactory(readerOf(panel('allow')), { get: () => service })(pi as never);
 
-    const ctx = { sessionManager: sm, signal: undefined };
-    await emit('agent_end', { type: 'agent_end', messages: [] }, ctx);
+    await emit('agent_settled', { type: 'agent_settled' }, { sessionManager: sm, signal: undefined });
 
-    // The held continuation deferred finalize → no checkpoint minted this emit.
-    expect(ready).toEqual([]);
-    expect(heldPanel.onAgentEnd).toHaveBeenCalledTimes(1);
-
-    // The real end of the turn (no hold) finalizes exactly one checkpoint for u1.
-    await emit('agent_end', { type: 'agent_end', messages: [] }, ctx);
     expect(ready).toEqual(['u1']);
   });
 
-  it('without a hold, the checkpoint hook finalizes normally on agent_end', async () => {
+  it('never finalizes on agent_end, so a continuation round cannot mint a second checkpoint', async () => {
     const ready: string[] = [];
     const { service, sm } = await serviceWithPendingTurn(ready);
 
-    // A panel that does not hold the turn (onAgentEnd is a no-op).
-    const idlePanel = { ...panel('allow'), onAgentEnd: vi.fn(async () => undefined) } as unknown as PanelGateContext;
-
     const { pi, emit } = fakePiMulti();
-    createDamoclesExtensionFactory(
-      readerOf(idlePanel),
-      { get: () => service },
-    )(pi as never);
+    createDamoclesExtensionFactory(readerOf(panel('allow')), { get: () => service })(pi as never);
 
+    // Two run segments for one logical turn: the continuation's agent_end must mint nothing.
     await emit('agent_end', { type: 'agent_end', messages: [] }, { sessionManager: sm, signal: undefined });
+    await emit('agent_end', { type: 'agent_end', messages: [] }, { sessionManager: sm, signal: undefined });
+    expect(ready).toEqual([]);
+
+    await emit('agent_settled', { type: 'agent_settled' }, { sessionManager: sm, signal: undefined });
     expect(ready).toEqual(['u1']);
   });
 });
 
 describe('context image pruning registration', () => {
-  const imageHeavy = (count: number) =>
+  /** Records every handler per event in registration order, as the real runner dispatches them. */
+  function fakePiOrdered(): { pi: unknown; handlersFor: (event: string) => Array<(e: unknown, c: unknown) => unknown> } {
+    const ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>> = {};
+    const pi = { on: (event: string, h: (e: unknown, c: unknown) => unknown) => pushHandler(ordered, event, h) };
+    return { pi, handlersFor: (event) => ordered[event] ?? [] };
+  }
+
+  /** One projected tool-result entry per screenshot, as `turn_end` hands them over. */
+  const projected = (count: number) =>
     Array.from({ length: count }, (_, i) => ({
-      role: 'toolResult' as const,
-      toolCallId: `t${i}`,
-      toolName: 'BrowserScreenshot',
-      content: [{ type: 'image' as const, data: `d${i}`, mimeType: 'image/png' }],
-      isError: false,
-      timestamp: 0,
+      sourceEntry: { id: `t${i}` },
+      messages: [
+        {
+          role: 'toolResult' as const,
+          toolCallId: `t${i}`,
+          toolName: 'BrowserScreenshot',
+          content: [{ type: 'image' as const, data: `d${i}`, mimeType: 'image/jpeg' }],
+          isError: false,
+          timestamp: 0,
+        },
+      ],
     }));
 
-  it('registers a context handler that returns pruned messages', async () => {
-    const handlers: Handlers = {};
-    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
-
-    expect(typeof handlers.context).toBe('function');
-    const result = (await handler(handlers, 'context')({ type: 'context', messages: imageHeavy(7) }, ctxFor('S'))) as {
-      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
-    };
-    const images = result.messages.flatMap((m) => m.content).filter((b) => b.type === 'image');
-    expect(images).toHaveLength(4); // 7 − boundary 3
+  const turnEnd = (contextEntries: unknown[]) => ({
+    type: 'turn_end',
+    entries: [],
+    continue: false,
+    context: { contextEntries, contextMessages: [], llmMessages: [], pendingMessages: [], canContinue: true },
+    outcome: 'completed',
+    turnIndex: 0,
+    toolResults: [],
+    messageEntryId: 'a1',
+    toolResultEntryIds: [],
   });
 
-  it('fails soft: a thrown pruning error yields undefined, not a rejection', async () => {
-    const handlers: Handlers = {};
-    createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
+  /** Dispatch to every handler for `event` and keep what they returned. */
+  async function dispatch(
+    pi: { handlersFor: (event: string) => Array<(e: unknown, c: unknown) => unknown> },
+    event: string,
+    payload: unknown,
+    ctx: unknown,
+  ): Promise<unknown[]> {
+    const results: unknown[] = [];
+    for (const h of pi.handlersFor(event)) results.push(await h(payload, ctx));
+    return results;
+  }
 
-    // content:null makes the image-counting loop throw; the handler must swallow it and return undefined.
-    const bad = [{ role: 'toolResult', toolCallId: 'x', toolName: 'X', content: null, isError: false, timestamp: 0 }];
-    expect(await handler(handlers, 'context')({ type: 'context', messages: bad }, ctxFor('S'))).toBeUndefined();
+  it('prunes at turn_end for a session with no panel entry', async () => {
+    // btw, subagent and team sessions never register a panel, and all three run browser tools.
+    const pi = fakePiOrdered();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
+
+    const results = await dispatch(pi, 'turn_end', turnEnd(projected(13)), ctxFor('no-panel'));
+    const drafts = results.flatMap((r) => (r as { entries?: Array<{ type: string }> } | undefined)?.entries ?? []);
+
+    expect(drafts.map((d) => d.type)).toEqual(Array(6).fill('context_edit'));
+  });
+
+  it('reconciles at before_agent_start for a session with no panel entry', async () => {
+    const pi = fakePiOrdered();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
+    const appendContextEdit = vi.fn();
+    const sessionManager = {
+      getSessionId: () => 'no-panel',
+      buildSessionProjection: () => ({ entries: projected(13) }),
+      appendContextEdit,
+    };
+
+    await dispatch(
+      pi,
+      'before_agent_start',
+      { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { selectedTools: [], sections: {} } },
+      { sessionManager, model: undefined },
+    );
+
+    expect(appendContextEdit).toHaveBeenCalledTimes(6);
+    expect(appendContextEdit.mock.calls[0]![0]).toBe('t0');
+  });
+
+  it('registers no outbound context handler', async () => {
+    // Every prune is persisted as a context edit, so recomputing one per request would duplicate it.
+    const pi = fakePiOrdered();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
+    expect(pi.handlersFor('context')).toHaveLength(0);
+  });
+
+  it('fails soft: a pruning error leaves the turn running', async () => {
+    const pi = fakePiOrdered();
+    createDamoclesExtensionFactory(reader(), noCheckpoints())(pi.pi as never);
+
+    const results = await dispatch(pi, 'turn_end', turnEnd([{ sourceEntry: { id: 'x' } }]), ctxFor('S'));
+
+    expect(results.every((r) => r === undefined)).toBe(true);
   });
 });
 

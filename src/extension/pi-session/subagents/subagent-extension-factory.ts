@@ -30,7 +30,7 @@ import {
 } from '../hooks';
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
-import { registerContextImagePruning } from '../context-image-pruning';
+import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '../context-image-pruning';
 import { createToolSearchTool, mcpGroupName, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
@@ -161,16 +161,25 @@ function registerSubagentHooks(
     }
   });
 
-  pi.on('agent_end', async (event, hookCtx) => {
-    // The subagent finished: sweep any orphaned PreToolUse context it left (its stash is local to it).
+  // Kept on the per-segment event rather than moved to `agent_settled` with the dispatch below: the
+  // sweep is idempotent, so the earlier cadence reclaims sooner and costs nothing.
+  pi.on('agent_end', async (_event, hookCtx) => {
     clearSessionPreToolUseContext(contextStash, hookCtx.sessionManager.getSessionId());
+  });
+
+  // `agent_end` fires once per run segment, so a pi retry would report one subagent as finishing several
+  // times. `agent_settled` fires once per run, and this pi instance serves exactly one subagent session,
+  // so it marks that subagent's own completion. It carries no messages, so the transcript comes from the
+  // session projection.
+  pi.on('agent_settled', async (_event, hookCtx) => {
     if (!deps.config.hasEntries('subagent_end')) return;
     try {
+      const { messages } = hookCtx.sessionManager.buildSessionProjection();
       await dispatchObserveOnly(
         deps,
         'subagent_end',
         hookCtx.cwd,
-        buildAgentEndPayload(buildHookCommon(hookCtx), event.messages, { subagent: true, parentToolUseId: ctx.parentToolUseId }),
+        buildAgentEndPayload(buildHookCommon(hookCtx), messages, { subagent: true, parentToolUseId: ctx.parentToolUseId }),
       );
     } catch (err) {
       log('[SubagentExtension] subagent_end (SubagentStop) hook failed: %O', err);
@@ -189,9 +198,10 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     const preToolUseContextStash = createPreToolUseContextStash();
 
     // Subagent/team sessions can inherit browser tools, so they must prune stale screenshots too
-    // (this factory is the ONLY one they register — the main factory's handler would not cover them).
+    // (this factory is the ONLY one they register — the main factory's handlers would not cover them).
     // btw sessions register the pruner directly via their inline factory in pi-session.ts.
-    registerContextImagePruning(pi);
+    registerTurnEndImagePruning(pi);
+    registerAgentStartImageReconcile(pi);
 
     if (ctx.deferrableToolNames.length > 0) {
       try {

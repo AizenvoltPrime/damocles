@@ -2,6 +2,40 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.28.0] - 2026-09-22
+
+### Added
+
+- **`agent_before_settle` joins the hook events you can configure.** It fires after an agent run finishes and before pi settles it. Damocles dispatches it observe-only, like every other tier-2 event, so a hook on it can log or notify but cannot append session entries or ask for another provider request.
+
+### Changed
+
+- **A turn that continues no longer flashes as finished.** Damocles settled the panel on pi's `agent_end`, which fires once per run segment. A turn that waits for background subagents runs two segments. So does a plan-mode turn that gets the ExitPlanMode nudge, and so does a turn pi retries internally. Each case needed a one-shot flag to suppress a terminal state the panel had no business showing. The panel now settles on `agent_settled`, which pi fires once, after the last continuation and the last retry. The checkpoint finalize moved with it, so one logical turn still mints one rewind entry and no flag tells the checkpoint engine to skip a round. The two holds became one `agent_before_settle` handler. It appends the injected content as an ordered session entry and asks pi for exactly one more provider request. The content persists, and pi checks up front that the run can continue rather than hanging on a re-prompt that never lands. An error card and a cancelled card still appear the moment Damocles detects them. Only the spinner waits for the settle.
+
+- **Stale browser screenshots now leave model context on the active model's published limits, and the decision is recorded in the session.** Damocles used to rewrite the outbound request on every provider call, keeping six screenshots and dropping three at a time, with both numbers picked by hand. pi 0.87.0 publishes each model's image and request-size limits, so the retained window is now the smaller of a Damocles cost policy of twelve and whatever the model allows, and images leave in batches of half that window. A prune is decided once per turn and appended as a `context_edit` entry, so it survives resume, fork and branch navigation, and a session recorded before this change is brought up to date before its first request. Pruning covers the main panel, `/btw`, subagents and team agents. A pruned screenshot is never restored, and the request after a prune no longer reports its cache miss as waste. The transcript still shows every screenshot on reload, because it reads raw history.
+
+- **The pi runtime moves to 0.87.0** from 0.86.1, across `pi-agent-core`, `pi-ai`, `pi-coding-agent` and `pi-tui`. Six packages moved in the production dependency closure and Damocles added or removed none: those four, plus `@earendil-works/pi-telemetry` and `@earendil-works/chord`. npm now hoists `chord` to the top level of `node_modules`, where at 0.86.1 it sat nested under both `pi-agent-core` and `pi-coding-agent`. It still ships twice, because `.vscodeignore` re-includes the copy nested under `pi-coding-agent`: 0.36 MB over 32 files at the top level, 0.25 MB over 28 nested. The VSIX carries 31.02 MB of `@earendil-works` `.js` and `.json` over 4,112 files. Reproduce that figure by running `npm run package` and reading the sizes off the `.vsix` zip entries.
+
+- **pi replaced `agent.shouldStopAfterTurn` with `agent.finishTurn`**, which answers `{ action: 'end' }` or `{ action: 'continue' }` in place of a boolean. Damocles has two consumers, the graceful budget stop and the team terminal tools, and pi's own session dispatches every extension `turn_end` through that same field. All three now share one wrapper per agent holding a keyed map of deciders. The hook pi installed runs first on every turn and is never skipped, `end` beats `continue`, and a decider with no opinion answers with nothing. Behaviour is unchanged: a budget stop ends the turn at the next model round trip instead of aborting it, a team agent still parks on `team_standby` and `team_report_complete`, and a checkpoint is still minted on every turn.
+
+- **The prompt cache warmer no longer carries a note about an upstream fix Damocles was waiting on.** pi 0.87.0 arms a refresh deadline when it schedules a warm and skips the refresh once that deadline has passed, so a warm armed near expiry cannot rebuild an already-expired cache. The Damocles handler stays: stopping the warm when the panel is gone or a budget stop is active is policy, not a workaround.
+
+- **Verified against 0.87.0, with no change: the Claude Pro/Max subscription plugin pin.** pi still reads the system prompt and the tool loadout off the transcript's system messages, which is the contract the pinned commit satisfies, and `@earendil-works/pi-ai/oauth` still resolves.
+
+### Fixed
+
+- **A plan-mode turn could repeat the same reminder until you stopped it.** When a plan-mode turn ended without an approved ExitPlanMode, Damocles injected a hidden reminder and asked the model for one more response. That reminder ended with "Otherwise, keep planning.", which let the model answer in text and call no tool. The answer satisfied the reminder, the turn ended the same way it had before, and the reminder fired again. One session ran fifteen rounds and wore down to "Holding." each time. The first reminder of a turn now says that a plan-mode turn ends by calling ExitPlanMode or AskUserQuestion, and that text on its own does not end it. Every reminder after it in the same turn is a stronger one, because the model has already ignored the first. That version names the case that caused the loop: if your own instructions stop the model from calling ExitPlanMode, it must call AskUserQuestion and ask you how to proceed. The count restarts at your next message, so a fresh turn opens with the plain reminder again. The funnel itself is unchanged and still has no retry limit, because leaving plan mode is a decision for you to make.
+
+- **The download is 20% smaller: 42.23 MB, down from 53.15 MB.** Every build shipped esbuild, and none of it could run. Three of its WebAssembly binaries targeted Android and OpenHarmony, which Damocles does not support and cannot run on, at 13.35 MB each. The driver that loads them shipped twice while the executable for your own platform was excluded, so any code path reaching esbuild failed. Nothing reaches it: the only import lives in a chord module that pi never loads, and pi loads extensions through jiti instead. The packaging allowlist now excludes esbuild, which removes 40.27 MB over 42 files and leaves the uncompressed payload at 160.47 MB. The two WebAssembly files Damocles does use, the image processor and the tree-sitter parser, still ship. The allowlist generator now fails the build if a future dependency brings esbuild back, so the exclusion cannot rot into a silent breakage.
+
+- **A message sent as the budget limit trips no longer buys another billed request.** Damocles accepted a queued message whenever the run was still streaming, and pi continues a run whenever its queue is not empty, so a message sent in that window forced one more provider round trip past the limit you set. The graceful stop already flushed the queue it knew about; it now also refuses new ones for the rest of the turn, so the limit is hard from the moment it trips.
+
+- **The plan-mode reminder no longer lands in front of your own queued message.** When you queued a follow-up during a plan-mode turn, Damocles appended the hidden reminder first, so the model read "call ExitPlanMode now" immediately before whatever you had just asked for. Damocles now holds the reminder back whenever you have something queued, and sends it at the next turn end if it is still needed.
+
+- **Hook payloads no longer carry raw base64 screenshots.** Every image block in a `Stop` or `SubagentStop` payload was serialised in full onto your hook script's stdin. Images now arrive as `[image]`, so the payload stays a readable transcript. `transcript_path` is still the complete record.
+
+- **A Stop hook fired once per run segment instead of once per turn.** A notifier on `agent_end` sent you one message per internal pi retry, and one more each time Damocles held the run open to wait for a background subagent or to deliver the plan-mode reminder. The looping session above sent a "Task Complete" per round. Stop now fires on pi's `agent_settled`, which fires once per turn, after the last retry and the last continuation. `subagent_end` moved the same way and fires once per subagent run. The `messages` array on both payloads is now the conversation as the model sees it rather than the last segment alone; `transcript_path` is still the complete record.
+
 ## [2.27.0] - 2026-09-21
 
 ### Changed
@@ -4009,6 +4043,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.28.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.27.0...v2.28.0
 [2.27.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.26.0...v2.27.0
 [2.26.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.25.0...v2.26.0
 [2.25.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.24.0...v2.25.0

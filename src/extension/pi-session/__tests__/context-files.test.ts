@@ -12,7 +12,7 @@ import {
 
 /**
  * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:71-72`
- * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^0.86.1`. It is a literal, not an import,
+ * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^0.87.0`. It is a literal, not an import,
  * so a pi upgrade that changes the candidate order fails here instead of silently diverging.
  */
 const PI_CONTEXT_FILE_CANDIDATES = [
@@ -50,7 +50,8 @@ describe('pi version pin', () => {
     const actual = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
     if (!actual) throw new Error(`unparseable installed version "${version}"`);
     const [vMajor, vMinor, vPatch] = actual.slice(1).map(Number) as [number, number, number];
-    // npm widens a caret only up to the leftmost non-zero component, so ^0.86.1 is <0.87.0.
+    // npm widens a caret only up to the leftmost non-zero component, so a 0.x range admits later
+    // patches of that same minor and nothing beyond it.
     const upper: [number, number, number] = major === 0 ? [0, minor + 1, 0] : [major + 1, 0, 0];
     const rank = ([a, b, c]: [number, number, number]): number => a * 1e12 + b * 1e6 + c;
     const actualRank = rank([vMajor, vMinor, vPatch]);

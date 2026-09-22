@@ -256,7 +256,7 @@ describe('AgentManager concurrency', () => {
     mgr.abortAll();
 
     // A killed agent has no result to incorporate. Leaving these unconsumed made the parent's
-    // keep-alive drain them on the next agent_end and hold the turn for one more paid round-trip.
+    // keep-alive drain them at the next settle and continue the run for one more paid round-trip.
     expect(mgr.getRecord(running)!.resultConsumed).toBe(true);
     expect(mgr.getRecord(queued)!.resultConsumed).toBe(true);
     expect(mgr.hasUnconsumedBackground()).toBe(false);
@@ -375,7 +375,7 @@ describe('AgentManager background keep-alive', () => {
     const mgr = new AgentManager(engine, 4);
     const id = mgr.spawn(spec(0)); // background
     await flush();
-    gateAt(gates, 0).resolve(); // completes during the turn, before agent_end
+    gateAt(gates, 0).resolve(); // completes during the turn, before the settle
     await flush();
     await flush();
     expect(mgr.getRecord(id)!.status).toBe('completed');

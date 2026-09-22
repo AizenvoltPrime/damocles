@@ -63,7 +63,8 @@ const FORCE_COMPLETED_WAKE =
 const leadReviewStrandedBanner = (n: number): string =>
   `⚠️ REVIEW ROUND ABANDONED — the lead did not review ${n} specialist(s) in awaiting-review after ` +
   `repeated prompts; the team was force-completed. Treat the result below as SUSPECT.`;
-const STRANDED_STANDBY_NUDGE =
+/** Exported so the wiring test asserts the delivered text against this constant, not a copy. */
+export const STRANDED_STANDBY_NUDGE: string =
   'No peer is still working, so no further peer input is coming. If your work is complete and verified, ' +
   'post any final scratchpad and call team_report_complete now. If you are still blocked, message the ' +
   'lead with team_send_message. Do not call team_standby again.';

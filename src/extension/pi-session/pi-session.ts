@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentEndEvent } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
@@ -23,6 +23,7 @@ import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
+import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
 import { dispatchObserveOnly } from "./hooks/dispatch";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
@@ -99,12 +100,12 @@ import {
 } from "./branch-text";
 import {
   PLAN_MODE_NUDGE_CUSTOM_TYPE,
-  PLAN_MODE_NUDGE_TEXT,
+  selectPlanModeNudgeText,
   lastAssistant,
   turnHasNonErrorExitPlanModeResult,
 } from "./plan-mode-hold";
 import { BTW_SYSTEM_PROMPT, buildBtwContextBlock } from "./btw-context";
-import { registerContextImagePruning } from "./context-image-pruning";
+import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from "./context-image-pruning";
 import { buildContextUsage } from "./context-usage";
 import { resolveCompactionBudget } from "./compaction-budget";
 import { generateSessionTitle } from "./session-title";
@@ -189,7 +190,7 @@ export class PiSession implements ChatSession {
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
   /** Set when the hard budget limit is crossed mid-turn, so the turn finishes gracefully at the next
-   * model round-trip boundary (`shouldStopAfterTurn`) instead of being torn mid-stream by an abort. */
+   * model round-trip boundary (the `finishTurn` decider) instead of being torn mid-stream by an abort. */
   private _budgetStopRequested = false;
   /** Set once dispose() begins, so a late hook callback draining during teardown emits nothing. */
   private _disposed = false;
@@ -415,13 +416,15 @@ export class PiSession implements ChatSession {
    */
   private bindSession(session: AgentSession): void {
     this.unsubscribe = this.adapter.subscribe(session);
-    // Graceful budget stop (US-008): pi consults this once per model round-trip, so returning true ends
-    // the turn at the next boundary with the in-flight message and its tool results intact, unlike an
+    // Graceful budget stop (US-008): pi consults this once per model round-trip, so `end` finishes the
+    // turn at the next boundary with the in-flight message and its tool results intact, unlike an
     // abort. Installed here because start() and setRebindSession both funnel through bindSession, and a
     // REPLACEMENT session brings a new Agent needing it re-installed (as `applyActiveToolsForMode` does).
-    // Must stay synchronous, and must read the field at call time — pi snapshots the function reference
-    // at run start, so a captured boolean would freeze at that run's starting value.
-    session.agent.shouldStopAfterTurn = () => this._budgetStopRequested;
+    // Must read the field at call time — pi snapshots the function reference at run start, so a captured
+    // boolean would freeze at that run's starting value.
+    installTurnDecider(session.agent, BUDGET_STOP_HOOK, () =>
+      this._budgetStopRequested ? { action: 'end' } : undefined,
+    );
     // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
     // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
     // (see PiRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
@@ -456,7 +459,7 @@ export class PiSession implements ChatSession {
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
       budgetStopRequested: () => this._budgetStopRequested,
-      onAgentEnd: (event) => this.onParentAgentEnd(event),
+      onBeforeSettle: (event) => this.onBeforeSettle(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
       deferrableTools: () => this.deferrableToolsSnapshot(),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
@@ -726,7 +729,7 @@ export class PiSession implements ChatSession {
       // no longer matches what the user typed. Record the original typed text as an inert sidecar keyed
       // to the pi user entry so reload/up-arrow/preview can restore it.
       if (!isInternal && userBroadcast) this.recordOriginalInputIfDiverged(session, userBroadcast.content, priorUserEntryId);
-      // The turn completed (prompt resolved at agent_end). After the first real turn, auto-title the
+      // The turn completed (prompt resolves once the run has settled). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
       if (!isInternal) void this.maybeGenerateTitle();
       // Record the completed exchange as a memory extraction candidate so the consolidation passes have
@@ -765,7 +768,10 @@ export class PiSession implements ChatSession {
     // 0.80.5 `isStreaming` also stays true across retry/compaction windows, so input is now accepted
     // during those (desirable — pi steers at the next boundary); the disagreement window is narrower.
     // A queue routed to a non-streaming session must still be refused so the caller can fall back.
-    if (!session || !session.isStreaming) return false;
+    // Refused after a budget stop too, even though the run is still streaming: pi's settle boundary
+    // continues on a non-empty queue whatever the decider answers, so accepting one bills a round trip
+    // past a hard limit (the same hazard `stopForBudget` flushes the existing queue for).
+    if (!session || !session.isStreaming || this._budgetStopRequested) return false;
     this.queuedInputs.push({
       id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       text: extractText(content),
@@ -1182,9 +1188,9 @@ export class PiSession implements ChatSession {
       }
       this.btwSessions.clear();
     }
-    // Unregister FIRST so no new hook can look the checkpoint service up, then drain the runtime
-    // (its dispose fires agent_end/shutdown hooks). Only once those have drained do we tear down the
-    // checkpoint service, so an in-flight onAgentEnd can't race a half-disposed service or session.
+    // Unregister FIRST so no new hook can look the checkpoint service up, then dispose the runtime: it
+    // emits `session_shutdown` to the extension runner, and a handler on that still needs a live
+    // checkpoint service, so the service is only torn down after.
     if (this.registeredSessionId) {
       const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
       piRuntime.unregisterPanel(this.registeredSessionId);
@@ -1924,98 +1930,86 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * `agent_end` coordinator: two independent "hold the turn open" mechanisms compose here, ordered so
-   * they never double-fire on one `agent_end`. The background keep-alive runs first; if it injects+holds
-   * (returns true), this `agent_end` is already consumed and the plan-mode hold is skipped — on the NEXT
-   * `agent_end` (after the synthesis round) the background results are drained and the plan-mode hold gets
-   * its turn. Awaited from the shared-extension `agent_end` hook before the turn settles.
+   * Pre-settlement coordinator: two independent "keep the run going" mechanisms compose here. The
+   * background keep-alive runs first; if it produces a draft the plan-mode hold is skipped, and pi
+   * re-enters this boundary after the continuation round, where the background results are already
+   * drained and the plan-mode hold gets its chance. Returns the entry to append, or undefined to let
+   * the run settle.
    */
-  private async onParentAgentEnd(event: AgentEndEvent): Promise<void> {
-    if (!this.runtime?.session || this.stopRequested()) return;
-    if (await this.tryBackgroundKeepAlive()) return;
-    await this.tryPlanModeHold(event);
+  private async onBeforeSettle(event: AgentBeforeSettleEvent): Promise<CustomMessageEntryDraft | undefined> {
+    if (!this.runtime?.session || this.stopRequested()) return undefined;
+    return (await this.tryBackgroundKeepAlive()) ?? this.tryPlanModeHold(event);
   }
 
   /**
-   * Keep-alive hold: when a parent turn ends while background subagents are still running, await ALL of
-   * them, then inject their results as a `display:false` custom follow-up so pi runs one more round in
-   * the SAME turn and the model finishes its answer using the results (the user's requirement: the parent
-   * must not finish until its background subagents complete). ESC (`_aborting`, which `abortAll()`s the
-   * subagents) breaks the wait. Returns true iff it injected results and held the turn; false on every
-   * early-return (nothing pending), so the coordinator can fall through to the plan-mode hold.
+   * Keep-alive: when a run is about to settle while background subagents are still running, await ALL of
+   * them and carry their results into one more request as a `display:false` custom entry, so the model
+   * finishes its answer using the results (the user's requirement: the parent must not finish until its
+   * background subagents complete). ESC (`_aborting`, which `abortAll()`s the subagents) breaks the wait.
    */
-  private async tryBackgroundKeepAlive(): Promise<boolean> {
+  private async tryBackgroundKeepAlive(): Promise<CustomMessageEntryDraft | undefined> {
     const mgr = this.subagentManager;
-    const session = this.runtime?.session;
-    if (!mgr || !session || this.stopRequested()) return false;
+    if (!mgr || this.stopRequested()) return undefined;
     // Gate on UNCONSUMED background results, not just still-running ones: an agent that completed
     // mid-turn but was never fetched via GetSubagentResult must still be injected, or its result is
-    // silently dropped (the bug — a fast background agent that finishes before agent_end vanished).
-    if (!mgr.hasUnconsumedBackground()) return false;
+    // silently dropped (the bug — a fast background agent that finished early vanished).
+    if (!mgr.hasUnconsumedBackground()) return undefined;
 
     await mgr.waitForBackground();
-    if (this.stopRequested()) return false;
+    if (this.stopRequested()) return undefined;
 
     const completed = mgr.takeCompletedBackgroundResults();
-    if (completed.length === 0) return false;
+    if (completed.length === 0) return undefined;
 
-    try {
-      // deliverAs follow-up continues the SAME turn while streaming (the documented agent_end path);
-      // triggerTurn is a safety net so a non-streaming agent_end can never leave the held turn hung.
-      await session.sendCustomMessage(
-        { customType: SUBAGENT_RESULTS_CUSTOM_TYPE, content: formatBackgroundResults(completed), display: false },
-        { deliverAs: "followUp", triggerTurn: true },
-      );
-      // Only after the follow-up is queued: suppress the idle/done for THIS agent_end, since pi will now
-      // continue the turn with the synthesis round (the next agent_end settles it normally), and defer
-      // the checkpoint finalize so this held turn keeps its single pending checkpoint (FR: one logical
-      // turn → one rewind entry) instead of minting a duplicate per continuation round.
-      this.checkpointService?.deferNextFinalize();
-      this.adapter.holdNextAgentEnd();
-      return true;
-    } catch (err) {
-      log("[PiSession] background-results follow-up injection failed: %O", err);
-      return false;
-    }
+    return {
+      type: "custom_message",
+      customType: SUBAGENT_RESULTS_CUSTOM_TYPE,
+      content: formatBackgroundResults(completed),
+      display: false,
+    };
   }
 
   /**
    * Plan-mode hold: deterministically funnel every plan-mode turn through `ExitPlanMode`. When a plan-mode
-   * turn ends cleanly WITHOUT the model having successfully exited plan mode, inject a hidden nudge as a
-   * follow-up and hold the turn so pi's loop continues — the model must then call ExitPlanMode, call
-   * AskUserQuestion (which keeps the turn alive on its own), or keep planning; it can no longer silently
-   * stop with an unapproved plan. The prose guidance in `plan-mode-guidance.ts` is the first line of
-   * defense; this is the deterministic backstop for when the model ignores it.
+   * turn is about to settle WITHOUT the model having successfully exited plan mode, carry a hidden nudge
+   * into one more request — the model must then call ExitPlanMode or AskUserQuestion (which keeps the turn
+   * alive on its own); it can no longer silently stop with an unapproved plan. The prose guidance in
+   * `plan-mode-guidance.ts` is the first line of defense; this is the deterministic backstop for when the
+   * model ignores it.
+   *
+   * The funnel is deliberately unbounded, so convergence has to come from the nudge text rather than from
+   * a retry cap: `selectPlanModeNudgeText` escalates once this turn has already produced a nudge. The
+   * count selects which text goes out, never whether one does.
    *
    * Fires iff ALL hold: still in plan mode; no NON-error `ExitPlanMode` result in this turn (an approved
    * exit returns a normal result and suppresses the nudge; a rejected exit leaves only an isError result
    * and does not); the last assistant message stopped cleanly (`stopReason === 'stop'` — never on
-   * error/aborted/length or an auto-retry); and we are not aborting. Fail-soft: a throw never breaks the
-   * turn. The mode is re-read live every `agent_end`, so switching out of plan mode (via the UI) stops the
-   * funnel on the very next turn-end — the user always has a non-Stop way out.
+   * error/aborted/length or an auto-retry); the user has nothing queued; and we are not aborting. The
+   * mode is re-read live at every settle, so switching out of plan mode (via the UI) stops the funnel on
+   * the very next turn — the user always has a non-Stop way out.
    */
-  private async tryPlanModeHold(event: AgentEndEvent): Promise<void> {
-    if (this.permissionMode !== "plan") return;
-    if (this.stopRequested()) return;
-    if (turnHasNonErrorExitPlanModeResult(event.messages)) return;
-    if (lastAssistant(event.messages)?.stopReason !== "stop") return;
+  private tryPlanModeHold(event: AgentBeforeSettleEvent): CustomMessageEntryDraft | undefined {
+    if (this.permissionMode !== "plan") return undefined;
+    if (this.stopRequested()) return undefined;
+    // Hold no opinion while the user has something queued: the nudge would land immediately ahead of
+    // their own message, telling the model to exit plan mode just before a human instruction that may
+    // say otherwise. It re-fires at the next settle if still needed. Reads the agent's own queue, not
+    // `pendingMessageCount`: `sendCustomMessage` bypasses the mirror that one counts.
+    if ((this.runtime?.session.agent.peekQueuedMessages().length ?? 0) > 0) return undefined;
+    // The boundary event carries no per-turn message list, so both predicates read the session
+    // projection. `turnHasNonErrorExitPlanModeResult` scopes itself to the current turn; `lastAssistant`
+    // does not need to, because every run reaching this boundary has appended an assistant message, a
+    // synthetic one even on hard failure (`agent.js:361-376`), so the last one is always this turn's.
+    const messages = event.context.contextMessages;
+    if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
+    if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
 
-    const session = this.runtime?.session;
-    if (!session) return;
-
-    try {
-      await session.sendCustomMessage(
-        { customType: PLAN_MODE_NUDGE_CUSTOM_TYPE, content: PLAN_MODE_NUDGE_TEXT, display: false },
-        { deliverAs: "followUp", triggerTurn: true },
-      );
-      // Defer the checkpoint finalize for this held continuation so the plan-mode turn keeps its single
-      // pending checkpoint — without this each nudge round mints a duplicate checkpoint for the same user
-      // entry, which surfaces as repeated identical rows in the Rewind picker.
-      this.checkpointService?.deferNextFinalize();
-      this.adapter.holdNextAgentEnd();
-    } catch (err) {
-      log("[PiSession] plan-mode hold injection failed: %O", err);
-    }
+    return {
+      type: "custom_message",
+      customType: PLAN_MODE_NUDGE_CUSTOM_TYPE,
+      content: selectPlanModeNudgeText(messages),
+      display: false,
+    };
   }
 
   /**
@@ -2548,7 +2542,7 @@ export class PiSession implements ChatSession {
         tools: [],
         customTools: [],
         excludeTools: [],
-        extensionFactory: (pi) => { registerContextImagePruning(pi); },
+        extensionFactory: (pi) => { registerTurnEndImagePruning(pi); registerAgentStartImageReconcile(pi); },
       });
     } catch (err) {
       this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
@@ -2845,19 +2839,20 @@ export class PiSession implements ChatSession {
 
   /**
    * Stop the in-flight turn because the hard budget limit was crossed (US-008 in-flight enforcement).
-   * Graceful, not an abort: the flag makes `shouldStopAfterTurn` end the turn at the next model
-   * round-trip, so the assistant message and its tool results complete and the turn settles through the
-   * normal `agent_end` path (which already emits done/result/processing:false/idle) — no torn stream and
+   * Graceful, not an abort: the flag makes the `finishTurn` decider end the turn at the next model
+   * round-trip, so the assistant message and its tool results complete and the run settles normally
+   * (which already emits done/result/processing:false/idle) — no torn stream and
    * no `sessionCancelled`. Background subagents are killed outright because they run outside the
-   * parent's round-trip boundaries, so `shouldStopAfterTurn` never sees them.
+   * parent's round-trip boundaries, so the decider never sees them.
    *
    * Overshoot is bounded to one round-trip OF THE PARENT LOOP, and that round-trip's own spend is not
    * bounded: enforcement fires at `message_end`, which pi emits BEFORE it executes the message's tool
    * calls, so those tools still run — including an `Agent`/`create_team` call that spawns agents this
    * `abortAll()` never saw. Auto-compaction does not add to that: pi reaches `prepareNextTurn` only at
-   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^0.85.0`,
-   * `agent-loop.ts:176-177`), and `shouldStopAfterTurn` returning true returns from the loop at `:252`
-   * before it. So the bound is the tool calls of the message that tripped the limit and nothing else.
+   * the top of the next inner-loop iteration (`@earendil-works/pi-agent-core@^0.87.0`,
+   * `agent-loop.ts:184-188`), and a decider answering `{ action: 'end' }` returns from the loop at
+   * `:285-290` before it. So the bound is the tool calls of the message that tripped the limit and
+   * nothing else.
    * And an in-flight TEAM keeps running to completion: unlike `beginAbort`, this
    * deliberately does not `cancelActiveTeam()` (product decision), so a team can exceed the limit without
    * a bound. The pre-prompt budget block refuses the NEXT turn.
@@ -2866,9 +2861,9 @@ export class PiSession implements ChatSession {
     if (!this.processingFlag || this._budgetStopRequested) return;
     this._budgetStopRequested = true;
     this.subagentManager?.abortAll();
-    // A graceful stop never polls pi's steering queue (its loop emits agent_end and returns), and the
-    // pre-prompt block then refuses the send that would drain it — so a queued steer would sit pending
-    // until the limit is raised and could replay into an unrelated turn.
+    // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
+    // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
+    // (`agent-session.ts:1544`) whatever the decider answered. `queueInput` refuses new ones from here on.
     this.clearQueuedInputs();
     // A cancel note in that queue was already echoed as a user turn, so the transcript now says the agent
     // was told something this drop means it never hears. Restoring it would let pi's post-run

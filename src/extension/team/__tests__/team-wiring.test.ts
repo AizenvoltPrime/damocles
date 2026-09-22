@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TeamRunner, VERIFICATION_SECTION, leadShouldDeliverMessage } from '../team-runner';
+import { TeamRunner, VERIFICATION_SECTION, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage } from '../team-runner';
 import { AgentRunner } from '../agent-runner';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
@@ -177,6 +177,11 @@ async function drainPastControl(w: Wiring, session: FakeSession, name: string): 
   w.messageBus.send('control', name, CONTROL_MESSAGE);
   await session.whenPrompted(expected);
   await w.settle();
+}
+
+/** Flush microtasks until `predicate` holds, so no assertion depends on a tick count. */
+async function until(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
 }
 
 const CONTROL_MESSAGE = 'control probe — delivery has flushed to here';
@@ -666,8 +671,8 @@ describe('team wiring: a user note reaches the live run, or says it did not', ()
 
 /**
  * The engine-side standby park. Every other session in this file ends its turn on its own, so nothing
- * here observed the `shouldStopAfterTurn` hook the AgentRunner installs. These drive a session that
- * ends its turn ONLY when that hook says so, spawned through the real `startSpecialist` path.
+ * here observed the `finishTurn` decider the AgentRunner installs. These drive a session that ends its
+ * turn ONLY when that decider says so, spawned through the real `startSpecialist` path.
  */
 describe('team wiring: a team_standby call parks the specialist, which still wakes', () => {
   interface StandbySpecialist { session: FakeSession; stops: boolean[] }
@@ -695,17 +700,22 @@ describe('team wiring: a team_standby call parks the specialist, which still wak
     const w = makeWiring(['A', 'B']);
     startSpecialist(w, 'A');
     const b = startStandbySpecialist(w, 'B');
+    await until(() => b.stops.length > 0);
+    // `until` returns at the first tick the stop lands, which is fewer hops than a delivery takes, so
+    // the assertions below need the full settle behind them to mean anything.
     await w.settle();
 
     expect(b.stops).toEqual([true]);
-    expect(deliveredPrompts(b.session)).toEqual([]);
+    // Its only peer already ended its turn, so B is stranded and the recovery nudge is the one prompt
+    // it should get. No task work follows the park.
+    expect(deliveredPrompts(b.session)).toEqual([`[Message from system]: ${STRANDED_STANDBY_NUDGE}`]);
   });
 
   it('wakes the parked specialist on a direct message', async () => {
     const w = makeWiring(['A', 'B']);
     startSpecialist(w, 'A');
     const b = startStandbySpecialist(w, 'B');
-    await w.settle();
+    await until(() => b.stops.length > 0);
 
     expect(b.stops).toEqual([true]);
 
@@ -719,7 +729,7 @@ describe('team wiring: a team_standby call parks the specialist, which still wak
     const w = makeWiring(['A', 'B']);
     startSpecialist(w, 'A');
     const b = startStandbySpecialist(w, 'B');
-    await w.settle();
+    await until(() => b.stops.length > 0);
 
     expect(b.stops).toEqual([true]);
 
@@ -750,11 +760,6 @@ describe('team wiring: a team_report_complete call parks the specialist with its
 
   function agentOf(w: Wiring, name: string): TeamAgent {
     return (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
-  }
-
-  /** Flush microtasks until `predicate` holds, so no assertion depends on a tick count. */
-  async function until(predicate: () => boolean): Promise<void> {
-    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
   }
 
   /**
@@ -792,6 +797,9 @@ describe('team wiring: a team_report_complete call parks the specialist with its
     const w = makeWiring(['A', 'B']);
     startSpecialist(w, 'A');
     const b = startReportingSpecialist(w, 'B', ['sign-off from B']);
+    await until(() => b.stops.length > 0);
+    // `until` returns at the first tick the stop lands, which can be fewer hops than a delivery takes,
+    // so the absence below needs the full settle behind it to mean anything.
     await w.settle();
 
     expect(b.stops).toEqual([true]);
@@ -889,11 +897,6 @@ describe('team wiring: a team_report_complete call parks the specialist with its
 describe('team wiring: a redispatch is a fresh attempt, and each agent carries its own billing flag', () => {
   function agentOf(w: Wiring, name: string): TeamAgent {
     return (w.runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
-  }
-
-  /** Flush microtasks until `predicate` holds, so no assertion depends on a tick count. */
-  async function until(predicate: () => boolean): Promise<void> {
-    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
   }
 
   /** Cancel a running specialist and queue the session its re-run will take. */

@@ -11,9 +11,9 @@ import {
 } from '../cache-stats';
 
 /**
- * Unit tests for the faithful port of pi's `core/cache-stats.ts` @0.80.6. They pin the exact
+ * Unit tests for the port of pi's `dist/core/cache-stats.js` @0.87.0. They pin the exact
  * detection thresholds and reset semantics: TTL-scale idle gaps, the 1024-token noise floor,
- * compaction/branch_summary baseline resets, the sticky `reportedCache` behaviour on providers
+ * compaction/branch_summary/context_edit baseline resets, the sticky `reportedCache` behaviour on providers
  * that never report cache activity, cache-read-only total misses, the missed-cost math (paid rate
  * vs. cache-read rate, with a ModelPriceSource fallback), and the model-change flag.
  */
@@ -57,7 +57,9 @@ const msgEntry = (message: AssistantMessage): SessionEntry =>
   ({ type: 'message', message }) as unknown as SessionEntry;
 const compactionEntry = (): SessionEntry => ({ type: 'compaction' }) as unknown as SessionEntry;
 const branchSummaryEntry = (): SessionEntry => ({ type: 'branch_summary' }) as unknown as SessionEntry;
-/** The entry shape pi's cache warmer appends (`dist/core/session-manager.js:819-832`). */
+const contextEditEntry = (): SessionEntry =>
+  ({ type: 'context_edit', targetId: 't1', replacement: { content: [{ type: 'text', text: '[Image removed]' }] } }) as unknown as SessionEntry;
+/** The entry shape pi's cache warmer appends (`dist/core/session-manager.js:864-878`). */
 const cacheWarmEntry = (message: AssistantMessage): SessionEntry =>
   ({
     type: 'usage',
@@ -131,6 +133,21 @@ describe('detectCacheMiss', () => {
       usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },
     });
     const miss = detectCacheMiss([msgEntry(prev), branchSummaryEntry()], message, noPrice);
+    expect(miss).toBeUndefined();
+  });
+
+  it('(4b) a context_edit entry resets the baseline: the prune explains the miss', () => {
+    // Image pruning appends one, which rewrites the prefix from the edited entry onward. Without the
+    // reset the request after a prune reads as a large unexplained miss and is priced as waste.
+    const prev = makeMessage({
+      timestamp: 0,
+      usage: { input: 100, cacheRead: 0, cacheWrite: 50_000 },
+    });
+    const message = makeMessage({
+      timestamp: 1_000,
+      usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },
+    });
+    const miss = detectCacheMiss([msgEntry(prev), contextEditEntry()], message, noPrice);
     expect(miss).toBeUndefined();
   });
 
@@ -245,6 +262,26 @@ describe('detectCacheMiss — multi-turn baseline behaviour', () => {
       usage: { input: 40_100, cacheRead: 0, cacheWrite: 0, cost: { input: 0.12 } },
     });
     const miss = detectCacheMiss([msgEntry(t1), msgEntry(t2)], t3, priceSource(1.5));
+    expect(miss).toBeDefined();
+    expect(miss!.missedTokens).toBe(40_100);
+  });
+
+  it('(9b) sticky reportedCache survives a context_edit reset, so a later total miss is still detected', () => {
+    // The edit resets the token baseline, but whether this provider reports caching at all is not a
+    // fact about the prefix: dropping it would silence every total miss after the first prune.
+    const t1 = makeMessage({
+      timestamp: 0,
+      usage: { input: 100, cacheRead: 40_000, cacheWrite: 0, cost: { cacheRead: 0.004 } },
+    });
+    const t2 = makeMessage({
+      timestamp: 1_000,
+      usage: { input: 40_100, cacheRead: 0, cacheWrite: 0, cost: { input: 0.12 } },
+    });
+    const t3 = makeMessage({
+      timestamp: 2_000,
+      usage: { input: 40_100, cacheRead: 0, cacheWrite: 0, cost: { input: 0.12 } },
+    });
+    const miss = detectCacheMiss([msgEntry(t1), contextEditEntry(), msgEntry(t2)], t3, priceSource(1.5));
     expect(miss).toBeDefined();
     expect(miss!.missedTokens).toBe(40_100);
   });

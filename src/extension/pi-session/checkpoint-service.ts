@@ -56,7 +56,7 @@ function findLastUserEntry(sm: CheckpointTreeReader): { id: string; prompt: stri
 /**
  * Per-session auto-checkpoint engine driver (US-013b). Owns one `RepoManager` + `AutoCheckpointProducer`
  * bound to the session's bare repo, driven by the pi turn lifecycle (message_start → turnStart,
- * turn_end → turnEnd, agent_end → finalize). Checkpoints are always on when git is available; git
+ * turn_end → turnEnd, agent_settled → finalize). Checkpoints are always on when git is available; git
  * absence is detected once and disables the engine cleanly (every method no-ops, nothing throws — FR-6).
  *
  * Methods that mint checkpoint entries RETURN them so the extension factory (which holds the pi
@@ -68,14 +68,6 @@ export class CheckpointService {
   private producer: AutoCheckpointProducer | null = null;
   private gitAvailable: boolean | null = null;
   private turnCounter = 0;
-  /** One-shot: skip the NEXT agent_end finalize because the turn is being held open for a continuation
-   *  round (plan-mode nudge / background-subagent keep-alive both re-prompt via `triggerTurn`). Without
-   *  this, every held continuation's agent_end would finalize a fresh checkpoint for the SAME user entry,
-   *  producing duplicate rewind rows (one per continuation) and a wrong restore point (the latest
-   *  mid-turn snapshot instead of the true pre-prompt state). Set by the keep-alive `agent_end` hook,
-   *  which runs before the checkpoint `agent_end` hook in the same emit, so it is consumed within the
-   *  same cycle — one logical turn keeps its single pending checkpoint and finalizes once when it ends. */
-  private deferFinalize = false;
   /** Serializes the producer's async steps so concurrent lifecycle events can't interleave. */
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -117,7 +109,7 @@ export class CheckpointService {
   /**
    * Assistant message of a turn: snapshot the pre-turn state for the latest user entry. Called on every
    * assistant message_start; the producer dedups by user entry id (cheap no-op within a turn), so this
-   * stays correct even if a prior turn aborted before agent_end finalized it.
+   * stays correct even if a prior turn aborted before the settle finalized it.
    */
   onMessageStart(message: PiMessage, sm: CheckpointTreeReader): Promise<CheckpointEntry[]> {
     if (message.role !== 'assistant') return Promise.resolve([]);
@@ -146,24 +138,10 @@ export class CheckpointService {
     });
   }
 
-  /**
-   * Mark that the next `agent_end` does NOT end the turn — Damocles is holding it open for a
-   * continuation round (a `triggerTurn` follow-up). One-shot: cleared as it is consumed in `onAgentEnd`.
-   * Must be called from the keep-alive `agent_end` hook (which runs before the checkpoint hook in the
-   * same emit) so the pending checkpoint survives the held continuation instead of finalizing early.
-   */
-  deferNextFinalize(): void {
-    this.deferFinalize = true;
-  }
-
-  /** End of the agent loop: finalize the turn's checkpoint (afterCommit + diff) — unless this agent_end
-   *  is a held continuation (deferFinalize), in which case the pending checkpoint is kept for the next
-   *  agent_end so one logical turn yields exactly one checkpoint. */
-  onAgentEnd(_sm: CheckpointTreeReader): Promise<CheckpointEntry[]> {
-    if (this.deferFinalize) {
-      this.deferFinalize = false;
-      return Promise.resolve([]);
-    }
+  /** The run has fully settled: finalize the turn's checkpoint (afterCommit + diff). A boundary
+   *  continuation stays inside the same run, so one logical turn reaches this once and yields exactly
+   *  one checkpoint. */
+  onSettled(_sm: CheckpointTreeReader): Promise<CheckpointEntry[]> {
     if (!this.producer) return Promise.resolve([]);
     return this.serialize(async () => {
       if (!this.producer) return [];
@@ -179,7 +157,7 @@ export class CheckpointService {
    * compaction anchor becomes a rewind point (its files can be restored). This is a single atomic
    * commit with no two-phase turn lifecycle — `beforeCommit === afterCommit === snapshotHash`, with
    * an empty prompt and no file diff. It runs INSIDE the service's `serialize` chain, so it can never
-   * interleave with `onMessageStart`/`onAgentEnd`, and it MUST NOT touch the producer's pending turn:
+   * interleave with `onMessageStart`/`onSettled`, and it MUST NOT touch the producer's pending turn:
    * `finalizeRun` diffs against its stored `beforeCommit` HASH (not HEAD), so an extra commit here
    * cannot disturb an in-flight turn. The producer is obtained only to trigger lazy repo binding.
    *
@@ -239,7 +217,7 @@ export class CheckpointService {
     const droppedUserEntryId = this.producer?.discardRun() ?? null;
     if (droppedUserEntryId) {
       // The turn's pre-turn (before) commit is already in the bare repo, but its CheckpointEntry was
-      // never persisted (the panel closed / session rebound before agent_end finalized it), so that
+      // never persisted (the panel closed / session rebound before the settle finalized it), so that
       // turn is left non-rewindable. Surface it rather than dropping it silently (FR-6 fail-soft).
       log('[CheckpointService] dispose dropped an unfinalized checkpoint for user entry %s', droppedUserEntryId);
     }

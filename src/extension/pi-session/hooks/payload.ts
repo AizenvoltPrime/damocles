@@ -18,6 +18,10 @@ interface SimpleMessage {
   content: unknown;
 }
 
+/** Stands in for an image block on hook stdin: the raw block carries base64 that would dwarf the rest of
+ *  the payload, and a hook reads the transcript for what was said, not for pixels. */
+const IMAGE_BLOCK_MARKER = '[image]';
+
 /** Flatten a pi `AgentMessage` to `{role, content}`: text blocks are joined; other shapes pass through. */
 export function messageToSimple(message: { role?: unknown; content?: unknown }): SimpleMessage {
   const role = typeof message.role === 'string' ? message.role : 'assistant';
@@ -28,10 +32,14 @@ export function messageToSimple(message: { role?: unknown; content?: unknown }):
       .map((block) =>
         block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string'
           ? (block as { text: string }).text
-          : '',
+          : block && typeof block === 'object' && (block as { type?: unknown }).type === 'image'
+            ? IMAGE_BLOCK_MARKER
+            : '',
       )
       .filter((t) => t.length > 0)
       .join('\n');
+    // The fallback to `content` must not reach a message whose only blocks are images, or the base64 is
+    // back: an image-only message always produces the marker above, so `text` is non-empty here.
     return { role, content: text.length > 0 ? text : content };
   }
   return { role, content: content ?? '' };

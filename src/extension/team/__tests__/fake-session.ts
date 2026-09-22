@@ -4,7 +4,7 @@
  * by `agent-runner.test.ts` (the runner loop in isolation) and `team-wiring.test.ts` (the real
  * TeamRunner<->AgentRunner seam), so both observe what an agent's session ACTUALLY receives.
  */
-import type { ShouldStopAfterTurnContext } from '@earendil-works/pi-agent-core';
+import type { AgentTurnContext, FinishTurn } from '@earendil-works/pi-agent-core';
 
 export interface FakeSessionOptions {
   /** Per-`prompt()` behavior: emit assistant text, then resolve at the turn boundary. */
@@ -114,44 +114,60 @@ export class FakeSession {
   }
 
   /** Mirrors pi's `AgentSession.agent`: the mutable `Agent` a consumer installs its hooks on. */
-  readonly agent: { shouldStopAfterTurn?: (context: ShouldStopAfterTurnContext, signal?: AbortSignal) => boolean | Promise<boolean> } = {};
+  readonly agent: { finishTurn?: FinishTurn; peekQueuedMessages: () => unknown[] } = {
+    peekQueuedMessages: () => [...this.queued, ...this.agentOnlyQueued],
+  };
 
-  /** Messages pi is holding for the in-flight turn. Backs `pendingMessageCount` and `clearQueue`. */
+  /** Messages held in pi's `AgentSession` mirror, which is what `pendingMessageCount` counts. */
   private readonly queued: string[] = [];
+
+  /**
+   * Messages pi enqueued straight onto the agent, which its mirror never sees
+   * (`sendCustomMessage`, `agent-session.js:1481`, steers the agent directly). Only `peekQueuedMessages` reports these.
+   */
+  private readonly agentOnlyQueued: string[] = [];
 
   /** Mirrors pi's `AgentSession.pendingMessageCount`: messages queued for steering or follow-up. */
   get pendingMessageCount(): number {
     return this.queued.length;
   }
 
-  /** Mirrors pi's `AgentSession.clearQueue`: hands back everything queued and empties the queue. */
+  /** Mirrors pi's `AgentSession.clearQueue`: hands back the mirror and empties both queues. */
   clearQueue(): { steering: string[]; followUp: string[] } {
     const steering = [...this.queued];
     this.queued.length = 0;
+    this.agentOnlyQueued.length = 0;
     return { steering, followUp: [] };
   }
 
   /**
-   * Queue a steered message without delivering it, the window pi leaves open by running
-   * `shouldStopAfterTurn` before it drains the queue.
+   * Queue a steered message without delivering it, the window pi leaves open by running `finishTurn`
+   * before it drains the queue.
    */
   holdSteeredMessage(text: string): void {
     this.queued.push(text);
   }
 
+  /** Queue a message the way `sendCustomMessage` does: onto the agent, invisible to the mirror. */
+  holdCustomMessage(text: string): void {
+    this.agentOnlyQueued.push(text);
+  }
+
   /**
    * One turn the way pi's loop runs it: emit the completed assistant message, then consult
-   * `agent.shouldStopAfterTurn`. The turn ends (resolving the in-flight `prompt()`) only when the hook
-   * answers true, so a test sees whether the agent parks or would have kept going.
+   * `agent.finishTurn`. The turn ends (resolving the in-flight `prompt()`) only on `{ action: 'end' }`,
+   * so a test sees whether the agent parks or would have kept going.
    */
   async runTurn(toolCalls: FakeToolCall[]): Promise<boolean> {
     const content = toolCalls.map((c) => ({ type: 'toolCall', id: c.id, name: c.name, arguments: c.arguments ?? {} }));
     const message = { role: 'assistant', content };
     this.emit({ type: 'message_end', message });
-    // pi pairs every executed call with a result message, keyed by the call id (`agent-loop.js:534`).
+    // pi pairs every executed call with a result message, keyed by the call id (`createToolResultMessage`,
+    // `agent-loop.js:620-626`).
     const toolResults = toolCalls.map((c) => ({ role: 'toolResult', toolCallId: c.id, toolName: c.name, content: [], isError: false }));
-    const context = { message, toolResults, context: {}, newMessages: [] } as unknown as ShouldStopAfterTurnContext;
-    const stop = (await this.agent.shouldStopAfterTurn?.(context)) ?? false;
+    const turn = { message, toolResults, context: {}, newMessages: [] } as unknown as AgentTurnContext;
+    const decision = await this.agent.finishTurn?.(turn);
+    const stop = decision?.action === 'end';
     if (stop) this.emit({ type: 'turn_end' });
     return stop;
   }

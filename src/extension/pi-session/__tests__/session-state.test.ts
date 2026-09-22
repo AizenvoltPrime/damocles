@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { CanUseToolContext } from '../../permission-handler/types';
+import type { FinishTurn } from '@earendil-works/pi-agent-core';
 import { readFileSync, readdirSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
@@ -36,7 +37,7 @@ const H = vi.hoisted(() => {
     };
     const session = {
       sessionId: id,
-      agent: {} as { shouldStopAfterTurn?: () => boolean },
+      agent: {} as { finishTurn?: FinishTurn },
       isStreaming: false,
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
@@ -245,8 +246,8 @@ async function openTurn(session: PiSession): Promise<() => Promise<void>> {
   const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
   while (!session.processing) await tick();
   return async () => {
-    // The real settle path: pi's agent_end reaches the adapter, which reports the idle turn state.
-    H.fireEvent({ type: 'agent_end', messages: [], willRetry: false });
+    // The real settle path: pi's agent_settled reaches the adapter, which reports the idle turn state.
+    H.fireEvent({ type: 'agent_settled' });
     releasePrompt();
     await turn;
   };
@@ -501,7 +502,7 @@ describe('session state publisher', () => {
   });
 
   /**
-   * The window this covers: pi's `agent_end` reaches the adapter, which reports `idle`, while
+   * The window this covers: pi's `agent_settled` reaches the adapter, which reports `idle`, while
    * `sendMessage`'s own `finally` has not run yet. A prompt settling inside that window republishes,
    * and a lifecycle derived from `processingFlag` would answer `running` there and never correct
    * itself, leaving the status bar working for the rest of the session.
@@ -523,7 +524,7 @@ describe('session state publisher', () => {
 
     // The adapter settles the turn, and `prompt()` has NOT resolved yet, so `processingFlag` is still
     // true. Answering the approval here is what used to publish `running` after `idle`.
-    H.fireEvent({ type: 'agent_end', messages: [], willRetry: false });
+    H.fireEvent({ type: 'agent_settled' });
     expect(session.processing).toBe(true);
     await permissionHandler.resolveApproval('t1', true);
     await approval;

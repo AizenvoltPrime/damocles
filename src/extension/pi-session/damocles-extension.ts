@@ -16,7 +16,7 @@ import {
 } from './hooks';
 import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
-import { registerContextImagePruning } from './context-image-pruning';
+import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from './context-image-pruning';
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
@@ -52,8 +52,8 @@ function buildPreToolUseGate(
       }),
     onDecision: (toolName, decision, reason, terminate) => {
       log('[Hooks] PreToolUse %s%s for %s%s', decision, terminate ? ' (terminate)' : '', toolName, reason ? `: ${reason}` : '');
-      // A terminating block is the only one the user gets no other signal about: pi settles the turn
-      // through a normal `agent_end`, so without this line the panel just goes idle mid-task.
+      // A terminating block is the only one the user gets no other signal about: the run settles
+      // normally, so without this line the panel just goes idle mid-task.
       const blocked = terminate
         ? `A hook blocked ${toolName} and ended the turn`
         : `A hook blocked ${toolName}`;
@@ -104,9 +104,14 @@ export function createDamoclesExtensionFactory(
     // Per-runtime: shared between the gate below (writes) and the tool_result handler (drains).
     const preToolUseContextStash = createPreToolUseContextStash();
 
-    // Prune stale tool-result screenshots from the outbound context so long browser sessions stay
-    // under the provider byte cap (413 request_too_large). Outbound-only; never touches persisted state.
-    registerContextImagePruning(pi);
+    // Prune stale tool-result screenshots so a long browser session's retained images stay near the
+    // model's published caps (user attachments are exempt, so the totals can still exceed them). Both
+    // halves register here rather than in the panel-routed handlers below so that pruning survives a
+    // session whose panel entry is already unregistered. This factory serves only the main runtime;
+    // nested sessions register the same pair themselves (`subagents/subagent-extension-factory.ts:203`
+    // and `pi-session.ts:2545`), so deleting either of those leaves those sessions unpruned.
+    registerTurnEndImagePruning(pi);
+    registerAgentStartImageReconcile(pi);
 
     // Register cached MCP tools (Phase 6). Re-runs on every reload (fresh runtime → fresh registry),
     // so MCP tools survive `resourceLoader.reload()`; mid-session new tools are topped up via the
@@ -222,9 +227,6 @@ export function createDamoclesExtensionFactory(
     });
 
     // A warm refresh bills against the same budget cap the user set, so a budget stop cancels it too.
-    //
-    // pi 0.86.1 does not carry the upstream fix for late idle refreshes (pi commit 3390bd936), so a
-    // refresh armed near expiry can still rebuild an already-expired cache. Remove this when pi ships it.
     pi.on('cache_warming_decision', (_event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
       // No registered panel means the session's panel was disposed; pi keeps warming until told to stop.
@@ -232,16 +234,21 @@ export function createDamoclesExtensionFactory(
       return undefined;
     });
 
-    // Keep-alive: hold the parent turn until its background subagents finish, then inject their results
-    // so the same turn continues into a synthesis round. Awaited before the turn settles (runs ahead of
-    // the checkpoint agent_end below, which is fine — it persists the post-hold state).
-    pi.on('agent_end', async (event, ctx) => {
+    // The two continuation holds: wait for background subagents and carry their results into one more
+    // request, or nudge a plan-mode turn that ended without ExitPlanMode. Panel-routed because both are
+    // panel-session concepts, unlike the image pruning above.
+    pi.on('agent_before_settle', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
-      if (!panel?.onAgentEnd) return;
+      if (!panel?.onBeforeSettle) return undefined;
       try {
-        await panel.onAgentEnd(event);
+        const draft = await panel.onBeforeSettle(event);
+        if (!draft) return undefined;
+        // Spread: pi replaces the draft accumulator with whatever this returns, so a bare list would
+        // discard every earlier handler's drafts.
+        return { entries: [...event.entries, draft], continue: true };
       } catch (err) {
-        log('[DamoclesExtension] agent_end keep-alive failed: %O', err);
+        log('[DamoclesExtension] agent_before_settle hold failed: %O', err);
+        return undefined;
       }
     });
 
@@ -272,14 +279,16 @@ export function createDamoclesExtensionFactory(
       }
     });
 
-    pi.on('agent_end', async (_event, ctx) => {
+    // `agent_settled`, not `agent_end`: a boundary continuation stays inside the same run, so finalizing
+    // per run segment would mint a second checkpoint against the same user entry.
+    pi.on('agent_settled', async (_event, ctx) => {
       const service = checkpoints.get(ctx.sessionManager.getSessionId());
       if (!service) return;
       try {
-        const entries = await service.onAgentEnd(ctx.sessionManager);
+        const entries = await service.onSettled(ctx.sessionManager);
         for (const entry of entries) pi.appendEntry(DAMOCLES_CHECKPOINT_ENTRY, entry);
       } catch (err) {
-        log('[DamoclesExtension] checkpoint agent_end failed: %O', err);
+        log('[DamoclesExtension] checkpoint agent_settled failed: %O', err);
       }
     });
 

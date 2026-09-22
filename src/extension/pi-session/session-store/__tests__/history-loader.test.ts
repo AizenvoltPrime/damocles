@@ -256,3 +256,56 @@ describe('loadPiSessionHistory — steer chip replay (Slice 3)', () => {
     expect(steer!.steerTarget).toEqual({ agentId: 'agent-7', agentType: 'coder', description: 'Build parser' });
   });
 });
+
+describe('reconstructMessages — pruned screenshot', () => {
+  const SCREENSHOT_PLACEHOLDER =
+    '[Image removed: an older screenshot was pruned to keep the request within provider size limits. Capture a fresh screenshot (BrowserScreenshot) or re-read the file if this content is still needed.]';
+
+  function screenshotTurn(): SessionEntry[] {
+    return [
+      userMsg('u1', 'take a screenshot'),
+      {
+        id: 'a1',
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'toolCall', id: 'call-1', name: 'browser_screenshot', arguments: { fullPage: false } }],
+        },
+      } as unknown as SessionEntry,
+      {
+        id: 'r1',
+        type: 'message',
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call-1',
+          toolName: 'browser_screenshot',
+          isError: false,
+          content: [
+            { type: 'text', text: 'Screenshot of https://example.com' },
+            { type: 'image', data: 'BASE64', mimeType: 'image/jpeg' },
+          ],
+        },
+      } as unknown as SessionEntry,
+    ];
+  }
+
+  /**
+   * The UI transcript is raw history, so it must keep showing what the tool returned even after the
+   * image has left model context. Pinned here rather than left to the entry-type if-chain's silence.
+   */
+  it('ignores the context_edit that pruned the image', () => {
+    const edit = {
+      id: 'e1',
+      type: 'context_edit',
+      targetId: 'r1',
+      replacement: { content: [{ type: 'text', text: SCREENSHOT_PLACEHOLDER }] },
+    } as unknown as SessionEntry;
+
+    const { messages } = reconstructMessages([...screenshotTurn(), edit]);
+
+    expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+    const tools = (messages[1] as { tools: Array<{ id: string; result?: string }> }).tools;
+    expect(tools[0]!.result).toBe('Screenshot of https://example.com');
+    expect(JSON.stringify(messages)).not.toContain('[Image removed');
+  });
+});
