@@ -44,6 +44,7 @@ import {
   IconX,
   IconEye,
   IconLayers,
+  IconPlay,
 } from "@/components/icons";
 import LoadingSpinner from "./LoadingSpinner.vue";
 import LiveOutputPane from "./LiveOutputPane.vue";
@@ -64,11 +65,12 @@ const MEMORY_TOOL_NAMES = new Set([
   "UnforgetMemory", "UpdateMemory",
 ]);
 
-/** Icons for the nineteen team tools. `TEAM_TOOL_PRESENTATION` is the name list; this only picks glyphs. */
+/** Icons for the twenty team tools. `TEAM_TOOL_PRESENTATION` is the name list; this only picks glyphs. */
 const TEAM_TOOL_ICONS: Record<string, Component> = {
   create_team: IconRobot,
   get_team_status: IconSignal,
   cancel_team: IconX,
+  resume_team: IconPlay,
 
   team_send_message: IconPaperPlane,
   team_read_messages: IconMessageSquare,
@@ -111,7 +113,7 @@ const emit = defineEmits<{
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
 const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
 
-/** Undefined for every tool that is not one of the nineteen team tools. */
+/** Undefined for every tool that is not one of the twenty team tools. */
 const teamPresentation = computed(() => ownEntry(TEAM_TOOL_PRESENTATION, props.toolCall.name));
 const teamToolLabel = computed(() => teamPresentation.value?.label);
 

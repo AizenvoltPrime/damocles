@@ -69,7 +69,7 @@ describe('resolveAgentToolset', () => {
   // service), so a name that survives here reaches pi with nothing behind it and is dropped with no
   // error and no log. Stripping it keeps `tools:` and the definitions in agreement.
   it('strips the main team tools whether inherited ("all") or named explicitly', () => {
-    const TEAM = ['create_team', 'get_team_status', 'cancel_team'];
+    const TEAM = ['create_team', 'get_team_status', 'cancel_team', 'resume_team'];
     const inherited = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, ...TEAM]);
     for (const name of TEAM) expect(inherited.names, name).not.toContain(name);
     // Still holds what it should: stripping is scoped to the team names.

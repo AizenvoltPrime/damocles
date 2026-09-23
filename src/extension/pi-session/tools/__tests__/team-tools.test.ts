@@ -63,8 +63,8 @@ describe('TEAM_TOOL_CATALOG takes the role prefix from access', () => {
     expect(byName.get('team_flag_brief_conflict')!.description).toMatch(/^Specialist-only: /);
   });
 
-  it('leaves the three main coordination tools unprefixed, since no role gates them', () => {
-    for (const name of ['create_team', 'get_team_status', 'cancel_team']) {
+  it('leaves the four main coordination tools unprefixed, since no role gates them', () => {
+    for (const name of ['create_team', 'get_team_status', 'cancel_team', 'resume_team']) {
       expect(byName.get(name)!.description, name).not.toMatch(/-only: /);
     }
   });
@@ -167,5 +167,80 @@ describe('create_team — blocking resolveRoleModel error surfaces to the model'
     await expect(
       createTeam.execute('call-1', { title: 'T', brief: 'spec', agents: AGENTS }),
     ).rejects.toThrow(/damocles\.team\.reviewerModel/);
+  });
+});
+
+describe('resume_team and cancel_team tools', () => {
+  const TEAM = '3f2b8c1e-9d4a-4e6b-8a1c-2b3d4e5f6a7b';
+  type Tool = { name: string; execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }> }> };
+
+  function tools(service: Partial<TeamServiceRef>): Map<string, Tool> {
+    const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+    const built = buildTeamMainPiTools(pi, service as TeamServiceRef) as unknown as Tool[];
+    return new Map(built.map((t) => [t.name, t]));
+  }
+
+  it('blocks on the resume and returns its synthesis, passing the call id and message through', async () => {
+    const calls: unknown[][] = [];
+    const resume = tools({ resumeTeam: async (...args: unknown[]) => { calls.push(args); return 'the synthesis'; }, cancelActiveTeam: () => true }).get('resume_team')!;
+
+    const result = await resume.execute('tc-resume', { team_id: TEAM, message: 'continue' });
+
+    expect(calls).toEqual([[TEAM, 'continue', 'tc-resume']]);
+    expect(result.content[0]!.text).toBe('the synthesis');
+  });
+
+  it('cancels the team when its signal aborts mid-run, and not after it settled', async () => {
+    let cancels = 0;
+    let finish!: (text: string) => void;
+    const resume = tools({
+      resumeTeam: () => new Promise<string>((r) => { finish = r; }),
+      cancelActiveTeam: () => { cancels++; return true; },
+    }).get('resume_team')!;
+    const abort = new AbortController();
+
+    const running = resume.execute('tc-resume', { team_id: TEAM }, abort.signal);
+    abort.abort();
+    expect(cancels).toBe(1);
+    finish('partial');
+    await running;
+
+    const later = new AbortController();
+    const done = resume.execute('tc-resume-2', { team_id: TEAM }, later.signal);
+    finish('done');
+    await done;
+    later.abort();
+    expect(cancels).toBe(1);
+  });
+
+  it('an already-aborted call starts nothing and says the team is still resumable', async () => {
+    let resumed = false;
+    const resume = tools({ resumeTeam: async () => { resumed = true; return ''; }, cancelActiveTeam: () => true }).get('resume_team')!;
+    const abort = new AbortController();
+    abort.abort();
+
+    await expect(resume.execute('tc-resume', { team_id: TEAM }, abort.signal)).rejects.toThrow(
+      `The resume of team "${TEAM}" was stopped before it started; it can still be resumed.`,
+    );
+    expect(resumed).toBe(false);
+  });
+
+  it('reports a validation error verbatim', async () => {
+    const text = `Team "${TEAM}" completed and cannot be resumed.`;
+    const resume = tools({ resumeTeam: async () => { throw new Error(text); }, cancelActiveTeam: () => true }).get('resume_team')!;
+
+    await expect(resume.execute('tc-resume', { team_id: TEAM })).rejects.toMatchObject({ message: text });
+  });
+
+  it('cancel_team returns the service text, header included, and reports a team that is not running', async () => {
+    const cancel = tools({
+      cancelTeam: (id: string) => {
+        if (id !== TEAM) throw new Error(`Team "${id}" is not running.`);
+        return `(TEAM CANCELLED ...)\n\nTeam "${id}" cancelled.`;
+      },
+    }).get('cancel_team')!;
+
+    expect((await cancel.execute('tc-c', { team_id: TEAM })).content[0]!.text).toBe(`(TEAM CANCELLED ...)\n\nTeam "${TEAM}" cancelled.`);
+    await expect(cancel.execute('tc-c', { team_id: 'other' })).rejects.toThrow('Team "other" is not running.');
   });
 });

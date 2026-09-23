@@ -4,7 +4,8 @@ import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
-import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
+import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
+import { ensurePiSessionDir } from "../../../pi-session/session-store/session-dir";
 import { log } from "../../../logger";
 import { openMarkdownPreview } from "../../markdown-preview";
 
@@ -40,14 +41,17 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openAgentLog: async (msg, ctx) => {
       if (msg.type !== "openAgentLog") return;
       try {
-        // agentId is webview-supplied and interpolated into a transcript path — reject traversal before
-        // it reaches the path builder (extension-generated ids are safe; this guards the boundary).
+        // agentId is webview-supplied: reject traversal at the boundary.
         if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
-        // pi subagent transcripts live at ~/.damocles/pi/subagents/<enc-cwd>/<sessionId>/tasks/<agentId>.jsonl.
-        // The card's agentId is the transcript file base.
         const sessionId = ctx.session.persistenceSessionId;
         if (!sessionId) throw new Error("No active session");
-        const filePath = subagentTranscriptPath(workspacePath, sessionId, msg.agentId);
+        const filePath = await findAgentFile(subagentsDir(ensurePiSessionDir(workspacePath), sessionId), msg.agentId);
+        if (!filePath) {
+          vscode.window.showInformationMessage(
+            vscode.l10n.t("This agent has no log file. A log is written only after the agent's first reply."),
+          );
+          return;
+        }
         const fileUri = vscode.Uri.file(filePath);
         const doc = await vscode.workspace.openTextDocument(fileUri);
         await vscode.window.showTextDocument(doc, { preview: false });
@@ -225,8 +229,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await workspaceManager.sendCustomSlashCommands(ctx.host);
     },
 
-    requestRunningSubagents: (_msg, ctx) => {
-      postMessage(ctx.host, { type: "runningSubagents", agents: ctx.session.listActiveSubagents() });
+    requestSteerTargets: (_msg, ctx) => {
+      postMessage(ctx.host, { type: "steerTargets", agents: ctx.session.listSteerTargets() });
     },
 
     requestCustomAgents: async (_msg, ctx) => {
@@ -245,9 +249,9 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await ctx.session.stopTask(msg.taskId);
     },
 
-    steerSubagent: async (msg, ctx) => {
-      if (msg.type !== "steerSubagent") return;
-      await ctx.session.steerSubagent(msg.agentId, msg.message);
+    steerAgent: async (msg, ctx) => {
+      if (msg.type !== "steerAgent") return;
+      await ctx.session.steerTarget(msg.agentId, msg.message);
     },
 
   };

@@ -3,6 +3,7 @@ import type {
   AgentSessionServices,
   ExtensionFactory,
   PackageManager,
+  SessionManager,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, AuthInteraction } from '@earendil-works/pi-ai';
@@ -110,10 +111,39 @@ export interface PiCreateSubagentSessionOptions {
   excludeTools?: string[];
   /** The per-subagent gate-routing extension factory (createSubagentExtensionFactory). */
   extensionFactory: ExtensionFactory;
+  /** Where the nested session persists. `file` creates `<dir>/<ts>_<id>.jsonl`; `reopen` opens an
+   *  existing session file. pi writes nothing until the session's first assistant message. */
+  store: SubagentSessionStore;
 }
 
-/** A nested session has no durable activated set at construction — nothing has been activated yet. */
-const NO_ACTIVATED_TOOLS: ReadonlySet<string> = new Set();
+/** `reopen` takes model and thinking level from the file, so it must not be given `model`/`thinkingLevel`.
+ *  `agentId` names the agent in the error thrown when the recorded model is unavailable. */
+export type SubagentSessionStore =
+  | { kind: 'memory' }
+  | { kind: 'file'; dir: string; id: string }
+  | { kind: 'reopen'; path: string; agentId: string };
+
+/**
+ * The deferred tools a restored transcript had loaded: every successful ToolSearch result's `matches`,
+ * plus every tool it called. The set is not persisted, and a fresh session's transcript is empty.
+ */
+export function activatedToolsFromMessages(messages: readonly unknown[]): Set<string> {
+  const out = new Set<string>();
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+  for (const message of messages) {
+    if (!isRecord(message)) continue;
+    if (message['role'] === 'toolResult' && message['toolName'] === TOOL_TOOL_SEARCH && message['isError'] !== true) {
+      const details = message['details'];
+      const matches = isRecord(details) ? details['matches'] : undefined;
+      if (Array.isArray(matches)) for (const name of matches) if (typeof name === 'string') out.add(name);
+    } else if (message['role'] === 'assistant' && Array.isArray(message['content'])) {
+      for (const block of message['content']) {
+        if (isRecord(block) && block['type'] === 'toolCall' && typeof block['name'] === 'string') out.add(block['name']);
+      }
+    }
+  }
+  return out;
+}
 
 /**
  * Whether a session will bind the extension instance this reload mints. `'session-bound'` instances
@@ -268,9 +298,10 @@ export class PiRuntime {
     if (sessionId) this._panelRegistry.set(sessionId, ctx);
   }
 
-  /** Drop a panel's gate context (called on session rebind for the old id, and on dispose). */
-  unregisterPanel(sessionId: string): void {
-    if (sessionId) this._panelRegistry.delete(sessionId);
+  /** Drop a panel's gate context (called on session rebind for the old id, and on dispose). Only the
+   *  registrant's own entry goes: another panel may since have registered the same session id. */
+  unregisterPanel(sessionId: string, ctx: PanelGateContext): void {
+    if (sessionId && this._panelRegistry.get(sessionId) === ctx) this._panelRegistry.delete(sessionId);
   }
 
   /** Register/replace the checkpoint engine driver for a panel's pi session (US-013b). */
@@ -278,22 +309,23 @@ export class PiRuntime {
     if (sessionId) this._checkpointRegistry.set(sessionId, service);
   }
 
-  /** Drop a session's checkpoint driver (on session rebind for the old id, and on dispose). */
-  unregisterCheckpointService(sessionId: string): void {
-    if (sessionId) this._checkpointRegistry.delete(sessionId);
+  /** Drop a session's checkpoint driver (on session rebind for the old id, and on dispose), only if it
+   *  is still `service`. */
+  unregisterCheckpointService(sessionId: string, service: CheckpointService): void {
+    if (sessionId && this._checkpointRegistry.get(sessionId) === service) this._checkpointRegistry.delete(sessionId);
   }
 
-  /** Register/replace the live mutator for a panel's pi session (called on start + rebind). NOTE: a
-   *  Map, so two panels holding the SAME session id (both resuming one file — the id comes from the
-   *  header) leave only the last registrant reachable; a caller that must reach every holder has to
-   *  union this with its own session. */
+  /** Register/replace the live mutator for a panel's pi session (called on start + rebind). A panel
+   *  that holds the session only as a not-yet-started resume or fork target has no entry here, so a
+   *  caller that must reach every holder has to union this with that panel's session. */
   registerSessionMutator(sessionId: string, mutator: LiveSessionMutator): void {
     if (sessionId) this._sessionMutators.set(sessionId, mutator);
   }
 
-  /** Drop a session's live mutator (on session rebind for the old id, and on dispose). */
-  unregisterSessionMutator(sessionId: string): void {
-    if (sessionId) this._sessionMutators.delete(sessionId);
+  /** Drop a session's live mutator (on session rebind for the old id, and on dispose), only if it is
+   *  still `mutator`. */
+  unregisterSessionMutator(sessionId: string, mutator: LiveSessionMutator): void {
+    if (sessionId && this._sessionMutators.get(sessionId) === mutator) this._sessionMutators.delete(sessionId);
   }
 
   /** The live mutator for a session currently open in some panel, or undefined if none. */
@@ -317,9 +349,10 @@ export class PiRuntime {
     if (sessionId) this._activeToolRefreshers.set(sessionId, refresh);
   }
 
-  /** Drop a session's active-tool refresher (on rebind for the old id, and on dispose). */
-  unregisterActiveToolRefresher(sessionId: string): void {
-    if (sessionId) this._activeToolRefreshers.delete(sessionId);
+  /** Drop a session's active-tool refresher (on rebind for the old id, and on dispose), only if it is
+   *  still `refresh`. */
+  unregisterActiveToolRefresher(sessionId: string, refresh: () => void): void {
+    if (sessionId && this._activeToolRefreshers.get(sessionId) === refresh) this._activeToolRefreshers.delete(sessionId);
   }
 
   /**
@@ -694,7 +727,7 @@ export class PiRuntime {
    *
    * `noContextFiles/noSkills/noPromptTemplates/noThemes` prevent AGENTS.md/CLAUDE.md re-appending after
    * the system-prompt override — required for `prompt_mode: replace` and read-only agents to behave.
-   * The session uses an in-memory store (not persisted to the pi tree — v1) and has auto-compaction off.
+   * The session persists per `opts.store` and has auto-compaction off.
    */
   async createSubagentSession(opts: PiCreateSubagentSessionOptions): Promise<AgentSession> {
     await this.init();
@@ -752,11 +785,24 @@ export class PiRuntime {
       log('[PiRuntime] %d mcp name(s) in tools: with no customTool definition (pi drops these silently): %o', orphans.length, orphans);
     }
 
+    const store = opts.store;
+    if (store.kind === 'reopen' && (opts.model || opts.thinkingLevel)) {
+      throw new Error('PiRuntime.createSubagentSession: a reopened session takes its model and thinking level from its file');
+    }
+    // Same cwd the services above were built with, so `getCwd()` and the agent's cwd agree.
+    const sessionManager =
+      store.kind === 'file' ? pi.SessionManager.create(opts.cwd, store.dir, { id: store.id })
+      : store.kind === 'reopen' ? pi.SessionManager.open(store.path, undefined, opts.cwd)
+      : pi.SessionManager.inMemory(opts.cwd);
+    // Resolved here because pi, given no model, falls back to another one with only a
+    // `modelFallbackMessage`; thinking signatures are model-specific, so a resume must not switch models.
+    // With no `thinkingLevel`, pi restores the file's last thinking_level_change entry.
+    const model = store.kind === 'reopen' ? this.resolveRecordedModel(sessionManager, store.agentId) : opts.model;
+
     const { session } = await pi.createAgentSessionFromServices({
       services,
-      // Same cwd the services above were built with, so `getCwd()` and the agent's cwd agree.
-      sessionManager: pi.SessionManager.inMemory(opts.cwd),
-      ...(opts.model ? { model: opts.model } : {}),
+      sessionManager,
+      ...(model ? { model } : {}),
       ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
       tools: opts.tools,
       customTools: opts.customTools,
@@ -801,13 +847,33 @@ export class PiRuntime {
     const hasToolSearch = session.getAllTools().some((tool) => tool.name === TOOL_TOOL_SEARCH);
     if (hasToolSearch) {
       session.setActiveToolsByName(
-        initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, mcpToolNames), NO_ACTIVATED_TOOLS),
+        initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, mcpToolNames), activatedToolsFromMessages(session.messages)),
       );
     }
 
     session.setAutoCompactionEnabled(false);
     this._subagentSessions.add(session);
     return session;
+  }
+
+  /** Throw the resume error unless the model recorded in the agent session file `path` is usable. */
+  assertResumableModel(path: string, agentId: string): void {
+    const pi = getPiCodingAgent();
+    if (!pi || !this._services) throw new Error('PiRuntime.assertResumableModel: runtime not initialized');
+    this.resolveRecordedModel(pi.SessionManager.open(path, undefined, this._primaryCwd), agentId);
+  }
+
+  /** The model a session file last recorded (pi's own rule: last model change or assistant message). */
+  private resolveRecordedModel(sessionManager: SessionManager, agentId: string): Model<Api> {
+    const modelRuntime = this._services?.modelRuntime;
+    if (!modelRuntime) throw new Error('PiRuntime.resolveRecordedModel: runtime not initialized');
+    const recorded = sessionManager.buildSessionContext().model;
+    if (!recorded) throw new Error(`Cannot resume "${agentId}": its session records no model.`);
+    const model = modelRuntime.getModel(recorded.provider, recorded.modelId);
+    if (!model || !modelRuntime.hasConfiguredAuth(model.provider)) {
+      throw new Error(`Cannot resume "${agentId}": its model ${recorded.provider}/${recorded.modelId} is not configured or not signed in.`);
+    }
+    return model;
   }
 
   /** Dispose and forget a nested subagent session (called on completion / manager dispose). */

@@ -3,6 +3,7 @@ import type { TaskCreateInput, TaskUpdateInput, TaskUpdateStatus } from "@shared
 import type { HandlerRegistry } from "../types";
 import { extractDenialFeedback } from "../utils";
 import { takeRejectedCancels } from "@/composables/useToolCancel";
+import { endedSubagentStatus } from "@/stores/useSubagentStore";
 
 function str(bag: Record<string, unknown>, key: string): string | undefined {
   const value = bag[key];
@@ -79,7 +80,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (msg.tool.name === TOOL_AGENT) {
         subagentStore.registerAgentTool(
           msg.tool.id,
-          msg.tool.input as { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean }
+          msg.tool.input as { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean; resume?: string; message?: string }
         );
       }
 
@@ -159,8 +160,11 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
             uiStore.setCurrentRunningTool(null);
             return;
           }
-          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
-          subagentStore.completeSubagent(msg.toolUseId);
+          const agentStatus: unknown = parsed.agentStatus;
+          const status = endedSubagentStatus(typeof agentStatus === "string" ? agentStatus : "completed");
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, status, msg.result, undefined, msg.durationMs);
+          // Before setSubagentResult, which ends a card still running as completed.
+          subagentStore.endSubagent(msg.toolUseId, status);
           const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
           const contentText =
             contentItems

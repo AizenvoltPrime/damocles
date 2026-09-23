@@ -271,6 +271,16 @@ vi.mock('../session-store/session-dir', () => ({
   ensurePiSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
 }));
 
+// Recording pass-throughs, so a case can hold the interruption reconcile open or read the fork copy's input.
+vi.mock('../interruption-notice', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../interruption-notice')>();
+  return { ...actual, reconcileInterruptions: vi.fn(actual.reconcileInterruptions) };
+});
+vi.mock('../fork-agent-data', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fork-agent-data')>();
+  return { ...actual, copyForkAgentData: vi.fn(actual.copyForkAgentData) };
+});
+
 import * as vscode from 'vscode';
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
@@ -293,6 +303,9 @@ import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mo
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
+import { reconcileInterruptions, type NoticeMessage } from '../interruption-notice';
+import { copyForkAgentData } from '../fork-agent-data';
+import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE } from '../session-store/constants';
 import * as fsSync from 'fs';
 // The on-disk-invariant suite drives the REAL SessionManager. `pi-loader` is mocked, so nothing else
 // pulls this package in, and loading it takes most of a second. Imported statically so that cost is
@@ -1628,6 +1641,62 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   });
 });
 
+describe('PiSession runtime registration with two panels on one session id', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    await PiRuntime.disposeInstance();
+  });
+
+  it("the older panel disposing after the newer one registered leaves the newer panel's gate, checkpoints, mutator and refresher", async () => {
+    // Both panels resume one file, so pi hands both the header's session id.
+    H.setSessionSetup((s) => { (s as unknown as { sessionId: string }).sessionId = 'sess-shared'; });
+    const older = new PiSession(makeOptions([]));
+    await older.initializeEarly();
+    const newerOptions = makeOptions([]);
+    const newer = new PiSession(newerOptions);
+    await newer.initializeEarly();
+
+    await older.dispose();
+
+    const runtime = PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+      _panelRegistryReader(): { get(id: string): { permissionHandler: unknown } | undefined };
+      _checkpointRegistryReader(): { get(id: string): unknown };
+      _activeToolRefreshers: Map<string, () => void>;
+      getSessionMutator(id: string): unknown;
+    };
+    // The reader is the one the shared extension's tool_call handler routes through.
+    expect(runtime._panelRegistryReader().get('sess-shared')?.permissionHandler).toBe(newerOptions.permissionHandler);
+    expect(runtime._checkpointRegistryReader().get('sess-shared')).toBe((newer as unknown as { checkpointService: unknown }).checkpointService);
+    expect(runtime.getSessionMutator('sess-shared')).toBe(newer);
+    expect(runtime._activeToolRefreshers.has('sess-shared')).toBe(true);
+
+    await newer.dispose();
+    expect(runtime._panelRegistryReader().get('sess-shared')).toBeUndefined();
+    expect(runtime.getSessionMutator('sess-shared')).toBeUndefined();
+  });
+
+  it('holdsSession names the target of a resume switch before the switch lands', async () => {
+    // Another panel's claim check runs in this window, while currentSessionId still reports the old session.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const before = session.currentSessionId!;
+
+    session.setResumeSession('sess-target');
+
+    expect(session.currentSessionId).toBe(before);
+    expect(session.holdsSession('sess-target')).toBe(true);
+    expect(session.holdsSession(before)).toBe(true);
+    expect(session.holdsSession('sess-unrelated')).toBe(false);
+    await session.whenReplaced();
+    await session.dispose();
+  });
+});
+
 describe('PiSession plan-mode force-continue (WI-3)', () => {
   beforeEach(() => {
     H.seq.length = 0;
@@ -1842,6 +1911,25 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.dispose();
   });
 
+  it('the background injection carries per-agent status in details, which never reach the model-visible content', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    const mgr = (session as unknown as { subagentManager: unknown }).subagentManager as Record<string, unknown>;
+    mgr.hasUnconsumedBackground = vi.fn(() => true);
+    mgr.waitForBackground = vi.fn(async () => undefined);
+    mgr.takeCompletedBackgroundResults = vi.fn(() => [
+      { id: 'agent-1', toolCallId: 'tc-1', type: 'Explore', description: 'd', status: 'error', error: 'model unavailable' },
+    ]);
+
+    const draft = (await fireBeforeSettle(evt([assistant('stop')]))) as { content: string; details: unknown };
+
+    expect(draft.details).toEqual({ agents: [{ agentId: 'agent-1', toolCallId: 'tc-1', status: 'error', result: 'model unavailable' }] });
+    expect(draft.content).not.toContain('agent-1');
+    expect(draft.content).not.toContain('tc-1');
+    await session.dispose();
+  });
+
   it('the settle after the continuation drains the background and lets the plan-mode hold through', async () => {
     // pi re-enters the boundary after each continuation, so precedence needs no state of its own.
     const session = new PiSession(makeOptions([]));
@@ -1972,6 +2060,52 @@ describe('PiSession — subagent model resolution', () => {
     const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' });
     expect(res.error).toBeUndefined();
     expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
+    await session.dispose();
+  });
+});
+
+describe('PiSession subagent records', () => {
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  type RecordsEngine = { recordInvocation: (d: unknown) => void; subagentStoreDir: () => string };
+  const engineOf = (session: PiSession): RecordsEngine =>
+    (session as unknown as { buildSubagentEngine: (pi: unknown) => RecordsEngine }).buildSubagentEngine(getPiCodingAgent());
+
+  it('appends the invocation entry to the live parent session', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    append.mockClear();
+
+    const data = { kind: 'subagent', id: 'agent-1', toolCallId: 'tc-1', resume: false };
+    engineOf(session).recordInvocation(data);
+
+    expect(append).toHaveBeenCalledWith('damocles-agent-invocation', data);
+    await session.dispose();
+  });
+
+  it('warns the user when the invocation entry cannot be written', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const append = H.getLastSession()!.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    append.mockImplementationOnce(() => { throw new Error('disk full'); });
+
+    engineOf(session).recordInvocation({ kind: 'subagent', id: 'agent-1', toolCallId: 'tc-1', resume: false });
+
+    expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'warning')).toBe(true);
+    await session.dispose();
+  });
+
+  it('files subagent sessions under the live parent session’s subagents folder', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const dir = engineOf(session).subagentStoreDir();
+    expect(path.basename(dir)).toBe('subagents');
+    expect(path.basename(path.dirname(dir))).toBe(H.getLastSession()!.sessionId);
     await session.dispose();
   });
 });
@@ -2116,6 +2250,96 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
     await session.steerSubagent('agent-1', 'too late');
 
     expect(record.userSteers).toBeUndefined();
+    await session.dispose();
+  });
+});
+
+describe('PiSession.steerTarget (/steer routing to team members)', () => {
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  function teamServiceStub(outcome: unknown) {
+    return { steerMember: vi.fn(() => outcome), listSteerTargets: vi.fn(() => []), dispose: vi.fn(), cancelActiveTeam: vi.fn() };
+  }
+
+  it('routes an id no subagent owns to the team member, emits the team chip and persists it', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'steered', teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const subagentSteer = vi.fn();
+    (session as unknown as { subagentManager: unknown }).subagentManager = { steer: subagentSteer, getRecord: vi.fn(() => undefined), dispose: vi.fn() };
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerTarget('member-1', 'use the new schema');
+
+    expect(subagentSteer).not.toHaveBeenCalled();
+    expect(teamService.steerMember).toHaveBeenCalledWith('member-1', 'use the new schema');
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({
+      agentId: 'member-1',
+      toolUseId: null,
+      description: 'Rewrite · backend',
+      message: 'use the new schema',
+      status: 'steered',
+      team: { teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' },
+    });
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', { agentId: 'member-1', description: 'Rewrite · backend', message: 'use the new schema' });
+    await session.dispose();
+  });
+
+  it('reports a finished member without persisting a chip', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'finished', teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerTarget('member-1', 'too late');
+
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ status: 'finished' });
+    expect(appendCustomEntry).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('prefers a subagent that owns the id and never asks the team', async () => {
+    const teamService = teamServiceStub(null);
+    const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const steer = vi.fn(async () => 'steered' as const);
+    (session as unknown as { subagentManager: unknown }).subagentManager = { steer, getRecord: vi.fn(() => ({ toolCallId: 't1' })), dispose: vi.fn() };
+
+    await session.steerTarget('agent-1', 'focus');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', 'focus');
+    expect(teamService.steerMember).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('falls back to the subagent not-found report when no team member matches', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub(null);
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+
+    await session.steerTarget('ghost', 'hello');
+
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ agentId: 'ghost', status: 'not-found' });
+    await session.dispose();
+  });
+
+  it('steerSubagent stays subagent-only and never consults the team', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'steered', teamId: 't', teamTitle: 'T', memberName: 'm', role: 'lead' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+
+    await session.steerSubagent('member-1', 'hello');
+
+    expect(teamService.steerMember).not.toHaveBeenCalled();
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ status: 'not-found' });
     await session.dispose();
   });
 });
@@ -3510,6 +3734,212 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     runtime.newSession = async () => ({ cancelled: true });
 
     await expect(session.detachFromDeletedSession()).rejects.toThrow(/cancelled/);
+    await session.dispose();
+  });
+
+  /** Hold the panel's subagent runs open until the returned release is called. */
+  function holdSubagentRuns(session: PiSession): { release: () => void } {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const manager = (session as unknown as { subagentManager: { whenRunsSettled: () => Promise<void> } }).subagentManager;
+    manager.whenRunsSettled = () => held;
+    return { release };
+  }
+
+  it('detach resolves only once the agents it aborted have stopped writing', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runs = holdSubagentRuns(session);
+
+    let detached = false;
+    const detaching = session.detachFromDeletedSession().then(() => { detached = true; });
+    await session.whenReplaced();
+    await tick();
+    expect(detached).toBe(false);
+
+    runs.release();
+    await detaching;
+    expect(detached).toBe(true);
+    await session.dispose();
+  });
+
+  it('detach gives up on an aborted agent that never settles, so the delete is not blocked forever', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    holdSubagentRuns(session);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const detaching = session.detachFromDeletedSession();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(detaching).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    await session.dispose();
+  });
+});
+
+describe('PiSession interruption notice and the pre-turn window', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    vi.mocked(reconcileInterruptions).mockClear();
+    vi.mocked(copyForkAgentData).mockClear();
+  });
+  afterEach(async () => {
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    await PiRuntime.disposeInstance();
+  });
+
+  function deferred(): { promise: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const promise = new Promise<void>((r) => { release = r; });
+    return { promise, release };
+  }
+
+  it('ESC then a prompt: the notice naming the stopped subagent is sent once, before the prompt', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager['getBranch'] as ReturnType<typeof vi.fn<() => unknown[]>>;
+    getBranch.mockReturnValue([
+      ...getBranch(),
+      { type: 'custom', id: 'inv1', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-1', toolCallId: 't1', resume: false } },
+    ]);
+
+    await session.interrupt();
+    await session.sendMessage('go on', undefined, 'c1', { content: 'go on' });
+    await session.sendMessage('and again', undefined, 'c2', { content: 'and again' });
+
+    const send = live.sendCustomMessage as ReturnType<typeof vi.fn>;
+    const prompt = live.prompt as ReturnType<typeof vi.fn>;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0] as NoticeMessage).toMatchObject({
+      customType: DAMOCLES_INTERRUPTION_NOTICE,
+      details: { agents: [{ kind: 'subagent', id: 'agent-1', toolCallId: 't1' }] },
+    });
+    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(send.mock.invocationCallOrder[0]!).toBeLessThan(prompt.mock.invocationCallOrder[0]!);
+    await session.dispose();
+  });
+
+  it('ESC while the reconcile is pending: no prompt runs and the message goes back to the composer', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    session.requestInterruptionCheck();
+    const gate = deferred();
+    vi.mocked(reconcileInterruptions).mockImplementationOnce(async () => {
+      await gate.promise;
+      return [];
+    });
+
+    const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await vi.waitFor(() => expect(reconcileInterruptions).toHaveBeenCalledTimes(1));
+    await session.interrupt();
+    gate.release();
+    await sending;
+
+    expect(live.prompt).not.toHaveBeenCalled();
+    expect(messages.some((m) => m.type === 'userMessage')).toBe(false);
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'go' });
+    expect(session.processing).toBe(false);
+    await session.dispose();
+  });
+
+  it('a session replaced while the reconcile is pending gets neither the notice nor the prompt', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const first = H.getLastSession()!;
+    session.requestInterruptionCheck();
+    const gate = deferred();
+    vi.mocked(reconcileInterruptions).mockImplementationOnce(async (sources) => {
+      await gate.promise;
+      await sources.send({ customType: DAMOCLES_INTERRUPTION_NOTICE, content: 'notice', display: false, details: { agents: [] } });
+      return [];
+    });
+
+    const sending = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    await vi.waitFor(() => expect(reconcileInterruptions).toHaveBeenCalledTimes(1));
+    session.reset();
+    await session.whenReplaced();
+    gate.release();
+    await sending;
+
+    const replacement = H.getLastSession()!;
+    expect(replacement).not.toBe(first);
+    expect(first.sendCustomMessage).not.toHaveBeenCalled();
+    expect(first.prompt).not.toHaveBeenCalled();
+    expect(replacement.prompt).not.toHaveBeenCalled();
+    expect(messages).toContainEqual({ type: 'interruptRecovery', correlationId: 'c1', promptContent: 'go' });
+    await session.dispose();
+  });
+
+  it('a failed reconcile warns and the turn still runs', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    session.requestInterruptionCheck();
+    vi.mocked(reconcileInterruptions).mockRejectedValueOnce(new Error('EBUSY'));
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+
+    expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'warning')).toBe(true);
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  /** A live session whose branch can fork at `a1`, the parent of user entry `u2`. */
+  async function forkableSession(messages: ExtensionToWebviewMessage[], parentTimestamp: string | undefined) {
+    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const sm = H.getLastSession()!.sessionManager;
+    (sm['getEntry'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+      id === 'u2' ? { id: 'u2', parentId: 'a1', type: 'message', timestamp: '2026-03-04T09:00:00.000Z' }
+      : id === 'a1' ? { id: 'a1', parentId: 'u1', type: 'message', ...(parentTimestamp ? { timestamp: parentTimestamp } : {}) }
+      : undefined,
+    );
+    (sm['getSessionFile'] as ReturnType<typeof vi.fn>).mockReturnValue('/fake/agent/sessions/cwd/2026-03-04T08-00-00-000Z_src.jsonl');
+    sm['getSessionId'] = () => 'src';
+    sm['getEntries'] = () => [];
+    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({
+      createBranchedSession: () => '/fake/agent/sessions/cwd/2026-03-04T10-00-00-000Z_fork.jsonl',
+    });
+    return { session, onSpawnFork };
+  }
+
+  it('a fork copies agent data cut at the parent entry\'s timestamp', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, onSpawnFork } = await forkableSession(messages, '2026-03-04T08:30:00.123Z');
+    vi.mocked(copyForkAgentData).mockResolvedValueOnce([]);
+
+    await session.rewindFiles('u2', 'fork-conversation');
+
+    expect(copyForkAgentData).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(copyForkAgentData).mock.calls[0]![0]).toMatchObject({
+      sourceSessionId: 'src',
+      targetSessionId: 'fork',
+      forkPointMs: Date.parse('2026-03-04T08:30:00.123Z'),
+    });
+    expect(messages.some((m) => m.type === 'notification')).toBe(false);
+    expect(onSpawnFork.mock.calls[0]![0].piBranchedSessionId).toBe('fork');
+    await session.dispose();
+  });
+
+  it('a fork whose parent entry has no timestamp copies nothing, warns, and still opens', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, onSpawnFork } = await forkableSession(messages, undefined);
+
+    await session.rewindFiles('u2', 'fork-conversation');
+
+    expect(copyForkAgentData).not.toHaveBeenCalled();
+    expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'warning')).toBe(true);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
     await session.dispose();
   });
 });

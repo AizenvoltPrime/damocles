@@ -18,6 +18,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
+import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -31,6 +32,8 @@ defineEmits<{
 }>();
 
 const hasTemplate = computed(() => Boolean(props.subagent.templatePath));
+
+const heading = computed(() => subagentHeading(props.subagent, t));
 
 function openTemplate(): void {
   if (props.subagent.templatePath) {
@@ -77,7 +80,10 @@ const AGENT_TYPE_ICONS: Record<string, Component> = {
   'general-purpose': IconRobot,
 };
 
-const agentIcon = computed((): Component => ownEntry(AGENT_TYPE_ICONS, props.subagent.agentType) ?? IconClipboard);
+const agentIcon = computed((): Component => {
+  const type = props.subagent.agentType;
+  return (type !== undefined ? ownEntry(AGENT_TYPE_ICONS, type) : undefined) ?? IconClipboard;
+});
 
 const toolCount = computed(() => {
   if (props.subagent.result?.totalToolUseCount) {
@@ -122,9 +128,11 @@ const statusBadgeClass = computed(() => {
   }
 });
 
-const displayAgentType = computed(() => {
-  const key = subagentTypeLabelKey(props.subagent.agentType);
-  return key ? t(key) : props.subagent.agentType;
+const displayAgentType = computed((): string | null => {
+  const type = props.subagent.agentType;
+  if (type === undefined) return null;
+  const key = subagentTypeLabelKey(type);
+  return key ? t(key) : type;
 });
 
 // Render the extension-resolved display label verbatim (custom providers like StepFun included); never
@@ -148,12 +156,20 @@ const metadataItems = computed(() => [
   >
     <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
       <component :is="agentIcon" :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium truncate flex-1">{{ subagent.description }}</span>
+      <span class="text-foreground font-medium truncate flex-1">{{ heading.title }}</span>
+      <Badge
+        v-if="heading.resumed"
+        variant="secondary"
+        class="bg-primary/15 text-primary border-primary/30 shrink-0"
+      >
+        {{ t('subagentDisplay.resumed') }}
+      </Badge>
       <Badge v-if="subagent.isBackground" variant="secondary" class="bg-blue-500/15 text-blue-400 border-blue-500/30 gap-1 shrink-0">
         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
         <span>{{ t('backgroundTask.background') }}</span>
       </Badge>
       <Badge
+        v-if="displayAgentType !== null"
         variant="secondary"
         :class="[statusBadgeClass, hasTemplate ? 'cursor-pointer hover:brightness-125 transition' : '']"
         class="gap-1 shrink-0"

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
-import type { TeamAgentContentBlock } from '@shared/types/team';
+import type { TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
+import { wrapSteerMessage } from '@shared/steer';
 import { useTeamStore } from '../useTeamStore';
 
 /**
@@ -25,6 +26,16 @@ function toolResult(
   extra?: { is_error?: boolean; metadata?: Record<string, unknown> },
 ): TeamAgentContentBlock {
   return { type: 'tool_result', tool_use_id: id, content, ...extra };
+}
+
+let entrySeq = 0;
+/** One persisted member message as the host sends it; the id stands in for its pi session entry id. */
+function persisted(role: TeamAgentHistoryMessage['role'], ...content: TeamAgentContentBlock[]): TeamAgentHistoryMessage {
+  return { id: `entry-${++entrySeq}`, role, content };
+}
+
+function userTurn(text: string): TeamAgentHistoryMessage {
+  return persisted('user', { type: 'text', text });
 }
 
 /** Fails loudly rather than letting an undefined element propagate into a comparison that passes. */
@@ -206,9 +217,9 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('restores a historical tool call with its persisted result as completed', () => {
     const store = useTeamStore();
     store.handleAgentDataLoaded(AGENT, [
-      [{ type: 'text', text: 'do the task' }],
-      [{ type: 'text', text: 'running it' }, toolUse('tc-1', 'Bash', { command: 'ls' })],
-      [toolResult('tc-1', 'a.ts\nb.ts')],
+      userTurn('do the task'),
+      persisted('assistant', { type: 'text', text: 'running it' }, toolUse('tc-1', 'Bash', { command: 'ls' })),
+      persisted('toolResult', toolResult('tc-1', 'a.ts\nb.ts')),
     ]);
 
     const call = toolCallById(store, AGENT, 'tc-1');
@@ -222,8 +233,8 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('restores an errored call as failed rather than as a success', () => {
     const store = useTeamStore();
     store.handleAgentDataLoaded(AGENT, [
-      [toolUse('tc-1', 'Bash', { command: 'nope' })],
-      [{ type: 'tool_result', tool_use_id: 'tc-1', content: 'command not found', is_error: true }],
+      persisted('assistant', toolUse('tc-1', 'Bash', { command: 'nope' })),
+      persisted('toolResult', { type: 'tool_result', tool_use_id: 'tc-1', content: 'command not found', is_error: true }),
     ]);
 
     const call = toolCallById(store, AGENT, 'tc-1');
@@ -235,8 +246,8 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('restores a user-cancelled call as cancelled, from the marker on the persisted metadata', () => {
     const store = useTeamStore();
     store.handleAgentDataLoaded(AGENT, [
-      [toolUse('tc-1', 'Bash', { command: 'sleep 300' })],
-      [toolResult('tc-1', 'partial output', { metadata: { [CANCELLED_TOOL_DETAIL_KEY]: true } })],
+      persisted('assistant', toolUse('tc-1', 'Bash', { command: 'sleep 300' })),
+      persisted('toolResult', toolResult('tc-1', 'partial output', { metadata: { [CANCELLED_TOOL_DETAIL_KEY]: true } })),
     ]);
 
     const call = toolCallById(store, AGENT, 'tc-1');
@@ -247,7 +258,7 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('marks a call with no persisted result unrecorded instead of claiming it succeeded', () => {
     // Every team log written before results were persisted lands here, as does a team killed mid-call.
     const store = useTeamStore();
-    store.handleAgentDataLoaded(AGENT, [[toolUse('tc-1', 'Bash', { command: 'ls' })]]);
+    store.handleAgentDataLoaded(AGENT, [persisted('assistant', toolUse('tc-1', 'Bash', { command: 'ls' }))]);
 
     const call = toolCallById(store, AGENT, 'tc-1');
     expect(call.status).toBe('unrecorded');
@@ -257,7 +268,7 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('never restores such a call to a pre-terminal status, which renders it as still running', () => {
     // `pending` and `running` both put a live control on a card for a tool that ended long ago.
     const store = useTeamStore();
-    store.handleAgentDataLoaded(AGENT, [[toolUse('tc-1', 'Bash', { command: 'ls' })]]);
+    store.handleAgentDataLoaded(AGENT, [persisted('assistant', toolUse('tc-1', 'Bash', { command: 'ls' }))]);
 
     const status = toolCallById(store, AGENT, 'tc-1').status;
     expect(status).not.toBe('pending');
@@ -268,13 +279,14 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('applies each result to the call it names when one turn holds several', () => {
     const store = useTeamStore();
     store.handleAgentDataLoaded(AGENT, [
-      [
+      persisted(
+        'assistant',
         toolUse('tc-1', 'Bash', { command: 'ls' }),
         toolUse('tc-2', 'Read', { file_path: 'c:/x.ts' }),
         toolUse('tc-3', 'Bash', { command: 'nope' }),
-      ],
-      [toolResult('tc-2', 'file body')],
-      [toolResult('tc-3', 'command not found', { is_error: true })],
+      ),
+      persisted('toolResult', toolResult('tc-2', 'file body')),
+      persisted('toolResult', toolResult('tc-3', 'command not found', { is_error: true })),
     ]);
 
     expect(toolCallById(store, AGENT, 'tc-1').status).toBe('unrecorded');
@@ -287,8 +299,8 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('renders a result turn on its call rather than as a message of its own', () => {
     const store = useTeamStore();
     store.handleAgentDataLoaded(AGENT, [
-      [toolUse('tc-1', 'Bash', { command: 'ls' })],
-      [toolResult('tc-1', 'a.ts')],
+      persisted('assistant', toolUse('tc-1', 'Bash', { command: 'ls' })),
+      persisted('toolResult', toolResult('tc-1', 'a.ts')),
     ]);
 
     expect(store.agentMessages[AGENT]).toHaveLength(1);
@@ -297,9 +309,143 @@ describe('useTeamStore.handleAgentDataLoaded', () => {
   it('coerces a scalar input on a historical entry to an empty object', () => {
     // Team logs written before the extension normalized are not migrated, so this path meets junk input.
     const store = useTeamStore();
-    store.handleAgentDataLoaded(AGENT, [[toolUse('tc-1', 'bash', 'ls')]]);
+    store.handleAgentDataLoaded(AGENT, [persisted('assistant', toolUse('tc-1', 'bash', 'ls'))]);
 
     expect(toolCallById(store, AGENT, 'tc-1').input).toEqual({});
+  });
+
+  it('restores user turns as user messages and text replies as assistant ones, each keyed by its entry id', () => {
+    const store = useTeamStore();
+    const history = [
+      userTurn('fix the parser'),
+      userTurn('[Message from lead]: the spec changed'),
+      userTurn(wrapSteerMessage('skip the slow suite')),
+      persisted('assistant', { type: 'text', text: 'On it.' }),
+    ];
+
+    store.handleAgentDataLoaded(AGENT, history);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => [m.id, m.role, m.content])).toEqual([
+      [history[0]!.id, 'user', 'fix the parser'],
+      [history[1]!.id, 'user', '[Message from lead]: the spec changed'],
+      [history[2]!.id, 'user', wrapSteerMessage('skip the slow suite')],
+      [history[3]!.id, 'assistant', 'On it.'],
+    ]);
+  });
+
+  it('drops a message whose role the card does not know', () => {
+    const store = useTeamStore();
+    const unknown = { id: 'entry-x', role: 'system', content: [{ type: 'text', text: 'injected' }] } as unknown as TeamAgentHistoryMessage;
+
+    store.handleAgentDataLoaded(AGENT, [unknown, userTurn('fix the parser')]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.content)).toEqual(['fix the parser']);
+  });
+});
+
+describe('useTeamStore.handleAgentDataLoaded beside live messages', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const RESUME_PROMPT = 'You were interrupted. Continue.';
+
+  /** A member resumed after a reload: its relaunch streamed live before the overlay asked for its file. */
+  function resumedLive(store: TeamStore): void {
+    store.handleAgentUserMessage(AGENT, RESUME_PROMPT, 10);
+    store.handleAgentAssistant(AGENT, 'live-1', [{ type: 'text', text: 'picking up' }, toolUse('tc-9', 'Bash', { command: 'npm test' })], 11);
+  }
+
+  const beforeCancel = (): TeamAgentHistoryMessage[] => [
+    userTurn('do the task'),
+    persisted('assistant', { type: 'text', text: 'started' }, toolUse('tc-1', 'Bash', { command: 'ls' })),
+    persisted('toolResult', toolResult('tc-1', 'a.ts')),
+  ];
+
+  const resumedTurns = (): TeamAgentHistoryMessage[] => [
+    userTurn(RESUME_PROMPT),
+    persisted('assistant', { type: 'text', text: 'picking up' }, toolUse('tc-9', 'Bash', { command: 'npm test' })),
+  ];
+
+  it('puts the turns from before the cancel ahead of the live ones and repeats none', () => {
+    const store = useTeamStore();
+    resumedLive(store);
+
+    store.handleAgentDataLoaded(AGENT, [...beforeCancel(), ...resumedTurns()]);
+
+    const messages = store.agentMessages[AGENT] ?? [];
+    expect(messages.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'do the task'],
+      ['assistant', 'started'],
+      ['user', RESUME_PROMPT],
+      ['assistant', 'picking up'],
+    ]);
+  });
+
+  it('keeps the live copy of a repeated message, whose running tool the file has no result for yet', () => {
+    const store = useTeamStore();
+    resumedLive(store);
+
+    store.handleAgentDataLoaded(AGENT, [...beforeCancel(), ...resumedTurns()]);
+
+    expect(toolCallById(store, AGENT, 'tc-9').status).toBe('running');
+  });
+
+  it('keeps a live message the file did not hold yet when it was read', () => {
+    const store = useTeamStore();
+    resumedLive(store);
+
+    store.handleAgentDataLoaded(AGENT, [...beforeCancel(), userTurn(RESUME_PROMPT)]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.content)).toEqual(['do the task', 'started', RESUME_PROMPT, 'picking up']);
+  });
+
+  it('keeps an earlier turn that happens to equal a live one when both really happened', () => {
+    const store = useTeamStore();
+    store.handleAgentUserMessage(AGENT, 'ok', 10);
+
+    store.handleAgentDataLoaded(AGENT, [userTurn('ok'), persisted('assistant', { type: 'text', text: 'done' }), userTurn('ok')]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.content)).toEqual(['ok', 'done', 'ok']);
+  });
+
+  it('shows two identical live messages once each when the file holds both', () => {
+    const store = useTeamStore();
+    store.handleAgentUserMessage(AGENT, '[Message from lead]: ping', 10);
+    store.handleAgentUserMessage(AGENT, '[Message from lead]: ping', 11);
+
+    store.handleAgentDataLoaded(AGENT, [
+      ...beforeCancel(),
+      userTurn('[Message from lead]: ping'),
+      userTurn('[Message from lead]: ping'),
+    ]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => m.content)).toEqual([
+      'do the task', 'started', '[Message from lead]: ping', '[Message from lead]: ping',
+    ]);
+  });
+
+  it('keeps a reply the file holds when a live user message has the same text', () => {
+    // The note is echoed live before pi persists it, so the file's last message is the member's own reply.
+    const store = useTeamStore();
+    store.handleAgentUserMessage(AGENT, 'ok', 10);
+
+    store.handleAgentDataLoaded(AGENT, [userTurn('do the task'), persisted('assistant', { type: 'text', text: 'ok' })]);
+
+    expect((store.agentMessages[AGENT] ?? []).map((m) => [m.role, m.content])).toEqual([
+      ['user', 'do the task'],
+      ['assistant', 'ok'],
+      ['user', 'ok'],
+    ]);
+  });
+
+  it('records the member as loaded so the overlay asks for its file once', () => {
+    const store = useTeamStore();
+    expect(store.isAgentHistoryLoaded(AGENT)).toBe(false);
+
+    store.handleAgentDataLoaded(AGENT, []);
+
+    expect(store.isAgentHistoryLoaded(AGENT)).toBe(true);
+    store.$reset();
+    expect(store.isAgentHistoryLoaded(AGENT)).toBe(false);
   });
 });
 
@@ -376,6 +522,7 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
       startTime: 1000,
       endTime: null,
       totalToolCount: 5,
+      runs: [],
     });
   }
 

@@ -105,13 +105,8 @@ import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage } from "@shared/types/messages";
-/** Shape persisted through the webview host's `setState`, restored on panel reload. */
-interface PanelState {
-  sessionId?: string;
-  sessionName?: string | null;
-}
 
-const { postMessage, setState, getState } = useVSCode();
+const { postMessage } = useVSCode();
 const { t } = useI18n();
 
 initLocaleMessaging(postMessage);
@@ -388,7 +383,7 @@ function tryDispatchSteer(content: string | UserContentBlock[]): boolean {
     streamingStore.addErrorMessage(t("steerCommand.usage"));
     return true;
   }
-  postMessage({ type: "steerSubagent", agentId: steerMatch[1]!, message: steerMatch[2]! });
+  postMessage({ type: "steerAgent", agentId: steerMatch[1]!, message: steerMatch[2]! });
   return true;
 }
 
@@ -448,18 +443,10 @@ function handleCancel() {
   postMessage({ type: "cancelSession" });
 }
 
+// The panel is cleared on the host's `resumeAccepted`, since the host refuses a conversation another panel holds.
 function handleSessionSelect(sessionId: string) {
-  const session = storedSessions.value.find((s) => s.id === sessionId);
-  if (!session) return;
-
-  const sessionName = session.customTitle || session.aiTitle || session.preview || null;
-  streamingStore.$reset();
-  teamStore.$reset();
-  sessionStore.clearSessionData();
-  sessionStore.setResumedSession(sessionId);
-  sessionStore.setSelectedSession(sessionId, sessionName);
+  if (!storedSessions.value.some((s) => s.id === sessionId)) return;
   postMessage({ type: "resumeSession", sessionId });
-  setState({ ...getState<PanelState>(), sessionId, sessionName });
 }
 
 function handleSessionRename(sessionId: string, newName: string) {

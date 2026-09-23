@@ -9,9 +9,17 @@
 
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import type { AgentStopReason } from '../agent-records';
 import type { LifetimeUsage } from './usage';
 
 export type { ThinkingLevel };
+
+/** The thinking levels a spawn may request, which the `Agent` schema advertises. */
+export const THINKING_OVERRIDES: readonly ['minimal', 'low', 'medium', 'high', 'xhigh'] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+
+export function isThinkingOverride(value: unknown): value is (typeof THINKING_OVERRIDES)[number] {
+  return typeof value === 'string' && (THINKING_OVERRIDES as readonly string[]).includes(value);
+}
 
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
@@ -110,11 +118,13 @@ export interface AgentRecord {
    *  the parent when it consumes this subagent's result, so it knows the user redirected the subagent. */
   userSteers?: string[] | undefined;
   /** The tool_use_id from the original Agent tool call (the webview `parentToolUseId`). */
-  toolCallId?: string | undefined;
-  /** Path to the streaming output transcript file. */
+  toolCallId: string;
+  /** Why a `stopped` agent was stopped. */
+  stopReason?: AgentStopReason | undefined;
+  /** Path of the agent's pi session file. pi creates it at the first assistant message. */
   outputFile?: string | undefined;
-  /** Cleanup function for the output file stream subscription. */
-  outputCleanup?: (() => void) | undefined;
+  /** Set once the `damocles-agent-status` entry has been appended to the agent's session. */
+  statusRecorded?: boolean | undefined;
   /** Unsubscribe for the stream-bridge's session subscription (torn down on completion). */
   bridgeUnsub?: (() => void) | undefined;
   /** Whether this agent was spawned with run_in_background (drives the keep-alive hold + bg-task UI). */
@@ -126,8 +136,10 @@ export interface AgentRecord {
    * cacheRead answers a different question, what the API bills. Initialized to zeros at spawn.
    */
   lifetimeUsage: LifetimeUsage;
-  /** Cumulative dollar cost reported by the subagent session, last seen (for budget rollup). */
+  /** This run's dollar cost, last seen (for budget rollup): session cost minus `costBaseline`. */
   costUsd: number;
+  /** Session cost when this run opened it. A reopened session's stats include earlier runs' spend. */
+  costBaseline?: number | undefined;
   /** Number of times this agent's session has compacted. */
   compactionCount: number;
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */

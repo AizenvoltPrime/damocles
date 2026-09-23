@@ -1,23 +1,38 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import type { HistoryToolCall } from '@shared/types/content';
 
-// Hermetic fixtures for driving loadPiSessionHistory without the real pi runtime or filesystem.
-const hoisted = vi.hoisted(() => ({ branch: [] as unknown[] }));
-vi.mock('../../pi-loader', () => ({
-  initPiLoader: vi.fn(async () => ({
-    SessionManager: { open: () => ({ getLeafId: () => 'leaf', getBranch: () => hoisted.branch }) },
-  })),
-}));
+// Hermetic fixtures for driving loadPiSessionHistory without the real pi runtime. Agent files are real
+// JSONL under a temp session dir, parsed by pi's own `parseSessionEntries`.
+const hoisted = vi.hoisted(() => ({ branch: [] as unknown[], sessionDir: '/fake/dir' }));
+vi.mock('../../pi-loader', async () => {
+  const real = await import('@earendil-works/pi-coding-agent');
+  return {
+    initPiLoader: vi.fn(async () => ({
+      SessionManager: { open: () => ({ getLeafId: () => 'leaf', getBranch: () => hoisted.branch }) },
+      parseSessionEntries: real.parseSessionEntries,
+    })),
+  };
+});
 vi.mock('../reading', () => ({ resolvePiSessionFile: vi.fn(async () => '/fake/session.jsonl') }));
-vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => '/fake/dir') }));
+vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => hoisted.sessionDir) }));
 vi.mock('../../checkpoints', () => ({ getCheckpointEntries: vi.fn(() => []) }));
-vi.mock('../../subagents/output-file', () => ({ readSubagentTranscripts: vi.fn(async () => new Map()) }));
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
 
 import { reconstructMessages, loadPiSessionHistory } from '../history-loader';
 import { stripIdeContext } from '../ide-context';
-import { DAMOCLES_ORIGINAL_INPUT_ENTRY, DAMOCLES_STEER_ENTRY } from '../constants';
+import {
+  DAMOCLES_AGENT_INVOCATION_ENTRY,
+  DAMOCLES_AGENT_LAUNCH_ENTRY,
+  DAMOCLES_AGENT_SEGMENT_ENTRY,
+  DAMOCLES_AGENT_STATUS_ENTRY,
+  DAMOCLES_ORIGINAL_INPUT_ENTRY,
+  DAMOCLES_STEER_ENTRY,
+} from '../constants';
 
 function userMsg(id: string, text: string): SessionEntry {
   return { id, type: 'message', message: { role: 'user', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
@@ -307,5 +322,197 @@ describe('reconstructMessages — pruned screenshot', () => {
     const tools = (messages[1] as { tools: Array<{ id: string; result?: string }> }).tools;
     expect(tools[0]!.result).toBe('Screenshot of https://example.com');
     expect(JSON.stringify(messages)).not.toContain('[Image removed');
+  });
+});
+
+describe('loadPiSessionHistory — subagent cards from invocation entries and agent files', () => {
+  const SESSION_ID = 'sess-agents';
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-history-agents-'));
+    hoisted.sessionDir = tmp;
+    hoisted.branch = [];
+  });
+  afterEach(() => {
+    hoisted.sessionDir = '/fake/dir';
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const ts = (s: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
+
+  /** An agent pi session file as pi writes it: header, launch, then the given entries. */
+  function writeAgentFile(fileId: string, agentId: string, extra: unknown[]): void {
+    const dir = path.join(tmp, SESSION_ID, 'subagents');
+    fs.mkdirSync(dir, { recursive: true });
+    const entries = [
+      { type: 'session', version: 3, id: fileId, timestamp: ts(0), cwd: '/cwd' },
+      {
+        type: 'custom',
+        id: 'l1',
+        parentId: null,
+        timestamp: ts(1),
+        customType: DAMOCLES_AGENT_LAUNCH_ENTRY,
+        data: { agentId, kind: 'subagent', agentType: 'Explore', description: 'look', prompt: 'look around', background: false, modelLabel: 'haiku', templatePath: '/a/explore.md' },
+      },
+      ...extra,
+    ];
+    const lines = entries.map((e) => JSON.stringify(e)).join(String.fromCharCode(10));
+    fs.writeFileSync(path.join(dir, `2026-01-01T00-00-00-000Z_${fileId}.jsonl`), lines);
+  }
+
+  const agentCall = (id: string, toolCallId: string, background = false): SessionEntry =>
+    ({
+      id,
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: toolCallId, name: 'Agent', arguments: { description: 'look', prompt: 'look around', subagent_type: 'Explore', run_in_background: background } },
+        ],
+      },
+    }) as unknown as SessionEntry;
+  const invocation = (agentId: string, toolCallId: string): SessionEntry =>
+    ({ id: `i-${agentId}`, type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: agentId, toolCallId, resume: false } }) as unknown as SessionEntry;
+  const agentResult = (toolCallId: string, text: string, details: unknown): SessionEntry =>
+    ({ id: `r-${toolCallId}`, type: 'message', message: { role: 'toolResult', toolCallId, content: [{ type: 'text', text }], isError: false, details } }) as unknown as SessionEntry;
+
+  async function replayedAgentTools(): Promise<HistoryToolCall[]> {
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', SESSION_ID, (m) => posts.push(m));
+    return posts.flatMap((p) => (p.type === 'assistantReplay' ? (p.tools ?? []) : [])).filter((t) => t.name === 'Agent');
+  }
+
+  it('rebuilds a card from its invocation entry and the agent’s pi session file', async () => {
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      {
+        type: 'message',
+        id: 'm2',
+        parentId: 'm1',
+        timestamp: ts(3),
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'n1', name: 'read', arguments: { path: 'a.ts' } }] },
+      },
+      { type: 'message', id: 'm3', parentId: 'm2', timestamp: ts(4), message: { role: 'toolResult', toolCallId: 'n1', content: [{ type: 'text', text: 'body' }] } },
+      { type: 'message', id: 'm4', parentId: 'm3', timestamp: ts(5), message: { role: 'assistant', content: [{ type: 'text', text: 'all found' }] } },
+      { type: 'custom', id: 's1', parentId: 'm4', timestamp: ts(6), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'completed', result: 'all found' } },
+    ]);
+    hoisted.branch = [
+      userMsg('u1', 'explore it'),
+      agentCall('a1', 'tc1'),
+      invocation('agent-1', 'tc1'),
+      agentResult('tc1', '{"agentId":"agent-1"}', { agentId: 'agent-1', status: 'completed' }),
+    ];
+
+    const [tool] = await replayedAgentTools();
+    expect(tool).toMatchObject({
+      sdkAgentId: 'agent-1',
+      agentStatus: 'completed',
+      agentResultText: 'all found',
+      agentModel: 'haiku',
+      agentTemplatePath: '/a/explore.md',
+      agentToolCount: 1,
+      agentStartTimestamp: Date.parse(ts(1)),
+      agentEndTimestamp: Date.parse(ts(6)),
+    });
+    expect(tool!.agentMessages!.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant']);
+    expect(tool!.agentMessages![1]!.contentBlocks[0]).toMatchObject({ type: 'tool_use', id: 'n1', result: 'body' });
+  });
+
+  it('a background agent that failed before its first response takes its error from the injection details', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'explore in the background'),
+      agentCall('a1', 'tc2', true),
+      invocation('agent-2', 'tc2'),
+      agentResult('tc2', '{"status":"async_launched","agentId":"agent-2"}', { agentId: 'agent-2', status: 'async_launched' }),
+      {
+        id: 'inj',
+        type: 'custom_message',
+        customType: 'damocles-subagent-results',
+        content: 'The background subagent you launched has finished.',
+        display: false,
+        details: { agents: [{ agentId: 'agent-2', toolCallId: 'tc2', status: 'error', result: 'Model x is not signed in.' }] },
+      } as unknown as SessionEntry,
+    ];
+
+    const [tool] = await replayedAgentTools();
+    expect(tool).toMatchObject({ sdkAgentId: 'agent-2', agentStatus: 'error', agentResultText: 'Model x is not signed in.' });
+    expect(tool!.agentMessages).toBeUndefined();
+  });
+
+  it('an agent killed before any status was recorded replays as interrupted', async () => {
+    hoisted.branch = [userMsg('u1', 'go'), agentCall('a1', 'tc3', true), invocation('agent-3', 'tc3')];
+    const [tool] = await replayedAgentTools();
+    expect(tool).toMatchObject({ sdkAgentId: 'agent-3', agentStatus: 'interrupted' });
+  });
+
+  it('a resume call gets its own card with only its segment; the original card keeps its stop', async () => {
+    writeAgentFile('agent-5', 'agent-5', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: { role: 'assistant', content: [{ type: 'text', text: 'first half' }] } },
+      { type: 'custom', id: 's1', parentId: 'm2', timestamp: ts(4), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'stopped', stopReason: 'user', result: 'first half' } },
+      { type: 'custom', id: 'g1', parentId: 's1', timestamp: ts(10), customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: { toolCallId: 'tc-r', message: 'finish it' } },
+      { type: 'message', id: 'm3', parentId: 'g1', timestamp: ts(11), message: { role: 'user', content: 'continue' } },
+      { type: 'message', id: 'm4', parentId: 'm3', timestamp: ts(12), message: { role: 'assistant', content: [{ type: 'text', text: 'second half' }] } },
+      { type: 'custom', id: 's2', parentId: 'm4', timestamp: ts(13), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'completed', result: 'second half' } },
+    ]);
+    hoisted.branch = [
+      userMsg('u1', 'explore it'),
+      agentCall('a1', 'tc5'),
+      invocation('agent-5', 'tc5'),
+      agentResult('tc5', 'first half', { agentId: 'agent-5', status: 'stopped', stopReason: 'user' }),
+      userMsg('u2', 'continue'),
+      {
+        id: 'a2',
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-r', name: 'Agent', arguments: { resume: 'agent-5', message: 'finish it' } }] },
+      } as unknown as SessionEntry,
+      { id: 'i-r', type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-5', toolCallId: 'tc-r', resume: true } } as unknown as SessionEntry,
+      agentResult('tc-r', 'second half', { agentId: 'agent-5', status: 'completed' }),
+    ];
+
+    const [original, resumed] = await replayedAgentTools();
+
+    expect(original).toMatchObject({ id: 'tc5', sdkAgentId: 'agent-5', agentStatus: 'stopped', agentResultText: 'first half' });
+    expect(original!.agentResumedFrom).toBeUndefined();
+    expect(original!.agentMessages!.flatMap((m) => m.contentBlocks)).toEqual([
+      { type: 'text', text: 'look around' },
+      { type: 'text', text: 'first half' },
+    ]);
+    expect(original!.agentEndTimestamp).toBe(Date.parse(ts(4)));
+
+    expect(resumed).toMatchObject({
+      id: 'tc-r',
+      sdkAgentId: 'agent-5',
+      agentResumedFrom: 'agent-5',
+      agentStatus: 'completed',
+      agentResultText: 'second half',
+      agentLaunch: { agentType: 'Explore', description: 'look', prompt: 'look around', background: false },
+      agentStartTimestamp: Date.parse(ts(10)),
+    });
+    expect(resumed!.agentMessages!.flatMap((m) => m.contentBlocks)).toEqual([
+      { type: 'text', text: 'continue' },
+      { type: 'text', text: 'second half' },
+    ]);
+  });
+
+  it('display:false custom messages, such as the interruption notice, render nothing', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'go'),
+      { id: 'n1', type: 'custom_message', customType: 'damocles-interruption-notice', content: 'These agents were interrupted', display: false } as unknown as SessionEntry,
+      assistantMsg('a1', 'done'),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', SESSION_ID, (m) => posts.push(m));
+    expect(JSON.stringify(posts)).not.toContain('These agents were interrupted');
+  });
+
+  it('a session recorded before agent files shows only the parent tool call and result', async () => {
+    hoisted.branch = [userMsg('u1', 'go'), agentCall('a1', 'tc4'), agentResult('tc4', '{"agentId":"old"}', undefined)];
+    const [tool] = await replayedAgentTools();
+    expect(tool!.result).toBe('{"agentId":"old"}');
+    expect(tool!.sdkAgentId).toBeUndefined();
+    expect(tool!.agentStatus).toBeUndefined();
+    expect(tool!.agentMessages).toBeUndefined();
   });
 });

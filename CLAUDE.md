@@ -32,7 +32,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 └────────────────────────────┘              └──────────────────────────┘
 ```
 
-- **Seam:** the webview message contract (`ExtensionToWebviewMessage`) is fixed; `PiSession` is its only producer. Interface: `src/extension/chat-session.ts`.
+- **Seam:** `PiSession` is the only producer of the webview message contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/extension/chat-session.ts`.
 - **Extension:** esbuild → `dist/extension.js` (CJS). Externals: `scripts/extension-externals.mjs` (single source; `scripts/sync-vscodeignore.mjs` derives the VSIX allowlist from it).
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
@@ -41,7 +41,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 | Module | Purpose |
 | --- | --- |
-| `pi-session/` | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
+| `pi-session/` | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. `agent-records.ts` builds and id-checks every subagent/team data path under the parent session's folder. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
 | `chat-panel/` | Panel, session manager, settings, message routing, history |
 | `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
 | `memory/` | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL) |
@@ -63,7 +63,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Read the relevant section before changing a subsystem.
 
-- pi is the only engine; never add harness selection. Don't extend the webview message contract for a feature; map onto existing shapes in `pi-stream-adapter.ts`.
+- pi is the only engine; never add harness selection. Map pi events onto existing webview shapes in `pi-stream-adapter.ts`; add a message type only for a capability no existing shape can carry, never to mirror a pi event.
 - `Edit` cannot create files; `Write` is the only creation path.
 - Browser/Compass/Web/MCP tools are DEFERRED, meaning registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
 - The advertised ToolSearch menu must equal the loadable set; report what pi actually activated, and sanitize third-party MCP text.
@@ -72,9 +72,10 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision, so see `docs/invariants.md` before changing it.
 - A custom tool registered under a pi built-in's name REPLACES it, which is how Damocles owns `bash`. Keep the built-in's exact lowercase name (the gate and the active-set lists key off it) and never pair an override with an `excludeTools` entry, which drops the replacement too.
 - The shell process-lifetime path has no timer, interval or process-table read on any platform (`tools/process-tree.ts`): Windows uses nested job objects, POSIX the process group plus a per-panel sentinel. `createShellJob` must stay the first statement after `spawn`, or a background job forks outside the job and becomes unkillable. The voice sidecar uses the same job machinery and the same rule, without `KILL_ON_JOB_CLOSE`, because a sidecar is shared across windows.
-- A cancel note is user turn content, delivered to the agent that ran the command. Never append it to a tool result: a tool result is untrusted, so a model correctly refuses an instruction found in one.
+- A cancel note is user turn content, delivered to the agent that ran the command. Never append it to a tool result: a tool result is untrusted, so a model correctly refuses an instruction found in one. A steer is a user message whose first line is `STEER_INSTRUCTION_PREFIX`; never merge peer or tool text into one, which hands that text operator authority.
 - An overlay's z-index comes from the shared overlay stack (`useOverlayEscape.ts`), never a fixed `z-` class, or a nested overlay paints behind the one it opened from.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
+- A conversation is live in at most one panel (`claimStoredSession` guards every bind), and `PiRuntime`'s session-keyed registries unregister only the entry the caller registered. An unconditional unregister lets a closing panel strip a live panel's gate entry, which blocks its tool calls.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed, so never sequence a delete off a promise that resolves either way.
 - Damocles READS other tools' config (`.claude`, `.codex`, the project's `.mcp.json`) and WRITES only under `.damocles`. MCP writes go to `~/.damocles/mcp.json` alone; permission rules to `.damocles/settings*.json` alone. Never write to a file another tool owns.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`, which writes pi's `customPrompt` plus one named section per toggleable piece, so pi patches only what changed. Returning `systemPrompt` instead sets `forceSystemPrompt` and drops every section.
@@ -84,7 +85,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
 - Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
 - `team_standby` and `team_report_complete` end the turn from the engine, keyed on a non-error result. Never trust the model to stop, never block inside the tool, and register any turn decider through `installTurnDecider`, because assigning `agent.finishTurn` directly typechecks and silently drops pi's own `turn_end` dispatch that mints checkpoints.
-- A team agent's work fields are per attempt and its usage fields are cumulative. The runner, the persistence loader and the webview store must all agree, or a reopened team contradicts the live one.
+- A team agent's work fields are per attempt (a resume continues the attempt, a redispatch starts a new one) and its usage fields are cumulative, while each team card shows one run (`TeamState.runs`, built by `TeamRunLog` both live and on reload). The runner, the persistence loader and the webview store must all agree, or a reopened team contradicts the live one.
 - Account state has one publisher, `PiSession.publishAccountInfo()`, called wherever its inputs change. Never publish it from a once-guarded session-start path.
 - Session state has one publisher, `PiSession.publishSessionState()`, derived from the turn lifecycle plus every pending-prompt map. A new prompt kind must register through `PermissionState`, or the session reads as working while it waits. Never infer the state in the webview to cover a missing publication.
 - The team profile catalog is generated: edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.

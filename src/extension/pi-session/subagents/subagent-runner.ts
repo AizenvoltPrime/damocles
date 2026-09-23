@@ -85,22 +85,17 @@ function getLastAssistantText(session: AgentSession): string {
 /** Wire an AbortSignal to abort a session. Returns a cleanup function. */
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
   if (!signal) return () => {};
-  // The signal can already be aborted by the time this runs — the session is built behind an
-  // `await createSession()`, so an abort fired during construction passes before the listener exists.
-  // An already-aborted signal never re-fires 'abort', so check up-front or the cancel is silently lost.
-  if (signal.aborted) {
-    void session.abort();
-    return () => {};
-  }
   const onAbort = () => void session.abort();
   signal.addEventListener('abort', onAbort, { once: true });
   return () => signal.removeEventListener('abort', onAbort);
 }
 
-/** Run a subagent session to completion. */
+/** Run a subagent session to completion. An abort before the run starts skips the prompt entirely. */
 export async function runSubagent(options: RunSubagentOptions): Promise<RunResult> {
   const session = await options.createSession();
   options.onSessionCreated?.(session);
+  // pi's abort acts only on a started run, so a signal that fired while the session was built never reached it.
+  if (options.signal?.aborted) return { responseText: '', session, aborted: false, steered: false };
 
   const maxTurns = normalizeMaxTurns(options.maxTurns);
   const graceTurns = Math.max(1, options.graceTurns ?? DEFAULT_GRACE_TURNS);
@@ -109,6 +104,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<RunResul
   let aborted = false;
 
   const unsub = session.subscribe((event: AgentSessionEvent) => {
+    // An abort during prompt()'s preflight preceded the run it was meant to stop, so repeat it now.
+    if (event.type === 'agent_start' && options.signal?.aborted) void session.abort();
     if (event.type === 'turn_end') {
       turnCount++;
       options.onTurnEnd?.(turnCount);

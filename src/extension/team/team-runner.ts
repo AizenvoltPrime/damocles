@@ -1,10 +1,13 @@
 import * as crypto from 'crypto';
-import * as path from 'path';
-import { ensurePiSessionDir } from '../pi-session/session-store';
+import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import { piSessionDir } from '../pi-session/session-store';
+import { teamMemberSessionId, teamMembersDir, type AgentSegmentData, type TeamMemberLaunchData } from '../pi-session/agent-records';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY } from '../pi-session/session-store/constants';
 import { MessageBus } from './message-bus';
 import { Scratchpad, type ScratchpadReadStats } from './scratchpad';
 import { AgentRunner } from './agent-runner';
 import { TeamPersistence } from './persistence';
+import type { TeamRunTotals } from './runs';
 import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
 import {
@@ -27,9 +30,26 @@ import type {
   TeamStatus,
   SpecialistKind,
   ResolvedTeamModel,
+  TeamSessionOptions,
+  AgentStart,
+  ScratchpadEntry,
+  TeamCheckpoint,
+  TeamEventLog,
+  TeamLogSpawn,
+  TeamMessage,
+  TeamRunResult,
+  UndeliveredMessage,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/types/team';
+import type {
+  TeamState,
+  TeamRunSummary,
+  TeamAgent as WebviewTeamAgent,
+  TeamMessage as WebviewTeamMessage,
+  ScratchpadEntry as WebviewScratchpadEntry,
+} from '../../shared/types/team';
+import type { SteerTargetInfo } from '../../shared/types/subagents';
+import { buildResumePrompt, wrapSteerMessage } from '../../shared/steer';
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
@@ -50,9 +70,43 @@ export const leadShouldDeliverMessage = (msg: { to: string | null }): boolean =>
  * attempt keeps its tabs open for inspection with its scope entry already dropped, so a retry reusing
  * the bare agentId would adopt those dead tabs and a later success would close them. Always resolve this
  * at LAUNCH time and capture it in the settle handlers — reading it at settle time would pick up an
- * `attempt` a concurrent redispatch has already bumped.
+ * `attempt` a concurrent redispatch has already bumped. A resume reopens the same attempt, whose
+ * cancelled run left its tabs behind, so each resume gets its own `.resumeCount` suffix.
  */
-const browserScopeIdFor = (agent: TeamAgent): string => `${agent.agentId}#${agent.attempt}`;
+const browserScopeIdFor = (agent: TeamAgent, resumeCount: number): string =>
+  resumeCount > 0 ? `${agent.agentId}#${agent.attempt}.${resumeCount}` : `${agent.agentId}#${agent.attempt}`;
+
+/** The lead's opening prompt. Its `agent-spawned` entry records a label instead, so a restart reads this. */
+const LEAD_OPENING_TASK =
+  'Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.';
+
+/**
+ * How one member session starts. `fresh` creates the attempt's file and prompts `prompt`; `reopen`
+ * continues the attempt's existing file from a resume segment.
+ */
+type MemberLaunch =
+  | { kind: 'fresh'; resolution: ResolvedTeamModel; prompt: string; redeliver: UndeliveredMessage[] }
+  | { kind: 'reopen'; path: string; segment: AgentSegmentData; initial: AgentStart; redeliver: UndeliveredMessage[] };
+
+/** What a resume does with one member, fixed by `restore` so every failure surfaces before anything launches. */
+type ResumePlan =
+  | { mode: 'relaunch'; path: string }
+  | { mode: 'park'; path: string }
+  | { mode: 'restart'; resolution: ResolvedTeamModel };
+
+function domainProfileFor(profileId: string | null): DomainProfile | undefined {
+  if (!profileId) return undefined;
+  const agentProfile = AGENT_PROFILE_MAP.get(profileId);
+  if (!agentProfile) {
+    throw new Error(`Unknown agent profile: "${profileId}". Use a valid profile ID from the catalog.`);
+  }
+  return {
+    name: agentProfile.name,
+    identity: agentProfile.identity,
+    mission: agentProfile.mission,
+    rules: agentProfile.rules,
+  };
+}
 
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const CONFLICT_NUDGE_MAX = 2;
@@ -72,6 +126,9 @@ const TERMINAL_CONTRACT_NUDGE =
   'You ended a turn without a terminal action. If your work is complete and verified, post your final ' +
   'scratchpad and call `team_report_complete` now. If you are waiting on a peer, call `team_standby`; ' +
   'if blocked, message the lead. A bare turn-end is not allowed — do not end again without one of these.';
+/** Exported so the test asserts the delivered text against this function, not a copy. */
+export const operatorSteerLeadNotice = (name: string, message: string): string =>
+  `[OPERATOR STEER] The user steered "${name}": "${message}". Treat it as an authoritative change to ${name}'s task; do not revise it back.`;
 const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
 const CONFLICT_NUDGE_SUFFIX =
   '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
@@ -88,6 +145,15 @@ function applyAttemptUsage(agent: TeamAgent, attemptUsage: AgentUsageTotals): Ag
   agent.cacheReadTokens = agent.carriedUsage.cacheReadTokens + attemptUsage.cacheReadTokens;
   agent.cacheCreationTokens = agent.carriedUsage.cacheCreationTokens + attemptUsage.cacheCreationTokens;
   agent.costUsd = agent.carriedUsage.costUsd + attemptUsage.costUsd;
+  return usageTotals(agent);
+}
+
+/** Whether `resume` launches a member with this role and checkpointed status. */
+function launchesOnResume(role: TeamAgent['role'], status: TeamAgent['status']): boolean {
+  return role === 'lead' || status === 'running' || status === 'standby' || status === 'awaiting-review';
+}
+
+function usageTotals(agent: TeamAgent): AgentUsageTotals {
   return {
     totalInputTokens: agent.totalInputTokens,
     totalOutputTokens: agent.totalOutputTokens,
@@ -114,7 +180,6 @@ export class TeamRunner {
   private teamAbort = new AbortController();
   private completionResolve: ((result: string) => void) | null = null;
   private completionResolved = false;
-  private cachedSessionDir: string | null = null;
   // Each running agent's note sink, keyed by agentId, registered by its runner and dropped when that
   // run tears down. A missing entry is the honest answer that no live run can take a user note.
   private noteSinks = new Map<string, (text: string) => boolean>();
@@ -158,6 +223,29 @@ export class TeamRunner {
   // see (roster, per-section versions, and the lead's own read cursor), so any change worth a re-prompt
   // necessarily renders differently. Cleared whenever the round is no longer open.
   private lastReviewRoundNotification: string | null = null;
+  // Every delivered `/steer`, in order, prefixed onto the team's result so the parent sees the redirect.
+  private readonly operatorSteers: Array<{ memberName: string; message: string }> = [];
+  // Each live run's undelivered-message reader, keyed by agentId; same ownership rule as noteSinks.
+  private undeliveredReaders = new Map<string, () => UndeliveredMessage[]>();
+  // Resumes of a member's current attempt, keyed by name. A redispatch starts a new attempt at zero.
+  private resumeCounts = new Map<string, number>();
+  // The role slot each specialist was dispatched under, which a restart without a session file resolves again.
+  private specialistKinds = new Map<string, SpecialistKind>();
+  private leadPromise: Promise<AgentResult> | null = null;
+  private startTime = Date.now();
+  // Filled by `restore`, consumed once by `resume`.
+  private resumePlans = new Map<string, ResumePlan>();
+  private restoredUndelivered = new Map<string, UndeliveredMessage[]>();
+  // The `cancelledAt` of the checkpoint `restore` read.
+  private restoredCheckpointAt: number | null = null;
+  // This run's cancel checkpoint, once it is on disk.
+  private writtenCheckpoint: TeamCheckpoint | null = null;
+  // The runs before this one, as the event log `restore` read records them.
+  private pastRuns: TeamRunSummary[] = [];
+  // Opened by the entry that starts this run. The usage baseline is the team's spend before it.
+  private currentRun = { toolUseId: '', startTime: 0, toolCount: 0, baseTokens: 0, baseCostUsd: 0 };
+  // Fixed by the `team-completed` entry, so a member settling after it cannot move what that entry recorded.
+  private endedRun: TeamRunSummary | null = null;
 
   constructor(
     config: TeamConfig,
@@ -167,16 +255,14 @@ export class TeamRunner {
     this.onMessage = onMessage;
   }
 
-  async run(): Promise<string> {
+  async run(): Promise<TeamRunResult> {
     this.messageBus = new MessageBus(this.config.teamId);
     this.scratchpad = new Scratchpad();
     this.persistence = new TeamPersistence(this.config.cwd, this.config.persistenceSessionId);
 
-    await this.persistence.initTeamFile(this.config.teamId);
-    // Pin team transcripts under the Damocles-owned pi session dir, isolated from the deleted SDK
-    // `~/.claude/projects` tree (US-024d latent-bug fix).
-    this.cachedSessionDir = ensurePiSessionDir(this.config.cwd);
+    this.persistence.initTeamFile(this.config.teamId);
 
+    const createdAt = new Date().toISOString();
     this.persistence.appendTeamEntry({
       type: 'team-created',
       teamId: this.config.teamId,
@@ -184,8 +270,9 @@ export class TeamRunner {
       title: this.config.title,
       brief: this.config.brief,
       agents: this.config.agents,
-      timestamp: new Date().toISOString(),
+      timestamp: createdAt,
     });
+    this.beginRun(this.config.toolUseId, createdAt);
 
     this.installSubscribers();
 
@@ -218,6 +305,7 @@ export class TeamRunner {
         startTime: null,
         endTime: null,
         toolCallCount: 0,
+        carriedToolCallCount: 0,
         totalInputTokens: 0,
         totalOutputTokens: 0,
         cacheReadTokens: 0,
@@ -246,9 +334,7 @@ export class TeamRunner {
     // verified instead of re-running the suite to be sure.
     this.scratchpad.seedAppendOnly(VERIFICATION_SECTION);
 
-    const completionPromise = new Promise<string>((resolve) => {
-      this.completionResolve = resolve;
-    });
+    const completionPromise = this.openCompletion();
 
     const leadSpec = this.config.agents.find(a => a.role === 'lead');
     if (!leadSpec) {
@@ -258,17 +344,9 @@ export class TeamRunner {
     this.setPhase('spawning');
 
     const leadAgent = this.agents.get(leadSpec.name)!;
-    const specialists = this.config.agents.filter(a => a.role === 'specialist');
-    const leadPrompt = buildLeadSystemPrompt(this.config.title, this.config.brief, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
-
-    const leadScopeId = browserScopeIdFor(leadAgent);
-    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadScopeId, leadSpec.name);
-
-    await this.persistence.initAgentFile(this.config.teamId, leadAgent.agentId);
 
     leadAgent.status = 'running';
     leadAgent.startTime = Date.now();
-    leadAgent.logFilePath = this.agentLogPath(leadAgent.agentId);
 
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
@@ -288,19 +366,40 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: leadAgent.agentId,
       status: 'running',
-      logFilePath: leadAgent.logFilePath,
       attempt: leadAgent.attempt,
       ...(leadAgent.model ? { model: leadAgent.model } : {}),
     });
 
     this.setPhase('working');
 
+    this.launchLead(leadAgent, { kind: 'fresh', resolution: lead, prompt: LEAD_OPENING_TASK, redeliver: [] });
+
+    return this.awaitCompletionAndFinalize(completionPromise);
+  }
+
+  /** The promise `synthesizeResult` resolves. Created before any member launches, since any of them can complete the team. */
+  private openCompletion(): Promise<string> {
+    return new Promise<string>((resolve) => {
+      this.completionResolve = resolve;
+    });
+  }
+
+  /** Start the lead's run and wire its settle path. The caller owns its status, persistence and emits. */
+  private launchLead(leadAgent: TeamAgent, launch: MemberLaunch): void {
+    const leadName = leadAgent.name;
+    const specialists = this.config.agents.filter(a => a.role === 'specialist');
+    const leadPrompt = buildLeadSystemPrompt(this.config.title, this.config.brief, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
+
+    const leadScopeId = this.browserScopeId(leadAgent);
+    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadScopeId, leadName);
+    const leadAttempt = leadAgent.attempt;
     const leadPromise = this.agentRunner.startAgent({
       agentId: leadAgent.agentId,
-      name: leadSpec.name,
+      name: leadName,
       role: 'lead',
-      specialization: `Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.`,
-      createSession: () => {
+      initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
+      redeliver: launch.redeliver,
+      createSession: () => this.createMemberSession(leadAgent, leadAttempt, LEAD_OPENING_TASK, launch, (store, resolution) => {
         // ONE toolset call per spawn. Names, customTools and the MCP snapshot used to be three
         // separate live reads inside this one object literal, so an `mcp__*` name could reach `tools:`
         // with no matching definition — pi filters the registry by the frozen `_allowedToolNames` and
@@ -311,21 +410,22 @@ export class TeamRunner {
         return this.config.engine.createSession({
           cwd: this.config.cwd,
           systemPrompt: leadPrompt,
-          ...(lead.model ? { model: lead.model } : {}),
-          ...(lead.thinkingLevel ? { thinkingLevel: lead.thinkingLevel } : {}),
+          ...(resolution?.model ? { model: resolution.model } : {}),
+          ...(resolution?.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
           tools: [...toolNames, ...mcp.names],
           customTools,
           excludeTools: ['edit'],
-          extensionFactory: this.config.engine.buildExtensionFactory(leadSpec.name, leadAgent.agentId, mcp),
+          extensionFactory: this.config.engine.buildExtensionFactory(leadName, leadAgent.agentId, mcp),
+          store,
         });
-      },
+      }),
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
+      bindUndelivered: (read) => this.bindUndelivered(leadAgent.agentId, read),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
-      persistence: this.persistence,
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
         this.onMessage({
@@ -335,8 +435,8 @@ export class TeamRunner {
           status: 'monitoring',
           progressSummary: 'Waiting for specialists',
         });
-        this.nudgeLeadOnOpenConflicts(leadSpec.name);
-        this.nudgeLeadOnOpenReviewRound(leadSpec.name);
+        this.nudgeLeadOnOpenConflicts(leadName);
+        this.nudgeLeadOnOpenReviewRound(leadName);
       },
       onKeepAliveResume: () => {
         leadAgent.status = 'running';
@@ -352,7 +452,8 @@ export class TeamRunner {
         a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
       ),
       onToolCall: (_toolName, count) => {
-        leadAgent.toolCallCount = count;
+        leadAgent.toolCallCount = leadAgent.carriedToolCallCount + count;
+        this.currentRun.toolCount++;
       },
       onUsageUpdate: (usage) => {
         const totals = applyAttemptUsage(leadAgent, {
@@ -371,6 +472,7 @@ export class TeamRunner {
       },
       onCost: (delta) => this.config.engine.onAgentCost(delta),
     });
+    this.leadPromise = leadPromise;
 
     leadPromise.then((result) => {
       const effectiveStatus = result.status === 'cancelled'
@@ -387,7 +489,7 @@ export class TeamRunner {
       // unlike a tab, a modal naming a finished agent is never worth keeping open for inspection.
       this.config.engine.cancelAgentDialogs(leadAgent.agentId);
       leadAgent.endTime = Date.now();
-      leadAgent.toolCallCount = result.toolCallCount;
+      leadAgent.toolCallCount = leadAgent.carriedToolCallCount + result.toolCallCount;
       applyAttemptUsage(leadAgent, result);
       leadAgent.finalResponse = result.finalResponse;
 
@@ -398,7 +500,7 @@ export class TeamRunner {
         name: leadAgent.name,
         status: effectiveStatus,
         result: result.finalResponse,
-        toolCallCount: result.toolCallCount,
+        toolCallCount: leadAgent.toolCallCount,
         durationMs: result.durationMs,
         totalInputTokens: result.totalInputTokens,
         totalOutputTokens: result.totalOutputTokens,
@@ -414,7 +516,7 @@ export class TeamRunner {
           teamId: this.config.teamId,
           agentId: leadAgent.agentId,
           status: effectiveStatus,
-          progressSummary: `Completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
+          progressSummary: `Completed (${leadAgent.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
         });
       }
 
@@ -436,11 +538,14 @@ export class TeamRunner {
         this.synthesizeResult(this.buildPartialResults());
       }
     });
+  }
 
+  /** Wait for the synthesis, drain the members, and record the team's end. */
+  private async awaitCompletionAndFinalize(completionPromise: Promise<string>): Promise<TeamRunResult> {
     try {
       const synthesizedResult = await completionPromise;
 
-      const allPromises = [leadPromise, ...this.specialistPromises.values()];
+      const allPromises = [...(this.leadPromise ? [this.leadPromise] : []), ...this.specialistPromises.values()];
       let drainTimer: ReturnType<typeof setTimeout> | null = null;
       const drainTimeout = new Promise<void>(resolve => {
         drainTimer = setTimeout(resolve, SPECIALIST_DRAIN_TIMEOUT_MS);
@@ -472,14 +577,19 @@ export class TeamRunner {
         } else {
           continue;
         }
-        this.config.engine.disposeBrowserScope(browserScopeIdFor(agent), false);
+        this.config.engine.disposeBrowserScope(this.browserScopeId(agent), false);
         this.config.engine.cancelAgentDialogs(agent.agentId);
       }
 
+      this.rewriteCheckpointAfterDrain();
       this.setPhase('complete');
       const finalStatus = this.status === 'cancelled' ? 'cancelled' : 'completed';
       this.status = finalStatus;
 
+      const completedAt = new Date().toISOString();
+      const endedRun: TeamRunSummary = { ...this.runSummary(), endTime: Date.parse(completedAt) };
+      this.endedRun = endedRun;
+      const runTotals: TeamRunTotals = { toolCount: endedRun.toolCount, tokens: endedRun.tokens, costUsd: endedRun.costUsd };
       this.persistence.appendTeamEntry({
         type: 'team-completed',
         teamId: this.config.teamId,
@@ -491,7 +601,8 @@ export class TeamRunner {
           status: a.status,
           toolCallCount: a.toolCallCount,
         })),
-        timestamp: new Date().toISOString(),
+        run: runTotals,
+        timestamp: completedAt,
       });
 
       try {
@@ -506,9 +617,12 @@ export class TeamRunner {
         teamId: this.config.teamId,
         status: finalStatus,
         result: synthesizedResult,
+        run: endedRun,
       });
 
-      return synthesizedResult;
+      return finalStatus === 'cancelled'
+        ? { status: finalStatus, text: synthesizedResult, resumable: this.writtenCheckpoint !== null }
+        : { status: finalStatus, text: synthesizedResult };
     } finally {
       if (!this.teamAbort.signal.aborted) {
         this.teamAbort.abort();
@@ -531,23 +645,14 @@ export class TeamRunner {
         from: msg.from,
         to: msg.to,
         content: msg.content,
+        ...(msg.kind ? { kind: msg.kind } : {}),
         timestamp: new Date(msg.timestamp).toISOString(),
       });
 
-      const senderAgent = this.findAgentByName(msg.from);
-      const recipientAgent = msg.to ? this.findAgentByName(msg.to) : null;
       this.onMessage({
         type: 'teamMessage',
         teamId: this.config.teamId,
-        message: {
-          messageId: msg.messageId,
-          senderAgentId: senderAgent?.agentId ?? '',
-          senderName: msg.from,
-          recipientAgentId: recipientAgent?.agentId ?? null,
-          recipientName: msg.to,
-          content: msg.content,
-          timestamp: msg.timestamp,
-        },
+        message: this.toWebviewMessage(msg),
       });
     });
 
@@ -557,23 +662,18 @@ export class TeamRunner {
         teamId: this.config.teamId,
         section: entry.section,
         content: entry.content,
+        // `author` is the section's owner: a non-owner write is rejected and a seeded section stays system's.
         author: entry.author,
+        immutable: this.scratchpad.isImmutable(entry.section),
+        appendOnly: this.scratchpad.isAppendOnly(entry.section),
         version: entry.version,
         timestamp: new Date(entry.timestamp).toISOString(),
       });
 
-      const authorAgent = this.findAgentByName(entry.author);
       this.onMessage({
         type: 'teamScratchpadUpdate',
         teamId: this.config.teamId,
-        entry: {
-          section: entry.section,
-          content: entry.content,
-          agentId: authorAgent?.agentId ?? '',
-          agentName: entry.author,
-          version: entry.version,
-          timestamp: entry.timestamp,
-        },
+        entry: this.toWebviewScratchpadEntry(entry),
       });
 
       // The broadcast still fires for every write: it feeds the `agent-message` JSONL record, the
@@ -631,19 +731,7 @@ export class TeamRunner {
       throw new Error(`Max ${MAX_AGENTS} concurrent agents reached`);
     }
 
-    let domainProfile: DomainProfile | undefined;
-    if (profileId) {
-      const agentProfile = AGENT_PROFILE_MAP.get(profileId);
-      if (!agentProfile) {
-        throw new Error(`Unknown agent profile: "${profileId}". Use a valid profile ID from the catalog.`);
-      }
-      domainProfile = {
-        name: agentProfile.name,
-        identity: agentProfile.identity,
-        mission: agentProfile.mission,
-        rules: agentProfile.rules,
-      };
-    }
+    const domainProfile = domainProfileFor(profileId ?? null);
 
     // Resolve the specialist's model from the role slot (`kind` selects implementor vs reviewer settings)
     // BEFORE mutating agent state. A configured-but-unresolvable/unauthed slot throws — surfaced to the
@@ -660,7 +748,7 @@ export class TeamRunner {
     agent.status = 'running';
     agent.startTime = Date.now();
     agent.profileId = profileId ?? null;
-    agent.logFilePath = this.agentLogPath(agent.agentId);
+    this.specialistKinds.set(name, kind ?? 'implementor');
     agent.model = resolution.modelLabel ?? '';
     agent.dollarBilled = resolution.dollarBilled;
 
@@ -675,6 +763,7 @@ export class TeamRunner {
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
       attempt: agent.attempt,
+      kind: kind ?? 'implementor',
       timestamp: new Date().toISOString(),
     });
 
@@ -683,15 +772,12 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: agent.agentId,
       status: 'running',
-      logFilePath: agent.logFilePath,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
     });
 
-    // Fresh spawn: serialize the runner start on initAgentFile (creates/TRUNCATES the transcript file).
-    const initPromise = this.persistence.initAgentFile(this.config.teamId, agent.agentId);
-    this.launchSpecialist(name, agent, task, resolution, domainProfile, initPromise);
+    this.launchSpecialist(name, agent, { kind: 'fresh', resolution, prompt: task, redeliver: [] }, domainProfile);
     return agent.agentId;
   }
 
@@ -700,19 +786,14 @@ export class TeamRunner {
    * (`redispatchSpecialist`). PURE extraction — builds the specialist prompt, wires the AbortController +
    * team-abort propagation, constructs the AgentRunConfig closures, starts the runner, and records the
    * promise. Callers own agent-state mutation, persistence, and the `teamAgentStatusUpdate` emit.
-   *
-   * `initPromise` gates the runner start: the fresh path passes `initAgentFile(...)` so the runner starts
-   * only after the transcript file exists; the redispatch path passes `Promise.resolve()` so the runner
-   * starts WITHOUT touching the transcript (initAgentFile fs.writeFile-truncates — persistence.ts:57-67).
    */
   private launchSpecialist(
     name: string,
     agent: TeamAgent,
-    task: string,
-    resolution: ResolvedTeamModel,
+    launch: MemberLaunch,
     domainProfile: DomainProfile | undefined,
-    initPromise: Promise<void>,
   ): void {
+    const task = agent.specialization;
     const leadAgent = [...this.agents.values()].find(a => a.role === 'lead');
     const specialistPrompt = buildSpecialistSystemPrompt(
       name,
@@ -725,7 +806,8 @@ export class TeamRunner {
 
     // Resolved ONCE per launch and captured by both settle handlers below: a redispatch bumps
     // `agent.attempt`, so re-reading it at settle time would dispose the NEW attempt's scope.
-    const browserScopeId = browserScopeIdFor(agent);
+    const browserScopeId = this.browserScopeId(agent);
+    const attempt = agent.attempt;
     const specialistCtx = this.buildSpecialistContext(agent.agentId, browserScopeId, name);
 
     const specialistAbort = new AbortController();
@@ -738,33 +820,35 @@ export class TeamRunner {
       this.teamAbort.signal.addEventListener('abort', () => specialistAbort.abort(), { once: true });
     }
 
-    const promise = initPromise.then(() => this.agentRunner.startAgent({
+    const promise = this.agentRunner.startAgent({
       agentId: agent.agentId,
       name,
       role: 'specialist',
-      specialization: task,
-      createSession: () => {
+      initial: launch.kind === 'fresh' ? { kind: 'prompt', text: launch.prompt } : launch.initial,
+      redeliver: launch.redeliver,
+      createSession: () => this.createMemberSession(agent, attempt, task, launch, (store, resolution) => {
         // ONE toolset call per spawn, inside this per-spawn arrow — see the lead spawn site above for
         // why both properties (single read, live-at-spawn) are load-bearing.
         const { toolNames, customTools, mcp } = this.config.engine.buildAgentToolset(specialistCtx);
         return this.config.engine.createSession({
           cwd: this.config.cwd,
           systemPrompt: specialistPrompt,
-          ...(resolution.model ? { model: resolution.model } : {}),
-          ...(resolution.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
+          ...(resolution?.model ? { model: resolution.model } : {}),
+          ...(resolution?.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
           tools: [...toolNames, ...mcp.names],
           customTools,
           excludeTools: ['edit'],
           extensionFactory: this.config.engine.buildExtensionFactory(name, agent.agentId, mcp),
+          store,
         });
-      },
+      }),
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
+      bindUndelivered: (read) => this.bindUndelivered(agent.agentId, read),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
-      persistence: this.persistence,
       getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
       keepAlive: () => {
         if (this.completionResolved) return false;
@@ -839,7 +923,8 @@ export class TeamRunner {
         });
       },
       onToolCall: (_toolName, count) => {
-        agent.toolCallCount = count;
+        agent.toolCallCount = agent.carriedToolCallCount + count;
+        this.currentRun.toolCount++;
       },
       onUsageUpdate: (usage) => {
         const totals = applyAttemptUsage(agent, {
@@ -857,7 +942,7 @@ export class TeamRunner {
         });
       },
       onCost: (delta) => this.config.engine.onAgentCost(delta),
-    }));
+    });
 
     promise.then((result) => {
       const wasApproved = this.reviewedSpecialists.has(name);
@@ -872,7 +957,7 @@ export class TeamRunner {
       this.config.engine.disposeBrowserScope(browserScopeId, effectiveStatus === 'completed');
       this.config.engine.cancelAgentDialogs(agent.agentId);
       agent.endTime = agent.endTime ?? Date.now();
-      agent.toolCallCount = result.toolCallCount;
+      agent.toolCallCount = agent.carriedToolCallCount + result.toolCallCount;
       applyAttemptUsage(agent, result);
       agent.finalResponse = result.finalResponse;
 
@@ -885,7 +970,7 @@ export class TeamRunner {
         name: agent.name,
         status: effectiveStatus,
         result: result.finalResponse,
-        toolCallCount: result.toolCallCount,
+        toolCallCount: agent.toolCallCount,
         durationMs: result.durationMs,
         totalInputTokens: result.totalInputTokens,
         totalOutputTokens: result.totalOutputTokens,
@@ -901,7 +986,7 @@ export class TeamRunner {
           teamId: this.config.teamId,
           agentId: agent.agentId,
           status: effectiveStatus,
-          progressSummary: `Completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
+          progressSummary: `Completed (${agent.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
         });
       }
 
@@ -909,7 +994,7 @@ export class TeamRunner {
         const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
         if (leadName) {
           const statusText = effectiveStatus === 'completed'
-            ? `completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`
+            ? `completed (${agent.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`
             : effectiveStatus;
           this.messageBus.send('system', leadName,
             `Specialist "${name}" ${statusText}. Read their scratchpad section for findings.`,
@@ -939,8 +1024,8 @@ export class TeamRunner {
   }
 
   /**
-   * Re-run a `failed` or `cancelled` specialist as a fresh attempt. REUSES the existing `agentId` and
-   * PRESERVES the prior transcript (never calls initAgentFile — that fs.writeFile-truncates). `completed`
+   * Re-run a `failed` or `cancelled` specialist as a fresh attempt. REUSES the existing `agentId` so the
+   * card survives; the attempt gets its own pi session file beside the earlier ones. `completed`
    * is terminal (redo an approved role via revision, not re-dispatch). Resets all per-attempt bookkeeping
    * so a full fresh review round can run, but does NOT clear open briefConflicts (safety flags are never
    * silently dropped — the lead resolves those via the status-independent team_resolve_brief_conflict).
@@ -972,19 +1057,7 @@ export class TeamRunner {
       throw new Error(`Max ${MAX_AGENTS} concurrent agents reached`);
     }
 
-    let domainProfile: DomainProfile | undefined;
-    if (profileId) {
-      const agentProfile = AGENT_PROFILE_MAP.get(profileId);
-      if (!agentProfile) {
-        throw new Error(`Unknown agent profile: "${profileId}". Use a valid profile ID from the catalog.`);
-      }
-      domainProfile = {
-        name: agentProfile.name,
-        identity: agentProfile.identity,
-        mission: agentProfile.mission,
-        rules: agentProfile.rules,
-      };
-    }
+    const domainProfile = domainProfileFor(profileId ?? null);
 
     // Resolve the role model BEFORE mutating agent state (same fail-safe ordering as startSpecialist):
     // a configured-but-unresolvable/unauthed slot throws here, leaving the agent 'failed'/'cancelled'
@@ -1014,20 +1087,12 @@ export class TeamRunner {
     // Scratchpad read state is keyed by name as well, and the re-run has seen none of it.
     this.scratchpad.clearReader(name);
 
-    // A specialist cancelled straight from `pending` never launched: initAgentFile was never called, so
-    // this redispatch IS its first real launch — init the transcript (nothing to truncate). startTime is
-    // the launch discriminator (set unconditionally by every launch path); logFilePath is NOT reliable
-    // here — agentLogPath returns null while cachedSessionDir is unset, so a launched agent can carry a
-    // null path and must never be re-inited (that would truncate its transcript).
-    const firstLaunch = agent.startTime === null;
-    if (agent.logFilePath === null) {
-      agent.logFilePath = this.agentLogPath(agent.agentId);
-    }
-
-    // Reset agent to a fresh running attempt. KEEP agentId (webview keys cards by it) and logFilePath
-    // (reuse the existing transcript path — do NOT recompute). `attempt` advances so this launch gets a
-    // clean browser scope instead of inheriting the tabs the failed attempt left open.
+    // Reset agent to a fresh running attempt. KEEP agentId (webview keys cards by it). `attempt` advances
+    // so this launch gets its own session file and a clean browser scope instead of inheriting the tabs
+    // the failed attempt left open.
     agent.attempt++;
+    this.resumeCounts.delete(name);
+    this.specialistKinds.set(name, kind ?? 'implementor');
     agent.specialization = task;
     agent.status = 'running';
     agent.startTime = Date.now();
@@ -1035,6 +1100,7 @@ export class TeamRunner {
     agent.error = null;
     agent.finalResponse = null;
     agent.toolCallCount = 0;
+    agent.carriedToolCallCount = 0;
     // Work restarts, spend does not: the dead attempt's tokens and dollars were really consumed under
     // this name, so they carry into the totals the next attempt reports.
     agent.carriedUsage = {
@@ -1048,9 +1114,8 @@ export class TeamRunner {
     agent.model = resolution.modelLabel ?? '';
     agent.dollarBilled = resolution.dollarBilled;
 
-    // Transcript preservation: do NOT call initAgentFile (it truncates). Append an agent-spawned entry
-    // carrying a `reattempt: true` marker — the loader's agent-spawned branch re-sets status/agentId and
-    // tolerates the extra field (entries are Record<string, unknown>).
+    // The `reattempt: true` marker is informational: the loader's agent-spawned branch re-sets
+    // status/agentId and tolerates the extra field (entries are Record<string, unknown>).
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
       teamId: this.config.teamId,
@@ -1062,6 +1127,7 @@ export class TeamRunner {
       dollarBilled: agent.dollarBilled,
       profileId: agent.profileId,
       attempt: agent.attempt,
+      kind: kind ?? 'implementor',
       reattempt: true,
       timestamp: new Date().toISOString(),
     });
@@ -1073,20 +1139,14 @@ export class TeamRunner {
       teamId: this.config.teamId,
       agentId: agent.agentId,
       status: 'running',
-      logFilePath: agent.logFilePath,
       dollarBilled: agent.dollarBilled,
       attempt: agent.attempt,
       ...(agent.model ? { model: agent.model } : {}),
     });
 
-    // Redispatch path: skip initAgentFile (preserve the transcript) unless this is the agent's first real
-    // launch (cancelled-from-pending — no transcript exists yet). launchSpecialist installs a fresh
-    // AbortController, re-wires teamAbort propagation, and overwrites specialistPromises — the old
-    // controller is already aborted/settled, so overwriting the map entries is correct (no leak).
-    const initPromise = firstLaunch
-      ? this.persistence.initAgentFile(this.config.teamId, agent.agentId)
-      : Promise.resolve();
-    this.launchSpecialist(name, agent, task, resolution, domainProfile, initPromise);
+    // launchSpecialist installs a fresh AbortController, re-wires teamAbort propagation, and overwrites
+    // specialistPromises — the old controller is already aborted/settled, so overwriting is correct.
+    this.launchSpecialist(name, agent, { kind: 'fresh', resolution, prompt: task, redeliver: [] }, domainProfile);
     return agent.agentId;
   }
 
@@ -1647,12 +1707,337 @@ export class TeamRunner {
     return [...this.agents.values()].find(a => a.role === 'lead')?.name;
   }
 
-  cancel(): void {
-    this.status = 'cancelled';
+  /** Members with a live run that can take a steer, for the `/steer` picker. */
+  listSteerTargets(): SteerTargetInfo[] {
+    if (this.completionResolved) return [];
+    return [...this.agents.values()]
+      .filter((a) => this.noteSinks.has(a.agentId))
+      .map((a) => ({
+        kind: 'team-member' as const,
+        id: a.agentId,
+        teamId: this.config.teamId,
+        teamTitle: this.config.title,
+        memberName: a.name,
+        role: a.role,
+        status: a.status,
+      }));
+  }
+
+  /**
+   * Delivers a user `/steer` through the member's note sink, which echoes it into the overlay and
+   * steers mid-stream, wakes an idle run, or holds it for a session still opening. A steered
+   * specialist's lead is told, so its review does not revise the redirect back.
+   */
+  steerMember(agentId: string, message: string): 'steered' | 'finished' | 'not-found' {
+    const agent = this.getMember(agentId);
+    if (!agent || agent.status === 'pending') return 'not-found';
+    const deliver = this.noteSinks.get(agentId);
+    if (this.completionResolved || !deliver || !deliver(wrapSteerMessage(message))) return 'finished';
+    this.operatorSteers.push({ memberName: agent.name, message });
+    if (agent.role === 'specialist') {
+      const leadName = this.findLeadName();
+      if (leadName) this.messageBus.send('system', leadName, operatorSteerLeadNotice(agent.name, message));
+    }
+    return 'steered';
+  }
+
+  getMember(agentId: string): TeamAgent | undefined {
+    return [...this.agents.values()].find((a) => a.agentId === agentId);
+  }
+
+  getOperatorSteers(): ReadonlyArray<{ memberName: string; message: string }> {
+    return this.operatorSteers;
+  }
+
+  getTitle(): string {
+    return this.config.title;
+  }
+
+  /**
+   * True when it stopped an unfinished team. A 'user' stop leaves a checkpoint for a resume; a 'reset'
+   * stop leaves none, since the conversation that could resume the team is gone.
+   */
+  cancel(stop: 'user' | 'reset' = 'user'): boolean {
+    this.writeCheckpointOnCancel(stop);
+    // A cancel after the synthesis only cuts the drain short: the team completed, and nothing is left to resume.
+    const unfinished = !this.completionResolved;
+    if (unfinished) {
+      this.status = 'cancelled';
+      // A reload can kill the drain before `team-completed`, and then this is the run's only record of its work.
+      const { toolCount, tokens, costUsd } = this.runSummary();
+      const run: TeamRunTotals = { toolCount, tokens, costUsd };
+      this.persistence.appendTeamEntry({ type: 'team-cancelled', teamId: this.config.teamId, run, timestamp: new Date().toISOString() });
+    }
     this.teamAbort.abort();
-    if (!this.completionResolved) {
+    if (unfinished) {
       this.synthesizeResult(this.buildPartialResults());
     }
+    return unfinished;
+  }
+
+  /** Whether a cancel of this run left a checkpoint that `resume_team` can continue from. */
+  hasCheckpoint(): boolean {
+    return this.writtenCheckpoint !== null;
+  }
+
+  /**
+   * Runs before the abort changes member state and before the synthesis clears review state, so a
+   * reload that kills the drain still leaves it. The synthesis that follows sets completionResolved,
+   * which keeps it to one cancel per run.
+   */
+  private writeCheckpointOnCancel(stop: 'user' | 'reset'): void {
+    if (this.completionResolved || stop === 'reset') return;
+    // Unique per team, even for a cancel in the same millisecond as the resume it follows.
+    const cancelledAt = Math.max(Date.now(), (this.restoredCheckpointAt ?? -1) + 1);
+    const checkpoint = this.buildCheckpoint(cancelledAt);
+    if (this.persistence.writeCheckpoint(checkpoint)) this.writtenCheckpoint = checkpoint;
+  }
+
+  /** The in-flight requests settled in the drain, so their usage and tool calls replace the totals taken at the cancel. */
+  private rewriteCheckpointAfterDrain(): void {
+    const checkpoint = this.writtenCheckpoint;
+    if (!checkpoint) return;
+    this.persistence.writeCheckpoint({
+      ...checkpoint,
+      members: checkpoint.members.map((m) => {
+        const agent = this.agents.get(m.name)!;
+        return { ...m, usage: usageTotals(agent), toolCallCount: agent.toolCallCount };
+      }),
+    });
+  }
+
+  /** Everything a resume needs that no team event records. */
+  buildCheckpoint(cancelledAt: number): TeamCheckpoint {
+    return {
+      version: 1,
+      teamId: this.config.teamId,
+      cancelledAt,
+      members: [...this.agents.values()].map((a) => ({
+        agentId: a.agentId,
+        name: a.name,
+        role: a.role,
+        attempt: a.attempt,
+        resumeCount: this.resumeCounts.get(a.name) ?? 0,
+        status: this.statusAtCancel(a),
+        // A restored member that has not relaunched yet still owes the messages its checkpoint carried.
+        undelivered: this.undeliveredReaders.get(a.agentId)?.() ?? this.restoredUndelivered.get(a.name) ?? [],
+        usage: usageTotals(a),
+        toolCallCount: a.toolCallCount,
+      })),
+      readerCursors: this.scratchpad.serializeCursors(),
+      review: {
+        specialistReviewRounds: [...this.specialistReviewRounds],
+        reviewedSpecialists: [...this.reviewedSpecialists],
+        confirmedComplete: [...this.confirmedComplete],
+        reportedSummaries: [...this.reportedSummaries],
+        pendingStandby: [...this.pendingStandby],
+        owedTerminalAction: [...this.owedTerminalAction],
+        nudgeDelivered: [...this.nudgeDelivered],
+        terminalNudgeDelivered: [...this.terminalNudgeDelivered],
+        briefConflicts: [...this.briefConflicts],
+        conflictNudges: this.conflictNudges,
+        leadReviewStalls: this.leadReviewStalls,
+        lastReviewRoundNotification: this.lastReviewRoundNotification,
+      },
+      operatorSteers: this.operatorSteers.map((s) => ({ ...s })),
+    };
+  }
+
+  /** A specialist the lead cancelled keeps an active status until its run settles, but it is not to be resumed. */
+  private statusAtCancel(agent: TeamAgent): TeamAgent['status'] {
+    const active = agent.status === 'running' || agent.status === 'standby' || agent.status === 'awaiting-review';
+    if (agent.role === 'specialist' && active && this.specialistAborts.get(agent.name)?.signal.aborted) return 'cancelled';
+    return agent.status;
+  }
+
+  /**
+   * Rebuild a cancelled team from its event log and checkpoint, and decide what `resume` does with each
+   * member. `sessionFiles` maps an agentId to its current attempt's session file. Throws, before anything
+   * is launched, when a member cannot be resumed. Subscribers are installed last, so nothing restored
+   * here is persisted or emitted again.
+   */
+  restore(log: TeamEventLog, checkpoint: TeamCheckpoint, sessionFiles: ReadonlyMap<string, string>): void {
+    const teamId = this.config.teamId;
+    const roster = new Set(log.agents.map((a) => a.name));
+    const names = new Set(checkpoint.members.map((m) => m.name));
+    const matches = names.size === checkpoint.members.length && names.size === roster.size && [...names].every((n) => roster.has(n))
+      && checkpoint.members.filter((m) => m.role === 'lead').length === 1;
+    if (!matches) throw new Error(`Team "${teamId}" has a resume checkpoint that does not match its roster.`);
+    this.messageBus = new MessageBus(teamId);
+    this.messageBus.restore(log.messages);
+    this.scratchpad = new Scratchpad();
+    this.scratchpad.restore(log.scratchpad);
+    this.scratchpad.restoreCursors(checkpoint.readerCursors);
+    this.persistence = new TeamPersistence(this.config.cwd, this.config.persistenceSessionId);
+    this.startTime = log.startTime;
+    this.pastRuns = log.runs;
+
+    const spawns = new Map<string, TeamLogSpawn>();
+    for (const spawn of log.spawns) spawns.set(spawn.name, spawn);
+    const { review } = checkpoint;
+    const summaries = new Map(review.reportedSummaries);
+    for (const member of checkpoint.members) {
+      const spawn = spawns.get(member.name);
+      // A specialist the lead cancelled while still pending was never spawned.
+      if (spawn ? spawn.agentId !== member.agentId : launchesOnResume(member.role, member.status)) {
+        throw new Error(`Team "${teamId}" has no launch of "${member.name}" in its event log.`);
+      }
+      this.agents.set(member.name, {
+        agentId: member.agentId,
+        teamId,
+        name: member.name,
+        role: member.role,
+        attempt: member.attempt,
+        specialization: spawn?.specialization ?? '',
+        status: member.status,
+        model: spawn?.model ?? '',
+        profileId: spawn?.profileId ?? null,
+        startTime: spawn?.timestamp ?? null,
+        endTime: null,
+        toolCallCount: member.toolCallCount,
+        carriedToolCallCount: member.toolCallCount,
+        ...member.usage,
+        carriedUsage: { ...member.usage },
+        dollarBilled: spawn?.dollarBilled ?? true,
+        finalResponse: summaries.get(member.name) ?? log.lastResults.get(member.name) ?? null,
+        error: null,
+        logFilePath: sessionFiles.get(member.agentId) ?? null,
+      });
+      this.resumeCounts.set(member.name, member.resumeCount);
+      if (spawn?.kind) this.specialistKinds.set(member.name, spawn.kind);
+      this.restoredUndelivered.set(member.name, member.undelivered);
+    }
+
+    this.specialistReviewRounds = new Map(review.specialistReviewRounds);
+    this.reviewedSpecialists = new Set(review.reviewedSpecialists);
+    this.confirmedComplete = new Set(review.confirmedComplete);
+    this.reportedSummaries = summaries;
+    this.pendingStandby = new Set(review.pendingStandby);
+    this.owedTerminalAction = new Set(review.owedTerminalAction);
+    this.nudgeDelivered = new Set(review.nudgeDelivered);
+    this.terminalNudgeDelivered = new Set(review.terminalNudgeDelivered);
+    // A nudge scheduled but not delivered before the cancel was dropped by its completion guard.
+    this.nudgeScheduled = new Set(review.nudgeDelivered);
+    this.terminalNudgeScheduled = new Set(review.terminalNudgeDelivered);
+    this.briefConflicts = new Map(review.briefConflicts);
+    this.conflictNudges = review.conflictNudges;
+    this.leadReviewStalls = review.leadReviewStalls;
+    this.lastReviewRoundNotification = review.lastReviewRoundNotification;
+    this.restoredCheckpointAt = checkpoint.cancelledAt;
+    this.operatorSteers.push(...checkpoint.operatorSteers.map((s) => ({ ...s })));
+
+    for (const agent of this.agents.values()) {
+      const plan = this.planResume(agent, sessionFiles.get(agent.agentId));
+      if (plan) this.resumePlans.set(agent.name, plan);
+    }
+
+    this.installSubscribers();
+  }
+
+  /** The session file of every member `resume` reopens, keyed by agentId, so the caller can check their models first. */
+  reopenedSessionFiles(): Array<[agentId: string, path: string]> {
+    const out: Array<[string, string]> = [];
+    for (const [name, plan] of this.resumePlans) {
+      if (plan.mode !== 'restart') out.push([this.agents.get(name)!.agentId, plan.path]);
+    }
+    return out;
+  }
+
+  /**
+   * The lead and running specialists relaunch from their session file, awaiting-review and standby
+   * specialists reopen parked, and a member with no file restarts from its task. Null leaves a finished
+   * or never-dispatched member as it is.
+   */
+  private planResume(agent: TeamAgent, path: string | undefined): ResumePlan | null {
+    if (!launchesOnResume(agent.role, agent.status)) return null;
+    const parks = agent.status === 'standby' || agent.status === 'awaiting-review';
+    if (agent.role === 'specialist') domainProfileFor(agent.profileId);
+    if (path) return parks ? { mode: 'park', path } : { mode: 'relaunch', path };
+    // No session file: the member stopped before its first response, so it starts over from its task.
+    const kind = agent.role === 'lead' ? 'lead' : this.specialistKinds.get(agent.name);
+    if (!kind) throw new Error(`Team "${this.config.teamId}" recorded no role slot for "${agent.name}".`);
+    const resolution = this.config.resolveRoleModel(kind);
+    if (resolution.error) throw new Error(resolution.error);
+    return { mode: 'restart', resolution };
+  }
+
+  /**
+   * Continue a restored team per the plans `restore` made, then wait for its synthesis. Everything up to
+   * the first await runs synchronously, so a cancel cannot land between the caller's checks and the launch.
+   */
+  resume(toolCallId: string, message?: string): Promise<TeamRunResult> {
+    const completionPromise = this.openCompletion();
+    // The operator's resume is progress, so the lead does not inherit a stall budget it spent before it.
+    this.leadReviewStalls = 0;
+    const resumedAt = new Date().toISOString();
+    this.persistence.appendTeamEntry({
+      type: 'team-resumed',
+      teamId: this.config.teamId,
+      toolUseId: toolCallId,
+      checkpoint: this.restoredCheckpointAt,
+      ...(message !== undefined ? { message } : {}),
+      timestamp: resumedAt,
+    });
+    this.beginRun(toolCallId, resumedAt);
+
+    const launches: Array<{ agent: TeamAgent; launch: MemberLaunch }> = [];
+    for (const agent of this.agents.values()) {
+      const plan = this.resumePlans.get(agent.name);
+      if (!plan) continue;
+      const isLead = agent.role === 'lead';
+      const redeliver = this.restoredUndelivered.get(agent.name) ?? [];
+      const segment: AgentSegmentData = { toolCallId, ...(isLead && message !== undefined ? { message } : {}) };
+      let launch: MemberLaunch;
+      if (plan.mode === 'restart') {
+        const task = isLead ? LEAD_OPENING_TASK : agent.specialization;
+        // The steering protocol honours the marker only on a message's first line.
+        const prompt = isLead && message?.trim() ? wrapSteerMessage(`${message.trim()}\n\nYour original task:\n${task}`) : task;
+        launch = { kind: 'fresh', resolution: plan.resolution, prompt, redeliver };
+      } else if (plan.mode === 'relaunch') {
+        const initial: AgentStart = { kind: 'prompt', text: buildResumePrompt(isLead ? message : undefined) };
+        launch = { kind: 'reopen', path: plan.path, segment, initial, redeliver };
+      } else {
+        launch = { kind: 'reopen', path: plan.path, segment, initial: { kind: 'park' }, redeliver };
+      }
+
+      if (plan.mode !== 'park') {
+        agent.status = 'running';
+        // A relaunched turn settles its terminal contract afresh at its own end.
+        this.owedTerminalAction.delete(agent.name);
+      } else if (redeliver.length > 0) {
+        // The run wakes on these at once, the way a live delivery would have woken it.
+        this.pendingStandby.delete(agent.name);
+        this.owedTerminalAction.delete(agent.name);
+        agent.status = 'running';
+      }
+      agent.endTime = null;
+      const resumeCount = (this.resumeCounts.get(agent.name) ?? 0) + 1;
+      this.resumeCounts.set(agent.name, resumeCount);
+      this.persistence.appendTeamEntry({
+        type: 'agent-resumed',
+        teamId: this.config.teamId,
+        agentId: agent.agentId,
+        name: agent.name,
+        attempt: agent.attempt,
+        resumeCount,
+        mode: plan.mode,
+        status: agent.status,
+        timestamp: new Date().toISOString(),
+      });
+      launches.push({ agent, launch });
+    }
+    this.resumePlans.clear();
+    this.restoredUndelivered.clear();
+
+    this.setPhase('working');
+    this.emitTeamStarted();
+    for (const { agent, launch } of launches) {
+      if (agent.role === 'lead') this.launchLead(agent, launch);
+      else this.launchSpecialist(agent.name, agent, launch, domainProfileFor(agent.profileId));
+    }
+    this.notifyLeadIfReviewRoundReady();
+    this.resolveStrandedStandbys();
+    return this.awaitCompletionAndFinalize(completionPromise);
   }
 
   private setPhase(phase: TeamPhase): void {
@@ -1668,13 +2053,61 @@ export class TeamRunner {
     return this.agents.get(name);
   }
 
-  /** The team agent transcript path under the pi session dir (mirrors TeamPersistence's layout). */
-  private agentLogPath(agentId: string): string | null {
-    if (!this.cachedSessionDir) return null;
-    return path.join(
-      this.cachedSessionDir, this.config.persistenceSessionId,
-      'teams', 'agents', `${agentId}.jsonl`,
-    );
+  /**
+   * Open one member attempt's pi session and point the card's log link at its file. A fresh launch
+   * creates the file under the team's members dir with the launch as its first entry; a reopen continues
+   * the attempt's file from a resume segment, taking its model and thinking level from the file.
+   */
+  private async createMemberSession(
+    agent: TeamAgent,
+    attempt: number,
+    task: string,
+    member: MemberLaunch,
+    create: (store: TeamSessionOptions['store'], resolution: ResolvedTeamModel | null) => Promise<AgentSession>,
+  ): Promise<AgentSession> {
+    let session: AgentSession;
+    let entry: [customType: string, data: unknown];
+    if (member.kind === 'fresh') {
+      session = await create({
+        kind: 'file',
+        dir: teamMembersDir(piSessionDir(this.config.cwd), this.config.persistenceSessionId, this.config.teamId),
+        id: teamMemberSessionId(agent.agentId, attempt),
+      }, member.resolution);
+      const launch: TeamMemberLaunchData = {
+        agentId: agent.agentId,
+        kind: 'team-member',
+        teamId: this.config.teamId,
+        attempt,
+        memberName: agent.name,
+        role: agent.role,
+        task,
+      };
+      // pi buffers it until the member's first response, so it still lands ahead of every message.
+      entry = [DAMOCLES_AGENT_LAUNCH_ENTRY, launch];
+    } else {
+      session = await create({ kind: 'reopen', path: member.path, agentId: agent.agentId }, null);
+      entry = [DAMOCLES_AGENT_SEGMENT_ENTRY, member.segment];
+    }
+    try {
+      session.sessionManager.appendCustomEntry(...entry);
+    } catch (err) {
+      // The runner never receives this session, so only here can it be released.
+      this.config.engine.forgetSession(session);
+      throw err;
+    }
+    const logFilePath = session.sessionManager.getSessionFile() ?? null;
+    // A redispatch may already have started a newer attempt, whose file the card must keep.
+    if (agent.attempt === attempt) {
+      agent.logFilePath = logFilePath;
+      this.onMessage({
+        type: 'teamAgentStatusUpdate',
+        teamId: this.config.teamId,
+        agentId: agent.agentId,
+        status: agent.status,
+        logFilePath,
+      });
+    }
+    return session;
   }
 
   /** Whether a message to `name` can be delivered now. A dead agent unsubscribes from the bus on exit,
@@ -1715,6 +2148,17 @@ export class TeamRunner {
     return () => {
       if (this.noteSinks.get(agentId) === deliver) this.noteSinks.delete(agentId);
     };
+  }
+
+  private bindUndelivered(agentId: string, read: () => UndeliveredMessage[]): () => void {
+    this.undeliveredReaders.set(agentId, read);
+    return () => {
+      if (this.undeliveredReaders.get(agentId) === read) this.undeliveredReaders.delete(agentId);
+    };
+  }
+
+  private browserScopeId(agent: TeamAgent): string {
+    return browserScopeIdFor(agent, this.resumeCounts.get(agent.name) ?? 0);
   }
 
   /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
@@ -1824,7 +2268,39 @@ export class TeamRunner {
     return parts.join('\n');
   }
 
+  private toWebviewMessage(msg: TeamMessage): WebviewTeamMessage {
+    return {
+      messageId: msg.messageId,
+      senderAgentId: this.findAgentByName(msg.from)?.agentId ?? '',
+      senderName: msg.from,
+      recipientAgentId: msg.to ? this.findAgentByName(msg.to)?.agentId ?? null : null,
+      recipientName: msg.to,
+      content: msg.content,
+      timestamp: msg.timestamp,
+    };
+  }
+
+  private toWebviewScratchpadEntry(entry: ScratchpadEntry): WebviewScratchpadEntry {
+    return {
+      section: entry.section,
+      content: entry.content,
+      agentId: this.findAgentByName(entry.author)?.agentId ?? '',
+      agentName: entry.author,
+      version: entry.version,
+      timestamp: entry.timestamp,
+    };
+  }
+
+  /** The whole team as it stands, so a resumed team's card keeps its timeline and scratchpad. */
   private emitTeamStarted(): void {
+    this.onMessage({
+      type: 'teamStarted',
+      team: this.getTeamState(),
+    });
+  }
+
+  /** The card of this run as it stands, which outranks the event log's for the team while it runs. */
+  getTeamState(): TeamState {
     const agentList: WebviewTeamAgent[] = [...this.agents.values()].map(a => ({
       agentId: a.agentId,
       name: a.name,
@@ -1849,24 +2325,49 @@ export class TeamRunner {
       logFilePath: a.logFilePath,
     }));
 
-    const teamState: TeamState = {
+    return {
       teamId: this.config.teamId,
       toolUseId: this.config.toolUseId,
       title: this.config.title,
-      status: 'running',
+      status: this.status,
       phase: this.phase,
       agents: agentList,
-      messages: [],
-      scratchpad: [],
+      messages: this.messageBus.getAllMessages().map((m) => this.toWebviewMessage(m)),
+      scratchpad: this.scratchpad.getAll().map((e) => this.toWebviewScratchpadEntry(e)),
       result: null,
-      startTime: Date.now(),
+      startTime: this.startTime,
       endTime: null,
       totalToolCount: 0,
+      runs: [...this.pastRuns, this.endedRun ?? this.runSummary()],
     };
+  }
 
-    this.onMessage({
-      type: 'teamStarted',
-      team: teamState,
-    });
+  private teamUsage(): { tokens: number; costUsd: number } {
+    let tokens = 0;
+    let costUsd = 0;
+    for (const a of this.agents.values()) {
+      tokens += a.totalInputTokens + a.totalOutputTokens;
+      costUsd += a.costUsd;
+    }
+    return { tokens, costUsd };
+  }
+
+  /** `startedAt` is the timestamp of the entry that opens the run, so the log reads back the same start. */
+  private beginRun(toolUseId: string, startedAt: string): void {
+    const usage = this.teamUsage();
+    this.currentRun = { toolUseId, startTime: Date.parse(startedAt), toolCount: 0, baseTokens: usage.tokens, baseCostUsd: usage.costUsd };
+  }
+
+  private runSummary(): TeamRunSummary {
+    const usage = this.teamUsage();
+    return {
+      toolUseId: this.currentRun.toolUseId,
+      status: this.status,
+      startTime: this.currentRun.startTime,
+      endTime: null,
+      toolCount: this.currentRun.toolCount,
+      tokens: usage.tokens - this.currentRun.baseTokens,
+      costUsd: usage.costUsd - this.currentRun.baseCostUsd,
+    };
   }
 }

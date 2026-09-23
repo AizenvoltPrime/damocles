@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setActivePinia, createPinia } from 'pinia';
@@ -19,6 +19,7 @@ import { TeamPersistence } from '../persistence';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession } from './fake-session';
+import { initPiLoader } from '../../pi-session/pi-loader';
 import { teamAgentToolset } from './team-mcp-fixture';
 import type { AgentMcpContext, TeamAgent, TeamConfig, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -27,8 +28,8 @@ import { useTeamStore } from '@/stores/useTeamStore';
 import { createTeamHandlers } from '@/composables/message-handler/handlers/team-handlers';
 
 /**
- * The redispatch seam, from both ends at once. A cancelled specialist that is re-run keeps one card and
- * one transcript, so the live card and the card a reopened team restores read the same agent from two
+ * The redispatch seam, from both ends at once. A cancelled specialist that is re-run keeps one card, so
+ * the live card and the card a reopened team restores read the same agent from two
  * different sources: a stream of webview messages, and the team log. They disagreed, which is the bug
  * these tests exist to hold shut.
  *
@@ -79,7 +80,7 @@ function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
     agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '',
     status: 'pending', model: 'test', profileId: null, startTime: null, endTime: null,
-    toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
+    toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
     dollarBilled: false, finalResponse: null, error: null, logFilePath: null,
@@ -137,14 +138,14 @@ async function makeHarness(cwd: string) {
   for (const spec of config.agents) agents.set(spec.name, makeAgent(spec.name, spec.role));
   (runner as unknown as { installSubscribers: () => void }).installSubscribers();
 
-  await persistence.initTeamFile(TEAM_ID);
+  persistence.initTeamFile(TEAM_ID);
   persistence.appendTeamEntry({
     type: 'team-created', teamId: TEAM_ID, toolUseId: 'toolu_1', title: 'remediation check',
     agents: config.agents, timestamp: new Date().toISOString(),
   });
   (runner as unknown as { emitTeamStarted: () => void }).emitTeamStarted();
 
-  /** Flush microtasks and the pending file writes the runner serializes its launches on. */
+  /** Flush microtasks and macrotasks so the runner's launches and prompt loops settle. */
   const settle = async (): Promise<void> => {
     for (let i = 0; i < 4; i++) {
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -230,11 +231,16 @@ async function runCancelledThenRedispatched(cwd: string) {
   await h.settle();
   h.runner.synthesizeResult('the team result');
   await h.settle();
-  // The writer queues its appends, so the log is only complete on disk once the queue drains.
+  // Appends are synchronous; flush only surfaces a write that failed.
   await h.persistence.flush();
 
   return h;
 }
+
+// The first pi import takes about a second, which under a loaded machine overruns the first test's timeout.
+beforeAll(async () => {
+  await initPiLoader();
+});
 
 afterAll(() => rmSync(DAMOCLES_HOME_DIR, { recursive: true, force: true }));
 

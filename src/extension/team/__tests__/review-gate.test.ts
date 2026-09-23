@@ -31,7 +31,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     profileId: null,
     startTime: null,
     endTime: null,
-    toolCallCount: 0,
+    toolCallCount: 0, carriedToolCallCount: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cacheReadTokens: 0,

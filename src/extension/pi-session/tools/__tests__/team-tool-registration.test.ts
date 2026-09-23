@@ -14,7 +14,7 @@ import {
  */
 
 /** Spelled out rather than derived, so removing a tool from team-tools.ts fails here instead of shrinking the expectation with it. */
-const EXPECTED_MAIN_NAMES: readonly string[] = ['cancel_team', 'create_team', 'get_team_status'];
+const EXPECTED_MAIN_NAMES: readonly string[] = ['cancel_team', 'create_team', 'get_team_status', 'resume_team'];
 
 const EXPECTED_AGENT_NAMES: readonly string[] = [
   'team_approve_specialist',
@@ -39,7 +39,7 @@ const registeredNames: readonly string[] = [...TEAM_MAIN_PI_TOOL_NAMES, ...TEAM_
 
 describe('registered team tools and the shared presentation table', () => {
   it('holds a label and both card summaries for every team tool name the extension registers', () => {
-    expect(registeredNames).toHaveLength(19);
+    expect(registeredNames).toHaveLength(20);
     const unlabelled = registeredNames.filter((name) => TEAM_TOOL_LABELS[name] === undefined);
     expect(unlabelled).toEqual([]);
     const unsummarized = registeredNames.filter((name) => {
@@ -62,7 +62,7 @@ describe('registered team tools and the shared presentation table', () => {
   });
 
   it('is the one table: the Tools panel catalog reads its labels from here', () => {
-    expect(TEAM_TOOL_CATALOG).toHaveLength(19);
+    expect(TEAM_TOOL_CATALOG).toHaveLength(20);
     for (const entry of TEAM_TOOL_CATALOG) {
       expect(entry.label, `catalog label for ${entry.name}`).toBe(TEAM_TOOL_LABELS[entry.name]);
     }

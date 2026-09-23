@@ -62,7 +62,10 @@ export function isShellTool(name: string): name is ShellToolName {
 }
 
 export const TEAM_CREATE_TOOL = 'create_team';
+export const TEAM_RESUME_TOOL = 'resume_team';
+/** The primary agent's team tools besides create_team. A nested agent never gets them (no recursion). */
 export const TEAM_MANAGEMENT_TOOLS: Set<string> = new Set([
   'get_team_status',
   'cancel_team',
+  TEAM_RESUME_TOOL,
 ]);

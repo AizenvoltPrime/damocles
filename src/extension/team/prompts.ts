@@ -1,6 +1,7 @@
 import type { AgentSpec } from "./types";
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
+import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
 
 /** Shared by all three team prompts, which run in replace mode and inherit no comment policy. */
 const COMMENTS_SUBSECTION = `### Comments
@@ -276,7 +277,9 @@ ${PROSE_RULES_BODY}
 
 ### Narration
 
-${LEAD_NARRATION}${
+${LEAD_NARRATION}
+
+${STEERING_PROTOCOL_BLOCK}${
     profileCatalog
       ? `
 
@@ -439,7 +442,9 @@ ${PROSE_RULES_BODY}
 
 ### Narration
 
-${SPECIALIST_NARRATION}`;
+${SPECIALIST_NARRATION}
+
+${STEERING_PROTOCOL_BLOCK}`;
 }
 
 function buildProfiledSpecialistPrompt(
@@ -568,6 +573,7 @@ If you encounter a blocker you cannot resolve:
 
   const rulesSection = buildRulesSection(profile.rules);
   sections.push(rulesSection);
+  sections.push(STEERING_PROTOCOL_BLOCK);
 
   return sections.join("\n\n");
 }

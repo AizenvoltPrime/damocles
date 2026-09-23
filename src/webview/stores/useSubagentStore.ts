@@ -33,6 +33,33 @@ const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
   'cancelled': 6,
 };
 
+/** The card heading: a resume card names the agent it continues until the agent's own details arrive. */
+export function subagentHeading(
+  subagent: SubagentState,
+  t: (key: string, params: Record<string, unknown>) => string,
+): { title: string; resumed: boolean } {
+  if (subagent.resume && !subagent.resume.loaded) {
+    return { title: t('subagentDisplay.resuming', { id: subagent.resume.agentId.slice(0, 8) }), resumed: false };
+  }
+  return { title: subagent.description, resumed: subagent.resume !== undefined };
+}
+
+export type EndedSubagentStatus = Exclude<SubagentState['status'], 'running'>;
+
+/** The card status for an agent's terminal status; the live completion and the reload both read it. */
+export function endedSubagentStatus(agentStatus: string): EndedSubagentStatus {
+  if (agentStatus === 'error') return 'failed';
+  return agentStatus === 'stopped' || agentStatus === 'interrupted' ? 'cancelled' : 'completed';
+}
+
+function restoredSubagentStatus(tool: HistoryToolCall): SubagentState['status'] {
+  // A refused call ran no agent, and a refused resume writes no invocation entry to carry a status.
+  if (tool.isError) return 'failed';
+  // Transcripts that predate the persisted status offer only the presence of a result.
+  if (!tool.agentStatus) return tool.result ? 'completed' : 'cancelled';
+  return endedSubagentStatus(tool.agentStatus);
+}
+
 function extractLastTextFromMessages(agentMessages?: HistoryAgentMessage[]): string {
   if (!agentMessages || agentMessages.length === 0) return '';
   for (const msg of [...agentMessages].reverse()) {
@@ -118,41 +145,66 @@ export const useSubagentStore = defineStore('subagent', () => {
 
   function registerAgentTool(
     toolId: string,
-    input: { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean }
+    input: { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean; resume?: string; message?: string }
   ): void {
     if (toolId in subagents.value) return;
 
-    const subagentType = (input.subagent_type as string) || 'general-purpose';
-    const description = (input.description as string) || subagentType;
+    const resumedFrom = typeof input.resume === 'string' ? input.resume : undefined;
+    const known = resumedFrom !== undefined ? cardWithDetails(resumedFrom) : undefined;
+    const agentType = input.subagent_type || known?.agentType;
+    const description = input.description || known?.description || agentType || '';
 
     subagents.value = {
       ...subagents.value,
       [toolId]: {
         id: toolId,
-        agentType: subagentType,
+        ...(agentType !== undefined ? { agentType } : {}),
         description,
-        prompt: (input.prompt as string) || '',
+        prompt: (resumedFrom !== undefined ? input.message : input.prompt) || '',
         status: 'running',
         startTime: Date.now(),
         messages: [],
         toolCalls: [],
         messagesSealed: false,
         isBackground: input.run_in_background === true,
+        ...(resumedFrom !== undefined ? { resume: { agentId: resumedFrom, loaded: known !== undefined } } : {}),
       },
     };
   }
 
-  function startSubagent(sdkAgentId: string, _agentType: string, toolUseId?: string, isBackground?: boolean): void {
+  /** A card already showing this agent's own type and description: its spawn card or a loaded resume card. */
+  function cardWithDetails(sdkAgentId: string): SubagentState | undefined {
+    return Object.values(subagents.value).find(
+      s => s.sdkAgentId === sdkAgentId && s.agentType !== undefined && (!s.resume || s.resume.loaded),
+    );
+  }
+
+  function startSubagent(
+    sdkAgentId: string,
+    agentType: string,
+    toolUseId?: string,
+    isBackground?: boolean,
+    details?: { description?: string; resumedFrom?: string },
+  ): void {
     if (!toolUseId) return;
 
     const subagent = subagents.value[toolUseId];
     if (!subagent) return;
+    // A resume call's arguments name only the agent, so its type and description arrive here.
+    const resumed = details?.resumedFrom !== undefined
+      ? {
+          agentType,
+          description: details.description || subagent.description || agentType,
+          resume: { agentId: details.resumedFrom, loaded: true },
+        }
+      : {};
     // The card's `isBackground` was first derived from the Agent call's params; the extension now sends
     // the resolved flag (which folds in the template's `run_in_background` default), so correct it here.
     subagents.value = {
       ...subagents.value,
       [toolUseId]: {
         ...subagent,
+        ...resumed,
         sdkAgentId: subagent.sdkAgentId ?? sdkAgentId,
         ...(isBackground !== undefined ? { isBackground } : {}),
       },
@@ -195,32 +247,26 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
-  function completeSubagent(agentToolId: string): void {
+  function endSubagent(agentToolId: string, status: EndedSubagentStatus): void {
     const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
           ...subagent,
-          status: 'completed',
+          status,
           endTime: Date.now(),
         },
       };
     }
   }
 
+  function completeSubagent(agentToolId: string): void {
+    endSubagent(agentToolId, 'completed');
+  }
+
   function failSubagent(agentToolId: string): void {
-    const subagent = subagents.value[agentToolId];
-    if (subagent && subagent.status === 'running') {
-      subagents.value = {
-        ...subagents.value,
-        [agentToolId]: {
-          ...subagent,
-          status: 'failed',
-          endTime: Date.now(),
-        },
-      };
-    }
+    endSubagent(agentToolId, 'failed');
   }
 
   function cancelRunningSubagents(): void {
@@ -561,27 +607,21 @@ export const useSubagentStore = defineStore('subagent', () => {
   function restoreSubagentFromHistory(tool: HistoryToolCall): void {
     if (tool.id in subagents.value) return;
 
-    const description = (tool.input.description as string) || '';
-    const prompt = (tool.input.prompt as string) || '';
-    const subagentType = (tool.input.subagent_type as string) || 'general-purpose';
+    const launch = tool.agentLaunch;
+    const resumedFrom = tool.agentResumedFrom ?? (typeof tool.input.resume === 'string' ? tool.input.resume : undefined);
+    const known = launch === undefined && resumedFrom !== undefined ? cardWithDetails(resumedFrom) : undefined;
+    const description = launch?.description ?? known?.description ?? ((tool.input.description as string) || '');
+    const prompt = resumedFrom !== undefined ? (tool.input.message as string) || '' : (tool.input.prompt as string) || '';
+    const subagentType = launch?.agentType ?? known?.agentType ?? ((tool.input.subagent_type as string) || undefined);
 
-    const isBackground = Boolean(tool.input.run_in_background);
-    // Prefer the transcript's persisted terminal status (e.g. user-stopped → cancelled). Fall back to the
-    // old presence heuristic only for legacy transcripts that predate the status entry.
-    const status: SubagentState['status'] = tool.agentStatus
-      ? tool.agentStatus === 'error'
-        ? 'failed'
-        : tool.agentStatus === 'stopped'
-          ? 'cancelled'
-          : 'completed'
-      : tool.result
-        ? 'completed'
-        : 'cancelled';
+    const isBackground = launch?.background ?? Boolean(tool.input.run_in_background);
+    const status = restoredSubagentStatus(tool);
 
     // The transcript's persisted final text is authoritative; a background spawn's tool.result is only the
     // async-launch ack, so prefer agentResultText, then the parsed sync result, then the last message.
+    // An errored call's result is the refusal, which the live card never shows as the agent's result.
     let result: SubagentResult | undefined;
-    if (tool.agentResultText !== undefined || tool.result) {
+    if (!tool.isError && (tool.agentResultText !== undefined || tool.result)) {
       let parsed: { content?: Array<{ type: string; text?: string }>; totalDurationMs?: number; totalTokens?: number; totalToolUseCount?: number; agentId?: string } = {};
       if (tool.result) {
         try {
@@ -618,8 +658,8 @@ export const useSubagentStore = defineStore('subagent', () => {
       ...subagents.value,
       [tool.id]: {
         id: tool.id,
-        agentType: subagentType,
-        description: description || subagentType,
+        ...(subagentType !== undefined ? { agentType: subagentType } : {}),
+        description: description || subagentType || '',
         prompt,
         status,
         startTime,
@@ -632,6 +672,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(restoredAgentId !== undefined && { sdkAgentId: restoredAgentId }),
         messagesSealed: false,
         ...(isBackground ? { isBackground: true } : {}),
+        ...(resumedFrom !== undefined ? { resume: { agentId: resumedFrom, loaded: launch !== undefined || known !== undefined } } : {}),
       },
     };
   }
@@ -726,6 +767,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     resetToRunning,
     startSubagent,
     stopSubagent,
+    endSubagent,
     completeSubagent,
     failSubagent,
     cancelRunningSubagents,
@@ -743,6 +785,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     getSubagent,
     hasSubagent,
     getSubagentDescription,
+    cardWithDetails,
     getToolCallWithStatus,
     buildToolCallsWithStatus,
     expandSubagent,

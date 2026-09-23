@@ -1,4 +1,5 @@
 import type { ChatMessage, ToolCall } from './session';
+import type { TeamAgentStatus } from './team';
 
 export interface SubagentResult {
   content: string;
@@ -10,7 +11,8 @@ export interface SubagentResult {
 
 export interface SubagentState {
   id: string;
-  agentType: string;
+  /** Unset while unknown: a resume call's arguments name only the agent id. */
+  agentType?: string;
   description: string;
   prompt: string;
   status: "running" | "completed" | "failed" | "cancelled";
@@ -27,16 +29,29 @@ export interface SubagentState {
   lastAssistantMessage?: string;
   progressSummary?: string;
   isBackground?: boolean;
+  /** Set on a resume call's card. `loaded` turns true once the agent's own details replace the id. */
+  resume?: { agentId: string; loaded: boolean };
 }
 
-/** A currently running or queued Agent-tool subagent, for the `/steer` second-stage picker. */
-export interface RunningSubagentInfo {
-  id: string;
-  agentType: string;
-  description: string;
-  status: 'running' | 'queued';
-  isBackground: boolean;
-}
+/** A live agent the `/steer` second-stage picker can target: an Agent-tool subagent or a team member. */
+export type SteerTargetInfo =
+  | {
+      kind: 'subagent';
+      id: string;
+      agentType: string;
+      description: string;
+      status: 'running' | 'queued';
+      isBackground: boolean;
+    }
+  | {
+      kind: 'team-member';
+      id: string;
+      teamId: string;
+      teamTitle: string;
+      memberName: string;
+      role: 'lead' | 'specialist';
+      status: TeamAgentStatus;
+    };
 
 export interface Task {
   id: string;

@@ -69,6 +69,7 @@ function team(agents: TeamAgent[]): TeamState {
     startTime: 1,
     endTime: null,
     totalToolCount: 1,
+    runs: [{ toolUseId: 'toolu_1', status: 'running', startTime: 1, endTime: null, toolCount: 1, tokens: 0, costUsd: agents.reduce((sum, a) => sum + a.costUsd, 0) }],
   };
 }
 
@@ -111,8 +112,9 @@ function mountTeamOverlay(agents: TeamAgent[]) {
 }
 
 function mountTeamCard(agents: TeamAgent[]) {
+  const state = team(agents);
   return mount(TeamCard, {
-    props: { team: team(agents) },
+    props: { team: state, run: state.runs[0]! },
     global: { plugins: [i18n], stubs: { LoadingSpinner: true } },
   });
 }

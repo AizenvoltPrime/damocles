@@ -821,11 +821,15 @@
   "steerCommand": {
     "youSteered": "You steered {agent}",
     "usage": "Usage: /steer <agent> <message>",
-    "finished": "That subagent already finished. Nothing to steer.",
-    "failed": "Steering the subagent failed.",
-    "notFound": "No running subagent matches that id.",
-    "noAgents": "No running subagents",
-    "loadingAgents": "Loading agents…"
+    "finished": "That agent already finished. Nothing to steer.",
+    "failed": "Steering the agent failed.",
+    "notFound": "No running agent matches that id.",
+    "noAgents": "No running agents",
+    "loadingAgents": "Loading agents…",
+    "role": {
+      "lead": "Lead",
+      "specialist": "Specialist"
+    }
   },
   "subagentTypes": {
     "codeReviewer": "Code Reviewer",
@@ -845,7 +849,9 @@
     "noActivity": "No activity recorded",
     "modelLabel": "Model:",
     "modelDefault": "Default",
-    "steered": "Steered"
+    "steered": "Steered",
+    "resuming": "Resuming {id}",
+    "resumed": "Resumed"
   },
   "steerTool": {
     "title": "Steer subagent",
@@ -1123,7 +1129,8 @@
     "timelineEntry": {
       "toAgent": "→ {name}",
       "toAll": "→ all"
-    }
+    },
+    "resumed": "Resumed"
   },
   "userMessage": {
     "copyTitle": "Copy message",

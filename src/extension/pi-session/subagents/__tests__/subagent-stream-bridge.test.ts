@@ -117,6 +117,49 @@ describe('SubagentStreamBridge streaming', () => {
     expect(failed[0]).toMatchObject({ toolUseId: 'toolu_parent', toolName: 'Agent', error: 'boom' });
   });
 
+  it('subagentStart carries the description and resumedFrom when given, and omits them otherwise', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    new SubagentStreamBridge({
+      parentToolUseId: 'toolu_resume',
+      agentId: 'agent-1',
+      agentType: 'Explore',
+      isBackground: true,
+      description: 'dig in',
+      resumedFrom: 'agent-1',
+      getSessionId: () => 'parent-sid',
+      postMessage: (m) => sent.push(m),
+    }).start();
+    makeBridge(sent).start();
+
+    expect(sent.filter((m) => m.type === 'subagentStart')).toEqual([
+      { type: 'subagentStart', agentId: 'agent-1', agentType: 'Explore', toolUseId: 'toolu_resume', isBackground: true, description: 'dig in', resumedFrom: 'agent-1' },
+      { type: 'subagentStart', agentId: 'agent-1', agentType: 'Explore', toolUseId: 'toolu_parent', isBackground: false },
+    ]);
+  });
+
+  it('a reopened session seals only the messages of this run, not those it held when attached', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const messages: unknown[] = [
+      { role: 'user', content: [{ type: 'text', text: 'earlier task' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }] },
+    ];
+    const session = { ...makeFakeSession(), messages };
+    bridge.attach(session as never);
+    messages.push(
+      { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'resumed answer' }] },
+    );
+
+    bridge.finish({ session: session as never, responseText: 'resumed answer', resultJson: '{}', isError: false, durationMs: 1 });
+
+    const update = sent.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'subagentMessagesUpdate' }> => m.type === 'subagentMessagesUpdate');
+    expect(update!.messages).toEqual([
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'continue' }] },
+      { role: 'assistant', contentBlocks: [{ type: 'text', text: 'resumed answer' }] },
+    ]);
+  });
+
   it('assigns a fresh messageId per assistant message', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);

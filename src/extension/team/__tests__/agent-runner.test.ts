@@ -19,15 +19,15 @@ function baseConfig(overrides: Partial<AgentRunConfig>): AgentRunConfig {
     agentId: 'a1',
     name: 'worker',
     role: 'specialist',
-    specialization: 'do the task',
+    initial: { kind: 'prompt', text: 'do the task' },
     createSession: overrides.createSession ?? (async () => { throw new Error('no session'); }),
     forgetSession: vi.fn(),
     abortSignal: new AbortController().signal,
     messageBus,
     onMessage: vi.fn<(m: ExtensionToWebviewMessage) => void>(),
     teamId: 'team-1',
-    persistence: { appendAgentEntry: vi.fn(), appendTeamEntry: vi.fn(), flush: async () => {} },
     bindNoteDelivery: () => () => undefined,
+    bindUndelivered: () => () => undefined,
     ...overrides,
   } as AgentRunConfig;
 }
@@ -217,15 +217,12 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(fake.prompts.some((p) => p.includes('NUDGE: report complete now'))).toBe(true);
   });
 
-  it('does NOT wake a parked agent when the nudge is sent synchronously from the settle path (lost wakeup)', async () => {
-    // A synchronous send from inside onTurnEnd lands BEFORE the runner arms waitResolve → the wake is a
-    // no-op and the message sits unflushed. This is exactly why resolveStrandedStandbys must defer.
+  it('wakes a parked agent when the nudge is sent synchronously from the settle path', async () => {
+    // The send lands before the wait is armed; the loop must see it pending rather than wait over it.
     const ac = new AbortController();
     let sent = false;
     const messageBus = new MessageBus('team-1');
     const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
-    let idleResolve: (() => void) | null = null;
-    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
     const config = baseConfig({
       abortSignal: ac.signal,
       messageBus,
@@ -236,18 +233,15 @@ describe('AgentRunner (pi-native team agent)', () => {
           sent = true;
           messageBus.send('system', 'worker', 'SYNC nudge');
         }
-        idleResolve?.(); idleResolve = null;
       },
     });
 
-    const idle1 = nextIdle();
     const run = new AgentRunner().startAgent(config);
-    await idle1;             // parked; the synchronous nudge was already delivered and lost
-    expect(fake.prompts).toEqual(['do the task']);
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(2));
     ac.abort();
     const result = await run;
     expect(result.status).toBe('cancelled');
-    expect(fake.prompts).toEqual(['do the task']);
+    expect(fake.prompts).toEqual(['do the task', '[Message from system]: SYNC nudge']);
   });
 
   it('calls onReconcileBeforeEnd at the keepAlive-false boundary and ends when it leaves keepAlive false (break path: onTurnEnd never fires)', async () => {
@@ -313,18 +307,13 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(turnEnds).toBeGreaterThanOrEqual(2); // parked after the bare end AND after the grace turn
   });
 
-  it('loses a SYNCHRONOUS send from onReconcileBeforeEnd (lost-wakeup guard) — the agent parks with the message unflushed and never re-prompts', async () => {
-    // The lost-wakeup rule for the reconcile path: a synchronous MessageBus.send from inside
-    // onReconcileBeforeEnd pushes to pendingMessages and tries to wake, but waitResolve is not armed yet
-    // (the park await is set up AFTER onTurnEnd). The wake is a no-op and the message sits unflushed — the
-    // agent parks forever. This is exactly why reconcileTerminalContract defers the nudge via queueMicrotask.
+  it('prompts a SYNCHRONOUS send from onReconcileBeforeEnd instead of parking over it', async () => {
+    // The send lands before the wait is armed; the loop must see it pending rather than wait over it.
     const ac = new AbortController();
     let alive = false;
     let sent = false;
     const messageBus = new MessageBus('team-1');
     const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
-    let idleResolve: (() => void) | null = null;
-    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
     const config = baseConfig({
       abortSignal: ac.signal,
       messageBus,
@@ -333,21 +322,18 @@ describe('AgentRunner (pi-native team agent)', () => {
       onReconcileBeforeEnd: () => {
         if (!sent) {
           sent = true;
-          alive = true; // arm the hold so the runner parks (the send must survive to be meaningful)
-          messageBus.send('system', 'worker', 'SYNC nudge'); // synchronous — lost
+          alive = true;
+          messageBus.send('system', 'worker', 'SYNC nudge');
         }
       },
-      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
     });
 
-    const idle1 = nextIdle();
     const run = new AgentRunner().startAgent(config);
-    await idle1;             // parked; the synchronous nudge was delivered into pendingMessages but lost
-    expect(fake.prompts).toEqual(['do the task']); // never re-prompted — the wake was a no-op
+    await vi.waitFor(() => expect(fake.prompts).toHaveLength(2));
     ac.abort();
     const result = await run;
     expect(result.status).toBe('cancelled');
-    expect(fake.prompts).toEqual(['do the task']);
+    expect(fake.prompts).toEqual(['do the task', '[Message from system]: SYNC nudge']);
   });
 
   it('reclaims a message pi still holds when the turn ends, instead of ending with it undelivered', async () => {
@@ -401,14 +387,12 @@ describe('AgentRunner user note delivery', () => {
     const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
     const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
     const messages: ExtensionToWebviewMessage[] = [];
-    const entries: Array<Record<string, unknown>> = [];
     const sink = noteSink();
     const config = baseConfig({
       createSession: async () => fake as never,
       keepAlive: () => alive,
       onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
       onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
-      persistence: { appendAgentEntry: (_t, _a, e) => { entries.push(e); }, appendTeamEntry: () => undefined, flush: async () => undefined },
       bindNoteDelivery: sink.bind,
     });
 
@@ -425,8 +409,6 @@ describe('AgentRunner user note delivery', () => {
     expect(fake.prompts[1]).toBe('[cancel] the shell command was stopped');
     const echoes = messages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === '[cancel] the shell command was stopped');
     expect(echoes).toHaveLength(1);
-    const persisted = entries.filter((e) => e['type'] === 'user' && e['content'] === '[cancel] the shell command was stopped');
-    expect(persisted).toHaveLength(1);
   });
 
   it('steers a note that arrives mid-stream, still echoing it once', async () => {
@@ -565,18 +547,15 @@ describe('AgentRunner user note delivery', () => {
 /**
  * The team runner is the only producer that used to hand the webview pi's raw tool names and raw
  * argument keys. `ToolCallCard` keys its icon and its IN line off the Damocles names, so the mapping
- * has to happen here. Both destinations are asserted: the live `teamAgentToolCall` message AND the
- * entry given to `persistence.appendAgentEntry`, which nothing reads until a user reopens the team.
+ * has to happen here. Both live destinations are asserted: the `teamAgentToolCall` message and the
+ * `teamAgentAssistant` block.
  */
 
 interface PiToolCallBlock { id: string; name: string; arguments: Record<string, unknown> }
-/** `appendAgentEntry` takes an open record, so the entry is read by key rather than by a shaped type. */
-type PersistedEntry = Record<string, unknown>;
 
 /** Runs one turn whose single assistant message carries the given pi `toolCall` blocks. */
-async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: ExtensionToWebviewMessage[]; entries: PersistedEntry[] }> {
+async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: ExtensionToWebviewMessage[] }> {
   const messages: ExtensionToWebviewMessage[] = [];
-  const entries: PersistedEntry[] = [];
   const fake = new FakeSession({
     onPrompt: (_t, s) => {
       s.emit({ type: 'message_end', message: { role: 'assistant', content: blocks.map((b) => ({ type: 'toolCall', ...b })) } });
@@ -587,28 +566,14 @@ async function runWithToolCalls(blocks: PiToolCallBlock[]): Promise<{ messages: 
     createSession: async () => fake as never,
     keepAlive: () => false,
     onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
-    persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
   });
 
   await new AgentRunner().startAgent(config);
-  return { messages, entries };
+  return { messages };
 }
 
 function toolCallMessages(messages: ExtensionToWebviewMessage[]): Array<{ toolName: string; toolInput: Record<string, unknown> }> {
   return messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolCall' }> => m.type === 'teamAgentToolCall');
-}
-
-/** The persisted `tool_use` block for an id, from the assistant entry the runner appended. */
-function persistedToolUse(entries: PersistedEntry[], id: string): { name: string; input: Record<string, unknown> } {
-  for (const entry of entries) {
-    if (entry['type'] !== 'assistant' || !Array.isArray(entry['content'])) continue;
-    for (const block of entry['content'] as Array<{ type: string; id?: string; name?: string; input?: unknown }>) {
-      if (block.type === 'tool_use' && block.id === id) {
-        return { name: block.name ?? '', input: (block.input ?? {}) as Record<string, unknown> };
-      }
-    }
-  }
-  throw new Error(`expected a persisted tool_use block '${id}', found none in ${entries.length} entries`);
 }
 
 /** The live assistant `tool_use` block for an id, from the message the store consumes. */
@@ -625,28 +590,22 @@ function assistantToolUse(messages: ExtensionToWebviewMessage[], id: string): { 
 }
 
 describe('AgentRunner tool normalization', () => {
-  it('maps a pi bash call to Bash in the message, the live block and the persisted entry', async () => {
-    const { messages, entries } = await runWithToolCalls([{ id: 'tc-1', name: 'bash', arguments: { command: 'ls -la' } }]);
+  it('maps a pi bash call to Bash in the message and the live block', async () => {
+    const { messages } = await runWithToolCalls([{ id: 'tc-1', name: 'bash', arguments: { command: 'ls -la' } }]);
 
     expect(toolCallMessages(messages)).toEqual([
       expect.objectContaining({ toolName: 'Bash', toolInput: { command: 'ls -la' } }),
     ]);
     expect(assistantToolUse(messages, 'tc-1').name).toBe('Bash');
-    expect(persistedToolUse(entries, 'tc-1').name).toBe('Bash');
   });
 
-  it('rewrites read.path to file_path in the message, the live block and the persisted entry', async () => {
-    const { messages, entries } = await runWithToolCalls([{ id: 'tc-2', name: 'read', arguments: { path: 'c:/x.ts', limit: 20 } }]);
+  it('rewrites read.path to file_path in the message and the live block', async () => {
+    const { messages } = await runWithToolCalls([{ id: 'tc-2', name: 'read', arguments: { path: 'c:/x.ts', limit: 20 } }]);
 
     const sent = toolCallMessages(messages)[0];
     expect(sent?.toolName).toBe('Read');
     expect(sent?.toolInput).toEqual({ file_path: 'c:/x.ts', limit: 20 });
     expect(sent?.toolInput).not.toHaveProperty('path');
-
-    const persisted = persistedToolUse(entries, 'tc-2');
-    expect(persisted.name).toBe('Read');
-    expect(persisted.input).toEqual({ file_path: 'c:/x.ts', limit: 20 });
-    expect(persisted.input).not.toHaveProperty('path');
 
     const live = assistantToolUse(messages, 'tc-2');
     expect(live.name).toBe('Read');
@@ -654,26 +613,26 @@ describe('AgentRunner tool normalization', () => {
   });
 
   it('maps find to Glob and grep.ignoreCase to -i', async () => {
-    const { messages, entries } = await runWithToolCalls([
+    const { messages } = await runWithToolCalls([
       { id: 'tc-3', name: 'find', arguments: { pattern: '**/*.ts' } },
       { id: 'tc-4', name: 'grep', arguments: { pattern: 'todo', ignoreCase: true } },
     ]);
 
     expect(toolCallMessages(messages).map((m) => m.toolName)).toEqual(['Glob', 'Grep']);
-    expect(persistedToolUse(entries, 'tc-3').name).toBe('Glob');
-    const grep = persistedToolUse(entries, 'tc-4');
+    expect(assistantToolUse(messages, 'tc-3').name).toBe('Glob');
+    const grep = assistantToolUse(messages, 'tc-4');
     expect(grep.input).toEqual({ pattern: 'todo', '-i': true });
     expect(grep.input).not.toHaveProperty('ignoreCase');
   });
 
   it('passes an unmapped tool name and its arguments through untouched', async () => {
     // Custom and MCP tools are already Damocles-shaped, so the mapping must be identity for them.
-    const { messages, entries } = await runWithToolCalls([
+    const { messages } = await runWithToolCalls([
       { id: 'tc-5', name: 'mcp__pi__team_send_message', arguments: { to: 'lead', content: 'done' } },
     ]);
 
     expect(toolCallMessages(messages)[0]?.toolName).toBe('mcp__pi__team_send_message');
-    expect(persistedToolUse(entries, 'tc-5').input).toEqual({ to: 'lead', content: 'done' });
+    expect(assistantToolUse(messages, 'tc-5').input).toEqual({ to: 'lead', content: 'done' });
   });
 });
 
@@ -833,104 +792,13 @@ describe('AgentRunner tool result metadata', () => {
   });
 });
 
-/**
- * A team reopened from history is rebuilt from the persisted entries alone, so a result the runner
- * emits to the webview and never writes down leaves the reloaded card with no outcome to render.
- */
-describe('AgentRunner tool result persistence', () => {
-  async function persistedEntries(emitEvents: (s: FakeSession) => void): Promise<PersistedEntry[]> {
-    const entries: PersistedEntry[] = [];
-    const fake = new FakeSession({
-      onPrompt: (_t, s) => {
-        emitEvents(s);
-        s.emit({ type: 'turn_end' });
-      },
-    });
-    const config = baseConfig({
-      createSession: async () => fake as never,
-      keepAlive: () => false,
-      persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
+describe('AgentRunner tool result text', () => {
+  it('keeps a bare-string result instead of blanking the card', async () => {
+    // A custom tool or an MCP shim can answer with a plain string rather than a content array.
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: 'plain string result' } as never);
     });
 
-    await new AgentRunner().startAgent(config);
-    return entries;
-  }
-
-  /** The persisted `tool_result` block for an id, from the entry the runner appended. */
-  function persistedToolResult(entries: PersistedEntry[], id: string): Record<string, unknown> {
-    for (const entry of entries) {
-      if (entry['type'] !== 'tool_result' || !Array.isArray(entry['content'])) continue;
-      for (const block of entry['content'] as Array<Record<string, unknown>>) {
-        if (block['type'] === 'tool_result' && block['tool_use_id'] === id) return block;
-      }
-    }
-    throw new Error(`expected a persisted tool_result block '${id}', found none in ${entries.length} entries`);
-  }
-
-  it('writes the result text down under the id of the call it belongs to', async () => {
-    const entries = await persistedEntries((s) => {
-      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read', result: { content: [{ type: 'text', text: 'file body' }] }, isError: false });
-    });
-
-    expect(persistedToolResult(entries, 'tc-1')).toEqual({ type: 'tool_result', tool_use_id: 'tc-1', content: 'file body', is_error: false });
-  });
-
-  it('records an errored result as an error', async () => {
-    const entries = await persistedEntries((s) => {
-      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: { content: [{ type: 'text', text: 'command not found' }] }, isError: true });
-    });
-
-    expect(persistedToolResult(entries, 'tc-1')['is_error']).toBe(true);
-  });
-
-  it('carries the cancelled marker, which is the only thing that tells a stopped call from a finished one', async () => {
-    const entries = await persistedEntries((s) => {
-      s.emit({
-        type: 'tool_execution_end',
-        toolCallId: 'tc-1',
-        toolName: 'bash',
-        result: { content: [{ type: 'text', text: 'partial' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' } },
-        isError: false,
-      });
-    });
-
-    const block = persistedToolResult(entries, 'tc-1');
-    expect(block['is_error']).toBe(false);
-    expect(block['metadata']).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true, fullOutputPath: '/tmp/full.log' });
-  });
-
-  it('writes one result entry per call, each addressed to its own id', async () => {
-    const entries = await persistedEntries((s) => {
-      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'read', result: { content: [{ type: 'text', text: 'first' }] }, isError: false });
-      s.emit({ type: 'tool_execution_end', toolCallId: 'tc-2', toolName: 'read', result: { content: [{ type: 'text', text: 'second' }] }, isError: false });
-    });
-
-    expect(persistedToolResult(entries, 'tc-1')['content']).toBe('first');
-    expect(persistedToolResult(entries, 'tc-2')['content']).toBe('second');
-  });
-
-  it('keeps a bare-string result instead of blanking both the card and the log', async () => {
-    // A custom tool or an MCP shim can answer with a plain string rather than a content array. Both
-    // consumers read the same joined text, so blanking it loses the result on the card and writes the
-    // blank into the log a reopened team replays as authoritative.
-    const messages: ExtensionToWebviewMessage[] = [];
-    const entries: PersistedEntry[] = [];
-    const fake = new FakeSession({
-      onPrompt: (_t, s) => {
-        s.emit({ type: 'tool_execution_end', toolCallId: 'tc-1', toolName: 'bash', result: 'plain string result' } as never);
-        s.emit({ type: 'turn_end' });
-      },
-    });
-    const config = baseConfig({
-      createSession: async () => fake as never,
-      keepAlive: () => false,
-      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
-      persistence: { appendAgentEntry: (_t: string, _a: string, e: PersistedEntry) => { entries.push(e); }, appendTeamEntry: vi.fn(), flush: async () => {} },
-    });
-
-    await new AgentRunner().startAgent(config);
-
-    expect(persistedToolResult(entries, 'tc-1')['content']).toBe('plain string result');
     const card = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> => m.type === 'teamAgentToolResult');
     expect(card?.result).toBe('plain string result');
   });
@@ -1133,5 +1001,262 @@ describe('AgentRunner finalResponse', () => {
     }));
 
     expect(result.finalResponse).toBe('here is what I found');
+  });
+});
+
+/** Captures the undelivered reader the runner publishes, plus whether its teardown has run. */
+function undeliveredReader(): { read: () => Array<{ text: string; echoed: boolean }>; unbound: boolean; bind: AgentRunConfig['bindUndelivered'] } {
+  const sink: { read: () => Array<{ text: string; echoed: boolean }>; unbound: boolean; bind: AgentRunConfig['bindUndelivered'] } = {
+    read: () => { throw new Error('the runner never published an undelivered reader'); },
+    unbound: false,
+    bind: () => () => undefined,
+  };
+  sink.bind = (read) => {
+    sink.read = read;
+    return () => { sink.unbound = true; };
+  };
+  return sink;
+}
+
+function statusesOf(config: AgentRunConfig): string[] {
+  return vi.mocked(config.onMessage).mock.calls
+    .map(([m]) => m)
+    .flatMap((m) => (m.type === 'teamAgentStatusUpdate' ? [m.status] : []));
+}
+
+describe('AgentRunner park mode', () => {
+  it('opens the session, prompts nothing, emits no running status, and waits', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const abort = new AbortController();
+    const turnEnds: string[] = [];
+    let bound: (() => void) | null = null;
+    const live = new Promise<void>((r) => { bound = r; });
+    const config = baseConfig({
+      initial: { kind: 'park' },
+      createSession: async () => fake as never,
+      abortSignal: abort.signal,
+      keepAlive: () => true,
+      bindNoteDelivery: () => { bound?.(); return () => undefined; },
+      onTurnEnd: () => turnEnds.push('turn-end'),
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await live;
+    abort.abort();
+    const result = await run;
+
+    // Asserted after the run settled, so no later prompt can still be on its way.
+    expect(result.status).toBe('cancelled');
+    expect(fake.prompts).toEqual([]);
+    expect(statusesOf(config)).not.toContain('running');
+    expect(vi.mocked(config.onMessage).mock.calls.filter(([m]) => m.type === 'teamAgentUserMessage')).toEqual([]);
+    expect(turnEnds).toEqual([]);
+    expect(config.forgetSession).toHaveBeenCalledWith(fake);
+  });
+
+  it('a parked member wakes on a bus message and is prompted with it', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messageBus = new MessageBus('team-1');
+    let alive = true;
+    let bound: (() => void) | null = null;
+    const live = new Promise<void>((r) => { bound = r; });
+    const config = baseConfig({
+      initial: { kind: 'park' },
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      bindNoteDelivery: () => { bound?.(); return () => undefined; },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await live;
+    alive = false;
+    messageBus.send('Lead', 'worker', 'revise section 2');
+    const result = await run;
+
+    expect(fake.prompts).toEqual(['[Message from Lead]: revise section 2']);
+    expect(result.status).toBe('completed');
+  });
+
+  it('a parked member whose keepAlive holds reports the wake through onKeepAliveResume', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messageBus = new MessageBus('team-1');
+    const abort = new AbortController();
+    const resumed: string[] = [];
+    let parkAgain: (() => void) | null = null;
+    const parkedAgain = new Promise<void>((r) => { parkAgain = r; });
+    let bound: (() => void) | null = null;
+    const live = new Promise<void>((r) => { bound = r; });
+    const config = baseConfig({
+      initial: { kind: 'park' },
+      messageBus,
+      abortSignal: abort.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => true,
+      bindNoteDelivery: () => { bound?.(); return () => undefined; },
+      onTurnEnd: () => parkAgain?.(),
+      onKeepAliveResume: () => resumed.push('resume'),
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await live;
+    messageBus.send('Lead', 'worker', 'approved? not yet, one fix');
+    await parkedAgain;
+
+    expect(resumed).toEqual(['resume']);
+    expect(fake.prompts).toEqual(['[Message from Lead]: approved? not yet, one fix']);
+    abort.abort();
+    await run;
+  });
+
+  it('a message sent while the session is still opening is queued and prompted, not lost', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messageBus = new MessageBus('team-1');
+    let open!: () => void;
+    const opened = new Promise<void>((r) => { open = r; });
+    let requested: (() => void) | null = null;
+    const sessionRequested = new Promise<void>((r) => { requested = r; });
+    const config = baseConfig({
+      initial: { kind: 'park' },
+      messageBus,
+      createSession: async () => { requested?.(); await opened; return fake as never; },
+      keepAlive: () => false,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await sessionRequested;
+    messageBus.send('Lead', 'worker', 'sent during open');
+    open();
+    await run;
+
+    expect(fake.prompts).toEqual(['[Message from Lead]: sent during open']);
+  });
+
+  it.each([
+    ['a message sent during the reopen', 'bus'],
+    ['a redelivered message', 'redeliver'],
+  ] as const)('a parked member woken by %s is resumed before its first prompt', async (_label, source) => {
+    const events: string[] = [];
+    const fake = new FakeSession({ onPrompt: (t, s) => { events.push(`prompt:${t}`); s.emit({ type: 'turn_end' }); } });
+    const messageBus = new MessageBus('team-1');
+    const abort = new AbortController();
+    let open!: () => void;
+    const opened = new Promise<void>((r) => { open = r; });
+    let requested: (() => void) | null = null;
+    const sessionRequested = new Promise<void>((r) => { requested = r; });
+    let parked: (() => void) | null = null;
+    const parkedAfterTurn = new Promise<void>((r) => { parked = r; });
+    const config = baseConfig({
+      initial: { kind: 'park' },
+      messageBus,
+      abortSignal: abort.signal,
+      ...(source === 'redeliver' ? { redeliver: [{ text: '[Message from Lead]: early', echoed: true }] } : {}),
+      createSession: async () => { requested?.(); await opened; return fake as never; },
+      keepAlive: () => true,
+      onKeepAliveResume: () => events.push('resume'),
+      onTurnEnd: () => { if (events.some((e) => e.startsWith('prompt:'))) parked?.(); },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await sessionRequested;
+    if (source === 'bus') messageBus.send('Lead', 'worker', 'early');
+    open();
+    await parkedAfterTurn;
+
+    // The status hook runs first, so a terminal tool called in that turn sees a running member.
+    expect(events).toEqual(['resume', 'prompt:[Message from Lead]: early']);
+    abort.abort();
+    await run;
+  });
+});
+
+describe('AgentRunner redelivery and undelivered messages', () => {
+  it('prompts messages carried over from an earlier run before the member settles', async () => {
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const config = baseConfig({
+      initial: { kind: 'prompt', text: 'continue' },
+      redeliver: [{ text: '[Message from Lead]: carried over', echoed: true }],
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+    });
+
+    await new AgentRunner().startAgent(config);
+
+    expect(fake.prompts.join('\n')).toContain('[Message from Lead]: carried over');
+    expect(fake.prompts[0]).toContain('continue');
+  });
+
+  it('undelivered() returns runner-local pending messages plus the pi steering and follow-up queues', async () => {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
+    });
+    const messageBus = new MessageBus('team-1');
+    const reader = undeliveredReader();
+    const abort = new AbortController();
+    const config = baseConfig({
+      messageBus,
+      abortSignal: abort.signal,
+      createSession: async () => fake as never,
+      keepAlive: () => true,
+      bindUndelivered: reader.bind,
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await fake.whenPrompted(1);
+    // Not streaming and mid-turn, so the runner holds the message locally until the turn ends.
+    messageBus.send('Lead', 'worker', 'held by the runner');
+    fake.holdSteeredMessage('held by pi as a steer');
+    fake.holdFollowUpMessage('held by pi as a follow-up');
+
+    expect(reader.read()).toEqual([
+      { text: 'held by pi as a steer', echoed: true },
+      { text: 'held by pi as a follow-up', echoed: true },
+      { text: '[Message from Lead]: held by the runner', echoed: false },
+    ]);
+
+    abort.abort();
+    await run;
+    expect(reader.unbound).toBe(true);
+  });
+});
+
+describe('AgentRunner cost baseline', () => {
+  it('reports only spend after the session opened, in costUsd, usage updates and the budget deltas', async () => {
+    let alive = true;
+    const messageBus = new MessageBus('team-1');
+    let turn = 0;
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => {
+        turn += 1;
+        s.cost = turn === 1 ? 1.25 : 1.5;
+        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 });
+        if (turn === 2) alive = false;
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    // A reopened session reports its whole history's cost, spend the earlier run already charged.
+    fake.cost = 1;
+    const usageUpdates: number[] = [];
+    const costDeltas: number[] = [];
+    let idleResolve: (() => void) | null = null;
+    const idle1 = new Promise<void>((r) => { idleResolve = r; });
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onUsageUpdate: (u) => usageUpdates.push(u.costUsd),
+      onCost: (d) => costDeltas.push(d),
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+    });
+
+    const run = new AgentRunner().startAgent(config);
+    await idle1;
+    messageBus.send('peer', 'worker', 'second turn');
+    const result = await run;
+
+    expect(result.costUsd).toBeCloseTo(0.5, 10);
+    expect(usageUpdates.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.5]);
+    expect(costDeltas.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.25]);
   });
 });

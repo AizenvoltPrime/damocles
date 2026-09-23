@@ -252,3 +252,19 @@ describe('useVirtualizedMessages ordering inside one message gap', () => {
     ]);
   });
 });
+
+describe('useVirtualizedMessages team management calls', () => {
+  it('keeps a resume_team call, which renders its team card, and drops cancel_team', () => {
+    const message = {
+      id: 'm1', role: 'assistant', content: '', timestamp: 1,
+      toolCalls: [
+        { id: 'tc-resume', name: 'resume_team', input: { team_id: 't' }, status: 'running' },
+        { id: 'tc-cancel', name: 'cancel_team', input: { team_id: 't' }, status: 'completed' },
+      ],
+    } as unknown as ChatMessage;
+
+    const items = build([message]).items.value.filter((i) => i.type === 'tool-call');
+
+    expect(items.map((i) => i.toolCall?.id)).toEqual(['tc-resume']);
+  });
+});

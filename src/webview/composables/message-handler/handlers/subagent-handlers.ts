@@ -10,7 +10,8 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
           ...(msg.agentType !== undefined && { agentType: msg.agentType }),
           ...(msg.description !== undefined && { description: msg.description }),
         });
-        if (msg.toolUseId) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message);
+        // A team member's runner already echoes the steer into its overlay.
+        if (msg.toolUseId && !msg.team) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message);
         return;
       }
       const key = msg.status === "not-found" ? "notFound" : msg.status;
@@ -18,7 +19,10 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     subagentStart: (msg, ctx) => {
-      ctx.stores.subagentStore.startSubagent(msg.agentId, msg.agentType, msg.toolUseId, msg.isBackground);
+      ctx.stores.subagentStore.startSubagent(msg.agentId, msg.agentType, msg.toolUseId, msg.isBackground, {
+        ...(msg.description !== undefined && { description: msg.description }),
+        ...(msg.resumedFrom !== undefined && { resumedFrom: msg.resumedFrom }),
+      });
     },
 
     subagentStop: (msg, ctx) => {

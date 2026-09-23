@@ -22,6 +22,7 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ContentBlock } from '../../../shared/types/content';
+import type { AgentTerminalStatus } from '../agent-records';
 import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { joinResultText } from '../tool-result-text';
@@ -37,6 +38,10 @@ export interface SubagentStreamBridgeDeps {
   agentType: string;
   /** The resolved background flag (param-or-frontmatter) — corrects the card's param-derived badge. */
   isBackground: boolean;
+  /** The agent's task description, which a resume call's own arguments do not carry. */
+  description?: string;
+  /** Set when this run resumes the agent of that id on a new card. */
+  resumedFrom?: string;
   /** The parent panel's session id — stamped on emitted `assistant`/`partial` (`setCurrentSession`). */
   getSessionId: () => string;
   postMessage: (message: ExtensionToWebviewMessage) => void;
@@ -46,6 +51,7 @@ export interface SubagentStreamBridgeDeps {
 export function buildAgentResultJson(opts: {
   responseText: string;
   agentId: string;
+  agentStatus: AgentTerminalStatus;
   totalDurationMs: number;
   totalTokens: number;
   totalToolUseCount: number;
@@ -56,6 +62,8 @@ export function buildAgentResultJson(opts: {
     totalTokens: opts.totalTokens,
     totalToolUseCount: opts.totalToolUseCount,
     agentId: opts.agentId,
+    // Not `status`: the webview reads that key as the queued_to_running/async_launched acknowledgement.
+    agentStatus: opts.agentStatus,
   });
 }
 
@@ -72,6 +80,8 @@ export class SubagentStreamBridge {
   private streamingText = '';
   private streamingThinking = '';
   private thinkingStart: number | null = null;
+  /** Messages the session held when attached; a reopened session's earlier runs belong to earlier cards. */
+  private firstMessageIndex = 0;
 
   constructor(deps: SubagentStreamBridgeDeps) {
     this.deps = deps;
@@ -83,7 +93,15 @@ export class SubagentStreamBridge {
 
   /** Emit `subagentStart` (registers the card's sdkAgentId) and, if known, the model + template path. */
   start(model?: string, templatePath?: string): void {
-    this.emit({ type: 'subagentStart', agentId: this.deps.agentId, agentType: this.deps.agentType, toolUseId: this.deps.parentToolUseId, isBackground: this.deps.isBackground });
+    this.emit({
+      type: 'subagentStart',
+      agentId: this.deps.agentId,
+      agentType: this.deps.agentType,
+      toolUseId: this.deps.parentToolUseId,
+      isBackground: this.deps.isBackground,
+      ...(this.deps.description !== undefined ? { description: this.deps.description } : {}),
+      ...(this.deps.resumedFrom !== undefined ? { resumedFrom: this.deps.resumedFrom } : {}),
+    });
     if (model) this.emitModel(model);
     if (templatePath) this.emitTemplate(templatePath);
   }
@@ -104,6 +122,7 @@ export class SubagentStreamBridge {
 
   /** Subscribe to the nested session and stream per-tool events to the card. Returns unsubscribe. */
   attach(session: AgentSession): () => void {
+    this.firstMessageIndex = session.messages.length;
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));
     return () => {
       unsubscribe();
@@ -255,7 +274,7 @@ export class SubagentStreamBridge {
     this.emit({
       type: 'subagentMessagesUpdate',
       agentToolId: this.deps.parentToolUseId,
-      messages: piMessagesToHistoryAgentMessages(session.messages),
+      messages: piMessagesToHistoryAgentMessages(session.messages.slice(this.firstMessageIndex)),
     });
   }
 

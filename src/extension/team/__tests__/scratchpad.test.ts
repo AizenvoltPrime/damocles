@@ -443,3 +443,38 @@ describe('Scratchpad.clearReader', () => {
     expect(sp.getReadStats('B')).toEqual({ markerHits: 0, fullReturns: 1 });
   });
 });
+
+describe('Scratchpad reader cursors across a restore', () => {
+  it('serializeCursors and restoreCursors round-trip every reader, model-chosen names included', () => {
+    const sp = new Scratchpad();
+    sp.set('__proto__', 'odd name', 'A');
+    sp.set('findings', 'v1', 'A');
+    sp.set('findings', 'v2', 'A');
+    sp.markRead('Lead', 'findings');
+    sp.markRead('constructor', '__proto__');
+
+    const cursors = sp.serializeCursors();
+    const restored = new Scratchpad();
+    restored.restoreCursors(JSON.parse(JSON.stringify(cursors)) as typeof cursors);
+
+    expect(restored.serializeCursors()).toEqual(cursors);
+    expect(restored.getReadVersion('Lead', 'findings')).toBe(2);
+    expect(restored.getReadVersion('constructor', '__proto__')).toBe(1);
+    expect(restored.getReadVersion('A', 'findings')).toBe(2);
+    expect(restored.getReadVersion('Lead', '__proto__')).toBe(0);
+  });
+
+  it('a restored lead that read an unchanged section is not asked to read it again', () => {
+    const live = new Scratchpad();
+    live.set('a-notes', 'findings', 'A');
+    live.markRead('Lead', 'a-notes');
+    const events = live.getAll().map((e) => ({ ...e, timestamp: new Date(e.timestamp).toISOString(), immutable: false, appendOnly: false }));
+
+    const restored = new Scratchpad();
+    restored.restore(events as never);
+    restored.restoreCursors(live.serializeCursors());
+
+    expect(restored.getStaleSectionsFor('Lead', 'A')).toEqual([]);
+    expect(restored.hasCurrentRead('Lead', 'a-notes')).toBe(true);
+  });
+});

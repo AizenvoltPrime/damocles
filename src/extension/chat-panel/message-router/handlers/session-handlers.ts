@@ -3,6 +3,7 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { log } from "../../../logger";
 import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
 import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
+import { claimStoredSession } from "../../session-ownership";
 
 /**
  * The live mutation surface (rename, tag, delete-detach) for a session open in any panel, or
@@ -51,15 +52,16 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         log("[MessageRouter] Error pre-loading prompt history:", err);
       }
 
-      if (msg.type === "ready" && msg.savedSessionId) {
-        ctx.session.setResumeSession(msg.savedSessionId);
+      const savedSessionId = msg.type === "ready" ? msg.savedSessionId : undefined;
+      // A restored panel whose conversation another panel already holds opens empty instead.
+      if (savedSessionId && !claimStoredSession(deps.getPanels(), ctx, savedSessionId)) {
         try {
-          await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host, ctx.session);
-          postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
+          await deps.historyManager.loadSessionHistory(savedSessionId, ctx.host, ctx.session);
+          postMessage(ctx.host, { type: "sessionStarted", sessionId: savedSessionId });
         } catch (err) {
           if (err instanceof Error && err.name === 'AbortError') return;
           log("[MessageRouter] Error auto-resuming session:", err);
-          postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
+          postMessage(ctx.host, { type: "sessionStarted", sessionId: savedSessionId });
         }
       } else {
         await ctx.session.initializeEarly();
@@ -131,12 +133,10 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "deleteSession") return;
       try {
         // Every holder of this session must stop writing BEFORE the file goes, else its next append
-        // resurrects the path as a header-less file. There can be more than one: two panels resuming
-        // the same file get the same header-derived session id, and the mutator registry is a Map, so
-        // the second registration silently displaces the first. Detach the registered owner AND this
-        // panel (deduped when they are the same object) — this panel may be the displaced one, or may
-        // only POINT at the session as a not-yet-started resume/fork target. A detach that fails
-        // throws, which aborts the delete rather than removing a file someone can still write to.
+        // resurrects the path as a header-less file. Detach the registered owner AND this panel
+        // (deduped when they are the same object), since this panel may only POINT at the session as a
+        // not-yet-started resume/fork target, which registers nothing. A detach that fails throws,
+        // which aborts the delete rather than removing a file someone can still write to.
         const holders = new Set<{ detachFromDeletedSession(): Promise<void> }>();
         const registered = liveSessionMutator(msg.sessionId);
         if (registered) holders.add(registered);

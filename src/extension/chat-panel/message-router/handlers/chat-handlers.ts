@@ -5,6 +5,7 @@ import type { ContentInput } from "../../../session-types";
 import type { MemoryScope } from "../../../../shared/types/memory";
 import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
+import { claimStoredSession } from "../../session-ownership";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
 
@@ -262,7 +263,13 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      ctx.session.setResumeSession(msg.sessionId);
+      const holder = claimStoredSession(deps.getPanels(), ctx, msg.sessionId);
+      if (holder) {
+        holder.host.reveal();
+        return;
+      }
+      // The webview keeps its current conversation on screen until this arrives.
+      postMessage(ctx.host, { type: "resumeAccepted", sessionId: msg.sessionId });
 
       try {
         await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host, ctx.session);

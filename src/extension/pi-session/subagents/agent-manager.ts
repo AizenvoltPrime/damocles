@@ -2,20 +2,22 @@
  * agent-manager.ts — Tracks subagents, background execution with a concurrency cap, steering, abort.
  *
  * Adapted from @tintinweb/pi-subagents `agent-manager.ts` (MIT, © 2026 tintinweb; see
- * THIRD-PARTY-NOTICES.md). Worktree isolation, resume, and group-join are dropped. The manager is a
- * per-`PiSession` cross-turn singleton, so `run_in_background` agents outlive the spawning turn. The
- * per-spawn run orchestration (prompt build, toolset resolution, session creation, stream bridge) is
- * driven through an injected `SubagentEngine` so model policy + budget rollup stay owned by PiSession.
+ * THIRD-PARTY-NOTICES.md). Worktree isolation and group-join are dropped. Each subagent runs in its own
+ * pi session file under the parent session's `subagents/` folder (see `agent-records.ts`), which is its
+ * only message record and what a later resume reopens. The manager is a per-`PiSession` cross-turn
+ * singleton, so `run_in_background` agents outlive the spawning turn. The per-spawn run orchestration
+ * (prompt build, toolset resolution, session creation, stream bridge) is driven through an injected
+ * `SubagentEngine` so model policy + budget rollup stay owned by PiSession.
  */
 
 import { randomUUID } from 'node:crypto';
 import * as vscode from 'vscode';
 import type { Model, Api } from '@earendil-works/pi-ai';
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, ExtensionFactory, SessionEntry, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import type { RunningSubagentInfo } from '../../../shared/types/subagents';
-import { wrapSteerMessage } from '../../../shared/steer';
+import type { SteerTargetInfo } from '../../../shared/types/subagents';
+import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
 import { TEAM_CREATE_TOOL } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
@@ -30,15 +32,44 @@ import { buildAgentPrompt, buildPlanMechanismBlock, type PromptExtras } from './
 import { detectEnv } from './env';
 import { preloadSkills } from './skill-loader';
 import { resolveAgentToolset } from './agent-toolset';
-import { createOutputFilePath, writeInitialEntry, writeFinalEntry, streamToOutputFile } from './output-file';
+import {
+  findAgentFile,
+  isResumableSubagentStatus,
+  readAgentFile,
+  subagentBranchIndex,
+  subagentLatestState,
+  terminalAgentStatus,
+  toolCallArgumentsOnBranch,
+  type AgentInvocationData,
+  type AgentSegmentData,
+  type AgentStatusData,
+  type AgentStopReason,
+  type LiveAgentStatus,
+  type SubagentBranchIndex,
+  type SubagentLatestState,
+  type SubagentLaunchData,
+} from '../agent-records';
+import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_AGENT_STATUS_ENTRY } from '../session-store/constants';
 import { createSubagentExtensionFactory } from './subagent-extension-factory';
 import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-bridge';
 import { runSubagent, getAgentConversation } from './subagent-runner';
 import { getStatusNote } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
-import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type SubagentType, type ThinkingLevel } from './types';
+import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type SubagentType, type ThinkingLevel } from './types';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
+
+/** `randomUUID().slice(0, 17)`: 8 hex, dash, 4 hex, dash, the v4 version nibble and 2 hex. Keep the
+ *  pattern in step with `newSubagentId`; ids reach `isSubagentId` from the model. */
+const SUBAGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{2}$/;
+
+function newSubagentId(): string {
+  return randomUUID().slice(0, 17);
+}
+
+export function isSubagentId(id: string): boolean {
+  return SUBAGENT_ID.test(id);
+}
 
 /** Outcome of resolving a model for a spawn. */
 export interface ResolvedSubagentModel {
@@ -57,15 +88,23 @@ export interface ResolvedSubagentModel {
 export interface SubagentEngine {
   cwd: string;
   registry: AgentRegistry;
-  createSession: (opts: PiCreateSubagentSessionOptions) => Promise<import('@earendil-works/pi-coding-agent').AgentSession>;
-  forgetSession: (session: import('@earendil-works/pi-coding-agent').AgentSession) => void;
+  createSession: (opts: PiCreateSubagentSessionOptions) => Promise<AgentSession>;
+  forgetSession: (session: AgentSession) => void;
   permissionHandler: PermissionHandler;
   isPlanMode: () => boolean;
   postMessage: (message: ExtensionToWebviewMessage) => void;
   /** The parent panel's effective system prompt (for append-mode agents). */
   getParentSystemPrompt: () => string;
-  /** The parent panel's session id — groups a conversation's subagent transcripts on disk. */
+  /** The parent panel's session id, which the webview keys streamed subagent events by. */
   getParentSessionId: () => string;
+  /** The parent session's `subagents/` folder, where each subagent's pi session file is created. */
+  subagentStoreDir: () => string;
+  /** Append a `damocles-agent-invocation` entry to the parent session. Called before the agent starts. */
+  recordInvocation: (data: AgentInvocationData) => void;
+  /** The parent session's current branch: the only index of the agents this conversation invoked. */
+  parentBranch: () => readonly SessionEntry[];
+  /** Throw the resume error unless the model recorded in the agent session file at `path` is usable. */
+  assertResumableModel: (path: string, agentId: string) => void;
   /** The parent panel's full active tool-name set (for `*`/general-purpose agents). */
   parentFullToolNames: () => string[];
   /** Build the subagent's customTools (Edit, PowerShell, Task tools, memory/compass/browser) — NOT the
@@ -102,7 +141,8 @@ export interface SubagentEngine {
 }
 
 /** A spawn request. `toolCallId` is the spawning `Agent` tool-call id (the webview subagent-card key). */
-export interface SpawnSpec {
+export interface SpawnRequest {
+  kind: 'spawn';
   type: SubagentType;
   prompt: string;
   description: string;
@@ -113,18 +153,80 @@ export interface SpawnSpec {
   signal?: AbortSignal;
 }
 
+/** Continue an interrupted subagent under its own id. `toolCallId` is the resuming `Agent` call. */
+export interface ResumeRequest {
+  kind: 'resume';
+  agentId: string;
+  message?: string;
+  toolCallId: string;
+  /** Parent abort signal. Bound only when the resumed agent runs in the foreground. */
+  signal?: AbortSignal;
+}
+
+/** A validated resume: the agent file to reopen, or null to re-run it fresh from `launch`. */
+export interface ResumeTarget {
+  agentId: string;
+  path: string | null;
+  launch: SubagentLaunchData;
+}
+
+/** What the queue holds and a start runs: a spawn, or a resume that already passed validation. */
+type RunSpec = SpawnRequest | (ResumeRequest & { target: ResumeTarget });
+
+function runType(spec: RunSpec): SubagentType {
+  return spec.kind === 'spawn' ? spec.type : spec.target.launch.agentType;
+}
+
+function runInBackground(spec: RunSpec): boolean {
+  return spec.kind === 'spawn' ? spec.runInBackground : spec.target.launch.background;
+}
+
+/** The system prompt, toolset and gate factory for one run, rebuilt from the current template and mode. */
+interface PreparedRun {
+  systemPrompt: string;
+  eligibleToolNames: string[];
+  customTools: ToolDefinition[];
+  extensionFactory: ExtensionFactory;
+}
+
+function stillActiveError(id: string, status: string): Error {
+  return new Error(`Subagent "${id}" is still ${status}; steer it with SteerSubagent or read it with GetSubagentResult.`);
+}
+
+function alreadyResumingError(id: string): Error {
+  return new Error(`Subagent "${id}" is already being resumed by another Agent call; wait for that call's result.`);
+}
+
+function notResumableError(id: string, state: Pick<SubagentLatestState, 'status' | 'stopReason'>): Error {
+  if (state.status === 'stopped' && state.stopReason === 'budget') {
+    return new Error(`Subagent "${id}" was stopped by the budget limit and cannot be resumed.`);
+  }
+  if (state.status === 'stopped' && state.stopReason === 'reset') {
+    return new Error(`Subagent "${id}" was stopped when its conversation was cleared and cannot be resumed.`);
+  }
+  return new Error(`Subagent "${id}" finished with status "${state.status}"; only interrupted agents can be resumed.`);
+}
+
+function unknownResumeError(id: string): Error {
+  return new Error(`No interrupted subagent "${id}" in this conversation.`);
+}
+
 export class AgentManager {
   private readonly agents = new Map<string, AgentRecord>();
   private readonly bridges = new Map<string, SubagentStreamBridge>();
   private readonly engine: SubagentEngine;
   private maxConcurrent: number;
-  private readonly queue: { id: string; spec: SpawnSpec }[] = [];
+  private readonly queue: { id: string; spec: RunSpec }[] = [];
+  /** Ids claimed by a resume between validation and the resumed record being tracked. */
+  private readonly resuming = new Set<string>();
   /** Total concurrent subagents (foreground + background) that have started — capped at maxConcurrent. */
   private running = 0;
   /** Resolves each record's lifetime `promise` exactly once at its terminal state. Created at spawn so a
    *  spawn that never reaches `startRecord` (queued, then aborted) still settles its awaiters. */
   private readonly doneResolvers = new Map<string, (text: string) => void>();
   private disposed = false;
+  /** Bumped by `abortAll`, so a resume that was validating across an ESC, reset or dispose never starts. */
+  private abortEpoch = 0;
 
   constructor(engine: SubagentEngine, maxConcurrent: number = DEFAULT_MAX_CONCURRENT) {
     this.engine = engine;
@@ -144,11 +246,19 @@ export class AgentManager {
     return this.agents.get(id);
   }
 
+  /** The tracked record's status, tied to the invocation it ran for. */
+  liveStatus(id: string): LiveAgentStatus | undefined {
+    const record = this.agents.get(id);
+    if (!record) return undefined;
+    return { toolCallId: record.toolCallId, status: record.status, ...(record.stopReason ? { stopReason: record.stopReason } : {}) };
+  }
+
   /** The currently running + queued subagents, for the `/steer` second-stage picker. */
-  listActive(): RunningSubagentInfo[] {
+  listActive(): SteerTargetInfo[] {
     return [...this.agents.values()]
       .filter((r) => r.status === 'running' || r.status === 'queued')
       .map((r) => ({
+        kind: 'subagent' as const,
         id: r.id,
         agentType: r.type,
         description: r.description,
@@ -173,23 +283,119 @@ export class AgentManager {
   }
 
   /** Spawn a background subagent and return its id immediately. Queues if at the concurrency cap. */
-  spawn(spec: SpawnSpec): string {
-    const id = randomUUID().slice(0, 17);
+  spawn(spec: SpawnRequest): string {
+    const id = newSubagentId();
+    this.engine.recordInvocation({ kind: 'subagent', id, toolCallId: spec.toolCallId, resume: false });
     this.enqueueOrStart(id, spec);
     return id;
   }
 
   /** Spawn a foreground subagent and await completion. Shares the single concurrency cap with background
    *  spawns — queues for a slot when at capacity rather than launching unconditionally. */
-  async spawnAndWait(spec: SpawnSpec): Promise<AgentRecord> {
-    const id = randomUUID().slice(0, 17);
+  async spawnAndWait(spec: SpawnRequest): Promise<AgentRecord> {
+    const id = newSubagentId();
+    this.engine.recordInvocation({ kind: 'subagent', id, toolCallId: spec.toolCallId, resume: false });
     const record = this.enqueueOrStart(id, spec);
     await record.promise;
     return record;
   }
 
+  /**
+   * Continue an interrupted subagent under its own id, through the same queue and cap as a spawn. Returns
+   * once it is running or queued; await `record.promise` for the result. Throws the validation errors
+   * verbatim.
+   */
+  async resume(request: ResumeRequest): Promise<AgentRecord> {
+    const epoch = this.abortEpoch;
+    const target = await this.resolveResume(request.agentId);
+    try {
+      if (this.disposed || epoch !== this.abortEpoch) {
+        throw new Error(`The resume of subagent "${target.agentId}" was stopped before it started; it can still be resumed.`);
+      }
+      this.engine.recordInvocation({ kind: 'subagent', id: target.agentId, toolCallId: request.toolCallId, resume: true });
+      const { signal, ...rest } = request;
+      return this.enqueueOrStart(target.agentId, { ...rest, target, ...(signal && !target.launch.background ? { signal } : {}) });
+    } finally {
+      this.resuming.delete(target.agentId);
+    }
+  }
+
+  /**
+   * Validate a resume and claim the id. The claim is taken before the first `await`, so of two parallel
+   * resumes of one id only the first gets past it. It is released on failure here, or by `resume` once
+   * the resumed record is tracked as running or queued.
+   */
+  private async resolveResume(agentId: string): Promise<ResumeTarget> {
+    if (!isSubagentId(agentId)) throw new Error(`"${agentId}" is not a valid subagent id.`);
+    const branch = this.engine.parentBranch();
+    const index = subagentBranchIndex(branch);
+    if (!index.invocations.some((inv) => inv.id === agentId)) throw unknownResumeError(agentId);
+    if (this.resuming.has(agentId)) throw alreadyResumingError(agentId);
+    const existing = this.agents.get(agentId);
+    if (existing && (existing.status === 'running' || existing.status === 'queued')) throw stillActiveError(agentId, existing.status);
+    this.resuming.add(agentId);
+    try {
+      // A stopped run may still be winding down and appending to its file.
+      await existing?.promise;
+      const path = await findAgentFile(this.engine.subagentStoreDir(), agentId);
+      const file = path ? await readAgentFile(path) : null;
+      const state = subagentLatestState(index, agentId, file, this.liveStatus(agentId));
+      if (!state) throw unknownResumeError(agentId);
+      if (state.status === 'running' || state.status === 'queued') throw stillActiveError(agentId, state.status);
+      if (!isResumableSubagentStatus(state)) throw notResumableError(agentId, state);
+      let launch: SubagentLaunchData;
+      if (file) {
+        if (file.launch.kind !== 'subagent') throw unknownResumeError(agentId);
+        launch = file.launch;
+      } else {
+        launch = this.launchFromSpawnCall(agentId, branch, index, state, existing?.background);
+      }
+      if (!this.engine.registry.getAgentConfig(launch.agentType) || !this.engine.registry.isValidType(launch.agentType)) {
+        throw new Error(`Subagent "${agentId}" was a "${launch.agentType}" agent, which is no longer available.`);
+      }
+      if (path) this.engine.assertResumableModel(path, agentId);
+      return { agentId, path, launch };
+    } catch (err) {
+      this.resuming.delete(agentId);
+      throw err;
+    }
+  }
+
+  /** Rebuild the launch of an agent that stopped before its first response, so it has no file, from the
+   *  arguments of the `Agent` call that spawned it. */
+  private launchFromSpawnCall(
+    agentId: string,
+    branch: readonly SessionEntry[],
+    index: SubagentBranchIndex,
+    state: SubagentLatestState,
+    liveBackground: boolean | undefined,
+  ): SubagentLaunchData {
+    const args = state.spawn ? toolCallArgumentsOnBranch(branch, state.spawn.toolCallId) : undefined;
+    const description = args?.['description'];
+    const prompt = args?.['prompt'];
+    const agentType = args?.['subagent_type'];
+    if (!state.spawn || typeof description !== 'string' || typeof prompt !== 'string' || typeof agentType !== 'string') {
+      throw unknownResumeError(agentId);
+    }
+    const thinking = args?.['thinking'];
+    const requested = args?.['run_in_background'];
+    const spawnDetails = index.toolDetails.get(state.spawn.toolCallId);
+    const background =
+      liveBackground ??
+      (spawnDetails ? spawnDetails.status === 'async_launched' : this.resolveRunInBackground(agentType, typeof requested === 'boolean' ? requested : undefined));
+    return {
+      agentId,
+      kind: 'subagent',
+      agentType,
+      description,
+      prompt,
+      background,
+      ...(isThinkingOverride(thinking) ? { thinkingOverride: thinking } : {}),
+    };
+  }
+
   /** Create a record and either start it (slot free) or queue it (at the cap). */
-  private enqueueOrStart(id: string, spec: SpawnSpec): AgentRecord {
+  private enqueueOrStart(id: string, spec: RunSpec): AgentRecord {
     const willQueue = this.running >= this.maxConcurrent;
     const record = this.newRecord(id, spec, willQueue);
     this.agents.set(id, record);
@@ -272,6 +478,13 @@ export class AgentManager {
     }
   }
 
+  /** Settles once every tracked run has finished writing its session file, including runs `abortAll`
+   *  has marked stopped but that are still winding down. Call before `clearCompleted` drops them. */
+  whenRunsSettled(): Promise<void> {
+    const runs = [...this.agents.values()].map((r) => r.promise).filter((p): p is Promise<string> => p !== undefined);
+    return Promise.allSettled(runs).then(() => undefined);
+  }
+
   /** Take terminal, not-yet-consumed background subagent records (marks them consumed). For the parent
    *  keep-alive: their results are injected back into the parent once, then never re-injected. */
   takeCompletedBackgroundResults(): AgentRecord[] {
@@ -286,11 +499,11 @@ export class AgentManager {
     return out;
   }
 
-  private newRecord(id: string, spec: SpawnSpec, queued: boolean): AgentRecord {
+  private newRecord(id: string, spec: RunSpec, queued: boolean): AgentRecord {
     const record: AgentRecord = {
       id,
-      type: spec.type,
-      description: spec.description,
+      type: runType(spec),
+      description: spec.kind === 'spawn' ? spec.description : spec.target.launch.description,
       status: queued ? 'queued' : 'running',
       toolUses: 0,
       startedAt: Date.now(),
@@ -299,7 +512,7 @@ export class AgentManager {
       costUsd: 0,
       compactionCount: 0,
       toolCallId: spec.toolCallId,
-      background: spec.runInBackground,
+      background: runInBackground(spec),
     };
     // The executor runs synchronously, so the resolver is registered before this returns.
     record.promise = new Promise<string>((resolve) => this.doneResolvers.set(id, resolve));
@@ -315,39 +528,57 @@ export class AgentManager {
   }
 
   /** Begin running a subagent record (immediate spawn or queue drain). */
-  private startRecord(id: string, record: AgentRecord, spec: SpawnSpec): void {
+  private startRecord(id: string, record: AgentRecord, spec: RunSpec): void {
     record.status = 'running';
     record.startedAt = Date.now();
     this.running++;
 
-    // Forward the parent foreground signal into this record's controller.
-    let detachParent: (() => void) | undefined;
-    if (spec.signal) {
-      const onParentAbort = () => this.abort(id);
-      spec.signal.addEventListener('abort', onParentAbort, { once: true });
-      detachParent = () => spec.signal?.removeEventListener('abort', onParentAbort);
-    }
-
-    const config = this.engine.registry.getAgentConfig(spec.type);
+    const type = runType(spec);
+    const background = runInBackground(spec);
+    const config = this.engine.registry.getAgentConfig(type);
     const bridge = new SubagentStreamBridge({
       parentToolUseId: spec.toolCallId,
       agentId: id,
-      agentType: config?.name ?? spec.type,
-      isBackground: spec.runInBackground,
+      agentType: config?.name ?? type,
+      isBackground: background,
+      description: record.description,
+      ...(spec.kind === 'resume' ? { resumedFrom: id } : {}),
       getSessionId: this.engine.getParentSessionId,
       postMessage: this.engine.postMessage,
     });
     this.bridges.set(id, bridge);
 
-    // Reject an unknown or explicitly-disabled type with a distinct error rather than silently running
-    // it as general-purpose (which would hand a disabled/hallucinated agent the full toolset).
-    if (!config || !this.engine.registry.isValidType(spec.type)) {
+    // A resume validates across awaits and a spawn can wait in the queue, so the parent signal may
+    // already have fired. Finish without running: pi ignores a session abort that precedes prompt().
+    if (spec.signal?.aborted) {
+      this.abort(id, 'user');
       bridge.start();
-      this.finalizeError(id, record, bridge, `Unknown or disabled subagent type "${spec.type}".`, detachParent);
+      this.afterComplete(id, record, bridge);
       return;
     }
 
-    const resolved = this.engine.resolveModel({ agentConfig: config });
+    // Forward the parent foreground signal into this record's controller.
+    let detachParent: (() => void) | undefined;
+    if (spec.signal) {
+      // ESC, budget, reset and dispose all call abortAll with their reason before the turn aborts.
+      const onParentAbort = () => this.abort(id, 'user');
+      spec.signal.addEventListener('abort', onParentAbort, { once: true });
+      detachParent = () => spec.signal?.removeEventListener('abort', onParentAbort);
+    }
+
+    // Reject an unknown or explicitly-disabled type with a distinct error rather than silently running
+    // it as general-purpose (which would hand a disabled/hallucinated agent the full toolset).
+    if (!config || !this.engine.registry.isValidType(type)) {
+      bridge.start();
+      this.finalizeError(id, record, bridge, `Unknown or disabled subagent type "${type}".`, detachParent);
+      return;
+    }
+
+    // A reopened session runs on the model its file recorded, which the runtime resolves.
+    const reopening = spec.kind === 'resume' && spec.target.path !== null;
+    const resolved: ResolvedSubagentModel = reopening
+      ? { ...(spec.target.launch.modelLabel ? { modelLabel: spec.target.launch.modelLabel } : {}) }
+      : this.engine.resolveModel({ agentConfig: config });
     bridge.start(resolved.modelLabel, config.filePath);
 
     if (resolved.error) {
@@ -355,7 +586,7 @@ export class AgentManager {
       return;
     }
 
-    if (spec.runInBackground) this.emitBackgroundTaskStarted(record, config.name);
+    if (background) this.emitBackgroundTaskStarted(record, config.name);
 
     void this.run(record, spec, config, resolved, bridge)
       .catch((err) => {
@@ -365,17 +596,15 @@ export class AgentManager {
       })
       .finally(() => {
         detachParent?.();
-        this.afterComplete(id, record, spec, bridge);
+        this.afterComplete(id, record, bridge);
       });
   }
 
-  private async run(
-    record: AgentRecord,
-    spec: SpawnSpec,
-    config: AgentConfig,
-    resolved: ResolvedSubagentModel,
-    bridge: SubagentStreamBridge,
-  ): Promise<string> {
+  /**
+   * The system prompt, toolset and gate factory for one run. Built from the agent template and the
+   * panel as they are now, so a resumed agent picks up template edits and the current permission mode.
+   */
+  private prepareRun(record: AgentRecord, config: AgentConfig, parentToolUseId: string): PreparedRun {
     const env = detectEnv(this.engine.cwd);
     // Resolve the toolset BEFORE building the prompt: the prompt is capability-gated on what the agent
     // actually ends up holding, so the resolved set is an input to the prompt and not the other way
@@ -429,7 +658,7 @@ export class AgentManager {
       // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in
       // the shell too — otherwise its own description promises a read-only mode the runtime never had.
       readOnlyShell: toolset.readOnly,
-      parentToolUseId: spec.toolCallId,
+      parentToolUseId,
       deferrableToolNames: deferredToolNames(eligibleToolNames, mcp.names),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
@@ -438,56 +667,80 @@ export class AgentManager {
       mcpDescriptions: mcp.descriptions,
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
+    return { systemPrompt, eligibleToolNames, customTools, extensionFactory };
+  }
 
+  private async run(
+    record: AgentRecord,
+    spec: RunSpec,
+    config: AgentConfig,
+    resolved: ResolvedSubagentModel,
+    bridge: SubagentStreamBridge,
+  ): Promise<string> {
+    const prepared = this.prepareRun(record, config, spec.toolCallId);
+    const reopenPath = spec.kind === 'resume' ? spec.target.path : null;
+    // A fresh run: a spawn, or a resume of an agent that stopped before its first response.
+    const fresh = spec.kind === 'spawn'
+      ? { description: spec.description, prompt: spec.prompt, background: spec.runInBackground, thinking: spec.thinking }
+      : { ...spec.target.launch, thinking: spec.target.launch.thinkingOverride };
     const thinkingLevel =
       resolved.enforceThinking && resolved.thinkingLevel
         ? resolved.thinkingLevel
-        : (spec.thinking ?? resolved.thinkingLevel);
+        : (fresh.thinking ?? resolved.thinkingLevel);
     const createSession = () =>
       this.engine.createSession({
         cwd: this.engine.cwd,
-        systemPrompt,
-        ...(resolved.model ? { model: resolved.model } : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
+        systemPrompt: prepared.systemPrompt,
+        ...(reopenPath === null && resolved.model ? { model: resolved.model } : {}),
+        ...(reopenPath === null && thinkingLevel ? { thinkingLevel } : {}),
         // `mcp.names` MUST be here: pi freezes `options.tools` into `_allowedToolNames` and filters the
         // registry by it, so an MCP definition whose name is missing is dropped silently. It is also
         // where `createSubagentSession` reads this agent's MCP set back from, for the deferred baseline.
-        tools: eligibleToolNames,
-        customTools,
+        tools: prepared.eligibleToolNames,
+        customTools: prepared.customTools,
 
         excludeTools: [...PI_EXCLUDED_TOOLS],
-        extensionFactory,
+        extensionFactory: prepared.extensionFactory,
+        store: reopenPath !== null
+          ? { kind: 'reopen', path: reopenPath, agentId: record.id }
+          : { kind: 'file', dir: this.engine.subagentStoreDir(), id: record.id },
       });
+    const launch: SubagentLaunchData | null = reopenPath !== null ? null : {
+      agentId: record.id,
+      kind: 'subagent',
+      agentType: config.name,
+      description: fresh.description,
+      prompt: fresh.prompt,
+      background: fresh.background,
+      ...(fresh.thinking ? { thinkingOverride: fresh.thinking } : {}),
+      ...(config.filePath ? { templatePath: config.filePath } : {}),
+      ...(resolved.modelLabel ? { modelLabel: resolved.modelLabel } : {}),
+    };
+    const segment: AgentSegmentData | null = spec.kind === 'spawn' ? null : {
+      toolCallId: spec.toolCallId,
+      ...(spec.message !== undefined ? { message: spec.message } : {}),
+    };
+    let prompt = fresh.prompt;
+    if (spec.kind === 'resume') {
+      prompt = reopenPath !== null
+        ? buildResumePrompt(spec.message)
+        : spec.message?.trim() ? wrapSteerMessage(`${spec.message.trim()}\n\nYour original task:\n${fresh.prompt}`) : fresh.prompt;
+    }
 
     const result = await runSubagent({
       createSession,
-      prompt: spec.prompt,
+      prompt,
       ...(config.maxTurns !== undefined ? { maxTurns: config.maxTurns } : {}),
       signal: record.abortController!.signal,
       onSessionCreated: (session) => {
         record.session = session;
+        record.costBaseline = session.getSessionStats().cost;
         record.bridgeUnsub = bridge.attach(session);
-        // Stream a JSONL transcript to disk (§4.8) — the rehydrate source for the subagent card on resume
-        // (read back by the history loader, keyed by the spawning Agent tool-call id).
-        try {
-          const outputFile = createOutputFilePath(this.engine.cwd, record.id, this.engine.getParentSessionId());
-          const headerWritten = writeInitialEntry(outputFile, record.id, spec.prompt, this.engine.cwd, {
-            parentToolUseId: spec.toolCallId,
-            agentType: config.name,
-            ...(resolved.modelLabel ? { model: resolved.modelLabel } : {}),
-            ...(config.filePath ? { templatePath: config.filePath } : {}),
-          });
-          // Without the correlation header, streamed turns can never be rehydrated — don't start the
-          // stream (which would build an unparseable header-less file).
-          if (headerWritten) {
-            record.outputFile = outputFile;
-            record.outputCleanup = streamToOutputFile(session, outputFile, record.id, this.engine.cwd);
-          } else {
-            log('[AgentManager] subagent transcript header write failed; skipping transcript for %s', record.id);
-          }
-        } catch (err) {
-          log('[AgentManager] subagent transcript setup failed (non-fatal): %O', err);
-        }
+        // Appended before prompt(), so each entry precedes this run's messages. A new file is only
+        // written once the first assistant message arrives; a reopened file takes the entry at once.
+        if (launch) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch);
+        if (segment) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, segment);
+        record.outputFile = session.sessionManager.getSessionFile();
         if (record.pendingSteers?.length) {
           for (const msg of record.pendingSteers) {
             void session.steer(msg).catch((err) => log('[AgentManager] queued steer flush failed for %s: %O', record.id, err));
@@ -513,40 +766,33 @@ export class AgentManager {
     return result.responseText;
   }
 
-  /** Roll the subagent session's cost delta into the parent budget meter. */
+  /** Roll this run's cost delta into the parent budget meter. */
   private rollCost(record: AgentRecord): void {
-    // A record dropped from tracking was cleared by reset/clear (the only callers of clearCompleted) —
-    // its spend belongs to the now-replaced session, so a late post-reset `afterComplete` roll must not
-    // re-pollute the fresh meter that resetCostBaseline just zeroed.
-    if (!this.agents.has(record.id)) return;
-    const cost = record.session?.getSessionStats().cost ?? record.costUsd;
+    // A record no longer tracked was cleared by reset/clear or replaced by a resume of its id: its spend
+    // is already counted, and a late `afterComplete` roll would count it again.
+    if (this.agents.get(record.id) !== record) return;
+    const cost = record.session ? record.session.getSessionStats().cost - (record.costBaseline ?? 0) : record.costUsd;
     const delta = Math.max(0, cost - record.costUsd);
     record.costUsd = cost;
     if (delta > 0) this.engine.onSubagentCost(delta);
   }
 
   /** Emit the card resolution + dispose the session + drain the queue. */
-  private afterComplete(id: string, record: AgentRecord, spec: SpawnSpec, bridge: SubagentStreamBridge): void {
+  private afterComplete(id: string, record: AgentRecord, bridge: SubagentStreamBridge): void {
     const browserSuccess = record.status === 'completed' || record.status === 'steered';
     this.rollCost(record);
-    // Final transcript flush + unsubscribe (both the disk stream and the webview stream bridge).
-    if (record.outputCleanup) {
-      try { record.outputCleanup(); } catch { /* ignore */ }
-      record.outputCleanup = undefined;
-    }
     if (record.bridgeUnsub) {
       try { record.bridgeUnsub(); } catch { /* ignore */ }
       record.bridgeUnsub = undefined;
     }
     const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-    const responseText = (record.result ?? record.error ?? '') + getStatusNote(record.status);
+    const responseText = (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id);
     const isError = record.status === 'error';
-    // Persist the terminal status + final text to the transcript so a resumed card shows the real
-    // outcome (e.g. user-stopped → cancelled) rather than inferring "completed" from the spawn result.
-    if (record.outputFile) writeFinalEntry(record.outputFile, record.id, record.status, responseText);
+    this.recordStatus(record, responseText);
     const resultJson = buildAgentResultJson({
       responseText,
       agentId: id,
+      agentStatus: terminalAgentStatus(record.status),
       totalDurationMs: durationMs,
       totalTokens: getLifetimeTotal(record.lifetimeUsage),
       totalToolUseCount: record.toolUses,
@@ -577,10 +823,28 @@ export class AgentManager {
     // for a modal nobody can answer.
     this.engine.cancelAgentDialogs(id);
     this.bridges.delete(id);
-    if (spec.runInBackground) this.emitBackgroundTaskCompleted(record);
+    if (record.background) this.emitBackgroundTaskCompleted(record);
     this.running = Math.max(0, this.running - 1);
     this.settleDone(id, responseText);
     this.drainQueue();
+  }
+
+  /** Append the terminal `damocles-agent-status` entry to the agent's own session, once. A session
+   *  that never produced an assistant message keeps it buffered, so such an agent has no file. */
+  private recordStatus(record: AgentRecord, resultText: string): void {
+    if (record.statusRecorded || !record.session) return;
+    if (record.status === 'queued' || record.status === 'running') return;
+    record.statusRecorded = true;
+    const data: AgentStatusData = {
+      status: record.status,
+      ...(record.status === 'stopped' && record.stopReason ? { stopReason: record.stopReason } : {}),
+      result: resultText,
+    };
+    try {
+      record.session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_STATUS_ENTRY, data);
+    } catch (err) {
+      log('[AgentManager] recording the status of %s failed: %O', record.id, err);
+    }
   }
 
   /** Finalize a spawn that failed before running (e.g. model resolution error). */
@@ -601,7 +865,7 @@ export class AgentManager {
     if (!this.disposed) {
       bridge.finish({
         responseText: error,
-        resultJson: buildAgentResultJson({ responseText: error, agentId: id, totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
+        resultJson: buildAgentResultJson({ responseText: error, agentId: id, agentStatus: 'error', totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
         isError: true,
         durationMs,
       });
@@ -662,13 +926,14 @@ export class AgentManager {
   }
 
   /** Abort one subagent (queued → dropped; running → session abort). */
-  abort(id: string): boolean {
+  abort(id: string, reason: AgentStopReason): boolean {
     const record = this.agents.get(id);
     if (!record) return false;
     if (record.status === 'queued') {
       const idx = this.queue.findIndex((q) => q.id === id);
       if (idx !== -1) this.queue.splice(idx, 1);
       record.status = 'stopped';
+      record.stopReason = reason;
       record.completedAt = Date.now();
       // A queued agent never ran, so any steer it holds was never delivered — drop both the undelivered
       // buffer and the parent-awareness note so a stopped record can't carry a phantom "[User steered…]".
@@ -679,6 +944,7 @@ export class AgentManager {
     }
     if (record.status !== 'running') return false;
     record.status = 'stopped';
+    record.stopReason = reason;
     record.abortController?.abort();
     record.completedAt = Date.now();
     return true;
@@ -690,12 +956,14 @@ export class AgentManager {
    * `hasUnconsumedBackground()` keeps returning true and the NEXT turn's keep-alive injects
    * "(no output)" and pays for a synthesis round over agents this abort just killed.
    */
-  abortAll(): number {
+  abortAll(reason: AgentStopReason): number {
+    this.abortEpoch++;
     let count = 0;
     for (const queued of this.queue) {
       const record = this.agents.get(queued.id);
       if (record) {
         record.status = 'stopped';
+        record.stopReason = reason;
         record.completedAt = Date.now();
         record.resultConsumed = true;
         // Never-delivered steers on a queued agent must not survive the abort (see abort()).
@@ -709,6 +977,7 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       if (record.status === 'running') {
         record.status = 'stopped';
+        record.stopReason = reason;
         record.abortController?.abort();
         record.completedAt = Date.now();
         record.resultConsumed = true;
@@ -734,12 +1003,14 @@ export class AgentManager {
 
   dispose(): void {
     this.disposed = true;
-    this.abortAll();
+    this.abortAll('shutdown');
     // abortAll settles queued records; running ones abort asynchronously and would never reach
     // afterComplete after disposal — settle their awaiters now so no GetSubagentResult/spawnAndWait hangs.
     for (const [, resolve] of this.doneResolvers) resolve('');
     this.doneResolvers.clear();
     for (const record of this.agents.values()) {
+      // Written now: a window reload may never run the aborted agents' completion path.
+      this.recordStatus(record, (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id));
       if (record.session) {
         this.engine.forgetSession(record.session);
         record.session = undefined;

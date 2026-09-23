@@ -28,6 +28,7 @@ import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 const H = vi.hoisted(() => {
   const created: Array<{ tools?: string[]; customTools?: unknown; excludeTools?: string[] }> = [];
+  const restored: unknown[] = [];
   const sessions: Array<{
     calls: string[];
     getAllTools: Mock<() => Array<{ name: string }>>;
@@ -35,6 +36,7 @@ const H = vi.hoisted(() => {
     setAutoCompactionEnabled: Mock<(enabled: boolean) => void>;
     dispose: Mock<() => void>;
     sessionId: string;
+    messages: unknown[];
   }> = [];
 
   /**
@@ -54,6 +56,8 @@ const H = vi.hoisted(() => {
       setAutoCompactionEnabled: vi.fn<(enabled: boolean) => void>(() => { calls.push('setAutoCompactionEnabled'); }),
       dispose: vi.fn<() => void>(),
       sessionId: `nested-${sessions.length}`,
+      // What a reopened session restored; the baseline re-activates what its ToolSearch calls loaded.
+      messages: restored.splice(0),
     };
     sessions.push(session);
     return session;
@@ -93,7 +97,7 @@ const H = vi.hoisted(() => {
     SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
   };
-  return { created, sessions, fakePi };
+  return { created, sessions, fakePi, restored };
 });
 
 vi.mock('../pi-loader', () => ({
@@ -134,6 +138,7 @@ async function createNested(tools: string[], extensionFactory: ExtensionFactory 
     tools,
     customTools: [],
     extensionFactory,
+    store: { kind: 'memory' },
   });
   const session = H.sessions.at(-1)!;
   const createOpts = H.created.at(-1)!;
@@ -311,6 +316,20 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
     expect(baseline).toContain(TOOL_TOOL_SEARCH);
     expect(deferredToolNames(tools, []).some((n) => TEAM_AGENT_PI_TOOL_NAMES.includes(n))).toBe(false);
   });
+
+  it('a restored transcript re-activates what its ToolSearch calls loaded and the tools it called', async () => {
+    const [loaded, called, untouched] = BROWSER_PI_TOOL_NAMES;
+    const tools = ['read', TOOL_TOOL_SEARCH, ...BROWSER_PI_TOOL_NAMES];
+    H.restored.push(
+      { role: 'toolResult', toolName: TOOL_TOOL_SEARCH, toolCallId: 't1', isError: false, content: [], details: { matches: [loaded], totalDeferredTools: 3 } },
+      { role: 'toolResult', toolName: TOOL_TOOL_SEARCH, toolCallId: 't2', isError: true, content: [], details: { matches: [untouched], totalDeferredTools: 3 } },
+      { role: 'assistant', content: [{ type: 'toolCall', id: 't3', name: called, arguments: {} }] },
+    );
+
+    const { baseline } = await createNested(tools);
+
+    expect(baseline).toEqual(['read', TOOL_TOOL_SEARCH, loaded, called]);
+  });
 });
 
 /**
@@ -475,6 +494,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
       tools: [...baseTools, ...mcpToolNames],
       customTools: [],
       extensionFactory,
+      store: { kind: 'memory' },
     });
     const session = H.sessions.at(-1)!;
     const createOpts = H.created.at(-1)!;
@@ -535,6 +555,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
       tools: ['read', ...MCP_NAMES],
       customTools: [{ name: MCP_NAMES[0]! } as never], // only the FIRST has a definition
       extensionFactory: toolSearchFactory,
+      store: { kind: 'memory' },
     });
 
     const orphanLog = logLines.find((l) => l.includes('no customTool definition'));
@@ -554,6 +575,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
       tools: ['read', ...MCP_NAMES],
       customTools: MCP_NAMES.map((name) => ({ name }) as never),
       extensionFactory: toolSearchFactory,
+      store: { kind: 'memory' },
     });
 
     expect(logLines.find((l) => l.includes('no customTool definition'))).toBeUndefined();

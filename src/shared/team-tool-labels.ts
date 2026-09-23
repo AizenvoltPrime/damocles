@@ -1,5 +1,5 @@
 /**
- * The single presentation table for the nineteen team tools: three main coordination tools the primary
+ * The single presentation table for the twenty team tools: four main coordination tools the primary
  * agent calls, and sixteen `team_*` tools each team agent calls. It holds the human label plus how a
  * tool card summarises that tool's input and its result.
  *
@@ -149,6 +149,11 @@ export const TEAM_TOOL_PRESENTATION: Readonly<Record<string, TeamToolPresentatio
   cancel_team: {
     label: 'Cancel team',
     summarizeInput: (input) => line(input['team_id'], INPUT_MAX),
+    summarizeResult: rawResult,
+  },
+  resume_team: {
+    label: 'Resume team',
+    summarizeInput: (input) => labelled(line(input['team_id'], INPUT_MAX), line(input['message'], INPUT_MAX)),
     summarizeResult: rawResult,
   },
 

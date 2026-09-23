@@ -59,6 +59,7 @@ const TEAM_MAIN_SPECS: readonly ToolSpec[] = [
   { name: 'create_team', description: 'Spin up a collaborative team of specialist agents.' },
   { name: 'get_team_status', description: 'Get the status of a running team.' },
   { name: 'cancel_team', description: 'Cancel a running team, aborting all agents.' },
+  { name: 'resume_team', description: 'Continue a team a cancel interrupted.' },
 ].map(toSpec);
 
 const TEAM_AGENT_ENTRIES: ReadonlyArray<{ name: string; access: ToolAccess; description: string }> = [
@@ -153,16 +154,19 @@ function requireReviewRoundReady(
   if (!decision.ok) throw new TeamToolError(decision.error);
 }
 
-/** The TeamService surface the 3 main tools drive (blocking: `createTeam` returns the synthesis). */
+/** The TeamService surface the main tools drive (blocking: `createTeam` and `resumeTeam` return the synthesis). */
 export interface TeamServiceRef {
   createTeam: (config: {
     title: string;
     brief: string;
     agents: Array<{ name: string; role: 'lead' | 'specialist' }>;
   }) => Promise<string>;
+  /** Throws the resume validation errors verbatim. */
+  resumeTeam: (teamId: string, message: string | undefined, toolCallId: string) => Promise<string>;
   getTeamStatus: (teamId: string) => Record<string, unknown> | null;
-  cancelTeam: (teamId: string) => void;
-  /** Record the spawning `create_team` tool-call id so team transcripts correlate to it. */
+  /** Returns the tool result text; throws when the team is not running. */
+  cancelTeam: (teamId: string) => string;
+  /** Record the spawning `create_team` tool-call id, which the parent's invocation entry carries. */
   setPendingToolUseId: (toolUseId: string) => void;
   /** Abort the active team (ESC during a team → the `create_team` tool returns an aborted result). */
   cancelActiveTeam: () => void;
@@ -199,9 +203,17 @@ const cancelTeamSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const resumeTeamSchema = Type.Object(
+  {
+    team_id: Type.String({ description: 'The team_id of the interrupted team' }),
+    message: Type.Optional(Type.String({ maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Optional instruction for the lead as it continues' })),
+  },
+  { additionalProperties: false },
+);
+
 type CreateTeamAgent = { name: string; role: 'lead' | 'specialist' };
 
-/** Build the 3 main team coordination tools the PRIMARY agent calls (blocking `create_team`). */
+/** Build the 4 main team coordination tools the PRIMARY agent calls (blocking `create_team` and `resume_team`). */
 export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamServiceRef): ToolDefinition[] {
   return [
     pi.defineTool<typeof createTeamSchema, undefined>({
@@ -216,7 +228,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
         if (leads.length !== 1) {
           throw new TeamToolError(`Team must have exactly 1 lead agent, got ${leads.length}`);
         }
-        // Correlate the team's transcripts to this `create_team` tool-call id, and wire ESC: aborting
+        // Tie the team to this `create_team` tool-call id, and wire ESC: aborting
         // the tool aborts the whole team (the team then synthesizes partial results and returns them).
         teamService.setPendingToolUseId(toolCallId);
         const onAbort = (): void => teamService.cancelActiveTeam();
@@ -255,8 +267,34 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       description: 'Cancel a running team, aborting all agents.',
       parameters: cancelTeamSchema,
       execute: async (_id, input) => {
-        teamService.cancelTeam(input.team_id);
-        return textResult(`Team "${input.team_id}" cancelled.`);
+        try {
+          return textResult(teamService.cancelTeam(input.team_id));
+        } catch (err) {
+          throw new TeamToolError(err instanceof Error ? err.message : String(err));
+        }
+      },
+    }),
+
+    pi.defineTool<typeof resumeTeamSchema, undefined>({
+      name: 'resume_team',
+      label: 'resume_team',
+      description:
+        'Continue a team that a cancel interrupted, from where it stopped: the lead and every specialist that was working pick up their own conversations, and approved work stays done. Pass the team_id from the cancelled result or the interruption notice, and an optional message for the lead. Use it only when the user asks to continue the team. Blocks until the team completes and returns its synthesis, like create_team.',
+      parameters: resumeTeamSchema,
+      execute: async (toolCallId, input, signal) => {
+        if (signal?.aborted) {
+          throw new TeamToolError(`The resume of team "${input.team_id}" was stopped before it started; it can still be resumed.`);
+        }
+        // Wired like create_team: aborting the tool cancels the resumed team, which returns its partial synthesis.
+        const onAbort = (): void => teamService.cancelActiveTeam();
+        signal?.addEventListener('abort', onAbort, { once: true });
+        try {
+          return textResult(await teamService.resumeTeam(input.team_id, input.message, toolCallId));
+        } catch (err) {
+          throw new TeamToolError(err instanceof Error ? err.message : String(err));
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
+        }
       },
     }),
   ];

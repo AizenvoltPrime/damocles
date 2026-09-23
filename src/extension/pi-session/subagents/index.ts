@@ -6,7 +6,7 @@
  */
 
 export { AgentManager, DEFAULT_MAX_CONCURRENT } from './agent-manager';
-export type { SubagentEngine, SpawnSpec, ResolvedSubagentModel } from './agent-manager';
+export type { SubagentEngine, ResolvedSubagentModel } from './agent-manager';
 export { AgentRegistry, BUILTIN_TOOL_NAMES } from './agent-types';
 export { WorkspaceAgentRegistry } from './workspace-agent-registry';
 export { loadCustomAgents } from './custom-agents';

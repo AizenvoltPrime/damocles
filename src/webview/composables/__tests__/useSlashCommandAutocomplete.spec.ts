@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ref, defineComponent, h, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import type { RunningSubagentInfo } from '@shared/types/subagents';
+import type { SteerTargetInfo } from '@shared/types/subagents';
 import { useSlashCommandAutocomplete } from '../useSlashCommandAutocomplete';
 
 const hoisted = vi.hoisted(() => ({
@@ -55,8 +55,11 @@ function setup() {
   return { api, inputText, textarea, wrapper, typeText, dispatch };
 }
 
-function runningAgent(overrides: Partial<RunningSubagentInfo> = {}): RunningSubagentInfo {
+type SubagentTarget = Extract<SteerTargetInfo, { kind: 'subagent' }>;
+
+function runningAgent(overrides: Partial<SubagentTarget> = {}): SubagentTarget {
   return {
+    kind: 'subagent',
     id: 'abcd1234efgh5678',
     agentType: 'general-purpose',
     description: 'Investigate the failing test',
@@ -81,7 +84,7 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     expect(api.mode.value).toBe('agent');
     expect(api.query.value).toBe('');
     expect(api.isOpen.value).toBe(true);
-    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'requestRunningSubagents' });
+    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'requestSteerTargets' });
   });
 
   it('captures the partial id/description query on "/steer ab"', () => {
@@ -111,7 +114,7 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     api.checkAndUpdateSlashCommand();
     expect(api.agentsLoading.value).toBe(true); // no list yet → show the spinner
 
-    dispatch({ type: 'runningSubagents', agents: [runningAgent()] });
+    dispatch({ type: 'steerTargets', agents: [runningAgent()] });
     await nextTick();
     expect(api.agentsLoading.value).toBe(false);
 
@@ -128,7 +131,7 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     typeText('/steer ');
     api.checkAndUpdateSlashCommand();
     dispatch({
-      type: 'runningSubagents',
+      type: 'steerTargets',
       agents: [runningAgent({ id: 'a1' }), runningAgent({ id: 'b2' }), runningAgent({ id: 'c3' })],
     });
     await nextTick();
@@ -136,7 +139,7 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     api.selectedIndex.value = 2; // highlight the last row
 
     // Two subagents finish; the list shrinks under the stale highlight.
-    dispatch({ type: 'runningSubagents', agents: [runningAgent({ id: 'a1' })] });
+    dispatch({ type: 'steerTargets', agents: [runningAgent({ id: 'a1' })] });
     await nextTick();
     expect(api.selectedIndex.value).toBe(0); // re-clamped into range
 
@@ -170,7 +173,34 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     await nextTick();
 
     expect(api.mode.value).toBe('agent');
-    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'requestRunningSubagents' });
+    expect(hoisted.postMessage).toHaveBeenCalledWith({ type: 'requestSteerTargets' });
+  });
+
+  it('lists team members and matches on the team title and member name', async () => {
+    const { api, typeText, dispatch } = setup();
+    const member: SteerTargetInfo = {
+      kind: 'team-member',
+      id: 'member-uuid-1',
+      teamId: 'team-1',
+      teamTitle: 'Payments rewrite',
+      memberName: 'backend',
+      role: 'specialist',
+      status: 'running',
+    };
+
+    typeText('/steer ');
+    api.checkAndUpdateSlashCommand();
+    dispatch({ type: 'steerTargets', agents: [runningAgent(), member] });
+    await nextTick();
+    expect(api.agents.value).toHaveLength(2);
+
+    typeText('/steer backend');
+    api.checkAndUpdateSlashCommand();
+    expect(api.agents.value.map((a) => a.id)).toEqual(['member-uuid-1']);
+
+    typeText('/steer Payments');
+    api.checkAndUpdateSlashCommand();
+    expect(api.agents.value.map((a) => a.id)).toEqual(['member-uuid-1']);
   });
 
   it('inserts "/steer <id> " and keeps the popup closed once a trailing space follows', async () => {
@@ -180,7 +210,7 @@ describe('useSlashCommandAutocomplete — agent mode', () => {
     api.checkAndUpdateSlashCommand();
 
     const agent = runningAgent();
-    dispatch({ type: 'runningSubagents', agents: [agent] });
+    dispatch({ type: 'steerTargets', agents: [agent] });
     await nextTick();
 
     expect(api.agents.value).toHaveLength(1);

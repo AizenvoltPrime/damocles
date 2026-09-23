@@ -5,6 +5,8 @@ import { createToolHandlers } from '../tool-handlers';
 import type { HandlerContext, ScrollBehavior, StoreContext } from '../../types';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
+import { useUIStore } from '@/stores/useUIStore';
+import { useTaskStore } from '@/stores/useTaskStore';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 
 /**
@@ -146,5 +148,99 @@ describe('toolProgress live output', () => {
 
     expect(result?.skipScroll).not.toBe(true);
     expect(subagentStore.getSubagent('agent-1')?.toolCalls[0]?.metadata?.['elapsedTimeSeconds']).toBe(9);
+  });
+});
+
+describe('toolCompleted for an Agent card', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function agentContext(): HandlerContext {
+    const stores = {
+      streamingStore: useStreamingStore(),
+      subagentStore: useSubagentStore(),
+      uiStore: useUIStore(),
+      taskStore: useTaskStore(),
+    } as unknown as StoreContext;
+    return { stores } as unknown as HandlerContext;
+  }
+
+  function complete(ctx: HandlerContext, toolUseId: string, result: Record<string, unknown>): void {
+    const handler = createToolHandlers().toolCompleted;
+    if (!handler) throw new Error('no toolCompleted handler registered');
+    handler({ type: 'toolCompleted', toolUseId, toolName: 'Agent', result: JSON.stringify(result), durationMs: 5 }, ctx);
+  }
+
+  function agentResult(agentStatus: string): Record<string, unknown> {
+    return { content: [{ type: 'text', text: 'partial work' }], totalDurationMs: 5, totalTokens: 10, totalToolUseCount: 1, agentId: 'agent-1', agentStatus };
+  }
+
+  function startBackgroundCard(
+    ctx: HandlerContext,
+    toolUseId: string,
+    input: Record<string, unknown>,
+    details?: { description: string; resumedFrom: string },
+  ): void {
+    const { subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool(toolUseId, { run_in_background: true, ...input });
+    subagentStore.startSubagent('agent-1', 'Explore', toolUseId, true, details);
+    complete(ctx, toolUseId, { status: 'async_launched', agentId: 'agent-1' });
+  }
+
+  it('a stopped background agent leaves its card cancelled, not completed', () => {
+    const ctx = agentContext();
+    startBackgroundCard(ctx, 'tc-1', { subagent_type: 'Explore', description: 'find', prompt: 'go' });
+    expect(ctx.stores.subagentStore.getSubagent('tc-1')?.status).toBe('running');
+
+    complete(ctx, 'tc-1', agentResult('stopped'));
+
+    const card = ctx.stores.subagentStore.getSubagent('tc-1');
+    expect(card?.status).toBe('cancelled');
+    expect(card?.endTime).toBeDefined();
+    expect(card?.result?.content).toBe('partial work');
+  });
+
+  it('a completed background agent leaves its card completed', () => {
+    const ctx = agentContext();
+    startBackgroundCard(ctx, 'tc-1', { subagent_type: 'Explore', description: 'find', prompt: 'go' });
+
+    complete(ctx, 'tc-1', agentResult('completed'));
+
+    expect(ctx.stores.subagentStore.getSubagent('tc-1')?.status).toBe('completed');
+  });
+
+  it('a stopped resume card is cancelled and leaves the card it resumed alone', () => {
+    const ctx = agentContext();
+    startBackgroundCard(ctx, 'tc-1', { subagent_type: 'Explore', description: 'find', prompt: 'go' });
+    complete(ctx, 'tc-1', agentResult('completed'));
+    startBackgroundCard(ctx, 'tc-r', { resume: 'agent-1' }, { description: 'find', resumedFrom: 'agent-1' });
+    expect(ctx.stores.subagentStore.getSubagent('tc-r')?.status).toBe('running');
+
+    complete(ctx, 'tc-r', agentResult('stopped'));
+
+    expect(ctx.stores.subagentStore.getSubagent('tc-r')?.status).toBe('cancelled');
+    expect(ctx.stores.subagentStore.getSubagent('tc-1')?.status).toBe('completed');
+  });
+
+  it.each([
+    ['completed', 'completed'],
+    ['steered', 'completed'],
+    ['aborted', 'completed'],
+    ['stopped', 'cancelled'],
+    ['error', 'failed'],
+  ])('a live %s completion ends the card as a reload of the same status does', (agentStatus, expected) => {
+    const ctx = agentContext();
+    const { subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool('tc-live', { subagent_type: 'Explore', description: 'find', prompt: 'go' });
+    complete(ctx, 'tc-live', agentResult(agentStatus));
+    subagentStore.restoreSubagentFromHistory({
+      id: 'tc-reload',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'go' },
+      result: JSON.stringify(agentResult(agentStatus)),
+      agentStatus,
+    });
+
+    expect(subagentStore.getSubagent('tc-live')?.status).toBe(expected);
+    expect(subagentStore.getSubagent('tc-reload')?.status).toBe(expected);
   });
 });

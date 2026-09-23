@@ -29,8 +29,7 @@ const shortId = computed(() => String(input.value.agent_id ?? '').slice(0, 8));
 
 const storeMatch = computed(() => {
   const agentId = input.value.agent_id;
-  if (!agentId) return undefined;
-  return Object.values(subagentStore.subagents).find((s) => s.sdkAgentId === agentId);
+  return agentId ? subagentStore.cardWithDetails(agentId) : undefined;
 });
 
 const metadataAgentType = computed(() =>

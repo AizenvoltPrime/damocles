@@ -2,6 +2,48 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.30.0] - 2026-09-23
+
+### Added
+
+- **`/steer` reaches team members.** While a team runs, the `/steer` picker lists the lead and every live specialist with its team title, role and status, including a member whose session is still opening. The member takes the steer mid-stream, or wakes for it if idle, and always as a message of its own, so a message from another member never carries its priority. Steering a specialist also tells the lead, so its review does not revise the change back. The amber "You steered" chip and a "Steered" label in the member's overlay show each steer, and the team's result lists them all. The model's `SteerSubagent` tool still reaches subagents only.
+
+- **Interrupted subagents resume when you say "continue".** ESC, the Background Tasks stop button, closing the panel or reloading the window used to leave a subagent's work stranded. On your next message, Damocles now tells the model which subagents stopped and how to call `Agent({resume})`, and tells it not to resume them unless you ask. A resumed subagent keeps its conversation, model, reasoning level and foreground or background mode, and its new card carries a "Resumed" badge. Damocles does not count spend from before the interruption a second time. It refuses to resume a subagent that finished, failed, hit the budget limit or stopped because you cleared the conversation, and the model learns why.
+
+- **Cancelled teams resume with `resume_team`.** The same notice covers a team that `cancel_team`, ESC, closing the panel or a reload stopped. A resumed team restarts the lead and the specialists that were working, while specialists awaiting review stay parked and approved ones stay done. A peer message or `/steer` that a member had not received at the cancel reaches it during its resumed turn, and each member's tool count continues from before the cancel. A team that you cancel again resumes from its latest cancel. Damocles refuses to resume a team that completed, one that a cleared conversation stopped, or one whose resume state failed to save, and the cancelled result says so up front.
+
+- **Each team run has its own card.** Every `create_team` and `resume_team` call keeps a card showing that run's own status, time, tools, tokens and cost, and a resume card carries a "Resumed" badge. Only the running call's card stays live, so a resume leaves the earlier cancelled card as it was. A reload shows the same cards. After a reload, a resumed member's overlay shows its conversation from before the cancel ahead of the new turns.
+
+### Changed
+
+- **Forking a session keeps its subagent and team history.** A fork copies the agent data its conversation had at the fork point. Cards in the fork show their history. You can resume an interrupted agent in the fork. The original session stays as it was. A team you cancelled before the fork stays resumable in the fork and in any fork of that fork. A resume in one of those sessions leaves the team resumable in the others.
+
+- **Deleting a session also deletes its subagent and team data.** If agents of the session are still running, the delete stops them and waits up to 10 seconds for them to finish writing their files.
+
+- **Each subagent and team member log is now its own pi session file.** Damocles keeps these files in a folder named after the parent session, next to the parent's session file. "Open agent log" and the team card's log link open them. An agent writes its file after its first reply. Before that, "Open agent log" says the agent has no log yet. A file that Damocles cannot read hides only its own agent's history. The other cards, the interruption notice and a fork's copies of the other agents still work.
+
+- **Sessions recorded before this version no longer show the inner history of their subagents and teams.** Their cards show only the parent's tool call and its result. Damocles no longer reads the old subagent transcripts under `~/.damocles/pi/subagents/`, so you can delete that folder by hand. Deleting one of those sessions now removes its transcripts from that folder.
+
+### Fixed
+
+- **ESC before the model starts now cancels the message you sent.** Before its turn, a message can wait for the session to start, for an earlier turn to wind down or for MCP servers to reload. ESC during that wait used to leave the message running anyway. The message now stops. Its text returns to the input box with the "prompt restored" toast. A message whose session you replace or delete just before the model starts returns to the input box the same way.
+
+- **ESC now stops a subagent that is still starting.** A subagent that you stopped while Damocles was still building its session used to run a full turn anyway. You paid for that turn while its card showed it stopped. It now ends without calling the model.
+
+- **The model now learns why a subagent stopped.** Every stopped subagent's result used to tell the model that you had stopped it. That included subagents that the budget limit, a closed panel or a cleared conversation stopped. The result now names the actual cause.
+
+- **Stopping a background subagent from Background Tasks now tells the model.** The model used to get the partial output with no sign that you had stopped the subagent. It now learns that you stopped it and that the output is partial. A background subagent that hits its turn limit now reports that too. The follow-up message also no longer claims that every agent finished.
+
+- **Deleting a session whose file is already gone now removes its plan files.** Such a delete used to stop at the missing file and leave the plan files behind.
+
+- **A reloaded team that never recorded its end now shows as cancelled.** A team run that ended without writing its end record used to reload as completed. Its working members kept spinning. The team and those members now show as cancelled.
+
+- **A stopped subagent's card now shows as cancelled.** Stopping a subagent from Background Tasks used to leave its card with a green check, as if it had finished. The card now shows cancelled, the same as after a reload.
+
+- **A conversation now opens in one panel at a time.** Opening a conversation from history that another panel already shows now switches to that panel. The panel you opened it from keeps its own conversation. Before, both panels held the conversation, and closing the older one made the other block every tool call except reads with "This tool could not be approved".
+
+- **A reloaded team member's overlay now shows who said what.** After a reload, the overlay used to show the member's task, peer messages and steers as the member's own output. It now shows them as user messages, and each steer carries the "Steered" label it has live.
+
 ## [2.29.0] - 2026-09-23
 
 ### Changed
@@ -4061,6 +4103,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.30.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.29.0...v2.30.0
 [2.29.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.28.0...v2.29.0
 [2.28.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.27.0...v2.28.0
 [2.27.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.26.0...v2.27.0

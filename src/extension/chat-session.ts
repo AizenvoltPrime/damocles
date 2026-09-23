@@ -5,7 +5,7 @@ import type { UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
-import type { RunningSubagentInfo } from '../shared/types/subagents';
+import type { SteerTargetInfo } from '../shared/types/subagents';
 import type { TeamService } from './team';
 
 /**
@@ -42,6 +42,8 @@ export interface ChatSession {
 
   getModelInfo(model?: string): ModelInfo | undefined;
 
+  /** Whether this session is on, starting on, or switching to stored session `sessionId`. */
+  holdsSession(sessionId: string): boolean;
   setResumeSession(sessionId: string | null): void;
   initializeEarly(): Promise<void>;
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
@@ -68,7 +70,9 @@ export interface ChatSession {
   dispose(): Promise<void>;
   stopTask(taskId: string): Promise<void>;
   steerSubagent(agentId: string, message: string): Promise<void>;
-  listActiveSubagents(): RunningSubagentInfo[];
+  /** Routes a user `/steer` to a subagent or, failing that, a live team member. */
+  steerTarget(agentId: string, message: string): Promise<void>;
+  listSteerTargets(): SteerTargetInfo[];
 
   sendBtw(btwId: string, question: string): Promise<void>;
   cancelBtw(btwId: string): void;

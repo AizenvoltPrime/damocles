@@ -74,7 +74,7 @@ function team(): TeamState {
   return {
     teamId: 'team-1', toolUseId: 'toolu_1', title: 'Team', status: 'running', phase: 'working',
     agents: [teamAgent()], messages: [], scratchpad: [], result: null, startTime: 1, endTime: null,
-    totalToolCount: 1,
+    totalToolCount: 1, runs: [],
   };
 }
 

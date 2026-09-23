@@ -1,8 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
-import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { AgentManager, type SubagentEngine, type SpawnSpec } from '../agent-manager';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent';
+import { AgentManager, isSubagentId, type SubagentEngine, type SpawnRequest } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
-import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
+import { STEER_INSTRUCTION_PREFIX, buildResumePrompt, wrapSteerMessage } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT, COMPASS_SYSTEM_PROMPT } from '../../../compass/system-prompt';
@@ -15,6 +18,25 @@ import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AgentInvocationData } from '../../agent-records';
+import type { PiCreateSubagentSessionOptions } from '../../pi-runtime';
+import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import * as fsp from 'node:fs/promises';
+import { buildSubagentTools } from '../../tools/subagent-tools';
+import { backgroundResultsDetails } from '../background-results';
+import { SubagentStreamBridge } from '../subagent-stream-bridge';
+import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
+
+// Pass-through spies so a test can prove a rejected resume id never reached the filesystem.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readdir: vi.fn(actual.readdir), readFile: vi.fn(actual.readFile) };
+});
+
+function invocationEntry(data: AgentInvocationData): SessionEntry {
+  return { type: 'custom', customType: 'damocles-agent-invocation', data, id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString() } as SessionEntry;
+}
 
 /** `defineTool` is the only `pi` member `buildMcpPiTool` touches; the definitions produced are real. */
 const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
@@ -39,21 +61,45 @@ const buildAgentToolsetCalls: Array<{ agentId: string; agentName: string; mcpDis
 /** Every agentId whose panel dialogs the manager withdrew at teardown (Slice 2 criterion 5). */
 const cancelledDialogs: string[] = [];
 
+/** Custom entries appended to any nested session, in order. */
+const customEntries: Array<{ customType: string; data: unknown }> = [];
+
+/** Parent invocation entries the manager recorded, in order. */
+const invocations: AgentInvocationData[] = [];
+
+/** The parent branch the manager reads; recorded invocations are appended to it. */
+const branch: SessionEntry[] = [];
+
+/** Every `createSession` call's options, in order. */
+const sessionOpts: PiCreateSubagentSessionOptions[] = [];
+
+/** Every prompt a nested session was given, in order. */
+const prompts: string[] = [];
+
 /** A fake engine whose subagent sessions block on a per-spawn gate the test resolves to control timing. */
 function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
   const gates: Gate[] = [];
   buildAgentToolsetCalls.length = 0;
   cancelledDialogs.length = 0;
+  customEntries.length = 0;
+  invocations.length = 0;
+  branch.length = 0;
+  sessionOpts.length = 0;
+  prompts.length = 0;
   const engine: SubagentEngine = {
     cwd: '/ws',
     registry: new AgentRegistry(),
-    createSession: async () => {
+    createSession: async (opts) => {
+      sessionOpts.push(opts);
       let resolve!: () => void;
       const promise = new Promise<void>((r) => (resolve = r));
       gates.push({ resolve });
       const session = {
         subscribe: () => () => {},
-        prompt: () => promise,
+        prompt: (text: string) => {
+          prompts.push(text);
+          return promise;
+        },
         messages: [],
         getSessionStats: () => ({ cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }),
         getLastAssistantText: () => '',
@@ -63,6 +109,10 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
+        sessionManager: {
+          appendCustomEntry: (customType: string, data: unknown) => void customEntries.push({ customType, data }),
+          getSessionFile: () => `/store/${customEntries.length}.jsonl`,
+        },
       };
       return session as unknown as AgentSession;
     },
@@ -72,6 +122,13 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     postMessage: () => {},
     getParentSystemPrompt: () => '',
     getParentSessionId: () => 'parent-sid',
+    subagentStoreDir: () => '/store',
+    recordInvocation: (data) => {
+      invocations.push(data);
+      branch.push(invocationEntry(data));
+    },
+    parentBranch: () => branch,
+    assertResumableModel: () => {},
     parentFullToolNames: () => ['read'],
     // The default engine has no MCP manager, which is the no-MCP workspace: the real builder returns
     // the real empty snapshot rather than a hand-written stand-in, so `mcp.names`/`mcp.tools` are the
@@ -98,8 +155,8 @@ function gateAt(gates: readonly Gate[], i: number): Gate {
   return g;
 }
 
-function spec(i: number): SpawnSpec {
-  return { type: 'general-purpose', prompt: `task ${i}`, description: `d${i}`, toolCallId: `tc${i}`, runInBackground: true };
+function spec(i: number): SpawnRequest {
+  return { kind: 'spawn', type: 'general-purpose', prompt: `task ${i}`, description: `d${i}`, toolCallId: `tc${i}`, runInBackground: true };
 }
 
 describe('AgentManager concurrency', () => {
@@ -142,7 +199,7 @@ describe('AgentManager concurrency', () => {
   it('foreground spawns honor the shared concurrency cap, queueing the overflow', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
-    const fg = (i: number): SpawnSpec => ({ ...spec(i), runInBackground: false });
+    const fg = (i: number): SpawnRequest => ({ ...spec(i), runInBackground: false });
 
     const p0 = mgr.spawnAndWait(fg(0));
     const p1 = mgr.spawnAndWait(fg(1));
@@ -200,7 +257,7 @@ describe('AgentManager concurrency', () => {
 
     let settled = false;
     void mgr.getRecord(b)!.promise!.then(() => { settled = true; });
-    mgr.abort(b);
+    mgr.abort(b, 'user');
     await flush();
 
     expect(settled).toBe(true);
@@ -239,7 +296,7 @@ describe('AgentManager concurrency', () => {
     const a = mgr.spawn(spec(0));
     const b = mgr.spawn(spec(1));
     await flush();
-    const count = mgr.abortAll();
+    const count = mgr.abortAll('user');
     expect(count).toBe(2);
     expect(mgr.getRecord(a)!.status).toBe('stopped');
     expect(mgr.getRecord(b)!.status).toBe('stopped');
@@ -253,7 +310,7 @@ describe('AgentManager concurrency', () => {
     const queued = mgr.spawn(spec(1));  // background, waits behind the concurrency cap
     await flush();
 
-    mgr.abortAll();
+    mgr.abortAll('user');
 
     // A killed agent has no result to incorporate. Leaving these unconsumed made the parent's
     // keep-alive drain them at the next settle and continue the run for one more paid round-trip.
@@ -265,6 +322,26 @@ describe('AgentManager concurrency', () => {
     // GetSubagentResult, which is what makes fixing this at the root safe.
     expect(mgr.getRecord(running)!.status).toBe('stopped');
     expect(mgr.getRecord(queued)!.status).toBe('stopped');
+    mgr.dispose();
+  });
+
+  it('whenRunsSettled waits for runs abortAll stopped until their status is written, even after clearCompleted', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    mgr.spawn(spec(0));
+    await flush();
+    mgr.abortAll('reset');
+    const settled = mgr.whenRunsSettled();
+    mgr.clearCompleted();
+    let done = false;
+    void settled.then(() => { done = true; });
+
+    await flush();
+    expect(done).toBe(false);
+
+    gateAt(gates, 0).resolve();
+    await settled;
+    expect(customEntries.some((e) => e.customType === DAMOCLES_AGENT_STATUS_ENTRY)).toBe(true);
     mgr.dispose();
   });
 
@@ -345,7 +422,7 @@ describe('AgentManager background keep-alive', () => {
     expect(mgr.getRecord(id)!.status).toBe('running');
 
     // The Background Tasks "stop" button routes stopBackgroundTask → PiSession.stopTask → abort.
-    expect(mgr.abort(id)).toBe(true);
+    expect(mgr.abort(id, 'user')).toBe(true);
     expect(mgr.getRecord(id)!.status).toBe('stopped');
 
     gateAt(gates, 0).resolve(); // the aborted run settles (real pi: prompt rejects on the abort signal)
@@ -472,7 +549,7 @@ describe('AgentManager steer', () => {
     await mgr.steer(queued, 'do X'); // buffers a pending steer
     const record = mgr.getRecord(queued)!;
     record.userSteers = ['do X']; // PiSession records the parent-awareness note on a queued steer
-    expect(mgr.abort(queued)).toBe(true);
+    expect(mgr.abort(queued, 'user')).toBe(true);
     expect(record.status).toBe('stopped');
     expect(record.pendingSteers).toBeUndefined();
     expect(record.userSteers).toBeUndefined();
@@ -503,6 +580,7 @@ describe('AgentManager thinkingLevel precedence', () => {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
+        sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl' },
       };
       return session as unknown as AgentSession;
     };
@@ -579,7 +657,7 @@ describe('AgentManager resolveRunInBackground', () => {
 });
 
 describe('AgentManager listActive', () => {
-  it('returns only running + queued records with the exact RunningSubagentInfo shape', async () => {
+  it('returns only running + queued records with the exact subagent steer-target shape', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 2);
 
@@ -594,7 +672,7 @@ describe('AgentManager listActive', () => {
     // A background spawn that is aborted → terminal 'stopped', must be excluded.
     const stoppedId = mgr.spawn(spec(1));
     await flush();
-    expect(mgr.abort(stoppedId)).toBe(true);
+    expect(mgr.abort(stoppedId, 'user')).toBe(true);
     gateAt(gates, 1).resolve(); // let the aborted run settle so its slot frees
     await flush();
     await flush();
@@ -614,16 +692,16 @@ describe('AgentManager listActive', () => {
     // Only the three active records are returned — completed + stopped are excluded.
     expect(active.map((a) => a.id).sort()).toEqual([bgRunningId, fgRunningId, queuedId].sort());
 
-    // Each item has exactly the RunningSubagentInfo keys.
+    // Each item has exactly the subagent steer-target keys.
     for (const item of active) {
-      expect(Object.keys(item).sort()).toEqual(['agentType', 'description', 'id', 'isBackground', 'status']);
+      expect(Object.keys(item).sort()).toEqual(['agentType', 'description', 'id', 'isBackground', 'kind', 'status']);
     }
 
     const byId = new Map(active.map((a) => [a.id, a]));
     // agentType mirrors record.type; description mirrors record.description.
-    expect(byId.get(bgRunningId)).toEqual({ id: bgRunningId, agentType: 'general-purpose', description: 'd2', status: 'running', isBackground: true });
-    expect(byId.get(fgRunningId)).toEqual({ id: fgRunningId, agentType: 'general-purpose', description: 'd3', status: 'running', isBackground: false });
-    expect(byId.get(queuedId)).toEqual({ id: queuedId, agentType: 'general-purpose', description: 'd4', status: 'queued', isBackground: true });
+    expect(byId.get(bgRunningId)).toEqual({ kind: 'subagent', id: bgRunningId, agentType: 'general-purpose', description: 'd2', status: 'running', isBackground: true });
+    expect(byId.get(fgRunningId)).toEqual({ kind: 'subagent', id: fgRunningId, agentType: 'general-purpose', description: 'd3', status: 'running', isBackground: false });
+    expect(byId.get(queuedId)).toEqual({ kind: 'subagent', id: queuedId, agentType: 'general-purpose', description: 'd4', status: 'queued', isBackground: true });
 
     mgr.dispose();
   });
@@ -672,7 +750,7 @@ describe('AgentManager — per-subagent browser scope', () => {
 
     const id = mgr.spawn(spec(0));
     await flush();
-    mgr.abort(id); // manual stop → status 'stopped'
+    mgr.abort(id, 'user'); // manual stop → status 'stopped'
     gates[0]!.resolve(); // let the nested run settle so afterComplete fires
     await flush();
 
@@ -776,7 +854,7 @@ describe('AgentManager → nested MCP dialogs: attribution at spawn, withdrawal 
 
     const id = mgr.spawn(spec(0));
     await flush();
-    mgr.abort(id);
+    mgr.abort(id, 'user');
     gates[0]!.resolve();
     await flush();
 
@@ -1416,5 +1494,860 @@ describe('AgentManager → nested MCP: the panel switches apply (criterion 15)',
     expect(contexts[0]!.deferrableToolNames).not.toContain('mcp__ctx7__query_docs');
     expect(contexts.at(-1)!.deferrableToolNames).toContain('mcp__ctx7__query_docs');
     mgr.dispose();
+  });
+});
+
+describe('AgentManager agent records', () => {
+  const statusEntries = () => customEntries.filter((e) => e.customType === 'damocles-agent-status').map((e) => e.data);
+
+  it('indexes the invocation on the parent before the agent starts, then files the agent under the store dir', async () => {
+    const { engine, gates } = makeEngine();
+    const stores: unknown[] = [];
+    const create = engine.createSession;
+    engine.createSession = (opts) => {
+      stores.push(opts.store);
+      return create(opts);
+    };
+    const mgr = new AgentManager(engine, 2);
+    let startedAfterInvocation = false;
+    const record = engine.recordInvocation;
+    engine.recordInvocation = (data) => {
+      startedAfterInvocation = stores.length === 0;
+      record(data);
+    };
+
+    const id = mgr.spawn({ ...spec(0), thinking: 'low' });
+    expect(invocations).toEqual([{ kind: 'subagent', id, toolCallId: 'tc0', resume: false }]);
+    expect(startedAfterInvocation).toBe(true);
+    await flush();
+
+    expect(stores).toEqual([{ kind: 'file', dir: '/store', id }]);
+    expect(customEntries[0]).toEqual({
+      customType: 'damocles-agent-launch',
+      data: {
+        agentId: id,
+        kind: 'subagent',
+        agentType: 'general-purpose',
+        description: 'd0',
+        prompt: 'task 0',
+        background: true,
+        thinkingOverride: 'low',
+      },
+    });
+    expect(mgr.getRecord(id)!.outputFile).toBe('/store/1.jsonl');
+
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+    expect(statusEntries()).toEqual([{ status: 'completed', result: '' }]);
+    mgr.dispose();
+    expect(statusEntries()).toHaveLength(1);
+  });
+
+  it.each([
+    ['user', 'STOPPED BY THE USER'],
+    ['budget', 'stopped by the budget limit'],
+    ['reset', 'because the conversation was cleared'],
+  ] as const)('abortAll(%s) records the stop reason in the status entry', async (reason, note) => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush();
+
+    mgr.abortAll(reason);
+    expect(mgr.getRecord(id)!.stopReason).toBe(reason);
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+
+    expect(statusEntries()).toEqual([{ status: 'stopped', stopReason: reason, result: expect.stringContaining(note) }]);
+    mgr.dispose();
+  });
+
+  it('dispose records a shutdown stop at once, without waiting for the aborted run to settle', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    await flush();
+
+    mgr.dispose();
+
+    expect(statusEntries()).toEqual([{ status: 'stopped', stopReason: 'shutdown', result: expect.any(String) }]);
+  });
+
+  it('the stop button records a user stop; a queued agent never had a session, so it writes nothing', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    const running = mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+    await flush();
+
+    mgr.abort(queued, 'user');
+    mgr.abort(running, 'user');
+    expect(mgr.getRecord(queued)!.stopReason).toBe('user');
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+
+    expect(statusEntries()).toEqual([{ status: 'stopped', stopReason: 'user', result: expect.any(String) }]);
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager resume', () => {
+  const made: string[] = [];
+  afterEach(() => {
+    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** An engine whose subagent files live in a real temp folder. */
+  function resumeEngine(): { engine: SubagentEngine; gates: Gate[]; dir: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-resume-'));
+    made.push(dir);
+    const { engine, gates } = makeEngine();
+    engine.subagentStoreDir = () => dir;
+    return { engine, gates, dir };
+  }
+
+  const AGENT = '0a1b2c3d-4e5f-4a0';
+  const settle = async (): Promise<void> => {
+    await flush();
+    await flush();
+  };
+
+  function assistantMessage(text: string) {
+    return {
+      role: 'assistant',
+      content: [{ type: 'text', text }],
+      api: 'anthropic-messages',
+      provider: 'anthropic',
+      model: 'claude',
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    } as unknown as Parameters<SessionManager['appendMessage']>[0];
+  }
+
+  /** Write the agent's pi session file the way a run does, ending in `status` when given. */
+  function writeAgentFile(
+    dir: string,
+    opts: { agentType?: string; background?: boolean; status?: { status: string; stopReason?: string } },
+  ): string {
+    const sm = SessionManager.create(dir, dir, { id: AGENT });
+    sm.appendCustomEntry('damocles-agent-launch', {
+      agentId: AGENT,
+      kind: 'subagent',
+      agentType: opts.agentType ?? 'general-purpose',
+      description: 'dig in',
+      prompt: 'find the bug',
+      background: opts.background ?? false,
+      modelLabel: 'haiku',
+    });
+    sm.appendMessage({ role: 'user', content: [{ type: 'text', text: 'find the bug' }], timestamp: Date.now() });
+    sm.appendMessage(assistantMessage('looking'));
+    if (opts.status) sm.appendCustomEntry('damocles-agent-status', { ...opts.status, result: 'partial' });
+    return sm.getSessionFile()!;
+  }
+
+  /** The parent branch's spawn of `AGENT`: its `Agent` call, invocation entry and, optionally, result. */
+  function spawnOnBranch(args: Record<string, unknown>, details?: Record<string, unknown>): void {
+    const at = new Date().toISOString();
+    branch.push({
+      type: 'message', id: 'm1', parentId: null, timestamp: at,
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-spawn', name: 'Agent', arguments: args }] },
+    } as unknown as SessionEntry);
+    branch.push(invocationEntry({ kind: 'subagent', id: AGENT, toolCallId: 'tc-spawn', resume: false }));
+    if (details) {
+      branch.push({
+        type: 'message', id: 'm2', parentId: null, timestamp: at,
+        message: { role: 'toolResult', toolCallId: 'tc-spawn', toolName: 'Agent', content: [], details, isError: false },
+      } as unknown as SessionEntry);
+    }
+  }
+
+  const spawnArgs = { description: 'dig in', prompt: 'find the bug', subagent_type: 'general-purpose' };
+  const resumeReq = (toolCallId: string, message?: string) => ({
+    kind: 'resume' as const,
+    agentId: AGENT,
+    toolCallId,
+    ...(message !== undefined ? { message } : {}),
+  });
+
+  it('the id validator matches exactly what the generator produces', () => {
+    const mgr = new AgentManager(makeEngine().engine);
+    const id = mgr.spawn(spec(0));
+    expect(isSubagentId(id)).toBe(true);
+    expect(isSubagentId(AGENT)).toBe(true);
+    mgr.dispose();
+  });
+
+  it.each(['../x', '..\\x', 'x/../../y', '0a1b2c3d-4e5f-4a0/..', '0A1B2C3D-4E5F-4A0', '0a1b2c3d-4e5f-4a01', '0a1b2c3d-4e5f-3a0', ''])(
+    'a malformed id %j is rejected before any branch read or file access',
+    async (bad) => {
+      const { engine } = resumeEngine();
+      const storeDir = vi.fn(engine.subagentStoreDir);
+      const parentBranch = vi.fn(engine.parentBranch);
+      engine.subagentStoreDir = storeDir;
+      engine.parentBranch = parentBranch;
+      const mgr = new AgentManager(engine);
+
+      await expect(mgr.resume({ kind: 'resume', agentId: bad, toolCallId: 'tc-r' })).rejects.toThrow(`"${bad}" is not a valid subagent id.`);
+      expect(storeDir).not.toHaveBeenCalled();
+      expect(parentBranch).not.toHaveBeenCalled();
+      expect(invocations).toEqual([]);
+    },
+  );
+
+  it('an id this branch never invoked is unknown, even when its file exists', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r'))).rejects.toThrow(`No interrupted subagent "${AGENT}" in this conversation.`);
+    expect(invocations).toEqual([]);
+  });
+
+  it('a running or queued agent is still active', async () => {
+    const { engine } = resumeEngine();
+    const mgr = new AgentManager(engine, 1);
+    const running = mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+
+    await expect(mgr.resume({ kind: 'resume', agentId: running, toolCallId: 'tc-r' })).rejects.toThrow(
+      `Subagent "${running}" is still running; steer it with SteerSubagent or read it with GetSubagentResult.`,
+    );
+    await expect(mgr.resume({ kind: 'resume', agentId: queued, toolCallId: 'tc-r' })).rejects.toThrow(`Subagent "${queued}" is still queued;`);
+    mgr.dispose();
+  });
+
+  it('of two parallel resumes of one id only the first starts; the second is told to wait for the first', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'stopped', stopReason: 'user' });
+    const mgr = new AgentManager(engine);
+
+    const first = mgr.resume(resumeReq('tc-r1'));
+    const second = mgr.resume(resumeReq('tc-r2'));
+
+    await expect(second).rejects.toThrow(`Subagent "${AGENT}" is already being resumed by another Agent call; wait for that call's result.`);
+    const record = await first;
+    expect(record.status).toBe('running');
+    await settle();
+    expect(sessionOpts).toHaveLength(1);
+    expect(invocations.filter((i) => i.resume)).toEqual([{ kind: 'subagent', id: AGENT, toolCallId: 'tc-r1', resume: true }]);
+    mgr.dispose();
+  });
+
+  it.each([
+    ['completed', undefined, `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`],
+    ['error', undefined, `Subagent "${AGENT}" finished with status "error"; only interrupted agents can be resumed.`],
+    ['aborted', undefined, `Subagent "${AGENT}" finished with status "aborted"; only interrupted agents can be resumed.`],
+    ['stopped', 'reset', `Subagent "${AGENT}" was stopped when its conversation was cleared and cannot be resumed.`],
+    ['stopped', 'budget', `Subagent "${AGENT}" was stopped by the budget limit and cannot be resumed.`],
+  ])('an agent whose file says %s (%s) cannot be resumed', async (status, stopReason, error) => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status, ...(stopReason ? { stopReason } : {}) } });
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r'))).rejects.toThrow(error);
+    expect(invocations).toEqual([]);
+  });
+
+  it('an agent whose type is gone cannot be resumed', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { agentType: 'retired-agent', status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r'))).rejects.toThrow(`Subagent "${AGENT}" was a "retired-agent" agent, which is no longer available.`);
+  });
+
+  it('an unavailable model rejects the resume verbatim and releases the claim', async () => {
+    const { engine, dir } = resumeEngine();
+    const file = writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    const error = `Cannot resume "${AGENT}": its model anthropic/claude is not configured or not signed in.`;
+    let signedIn = false;
+    const checked: string[] = [];
+    engine.assertResumableModel = (p) => {
+      checked.push(p);
+      if (!signedIn) throw new Error(error);
+    };
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r1'))).rejects.toThrow(error);
+    expect(checked).toEqual([file]);
+    expect(invocations).toEqual([]);
+
+    signedIn = true;
+    await expect(mgr.resume(resumeReq('tc-r2'))).resolves.toMatchObject({ status: 'running' });
+    mgr.dispose();
+  });
+
+  it('a foreground resume reopens the file, opens a segment, prompts to continue and returns the result', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    const file = writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'stopped', stopReason: 'user' });
+    const mgr = new AgentManager(engine);
+    const parent = new AbortController();
+
+    const record = await mgr.resume({ ...resumeReq('tc-r', 'check the tests too'), signal: parent.signal });
+    expect(record).toMatchObject({ id: AGENT, toolCallId: 'tc-r', background: false, description: 'dig in', type: 'general-purpose' });
+    await settle();
+
+    expect(sessionOpts[0]!.store).toEqual({ kind: 'reopen', path: file, agentId: AGENT });
+    expect(sessionOpts[0]!.model).toBeUndefined();
+    expect(sessionOpts[0]!.thinkingLevel).toBeUndefined();
+    expect(customEntries).toEqual([{ customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r', message: 'check the tests too' } }]);
+    expect(prompts).toEqual([buildResumePrompt('check the tests too')]);
+    expect(prompts[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(true);
+
+    gateAt(gates, 0).resolve();
+    await record.promise;
+    expect(record.status).toBe('completed');
+    expect(mgr.hasUnconsumedBackground()).toBe(false);
+    mgr.dispose();
+  });
+
+  it('a foreground resume is stopped with the parent turn', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine);
+    const parent = new AbortController();
+
+    const record = await mgr.resume({ ...resumeReq('tc-r'), signal: parent.signal });
+    await settle();
+    parent.abort();
+    gateAt(gates, 0).resolve();
+    await record.promise;
+
+    expect(record).toMatchObject({ status: 'stopped', stopReason: 'user' });
+    mgr.dispose();
+  });
+
+  it('a foreground resume whose parent turn already aborted finishes stopped without opening a session', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume({ ...resumeReq('tc-r'), signal: AbortSignal.abort() });
+    await record.promise;
+
+    expect(record).toMatchObject({ status: 'stopped', stopReason: 'user' });
+    expect(sessionOpts).toEqual([]);
+    expect(prompts).toEqual([]);
+    const done = posted.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolCompleted' }> => m.type === 'toolCompleted');
+    expect(done).toMatchObject({ toolUseId: 'tc-r', toolName: 'Agent', result: expect.stringContaining('STOPPED BY THE USER') });
+    expect(mgr.hasRunning()).toBe(false);
+    await expect(mgr.resume(resumeReq('tc-r2'))).resolves.toMatchObject({ status: 'running' });
+    mgr.dispose();
+  });
+
+  // pi's session.abort() does nothing before prompt(), so only the manager can keep this run from starting.
+  it('a stop while the resumed session is being opened never prompts it, records the stop, and frees the id', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    let release!: () => void;
+    const opening = new Promise<void>((r) => (release = r));
+    let creating = 0;
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      if (++creating === 1) await opening;
+      return create(opts);
+    };
+    const mgr = new AgentManager(engine);
+    const parent = new AbortController();
+
+    const first = await mgr.resume({ ...resumeReq('tc-r1'), signal: parent.signal });
+    await vi.waitFor(() => expect(creating).toBe(1));
+    parent.abort();
+    release();
+    await vi.waitFor(() => expect(customEntries.map((e) => e.customType)).toContain('damocles-agent-segment'));
+
+    expect(prompts).toEqual([]);
+    await first.promise;
+    expect(first).toMatchObject({ status: 'stopped', stopReason: 'user' });
+    expect(customEntries).toEqual([
+      { customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r1' } },
+      { customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'stopped', stopReason: 'user', result: expect.stringContaining('STOPPED BY THE USER') } },
+    ]);
+    await expect(mgr.resume(resumeReq('tc-r2'))).resolves.toMatchObject({ status: 'running' });
+    mgr.dispose();
+  });
+
+  it('a resume called right after a stop waits for the stopped run to finish before reading its file', async () => {
+    const { engine, gates } = resumeEngine();
+    const mgr = new AgentManager(engine);
+    const id = mgr.spawn(spec(0));
+    branch.unshift({
+      type: 'message', id: 'm0', parentId: null, timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc0', name: 'Agent', arguments: { description: 'd0', prompt: 'task 0', subagent_type: 'general-purpose' } }] },
+    } as unknown as SessionEntry);
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    const stopped = mgr.getRecord(id)!;
+    const order: string[] = [];
+    void stopped.promise!.then(() => order.push('stopped run settled'));
+    const storeDir = engine.subagentStoreDir;
+    engine.subagentStoreDir = () => (order.push('file lookup'), storeDir());
+
+    mgr.abort(id, 'user');
+    const resumed = mgr.resume({ kind: 'resume', agentId: id, toolCallId: 'tc-r' });
+    expect(order).toEqual([]);
+
+    gateAt(gates, 0).resolve();
+    const record = await resumed;
+    expect(order.slice(0, 2)).toEqual(['stopped run settled', 'file lookup']);
+    expect(record).not.toBe(stopped);
+    expect(record.status).toBe('running');
+    mgr.dispose();
+  });
+
+  it('a background resume keeps its mode and reports through the keep-alive under the resume call', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'stopped', stopReason: 'shutdown' } });
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume({ ...resumeReq('tc-r'), signal: AbortSignal.abort() });
+    expect(record.background).toBe(true);
+    await settle();
+    expect(prompts).toEqual([buildResumePrompt()]);
+    // A background agent is not bound to the parent turn's signal, even an aborted one.
+    expect(record.status).toBe('running');
+    expect(mgr.hasUnconsumedBackground()).toBe(true);
+
+    gateAt(gates, 0).resolve();
+    await mgr.waitForBackground();
+    const [done] = mgr.takeCompletedBackgroundResults();
+    expect(done).toMatchObject({ id: AGENT, toolCallId: 'tc-r', status: 'completed' });
+    mgr.dispose();
+  });
+
+  it('an agent with no file re-runs fresh under its id from the spawning call\'s arguments', async () => {
+    const { engine, dir } = resumeEngine();
+    spawnOnBranch({ ...spawnArgs, thinking: 'low', run_in_background: false }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume(resumeReq('tc-r', 'be quick'));
+    await settle();
+
+    expect(record.background).toBe(true);
+    expect(sessionOpts[0]!.store).toEqual({ kind: 'file', dir, id: AGENT });
+    expect(sessionOpts[0]!.thinkingLevel).toBe('low');
+    expect(customEntries).toEqual([
+      {
+        customType: 'damocles-agent-launch',
+        data: { agentId: AGENT, kind: 'subagent', agentType: 'general-purpose', description: 'dig in', prompt: 'find the bug', background: true, thinkingOverride: 'low' },
+      },
+      { customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r', message: 'be quick' } },
+    ]);
+    // The marker must open the message: the steering protocol honours it only on the first line.
+    expect(prompts).toEqual([wrapSteerMessage('be quick\n\nYour original task:\nfind the bug')]);
+    expect(prompts[0]!.split('\n')[0]).toBe(STEER_INSTRUCTION_PREFIX);
+    mgr.dispose();
+  });
+
+  it('a second ESC during a resume leaves the agent resumable', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine);
+
+    const first = await mgr.resume(resumeReq('tc-r1'));
+    await settle();
+    mgr.abortAll('user');
+    gateAt(gates, 0).resolve();
+    await first.promise;
+    expect(first).toMatchObject({ status: 'stopped', stopReason: 'user' });
+
+    const second = await mgr.resume(resumeReq('tc-r2'));
+    expect(second).not.toBe(first);
+    expect(second.status).toBe('running');
+    mgr.dispose();
+  });
+
+  it.each([
+    ['user', true],
+    ['shutdown', true],
+    ['budget', false],
+    ['reset', false],
+  ] as const)('a live agent stopped for %s is resumable: %s', async (reason, resumable) => {
+    const { engine, gates } = resumeEngine();
+    const mgr = new AgentManager(engine);
+    const id = mgr.spawn(spec(0));
+    branch.unshift({
+      type: 'message', id: 'm0', parentId: null, timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc0', name: 'Agent', arguments: { description: 'd0', prompt: 'task 0', subagent_type: 'general-purpose' } }] },
+    } as unknown as SessionEntry);
+    await flush();
+    mgr.abortAll(reason);
+    gateAt(gates, 0).resolve();
+    await mgr.getRecord(id)!.promise;
+
+    const attempt = mgr.resume({ kind: 'resume', agentId: id, toolCallId: 'tc-r' });
+    if (resumable) await expect(attempt).resolves.toMatchObject({ status: 'running' });
+    else await expect(attempt).rejects.toThrow(reason === 'budget' ? 'budget limit' : 'when its conversation was cleared');
+    mgr.dispose();
+  });
+
+  it('the budget meter counts only spend after the session reopened', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch(spawnArgs);
+    let cost = 0.5;
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      const session = await create(opts);
+      (session as unknown as { getSessionStats: () => { cost: number } }).getSessionStats = () => ({ cost });
+      return session;
+    };
+    const charged: number[] = [];
+    engine.onSubagentCost = (delta) => charged.push(delta);
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume(resumeReq('tc-r'));
+    await settle();
+    cost = 0.75;
+    gateAt(gates, 0).resolve();
+    await record.promise;
+
+    expect(charged.reduce((a, b) => a + b, 0)).toBeCloseTo(0.25);
+    expect(record.costUsd).toBeCloseTo(0.25);
+    mgr.dispose();
+  });
+
+  type Exec = (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }>; details: unknown }>;
+  const agentExecute = (mgr: AgentManager): Exec => (buildSubagentTools(piStub, mgr)[0] as unknown as { execute: Exec }).execute;
+  /** The model-visible text inside a foreground `Agent` result. */
+  const resultText = (result: { content: Array<{ text: string }> }): string =>
+    (JSON.parse(result.content[0]!.text) as { content: Array<{ text: string }> }).content[0]!.text;
+
+  /** Append a resume segment to an agent file, as a resumed run does, ending in `status` when given. */
+  function appendSegment(file: string, toolCallId: string, status?: { status: string; stopReason?: string }): void {
+    const sm = SessionManager.open(file);
+    sm.appendCustomEntry('damocles-agent-segment', { toolCallId });
+    sm.appendMessage(assistantMessage('more'));
+    if (status) sm.appendCustomEntry('damocles-agent-status', { ...status, result: 'partial' });
+  }
+
+  // The branch entry is forged: it guards the id check itself, not the branch reader's own id filter.
+  it.each(['../x', 'a/b', '..\\x', '/etc/passwd', 'C:\\Windows\\win.ini', '\\\\server\\share\\x'])(
+    'the Agent tool rejects the path-shaped id %j before any filesystem access',
+    async (bad) => {
+      const { engine } = resumeEngine();
+      const storeDir = vi.fn(engine.subagentStoreDir);
+      engine.subagentStoreDir = storeDir;
+      branch.push({
+        type: 'custom', customType: 'damocles-agent-invocation', id: 'forged', parentId: null, timestamp: new Date().toISOString(),
+        data: { kind: 'subagent', id: bad, toolCallId: 'tc-forged', resume: false },
+      } as SessionEntry);
+      const mgr = new AgentManager(engine);
+      vi.mocked(fsp.readdir).mockClear();
+      vi.mocked(fsp.readFile).mockClear();
+
+      await expect(agentExecute(mgr)('tc-r', { resume: bad })).rejects.toMatchObject({ message: `"${bad}" is not a valid subagent id.` });
+      expect(fsp.readdir).not.toHaveBeenCalled();
+      expect(fsp.readFile).not.toHaveBeenCalled();
+      expect(storeDir).not.toHaveBeenCalled();
+      expect(invocations).toEqual([]);
+    },
+  );
+
+  it('the filesystem spies observe the file lookup of a well-formed resume', async () => {
+    const { engine, dir } = resumeEngine();
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine);
+    vi.mocked(fsp.readdir).mockClear();
+
+    await mgr.resume(resumeReq('tc-r'));
+
+    expect(fsp.readdir).toHaveBeenCalledWith(dir);
+    mgr.dispose();
+  });
+
+  const MODEL_ERROR = `Cannot resume "${AGENT}": its model anthropic/claude is not configured or not signed in.`;
+  const stoppedByUser = { status: { status: 'stopped', stopReason: 'user' } };
+  it.each<[string, (dir: string, engine: SubagentEngine) => void, string]>([
+    ['an id only another conversation invoked', (dir) => void writeAgentFile(dir, stoppedByUser), `No interrupted subagent "${AGENT}" in this conversation.`],
+    [
+      'a finished agent',
+      (dir) => (writeAgentFile(dir, { status: { status: 'completed' } }), spawnOnBranch(spawnArgs)),
+      `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`,
+    ],
+    [
+      'a budget-stopped agent',
+      (dir) => (writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'budget' } }), spawnOnBranch(spawnArgs)),
+      `Subagent "${AGENT}" was stopped by the budget limit and cannot be resumed.`,
+    ],
+    [
+      'an agent whose type is gone',
+      (dir) => (writeAgentFile(dir, { agentType: 'retired-agent', ...stoppedByUser }), spawnOnBranch(spawnArgs)),
+      `Subagent "${AGENT}" was a "retired-agent" agent, which is no longer available.`,
+    ],
+    [
+      'an agent whose model is unavailable',
+      (dir, engine) => {
+        writeAgentFile(dir, stoppedByUser);
+        spawnOnBranch(spawnArgs);
+        engine.assertResumableModel = () => {
+          throw new Error(MODEL_ERROR);
+        };
+      },
+      MODEL_ERROR,
+    ],
+  ])('the Agent tool rejects resuming %s with the exact refusal text and starts nothing', async (_label, setup, error) => {
+    const { engine, dir } = resumeEngine();
+    setup(dir, engine);
+    const mgr = new AgentManager(engine);
+
+    await expect(agentExecute(mgr)('tc-r', { resume: AGENT })).rejects.toMatchObject({ message: error });
+    expect(invocations).toEqual([]);
+    expect(sessionOpts).toEqual([]);
+    mgr.dispose();
+  });
+
+  it('the Agent tool reports a running, queued or resuming agent as still active, and one resume of two parallel ones starts', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, stoppedByUser);
+    spawnOnBranch(spawnArgs);
+    const mgr = new AgentManager(engine, 1);
+    const execute = agentExecute(mgr);
+    const bg = { description: 'd', prompt: 'p', subagent_type: 'general-purpose', run_in_background: true };
+    const idOf = (r: { details: unknown }) => (r.details as { agentId: string }).agentId;
+    const running = idOf(await execute('tc-a', bg));
+    const queued = idOf(await execute('tc-b', bg));
+    const still = (id: string, status: string) =>
+      `Subagent "${id}" is still ${status}; steer it with SteerSubagent or read it with GetSubagentResult.`;
+
+    await expect(execute('tc-r0', { resume: running })).rejects.toMatchObject({ message: still(running, 'running') });
+    await expect(execute('tc-r0', { resume: queued })).rejects.toMatchObject({ message: still(queued, 'queued') });
+
+    const first = execute('tc-r1', { resume: AGENT });
+    const second = execute('tc-r2', { resume: AGENT });
+    await expect(second).rejects.toMatchObject({
+      message: `Subagent "${AGENT}" is already being resumed by another Agent call; wait for that call's result.`,
+    });
+    await vi.waitFor(() => expect(invocations.filter((i) => i.resume)).toEqual([{ kind: 'subagent', id: AGENT, toolCallId: 'tc-r1', resume: true }]));
+    await expect(execute('tc-r3', { resume: AGENT })).rejects.toMatchObject({ message: still(AGENT, 'queued') });
+
+    mgr.dispose();
+    await first;
+  });
+
+  // Checked against a running agent: the branch lookup must come before the live "still running" check.
+  it('an agent whose invocation was rewound off the branch is unknown, even while it runs', async () => {
+    const { engine, gates } = resumeEngine();
+    const mgr = new AgentManager(engine, 2);
+    const running = mgr.spawn(spec(0));
+    const stopped = mgr.spawn(spec(1));
+    await vi.waitFor(() => expect(gates.length).toBe(2));
+    mgr.abort(stopped, 'user');
+    gateAt(gates, 1).resolve();
+    await mgr.getRecord(stopped)!.promise;
+    branch.length = 0;
+    const execute = agentExecute(mgr);
+
+    for (const id of [running, stopped]) {
+      await expect(execute('tc-r', { resume: id })).rejects.toMatchObject({ message: `No interrupted subagent "${id}" in this conversation.` });
+    }
+    expect(invocations.filter((i) => i.resume)).toEqual([]);
+    mgr.dispose();
+  });
+
+  it('after a reload, an agent stopped again during its resume resumes a third time from the same file', async () => {
+    const { engine, dir } = resumeEngine();
+    const file = writeAgentFile(dir, stoppedByUser);
+    appendSegment(file, 'tc-r1', { status: 'stopped', stopReason: 'user' });
+    spawnOnBranch(spawnArgs);
+    branch.push(invocationEntry({ kind: 'subagent', id: AGENT, toolCallId: 'tc-r1', resume: true }));
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume(resumeReq('tc-r2'));
+    await settle();
+
+    expect(record.status).toBe('running');
+    expect(sessionOpts.map((o) => o.store)).toEqual([{ kind: 'reopen', path: file, agentId: AGENT }]);
+    expect(customEntries).toEqual([{ customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r2' } }]);
+    mgr.dispose();
+  });
+
+  it('after a reload, the latest resume segment decides the status, not the launch segment', async () => {
+    const { engine, dir } = resumeEngine();
+    const file = writeAgentFile(dir, stoppedByUser);
+    appendSegment(file, 'tc-r1', { status: 'completed' });
+    spawnOnBranch(spawnArgs);
+    branch.push(invocationEntry({ kind: 'subagent', id: AGENT, toolCallId: 'tc-r1', resume: true }));
+    const mgr = new AgentManager(engine);
+
+    await expect(mgr.resume(resumeReq('tc-r2'))).rejects.toMatchObject({
+      message: `Subagent "${AGENT}" finished with status "completed"; only interrupted agents can be resumed.`,
+    });
+  });
+
+  it('a foreground resume through the Agent tool returns the resumed run as its tool result', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, stoppedByUser);
+    spawnOnBranch(spawnArgs, { agentId: AGENT, status: 'stopped', stopReason: 'user' });
+    const create = engine.createSession;
+    engine.createSession = async (opts) => {
+      const session = await create(opts);
+      (session as unknown as { messages: unknown[] }).messages = [{ role: 'assistant', content: [{ type: 'text', text: 'fixed the bug' }] }];
+      return session;
+    };
+    const mgr = new AgentManager(engine);
+
+    const pending = agentExecute(mgr)('tc-r', { resume: AGENT }, new AbortController().signal);
+    // Validation reads real files, so the session appears after an unknown number of ticks.
+    await vi.waitFor(() => expect(gates.length).toBe(1));
+    gateAt(gates, 0).resolve();
+    const result = await pending;
+
+    expect(resultText(result)).toBe('fixed the bug');
+    expect(result.details).toEqual({ agentId: AGENT, status: 'completed' });
+    expect(invocations).toEqual([{ kind: 'subagent', id: AGENT, toolCallId: 'tc-r', resume: true }]);
+    mgr.dispose();
+  });
+
+  it('a background resume through the Agent tool acknowledges, then injects its result under the resume call', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'stopped', stopReason: 'shutdown' } });
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const result = await agentExecute(mgr)('tc-r', { resume: AGENT });
+    expect(result.details).toEqual({ agentId: AGENT, status: 'async_launched' });
+    await vi.waitFor(() => expect(gates.length).toBe(1));
+    gateAt(gates, 0).resolve();
+    await mgr.waitForBackground();
+
+    expect(backgroundResultsDetails(mgr.takeCompletedBackgroundResults())).toEqual({
+      agents: [{ agentId: AGENT, toolCallId: 'tc-r', status: 'completed', result: '' }],
+    });
+    mgr.dispose();
+  });
+
+  it('a background resume still validating when the panel is disposed never starts', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'stopped', stopReason: 'shutdown' } });
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const pending = mgr.resume({ ...resumeReq('tc-r'), signal: AbortSignal.abort() });
+    mgr.dispose();
+    await pending.catch(() => undefined);
+    await settle();
+
+    expect(sessionOpts).toEqual([]);
+    expect(mgr.hasRunning()).toBe(false);
+  });
+
+  it('an ESC while a resume validates stops it before it starts, and the agent stays resumable', async () => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'stopped', stopReason: 'user' } });
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const first = mgr.resume(resumeReq('tc-r1'));
+    mgr.abortAll('user');
+    await expect(first).rejects.toThrow(`The resume of subagent "${AGENT}" was stopped before it started; it can still be resumed.`);
+    expect(sessionOpts).toEqual([]);
+    expect(invocations).toEqual([]);
+
+    const second = await mgr.resume(resumeReq('tc-r2'));
+    expect(second.status).toBe('running');
+    await vi.waitFor(() => expect(gates.length).toBe(1));
+    gateAt(gates, 0).resolve();
+    await mgr.waitForBackground();
+    mgr.dispose();
+  });
+
+  it('a budget-stopped foreground agent tells the parent it cannot be resumed, and a resume of it is refused', async () => {
+    const { engine, gates } = resumeEngine();
+    const mgr = new AgentManager(engine);
+    const execute = agentExecute(mgr);
+
+    const pending = execute('tc-b', { description: 'd', prompt: 'p', subagent_type: 'general-purpose' });
+    await settle();
+    mgr.abortAll('budget');
+    gateAt(gates, 0).resolve();
+    const result = await pending;
+    const id = (result.details as { agentId: string }).agentId;
+
+    expect(result.details).toEqual({ agentId: id, status: 'stopped', stopReason: 'budget' });
+    expect(resultText(result)).toBe(' (stopped by the budget limit before completion; output is partial and it cannot be resumed)');
+    await expect(execute('tc-r', { resume: id })).rejects.toMatchObject({
+      message: `Subagent "${id}" was stopped by the budget limit and cannot be resumed.`,
+    });
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager Agent result JSON', () => {
+  type Completed = Extract<ExtensionToWebviewMessage, { type: 'toolCompleted' }>;
+
+  function cardResult(posted: ExtensionToWebviewMessage[], toolUseId: string): Record<string, unknown> {
+    const done = posted.find((m): m is Completed => m.type === 'toolCompleted' && m.toolUseId === toolUseId);
+    if (!done) throw new Error(`no toolCompleted for ${toolUseId}`);
+    return JSON.parse(done.result) as Record<string, unknown>;
+  }
+
+  it('carries a stopped background agent\'s status on its card completion', async () => {
+    const { engine, gates } = makeEngine();
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+
+    mgr.abort(id, 'user');
+    gateAt(gates, 0).resolve();
+    await mgr.getRecord(id)!.promise;
+
+    expect(cardResult(posted, 'tc0')).toMatchObject({ agentId: id, agentStatus: 'stopped' });
+    mgr.dispose();
+  });
+
+  it('carries a completed background agent\'s status on its card completion', async () => {
+    const { engine, gates } = makeEngine();
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+
+    gateAt(gates, 0).resolve();
+    await mgr.getRecord(id)!.promise;
+
+    expect(cardResult(posted, 'tc0')).toMatchObject({ agentId: id, agentStatus: 'completed' });
+    mgr.dispose();
+  });
+
+  // An errored card resolves through toolFailed, so the built JSON is only visible at `finish`.
+  it.each([
+    ['a run that threw', (engine: SubagentEngine) => { engine.createSession = async () => { throw new Error('boom'); }; }, 'general-purpose'],
+    ['a spawn refused before running', () => {}, 'does-not-exist'],
+  ])('carries the error status for %s', async (_label, breakEngine, type) => {
+    const { engine } = makeEngine();
+    breakEngine(engine);
+    const finish = vi.spyOn(SubagentStreamBridge.prototype, 'finish');
+    try {
+      const mgr = new AgentManager(engine, 4);
+      const id = mgr.spawn({ ...spec(0), type });
+      await mgr.getRecord(id)!.promise;
+
+      expect(finish).toHaveBeenCalledTimes(1);
+      const opts = finish.mock.calls[0]![0];
+      expect(opts.isError).toBe(true);
+      expect(JSON.parse(opts.resultJson)).toMatchObject({ agentId: id, agentStatus: 'error' });
+      mgr.dispose();
+    } finally {
+      finish.mockRestore();
+    }
   });
 });

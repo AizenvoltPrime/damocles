@@ -32,6 +32,7 @@ import { useVSCode } from '@/composables/useVSCode';
 import { useUIStore } from '@/stores/useUIStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
+import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -94,7 +95,8 @@ const agentIcon = computed((): Component => {
     Plan: IconClipboard,
     'general-purpose': IconRobot,
   };
-  return ownEntry(icons, props.subagent.agentType) ?? IconClipboard;
+  const type = props.subagent.agentType;
+  return (type !== undefined ? ownEntry(icons, type) : undefined) ?? IconClipboard;
 });
 
 const statusBadgeClass = computed(() => {
@@ -122,9 +124,11 @@ const displayStatus = computed(() => {
   return statusMap[props.subagent.status] || props.subagent.status;
 });
 
-const displayAgentType = computed(() => {
-  const key = subagentTypeLabelKey(props.subagent.agentType);
-  return key ? t(key) : props.subagent.agentType;
+const displayAgentType = computed((): string | null => {
+  const type = props.subagent.agentType;
+  if (type === undefined) return null;
+  const key = subagentTypeLabelKey(type);
+  return key ? t(key) : type;
 });
 
 const hasPrompt = computed(() => Boolean(props.subagent.prompt?.trim()));
@@ -239,7 +243,7 @@ function userMessageText(message: ChatMessage): string {
 
 <template>
   <OverlayShell
-    :title="subagent.description"
+    :title="subagentHeading(subagent, t).title"
     :icon="agentIcon"
     icon-class="text-primary"
     :status-badge="overlayStatusBadge"
@@ -247,15 +251,17 @@ function userMessageText(message: ChatMessage): string {
   >
     <template #subtitle>
       <span class="inline-flex items-center">
-        <button
-          v-if="hasTemplate"
-          type="button"
-          class="cursor-pointer text-primary hover:underline"
-          :title="t('subagentDisplay.openTemplate', { path: subagent.templatePath })"
-          @click="openTemplate"
-        >{{ displayAgentType }}</button>
-        <span v-else>{{ displayAgentType }}</span>
-        <span v-if="metadataTail.length">&nbsp;•&nbsp;{{ metadataTail.join(' • ') }}</span>
+        <template v-if="displayAgentType !== null">
+          <button
+            v-if="hasTemplate"
+            type="button"
+            class="cursor-pointer text-primary hover:underline"
+            :title="t('subagentDisplay.openTemplate', { path: subagent.templatePath })"
+            @click="openTemplate"
+          >{{ displayAgentType }}</button>
+          <span v-else>{{ displayAgentType }}</span>
+        </template>
+        <span v-if="metadataTail.length"><template v-if="displayAgentType !== null">&nbsp;•&nbsp;</template>{{ metadataTail.join(' • ') }}</span>
       </span>
     </template>
 

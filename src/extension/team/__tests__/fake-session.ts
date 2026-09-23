@@ -90,8 +90,21 @@ export class FakeSession {
     });
   }
 
+  /**
+   * Mirrors a real run starting: pi marks the session streaming (`agent-session.js:1080`) and then emits
+   * `agent_start` (`agent-loop.js:50`). Opt-in, since most tests model a held turn as not streaming.
+   */
+  startStreaming(): void {
+    this.isStreaming = true;
+    this.emit({ type: 'agent_start' });
+  }
+
+  /** Real pi ends the in-flight turn on abort, so the aborted `prompt()` resolves. */
   async abort(): Promise<void> {
     this.aborted = true;
+    const resolve = this.pendingTurn;
+    this.pendingTurn = null;
+    resolve?.();
   }
 
   /** Cumulative session cost (real pi semantics) — driven by the test via `cost`. */
@@ -104,6 +117,17 @@ export class FakeSession {
   emitAssistantUsage(usage: { input: number; output: number; cacheRead: number; cacheWrite: number }): void {
     this.emit({ type: 'message_end', message: { role: 'assistant', content: [], usage } });
   }
+
+  /** Custom entries appended through `sessionManager`, in order. */
+  readonly customEntries: Array<{ customType: string; data: unknown }> = [];
+  sessionFile: string | undefined = undefined;
+  readonly sessionManager = {
+    appendCustomEntry: (customType: string, data: unknown): string => {
+      this.customEntries.push({ customType, data });
+      return `entry-${this.customEntries.length}`;
+    },
+    getSessionFile: (): string | undefined => this.sessionFile,
+  };
 
   getLastAssistantText(): string {
     return '';
@@ -127,17 +151,37 @@ export class FakeSession {
    */
   private readonly agentOnlyQueued: string[] = [];
 
+  /** The follow-up half of pi's mirror, which `holdFollowUpMessage` fills. */
+  private readonly followUps: string[] = [];
+
   /** Mirrors pi's `AgentSession.pendingMessageCount`: messages queued for steering or follow-up. */
   get pendingMessageCount(): number {
-    return this.queued.length;
+    return this.queued.length + this.followUps.length;
+  }
+
+  /** Mirrors pi's `AgentSession.getSteeringMessages`. */
+  getSteeringMessages(): readonly string[] {
+    return this.queued;
+  }
+
+  /** Mirrors pi's `AgentSession.getFollowUpMessages`. */
+  getFollowUpMessages(): readonly string[] {
+    return this.followUps;
   }
 
   /** Mirrors pi's `AgentSession.clearQueue`: hands back the mirror and empties both queues. */
   clearQueue(): { steering: string[]; followUp: string[] } {
     const steering = [...this.queued];
+    const followUp = [...this.followUps];
     this.queued.length = 0;
+    this.followUps.length = 0;
     this.agentOnlyQueued.length = 0;
-    return { steering, followUp: [] };
+    return { steering, followUp };
+  }
+
+  /** Queue a follow-up message without delivering it. */
+  holdFollowUpMessage(text: string): void {
+    this.followUps.push(text);
   }
 
   /**

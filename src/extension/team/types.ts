@@ -4,7 +4,9 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { TeamRunSummary } from '../../shared/types/team';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
+import type { SubagentSessionStore } from '../pi-session/pi-runtime';
 
 /** Selects which role slot a spawned specialist runs under — `implementor` or `reviewer` role settings
  *  (model + reasoning effort), set by the lead on spawn. Re-exported from the resolver, which itself
@@ -48,6 +50,8 @@ export interface TeamSessionOptions {
   customTools: ToolDefinition[];
   excludeTools?: string[];
   extensionFactory: import('@earendil-works/pi-coding-agent').ExtensionFactory;
+  /** Where the member's pi session lives: one file per member attempt. */
+  store: SubagentSessionStore;
 }
 
 /**
@@ -141,6 +145,8 @@ export interface TeamAgent {
   startTime: number | null;
   endTime: number | null;
   toolCallCount: number;
+  /** Tool calls this attempt made before a resume. A resume continues the attempt, a redispatch starts a new one at zero. */
+  carriedToolCallCount: number;
   totalInputTokens: number;
   totalOutputTokens: number;
   cacheReadTokens: number;
@@ -164,8 +170,9 @@ export interface TeamMessage {
   to: string | null;
   content: string;
   /** Structural discriminator for delivery policy. This is the INTERNAL bus type — distinct from the
-   *  webview contract type in `shared/types/team.ts`, and both the JSONL writer and the webview mapper
-   *  pick fields explicitly, so this field reaches neither. Branching on it (rather than on rendered
+   *  webview contract type in `shared/types/team.ts`. The team event log records it so a restored bus
+   *  keeps its delivery policy; the webview mapper picks fields explicitly, so it never reaches the
+   *  webview. Branching on it (rather than on rendered
    *  text) means a peer message mimicking the notice prefix cannot spoof a delivery decision.
    *
    *  - `scratchpad-notice`: a peer wrote a section. Delivered only to a specialist in standby, whose
@@ -203,12 +210,22 @@ export interface Team {
   synthesizedResult: string | null;
 }
 
+/** A message queued for an agent that it has not been prompted with yet. `echoed`: the overlay already shows it. */
+export interface UndeliveredMessage {
+  text: string;
+  echoed: boolean;
+}
+
+/** How a run starts: prompt the session, or wait for a message as if a turn had just ended. */
+export type AgentStart = { kind: 'prompt'; text: string } | { kind: 'park' };
+
 export interface AgentRunConfig {
   agentId: string;
   name: string;
   role: AgentRole;
-  /** The agent's opening task — sent as the first `session.prompt(...)`. */
-  specialization: string;
+  initial: AgentStart;
+  /** Queued before the first turn, so a message undelivered at an earlier cancel reaches the new run. */
+  redeliver?: UndeliveredMessage[];
   /** Build the nested pi agent session (model/tools/prompt/factory already resolved by TeamRunner). */
   createSession: () => Promise<AgentSession>;
   /** Dispose the nested session when the agent finishes (or aborts). */
@@ -222,9 +239,13 @@ export interface AgentRunConfig {
    * that forgets it is exactly how a user note goes back to vanishing with no echo.
    */
   bindNoteDelivery: (deliver: (text: string) => boolean) => () => void;
+  /**
+   * Publishes this run's undelivered-message reader and returns its teardown. The reader returns the
+   * runner's pending queue plus pi's steering and follow-up queues, which a cancel would otherwise drop.
+   */
+  bindUndelivered: (read: () => UndeliveredMessage[]) => () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
-  persistence: TeamPersistenceWriter;
   /**
    * Whether the agent should stay idle-waiting for more peer messages after a turn ends (no SDK keep-
    * alive timers — a pi idle session waits at zero cost). When false at a turn boundary the agent
@@ -272,9 +293,103 @@ export interface AgentResult {
 }
 
 export interface TeamPersistenceWriter {
-  appendAgentEntry(teamId: string, agentId: string, entry: Record<string, unknown>): void;
   appendTeamEntry(entry: Record<string, unknown>): void;
+  /** Synchronous; false when the write failed, which `flush()` then reports. */
+  writeCheckpoint(checkpoint: TeamCheckpoint): boolean;
   flush(): Promise<void>;
+}
+
+export type TeamRunResult =
+  | { status: 'completed'; text: string }
+  /** `resumable` is false when the cancel wrote no checkpoint. */
+  | { status: 'cancelled'; text: string; resumable: boolean };
+
+/** Reader name to its per-section read versions. Entry arrays, because names are model-chosen. */
+export type ScratchpadCursors = Array<[reader: string, sections: Array<[section: string, version: number]>]>;
+
+export interface TeamCheckpointMember {
+  agentId: string;
+  name: string;
+  role: AgentRole;
+  attempt: number;
+  resumeCount: number;
+  /** Status before the cancel changed it. */
+  status: TeamAgent['status'];
+  undelivered: UndeliveredMessage[];
+  /** Cumulative totals once the cancel's drain settled the run; the resumed run's usage adds to them. */
+  usage: AgentUsageTotals;
+  /** The attempt's tool calls once the drain settled the run; the resumed run's calls add to them. */
+  toolCallCount: number;
+}
+
+/**
+ * Coordination state no team event records, written at a cancel so `resume_team` can continue the team.
+ * A `team-resumed` entry naming its `cancelledAt` marks it used.
+ */
+export interface TeamCheckpoint {
+  version: 1;
+  teamId: string;
+  /** Epoch ms of the cancel; also the file name, and unique per team. */
+  cancelledAt: number;
+  members: TeamCheckpointMember[];
+  readerCursors: ScratchpadCursors;
+  review: {
+    specialistReviewRounds: Array<[string, number]>;
+    reviewedSpecialists: string[];
+    confirmedComplete: string[];
+    reportedSummaries: Array<[string, string]>;
+    pendingStandby: string[];
+    owedTerminalAction: string[];
+    nudgeDelivered: string[];
+    terminalNudgeDelivered: string[];
+    briefConflicts: Array<[string, string]>;
+    conflictNudges: number;
+    leadReviewStalls: number;
+    lastReviewRoundNotification: string | null;
+  };
+  operatorSteers: Array<{ memberName: string; message: string }>;
+}
+
+/** One `scratchpad-update` event, replayed to rebuild the scratchpad. */
+export interface ScratchpadUpdateEvent extends ScratchpadEntry {
+  immutable: boolean;
+  appendOnly: boolean;
+}
+
+/** One `agent-spawned` event: a member's launch of `attempt`. */
+export interface TeamLogSpawn {
+  agentId: string;
+  name: string;
+  role: AgentRole;
+  specialization: string;
+  model: string;
+  dollarBilled: boolean;
+  profileId: string | null;
+  attempt: number;
+  timestamp: number;
+  /** Specialists only. */
+  kind?: SpecialistKind;
+}
+
+/** What a resume reads back from the team event log. */
+export interface TeamEventLog {
+  teamId: string;
+  toolUseId: string;
+  title: string;
+  brief: string;
+  agents: AgentSpec[];
+  startTime: number;
+  spawns: TeamLogSpawn[];
+  messages: TeamMessage[];
+  scratchpad: ScratchpadUpdateEvent[];
+  /** Each member's latest `agent-completed` result since its last `agent-spawned`, by name. */
+  lastResults: ReadonlyMap<string, string>;
+  /** The last `team-completed` status after the last `team-resumed`, or null while none follows it. */
+  finalStatus: TeamStatus | null;
+  /** The `cancelledAt` of every checkpoint a `team-resumed` entry continued from. */
+  resumedCheckpoints: ReadonlySet<number>;
+  /** Every run the log records, each ended. */
+  runs: TeamRunSummary[];
 }
 
 export interface TeamJSONLEntry {

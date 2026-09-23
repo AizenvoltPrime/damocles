@@ -18,7 +18,7 @@ import type {
   CompactionTrigger,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
-import type { RunningSubagentInfo } from './subagents';
+import type { SteerTargetInfo } from './subagents';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
@@ -193,8 +193,8 @@ export type WebviewToExtensionMessage =
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
   | { type: "stopBackgroundTask"; taskId: string }
-  | { type: "steerSubagent"; agentId: string; message: string }
-  | { type: "requestRunningSubagents" }
+  | { type: "steerAgent"; agentId: string; message: string }
+  | { type: "requestSteerTargets" }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
   | { type: "openElementContext"; content: string }
@@ -259,6 +259,8 @@ export type ExtensionToWebviewMessage =
   | { type: "authFailure"; message: string }
   | { type: "authFailureCleared" }
   | { type: "sessionStarted"; sessionId: string }
+  /** The host bound this panel to a stored session from `resumeSession`; its history replay follows. */
+  | { type: "resumeAccepted"; sessionId: string }
   | { type: "processing"; isProcessing: boolean }
   | { type: "storedSessions"; sessions: StoredSession[]; hasMore?: boolean; nextOffset?: number; isFirstPage?: boolean }
   | { type: "sessionCleared"; pendingMessage?: { content: string; correlationId: string } }
@@ -287,7 +289,7 @@ export type ExtensionToWebviewMessage =
    *  a click landing after the call finished. */
   | { type: "toolCancelRejected"; toolUseId: string; requestId?: string }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
-  | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean }
+  | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean; description?: string; resumedFrom?: string }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
   | { type: "subagentModelUpdate"; agentToolId: string; model: string }
@@ -333,7 +335,7 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
-  | { type: "runningSubagents"; agents: RunningSubagentInfo[] }
+  | { type: "steerTargets"; agents: SteerTargetInfo[] }
   | { type: "customAgents"; agents: CustomAgentInfo[] }
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
@@ -452,7 +454,7 @@ export type ExtensionToWebviewMessage =
   | { type: "btwComplete"; btwId: string; text: string }
   | { type: "btwError"; btwId: string; message: string }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
-  | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found' }
+  | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
@@ -466,7 +468,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }
-  | { type: "teamCompleted"; teamId: string; status: 'completed' | 'failed' | 'cancelled'; result: string | null }
+  | { type: "teamCompleted"; teamId: string; status: 'completed' | 'failed' | 'cancelled'; result: string | null; run: import('./team').TeamRunSummary }
   | { type: "teamAgentStreamDelta"; teamId: string; agentId: string; deltaType: 'thinking' | 'text'; text: string }
   | { type: "teamAgentAssistant"; teamId: string; agentId: string; messageId: string; content: import('./team').TeamAgentContentBlock[]; timestamp: number }
   | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; timestamp: number }
@@ -475,7 +477,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
-  | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentContentBlock[][] }
+  | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }
   | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { runSubagent, normalizeMaxTurns } from '../subagent-runner';
 
@@ -8,7 +8,8 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 function makeSession() {
   const cbs: ((e: unknown) => void)[] = [];
   const steerCalls: string[] = [];
-  let aborted = false;
+  let aborts = 0;
+  let prompted = 0;
   let resolvePrompt!: () => void;
 
   const session = {
@@ -16,22 +17,28 @@ function makeSession() {
       cbs.push(fn);
       return () => {};
     },
-    prompt: () => new Promise<void>((r) => (resolvePrompt = r)),
+    prompt: () => {
+      prompted++;
+      return new Promise<void>((r) => (resolvePrompt = r));
+    },
     messages: [] as unknown[],
     steer: async (m: string) => {
       steerCalls.push(m);
     },
     abort: async () => {
-      aborted = true;
+      aborts++;
     },
   };
 
   return {
     session: session as unknown as AgentSession,
     emitTurnEnd: () => cbs.forEach((fn) => fn({ type: 'turn_end' })),
+    emitAgentStart: () => cbs.forEach((fn) => fn({ type: 'agent_start' })),
     finishPrompt: () => resolvePrompt(),
     steerCalls,
-    wasAborted: () => aborted,
+    wasAborted: () => aborts > 0,
+    abortCount: () => aborts,
+    promptCount: () => prompted,
   };
 }
 
@@ -97,21 +104,50 @@ describe('runSubagent turn-limit enforcement', () => {
     await p;
   });
 
-  it('aborts the session when the signal is already aborted before the listener attaches (created mid-spawn)', async () => {
+  // pi's session.abort() only stops a run that has started, so an abort during creation must skip prompt().
+  it('never prompts when the signal fired while the session was being created', async () => {
     const f = makeSession();
     const controller = new AbortController();
-    controller.abort(); // aborted while createSession is still pending — the event passed before the listener
+    const created: AgentSession[] = [];
 
     const p = runSubagent({
-      // Resolve createSession on a later tick so the abort genuinely precedes listener attachment.
-      createSession: async () => { await flush(); return f.session; },
+      createSession: async () => {
+        await flush();
+        controller.abort();
+        return f.session;
+      },
       prompt: 'go',
       signal: controller.signal,
+      onSessionCreated: (s) => created.push(s),
     });
-    await flush();
-    await flush();
+    await vi.waitFor(() => expect(created).toEqual([f.session]));
 
-    expect(f.wasAborted()).toBe(true);
+    expect(f.promptCount()).toBe(0);
+    expect(await p).toEqual({ responseText: '', session: f.session, aborted: false, steered: false });
+  });
+
+  it('repeats an abort that landed during prompt() preflight once the run starts', async () => {
+    const f = makeSession();
+    const controller = new AbortController();
+    const p = runSubagent({ createSession: async () => f.session, prompt: 'go', signal: controller.signal });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    controller.abort(); // pi has no active run yet, so this first abort is a no-op there
+    expect(f.abortCount()).toBe(1);
+    f.emitAgentStart();
+    expect(f.abortCount()).toBe(2);
+
+    f.finishPrompt();
+    await p;
+  });
+
+  it('does not abort at run start when the signal never fired', async () => {
+    const f = makeSession();
+    const p = runSubagent({ createSession: async () => f.session, prompt: 'go', signal: new AbortController().signal });
+    await vi.waitFor(() => expect(f.promptCount()).toBe(1));
+
+    f.emitAgentStart();
+    expect(f.wasAborted()).toBe(false);
 
     f.finishPrompt();
     await p;

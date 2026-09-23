@@ -12,14 +12,12 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT } from '../../../shared/tool-names';
-import { formatUserSteerPrefix } from '../../../shared/steer';
-import { getStatusNote } from '../subagents/status-note';
+import { recordResultText } from '../subagents/status-note';
 import { getLifetimeTotal } from '../subagents/usage';
 import { buildAgentResultJson } from '../subagents/subagent-stream-bridge';
-import type { AgentManager } from '../subagents/agent-manager';
-import type { AgentRecord, ThinkingLevel } from '../subagents/types';
-
-const THINKING_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+import type { AgentManager, SpawnRequest } from '../subagents/agent-manager';
+import { THINKING_OVERRIDES, type AgentRecord } from '../subagents/types';
+import { terminalAgentStatus, type AgentToolDetails } from '../agent-records';
 
 /**
  * Build the `Agent` parameter schema, advertising the currently-available `subagent_type` values.
@@ -31,22 +29,27 @@ const THINKING_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
  */
 function buildAgentSchema(agents: { name: string; description: string }[]) {
   const typeList = agents.length > 0 ? agents.map((a) => a.name).join(', ') : 'general-purpose';
+  // Every field is optional and `execute` enforces the two forms: providers handle a top-level `anyOf` poorly.
   return Type.Object(
     {
-      description: Type.String({ description: 'A short (3-5 word) description of the task' }),
-      prompt: Type.String({ description: 'The task for the agent to perform' }),
-      subagent_type: Type.String({ description: `The agent type to use. One of: ${typeList}.` }),
-      thinking: Type.Optional(Type.Union(THINKING_VALUES.map((v) => Type.Literal(v)), { description: 'Optional thinking level override.' })),
+      description: Type.Optional(Type.String({ description: 'A short (3-5 word) description of the task. Required unless resuming.' })),
+      prompt: Type.Optional(Type.String({ description: 'The task for the agent to perform. Required unless resuming.' })),
+      subagent_type: Type.Optional(Type.String({ description: `The agent type to use. One of: ${typeList}. Required unless resuming.` })),
+      thinking: Type.Optional(Type.Union(THINKING_OVERRIDES.map((v) => Type.Literal(v)), { description: 'Optional thinking level override.' })),
       run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult.' })),
+      resume: Type.Optional(Type.String({ description: 'The id of an interrupted subagent to continue. Pass alone or with message.' })),
+      message: Type.Optional(Type.String({ description: 'With resume: an instruction for the resumed agent.' })),
     },
     { additionalProperties: false },
   );
 }
 
+const BAD_AGENT_ARGUMENTS = 'Pass either resume (with optional message) or description + prompt + subagent_type.';
+
 /** The `Agent` tool description, enumerating the available subagent types so the model knows what exists. */
 function buildAgentDescription(agents: { name: string; description: string }[]): string {
   const base =
-    'Launch a nested in-process agent to handle a focused task. Set run_in_background:true to run asynchronously and poll with GetSubagentResult; otherwise the call blocks and returns the agent\'s final result. Nested agents cannot spawn further agents.';
+    'Launch a nested in-process agent to handle a focused task. Set run_in_background:true to run asynchronously and poll with GetSubagentResult; otherwise the call blocks and returns the agent\'s final result. Nested agents cannot spawn further agents. Use resume only when the user asks to continue an interrupted subagent.';
   if (agents.length === 0) return base;
   const list = agents.map((a) => `- ${a.name}: ${a.description}`).join('\n');
   return `${base}\n\nAvailable subagent_type values:\n${list}`;
@@ -69,17 +72,12 @@ const steerSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** The final-result string the LLM sees, with a status note for non-clean terminal outcomes. */
-export function recordResultText(record: AgentRecord): string {
-  const base = record.status === 'error' ? record.error ?? 'Subagent failed' : record.result ?? '';
-  return formatUserSteerPrefix(record.userSteers) + base + getStatusNote(record.status);
-}
-
 /** Build the JSON the webview's Agent-completion path parses, for a finished record. */
 function recordResultJson(record: AgentRecord): string {
   return buildAgentResultJson({
     responseText: recordResultText(record),
     agentId: record.id,
+    agentStatus: terminalAgentStatus(record.status),
     totalDurationMs: (record.completedAt ?? Date.now()) - record.startedAt,
     totalTokens: getLifetimeTotal(record.lifetimeUsage),
     totalToolUseCount: record.toolUses,
@@ -88,6 +86,16 @@ function recordResultJson(record: AgentRecord): string {
 
 function textResult(text: string): { content: { type: 'text'; text: string }[]; details: undefined } {
   return { content: [{ type: 'text', text }], details: undefined };
+}
+
+function agentResult(text: string, details: AgentToolDetails): { content: { type: 'text'; text: string }[]; details: AgentToolDetails } {
+  return { content: [{ type: 'text', text }], details };
+}
+
+/** The `Agent` result's `details` for a finished record (persisted by pi, never sent to the model). */
+function recordToolDetails(record: AgentRecord): AgentToolDetails {
+  const status = terminalAgentStatus(record.status);
+  return { agentId: record.id, status, ...(status === 'stopped' && record.stopReason ? { stopReason: record.stopReason } : {}) };
 }
 
 type SteerDetails = {
@@ -104,27 +112,51 @@ function steerResult(text: string, details: SteerDetails): { content: { type: 't
 export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManager): ToolDefinition[] {
   const agents = manager.getSpawnableAgents();
   const agentSchema = buildAgentSchema(agents);
-  const agentTool = pi.defineTool<typeof agentSchema, undefined>({
+  const agentTool = pi.defineTool<typeof agentSchema, AgentToolDetails>({
     name: TOOL_AGENT,
     label: 'Agent',
     description: buildAgentDescription(agents),
     parameters: agentSchema,
     executionMode: 'parallel',
     execute: async (toolCallId, params, signal) => {
-      const spec = {
-        type: params.subagent_type,
-        prompt: params.prompt,
-        description: params.description,
+      const spawnFields = [params.description, params.prompt, params.subagent_type];
+      if (params.resume !== undefined) {
+        if (spawnFields.some((v) => v !== undefined) || params.thinking !== undefined || params.run_in_background !== undefined) {
+          throw new Error(BAD_AGENT_ARGUMENTS);
+        }
+        // A resume keeps the agent's original mode; the manager binds the signal only to a foreground agent.
+        const record = await manager.resume({
+          kind: 'resume',
+          agentId: params.resume,
+          ...(params.message !== undefined ? { message: params.message } : {}),
+          toolCallId,
+          ...(signal ? { signal } : {}),
+        });
+        if (record.background) {
+          return agentResult(JSON.stringify({ status: 'async_launched', agentId: record.id }), { agentId: record.id, status: 'async_launched' });
+        }
+        await record.promise;
+        return agentResult(recordResultJson(record), recordToolDetails(record));
+      }
+      const [description, prompt, type] = spawnFields;
+      if (params.message !== undefined || description === undefined || prompt === undefined || type === undefined) {
+        throw new Error(BAD_AGENT_ARGUMENTS);
+      }
+      const spec: SpawnRequest = {
+        kind: 'spawn',
+        type,
+        prompt,
+        description,
         toolCallId,
-        ...(params.thinking ? { thinking: params.thinking as ThinkingLevel } : {}),
-        runInBackground: manager.resolveRunInBackground(params.subagent_type, params.run_in_background),
+        ...(params.thinking ? { thinking: params.thinking } : {}),
+        runInBackground: manager.resolveRunInBackground(type, params.run_in_background),
       };
       if (spec.runInBackground) {
         const id = manager.spawn(spec);
-        return textResult(JSON.stringify({ status: 'async_launched', agentId: id }));
+        return agentResult(JSON.stringify({ status: 'async_launched', agentId: id }), { agentId: id, status: 'async_launched' });
       }
       const record = await manager.spawnAndWait({ ...spec, ...(signal ? { signal } : {}) });
-      return textResult(recordResultJson(record));
+      return agentResult(recordResultJson(record), recordToolDetails(record));
     },
   });
 

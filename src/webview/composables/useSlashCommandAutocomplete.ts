@@ -3,7 +3,7 @@ import { Fzf, byLengthAsc } from 'fzf';
 import { useVSCode } from './useVSCode';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { SlashCommandItem } from '@shared/types/commands';
-import type { RunningSubagentInfo } from '@shared/types/subagents';
+import type { SteerTargetInfo } from '@shared/types/subagents';
 
 const MAX_FILTERED_ITEMS = 50;
 
@@ -22,7 +22,7 @@ export function useSlashCommandAutocomplete(
   const commandsLoaded = ref(false);
 
   const mode = ref<'command' | 'agent'>('command');
-  const agents = ref<RunningSubagentInfo[]>([]);
+  const agents = ref<SteerTargetInfo[]>([]);
   const agentsLoading = ref(false);
 
   const filteredCommands = computed(() => {
@@ -45,7 +45,9 @@ export function useSlashCommandAutocomplete(
     }
 
     const fzf = new Fzf(agents.value, {
-      selector: agent => agent.description + ' ' + agent.id,
+      selector: (agent: SteerTargetInfo) => agent.kind === 'subagent'
+        ? agent.description + ' ' + agent.id
+        : agent.teamTitle + ' ' + agent.memberName + ' ' + agent.id,
       tiebreakers: [byLengthAsc],
       limit: MAX_FILTERED_ITEMS,
     });
@@ -60,10 +62,10 @@ export function useSlashCommandAutocomplete(
       isLoading.value = false;
       clampSelection(filteredCommands.value.length);
     }
-    if (message.type === 'runningSubagents') {
+    if (message.type === 'steerTargets') {
       agents.value = message.agents;
       agentsLoading.value = false;
-      // The list can shrink between keystrokes (a subagent finished); keep the highlight in range so a
+      // The list can shrink between keystrokes (an agent finished); keep the highlight in range so a
       // subsequent Enter never dereferences a stale index (insertAgent(undefined)).
       clampSelection(filteredAgents.value.length);
     }
@@ -134,7 +136,7 @@ export function useSlashCommandAutocomplete(
 
       // Stale-while-revalidate: always refetch (a subagent may have started/finished), but only show the
       // loading state on the first fetch. Once a list exists, keep it visible while the refresh resolves.
-      postMessage({ type: 'requestRunningSubagents' });
+      postMessage({ type: 'requestSteerTargets' });
       if (agents.value.length === 0) agentsLoading.value = true;
 
       clampSelection(filteredAgents.value.length);
@@ -244,7 +246,7 @@ export function useSlashCommandAutocomplete(
     close();
   }
 
-  function insertAgent(agent: RunningSubagentInfo | undefined) {
+  function insertAgent(agent: SteerTargetInfo | undefined) {
     const textarea = textareaRef.value;
     if (!textarea || !agent) return;
 

@@ -74,6 +74,7 @@ describe('in-memory session cwd', () => {
       tools: ['read'],
       customTools: [],
       extensionFactory: () => {},
+      store: { kind: 'memory' },
     });
     sessions.push(subagent);
     expect(subagent.sessionManager.getCwd()).toBe(workspace);

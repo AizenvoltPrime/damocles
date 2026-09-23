@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconLoader, IconTerminal } from '@/components/icons';
 import type { SlashCommandItem } from '@shared/types/commands';
-import type { RunningSubagentInfo } from '@shared/types/subagents';
+import type { SteerTargetInfo } from '@shared/types/subagents';
 import { escapeHtml } from '@shared/utils';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
@@ -17,7 +17,7 @@ const props = defineProps<{
   query: string;
   isLoading: boolean;
   mode: 'command' | 'agent';
-  agents: RunningSubagentInfo[];
+  agents: SteerTargetInfo[];
 }>();
 
 const emit = defineEmits<{
@@ -115,9 +115,23 @@ function getSourceBadge(command: SlashCommandItem): string | null {
   return null;
 }
 
-function agentTypeLabel(agentType: string): string {
-  const key = subagentTypeLabelKey(agentType);
-  return key ? t(key) : agentType;
+function agentBadge(agent: SteerTargetInfo): string {
+  if (agent.kind === 'team-member') return t(`steerCommand.role.${agent.role}`);
+  const key = subagentTypeLabelKey(agent.agentType);
+  return key ? t(key) : agent.agentType;
+}
+
+function agentLabel(agent: SteerTargetInfo): string {
+  return agent.kind === 'team-member' ? `${agent.teamTitle} · ${agent.memberName}` : agent.description;
+}
+
+/** A queued subagent or an idle team member shows a hollow dot; one mid-turn pulses. */
+function isActive(agent: SteerTargetInfo): boolean {
+  return agent.status === 'running';
+}
+
+function agentStatusText(agent: SteerTargetInfo): string | null {
+  return agent.kind === 'team-member' ? t(`team.status.${agent.status}`) : null;
 }
 </script>
 
@@ -168,25 +182,26 @@ function agentTypeLabel(agentType: string): string {
                 <!-- Status dot -->
                 <span
                   class="shrink-0 w-2 h-2 rounded-full"
-                  :class="agent.status === 'running'
+                  :class="isActive(agent)
                     ? 'bg-primary animate-pulse'
                     : 'border border-amber-500'"
+                  aria-hidden="true"
                 />
 
                 <!-- Agent info -->
                 <div class="flex-1 min-w-0 flex flex-col">
                   <div class="flex items-center gap-2">
-                    <!-- Type badge -->
                     <span
                       class="text-xs px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50 shrink-0"
                     >
-                      {{ agentTypeLabel(agent.agentType) }}
+                      {{ agentBadge(agent) }}
                     </span>
-                    <!-- Description -->
-                    <span class="text-sm truncate">{{ agent.description }}</span>
+                    <span class="text-sm truncate">{{ agentLabel(agent) }}</span>
                   </div>
-                  <!-- Short id -->
-                  <span class="text-xs text-muted-foreground font-mono">{{ agent.id.slice(0, 8) }}</span>
+                  <span class="text-xs text-muted-foreground">
+                    <span class="font-mono">{{ agent.id.slice(0, 8) }}</span>
+                    <span v-if="agentStatusText(agent)"> · {{ agentStatusText(agent) }}</span>
+                  </span>
                 </div>
               </div>
             </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL } from '@shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
 import FormToolCard from './FormToolCard.vue';
@@ -42,7 +42,12 @@ const teamByToolUseId = computed(() => {
   return map;
 });
 
-const team = computed(() => teamByToolUseId.value[props.toolUseId] ?? null);
+const isResume = computed(() => props.toolName === TEAM_RESUME_TOOL);
+const team = computed(() =>
+  isResume.value ? teamStore.getTeamForResumeCall(props.toolCall) ?? null : teamByToolUseId.value[props.toolUseId] ?? null,
+);
+// Each create_team or resume_team call is one run of the team and its card shows only that run.
+const run = computed(() => team.value?.runs.find(r => r.toolUseId === props.toolUseId) ?? null);
 const explore = computed(() => exploreStore.explores[props.toolUseId] ?? null);
 
 const agentSubagent = computed(() =>
@@ -57,8 +62,9 @@ const agentSubagent = computed(() =>
     @expand="exploreStore.expandExplore(toolUseId)"
   />
   <TeamCard
-    v-else-if="team"
+    v-else-if="team && run"
     :team="team"
+    :run="run"
     @expand="teamStore.openOverlay(team!.teamId)"
   />
   <SubagentCard

@@ -48,3 +48,19 @@ export const DAMOCLES_MID_STREAM_ENTRY = 'damocles-mid-stream';
  * chip (consuming no prompt index); it otherwise skips custom entries.
  */
 export const DAMOCLES_STEER_ENTRY = 'damocles-steer';
+
+/** Parent-session custom entry: the parent started or resumed a subagent or team. Payloads and readers
+ *  for this and the agent-file entries below live in `agent-records.ts`. */
+export const DAMOCLES_AGENT_INVOCATION_ENTRY = 'damocles-agent-invocation';
+
+/** Agent-file custom entry: the agent's launch config, the first custom entry of its pi session. */
+export const DAMOCLES_AGENT_LAUNCH_ENTRY = 'damocles-agent-launch';
+
+/** Agent-file custom entry: a resume starts here; later messages render on that resume call's card. */
+export const DAMOCLES_AGENT_SEGMENT_ENTRY = 'damocles-agent-segment';
+
+/** Agent-file custom entry: the agent's terminal status for the current segment. */
+export const DAMOCLES_AGENT_STATUS_ENTRY = 'damocles-agent-status';
+
+/** Parent-session hidden custom message listing interrupted agents the model may resume. */
+export const DAMOCLES_INTERRUPTION_NOTICE = 'damocles-interruption-notice';

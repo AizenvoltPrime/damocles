@@ -1,4 +1,4 @@
-import type { ScratchpadEntry } from './types';
+import type { ScratchpadCursors, ScratchpadEntry, ScratchpadUpdateEvent } from './types';
 
 /**
  * Ring capacity for an append-only section. Each append re-persists and re-emits the entire section, so
@@ -30,9 +30,9 @@ export class Scratchpad {
   private readonly sections = new Map<string, ScratchpadEntry>();
   private readonly subscribers: Array<(entry: ScratchpadEntry) => void> = [];
   private readonly rejectionSubscribers: Array<(rejection: ScratchpadRejection) => void> = [];
-  // readVersions is in-memory only; teams are ephemeral per-run and not restored on session reload.
+  // A resume restores these from the team checkpoint, so the review read gates keep their progress.
   private readonly readVersions = new Map<string, Map<string, number>>();
-  // Counts only, never section names or payload; same in-memory lifetime as readVersions.
+  // Counts only, never section names or payload; in memory for one run, never checkpointed.
   private readonly readStats = new Map<string, ScratchpadReadStats>();
   // System-owned sections that no agent (not even a second `system` write) may overwrite.
   private readonly locked = new Set<string>();
@@ -44,8 +44,8 @@ export class Scratchpad {
 
   /**
    * Seed a system-owned, immutable section (e.g. the authoritative `mission-brief`) before any agent
-   * runs: writes version 1, records the author-read, fires `subscribers` (so the runner persists +
-   * broadcasts it), then locks the section so every subsequent `set()` is rejected.
+   * runs: writes version 1, records the author-read, locks the section so every subsequent `set()` is
+   * rejected, then fires `subscribers` (so the runner persists + broadcasts it).
    */
   seedImmutable(section: string, content: string, author = 'system'): void {
     const entry: ScratchpadEntry = {
@@ -57,8 +57,9 @@ export class Scratchpad {
     };
     this.sections.set(section, entry);
     this.recordRead(author, section, 1);
-    this.notifySubscribers(entry);
+    // Before notifying, so the subscriber that persists the seed records the section's kind.
     this.locked.add(section);
+    this.notifySubscribers(entry);
   }
 
   /**
@@ -77,8 +78,8 @@ export class Scratchpad {
     };
     this.sections.set(section, entry);
     this.recordRead(author, section, 1);
-    this.notifySubscribers(entry);
     this.appendOnly.add(section);
+    this.notifySubscribers(entry);
   }
 
   /**
@@ -112,6 +113,11 @@ export class Scratchpad {
     this.sections.set(section, entry);
     this.notifySubscribers(entry);
     return { version };
+  }
+
+  /** Whether a section is system-owned and rejects every write. */
+  isImmutable(section: string): boolean {
+    return this.locked.has(section);
   }
 
   /** Whether a section is the shared append-only ledger rather than a normal single-owner section. */
@@ -217,6 +223,33 @@ export class Scratchpad {
     const entry = this.sections.get(section);
     if (!entry) return false;
     return this.getReadVersion(reader, section) >= entry.version;
+  }
+
+  /**
+   * Rebuild the sections from the team event log's `scratchpad-update` events, in log order. Notifies no
+   * subscriber, since every event replayed here is already persisted and already on the webview.
+   */
+  restore(events: readonly ScratchpadUpdateEvent[]): void {
+    for (const event of events) {
+      this.sections.set(event.section, {
+        section: event.section,
+        content: event.content,
+        author: event.author,
+        version: event.version,
+        timestamp: event.timestamp,
+      });
+      if (event.immutable) this.locked.add(event.section);
+      if (event.appendOnly) this.appendOnly.add(event.section);
+    }
+  }
+
+  serializeCursors(): ScratchpadCursors {
+    return [...this.readVersions].map(([reader, sections]) => [reader, [...sections]]);
+  }
+
+  restoreCursors(cursors: ScratchpadCursors): void {
+    this.readVersions.clear();
+    for (const [reader, sections] of cursors) this.readVersions.set(reader, new Map(sections));
   }
 
   /** A re-run agent starts with empty model context, so its recorded reads no longer describe what it holds. */

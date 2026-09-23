@@ -1,7 +1,12 @@
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest';
 import * as vscode from 'vscode';
-import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { PiRuntime } from '../pi-runtime';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import type { ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
+import { PiRuntime, type LiveSessionMutator } from '../pi-runtime';
+import type { PanelGateContext } from '../permission-gate';
+import type { CheckpointService } from '../checkpoint-service';
 import { nodeSupportsPi, PI_MIN_NODE_MAJOR } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
 
@@ -37,6 +42,69 @@ describe('PiRuntime singleton (B1)', () => {
     expect(PiRuntime.exists).toBe(false);
     const c = PiRuntime.get('/tmp/workspace-a');
     expect(c).not.toBe(a);
+  });
+});
+
+describe('per-session registries are released by their owner only', () => {
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  type Registries = {
+    _panelRegistry: Map<string, unknown>;
+    _checkpointRegistry: Map<string, unknown>;
+    _sessionMutators: Map<string, unknown>;
+    _activeToolRefreshers: Map<string, unknown>;
+  };
+  const entries = (runtime: PiRuntime) => {
+    const r = runtime as unknown as Registries;
+    return [r._panelRegistry, r._checkpointRegistry, r._sessionMutators, r._activeToolRefreshers].map((m) => m.get('sess-x'));
+  };
+  const owner = () => ({
+    gate: {} as PanelGateContext,
+    checkpoints: {} as CheckpointService,
+    mutator: {} as LiveSessionMutator,
+    refresh: () => {},
+  });
+  const register = (runtime: PiRuntime, o: ReturnType<typeof owner>) => {
+    runtime.registerPanel('sess-x', o.gate);
+    runtime.registerCheckpointService('sess-x', o.checkpoints);
+    runtime.registerSessionMutator('sess-x', o.mutator);
+    runtime.registerActiveToolRefresher('sess-x', o.refresh);
+  };
+  const unregister = (runtime: PiRuntime, o: ReturnType<typeof owner>) => {
+    runtime.unregisterPanel('sess-x', o.gate);
+    runtime.unregisterCheckpointService('sess-x', o.checkpoints);
+    runtime.unregisterSessionMutator('sess-x', o.mutator);
+    runtime.unregisterActiveToolRefresher('sess-x', o.refresh);
+  };
+
+  it("a late unregister from the previous owner leaves the new owner's entry in all four registries", () => {
+    // Two panels can hold one session id; the older closing after the newer registered must not strip
+    // the newer's gate, or every tool call there hits the fail-closed fallback.
+    const runtime = PiRuntime.get('/tmp/ws');
+    const older = owner();
+    const newer = owner();
+    register(runtime, older);
+    register(runtime, newer);
+
+    unregister(runtime, older);
+
+    const [gate, checkpoints, mutator, refresh] = entries(runtime);
+    expect(gate).toBe(newer.gate);
+    expect(checkpoints).toBe(newer.checkpoints);
+    expect(mutator).toBe(newer.mutator);
+    expect(refresh).toBe(newer.refresh);
+  });
+
+  it("the current owner's unregister still removes its entries", () => {
+    const runtime = PiRuntime.get('/tmp/ws');
+    const only = owner();
+    register(runtime, only);
+
+    unregister(runtime, only);
+
+    expect(entries(runtime)).toEqual([undefined, undefined, undefined, undefined]);
   });
 });
 
@@ -555,4 +623,140 @@ describe('PiRuntime.syncCustomProviders', () => {
     expect(output).not.toContain(SENTINEL);
     expect(output).not.toContain('api_key');
   });
+});
+
+describe('createSubagentSession store', () => {
+  const made: string[] = [];
+  const tempDir = (prefix: string): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+    made.push(dir);
+    return dir;
+  };
+
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const assistantMessage = (provider: string, model: string) =>
+    ({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'done' }],
+      api: 'anthropic-messages',
+      provider,
+      model,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'stop',
+      timestamp: Date.now(),
+    }) as unknown as Parameters<SessionManager['appendMessage']>[0];
+
+  const baseOpts = (workspace: string) => ({
+    cwd: workspace,
+    systemPrompt: 'probe',
+    tools: [],
+    customTools: [],
+    extensionFactory: () => {},
+  });
+
+  /** A signed-in reasoning model from the runtime's own catalog, so the reopen check can resolve it. */
+  async function reasoningModel(runtime: PiRuntime) {
+    await runtime.services!.modelRuntime.setRuntimeApiKey('anthropic', 'test-key');
+    const model = runtime.services!.modelRuntime.getModels('anthropic').find((m) => m.reasoning);
+    if (!model) throw new Error('no anthropic reasoning model in the catalog');
+    expect(runtime.services!.modelRuntime.hasConfiguredAuth('anthropic')).toBe(true);
+    return model;
+  }
+
+  it('a file store writes into the given dir under the given id, from the first assistant message on', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const agentDir = tempDir('damocles-store-agent-');
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const runtime = PiRuntime.get(workspace, agentDir);
+
+    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
+    const file = session.sessionManager.getSessionFile()!;
+    expect(path.dirname(file)).toBe(storeDir);
+    expect(path.basename(file)).toMatch(/_agent-1\.jsonl$/);
+    expect(session.sessionManager.getSessionId()).toBe('agent-1');
+    expect(fs.existsSync(file)).toBe(false);
+
+    session.sessionManager.appendCustomEntry('damocles-agent-launch', { agentId: 'agent-1' });
+    session.sessionManager.appendMessage(assistantMessage('anthropic', 'claude'));
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { type: string; id: string });
+    expect(lines[0]).toMatchObject({ type: 'session', id: 'agent-1' });
+    expect(lines.map((l) => l.type)).toContain('custom');
+    runtime.forgetSubagentSession(session);
+  }, 60_000);
+
+  it('reopen restores the messages, the recorded model and the thinking level from the file', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const agentDir = tempDir('damocles-store-agent-');
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const runtime = PiRuntime.get(workspace, agentDir);
+    await runtime.init();
+    const model = await reasoningModel(runtime);
+
+    const session = await runtime.createSubagentSession({
+      ...baseOpts(workspace),
+      model,
+      thinkingLevel: 'medium',
+      store: { kind: 'file', dir: storeDir, id: 'agent-1' },
+    });
+    session.sessionManager.appendCustomEntry('damocles-agent-launch', { agentId: 'agent-1' });
+    session.sessionManager.appendMessage(assistantMessage(model.provider, model.id));
+    const file = session.sessionManager.getSessionFile()!;
+    runtime.forgetSubagentSession(session);
+
+    const reopened = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } });
+    expect(reopened.sessionManager.getSessionFile()).toBe(file);
+    expect(reopened.sessionManager.getSessionId()).toBe('agent-1');
+    expect(reopened.messages.map((m) => m.role)).toEqual(['assistant']);
+    expect(reopened.model?.provider).toBe(model.provider);
+    expect(reopened.model?.id).toBe(model.id);
+    expect(reopened.thinkingLevel).toBe('medium');
+    expect(() => runtime.assertResumableModel(file, 'agent-1')).not.toThrow();
+    runtime.forgetSubagentSession(reopened);
+  }, 60_000);
+
+  it('reopen throws the resume error, instead of falling back, when the recorded model is unavailable', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const agentDir = tempDir('damocles-store-agent-');
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const runtime = PiRuntime.get(workspace, agentDir);
+    await runtime.init();
+    await reasoningModel(runtime);
+
+    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
+    session.sessionManager.appendMessage(assistantMessage('anthropic', 'no-such-model'));
+    const file = session.sessionManager.getSessionFile()!;
+    runtime.forgetSubagentSession(session);
+
+    const error = 'Cannot resume "agent-1": its model anthropic/no-such-model is not configured or not signed in.';
+    await expect(
+      runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
+    ).rejects.toThrow(error);
+    expect(() => runtime.assertResumableModel(file, 'agent-1')).toThrow(error);
+  }, 60_000);
+
+  it('reopen throws the resume error when the recorded model exists but its provider is not signed in', async () => {
+    const workspace = tempDir('damocles-store-ws-');
+    const agentDir = tempDir('damocles-store-agent-');
+    const storeDir = path.join(workspace, 'sess-1', 'subagents');
+    const runtime = PiRuntime.get(workspace, agentDir);
+    await runtime.init();
+    const models = runtime.services!.modelRuntime;
+    const signedOut = models.getModels().find((m) => !models.hasConfiguredAuth(m.provider));
+    if (!signedOut) throw new Error('every catalog provider is signed in, so no signed-out model can be recorded');
+
+    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
+    session.sessionManager.appendMessage(assistantMessage(signedOut.provider, signedOut.id));
+    const file = session.sessionManager.getSessionFile()!;
+    runtime.forgetSubagentSession(session);
+
+    const error = `Cannot resume "agent-1": its model ${signedOut.provider}/${signedOut.id} is not configured or not signed in.`;
+    expect(() => runtime.assertResumableModel(file, 'agent-1')).toThrow(error);
+    await expect(
+      runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
+    ).rejects.toThrow(error);
+  }, 60_000);
 });

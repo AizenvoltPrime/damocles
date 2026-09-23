@@ -38,7 +38,7 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     teamCompleted: (msg) => {
-      useTeamStore().handleTeamCompleted(msg.teamId, msg.status, msg.result);
+      useTeamStore().handleTeamCompleted(msg.teamId, msg.status, msg.result, msg.run);
       return { skipScroll: true };
     },
     teamAgentStreamDelta: (msg) => {

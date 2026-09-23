@@ -1,8 +1,9 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { TeamState, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock } from '@shared/types/team';
+import type { TeamState, TeamRunSummary, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
 import type { ToolCall } from '@shared/types/session';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
+import { ownEntry } from '@/utils/ownEntry';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -34,6 +35,43 @@ function restoredToolStatus(result: PersistedToolResult | undefined): ToolCall['
   return resolveCancelledStatus('completed', result.metadata);
 }
 
+/**
+ * Live and reloaded cards build their blocks with the same host function, so equal role and blocks mean
+ * the same message. A live message has no entry id to match on: pi appends it after its listeners run.
+ */
+function messageKey(message: AgentChatMessage): string {
+  return JSON.stringify([message.role, message.contentBlocks ?? [{ type: 'text', text: message.content }]]);
+}
+
+/**
+ * History ahead of live, each message once. Every message the member persisted since this panel began
+ * listening also streamed live, so only history's last `live.length` entries can repeat one, and the live
+ * copy is kept because its tool statuses are current.
+ */
+function mergeAgentHistory(history: AgentChatMessage[], live: AgentChatMessage[]): AgentChatMessage[] {
+  const unmatched = new Map<string, number>();
+  for (const message of live) {
+    const key = messageKey(message);
+    unmatched.set(key, (unmatched.get(key) ?? 0) + 1);
+  }
+  const tailStart = history.length - live.length;
+  const earlier = history.filter((message, index) => {
+    if (index < tailStart) return true;
+    const key = messageKey(message);
+    const count = unmatched.get(key) ?? 0;
+    if (count === 0) return true;
+    unmatched.set(key, count - 1);
+    return false;
+  });
+  return [...earlier, ...live];
+}
+
+/** Live work counts toward the team's last run only while that run is still running. */
+function updateLiveRun(runs: TeamRunSummary[], update: (run: TeamRunSummary) => TeamRunSummary): TeamRunSummary[] {
+  const last = runs.at(-1);
+  return last?.status === 'running' ? [...runs.slice(0, -1), update(last)] : runs;
+}
+
 export const useTeamStore = defineStore('team', () => {
   const teams = ref<Record<string, TeamState>>({});
   const isOverlayOpen = ref(false);
@@ -42,6 +80,7 @@ export const useTeamStore = defineStore('team', () => {
 
   const agentMessages = ref<Record<string, AgentChatMessage[]>>({});
   const agentStreaming = ref<Record<string, AgentStreamingState>>({});
+  const agentHistoryLoaded = ref<ReadonlySet<string>>(new Set());
   const selectedAgentId = ref<string | null>(null);
   const isAgentOverlayOpen = ref(false);
 
@@ -117,21 +156,25 @@ export const useTeamStore = defineStore('team', () => {
       logFilePath: null,
     }));
 
+    const status = historical?.status ?? 'running';
+    const now = Date.now();
+    const endTime = historical ? now : null;
     teams.value = {
       ...teams.value,
       [teamId]: {
         teamId,
         toolUseId,
         title: input.title ?? 'Team',
-        status: historical?.status ?? 'running',
+        status,
         phase: historical ? 'complete' : 'initializing',
         agents,
         messages: [],
         scratchpad: [],
         result: historical?.result ?? null,
-        startTime: Date.now(),
-        endTime: historical ? Date.now() : null,
+        startTime: now,
+        endTime,
         totalToolCount: 0,
+        runs: [{ toolUseId, status, startTime: now, endTime, toolCount: 0, tokens: 0, costUsd: 0 }],
       },
     };
   }
@@ -185,12 +228,18 @@ export const useTeamStore = defineStore('team', () => {
   function handleAgentUsageUpdate(teamId: string, agentId: string, usage: { totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }): void {
     const team = teams.value[teamId];
     if (!team) return;
+    const previous = team.agents.find(a => a.agentId === agentId);
+    if (!previous) return;
     const agents = team.agents.map(a =>
-      a.agentId === agentId
+      a === previous
         ? { ...a, totalInputTokens: usage.totalInputTokens, totalOutputTokens: usage.totalOutputTokens, cacheReadTokens: usage.cacheReadTokens, cacheCreationTokens: usage.cacheCreationTokens, costUsd: usage.costUsd }
         : a
     );
-    teams.value = { ...teams.value, [teamId]: { ...team, agents } };
+    // The usage is the agent's running total, so only its growth since the last update is this run's.
+    const tokens = usage.totalInputTokens + usage.totalOutputTokens - previous.totalInputTokens - previous.totalOutputTokens;
+    const costUsd = usage.costUsd - previous.costUsd;
+    const runs = updateLiveRun(team.runs, r => ({ ...r, tokens: r.tokens + tokens, costUsd: r.costUsd + costUsd }));
+    teams.value = { ...teams.value, [teamId]: { ...team, agents, runs } };
   }
 
   function handleAgentToolCall(teamId: string, agentId: string, toolName: string): void {
@@ -202,7 +251,8 @@ export const useTeamStore = defineStore('team', () => {
         : a
     );
     const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);
-    teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount } };
+    const runs = updateLiveRun(team.runs, r => ({ ...r, toolCount: r.toolCount + 1 }));
+    teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount, runs } };
   }
 
   function handleTeamMessage(teamId: string, message: TeamMessage): void {
@@ -221,10 +271,13 @@ export const useTeamStore = defineStore('team', () => {
     teams.value = { ...teams.value, [teamId]: { ...team, scratchpad } };
   }
 
-  function handleTeamCompleted(teamId: string, status: TeamState['status'], result: string | null): void {
+  // The host's summary of the ended run replaces the live tally, so the card reads what a reload reads.
+  function handleTeamCompleted(teamId: string, status: TeamState['status'], result: string | null, run: TeamRunSummary): void {
     const team = teams.value[teamId];
     if (!team) return;
-    teams.value = { ...teams.value, [teamId]: { ...team, status, result, endTime: Date.now(), phase: 'complete' as const } };
+    const known = team.runs.some(r => r.toolUseId === run.toolUseId);
+    const runs = known ? team.runs.map(r => (r.toolUseId === run.toolUseId ? run : r)) : [...team.runs, run];
+    teams.value = { ...teams.value, [teamId]: { ...team, status, result, endTime: Date.now(), phase: 'complete' as const, runs } };
   }
 
   function restoreTeamFromHistory(team: TeamState): void {
@@ -394,23 +447,19 @@ export const useTeamStore = defineStore('team', () => {
     });
   }
 
-  function handleAgentDataLoaded(agentId: string, turns: TeamAgentContentBlock[][]): void {
+  function handleAgentDataLoaded(agentId: string, history: TeamAgentHistoryMessage[]): void {
     const results = new Map<string, PersistedToolResult>();
-    for (const turn of turns) {
-      for (const block of turn) {
+    for (const message of history) {
+      if (message.role !== 'toolResult') continue;
+      for (const block of message.content) {
         if (block.type === 'tool_result') results.set(block.tool_use_id, block);
       }
     }
 
     const messages: AgentChatMessage[] = [];
-    for (const turn of turns) {
-      // A result belongs to the card of the call it names, so its own turn renders nothing of its own.
-      const hasToolResult = turn.some(b => b.type === 'tool_result');
-      if (hasToolResult) continue;
-
-      const hasAssistantContent = turn.some(b => b.type === 'text' || b.type === 'thinking' || b.type === 'tool_use');
-
-      if (hasAssistantContent) {
+    // A result renders on the card of the call it names, and any other role is not one this card shows.
+    for (const { id, role, content: turn } of history) {
+      if (role === 'assistant') {
         const textContent = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
         const thinkingContent = turn.filter(b => b.type === 'thinking').map(b => (b as { thinking: string }).thinking).join('\n\n');
         const toolCalls: ToolCall[] = turn
@@ -428,7 +477,7 @@ export const useTeamStore = defineStore('team', () => {
             };
           });
         messages.push({
-          id: crypto.randomUUID(),
+          id,
           role: 'assistant',
           content: textContent,
           ...(thinkingContent ? { thinking: thinkingContent } : {}),
@@ -436,24 +485,29 @@ export const useTeamStore = defineStore('team', () => {
           contentBlocks: turn,
           timestamp: Date.now(),
         });
-      } else {
-        const textBlocks = turn.filter(b => b.type === 'text');
-        const userText = textBlocks.map(b => (b as { text: string }).text).join('');
-        if (userText) {
-          messages.push({
-            id: crypto.randomUUID(),
-            role: 'user',
-            content: userText,
-            timestamp: Date.now(),
-          });
-        }
+      } else if (role === 'user') {
+        // No contentBlocks, the same shape `handleAgentUserMessage` builds, so the merge key matches the live copy.
+        const userText = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
+        if (userText) messages.push({ id, role: 'user', content: userText, timestamp: Date.now() });
       }
     }
-    agentMessages.value = { ...agentMessages.value, [agentId]: messages };
+    agentMessages.value = { ...agentMessages.value, [agentId]: mergeAgentHistory(messages, agentMessages.value[agentId] ?? []) };
+    agentHistoryLoaded.value = new Set(agentHistoryLoaded.value).add(agentId);
+  }
+
+  function isAgentHistoryLoaded(agentId: string): boolean {
+    return agentHistoryLoaded.value.has(agentId);
   }
 
   function getTeamForToolUseId(toolUseId: string): TeamState | undefined {
     return Object.values(teams.value).find(t => t.toolUseId === toolUseId);
+  }
+
+  // Keyed by the team_id the call names; an errored or failed call resumed nothing.
+  function getTeamForResumeCall(toolCall: Pick<ToolCall, 'input' | 'status' | 'isError'>): TeamState | undefined {
+    if (toolCall.isError || toolCall.status === 'failed') return undefined;
+    const teamId = toolCall.input['team_id'];
+    return typeof teamId === 'string' ? ownEntry(teams.value, teamId) : undefined;
   }
 
   function failPendingTeamByToolUseId(toolUseId: string): void {
@@ -462,9 +516,10 @@ export const useTeamStore = defineStore('team', () => {
     );
     if (!entry) return;
     const [key, team] = entry;
+    const endTime = Date.now();
     teams.value = {
       ...teams.value,
-      [key]: { ...team, status: 'failed', phase: 'complete' as const, endTime: Date.now() },
+      [key]: { ...team, status: 'failed', phase: 'complete' as const, endTime, runs: updateLiveRun(team.runs, r => ({ ...r, status: 'failed', endTime })) },
     };
   }
 
@@ -483,6 +538,7 @@ export const useTeamStore = defineStore('team', () => {
     activeTab.value = 'agents';
     agentMessages.value = {};
     agentStreaming.value = {};
+    agentHistoryLoaded.value = new Set();
     selectedAgentId.value = null;
     isAgentOverlayOpen.value = false;
     permissionQueue.value = [];
@@ -531,7 +587,9 @@ export const useTeamStore = defineStore('team', () => {
     markAgentToolCancelRequested,
     clearAgentToolCancelRequested,
     handleAgentDataLoaded,
+    isAgentHistoryLoaded,
     getTeamForToolUseId,
+    getTeamForResumeCall,
     permissionQueue,
     activePermission,
     handlePermissionRequest,

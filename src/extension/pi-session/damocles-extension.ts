@@ -31,7 +31,7 @@ export interface HooksWiring {
   renameSession: (sessionId: string, cwd: string, newName: string) => Promise<void>;
 }
 
-/** Build the per-tool-call PreToolUse gate (Section 3.3): runs `tool_call` hooks + raises the D6 notice. */
+/** Build the per-tool-call PreToolUse gate (Section 3.3): runs `tool_call` hooks + raises the notice that a hook allowed or blocked the call. */
 function buildPreToolUseGate(
   deps: DispatchDeps,
   ctx: ExtensionContext,
@@ -198,10 +198,14 @@ export function createDamoclesExtensionFactory(
     });
 
     pi.on('tool_call', async (event, ctx) => {
-      const panel = registry.get(ctx.sessionManager.getSessionId());
+      const sessionId = ctx.sessionManager.getSessionId();
+      const panel = registry.get(sessionId);
       // A closing panel unregisters while its agent can still reach this handler, and no other session
       // kind dispatches here, so a missing entry is an absent approval authority, not an ungated kind.
-      if (!panel) return gateErrorFallback(event.toolName);
+      if (!panel) {
+        log('[DamoclesExtension] no panel registered for session %s; %s takes the fail-closed fallback', sessionId, event.toolName);
+        return gateErrorFallback(event.toolName);
+      }
       const preToolUse =
         hookDispatch && hookDispatch.config.hasEntries('tool_call')
           ? buildPreToolUseGate(hookDispatch, ctx, panel, preToolUseContextStash)

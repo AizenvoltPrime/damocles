@@ -19,7 +19,9 @@ import { useContextUsageStore } from '@/stores/useContextUsageStore';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
 import { useElicitationStore } from '@/stores/useElicitationStore';
 import { useBtwStore } from '@/stores/useBtwStore';
+import { useTeamStore } from '@/stores/useTeamStore';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import type { StoredSession } from '@shared/types/session';
 
 /**
  * A session reset must close whatever tool overlay was open.
@@ -48,6 +50,7 @@ function context(): HandlerContext {
     subscriptionUsageStore: useSubscriptionUsageStore(),
     elicitationStore: useElicitationStore(),
     btwStore: useBtwStore(),
+    teamStore: useTeamStore(),
   } as unknown as StoreContext;
 
   let state: Record<string, unknown> = {};
@@ -102,6 +105,27 @@ describe('a session reset closing the open tool overlay', () => {
 
     expect(uiStore.expandedToolId).toBeNull();
     expect(uiStore.expandedToolSource).toBeNull();
+  });
+});
+
+describe('resumeAccepted', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('clears the shown conversation and selects the accepted one under its stored name', () => {
+    // Selecting from history no longer clears the panel up front, so this is the only place it happens.
+    const ctx = context();
+    const { sessionStore, streamingStore } = ctx.stores;
+    const stored: StoredSession = { id: 's-x', timestamp: 1, preview: 'first prompt', customTitle: 'Refactor' };
+    sessionStore.updateStoredSessions([stored], true, false, 1);
+    streamingStore.addUserMessage('the conversation on screen');
+
+    dispatch({ type: 'resumeAccepted', sessionId: 's-x' }, ctx);
+
+    expect(streamingStore.messages).toEqual([]);
+    expect(sessionStore.selectedSessionId).toBe('s-x');
+    expect(sessionStore.selectedSessionName).toBe('Refactor');
+    expect(sessionStore.currentResumedSessionId).toBe('s-x');
+    expect(ctx.vscode.getState()).toMatchObject({ sessionId: 's-x', sessionName: 'Refactor' });
   });
 });
 

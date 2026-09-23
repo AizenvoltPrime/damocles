@@ -4,6 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { SubagentState } from '@shared/types/subagents';
 import SubagentCard from '../SubagentCard.vue';
+import { Badge } from '@/components/ui/badge';
 import { i18n } from '@/i18n';
 
 /**
@@ -62,5 +63,31 @@ describe('a subagent typed after an Object.prototype member', () => {
 
     expect(wrapper.text()).toContain('Code Reviewer');
     expect(iconPaths(wrapper)).not.toEqual(iconPaths(card('something-invented')));
+  });
+});
+
+describe('a resume card', () => {
+  const AGENT = '0a1b2c3d-4e5f-4a0';
+
+  function resumeCard(over: Partial<SubagentState>): VueWrapper {
+    const { agentType: _unset, ...rest } = subagent('Explore');
+    return mount(SubagentCard, {
+      props: { subagent: { ...rest, ...over } },
+      global: { plugins: [i18n], stubs: { MarkdownRenderer: true } },
+    });
+  }
+
+  it('shows the Resumed badge once the agent has named itself', () => {
+    const text = resumeCard({ agentType: 'Explore', resume: { agentId: AGENT, loaded: true } }).text();
+
+    expect(text).toContain('Resumed');
+    expect(text).toContain('do the thing');
+  });
+
+  it('shows neither the Resumed badge nor a type badge while it only knows the agent id', () => {
+    const wrapper = resumeCard({ resume: { agentId: AGENT, loaded: false } });
+
+    expect(wrapper.text()).toContain('Resuming 0a1b2c3d');
+    expect(wrapper.findAllComponents(Badge)).toHaveLength(0);
   });
 });

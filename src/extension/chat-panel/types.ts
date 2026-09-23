@@ -16,6 +16,7 @@ export interface WebviewHost {
   readonly onDidDispose: vscode.Event<void>;
   readonly onDidChangeVisibility: vscode.Event<void>;
   readonly onDidChangeActive: vscode.Event<void>;
+  reveal(): void;
   close(): void;
 }
 
@@ -48,6 +49,7 @@ export function createPanelHost(panel: vscode.WebviewPanel): WebviewHost {
         }
       }, thisArgs, disposables);
     },
+    reveal: () => panel.reveal(),
     close: () => panel.dispose(),
   };
 }
@@ -61,6 +63,7 @@ export function createViewHost(view: vscode.WebviewView): WebviewHost {
     onDidDispose: view.onDidDispose,
     onDidChangeVisibility: view.onDidChangeVisibility,
     onDidChangeActive: NO_OP_EVENT,
+    reveal: () => view.show(),
     close: () => {},
   };
 }

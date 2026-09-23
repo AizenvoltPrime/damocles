@@ -165,8 +165,8 @@ describe('a tool call whose outcome was never recorded', () => {
 describe('team tool cards', () => {
   const names = Object.keys(TEAM_TOOL_LABELS);
 
-  it('covers all nineteen team tools', () => {
-    expect(names).toHaveLength(19);
+  it('covers all twenty team tools', () => {
+    expect(names).toHaveLength(20);
   });
 
   it.each(names)('renders %s under its human label and never the raw name', (name) => {

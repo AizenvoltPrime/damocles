@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
@@ -14,7 +14,7 @@ import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, EffortL
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
-import type { RunningSubagentInfo } from "../../shared/types/subagents";
+import type { SteerTargetInfo } from "../../shared/types/subagents";
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
@@ -63,7 +63,11 @@ import {
 import type { AgentRegistry } from "./subagents/agent-types";
 import { AGENT_SCOPE_BY_SOURCE } from "./subagents/types";
 import { resolveCheapModelFor } from "./subagents/cheap-model";
-import { formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from "./subagents/background-results";
+import { backgroundResultsDetails, formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from "./subagents/background-results";
+import { reconcileInterruptions } from "./interruption-notice";
+import { copyForkAgentData } from "./fork-agent-data";
+import { subagentsDir, type AgentInvocationData } from "./agent-records";
+import { TeamPersistence } from "../team/persistence";
 import { resolveExploreSectionModel } from "./custom-providers";
 import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
@@ -76,6 +80,7 @@ import {
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
   DAMOCLES_MID_STREAM_ENTRY,
   DAMOCLES_STEER_ENTRY,
+  DAMOCLES_AGENT_INVOCATION_ENTRY,
   stripIdeContext,
 } from "./session-store";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
@@ -88,7 +93,7 @@ import { isMcpToolName } from "./mcp/naming";
 import { buildNestedMcpToolset, type NestedMcpToolset } from "./tools/mcp-tools";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext, type AgentUiAttribution } from "./extension-ui-context";
-import type { SystemPromptEnv } from "./permission-gate";
+import type { PanelGateContext, SystemPromptEnv } from "./permission-gate";
 import type { ToolsSnapshot } from "../../shared/types/tools";
 import {
   extractText,
@@ -127,6 +132,10 @@ import { mcpGroupName, type DeferrableSnapshot } from "./tools/tool-search-tool"
  *  Module scope because the dedupe spans PiSession instances; weak so a disposed runtime is collectable. */
 const fallbackWarnedRuntimes = new WeakSet<PiRuntime>();
 
+/** How long a session delete waits for the agents it aborted to stop writing. Aborted runs settle in
+ *  milliseconds; this only caps a run whose tool ignores the abort signal. */
+const ABORTED_AGENTS_SETTLE_TIMEOUT_MS = 10_000;
+
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses the process-singleton `PiRuntime.services` (B1) and a `PiStreamAdapter` that
@@ -156,6 +165,10 @@ export class PiSession implements ChatSession {
   private mcpReloadPendingAfterTurn = false;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
+  /** The exact gate context and tool refresher registered under `registeredSessionId`; unregistering
+   *  hands them back so a late release cannot evict another panel's entry for the same id. */
+  private registeredGate: PanelGateContext | null = null;
+  private registeredToolRefresher: (() => void) | null = null;
   /** Debounce key for `permission_required` (US-009): one notification per (sessionId, turn). */
   private _lastPermissionNotifyKey: string | null = null;
   /** Feed the initial enabled MCP servers once; later changes flow via live setMcpServers (US-014.9). */
@@ -189,11 +202,16 @@ export class PiSession implements ChatSession {
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
+  /** Bumped by every ESC, so a send still waiting to start its turn can tell it was cancelled. */
+  private abortEpoch = 0;
   /** Set when the hard budget limit is crossed mid-turn, so the turn finishes gracefully at the next
    * model round-trip boundary (the `finishTurn` decider) instead of being torn mid-stream by an abort. */
   private _budgetStopRequested = false;
   /** Set once dispose() begins, so a late hook callback draining during teardown emits nothing. */
   private _disposed = false;
+  /** Set whenever an agent may have stopped unfinished since the last check, so the next prompt first
+   *  tells the model which agents were interrupted (`reconcileInterruptions`). */
+  private interruptionCheckPending = false;
   private promptIndexCounter = -1;
   /** A stored session id to resume on next start(), or to switch the live runtime to (US-010b). */
   private resumeSessionId: string | null = null;
@@ -378,7 +396,10 @@ export class PiSession implements ChatSession {
 
     this.bindSession(this.runtime.session);
     // Continue the token/budget meter from the resumed session's loaded total rather than zero.
-    if (resumePath) this.seedResumedUsage();
+    if (resumePath) {
+      this.seedResumedUsage();
+      this.interruptionCheckPending = true;
+    }
     // Sync the active tool set to the panel's current permission mode (a forked panel may already be
     // in plan mode at session-creation time; the factory `tools` only sets the full default set).
     this.permissionMode = this.options.permissionHandler.getPermissionMode();
@@ -437,17 +458,14 @@ export class PiSession implements ChatSession {
       // Gate on the id ACTUALLY changing: a rebind onto the same session (refresh, mode change) must
       // keep whatever ToolSearch loaded, while a replacement session starts from the deferred baseline.
       this.toolSearchActivated.clear();
-      piRuntime.unregisterPanel(this.registeredSessionId);
+      this.unregisterFromRuntime(piRuntime, this.registeredSessionId);
       // A replacement session gets a fresh checkpoint driver + rewindable set.
-      piRuntime.unregisterCheckpointService(this.registeredSessionId);
-      piRuntime.unregisterSessionMutator(this.registeredSessionId);
-      piRuntime.unregisterActiveToolRefresher(this.registeredSessionId);
       this.checkpointService?.dispose();
       this.checkpointService = null;
       this.checkpointUserIds.clear();
       this.lastCheckpointBroadcast = -1;
     }
-    piRuntime.registerPanel(sessionId, {
+    const gate: PanelGateContext = {
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
@@ -463,17 +481,21 @@ export class PiSession implements ChatSession {
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
       deferrableTools: () => this.deferrableToolsSnapshot(),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
-    });
+    };
+    piRuntime.registerPanel(sessionId, gate);
+    this.registeredGate = gate;
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
     piRuntime.registerSessionMutator(sessionId, this);
     // On MCP tools-changed, re-apply this session's active set and push fresh MCP status (no manual
     // refresh). `reloadForMcpToolChange` also rebuilds an orphaned-runtime session whose registry never
     // got the new tools (multi-panel); it's a plain refresh when not orphaned.
-    piRuntime.registerActiveToolRefresher(sessionId, () => {
+    const refreshTools = (): void => {
       this.reloadForMcpToolChange();
       this._mcpStatusListener?.();
-    });
+    };
+    piRuntime.registerActiveToolRefresher(sessionId, refreshTools);
+    this.registeredToolRefresher = refreshTools;
     this.registeredSessionId = sessionId;
 
     // permission_required notifier (US-009): lazy + debounced-per-turn. Fires only when a hook is
@@ -525,6 +547,16 @@ export class PiSession implements ChatSession {
       this.mcpServersFed = true;
       this.setMcpServers(this.options.mcpServers ?? {});
     }
+  }
+
+  /** Release every runtime registry entry this panel registered under `sessionId`. */
+  private unregisterFromRuntime(piRuntime: PiRuntime, sessionId: string): void {
+    if (this.registeredGate) piRuntime.unregisterPanel(sessionId, this.registeredGate);
+    if (this.checkpointService) piRuntime.unregisterCheckpointService(sessionId, this.checkpointService);
+    piRuntime.unregisterSessionMutator(sessionId, this);
+    if (this.registeredToolRefresher) piRuntime.unregisterActiveToolRefresher(sessionId, this.registeredToolRefresher);
+    this.registeredGate = null;
+    this.registeredToolRefresher = null;
   }
 
   /**
@@ -625,18 +657,7 @@ export class PiSession implements ChatSession {
       this.adapter.emitAlreadyInProgress();
       return;
     }
-    // Capture the session's first real user message for the deterministic plan path (FR-3/FR-4). The
-    // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
-    // the first turn, so `getPlanFilePath` falls back to this. Prefer the user's ORIGINAL typed text
-    // (`userBroadcast.content`) over the expanded `prompt` so the slug matches the branch-derived value
-    // `extractFirstUserMessage` later returns (which resolves the same original via the sidecar) — else a
-    // slash-command/skill first message would slug the expansion now and the original later, splitting the
-    // session across two plan files. Drops `<…>`-prefixed synthetic prompts and internal sends; being a
-    // pre-branch fallback, it self-heals to the branch-derived value once a qualifying message lands.
-    if (!options?.isInternal && this._firstUserMessage === null) {
-      const text = userBroadcast?.content ?? piMessageText(prompt);
-      if (text && !text.trimStart().startsWith("<")) this._firstUserMessage = text;
-    }
+    const abortEpoch = this.abortEpoch;
     try {
       await this.ensureStarted();
     } catch (err) {
@@ -667,6 +688,26 @@ export class PiSession implements ChatSession {
     if (!session) {
       this.emit({ type: "error", message: "Failed to initialize pi session" });
       return;
+    }
+    // Before `beginTurn`: the notice's own message_start must not be read as this turn's user entry.
+    await this.reconcileInterruptionsIfPending(session);
+    // No await may follow this check before `prompt()`: an ESC or a session replacement that lands in
+    // one would be lost, and the message would run anyway.
+    if (this.abortEpoch !== abortEpoch || this.runtime?.session !== session) {
+      this.returnUnsentMessage(correlationId, userBroadcast);
+      return;
+    }
+    // Capture the session's first real user message for the deterministic plan path (FR-3/FR-4). The
+    // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
+    // the first turn, so `getPlanFilePath` falls back to this. Prefer the user's ORIGINAL typed text
+    // (`userBroadcast.content`) over the expanded `prompt` so the slug matches the branch-derived value
+    // `extractFirstUserMessage` later returns (which resolves the same original via the sidecar). Otherwise
+    // a slash-command/skill first message would slug the expansion now and the original later, splitting
+    // the session across two plan files. Drops `<…>`-prefixed synthetic prompts and internal sends; being a
+    // pre-branch fallback, it self-heals to the branch-derived value once a qualifying message lands.
+    if (!options?.isInternal && this._firstUserMessage === null) {
+      const text = userBroadcast?.content ?? piMessageText(prompt);
+      if (text && !text.trimStart().startsWith("<")) this._firstUserMessage = text;
     }
 
     // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
@@ -752,6 +793,40 @@ export class PiSession implements ChatSession {
       this.setTurnState("idle");
       this._aborting = false;
       this._budgetStopRequested = false;
+    }
+  }
+
+  /** A message cancelled or orphaned before its turn started never reached the model, so it goes back
+   *  to the composer. */
+  private returnUnsentMessage(correlationId: string | undefined, userBroadcast: { content: string } | undefined): void {
+    log("[PiSession] message not sent: cancelled or session replaced before its turn started");
+    this.emit({ type: "processing", isProcessing: false });
+    if (correlationId && userBroadcast) this.emit({ type: "interruptRecovery", correlationId, promptContent: userBroadcast.content });
+  }
+
+  /** Append the hidden interruption notice when one is pending. Never throws. */
+  private async reconcileInterruptionsIfPending(session: AgentSession): Promise<void> {
+    if (!this.interruptionCheckPending) return;
+    this.interruptionCheckPending = false;
+    try {
+      await reconcileInterruptions({
+        branch: session.sessionManager.getBranch(),
+        subagentDir: subagentsDir(ensurePiSessionDir(this.cwd), session.sessionId),
+        liveSubagent: (id) => this.subagentManager?.liveStatus(id),
+        teamResumable: (teamId) => new TeamPersistence(this.cwd, session.sessionId).isResumable(teamId),
+        // A replaced session's file may already be deleted, and an append would recreate it header-less.
+        send: async (message) => {
+          if (this.runtime?.session !== session) return;
+          await session.sendCustomMessage(message, { triggerTurn: false });
+        },
+      });
+    } catch (err) {
+      log("[PiSession] interruption notice failed: %O", err);
+      this.emit({
+        type: "notification",
+        message: "Could not record which agents were interrupted; the model will not be told it can resume them.",
+        notificationType: "warning",
+      });
     }
   }
 
@@ -926,6 +1001,7 @@ export class PiSession implements ChatSession {
    * otherwise hit pi's "Agent is already processing" rejection.
    */
   private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
+    this.abortEpoch++;
     this._aborting = true;
     this.processingFlag = false;
     // An abort during a long tool with no model stream open produces no aborted assistant event, so
@@ -934,7 +1010,8 @@ export class PiSession implements ChatSession {
     this._budgetStopRequested = false;
     this.adapter.markAborted();
     // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
-    this.subagentManager?.abortAll();
+    this.subagentManager?.abortAll("user");
+    this.interruptionCheckPending = true;
     // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
     this.options.teamService?.cancelActiveTeam();
     this.clearQueuedInputs();
@@ -1087,10 +1164,10 @@ export class PiSession implements ChatSession {
     // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
     this.injectedNotes = [];
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
-    this.subagentManager?.abortAll();
+    this.subagentManager?.abortAll("reset");
     this.subagentManager?.clearCompleted();
     // A context clear with a team running aborts it (its create_team tool returns the partial synthesis).
-    this.options.teamService?.cancelActiveTeam();
+    this.options.teamService?.cancelActiveTeam("reset");
     // The aborted agents above never close their own tabs (only success does), and their scopes are
     // dropped as they settle — so reclaim every tab this conversation opened before starting the next.
     this.releaseBrowserScopes();
@@ -1192,11 +1269,7 @@ export class PiSession implements ChatSession {
     // emits `session_shutdown` to the extension runner, and a handler on that still needs a live
     // checkpoint service, so the service is only torn down after.
     if (this.registeredSessionId) {
-      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-      piRuntime.unregisterPanel(this.registeredSessionId);
-      piRuntime.unregisterCheckpointService(this.registeredSessionId);
-      piRuntime.unregisterSessionMutator(this.registeredSessionId);
-      piRuntime.unregisterActiveToolRefresher(this.registeredSessionId);
+      this.unregisterFromRuntime(PiRuntime.get(this.cwd, PI_AGENT_DIR), this.registeredSessionId);
       this.registeredSessionId = null;
     }
     try {
@@ -1222,14 +1295,46 @@ export class PiSession implements ChatSession {
 
   /** Stop a running background subagent (the Background Tasks panel "stop" button). Aborting the
    *  record drives `AgentManager.emitBackgroundTaskCompleted` (status `stopped`) — the authoritative
-   *  completion — so the handler must not also post one. No-op if the task already finished. */
+   *  completion — so the handler must not also post one. No-op if the task already finished. It requests
+   *  no interruption notice: the keep-alive injection already gives the model the stop note and resume call. */
   async stopTask(taskId: string): Promise<void> {
-    this.subagentManager?.abort(taskId);
+    this.subagentManager?.abort(taskId, "user");
   }
 
-  /** The currently running + queued subagents, for the `/steer` second-stage picker. */
-  listActiveSubagents(): RunningSubagentInfo[] {
-    return this.subagentManager?.listActive() ?? [];
+  /** Running + queued subagents, then live team members, for the `/steer` second-stage picker. */
+  listSteerTargets(): SteerTargetInfo[] {
+    return [...(this.subagentManager?.listActive() ?? []), ...(this.options.teamService?.listSteerTargets() ?? [])];
+  }
+
+  /**
+   * The user's `/steer` path: a subagent first, then a live team member. `steerSubagent` stays
+   * subagent-only because the shell-cancel note path and the `SteerSubagent` tool rely on that.
+   */
+  async steerTarget(agentId: string, message: string): Promise<void> {
+    if (!message.trim()) return;
+    const outcome = this.subagentManager?.getRecord(agentId) ? null : this.options.teamService?.steerMember(agentId, message);
+    if (!outcome) {
+      await this.steerSubagent(agentId, message);
+      return;
+    }
+    const description = `${outcome.teamTitle} · ${outcome.memberName}`;
+    this.emit({
+      type: "subagentSteered",
+      agentId,
+      toolUseId: null,
+      description,
+      message,
+      status: outcome.status,
+      team: { teamId: outcome.teamId, teamTitle: outcome.teamTitle, memberName: outcome.memberName, role: outcome.role },
+    });
+    if (outcome.status !== 'steered') return;
+    const session = this.runtime?.session;
+    if (!session) return;
+    try {
+      session.sessionManager.appendCustomEntry(DAMOCLES_STEER_ENTRY, { agentId, description, message });
+    } catch (err) {
+      log("[PiSession] recordSteer failed: %O", err);
+    }
   }
 
   /** Deliver a user-typed `/steer <id> <message>` directly to a running/queued subagent (no model turn).
@@ -1374,6 +1479,12 @@ export class PiSession implements ChatSession {
     return this.currentSessionId;
   }
 
+  holdsSession(sessionId: string): boolean {
+    // `resumeSessionId` also names the target of a switch still in flight, while `currentSessionId`
+    // reports the session being left until the switch lands.
+    return this.currentSessionId === sessionId || this.resumeSessionId === sessionId;
+  }
+
   get memorySessionId(): string {
     return this.currentSessionId ?? this.options.panelId ?? "";
   }
@@ -1440,6 +1551,7 @@ export class PiSession implements ChatSession {
     // the now-current resumed session.
     if (!cancelled) {
       this.seedResumedUsage();
+      this.interruptionCheckPending = true;
       // The switched-in session reads the current tool set on build, so a deferred reload is moot.
       this.mcpReloadPendingAfterTurn = false;
     }
@@ -1518,7 +1630,9 @@ export class PiSession implements ChatSession {
    * from another one. pi's SessionManager keeps `flushed = true` after its first write, so every later
    * append is a bare `appendFileSync`: a session still live when its file is removed recreates it as a
    * header-less one-entry file that no reader can parse and no picker can ever show again. Resolves
-   * once the replacement session is installed, i.e. once the old manager can no longer write.
+   * once the replacement session is installed, i.e. once the old manager can no longer write, and the
+   * agents the reset aborted have stopped writing under the session's folder (bounded by
+   * `ABORTED_AGENTS_SETTLE_TIMEOUT_MS`).
    */
   async detachFromDeletedSession(): Promise<void> {
     // A panel mid-`start()` has no `runtime` yet, so reset() would bail and whenReplaced() would
@@ -1526,6 +1640,8 @@ export class PiSession implements ChatSession {
     // removed. Let the start settle so there is a live session to actually replace. Its own failure is
     // not this method's concern (the panel then holds nothing that could write).
     await this.startPromise?.catch(() => undefined);
+    // Captured before reset(), which drops the records of the subagents it aborts.
+    const agentsSettled = Promise.all([this.subagentManager?.whenRunsSettled(), this.options.teamService?.whenRunSettled()]);
     this.reset();
     // Rejects when the replacement failed or was cancelled — i.e. the old session is still installed
     // and still writable. The caller MUST NOT go on to delete the file in that case.
@@ -1538,6 +1654,15 @@ export class PiSession implements ChatSession {
     // no longer holds it. Cleared before the republish, never after.
     this.lastSessionState = null;
     this.publishSessionState();
+    // The aborted agents still append to files under the session's folder, which the caller removes next.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
+    });
+    if ((await Promise.race([agentsSettled, timedOut])) === "timeout") {
+      log("[PiSession] aborted agents still running after %dms; deleting their session data anyway", ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
+    }
+    clearTimeout(timer);
   }
 
   /**
@@ -1910,6 +2035,10 @@ export class PiSession implements ChatSession {
       postMessage: (m) => this.emit(m),
       getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
+      subagentStoreDir: () => subagentsDir(ensurePiSessionDir(this.cwd), this.liveSessionId()),
+      recordInvocation: (data) => this.recordAgentInvocation(data),
+      parentBranch: () => this.parentBranch(),
+      assertResumableModel: (path, agentId) => this.assertResumableModel(path, agentId),
       parentFullToolNames: () => this.fullActiveToolNames(),
       // ONE call per spawn: the MCP definitions are APPENDED to this agent's customTools here, exactly
       // as `buildTeamAgentCustomTools` appends the `team_*` tools, and the caller derives `tools:`,
@@ -1927,6 +2056,48 @@ export class PiSession implements ChatSession {
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
     };
+  }
+
+  /** The live parent session's id; agent data is filed under it. */
+  private liveSessionId(): string {
+    const sessionId = this.runtime?.session.sessionId;
+    if (!sessionId) throw new Error("No live session to file subagent data under");
+    return sessionId;
+  }
+
+  /** The live session's current branch: the only index of the agents this conversation invoked. */
+  parentBranch(): readonly SessionEntry[] {
+    return this.runtime?.session.sessionManager.getBranch() ?? [];
+  }
+
+  /** Throw the resume error unless the model recorded in the agent session file at `path` is usable. */
+  assertResumableModel(path: string, agentId: string): void {
+    PiRuntime.get(this.cwd, PI_AGENT_DIR).assertResumableModel(path, agentId);
+  }
+
+  /** Tell the model which agents were interrupted before the next user prompt. */
+  requestInterruptionCheck(): void {
+    this.interruptionCheckPending = true;
+  }
+
+  /** Index an agent invocation on the parent branch. The parent's assistant message holding the tool
+   *  call is already flushed, so pi writes the entry to disk immediately. */
+  recordAgentInvocation(data: AgentInvocationData): void {
+    const session = this.runtime?.session;
+    if (!session) {
+      log("[PiSession] agent invocation %s not recorded: no live session", data.id);
+      return;
+    }
+    try {
+      session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_INVOCATION_ENTRY, data);
+    } catch (err) {
+      log("[PiSession] recording agent invocation %s failed: %O", data.id, err);
+      this.emit({
+        type: "notification",
+        message: `Could not record a ${data.kind === "team" ? "team" : "subagent"} in the session file; its card will not be restored after a reload.`,
+        notificationType: "warning",
+      });
+    }
   }
 
   /**
@@ -1966,6 +2137,7 @@ export class PiSession implements ChatSession {
       customType: SUBAGENT_RESULTS_CUSTOM_TYPE,
       content: formatBackgroundResults(completed),
       display: false,
+      details: backgroundResultsDetails(completed),
     };
   }
 
@@ -2299,6 +2471,33 @@ export class PiSession implements ChatSession {
     }
   }
 
+  /** Copy the subagent and team data the fork's branch invoked into the fork's subtree. Never throws. */
+  private async copyAgentDataToFork(pi: PiCodingAgentModule, sourceSm: AgentSession["sessionManager"], forkLeafId: string, targetSessionId: string): Promise<void> {
+    let failures: Error[];
+    try {
+      // The fork point is the fork leaf's timestamp: the fork's conversation ends there, so its agents do too.
+      const forkPointMs = Date.parse(sourceSm.getEntry(forkLeafId)?.timestamp ?? "");
+      if (!Number.isFinite(forkPointMs)) throw new Error(`the fork entry ${forkLeafId} has no timestamp`);
+      failures = await copyForkAgentData({
+        SessionManager: pi.SessionManager,
+        sessionDir: ensurePiSessionDir(this.cwd),
+        sourceSessionId: sourceSm.getSessionId(),
+        targetSessionId,
+        branch: sourceSm.getBranch(forkLeafId),
+        forkPointMs,
+      });
+    } catch (err) {
+      failures = [err instanceof Error ? err : new Error(String(err))];
+    }
+    if (failures.length === 0) return;
+    for (const failure of failures) log("[PiSession] copying agent data to the fork failed: %O", failure);
+    this.emit({
+      type: "notification",
+      message: "Some subagent or team history could not be copied into the fork; those cards may be incomplete and cannot be resumed there.",
+      notificationType: "warning",
+    });
+  }
+
   /** Branch the pi conversation at the user message's parent and open it in a new forked panel. */
   private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string): Promise<void> {
     const onSpawnFork = this.options.onSpawnFork;
@@ -2341,6 +2540,7 @@ export class PiSession implements ChatSession {
           } catch (err) {
             log("[PiSession] checkpoint repo clone-on-fork failed: %O", err);
           }
+          await this.copyAgentDataToFork(pi, liveSm, parentId, piBranchedSessionId);
         }
       }
     }
@@ -2547,6 +2747,7 @@ export class PiSession implements ChatSession {
         customTools: [],
         excludeTools: [],
         extensionFactory: (pi) => { registerTurnEndImagePruning(pi); registerAgentStartImageReconcile(pi); },
+        store: { kind: "memory" },
       });
     } catch (err) {
       this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
@@ -2863,7 +3064,7 @@ export class PiSession implements ChatSession {
   private stopForBudget(): void {
     if (!this.processingFlag || this._budgetStopRequested) return;
     this._budgetStopRequested = true;
-    this.subagentManager?.abortAll();
+    this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
     // (`agent-session.ts:1544`) whatever the decider answered. `queueInput` refuses new ones from here on.

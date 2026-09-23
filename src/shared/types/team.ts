@@ -55,8 +55,32 @@ export type TeamAgentContentBlock =
   // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; metadata?: Record<string, unknown> };
 
+/** One persisted member message. `id` comes from its pi session entry; a live message never carries it. */
+export interface TeamAgentHistoryMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'toolResult';
+  content: TeamAgentContentBlock[];
+}
+
+/**
+ * One invocation of a team: its `create_team` call or one `resume_team` call. The totals count only the
+ * work done during this run, so the cards of a team's runs add up to the team.
+ */
+export interface TeamRunSummary {
+  toolUseId: string;
+  /** `running` only for the team's current run, and only while it runs. */
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  startTime: number;
+  endTime: number | null;
+  toolCount: number;
+  /** Input plus output tokens. */
+  tokens: number;
+  costUsd: number;
+}
+
 export interface TeamState {
   teamId: string;
+  /** The `create_team` call that started the team. */
   toolUseId: string;
   title: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled';
@@ -68,4 +92,6 @@ export interface TeamState {
   startTime: number;
   endTime: number | null;
   totalToolCount: number;
+  /** Oldest first; the last is the current run. */
+  runs: TeamRunSummary[];
 }

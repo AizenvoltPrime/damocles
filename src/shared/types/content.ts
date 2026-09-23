@@ -61,10 +61,14 @@ export interface HistoryToolCall {
   agentStartTimestamp?: number;
   agentEndTimestamp?: number;
   agentToolCount?: number;
-  /** Subagent terminal status persisted in its transcript (drives the resumed card's status). */
+  /** Subagent terminal status from `resolveAgentStatus`, or `interrupted` when none was recorded. */
   agentStatus?: string;
   /** Subagent final result text (raw result + status note) — the authoritative resumed-card content. */
   agentResultText?: string;
+  /** The subagent's launch from its file. A resume call's own arguments carry none of it. */
+  agentLaunch?: { agentType: string; description: string; prompt: string; background: boolean };
+  /** Set on a resume call's card: the id of the agent it continued. */
+  agentResumedFrom?: string;
   metadata?: Record<string, unknown>;
 }
 

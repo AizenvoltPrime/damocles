@@ -18,6 +18,19 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    resumeAccepted: (msg, ctx) => {
+      const { sessionStore, streamingStore, teamStore } = ctx.stores;
+      const { vscode } = ctx;
+      const session = sessionStore.storedSessions.find((s) => s.id === msg.sessionId);
+      const sessionName = session?.customTitle || session?.aiTitle || session?.preview || null;
+      streamingStore.$reset();
+      teamStore.$reset();
+      sessionStore.clearSessionData();
+      sessionStore.setResumedSession(msg.sessionId);
+      sessionStore.setSelectedSession(msg.sessionId, sessionName);
+      vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string | null }>(), sessionId: msg.sessionId, sessionName });
+    },
+
     // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
     sessionStateChanged: (msg, ctx) => {
       ctx.stores.sessionStore.setSessionState(msg.state);

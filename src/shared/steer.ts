@@ -17,6 +17,15 @@ export function wrapSteerMessage(message: string): string {
   return `${STEER_INSTRUCTION_PREFIX}\n${message}`;
 }
 
+const RESUME_CONTEXT =
+  'You were interrupted by the operator before finishing. Continue from where you left off; check current state before redoing any step that may have been cut off.';
+
+/** The prompt that continues a resumed agent. An operator message rides as a steer, marker first. */
+export function buildResumePrompt(message?: string): string {
+  const trimmed = message?.trim();
+  return trimmed ? wrapSteerMessage(`${trimmed}\n\n${RESUME_CONTEXT}`) : RESUME_CONTEXT;
+}
+
 /** Remove the priority marker for display (the raw instruction is shown; the UI labels it as steering). */
 export function stripSteerPrefix(text: string): string {
   if (!text.startsWith(STEER_INSTRUCTION_PREFIX)) return text;
@@ -31,4 +40,10 @@ export function stripSteerPrefix(text: string): string {
 export function formatUserSteerPrefix(userSteers: readonly string[] | undefined): string {
   if (!userSteers?.length) return '';
   return userSteers.map((message) => `[User steered this agent mid-task: "${message}"]`).join('\n') + '\n';
+}
+
+/** The team counterpart of `formatUserSteerPrefix`, prefixed onto a team's result. */
+export function formatTeamUserSteerPrefix(steers: ReadonlyArray<{ memberName: string; message: string }>): string {
+  if (!steers.length) return '';
+  return steers.map(({ memberName, message }) => `[User steered team member "${memberName}" mid-task: "${message}"]`).join('\n') + '\n';
 }

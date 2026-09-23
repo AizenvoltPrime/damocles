@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { h, ref, computed, onMounted, watch } from 'vue';
+import { h, ref, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown, IconClock, IconEye } from '@/components/icons';
+import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown, IconClock, IconEye, IconPaperPlane } from '@/components/icons';
+import { STEER_INSTRUCTION_PREFIX, stripSteerPrefix } from '@shared/steer';
 import OverlayShell from './OverlayShell.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
@@ -29,6 +30,11 @@ const agentIndex = computed(() => {
 });
 
 const color = computed(() => getAgentColor(agentIndex.value));
+
+// The marker opens an operator /steer and a resumed lead's prompt alike, so the label must not name a sender.
+function isSteer(content: string): boolean {
+  return content.startsWith(STEER_INSTRUCTION_PREFIX);
+}
 
 const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value?.status === 'running',
@@ -96,14 +102,13 @@ function openLog(): void {
   postMessage({ type: 'openFile', filePath: selectedAgent.value.logFilePath });
 }
 
-function fetchAgentDataIfNeeded(): void {
-  if (selectedAgent.value && currentAgentMessages.value.length === 0 && selectedAgent.value.status !== 'running' && selectedTeam.value) {
-    postMessage({
-      type: 'requestTeamAgentData',
-      teamId: selectedTeam.value.teamId,
-      agentId: selectedAgent.value.agentId,
-    });
-  }
+function requestAgentHistory(): void {
+  if (!selectedAgent.value || !selectedTeam.value) return;
+  postMessage({
+    type: 'requestTeamAgentData',
+    teamId: selectedTeam.value.teamId,
+    agentId: selectedAgent.value.agentId,
+  });
 }
 
 const collapsedThinking = ref<Set<string>>(new Set());
@@ -118,11 +123,15 @@ function toggleThinking(messageId: string): void {
   collapsedThinking.value = next;
 }
 
-onMounted(fetchAgentDataIfNeeded);
+// Live messages start where this panel began listening, so a member resumed after a reload has its
+// earlier turns only on disk even while its list is not empty.
+watch(() => selectedAgent.value?.agentId, (agentId) => {
+  if (agentId && !teamStore.isAgentHistoryLoaded(agentId)) requestAgentHistory();
+}, { immediate: true });
 
 watch(() => selectedAgent.value?.status, (newStatus, oldStatus) => {
-  if (oldStatus === 'running' && newStatus && newStatus !== 'running') {
-    fetchAgentDataIfNeeded();
+  if (oldStatus === 'running' && newStatus && newStatus !== 'running' && currentAgentMessages.value.length === 0) {
+    requestAgentHistory();
   }
 });
 
@@ -188,7 +197,17 @@ const AgentIcon = {
         </template>
 
         <template v-for="msg in currentAgentMessages" :key="msg.id">
-          <div v-if="msg.role === 'user'" class="text-xs text-foreground/50 border-l-2 border-foreground/20 pl-2 py-1">
+          <div
+            v-if="msg.role === 'user' && isSteer(msg.content)"
+            class="flex items-start gap-2 py-1.5 pl-2 pr-3 border-l-2 border-warning/50 bg-warning/5 rounded-r"
+          >
+            <IconPaperPlane :size="14" class="text-warning/80 shrink-0 mt-0.5" />
+            <div class="min-w-0 flex-1">
+              <div class="text-[11px] uppercase tracking-wide text-warning/80 mb-0.5">{{ t('subagentDisplay.steered') }}</div>
+              <MarkdownRenderer :content="stripSteerPrefix(msg.content)" class="text-sm" />
+            </div>
+          </div>
+          <div v-else-if="msg.role === 'user'" class="text-xs text-foreground/50 border-l-2 border-foreground/20 pl-2 py-1">
             <MarkdownRenderer :content="msg.content" />
           </div>
 

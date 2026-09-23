@@ -22,7 +22,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     profileId: null,
     startTime: null,
     endTime: null,
-    toolCallCount: 0,
+    toolCallCount: 0, carriedToolCallCount: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cacheReadTokens: 0,
@@ -85,7 +85,7 @@ function makeHarness(agents: TeamAgent[]): Harness {
   inject(target, 'messageBus', messageBus);
   inject(target, 'scratchpad', scratchpad);
   inject(target, 'agents', agentMap);
-  inject(target, 'persistence', { appendTeamEntry: () => undefined, appendAgentEntry: () => undefined, flush: async () => undefined });
+  inject(target, 'persistence', { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true });
   const pendingStandby = inject(target, 'pendingStandby', new Set<string>());
   const confirmedComplete = inject(target, 'confirmedComplete', new Set<string>());
   const nudgeScheduled = inject(target, 'nudgeScheduled', new Set<string>());
@@ -315,8 +315,8 @@ describe('TeamRunner brief-conflict gate', () => {
     const entries: Array<Record<string, unknown>> = [];
     (h.runner as unknown as Record<string, unknown>)['persistence'] = {
       appendTeamEntry: (e: Record<string, unknown>) => entries.push(e),
-      appendAgentEntry: () => undefined,
       flush: async () => undefined,
+      writeCheckpoint: () => true,
     };
     return entries;
   }
@@ -505,6 +505,11 @@ interface CapturedRun {
   reject: (error: unknown) => void;
 }
 
+/** The part of a pi session the runner touches before handing it to the agent runner. */
+function stubMemberSession(): never {
+  return { sessionManager: { appendCustomEntry: () => 'entry', getSessionFile: () => undefined } } as never;
+}
+
 function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; cancelledDialogs: string[]; boundScopes: string[]; mcpContexts: AgentMcpContext[]; factoryMcpSnapshots: NestedMcpToolset[]; toolsetSnapshots: NestedMcpToolset[]; sessionOpts: Array<Record<string, unknown>> } {
   const runs = new Map<string, CapturedRun>();
   const sentToLead: string[] = [];
@@ -531,7 +536,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     ],
     resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
     engine: {
-      createSession: async (opts: Record<string, unknown>) => { sessionOpts.push(opts); return {} as never; },
+      createSession: async (opts: Record<string, unknown>) => { sessionOpts.push(opts); return stubMemberSession(); },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
       // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
@@ -564,7 +569,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
   messageBus.subscribe((m) => { if (m.to === 'Lead') sentToLead.push(m.content); });
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
-  target['persistence'] = { initAgentFile: async () => undefined, appendAgentEntry: () => undefined, appendTeamEntry: () => undefined, flush: async () => undefined };
+  target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
   target['agentRunner'] = {
     startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
   };
@@ -809,7 +814,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
    * The reviewer's "fix first": the individual pieces (conflict flag, bounded nudge, stranded-standby
    * recovery, fail-loud completion) are each unit-tested, but a regression could reintroduce a HANG in
    * their INTERACTION. This drives the real closures end to end: a specialist flags a brief conflict then
-   * parks in standby (its promise.then never fires); the lead, per the adversarial D2 brief, never
+   * parks in standby (its promise.then never fires); the lead, briefed adversarially, never
    * resolves. The team must still TERMINATE — via the lead settling through synthesizeResult — and that
    * completion must carry the fail-loud unresolved block, never leave the completionPromise pending.
    */
@@ -1116,7 +1121,7 @@ function makeModelWiringRunner(
     ],
     resolveRoleModel,
     engine: {
-      createSession: async (opts: Record<string, unknown>) => { sessionOpts.set(currentName, opts); return {} as never; },
+      createSession: async (opts: Record<string, unknown>) => { sessionOpts.set(currentName, opts); return stubMemberSession(); },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
       // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
@@ -1139,7 +1144,7 @@ function makeModelWiringRunner(
   const messageBus = new MessageBus('team-1');
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
-  target['persistence'] = { initAgentFile: async () => undefined, appendAgentEntry: () => undefined, appendTeamEntry: () => undefined, flush: async () => undefined };
+  target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
   target['agentRunner'] = {
     startAgent: (cfg: AgentRunConfig) => {
       // Invoke the real createSession closure TeamRunner built so its resolved opts are captured.
@@ -1210,7 +1215,7 @@ describe('TeamRunner role-model resolution wiring', () => {
 
 /**
  * Slice C — team_redispatch_specialist. Re-run a `failed` or `cancelled` specialist as a FRESH attempt:
- * reuse the same agentId, preserve the prior transcript (no initAgentFile truncate), reset all per-attempt
+ * reuse the same agentId, give the attempt its own pi session file, reset all per-attempt
  * bookkeeping, keep any open briefConflict. Exact guard strings + reattempt entry shape are pinned in the
  * `engine-contract` scratchpad section (as-built) and asserted verbatim below.
  */
@@ -1218,7 +1223,8 @@ interface RedispatchHarness {
   runner: TeamRunner;
   runs: Map<string, CapturedRun>;
   agents: Map<string, TeamAgent>;
-  initAgentFileCalls: string[];
+  /** The `store` each member session was created with, in creation order. */
+  sessionStores: unknown[];
   teamEntries: Array<Record<string, unknown>>;
   statusUpdates: Array<{ agentId: string; status: string }>;
   sentToLead: string[];
@@ -1227,11 +1233,11 @@ interface RedispatchHarness {
   map: (name: string) => Map<string, unknown>;
 }
 
-/** A wiring runner with spy-able persistence (records initAgentFile calls + appended team entries) so the
- *  transcript-preservation and reattempt-marker contracts can be asserted directly. */
+/** A wiring runner with spy-able persistence (records session stores + appended team entries) so the
+ *  per-attempt session file and reattempt-marker contracts can be asserted directly. */
 function makeRedispatchHarness(names: string[]): RedispatchHarness {
   const runs = new Map<string, CapturedRun>();
-  const initAgentFileCalls: string[] = [];
+  const sessionStores: unknown[] = [];
   const teamEntries: Array<Record<string, unknown>> = [];
   const statusUpdates: Array<{ agentId: string; status: string }> = [];
   const sentToLead: string[] = [];
@@ -1248,7 +1254,10 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
     ],
     resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
     engine: {
-      createSession: async () => ({}) as never,
+      createSession: async (opts: { store: unknown }) => {
+        sessionStores.push(opts.store);
+        return stubMemberSession();
+      },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
       // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
@@ -1276,10 +1285,9 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
   target['persistence'] = {
-    initAgentFile: async (_teamId: string, agentId: string) => { initAgentFileCalls.push(agentId); },
-    appendAgentEntry: () => undefined,
     appendTeamEntry: (e: Record<string, unknown>) => teamEntries.push(e),
     flush: async () => undefined,
+    writeCheckpoint: () => true,
   };
   target['agentRunner'] = {
     startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
@@ -1295,13 +1303,13 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
   }
 
   return {
-    runner, runs, agents, initAgentFileCalls, teamEntries, statusUpdates, sentToLead, messageBus,
+    runner, runs, agents, sessionStores, teamEntries, statusUpdates, sentToLead, messageBus,
     set: (_name, key) => privateField<Set<string>>(runner, key),
     map: (key) => privateField<Map<string, unknown>>(runner, key),
   };
 }
 
-/** Drive a real fresh spawn (so initAgentFile + the fresh agent-spawned entry are recorded), then settle it
+/** Drive a real fresh spawn (so the fresh agent-spawned entry is recorded), then settle it
  *  into the terminal `failed` state exactly as the runner's promise-.catch handler would. */
 async function driveToFailed(h: RedispatchHarness, name: string): Promise<void> {
   h.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
@@ -1449,13 +1457,14 @@ describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and ca
   });
 });
 
-describe('TeamRunner.redispatchSpecialist — transcript preservation', () => {
-  it('does NOT call initAgentFile on redispatch (fresh spawn DOES) and appends a reattempt:true agent-spawned entry', async () => {
+describe('TeamRunner.redispatchSpecialist — one session file per attempt', () => {
+  it('opens the redispatch in its own attempt file and appends a reattempt:true agent-spawned entry', async () => {
     const h = makeRedispatchHarness(['A']);
 
-    // Fresh spawn: initAgentFile IS called; the agent-spawned entry carries NO reattempt marker.
+    // Fresh spawn: attempt 0's file; the agent-spawned entry carries NO reattempt marker.
     await driveToFailed(h, 'A');
-    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    await h.runs.get('A')!.config.createSession();
+    expect(h.sessionStores).toEqual([expect.objectContaining({ kind: 'file', id: 'id-A.a0' })]);
     const freshSpawn = h.teamEntries.find((e) => e.type === 'agent-spawned');
     expect(freshSpawn).toBeDefined();
     expect(freshSpawn!.reattempt).toBeUndefined();
@@ -1463,8 +1472,12 @@ describe('TeamRunner.redispatchSpecialist — transcript preservation', () => {
     const entriesBefore = h.teamEntries.length;
     h.runner.redispatchSpecialist('A', 'the fresh redispatch task, described');
 
-    // Redispatch: initAgentFile is NOT called again (transcript preserved — no fs truncate).
-    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    // Redispatch: attempt 1 gets a new file beside attempt 0's, which is left untouched.
+    await h.runs.get('A')!.config.createSession();
+    expect(h.sessionStores).toEqual([
+      expect.objectContaining({ kind: 'file', id: 'id-A.a0' }),
+      expect.objectContaining({ kind: 'file', id: 'id-A.a1' }),
+    ]);
     // An agent-spawned entry WITH the reattempt marker IS appended.
     const reattemptEntry = h.teamEntries.slice(entriesBefore).find((e) => e.type === 'agent-spawned');
     expect(reattemptEntry).toBeDefined();
@@ -1922,8 +1935,8 @@ describe('TeamRunner stranded-lead review liveness (Slice D)', () => {
  *     spawn, resolveBriefConflict), not only approve/requestRevision — otherwise a
  *     healthy cancel→redispatch recovery burns the budget and gets force-synthesized.
  *  2. startSpecialist/redispatchSpecialist must refuse to launch after completion.
- *  3. A cancelled-from-pending specialist has no transcript: its redispatch IS the
- *     first launch and must initAgentFile (a launched one must NEVER be re-inited).
+ *  3. A cancelled-from-pending specialist never launched: its redispatch IS the
+ *     first launch.
  *  4. The role-aware deliverability copy is pinned against the REAL helper here
  *     (team-agent-tools.test.ts uses sentinel mocks for tool mechanics only).
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -1979,7 +1992,6 @@ describe('TeamRunner — completionResolved guards spawn/redispatch (no post-com
     inject(h.runner as unknown as Record<string, unknown>, 'completionResolved', true);
     expect(() => h.runner.startSpecialist('A', 'a well-described task here')).toThrow(COMPLETED_ERR);
     expect(h.runs.size).toBe(0);
-    expect(h.initAgentFileCalls).toHaveLength(0);
   });
 
   it('redispatchSpecialist after completion throws and launches nothing', () => {
@@ -1991,33 +2003,19 @@ describe('TeamRunner — completionResolved guards spawn/redispatch (no post-com
   });
 });
 
-describe('TeamRunner.redispatchSpecialist — cancelled-from-pending gets a first-launch transcript init', () => {
-  it('pending→cancelled→redispatch calls initAgentFile (first real launch) and appends the reattempt marker', async () => {
+describe('TeamRunner.redispatchSpecialist — cancelled-from-pending is a first launch', () => {
+  it('pending→cancelled→redispatch launches attempt 1 into its own file and appends the reattempt marker', async () => {
     const h = makeRedispatchHarness(['A']);
-    h.runner.cancelSpecialist('A'); // never launched: startTime null, no transcript exists
+    h.runner.cancelSpecialist('A'); // never launched: startTime null, no session file exists
     expect(h.agents.get('A')!.startTime).toBeNull();
-    expect(h.initAgentFileCalls).toHaveLength(0);
 
     h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
-    await Promise.resolve();
-    await Promise.resolve();
+    await h.runs.get('A')!.config.createSession();
 
-    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    expect(h.sessionStores).toEqual([expect.objectContaining({ kind: 'file', id: 'id-A.a1' })]);
     const reattempt = h.teamEntries.find((e) => e['type'] === 'agent-spawned' && e['reattempt'] === true);
     expect(reattempt).toBeDefined();
     expect(h.agents.get('A')!.status).toBe('running');
-  });
-
-  it('a previously-launched (failed) specialist is NEVER re-inited — transcript preserved', async () => {
-    const h = makeRedispatchHarness(['B']);
-    await driveToFailed(h, 'B');
-    expect(h.initAgentFileCalls).toEqual(['id-B']); // the fresh spawn only
-
-    h.runner.redispatchSpecialist('B', 'a well-described redispatch task');
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(h.initAgentFileCalls).toEqual(['id-B']); // unchanged — no truncate
   });
 });
 
@@ -2293,5 +2291,23 @@ describe('TeamRunner.getScratchpadReadStats', () => {
 
     expect(Object.keys(status)).not.toContain('scratchpadReads');
     expect(JSON.stringify(status)).not.toContain('markerHits');
+  });
+});
+
+describe('TeamRunner member session opening', () => {
+  it.each(['fresh', 'reopen'] as const)('releases a %s session whose first entry cannot be written, then rethrows', async (kind) => {
+    const forgotten: unknown[] = [];
+    const config = { teamId: 'team-1', cwd: '/cwd', persistenceSessionId: 'sess', agents: [], engine: { forgetSession: (s: unknown) => forgotten.push(s) } };
+    const runner = new TeamRunner(config as unknown as TeamConfig, () => undefined);
+    const session = { sessionManager: { appendCustomEntry: () => { throw new Error('disk full'); }, getSessionFile: () => undefined } };
+    const launch = kind === 'fresh'
+      ? { kind, resolution: { modelLabel: 'spec-model' }, prompt: 'task', redeliver: [] }
+      : { kind, path: '/cwd/member.jsonl', segment: { toolCallId: 'tc-resume' }, initial: { kind: 'park' }, redeliver: [] };
+    const createMemberSession = (runner as unknown as {
+      createMemberSession: (agent: TeamAgent, attempt: number, task: string, member: unknown, create: () => Promise<unknown>) => Promise<unknown>;
+    }).createMemberSession.bind(runner);
+
+    await expect(createMemberSession(makeAgent({ name: 'A', role: 'specialist' }), 0, 'task', launch, async () => session)).rejects.toThrow('disk full');
+    expect(forgotten).toEqual([session]);
   });
 });

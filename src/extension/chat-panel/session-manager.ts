@@ -99,6 +99,10 @@ export class SessionManager {
       getPermissionMode: () => permissionHandler.getPermissionMode(),
       resolveRoleModel: (role) => piSession!.resolveTeamRole(role),
       buildEngine: () => piSession!.buildTeamEngine(),
+      recordInvocation: (data) => piSession!.recordAgentInvocation(data),
+      parentBranch: () => piSession!.parentBranch(),
+      assertResumableModel: (path, agentId) => piSession!.assertResumableModel(path, agentId),
+      requestInterruptionCheck: () => piSession!.requestInterruptionCheck(),
     });
 
     piSession = new PiSession({

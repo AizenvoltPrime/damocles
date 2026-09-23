@@ -2,7 +2,7 @@ import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
-import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
@@ -43,6 +43,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
             // registerTeamFromTool only has the create_team input (title + roster). Pull the full
             // persisted team (per-agent models, tokens, tool counts, aggregate stats) so the historical
             // card matches a freshly-run one instead of showing zeros until the overlay is opened.
+            ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
+          }
+          // The host resolves a resume call to its team through the call's invocation entry.
+          if (tool.name === TEAM_RESUME_TOOL && !tool.isError) {
             ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
           }
           if (tool.name === TOOL_TASK_LIST && tool.result) {

@@ -41,6 +41,14 @@ export class MessageBus {
     return message;
   }
 
+  /**
+   * Rebuild the history from the team event log. Notifies no subscriber: every message is already
+   * persisted, and one its recipient had not received at the cancel is redelivered from the checkpoint.
+   */
+  restore(messages: readonly TeamMessage[]): void {
+    for (const message of messages) this.appendMessage(message);
+  }
+
   private appendMessage(message: TeamMessage): void {
     this.messages.push(message);
     if (this.messages.length > MAX_MESSAGES) {

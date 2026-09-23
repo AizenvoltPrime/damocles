@@ -1,15 +1,22 @@
 import * as crypto from 'crypto';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
-import type { AgentRunConfig, AgentResult } from './types';
-import type { TeamAgentContentBlock } from '../../shared/types/team';
+import type { AgentRunConfig, AgentResult, UndeliveredMessage } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
+import { STEER_INSTRUCTION_PREFIX } from '../../shared/steer';
 import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../pi-session/finish-turn';
 import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
 import { joinResultText } from '../pi-session/tool-result-text';
-import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
+import { mapPiToolName } from '../pi-session/tool-normalization';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
+import { assistantContentBlocks, toolResultBlock, type PiAssistantBlock } from './content-blocks';
+
+/** Messages queued for one run. `onArrival` is a no-op until the session is open to deliver them. */
+interface RunInbox {
+  pending: UndeliveredMessage[];
+  onArrival: () => void;
+}
 
 /** Tools whose whole point is that the agent stops here, so the engine ends the turn on their result. */
 const TURN_ENDING_TOOLS = new Set(['team_standby', 'team_report_complete']);
@@ -23,9 +30,8 @@ const TURN_ENDING_TOOLS = new Set(['team_standby', 'team_report_complete']);
  * `keepAlive()` is false (the agent has nothing left to wait for, e.g. the team synthesized), the loop
  * exits and the session ends. Abort (the team or specialist controller) breaks the wait and ends.
  *
- * Webview streaming + persistence are emitted from the same session subscription so the existing
- * `team*` contract is preserved verbatim (no contract change). The runner returns an `AgentResult` with
- * the final usage totals, mirroring the SDK runner's return shape.
+ * Webview streaming is emitted from the session subscription, while the member's messages persist in
+ * its own pi session file. The runner returns an `AgentResult` with the final usage totals.
  */
 export class AgentRunner {
   async startAgent(config: AgentRunConfig): Promise<AgentResult> {
@@ -45,19 +51,54 @@ export class AgentRunner {
 
     if (config.abortSignal.aborted) return empty('cancelled', null);
 
+    // Subscribed before the session opens, so a message sent while it opens is queued, not lost.
+    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], onArrival: () => undefined };
+    const accept = (message: UndeliveredMessage): void => {
+      inbox.pending.push(message);
+      inbox.onArrival();
+    };
+    const unsubscribeBus = config.messageBus.subscribe((msg) => {
+      if (msg.from === config.name) return;
+      if (msg.to !== config.name && msg.to !== null) return;
+      if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to, ...(msg.kind ? { kind: msg.kind } : {}) })) return;
+      accept({ text: `[Message from ${msg.from}]: ${msg.content}`, echoed: false });
+    });
+    // A user note reaches the run here rather than through the bus, so no delivery filter, no self-name
+    // filter and no post-teardown subscription can drop it without the caller finding out.
+    const unbindNote = config.bindNoteDelivery((text: string): boolean => {
+      if (config.abortSignal.aborted) return false;
+      this.emitUserMessage(config, text);
+      accept({ text, echoed: true });
+      return true;
+    });
+    let opened: AgentSession | null = null;
+    const unbindUndelivered = config.bindUndelivered(() => [
+      // pi's queues hold text the runner already flushed and echoed, and it was queued before the pending list.
+      ...(opened ? [...opened.getSteeringMessages(), ...opened.getFollowUpMessages()].map((text) => ({ text, echoed: true })) : []),
+      ...inbox.pending.map((m) => ({ ...m })),
+    ]);
+    const release = (): void => {
+      unsubscribeBus();
+      unbindNote();
+      unbindUndelivered();
+    };
+
     let session: AgentSession;
     try {
       session = await config.createSession();
     } catch (err) {
+      release();
       const errMsg = err instanceof Error ? err.message : String(err);
       config.messageBus.broadcast('system', `Agent "${config.name}" failed to start: ${errMsg}`);
       return empty('failed', `Failed to start: ${errMsg}`);
     }
     // The signal can already be aborted by the time createSession resolves — check up-front before wiring.
     if (config.abortSignal.aborted) {
+      release();
       config.forgetSession(session);
       return empty('cancelled', null);
     }
+    opened = session;
 
     // A terminal tool only takes effect if the turn ends, and the model keeps working after calling one
     // unless the engine ends the turn.
@@ -75,10 +116,16 @@ export class AgentRunner {
       return parked ? { action: 'end' } : undefined;
     });
 
-    return this.runAgent(config, session, startTime);
+    return this.runAgent(config, session, startTime, inbox, release);
   }
 
-  private async runAgent(config: AgentRunConfig, session: AgentSession, startTime: number): Promise<AgentResult> {
+  private async runAgent(
+    config: AgentRunConfig,
+    session: AgentSession,
+    startTime: number,
+    inbox: RunInbox,
+    release: () => void,
+  ): Promise<AgentResult> {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
@@ -89,13 +136,15 @@ export class AgentRunner {
     let cacheReadTokens = 0;
     let costUsd = 0;
     let lastRolledCost = 0;
+    // A reopened session's stats include the spend of its earlier runs, which were already charged.
+    const costBaseline = session.getSessionStats().cost;
 
     /**
-     * Text waiting to be prompted, flushed as one combined prompt at the next turn. `echoed` records
-     * whether the overlay has already seen it: a user note is echoed the moment it is accepted (that
-     * echo is what the delivery caller is told about), a bus message is echoed at flush.
+     * Messages waiting to be delivered, each as its own prompt. `echoed` records whether the overlay has
+     * already seen one: a user note is echoed the moment it is accepted (that echo is what the delivery
+     * caller is told about), a bus message is echoed when it is handed to pi.
      */
-    const pendingMessages: Array<{ text: string; echoed: boolean }> = [];
+    const pendingMessages = inbox.pending;
     /** Wakes the idle-wait when a message arrives or the agent must terminate (abort). */
     let waitResolve: ((reason: 'message' | 'abort') => void) | null = null;
 
@@ -111,19 +160,22 @@ export class AgentRunner {
     const outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((msg) => config.onMessage(msg));
 
     const unsubscribeSession = session.subscribe((event: AgentSessionEvent) => {
+      // Messages queued before the run was streaming (redelivered, sent while the session opened or
+      // while pi prepared the prompt) join the run here instead of waiting for it to end.
+      if (event.type === 'agent_start') inbox.onArrival();
       this.handleSessionEvent(event, config, outputCoalescer, {
         onToolUse: (name) => {
           toolCallCount++;
           config.onToolCall?.(name, toolCallCount);
         },
         onAssistantText: (text) => { finalResponse = text; },
-        getCost: () => session.getSessionStats().cost,
+        getCost: () => session.getSessionStats().cost - costBaseline,
         onUsage: (u) => {
           // u is the per-message usage from this `message_end`, one request, so adding it here counts
           // each request's cached prefix exactly once.
           addUsage(lifetime, { input: u.input, output: u.output, cacheWrite: u.cacheWrite });
           cacheReadTokens += u.cacheRead;
-          // u.cost is pi's cumulative session cost. Safe to take as-is (not summed) because team agent
+          // u.cost is pi's cumulative session cost past the baseline. Safe to take as-is (not summed) because team agent
           // sessions force-disable auto-compaction (pi-runtime.createSubagentSession), so the cost never
           // resets mid-run — it stays monotonic for the agent's whole lifetime.
           costUsd = u.cost;
@@ -137,35 +189,19 @@ export class AgentRunner {
       });
     });
 
-    const unsubscribeBus = config.messageBus.subscribe((msg) => {
-      if (msg.from === config.name) return;
-      if (msg.to !== config.name && msg.to !== null) return;
-      if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to, ...(msg.kind ? { kind: msg.kind } : {}) })) return;
-      pendingMessages.push({ text: `[Message from ${msg.from}]: ${msg.content}`, echoed: false });
-      // Deliver immediately as a steer if mid-stream; otherwise wake the idle-wait to flush + re-prompt.
-      // 0.80.5 fixes a latent race here: `isStreaming` now stays true across retry windows, so a bus
-      // message arriving during a retry — which previously saw `isStreaming === false` and re-prompted a
-      // still-active session — now correctly steers instead.
+    inbox.onArrival = () => {
+      // Mid-stream, each message joins pi's steering queue in delivery order; otherwise wake the
+      // idle-wait to re-prompt. 0.80.5 fixes a latent race here: `isStreaming` now stays true across
+      // retry windows, so a bus message arriving during a retry — which previously saw
+      // `isStreaming === false` and re-prompted a still-active session — now correctly steers instead.
       if (session.isStreaming) {
-        void promptQueued(flushPending(), { streamingBehavior: 'steer' }).catch(() => {});
+        for (let text = takeNext(); text !== undefined; text = takeNext()) {
+          void promptQueued(text, { streamingBehavior: 'steer' }).catch(() => {});
+        }
       } else {
         wake('message');
       }
-    });
-
-    // A user note reaches the run here rather than through the bus, so no delivery filter, no self-name
-    // filter and no post-teardown subscription can drop it without the caller finding out.
-    const unbindNote = config.bindNoteDelivery((text: string): boolean => {
-      if (config.abortSignal.aborted) return false;
-      this.emitUserMessage(config, text);
-      pendingMessages.push({ text, echoed: true });
-      if (session.isStreaming) {
-        void promptQueued(flushPending(), { streamingBehavior: 'steer' }).catch(() => {});
-      } else {
-        wake('message');
-      }
-      return true;
-    });
+    };
 
     const onAbort = (): void => { wake('abort'); void session.abort().catch(() => {}); };
     config.abortSignal.addEventListener('abort', onAbort, { once: true });
@@ -179,50 +215,65 @@ export class AgentRunner {
     const promptQueued = (text: string, options?: { streamingBehavior: 'steer' }): Promise<void> =>
       session.prompt(text, { ...options, expandPromptTemplates: false });
 
-    /** Combines the queue into one prompt, echoing only the parts the overlay has not already seen. */
-    const flushPending = (): string => {
-      const unechoed = pendingMessages.filter((m) => !m.echoed).map((m) => m.text).join('\n\n');
-      if (unechoed) this.emitUserMessage(config, unechoed);
-      const combined = pendingMessages.map((m) => m.text).join('\n\n');
-      pendingMessages.length = 0;
-      return combined;
+    /**
+     * Removes the next message to deliver, steers first, echoing it if the overlay has not seen it.
+     * Never merge messages: a steer's authority covers its whole user message, so peer text must not share one.
+     */
+    const takeNext = (): string | undefined => {
+      const index = Math.max(0, pendingMessages.findIndex((m) => m.text.startsWith(STEER_INSTRUCTION_PREFIX)));
+      const [next] = pendingMessages.splice(index, 1);
+      if (!next) return undefined;
+      if (!next.echoed) this.emitUserMessage(config, next.text);
+      return next.text;
     };
 
     try {
-      this.emitStatus(config, 'running');
-      // The opening task — emitted to the webview + persisted as the first user message.
-      this.emitUserMessage(config, config.specialization);
+      // A parked run starts where a turn-end leaves one: waiting, with no prompt and no `running` status.
+      let parked = config.initial.kind === 'park';
+      if (config.initial.kind === 'prompt') {
+        this.emitStatus(config, 'running');
+        // The opening task — emitted to the webview + persisted as the first user message.
+        this.emitUserMessage(config, config.initial.text);
+        await session.prompt(config.initial.text);
+      }
 
-      await session.prompt(config.specialization);
-
-      // Event-driven wait/re-prompt loop — no timers. After each turn: flush any pending messages and
-      // re-prompt; else, if the agent must keep waiting, idle until a message arrives or it must abort.
+      // Event-driven wait/re-prompt loop — no timers. After each turn: re-prompt with the next pending
+      // message; else, if the agent must keep waiting, idle until a message arrives or it must abort.
       while (!config.abortSignal.aborted) {
-        // Reclaims a message pi never delivered because the run ended on an abort or a provider error,
-        // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
-        if (session.pendingMessageCount > 0) {
-          const queued = session.clearQueue();
-          for (const text of [...queued.steering, ...queued.followUp]) {
-            pendingMessages.push({ text, echoed: true });
+        if (!parked) {
+          // Reclaims a message pi never delivered because the run ended on an abort or a provider error,
+          // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
+          if (session.pendingMessageCount > 0) {
+            const queued = session.clearQueue();
+            for (const text of [...queued.steering, ...queued.followUp]) {
+              pendingMessages.push({ text, echoed: true });
+            }
           }
+          // One message opens the run; the rest of the queue joins it as steers on its `agent_start`.
+          const next = takeNext();
+          if (next !== undefined) {
+            await promptQueued(next);
+            continue;
+          }
+          if (!config.keepAlive?.()) {
+            config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
+            if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
+          }
+          config.onTurnEnd?.();
         }
-        if (pendingMessages.length > 0) {
-          await promptQueued(flushPending());
-          continue;
+        // A parked run's first message goes through the wake below, so onKeepAliveResume sees it.
+        parked = false;
+        // Something queued before the wait is armed would never resolve it, so it skips the wait.
+        if (pendingMessages.length === 0) {
+          const reason = await new Promise<'message' | 'abort'>((resolve) => { waitResolve = resolve; });
+          if (reason === 'abort' || config.abortSignal.aborted) break;
         }
-        if (!config.keepAlive?.()) {
-          config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
-          if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
-        }
-        config.onTurnEnd?.();
-        const reason = await new Promise<'message' | 'abort'>((resolve) => { waitResolve = resolve; });
-        if (reason === 'abort' || config.abortSignal.aborted) break;
         // Re-check keepAlive after the wake: a message may have arrived together with a state change
         // (e.g. revision delivered) — but if keepAlive flipped false meanwhile, end rather than re-prompt.
         if (!config.keepAlive?.() && pendingMessages.length === 0) break;
         config.onKeepAliveResume?.();
-        const combined = flushPending();
-        if (combined) await promptQueued(combined);
+        const woken = takeNext();
+        if (woken !== undefined) await promptQueued(woken);
       }
       if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
@@ -235,8 +286,7 @@ export class AgentRunner {
       }
     } finally {
       waitResolve = null;
-      unbindNote();
-      unsubscribeBus();
+      release();
       unsubscribeSession();
       outputCoalescer.dispose();
       config.abortSignal.removeEventListener('abort', onAbort);
@@ -261,7 +311,7 @@ export class AgentRunner {
     return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens: lifetime.input, totalOutputTokens: lifetime.output, cacheReadTokens, cacheCreationTokens: lifetime.cacheWrite, costUsd };
   }
 
-  /** Map one pi session event to the existing `team*` webview messages + persistence (no contract change). */
+  /** Map one pi session event to the existing `team*` webview messages (no contract change). */
   private handleSessionEvent(
     event: AgentSessionEvent,
     config: AgentRunConfig,
@@ -314,31 +364,15 @@ export class AgentRunner {
       case 'tool_execution_end': {
         // Cancel before anything else: a pending partial landing after the result would resurrect stale output.
         outputCoalescer.cancel(event.toolCallId);
-        const resultText = joinResultText(event.result);
         // The team path has no `toolMetadata` message, so the result's details ride on this one or reach the card never.
-        const details = (event.result as { details?: unknown } | undefined)?.details;
-        const metadata = details && typeof details === 'object'
-          ? normalizeToolDetails(details as Record<string, unknown>)
-          : undefined;
+        const block = toolResultBlock(event.toolCallId, event.result, event.isError === true);
         config.onMessage({
           type: 'teamAgentToolResult', teamId: config.teamId,
           agentId: config.agentId,
           toolUseId: event.toolCallId,
-          result: resultText,
-          isError: event.isError === true,
-          ...(metadata ? { metadata } : {}),
-        });
-        // Persisted alongside the live message: a reopened team derives each card's terminal status
-        // from this entry, and the cancelled marker travels in `metadata` or nowhere.
-        const block: TeamAgentContentBlock = {
-          type: 'tool_result',
-          tool_use_id: event.toolCallId,
-          content: resultText,
-          is_error: event.isError === true,
-          ...(metadata ? { metadata } : {}),
-        };
-        config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-          type: 'tool_result', agentId: config.agentId, content: [block], timestamp: new Date().toISOString(),
+          result: block.content,
+          isError: block.is_error === true,
+          ...(block.metadata ? { metadata: block.metadata } : {}),
         });
         break;
       }
@@ -363,9 +397,9 @@ export class AgentRunner {
     }
   }
 
-  /** Seal one completed assistant message: emit `teamAgentAssistant` + persist, and count tool uses. */
+  /** Seal one completed assistant message: emit `teamAgentAssistant` and count tool uses. */
   private emitAssistant(
-    content: ReadonlyArray<{ type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
+    content: ReadonlyArray<PiAssistantBlock> | undefined,
     config: AgentRunConfig,
     cb: {
       onToolUse: (name: string) => void;
@@ -374,20 +408,13 @@ export class AgentRunner {
   ): void {
     if (!content) return;
 
-    const blocks: TeamAgentContentBlock[] = [];
-    for (const b of content) {
-      if (b.type === 'text' && b.text) {
-        blocks.push({ type: 'text', text: b.text });
+    const blocks = assistantContentBlocks(content);
+    for (const b of blocks) {
+      if (b.type === 'text') {
         cb.onAssistantText(b.text);
-      } else if (b.type === 'thinking') {
-        blocks.push({ type: 'thinking', thinking: b.thinking ?? '' });
-      } else if (b.type === 'toolCall' && b.id && b.name) {
-        const toolName = mapPiToolName(b.name);
-        // normalizeToolInput switches on the raw pi name, so it takes b.name and never the mapped one.
-        const toolInput = normalizeToolInput(b.name, (b.arguments ?? {}) as Record<string, unknown>);
-        cb.onToolUse(toolName);
-        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName, toolInput });
-        blocks.push({ type: 'tool_use', id: b.id, name: toolName, input: toolInput });
+      } else if (b.type === 'tool_use') {
+        cb.onToolUse(b.name);
+        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName: b.name, toolInput: b.input as Record<string, unknown> });
       }
     }
     if (blocks.length === 0) return;
@@ -398,16 +425,10 @@ export class AgentRunner {
       content: blocks,
       timestamp: Date.now(),
     });
-    config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-      type: 'assistant', agentId: config.agentId, content: blocks, timestamp: new Date().toISOString(),
-    });
   }
 
   private emitUserMessage(config: AgentRunConfig, content: string): void {
     config.onMessage({ type: 'teamAgentUserMessage', teamId: config.teamId, agentId: config.agentId, content, timestamp: Date.now() });
-    config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-      type: 'user', agentId: config.agentId, content, timestamp: new Date().toISOString(),
-    });
   }
 
   private emitStatus(

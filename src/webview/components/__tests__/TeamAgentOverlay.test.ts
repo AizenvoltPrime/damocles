@@ -1,16 +1,28 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { defineComponent } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ToolCall } from '@shared/types/session';
 import type { TeamAgent, TeamState } from '@shared/types/team';
+import type { WebviewToExtensionMessage } from '@shared/types/messages';
+import { wrapSteerMessage } from '@shared/steer';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
-import { useTeamStore } from '@/stores/useTeamStore';
+import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
 import { i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
+
+const posted: WebviewToExtensionMessage[] = [];
+vi.mock('@/composables/useVSCode', () => ({
+  useVSCode: () => ({
+    postMessage: (m: WebviewToExtensionMessage) => posted.push(m),
+    onMessage: () => () => {},
+    getState: () => undefined,
+    setState: () => {},
+  }),
+}));
 
 /**
  * The seam between the agent transcript and the tool overlay. The two suites next door cover the
@@ -72,17 +84,24 @@ function team(): TeamState {
     startTime: 1,
     endTime: null,
     totalToolCount: 1,
+    runs: [],
   };
 }
 
 function open(toolCalls: ToolCall[]) {
+  return openWith([{ id: 'msg-1', role: 'assistant', content: 'working', toolCalls, timestamp: 1 }]);
+}
+
+function openWith(messages: AgentChatMessage[]) {
+  useTeamStore().agentMessages = { [AGENT_ID]: messages };
+  return mountOverlay();
+}
+
+function mountOverlay() {
   const store = useTeamStore();
   store.restoreTeamFromHistory(team());
   store.openOverlay(TEAM_ID);
   store.openAgentOverlay(AGENT_ID);
-  store.agentMessages = {
-    [AGENT_ID]: [{ id: 'msg-1', role: 'assistant', content: 'working', toolCalls, timestamp: 1 }],
-  };
 
   return mount(TeamAgentOverlay, {
     global: {
@@ -99,7 +118,80 @@ function open(toolCalls: ToolCall[]) {
   });
 }
 
-beforeEach(() => setActivePinia(createPinia()));
+beforeEach(() => {
+  setActivePinia(createPinia());
+  posted.length = 0;
+});
+
+function historyRequests(): WebviewToExtensionMessage[] {
+  return posted.filter((m) => m.type === 'requestTeamAgentData');
+}
+
+describe('a steering message inside a team agent overlay', () => {
+  // A resumed lead's prompt carries the same marker as an operator /steer, so the label names no sender.
+  it('is labelled Steered, not as something the user sent, and shows the text without the marker', () => {
+    const wrapper = openWith([{ id: 'u-1', role: 'user', content: wrapSteerMessage('check the tests'), timestamp: 1 }]);
+
+    expect(wrapper.text()).toContain('Steered');
+    expect(wrapper.text()).not.toContain('You steered');
+    expect(wrapper.find('markdown-renderer-stub').attributes('content')).toBe('check the tests');
+  });
+
+  it('shows a peer message as plain user text', () => {
+    const wrapper = openWith([{ id: 'u-1', role: 'user', content: '[Message from lead]: go', timestamp: 1 }]);
+
+    expect(wrapper.text()).not.toContain('Steered');
+  });
+});
+
+describe('a member history loaded from its session file', () => {
+  /** How the overlay presented each message, read from the wrapper around its rendered text. */
+  function rendered(wrapper: ReturnType<typeof mountOverlay>): Array<[string, string | undefined]> {
+    return wrapper.findAll('markdown-renderer-stub').map((stub) => {
+      const within = (cls: string): boolean => {
+        for (let el: Element | null = stub.element; el; el = el.parentElement) if (el.classList.contains(cls)) return true;
+        return false;
+      };
+      const kind = within('border-warning/50') ? 'steer' : within('border-foreground/20') ? 'user' : 'assistant';
+      return [kind, stub.attributes('content')];
+    });
+  }
+
+  it('shows the task and a peer message as user text, a steer as Steered, and the reply as output', () => {
+    useTeamStore().handleAgentDataLoaded(AGENT_ID, [
+      { id: '0:a1', role: 'user', content: [{ type: 'text', text: 'fix the parser' }] },
+      { id: '0:a2', role: 'user', content: [{ type: 'text', text: '[Message from lead]: go' }] },
+      { id: '0:a3', role: 'user', content: [{ type: 'text', text: wrapSteerMessage('check the tests') }] },
+      { id: '0:a4', role: 'assistant', content: [{ type: 'text', text: 'On it.' }] },
+    ]);
+
+    const wrapper = mountOverlay();
+
+    expect(rendered(wrapper)).toEqual([
+      ['user', 'fix the parser'],
+      ['user', '[Message from lead]: go'],
+      ['steer', 'check the tests'],
+      ['assistant', 'On it.'],
+    ]);
+    expect(wrapper.text()).toContain('Steered');
+  });
+});
+
+describe('the member history request', () => {
+  it('asks for the member file on open even while live messages are showing', () => {
+    openWith([{ id: 'u-1', role: 'user', content: 'You were interrupted. Continue.', timestamp: 1 }]);
+
+    expect(historyRequests()).toEqual([{ type: 'requestTeamAgentData', teamId: TEAM_ID, agentId: AGENT_ID }]);
+  });
+
+  it('does not ask again once the member file has loaded', () => {
+    useTeamStore().handleAgentDataLoaded(AGENT_ID, []);
+
+    openWith([]);
+
+    expect(historyRequests()).toEqual([]);
+  });
+});
 
 describe('tool calls inside a team agent overlay', () => {
   it('renders one card per tool call instead of a name chip', () => {

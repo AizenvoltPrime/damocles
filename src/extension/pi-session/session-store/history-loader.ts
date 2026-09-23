@@ -1,11 +1,23 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import type { ContentBlock, HistoryToolCall } from '@shared/types/content';
+import type { ContentBlock, HistoryAgentMessage, HistoryToolCall } from '@shared/types/content';
 import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { getCheckpointEntries } from '../checkpoints';
-import { readSubagentTranscripts } from '../subagents/output-file';
+import { piMessagesToHistoryAgentMessages } from '../subagents/message-mapper';
+import {
+  agentInvocationsOnBranch,
+  indexAgentFiles,
+  injectedAgentResultsOnBranch,
+  isAgentToolDetails,
+  readAgentFile,
+  resolveAgentStatus,
+  segmentForInvocation,
+  subagentsDir,
+  type AgentFile,
+  type AgentInvocationData,
+} from '../agent-records';
 import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
@@ -242,40 +254,86 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
   return { messages, usage };
 }
 
-/**
- * Attach each replayed `Agent` tool call to its subagent transcript on disk so the resumed parent card
- * rehydrates its nested conversation, model, and tool count (§4.8). Best-effort: missing/unreadable
- * transcripts leave the card as a bare tool entry rather than failing the session load. Keyed by the
- * spawning `Agent` tool-call id (the webview subagent-card key), which the transcript records natively.
- */
-async function hydrateSubagentTranscripts(cwd: string, sessionId: string, messages: ReplayMessage[]): Promise<void> {
-  const hasAgentTool = messages.some((m) => m.kind === 'assistant' && m.tools.some((t) => t.name === TOOL_AGENT));
-  if (!hasAgentTool) return;
-
-  let transcripts: Awaited<ReturnType<typeof readSubagentTranscripts>>;
-  try {
-    transcripts = await readSubagentTranscripts(cwd, sessionId);
-  } catch (err) {
-    log('[session-store] subagent transcript hydrate failed for %s: %O', sessionId, err);
-    return;
+function countToolUses(messages: readonly HistoryAgentMessage[]): number {
+  let count = 0;
+  for (const msg of messages) {
+    for (const block of msg.contentBlocks) {
+      if (block.type === 'tool_use') count++;
+    }
   }
-  if (transcripts.size === 0) return;
+  return count;
+}
+
+/**
+ * Attach each replayed `Agent` tool call to its subagent's pi session file, found through the parent
+ * branch's invocation entries, so the card rehydrates its nested conversation and outcome. A resume
+ * call gets its own card holding only the segment it opened. A call with no invocation entry (sessions
+ * recorded before agent files existed) stays a bare tool card.
+ */
+async function hydrateSubagentCards(
+  cwd: string,
+  sessionId: string,
+  branch: readonly SessionEntry[],
+  messages: ReplayMessage[],
+): Promise<void> {
+  const invocations = new Map<string, AgentInvocationData>();
+  for (const inv of agentInvocationsOnBranch(branch)) {
+    if (inv.kind === 'subagent') invocations.set(inv.toolCallId, inv);
+  }
+  if (invocations.size === 0) return;
+  const injected = injectedAgentResultsOnBranch(branch);
+
+  let files: Map<string, string>;
+  try {
+    files = await indexAgentFiles(subagentsDir(ensurePiSessionDir(cwd), sessionId));
+  } catch (err) {
+    log('[session-store] indexing subagent files failed for %s: %O', sessionId, err);
+    files = new Map();
+  }
+  const read = new Map<string, Promise<AgentFile | null>>();
+  const readOnce = (path: string): Promise<AgentFile | null> => {
+    let pending = read.get(path);
+    if (!pending) {
+      pending = readAgentFile(path).catch((err: unknown) => {
+        log('[session-store] reading subagent file %s failed: %O', path, err);
+        return null;
+      });
+      read.set(path, pending);
+    }
+    return pending;
+  };
 
   for (const msg of messages) {
     if (msg.kind !== 'assistant') continue;
     for (const tool of msg.tools) {
       if (tool.name !== TOOL_AGENT) continue;
-      const transcript = transcripts.get(tool.id);
-      if (!transcript) continue;
-      tool.sdkAgentId = transcript.agentId;
-      if (transcript.messages.length > 0) tool.agentMessages = transcript.messages;
-      if (transcript.model) tool.agentModel = transcript.model;
-      if (transcript.templatePath) tool.agentTemplatePath = transcript.templatePath;
-      if (transcript.startTimestamp !== undefined) tool.agentStartTimestamp = transcript.startTimestamp;
-      if (transcript.endTimestamp !== undefined) tool.agentEndTimestamp = transcript.endTimestamp;
-      tool.agentToolCount = transcript.totalToolUseCount;
-      if (transcript.status) tool.agentStatus = transcript.status;
-      if (transcript.finalResult !== undefined) tool.agentResultText = transcript.finalResult;
+      const inv = invocations.get(tool.id);
+      if (!inv) continue;
+      tool.sdkAgentId = inv.id;
+      if (inv.resume) tool.agentResumedFrom = inv.id;
+      const path = files.get(inv.id);
+      const file = path ? await readOnce(path) : null;
+      const segment = file ? segmentForInvocation(file, inv) : undefined;
+      if (file?.launch.kind === 'subagent') {
+        const { agentType, description, prompt, background } = file.launch;
+        tool.agentLaunch = { agentType, description, prompt, background };
+        if (file.launch.modelLabel) tool.agentModel = file.launch.modelLabel;
+        if (file.launch.templatePath) tool.agentTemplatePath = file.launch.templatePath;
+      }
+      if (segment) {
+        const agentMessages = piMessagesToHistoryAgentMessages(segment.messages);
+        if (agentMessages.length > 0) tool.agentMessages = agentMessages;
+        tool.agentToolCount = countToolUses(agentMessages);
+        if (segment.startTimestamp !== undefined) tool.agentStartTimestamp = segment.startTimestamp;
+        if (segment.endTimestamp !== undefined) tool.agentEndTimestamp = segment.endTimestamp;
+      }
+      const resolved = resolveAgentStatus({
+        file: segment?.status,
+        toolResult: isAgentToolDetails(tool.metadata) ? tool.metadata : undefined,
+        injection: injected.get(tool.id),
+      });
+      tool.agentStatus = resolved.status;
+      if (resolved.result !== undefined) tool.agentResultText = resolved.result;
     }
   }
 }
@@ -323,11 +381,12 @@ export async function loadPiSessionHistory(
 
   let messages: ReplayMessage[];
   let usage: UsageTotals;
+  let branch: SessionEntry[];
   const checkpointUserIds: string[] = [];
   try {
     const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
     const leafId = sm.getLeafId();
-    const branch = sm.getBranch(leafId ?? undefined);
+    branch = sm.getBranch(leafId ?? undefined);
     ({ messages, usage } = reconstructMessages(branch));
     // Re-surface checkpoints so resumed turns are immediately rewindable, on EVERY resume path (the
     // `ready` auto-resume defers the live session — and its hydrate — until the first message). The
@@ -347,7 +406,7 @@ export async function loadPiSessionHistory(
   // A newer replay superseded us mid-load; stop silently (it owns the panel and emits its own done).
   if (signal?.aborted) return;
 
-  await hydrateSubagentTranscripts(cwd, sessionId, messages);
+  await hydrateSubagentCards(cwd, sessionId, branch, messages);
   if (signal?.aborted) return;
 
   let promptIndex = 0;

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ContentBlock } from '@shared/types/content';
 import { CANCELLED_TOOL_DETAIL_KEY, type ToolCall } from '@shared/types/session';
-import { useSubagentStore } from '../useSubagentStore';
+import { subagentHeading, useSubagentStore } from '../useSubagentStore';
+import { i18n } from '@/i18n';
 import { defined } from '@/__tests__/helpers';
 
 function nestedTool(store: ReturnType<typeof useSubagentStore>, agentId: string, toolId: string): ToolCall {
@@ -116,6 +117,18 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
       agentResultText: 'boom',
     });
     expect(defined(store.subagents['toolu_3'], 'toolu_3').status).toBe('failed');
+  });
+
+  it('restores an interrupted subagent (no status recorded anywhere) as cancelled, not completed', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'toolu_3b',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'p', run_in_background: true },
+      result: JSON.stringify({ status: 'async_launched', agentId: 'agent-3b' }),
+      agentStatus: 'interrupted',
+    });
+    expect(defined(store.subagents['toolu_3b'], 'toolu_3b').status).toBe('cancelled');
   });
 
   it('falls back to the presence heuristic for legacy transcripts without a persisted status', () => {
@@ -272,5 +285,127 @@ describe('useSubagentStore sealed transcript rehydration', () => {
     }]);
 
     expect(nestedTool(store, 'agent-1', 'nested-1').status).toBe('cancelled');
+  });
+});
+
+describe('useSubagentStore resume cards', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  const t = (key: string, params: Record<string, unknown>): string => i18n.global.t(key, params);
+  const AGENT = '0a1b2c3d-4e5f-4a0';
+
+  it('shows "Resuming <id8>" until the agent starts, then its own description with the Resumed badge', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-r', { resume: AGENT, message: 'finish it' });
+    const pending = defined(store.subagents['tc-r'], 'tc-r');
+    expect(pending.prompt).toBe('finish it');
+    expect(subagentHeading(pending, t)).toEqual({ title: 'Resuming 0a1b2c3d', resumed: false });
+
+    store.startSubagent(AGENT, 'Explore', 'tc-r', true, { description: 'dig in', resumedFrom: AGENT });
+    const loaded = defined(store.subagents['tc-r'], 'tc-r');
+    expect(loaded).toMatchObject({ agentType: 'Explore', description: 'dig in', isBackground: true, resume: { agentId: AGENT, loaded: true } });
+    expect(subagentHeading(loaded, t)).toEqual({ title: 'dig in', resumed: true });
+  });
+
+  it('leaves the type unset on a resume card until the agent names it, rather than guessing one', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-r', { resume: AGENT });
+
+    expect(defined(store.subagents['tc-r'], 'tc-r').agentType).toBeUndefined();
+  });
+
+  it('takes the type and description from the spawn card of the same agent at once', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc1', { subagent_type: 'Explore', description: 'dig in', prompt: 'p' });
+    store.startSubagent(AGENT, 'Explore', 'tc1', false, { description: 'dig in' });
+    store.cancelRunningSubagents();
+
+    store.registerAgentTool('tc-r', { resume: AGENT, message: 'finish it' });
+
+    const pending = defined(store.subagents['tc-r'], 'tc-r');
+    expect(pending.agentType).toBe('Explore');
+    expect(subagentHeading(pending, t)).toEqual({ title: 'dig in', resumed: true });
+  });
+
+  it('titles a resumed agent that carries no description by its type, as a spawn card does', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc-r', { resume: AGENT });
+
+    store.startSubagent(AGENT, 'Explore', 'tc-r', false, { resumedFrom: AGENT });
+
+    const loaded = defined(store.subagents['tc-r'], 'tc-r');
+    expect(loaded.agentType).toBe('Explore');
+    expect(subagentHeading(loaded, t)).toEqual({ title: 'Explore', resumed: true });
+  });
+
+  it('a spawn card has no resume label, and the original card stays cancelled after a resume', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc1', { subagent_type: 'Explore', description: 'dig in', prompt: 'p' });
+    store.startSubagent(AGENT, 'Explore', 'tc1', false, { description: 'dig in' });
+    store.cancelRunningSubagents();
+    store.registerAgentTool('tc-r', { resume: AGENT });
+    store.startSubagent(AGENT, 'Explore', 'tc-r', false, { description: 'dig in', resumedFrom: AGENT });
+
+    const original = defined(store.subagents['tc1'], 'tc1');
+    expect(original.status).toBe('cancelled');
+    expect(subagentHeading(original, t)).toEqual({ title: 'dig in', resumed: false });
+    expect(defined(store.subagents['tc-r'], 'tc-r').status).toBe('running');
+  });
+
+  it('restores a resume card from history with the launch details and the Resumed badge', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'tc-r',
+      name: 'Agent',
+      input: { resume: AGENT, message: 'finish it' },
+      sdkAgentId: AGENT,
+      agentResumedFrom: AGENT,
+      agentLaunch: { agentType: 'Explore', description: 'dig in', prompt: 'look', background: true },
+      agentStatus: 'completed',
+      agentResultText: 'second half',
+    });
+    const restored = defined(store.subagents['tc-r'], 'tc-r');
+    expect(restored).toMatchObject({ agentType: 'Explore', prompt: 'finish it', isBackground: true, status: 'completed' });
+    expect(subagentHeading(restored, t)).toEqual({ title: 'dig in', resumed: true });
+  });
+
+  it('a resume card whose agent file is gone keeps the "Resuming" label and shows no type', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({ id: 'tc-r', name: 'Agent', input: { resume: AGENT }, agentResumedFrom: AGENT, agentStatus: 'interrupted' });
+    const restored = defined(store.subagents['tc-r'], 'tc-r');
+    expect(restored.status).toBe('cancelled');
+    expect(restored.agentType).toBeUndefined();
+    expect(subagentHeading(restored, t).title).toBe('Resuming 0a1b2c3d');
+  });
+
+  it('a restored resume card whose agent file is gone takes the details of the restored spawn card', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'tc1',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'dig in', prompt: 'p' },
+      sdkAgentId: AGENT,
+      agentStatus: 'interrupted',
+    });
+    store.restoreSubagentFromHistory({ id: 'tc-r', name: 'Agent', input: { resume: AGENT }, sdkAgentId: AGENT, agentResumedFrom: AGENT, agentStatus: 'completed' });
+
+    const restored = defined(store.subagents['tc-r'], 'tc-r');
+    expect(restored.agentType).toBe('Explore');
+    expect(subagentHeading(restored, t)).toEqual({ title: 'dig in', resumed: true });
+  });
+
+  it('restores a refused resume as failed with no result, as the live card showed it', () => {
+    // A refused resume writes no invocation entry, so the host attaches no status to the call.
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({
+      id: 'tc-r',
+      name: 'Agent',
+      input: { resume: AGENT, message: 'finish it' },
+      result: `Subagent "${AGENT}" is still running.`,
+      isError: true,
+    });
+
+    const restored = defined(store.subagents['tc-r'], 'tc-r');
+    expect(restored.status).toBe('failed');
+    expect(restored.result).toBeUndefined();
   });
 });

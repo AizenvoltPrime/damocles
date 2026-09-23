@@ -81,8 +81,8 @@ export interface CustomToolDeps {
    */
   subagentManager?: AgentManager;
   /**
-   * The panel's team service (US-024d). When present AND `damocles.team.enabled`, the 3 main team tools
-   * (create_team/get_team_status/cancel_team) are appended. A NESTED subagent's and a TEAM AGENT's
+   * The panel's team service (US-024d). When present AND `damocles.team.enabled`, the 4 main team tools
+   * (create_team/get_team_status/cancel_team/resume_team) are appended. A NESTED subagent's and a TEAM AGENT's
    * customTools are built WITHOUT this, so they never get the main team tools (no nested-team recursion).
    */
   teamService?: TeamServiceRef;
@@ -182,7 +182,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     tools.push(...buildSubagentTools(pi, subagentManager));
   }
 
-  // The 3 main team tools only when a team service is wired (the primary session) — subagents and team
+  // The 4 main team tools only when a team service is wired (the primary session) — subagents and team
   // agents build customTools WITHOUT it. Built even when team is currently disabled (cheap, inert when
   // not in the active set), so a mid-conversation enable activates them live. The per-turn active-set
   // gate (`isTeamEnabled()` in fullActiveToolNames) controls availability.

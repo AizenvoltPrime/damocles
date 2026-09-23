@@ -137,7 +137,7 @@ export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' |
 
 /**
  * PreToolUse hooks plugged into the single gate handler (Section 3.3). `run` executes the configured
- * `tool_call` hooks for this event (null when none match); `onDecision` raises the D6 transparency notice
+ * `tool_call` hooks for this event (null when none match); `onDecision` raises the transparency notice
  * when a hook force-allows or blocks. Built per tool-call by the extension wiring, which owns the panel's
  * webview emitter. Absent when no `tool_call` hook is configured, so the gate path stays zero-cost (FR-14).
  */
@@ -197,7 +197,7 @@ export async function runPermissionGate(
   // skips the gate entirely (force-allow); `deny`/exit-2 blocks; `updatedInput` mutates `event.input` in
   // place (denormalized to pi's shape) so the gate + the tool both see the rewrite; `ask`/none falls
   // through. An infra failure (spawn/timeout) is fail-closed for write/shell only. All bounded to tools
-  // the user wrote a hook for; both force-allow and block raise the D6 transparency notice.
+  // the user wrote a hook for; both force-allow and block raise the transparency notice.
   // A PreToolUse hook's `additionalContext` (when the tool will proceed) is delivered on the matching
   // tool result — pi's `tool_call` return can't inject context. Stamped on any "tool proceeds" path.
   let pendingContext: string | undefined;

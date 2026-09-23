@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { TeamState } from '@shared/types/team';
+import type { TeamState, TeamRunSummary } from '@shared/types/team';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan } from '@/components/icons';
@@ -13,18 +13,24 @@ import { useElapsedTimer } from '@/composables/useElapsedTimer';
 const { t } = useI18n();
 const { costLabel, costTitle, teamDollarBilled } = useCostLabel();
 
+// Status, time and totals come from `run`; the team supplies the title, roster and billing flags.
 const props = defineProps<{
   team: TeamState;
+  run: TeamRunSummary;
 }>();
 
 defineEmits<{
   (e: 'expand'): void;
 }>();
 
+const isRunning = computed(() => props.run.status === 'running');
+// Every run but the one its create_team call started is a resume_team call.
+const isResume = computed(() => props.run.toolUseId !== props.team.toolUseId);
+
 const { elapsedMs } = useElapsedTimer(
-  () => props.team.status === 'running',
-  () => props.team.startTime,
-  () => props.team.endTime,
+  () => isRunning.value,
+  () => props.run.startTime,
+  () => props.run.endTime,
 );
 
 const activeAgentCount = computed(() =>
@@ -37,18 +43,12 @@ const progressLine = computed(() =>
   t('team.agentActiveProgress', { active: activeAgentCount.value, total: totalAgentCount.value })
 );
 
-const totalTokens = computed(() =>
-  props.team.agents.reduce((sum, a) => sum + a.totalInputTokens + a.totalOutputTokens, 0)
-);
-const totalCost = computed(() =>
-  props.team.agents.reduce((sum, a) => sum + a.costUsd, 0)
-);
 // Each agent carries its own flag and a reload restores it, so the total is labelled from the agents
 // rather than from the panel account.
 const totalBilled = computed(() => teamDollarBilled(props.team.agents));
 
 const cardClass = computed(() => {
-  switch (props.team.status) {
+  switch (props.run.status) {
     case 'running':
       return 'border-primary/50 hover:border-primary/70';
     case 'completed':
@@ -63,7 +63,7 @@ const cardClass = computed(() => {
 });
 
 const statusBadgeClass = computed(() => {
-  switch (props.team.status) {
+  switch (props.run.status) {
     case 'running':
       return 'bg-primary/30 text-primary border-primary/30';
     case 'completed':
@@ -87,20 +87,27 @@ const statusBadgeClass = computed(() => {
     <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary shrink-0"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       <span class="text-foreground font-medium truncate flex-1">{{ team.title }}</span>
+      <Badge
+        v-if="isResume"
+        variant="secondary"
+        class="bg-primary/15 text-primary border-primary/30 shrink-0"
+      >
+        {{ t('team.resumed') }}
+      </Badge>
       <Badge variant="secondary" class="bg-foreground/10 text-foreground/70 border-foreground/20 gap-1 shrink-0">
         {{ t('team.agentCount', { n: totalAgentCount }) }}
       </Badge>
       <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0 items-center">
-        <LoadingSpinner v-if="team.status === 'running'" :size="10" class="shrink-0" />
-        <IconCheck v-else-if="team.status === 'completed'" :size="10" class="shrink-0" />
-        <IconXCircle v-else-if="team.status === 'failed'" :size="10" class="shrink-0" />
-        <IconBan v-else-if="team.status === 'cancelled'" :size="10" class="shrink-0" />
-        <span class="leading-none">{{ t('team.status.' + team.status) }}</span>
+        <LoadingSpinner v-if="isRunning" :size="10" class="shrink-0" />
+        <IconCheck v-else-if="run.status === 'completed'" :size="10" class="shrink-0" />
+        <IconXCircle v-else-if="run.status === 'failed'" :size="10" class="shrink-0" />
+        <IconBan v-else-if="run.status === 'cancelled'" :size="10" class="shrink-0" />
+        <span class="leading-none">{{ t('team.status.' + run.status) }}</span>
       </Badge>
     </CardHeader>
 
     <div
-      v-if="team.status === 'running'"
+      v-if="isRunning"
       class="px-3 py-1.5 text-xs text-primary/80 italic truncate border-b border-border/30"
     >
       {{ progressLine }}
@@ -108,22 +115,22 @@ const statusBadgeClass = computed(() => {
 
     <CardContent class="px-3 py-2 flex items-center justify-between">
       <div class="flex items-center gap-1.5 text-xs text-foreground/70 leading-none">
-        <span>{{ t('team.toolCount', { n: team.totalToolCount }) }}</span>
+        <span>{{ t('team.toolCount', { n: run.toolCount }) }}</span>
         <span class="text-foreground/40">•</span>
         <span>{{ formatElapsed(elapsedMs) }}</span>
-        <template v-if="totalTokens > 0">
+        <template v-if="run.tokens > 0">
           <span class="text-foreground/40">•</span>
-          <span>{{ formatTokenCount(totalTokens) }} tokens</span>
+          <span>{{ formatTokenCount(run.tokens) }} tokens</span>
         </template>
-        <template v-if="totalCost > 0">
+        <template v-if="run.costUsd > 0">
           <span class="text-foreground/40">•</span>
-          <span class="font-medium" :title="costTitle(totalBilled)">{{ costLabel(totalCost, totalBilled) }}</span>
+          <span class="font-medium" :title="costTitle(totalBilled)">{{ costLabel(run.costUsd, totalBilled) }}</span>
         </template>
       </div>
       <div class="flex items-center">
-        <LoadingSpinner v-if="team.status === 'running'" :size="14" class="text-primary" />
-        <IconCheck v-else-if="team.status === 'completed'" :size="14" class="text-success" />
-        <IconXCircle v-else-if="team.status === 'failed'" :size="14" class="text-error" />
+        <LoadingSpinner v-if="isRunning" :size="14" class="text-primary" />
+        <IconCheck v-else-if="run.status === 'completed'" :size="14" class="text-success" />
+        <IconXCircle v-else-if="run.status === 'failed'" :size="14" class="text-error" />
       </div>
     </CardContent>
   </Card>
