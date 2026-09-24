@@ -23,8 +23,8 @@ vi.mock('../../../../pi-session/session-store/session-dir', () => ({
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
 
 async function openAgentLog(): Promise<void> {
-  const deps = { workspacePath: '/ws', postMessage: () => undefined } as unknown as Parameters<typeof createWorkspaceHandlers>[0];
-  const ctx = { session: { persistenceSessionId: 's1' }, host: {} } as never;
+  const deps = { postMessage: () => undefined } as unknown as Parameters<typeof createWorkspaceHandlers>[0];
+  const ctx = { folder: { key: '/ws', fsPath: '/ws', name: 'ws', label: 'ws', projectScope: true }, session: { persistenceSessionId: 's1' }, host: {} } as never;
   await createWorkspaceHandlers(deps).openAgentLog!({ type: 'openAgentLog', agentId: 'agent-1' } as never, ctx);
 }
 

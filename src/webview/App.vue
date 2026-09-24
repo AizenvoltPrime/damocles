@@ -29,6 +29,7 @@ import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import PromptNavigatorChip from "./components/PromptNavigatorChip.vue";
+import WorkspaceFolderChip from "./components/WorkspaceFolderChip.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
 
@@ -1044,6 +1045,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           {{ accountInfo.email }}
         </PopoverContent>
       </Popover>
+
+      <WorkspaceFolderChip />
 
       <div class="flex-1"></div>
 

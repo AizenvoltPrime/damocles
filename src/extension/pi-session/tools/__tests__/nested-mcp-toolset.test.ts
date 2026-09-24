@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import type { McpClientManager } from '../../mcp/mcp-client-manager';
+import type { McpToolSource } from '../../mcp/tool-source';
+import { FolderMcpView } from '../../mcp/folder-mcp-view';
+import { managerWithFake } from '../../mcp/__tests__/fake-server-manager';
 import type { McpToolDescriptor } from '../../mcp/types';
 import { buildNestedMcpToolset, EMPTY_NESTED_MCP_TOOLSET } from '../mcp-tools';
 
@@ -25,6 +27,7 @@ function descriptor(overrides: Partial<McpToolDescriptor> = {}): McpToolDescript
   return {
     piName: 'mcp__git__status',
     serverName: 'git',
+    serverId: `test/${overrides.serverName ?? 'git'}`,
     kind: 'tool',
     originalName: 'status',
     description: 'Show the working tree status',
@@ -50,7 +53,7 @@ function fakeManager(initial: McpToolDescriptor[]) {
   // answers from the SAME mutable list — a stub that always returned a descriptor would hide the
   // vanished-tool branch entirely.
   const getToolDescriptor = vi.fn((piName: string) => descriptors.find((d) => d.piName === piName));
-  const manager = { getAllToolDescriptors, getToolDescriptor, callTool } as unknown as McpClientManager;
+  const manager = { getAllToolDescriptors, getToolDescriptor, callTool } as unknown as McpToolSource;
   return {
     manager,
     getAllToolDescriptors,
@@ -220,7 +223,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
 });
 
 describe('buildNestedMcpToolset — the definitions are the REAL callable tools', () => {
-  it('executing a built definition reaches `McpClientManager.callTool` with that piName', async () => {
+  it('executing a built definition reaches the MCP source `callTool` with that piName', async () => {
     // The point of the snapshot is a CALLABLE tool, not a name list. Driving the definition proves the
     // descriptor was closed over correctly — a builder that mixed up indices between `names` and
     // `tools` would still satisfy set-equality but call the wrong server tool here.
@@ -294,5 +297,70 @@ describe('buildNestedMcpToolset — `elicitationUi` reaches every tool in the sn
     await run(toolset.tools[0]!, { ui: panelUi, hasUI: true });
 
     expect((callTool.mock.calls[0]![2] as { elicitationUi?: unknown }).elicitationUi).toBe(uiStub);
+  });
+});
+
+describe('buildNestedMcpToolset — a nested agent sees only its own folder', () => {
+  it("an agent spawned in folder B gets B's tools and the shared user tools, never A's", async () => {
+    const tools = { alpha: [{ name: 'a_run' }], beta: [{ name: 'b_run' }], shared: [{ name: 'ping' }] };
+    const user = managerWithFake(tools);
+    const folderA = managerWithFake(tools);
+    const folderB = managerWithFake(tools);
+    const viewA = new FolderMcpView(user.manager, folderA.manager);
+    const viewB = new FolderMcpView(user.manager, folderB.manager);
+    try {
+      await user.manager.reconcile({ shared: { command: 'shared' } });
+      viewA.setUserVisible(['shared']);
+      viewB.setUserVisible(['shared']);
+      await folderA.manager.reconcile({ alpha: { command: 'alpha' } });
+      await folderB.manager.reconcile({ beta: { command: 'beta' } });
+      const everything = new Set([...viewA.allToolNames(), ...viewB.allToolNames()]);
+
+      const toolset = buildNestedMcpToolset(piStub, viewB, { eligible: everything });
+
+      expect([...toolset.names].sort()).toEqual(['mcp__beta__b_run', 'mcp__shared__ping']);
+      expect(toolset.tools.map((t) => t.name).sort()).toEqual(['mcp__beta__b_run', 'mcp__shared__ping']);
+    } finally {
+      viewA.dispose();
+      viewB.dispose();
+      await Promise.all([user.manager.dispose(), folderA.manager.dispose(), folderB.manager.dispose()]);
+    }
+  });
+
+  it('a frozen tool whose name passed to a user server fails as gone instead of calling that server', async () => {
+    // The user server takes its prefix back from the folder one, so the live `mcp__my_server__t` is the
+    // user server's tool while the snapshot still classifies the name read-only for the folder server.
+    const user = managerWithFake({ 'my-server': [{ name: 't' }] });
+    const holder: { view?: FolderMcpView } = {};
+    const folder = managerWithFake(
+      { 'my.server': [{ name: 't', annotations: { readOnlyHint: true } }] },
+      () => holder.view!.reservedPrefixes(),
+    );
+    const view = new FolderMcpView(user.manager, folder.manager);
+    holder.view = view;
+    try {
+      await user.manager.reconcile({});
+      await folder.manager.reconcile({ 'my.server': { command: 'folder' } });
+      const toolset = buildNestedMcpToolset(piStub, view, { eligible: new Set(view.allToolNames()) });
+      expect(toolset.names).toEqual(['mcp__my_server__t']);
+      expect(toolset.isReadOnly('mcp__my_server__t')).toBe(true);
+
+      view.setUserVisible(['my-server']);
+      await user.manager.reconcile({ 'my-server': { command: 'user' } });
+      expect(view.getToolDescriptor('mcp__my_server__t')?.serverName).toBe('my-server');
+
+      const result = await (toolset.tools[0]!.execute as unknown as (
+        id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: unknown,
+      ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: { isError: boolean } }>)('tc-1', {}, undefined, undefined, {});
+
+      expect(user.fake.callTool).not.toHaveBeenCalled();
+      expect(folder.fake.callTool).not.toHaveBeenCalled();
+      expect(result.details).toEqual({ isError: true });
+      expect(result.content[0]?.text).toContain('is no longer available');
+      expect(result.content[0]?.text).toContain('permanent');
+    } finally {
+      view.dispose();
+      await Promise.all([user.manager.dispose(), folder.manager.dispose()]);
+    }
   });
 });

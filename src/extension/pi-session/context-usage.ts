@@ -6,7 +6,7 @@ import { renderSections, type DamoclesPromptSections } from './agent-start';
 import { piMessageText } from './branch-text';
 import { resolveCompactionBudget } from './compaction-budget';
 import { isMcpToolName } from './mcp/naming';
-import type { McpClientManager } from './mcp/mcp-client-manager';
+import type { McpToolSource } from './mcp/tool-source';
 import type { AgentRegistry } from './subagents/agent-types';
 import { AGENT_SCOPE_BY_SOURCE } from './subagents/types';
 import { BUILTIN_DEFERRED_GROUPS } from './tools/deferred-tools';
@@ -27,8 +27,8 @@ export interface ContextUsageDeps {
   resourceLoader: ResourceLoader | null;
   /** The live `damocles.mcp.enabled` flag (`PiSession.isMcpEnabled()`). */
   mcpEnabled: boolean;
-  /** The process/workspace MCP client, or null (`PiSession.mcpClientManager()`). */
-  mcpClientManager: McpClientManager | null;
+  /** This panel's folder MCP view, or null (`PiSession.mcpClientManager()`). */
+  mcpClientManager: McpToolSource | null;
   /** The shared subagent registry, or null (`PiSession.agentRegistry`). */
   agentRegistry: AgentRegistry | null;
   /** The eligible tool universe for this panel (`PiSession.fullActiveToolNames()`). */
@@ -339,7 +339,7 @@ function agentsSection(agentRegistry: AgentRegistry | null): ContextUsageData['a
  */
 function mcpToolsSection(
   mcpEnabled: boolean,
-  manager: McpClientManager | null,
+  manager: McpToolSource | null,
   activeNames: ReadonlySet<string> | null,
   toolsByName: ReadonlyMap<string, ToolInfo> | null,
 ): ContextUsageData['mcpTools'] {

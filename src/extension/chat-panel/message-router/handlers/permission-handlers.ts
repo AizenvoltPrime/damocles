@@ -20,7 +20,7 @@ async function writePlanFile(planFilePath: string, planContent: string): Promise
 const PLAN_FILE_UNAVAILABLE_MESSAGE = "Plan file no longer available — please re-run the plan.";
 
 export function createPermissionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { workspacePath, postMessage, settingsManager } = deps;
+  const { postMessage, settingsManager } = deps;
 
   return {
     approveEdit: async (msg, ctx) => {
@@ -30,22 +30,15 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ctx.permissionHandler.autoApproveSubagent(msg.parentToolUseId);
       }
 
-      // Persisting the rule is best-effort; settling the approval is not. `resolveApproval` is what
-      // releases the agent's pending tool call, so letting a write failure propagate past this point
-      // leaves the turn blocked indefinitely with only a toast to explain it. A read-only workspace, a
-      // settings file that is not a JSON object, or an unknown destination all reach here.
-      if (msg.updatedPermissions?.length) {
-        try {
-          await syncPermissionRulesToSettings(msg.updatedPermissions, workspacePath);
-        } catch (err) {
-          log("[MessageRouter] Failed to persist permission rules:", err instanceof Error ? err.message : "Unknown error");
-        }
-      }
-
-      ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {
+      // Settled first, so a failed rule write cannot strand the tool call, and a click that matches no
+      // pending approval (one answered from a panel that has since switched folder) saves nothing.
+      const settled = await ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {
         ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
         ...(msg.updatedPermissions?.length ? { updatedPermissions: msg.updatedPermissions } : {}),
       });
+      if (settled && msg.updatedPermissions?.length) {
+        await syncPermissionRulesToSettings(msg.updatedPermissions, settled.workspacePath);
+      }
     },
 
     answerQuestion: (msg, ctx) => {
@@ -89,7 +82,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
         const persistenceId = ctx.session.persistenceSessionId;
         const transcriptPath = persistenceId
-          ? await resolveSessionFilePath(workspacePath, persistenceId)
+          ? await resolveSessionFilePath(ctx.folder.fsPath, persistenceId)
           : null;
 
         const newMessage = buildPlanImplementationMessage(fullPlan, transcriptPath);

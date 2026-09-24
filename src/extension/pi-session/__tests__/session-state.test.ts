@@ -81,6 +81,7 @@ const H = vi.hoisted(() => {
         getPackages: vi.fn(() => []),
         getShellCommandPrefix: vi.fn(() => undefined),
         getShellPath: vi.fn(() => undefined),
+        isProjectTrusted: vi.fn(() => true),
       },
       modelRuntime: {
         getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
@@ -127,7 +128,8 @@ const H = vi.hoisted(() => {
       };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),

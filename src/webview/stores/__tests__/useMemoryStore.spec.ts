@@ -137,3 +137,62 @@ describe('useMemoryStore create tokens', () => {
     expect(store.searchResults).toHaveLength(1);
   });
 });
+
+describe('useMemoryStore clearFolderData', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('drops folder-bound data and keeps the user filters', () => {
+    const store = useMemoryStore();
+    store.setMemories([entry('a')], true, { createdAt: 1, id: 'a' });
+    store.setVersionHistory('a', [entry('a')]);
+    store.setProfile({ static: 'project', dynamic: 'p' }, { static: 'global', dynamic: 'g' });
+    store.setKindFilter('fact');
+    store.setShowForgotten(true);
+
+    store.clearFolderData();
+
+    expect(store.memories).toEqual([]);
+    expect(store.hasMoreObservations).toBe(false);
+    expect(store.observationCursor).toBeNull();
+    expect(store.versionHistory).toEqual({});
+    expect(store.profile).toEqual({ project: { static: '', dynamic: '' }, global: { static: '', dynamic: '' } });
+    expect(store.kindFilter).toBe('fact');
+    expect(store.showForgotten).toBe(true);
+  });
+
+  const RESULT = { id: 'r', tier: 'project', kind: 'fact', scope: 'project', content: 'x', snippet: 'x', timestamp: 1 } as never;
+
+  it.each([
+    ['with its query', 'deploy'],
+    ['without a query', undefined],
+  ])('drops a late reply %s to a search run in the previous folder', (_name, query) => {
+    const store = useMemoryStore();
+    store.setPendingSearchQuery('deploy');
+
+    store.clearFolderData();
+    store.setSearchResults([RESULT], query);
+
+    expect(store.searchResults).toEqual([]);
+  });
+
+  it('drops the late reply even after a memoryError cleared the pending query', () => {
+    const store = useMemoryStore();
+    store.setPendingSearchQuery('deploy');
+    store.clearFolderData();
+
+    store.setPendingSearchQuery(null);
+    store.setSearchResults([RESULT], 'deploy');
+
+    expect(store.searchResults).toEqual([]);
+  });
+
+  it('accepts results again once a search is dispatched in the new folder', () => {
+    const store = useMemoryStore();
+    store.clearFolderData();
+
+    store.setPendingSearchQuery('build');
+    store.setSearchResults([RESULT], 'build');
+
+    expect(store.searchResults).toHaveLength(1);
+  });
+});

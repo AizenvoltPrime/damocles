@@ -33,6 +33,9 @@ vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 
 import * as vscode from "vscode";
 import { McpManager } from "../mcp-manager";
+import { connectedIn, folderTarget } from "./mcp-folder-fixtures";
+
+const WS = folderTarget(fakeWorkspace);
 
 const workspaceState = {
   get: <T>(_key: string, defaultValue?: T): T => defaultValue as T,
@@ -83,20 +86,18 @@ beforeAll(() => {
       },
     },
   });
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: fakeWorkspace } }];
 });
 
 afterEach(() => setTrusted(true));
 
 afterAll(() => {
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [];
   setTrusted(true);
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 async function loadedManager(trusted: boolean): Promise<McpManager> {
   setTrusted(trusted);
-  const manager = new McpManager(workspaceState);
+  const manager = new McpManager(workspaceState, () => [WS]);
   await manager.loadConfig();
   return manager;
 }
@@ -105,8 +106,8 @@ describe("McpManager — workspace precedence under trust", () => {
   it("lets a TRUSTED workspace tree outrank a user-global server, personal file highest", async () => {
     const manager = await loadedManager(true);
 
-    expect(manager.getEnabledServers()["github"]).toEqual({ command: "local-github" });
-    expect(manager.getServersForUI().find(s => s.name === "github")?.source).toBe("damocles-local");
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "local-github" });
+    expect(manager.getServersForUI(WS.key).find(s => s.name === "github")?.source).toBe("damocles-local");
   });
 
   it("does not let an UNTRUSTED workspace .mcp.json disable a user-global server", async () => {
@@ -115,20 +116,20 @@ describe("McpManager — workspace precedence under trust", () => {
     // that happens to name a server `github` silently stops your own `github` from connecting. That is
     // attacker-controllable denial of a tool, and the panel would blame your config for it.
     setTrusted(false);
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers()["github"]).toEqual({ command: "my-github" });
-    expect(manager.getEnabledServers()["mine"]).toEqual({ command: "mine" });
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "my-github" });
+    expect(connectedIn(manager, WS.key)["mine"]).toEqual({ command: "mine" });
   });
 
   it("still withholds a server only the untrusted workspace defines, and shows it as untrusted", async () => {
     setTrusted(false);
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers()).not.toHaveProperty("repoOnly");
-    const row = manager.getServersForUI().find(s => s.name === "repoOnly");
+    expect(connectedIn(manager, WS.key)).not.toHaveProperty("repoOnly");
+    const row = manager.getServersForUI(WS.key).find(s => s.name === "repoOnly");
     expect(row?.source).toBe("workspace");
     expect(row?.untrusted).toBe(true);
   });
@@ -140,17 +141,17 @@ describe("McpManager: the two new sources under trust", () => {
     async (name) => {
       const manager = await loadedManager(false);
 
-      expect(manager.getEnabledServers()).not.toHaveProperty(name);
-      expect(manager.getServersForUI().find(s => s.name === name)?.untrusted).toBe(true);
+      expect(connectedIn(manager, WS.key)).not.toHaveProperty(name);
+      expect(manager.getServersForUI(WS.key).find(s => s.name === name)?.untrusted).toBe(true);
     },
   );
 
   it("connects both repo-authored sources once the workspace IS trusted", async () => {
     const manager = await loadedManager(true);
 
-    expect(manager.getEnabledServers()["repoOnly"]).toEqual({ command: "repo-only" });
-    expect(manager.getEnabledServers()["localOnly"]).toEqual({ command: "local-only" });
-    expect(manager.getServersForUI().find(s => s.name === "localOnly")?.untrusted).toBeUndefined();
+    expect(connectedIn(manager, WS.key)["repoOnly"]).toEqual({ command: "repo-only" });
+    expect(connectedIn(manager, WS.key)["localOnly"]).toEqual({ command: "local-only" });
+    expect(manager.getServersForUI(WS.key).find(s => s.name === "localOnly")?.untrusted).toBeUndefined();
   });
 
   it("keeps a Claude local-scope server connected in an untrusted workspace", async () => {
@@ -159,8 +160,8 @@ describe("McpManager: the two new sources under trust", () => {
     // a repo that had no hand in it. Scope and repo-authorship are not the same question.
     const manager = await loadedManager(false);
 
-    expect(manager.getEnabledServers()["claudeLocalOnly"]).toEqual({ command: "claude-local-only" });
-    const row = manager.getServersForUI().find(s => s.name === "claudeLocalOnly");
+    expect(connectedIn(manager, WS.key)["claudeLocalOnly"]).toEqual({ command: "claude-local-only" });
+    const row = manager.getServersForUI(WS.key).find(s => s.name === "claudeLocalOnly");
     expect(row?.source).toBe("claude-local");
     expect(row?.untrusted).toBeUndefined();
   });
@@ -169,7 +170,7 @@ describe("McpManager: the two new sources under trust", () => {
     // Above `claude` (Claude Code's own local > user ordering) and below `damocles`, in both states.
     for (const trusted of [true, false]) {
       const manager = await loadedManager(trusted);
-      expect(manager.getEnabledServers()["claudeBoth"]).toEqual({ command: "claude-local" });
+      expect(connectedIn(manager, WS.key)["claudeBoth"]).toEqual({ command: "claude-local" });
     }
   });
 
@@ -178,10 +179,10 @@ describe("McpManager: the two new sources under trust", () => {
     // order flipped on the way down, `.mcp.json` would start beating the personal file that outranks
     // it everywhere else, so a name defined only by those two pins the pair's internal order.
     const untrusted = await loadedManager(false);
-    expect(untrusted.getServersForUI().find(s => s.name === "bothRepoFiles")?.source).toBe("damocles-local");
+    expect(untrusted.getServersForUI(WS.key).find(s => s.name === "bothRepoFiles")?.source).toBe("damocles-local");
 
     const trusted = await loadedManager(true);
-    expect(trusted.getEnabledServers()["bothRepoFiles"]).toEqual({ command: "from-mcp-local-json" });
+    expect(connectedIn(trusted, WS.key)["bothRepoFiles"]).toEqual({ command: "from-mcp-local-json" });
   });
 
   it("hands the user's own github back when neither repo file may override it", async () => {
@@ -189,36 +190,33 @@ describe("McpManager: the two new sources under trust", () => {
     // overwrite it and then be withheld, silently taking the user's server down with them.
     const manager = await loadedManager(false);
 
-    expect(manager.getEnabledServers()["github"]).toEqual({ command: "my-github" });
-    expect(manager.getServersForUI().find(s => s.name === "github")?.untrusted).toBeUndefined();
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "my-github" });
+    expect(manager.getServersForUI(WS.key).find(s => s.name === "github")?.untrusted).toBeUndefined();
   });
 });
 
 describe("McpManager: getShadowingServerNames under trust", () => {
   /** The names the write path would refuse, because a source above `~/.damocles/mcp.json` holds them. */
-  const shadowed = (manager: McpManager): string[] => [...manager.getShadowingServerNames().keys()].sort();
+  const shadowing = (manager: McpManager): [string, string][] =>
+    [...manager.getShadowingServerNames(WS.key).entries()].sort(([a], [b]) => a.localeCompare(b));
 
-  it("reports the repo files as shadowing while the workspace is trusted", async () => {
+  it("refuses every name a trusted folder's files win, attributed to the file that wins it", async () => {
     const manager = await loadedManager(true);
 
-    expect(shadowed(manager)).toEqual(["bothRepoFiles", "github", "localOnly", "repoOnly"]);
-  });
-
-  it("reports nothing from the repo files while the workspace is untrusted", async () => {
-    // Untrusted folds them below `~/.damocles/mcp.json`, so they no longer take precedence. Claiming
-    // otherwise refuses a valid write with a reason that is not true.
-    const manager = await loadedManager(false);
-
-    expect(shadowed(manager)).toEqual([]);
+    expect(shadowing(manager)).toEqual([
+      ["bothRepoFiles", "damocles-local"],
+      ["github", "damocles-local"],
+      ["localOnly", "damocles-local"],
+      ["repoOnly", "workspace"],
+    ]);
   });
 
   it("lets the user write a name the untrusted repo also defines", async () => {
-    // The concrete cost: without this, adding your own `repoOnly` is rejected as already defined by
-    // `.mcp.json`, a file whose servers are being withheld anyway.
+    // Untrusted, the repo files fold below `~/.damocles/mcp.json`, so the written server would win
+    // there. Refusing would block it with a reason that is not true.
     const manager = await loadedManager(false);
 
-    expect(manager.getShadowingServerNames().has("repoOnly")).toBe(false);
-    expect(manager.getShadowingServerNames().has("localOnly")).toBe(false);
+    expect(shadowing(manager)).toEqual([]);
   });
 });
 
@@ -232,7 +230,7 @@ describe("McpManager: the gitignore leak check and workspace trust", () => {
     const manager = await loadedManager(false);
 
     expect(execMock).not.toHaveBeenCalled();
-    expect(manager.getLocalMcpUnignored()).toBe(false);
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(false);
   });
 
   it("does ask git once the workspace is trusted, in the workspace's own directory", async () => {
@@ -258,47 +256,46 @@ describe("McpManager: state sampled at load time does not recover on a bare trus
     execMock.mockImplementation(async () => { throw new Error("fatal: not a git repository"); });
   });
 
-  it("leaves both sampled properties stale until something reloads", async () => {
-    // `localMcpUnignored` and the shadowing set are decided during `loadConfig`, unlike the trust
-    // filter on `getEnabledServers`, which reads `isTrusted` live. Flipping the flag alone therefore
-    // fixes the server list and nothing else, which is what makes a reload mandatory on the grant.
+  it("leaves the sampled leak warning and fold stale until something reloads", async () => {
+    // `localMcpUnignored` and the fold are decided during `loadConfig`, unlike the trust filter on
+    // `getEnabledServers`, which reads `isTrusted` live. Flipping the flag alone therefore fixes the
+    // server list and nothing else, which is what makes a reload mandatory on the grant.
     const manager = await loadedManager(false);
     expect(execMock).not.toHaveBeenCalled();
-    expect(manager.getLocalMcpUnignored()).toBe(false);
-    expect([...manager.getShadowingServerNames().keys()]).toEqual([]);
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(false);
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "my-github" });
 
     setTrusted(true);
 
     // Nothing re-read anything, so both are still wrong.
-    expect(manager.getLocalMcpUnignored()).toBe(false);
-    expect([...manager.getShadowingServerNames().keys()]).toEqual([]);
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(false);
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "my-github" });
 
     await manager.loadConfig();
 
     expect(execMock).toHaveBeenCalledTimes(1);
-    expect(manager.getLocalMcpUnignored()).toBe(true);
-    expect(manager.getShadowingServerNames().get("repoOnly")).toBe("workspace");
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(true);
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "local-github" });
   });
 
-  it("keeps all three properties consistent across concurrent loads", async () => {
-    // A half-applied snapshot would pair a trusted server list with an untrusted shadowing set, and
-    // the write path would then refuse a name for a precedence the merge did not grant.
+  it("keeps the sampled properties consistent across concurrent loads", async () => {
+    // A half-applied snapshot would pair a trusted server list with an untrusted leak warning.
     setTrusted(true);
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
 
     await Promise.all([manager.loadConfig(), manager.loadConfig(), manager.loadConfig()]);
 
     expect(manager.getConfigLoaded()).toBe(true);
-    expect(manager.getLocalMcpUnignored()).toBe(true);
-    expect(manager.getShadowingServerNames().get("repoOnly")).toBe("workspace");
-    expect(manager.getEnabledServers()["repoOnly"]).toEqual({ command: "repo-only" });
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(true);
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "local-github" });
+    expect(connectedIn(manager, WS.key)["repoOnly"]).toEqual({ command: "repo-only" });
     expect(execMock).toHaveBeenCalledTimes(3);
   });
 
   it("does not let a slow untrusted load un-warn the panel after a trusted one", async () => {
     // The grant handler reloads while a watcher-driven load may already be in flight. Without the
     // generation stamp the older untrusted result lands last and takes the warning back down.
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
 
     setTrusted(false);
     const untrusted = manager.loadConfig();
@@ -306,15 +303,15 @@ describe("McpManager: state sampled at load time does not recover on a bare trus
     const trusted = manager.loadConfig();
     await Promise.all([untrusted, trusted]);
 
-    expect(manager.getLocalMcpUnignored()).toBe(true);
-    expect(manager.getShadowingServerNames().get("repoOnly")).toBe("workspace");
-    expect(manager.getEnabledServers()["repoOnly"]).toEqual({ command: "repo-only" });
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(true);
+    expect(connectedIn(manager, WS.key)["github"]).toEqual({ command: "local-github" });
+    expect(connectedIn(manager, WS.key)["repoOnly"]).toEqual({ command: "repo-only" });
   });
 });
 
 describe("McpManager — concurrent loadConfig", () => {
   it("keeps the newest snapshot when an older read finishes last", async () => {
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
 
     // Three triggers reach loadConfig (panel write, watcher, session startup) and it awaits five reads
     // before assigning. Without a generation stamp an older one can land last — and since
@@ -324,19 +321,19 @@ describe("McpManager — concurrent loadConfig", () => {
     const fresh = manager.loadConfig();
     await Promise.all([stale, fresh]);
 
-    expect(Object.keys(manager.getEnabledServers()).sort()).toEqual([
+    expect(Object.keys(connectedIn(manager, WS.key)).sort()).toEqual([
       "bothRepoFiles", "claudeBoth", "claudeLocalOnly", "github", "localOnly", "mine", "repoOnly",
     ]);
     expect(manager.getConfigLoaded()).toBe(true);
   });
 
   it("hands out a copy of the config errors rather than its own array", async () => {
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     await manager.loadConfig();
 
-    const errors = manager.getConfigErrors();
+    const errors = manager.getConfigErrors(WS.key);
     errors.push({ path: "injected", displayPath: "injected", kind: "parse", line: null, column: null });
 
-    expect(manager.getConfigErrors()).toHaveLength(0);
+    expect(manager.getConfigErrors(WS.key)).toHaveLength(0);
   });
 });

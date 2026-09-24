@@ -16,6 +16,7 @@ import { createCompassHandlers } from "./handlers/compass-handlers";
 import { createOpenAIHandlers } from "./handlers/openai-handlers";
 import { createClaudeAuthHandlers } from "./handlers/claude-auth-handlers";
 import { createUsageHandlers } from "./handlers/usage-handlers";
+import { createWorkspaceFolderHandlers } from "./handlers/workspace-folder-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -45,5 +46,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createOpenAIHandlers(deps),
     ...createClaudeAuthHandlers(deps),
     ...createUsageHandlers(deps),
+    ...createWorkspaceFolderHandlers(deps),
   };
 }

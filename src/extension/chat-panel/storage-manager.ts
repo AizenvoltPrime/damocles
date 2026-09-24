@@ -9,10 +9,12 @@ import {
   getPiSessionMetadataByFile,
   piSessionIdFromFile,
   extractPiPromptHistory,
+  resolvePiSessionFile,
 } from "../pi-session/session-store";
 import { pruneOrphanCheckpointRepos, getCheckpointsBaseDir, getWorkspaceCheckpointDir } from "../pi-session/checkpoints";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { SESSIONS_PAGE_SIZE, type HostInstance, type WebviewHost } from "./types";
+import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
 
 const CHANGE_DEBOUNCE_MS = 300;
@@ -27,48 +29,71 @@ function isPiSessionFile(fsPath: string): boolean {
 }
 
 export interface StorageManagerConfig {
-  workspacePath: string;
+  /** Every open folder; the history lists the sessions of all of them. */
+  folders: () => readonly FolderTarget[];
+  isMultiRoot: () => boolean;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   getPanels: () => Map<string, HostInstance>;
 }
+
+const newestFirst = (a: StoredSession, b: StoredSession): number => b.timestamp - a.timestamp;
 
 export class StorageManager {
   private allSessionsCache: StoredSession[] | null = null;
   private promptHistoryCache: string[] | null = null;
   private pendingPromptEntries: string[] = [];
-  private sessionWatcher: vscode.FileSystemWatcher | null = null;
+  /** Folder key to that folder's session-dir watcher. */
+  private readonly sessionWatchers = new Map<string, vscode.FileSystemWatcher>();
   private pendingChangeTimers: Map<string, NodeJS.Timeout> = new Map();
-  private orphanReposPruned = false;
-  private readonly workspacePath: string;
+  private readonly prunedFolders = new Set<string>();
+  /** Session id to the key of the folder whose session dir holds it. */
+  private sessionFolder = new Map<string, string>();
+  private readonly folders: StorageManagerConfig["folders"];
+  private readonly isMultiRoot: StorageManagerConfig["isMultiRoot"];
   private readonly postMessage: StorageManagerConfig["postMessage"];
   private readonly getPanels: StorageManagerConfig["getPanels"];
 
   constructor(config: StorageManagerConfig) {
-    this.workspacePath = config.workspacePath;
+    this.folders = config.folders;
+    this.isMultiRoot = config.isMultiRoot;
     this.postMessage = config.postMessage;
     this.getPanels = config.getPanels;
   }
 
-  /** Load every stored session from the pi tree store. */
-  private loadAllSessions(): Promise<StoredSession[]> {
-    void this.pruneOrphanCheckpointReposOnce();
-    return listPiSessions(this.workspacePath);
+  private openFolder(key: string): FolderTarget | undefined {
+    return this.folders().find((t) => t.key === key);
+  }
+
+  /** A copy, because `listPiSessions` hands out objects its metadata cache still holds. */
+  private stamp(session: StoredSession, folder: FolderTarget): StoredSession {
+    return { ...session, workspaceFolder: { key: folder.key, label: folder.label } };
+  }
+
+  /** Every open folder's stored sessions, newest first. */
+  private async loadAllSessions(): Promise<StoredSession[]> {
+    const perFolder = await Promise.all(this.folders().map(async (folder) => {
+      void this.pruneOrphanCheckpointReposOnce(folder);
+      return (await listPiSessions(folder.fsPath)).map((s) => this.stamp(s, folder));
+    }));
+    const all = perFolder.flat();
+    this.sessionFolder = new Map(all.map((s) => [s.id, s.workspaceFolder!.key]));
+    return all.sort(newestFirst);
   }
 
   /**
-   * Once per StorageManager, delete THIS workspace's checkpoint repos whose session file no longer
+   * Once per folder, delete THIS workspace's checkpoint repos whose session file no longer
    * exists (US-013b). `deletePiSession` already removes a repo on explicit delete, so this only
    * reclaims repos orphaned out-of-band (file removed by another process or a prior crash). The sweep
    * is scoped to the workspace's own checkpoint subdir — a global sweep would delete OTHER workspaces'
    * repos, since the live set here is only this workspace's sessions. Runs off the session-list load
    * and never blocks it; the live set is the FULL on-disk session set, so pagination can't mis-prune.
    */
-  private pruneOrphanCheckpointReposOnce(): Promise<void> {
-    if (this.orphanReposPruned) return Promise.resolve();
-    this.orphanReposPruned = true;
+  private pruneOrphanCheckpointReposOnce(folder: FolderTarget): Promise<void> {
+    if (this.prunedFolders.has(folder.key)) return Promise.resolve();
+    this.prunedFolders.add(folder.key);
     return (async () => {
       try {
-        const dir = ensurePiSessionDir(this.workspacePath);
+        const dir = ensurePiSessionDir(folder.fsPath);
         const files = await fs.promises.readdir(dir);
         const liveBases = new Set(files.filter(isPiSessionFile).map((f) => path.basename(f, ".jsonl")));
         const workspaceRepoDir = getWorkspaceCheckpointDir(dir);
@@ -101,11 +126,6 @@ export class StorageManager {
         log("[StorageManager] checkpoint repo migration skipped for %s: %O", base, err);
       }
     }
-  }
-
-  /** Load precise metadata for one session id from the pi tree store. */
-  private async loadSessionMetadata(sessionId: string): Promise<StoredSession | null> {
-    return (await getPiSessionMetadata(this.workspacePath, sessionId)) ?? null;
   }
 
   async getStoredSessions(
@@ -146,10 +166,13 @@ export class StorageManager {
     }
 
     const normalizedQuery = query.toLowerCase().trim();
+    // Sessions carry a visible folder label only with two or more folders open; otherwise every one would match.
+    const matchFolder = this.isMultiRoot();
     const allMatches = this.allSessionsCache.filter((session) => {
       const displayName = session.customTitle || session.aiTitle || session.preview;
       return displayName.toLowerCase().includes(normalizedQuery)
-        || session.tag?.toLowerCase().includes(normalizedQuery);
+        || session.tag?.toLowerCase().includes(normalizedQuery)
+        || (matchFolder && session.workspaceFolder?.label.toLowerCase().includes(normalizedQuery));
     });
 
     const total = allMatches.length;
@@ -158,6 +181,39 @@ export class StorageManager {
     const nextOffset = offset + sessions.length;
 
     return { sessions, hasMore, nextOffset };
+  }
+
+  /**
+   * The open folder whose session dir holds `sessionId`, else undefined. The id is only ever matched
+   * against directory entries of open folders, so a webview-supplied id cannot name another path.
+   */
+  async folderOf(sessionId: string): Promise<FolderTarget | undefined> {
+    const indexed = this.sessionFolder.get(sessionId);
+    const known = indexed !== undefined ? this.openFolder(indexed) : undefined;
+    if (known) return known;
+    for (const folder of this.folders()) {
+      if ((await resolvePiSessionFile(folder.fsPath, sessionId)) !== null) {
+        this.sessionFolder.set(sessionId, folder.key);
+        return folder;
+      }
+    }
+    return undefined;
+  }
+
+  /** Follow folder adds, removes and relabels: one watcher per open folder, then a fresh list. */
+  async reloadFolders(): Promise<void> {
+    const open = new Set(this.folders().map((t) => t.key));
+    for (const [key, watcher] of this.sessionWatchers) {
+      if (open.has(key)) continue;
+      watcher.dispose();
+      this.sessionWatchers.delete(key);
+    }
+    // A folder re-added later is pruned again, since its sessions may have changed while it was closed.
+    for (const key of this.prunedFolders) if (!open.has(key)) this.prunedFolders.delete(key);
+    this.invalidateSessionsCache();
+    await this.setupSessionWatcher();
+    this.allSessionsCache = await this.loadAllSessions();
+    this.pushSessionsToAllPanels();
   }
 
   invalidateSessionsCache(): void {
@@ -177,10 +233,13 @@ export class StorageManager {
     this.pushSessionsToAllPanels();
   }
 
-  async addOrUpdateSession(sessionId: string): Promise<void> {
-    const metadata = await this.loadSessionMetadata(sessionId);
+  async addOrUpdateSession(sessionId: string, folderKey: string): Promise<void> {
+    const folder = this.openFolder(folderKey);
+    if (!folder) return;
+    const metadata = await getPiSessionMetadata(folder.fsPath, sessionId);
     if (!metadata) return;
-    await this.upsertSessionInCache(metadata);
+    this.sessionFolder.set(sessionId, folder.key);
+    await this.upsertSessionInCache(this.stamp(metadata, folder));
   }
 
   async getPromptHistory(
@@ -191,7 +250,7 @@ export class StorageManager {
     }
 
     if (!this.promptHistoryCache) {
-      const allHistory = await extractPiPromptHistory(this.workspacePath, this.allSessionsCache);
+      const allHistory = await extractPiPromptHistory(this.folders().map((t) => t.fsPath), this.allSessionsCache);
       const diskSet = new Set(allHistory);
       const uniquePending = this.pendingPromptEntries.filter((e) => !diskSet.has(e));
       this.promptHistoryCache = [...uniquePending, ...allHistory];
@@ -205,25 +264,34 @@ export class StorageManager {
     return { history: pageItems, hasMore };
   }
 
-  async setupSessionWatcher(): Promise<void> {
-    if (this.sessionWatcher) return;
+  /** Watch `folderKey`'s session dir, or every open folder's when omitted. Idempotent per folder. */
+  async setupSessionWatcher(folderKey?: string): Promise<void> {
+    const targets = folderKey !== undefined ? this.folders().filter((t) => t.key === folderKey) : this.folders();
+    for (const folder of targets) await this.watchFolder(folder);
+  }
+
+  private async watchFolder(folder: FolderTarget): Promise<void> {
+    if (this.sessionWatchers.has(folder.key)) return;
 
     // pi writes to the Damocles-owned pi tree dir (created here so the watcher attaches even before
     // the first session).
-    const sessionDir = ensurePiSessionDir(this.workspacePath);
+    const sessionDir = ensurePiSessionDir(folder.fsPath);
 
     try {
       await fs.promises.access(sessionDir);
     } catch {
       return;
     }
+    // Re-checked after the await: a concurrent call may have attached one, or the folder may have closed.
+    if (this.sessionWatchers.has(folder.key) || !this.openFolder(folder.key)) return;
 
     const pattern = new vscode.RelativePattern(vscode.Uri.file(sessionDir), "*.jsonl");
-
-    this.sessionWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-    this.sessionWatcher.onDidCreate((uri) => this.handleSessionFileCreated(uri));
-    this.sessionWatcher.onDidChange((uri) => this.handleSessionFileChanged(uri));
-    this.sessionWatcher.onDidDelete((uri) => this.handleSessionFileDeleted(uri));
+    const key = folder.key;
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    watcher.onDidCreate((uri) => this.handleSessionFileCreated(uri, key));
+    watcher.onDidChange((uri) => this.handleSessionFileChanged(uri, key));
+    watcher.onDidDelete((uri) => this.handleSessionFileDeleted(uri));
+    this.sessionWatchers.set(key, watcher);
   }
 
   pushSessionsToAllPanels(): void {
@@ -258,19 +326,20 @@ export class StorageManager {
   }
 
   dispose(): void {
-    this.sessionWatcher?.dispose();
+    for (const watcher of this.sessionWatchers.values()) watcher.dispose();
+    this.sessionWatchers.clear();
     for (const timer of this.pendingChangeTimers.values()) {
       clearTimeout(timer);
     }
     this.pendingChangeTimers.clear();
   }
 
-  private async handleSessionFileCreated(uri: vscode.Uri): Promise<void> {
-    return this.handlePiSessionFileUpsert(uri);
+  private async handleSessionFileCreated(uri: vscode.Uri, folderKey: string): Promise<void> {
+    return this.handlePiSessionFileUpsert(uri, folderKey);
   }
 
-  private handleSessionFileChanged(uri: vscode.Uri): void {
-    return this.handlePiSessionFileChanged(uri);
+  private handleSessionFileChanged(uri: vscode.Uri, folderKey: string): void {
+    return this.handlePiSessionFileChanged(uri, folderKey);
   }
 
   private async upsertSessionInCache(metadata: StoredSession): Promise<void> {
@@ -283,7 +352,7 @@ export class StorageManager {
       } else {
         this.allSessionsCache.push(metadata);
       }
-      this.allSessionsCache.sort((a, b) => b.timestamp - a.timestamp);
+      this.allSessionsCache.sort(newestFirst);
     }
     this.pushSessionsToAllPanels();
   }
@@ -296,31 +365,32 @@ export class StorageManager {
   // pi session files are named `<timestamp>_<id>.jsonl`, so the file base is NOT the session id and
   // metadata is read from the file itself; debounce timers are keyed by file path.
 
-  private async handlePiSessionFileUpsert(uri: vscode.Uri): Promise<void> {
+  private async handlePiSessionFileUpsert(uri: vscode.Uri, folderKey: string): Promise<void> {
     if (!isPiSessionFile(uri.fsPath)) return;
     // Let pi finish writing the header before the first read.
     await new Promise((resolve) => setTimeout(resolve, 150));
-    const metadata = await getPiSessionMetadataByFile(uri.fsPath);
-    if (!metadata) return;
-    await this.upsertSessionInCache(metadata);
+    await this.upsertFromFile(uri.fsPath, folderKey);
   }
 
-  private handlePiSessionFileChanged(uri: vscode.Uri): void {
+  /** Dropped when the folder left the workspace while the read was pending. */
+  private async upsertFromFile(filePath: string, folderKey: string): Promise<void> {
+    const metadata = await getPiSessionMetadataByFile(filePath);
+    const folder = this.openFolder(folderKey);
+    if (!metadata || !folder) return;
+    this.sessionFolder.set(metadata.id, folder.key);
+    await this.upsertSessionInCache(this.stamp(metadata, folder));
+  }
+
+  private handlePiSessionFileChanged(uri: vscode.Uri, folderKey: string): void {
     if (!isPiSessionFile(uri.fsPath)) return;
     const key = uri.fsPath;
     const existingTimer = this.pendingChangeTimers.get(key);
     if (existingTimer) clearTimeout(existingTimer);
     const timer = setTimeout(() => {
       this.pendingChangeTimers.delete(key);
-      void this.processPiSessionChange(uri.fsPath);
+      void this.upsertFromFile(uri.fsPath, folderKey);
     }, CHANGE_DEBOUNCE_MS);
     this.pendingChangeTimers.set(key, timer);
-  }
-
-  private async processPiSessionChange(filePath: string): Promise<void> {
-    const metadata = await getPiSessionMetadataByFile(filePath);
-    if (!metadata) return;
-    await this.upsertSessionInCache(metadata);
   }
 
   private handlePiSessionFileDeleted(uri: vscode.Uri): void {
@@ -332,6 +402,7 @@ export class StorageManager {
       this.pendingChangeTimers.delete(key);
     }
     const sessionId = piSessionIdFromFile(uri.fsPath);
+    this.sessionFolder.delete(sessionId);
     if (this.allSessionsCache) {
       this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
     }

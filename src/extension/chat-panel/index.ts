@@ -9,9 +9,14 @@ import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { MemoryService } from "../memory";
 import { BrowserService } from "../browser";
-import { CompassService } from "../compass";
+import type { CompassService } from "../compass";
+import { CompassRegistry } from "../compass/compass-registry";
+import { CompassViews } from "../compass/compass-views";
 import { VoiceService } from "../voice/service";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
+import { PiRuntime } from "../pi-session/pi-runtime";
+import { WorkspaceFolderRegistry, homeDirectory } from "../workspace-folders/folder-registry";
+import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { WebviewHost } from "./types";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -27,9 +32,10 @@ export class ChatPanelProvider {
   private readonly messageRouter: MessageRouter;
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
-  private readonly compassService: CompassService | null;
+  private readonly compassRegistry: CompassRegistry;
+  private readonly compassViews: CompassViews;
   private readonly voiceService: VoiceService;
-  private readonly workspacePath: string;
+  private readonly folderRegistry: WorkspaceFolderRegistry;
 
   private readonly extensionUri: vscode.Uri;
   private readonly context: vscode.ExtensionContext;
@@ -37,12 +43,8 @@ export class ChatPanelProvider {
   constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
     this.extensionUri = extensionUri;
     this.context = context;
-    const homeDir = process.env["HOME"] || process.env["USERPROFILE"] || "";
-    const projectPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-    // Session storage and history key on this path, so with no folder open they need the home dir.
-    // Asset discovery must not follow them there: with no folder open there is no project scope, so
-    // it takes `projectPath` and scans the user dirs alone.
-    this.workspacePath = projectPath || homeDir;
+    const homeDir = homeDirectory();
+    this.folderRegistry = new WorkspaceFolderRegistry(context.workspaceState);
 
     const postMessage = (host: WebviewHost, message: unknown) => {
       this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
@@ -52,51 +54,57 @@ export class ChatPanelProvider {
       postMessage,
       secrets: context.secrets,
       workspaceState: context.workspaceState,
+      folders: () => this.folderRegistry.targets(),
     });
 
     this.storageManager = new StorageManager({
-      workspacePath: this.workspacePath,
+      folders: () => this.folderRegistry.targets(),
+      isMultiRoot: () => this.folderRegistry.isMultiRoot,
       postMessage,
       getPanels: () => this.panelManager.getPanels(),
     });
 
     this.historyManager = new HistoryManager({
-      workspacePath: this.workspacePath,
       postMessage,
     });
 
     this.workspaceManager = new WorkspaceManager({
-      workspacePath: this.workspacePath,
-      projectPath,
       postMessage,
-      broadcastToAllPanels: (message) => this.panelManager.broadcast(message),
+      getPanels: () => this.panelManager.getPanels(),
     });
 
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
+    this.memoryService.setFallbackWorkspace(() => this.folderRegistry.defaultTarget().fsPath);
+    this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
     this.browserService = new BrowserService();
     this.voiceService = new VoiceService({ extensionRoot: extensionUri.fsPath });
     this.voiceService.registerWithExtension(context);
-    const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
-    if (hasWorkspaceFolder) {
-      const damoclesDir = path.join(homeDir, '.damocles');
-      this.compassService = new CompassService(this.workspacePath, damoclesDir, extensionUri.fsPath);
-      this.compassService.onStatusChange((status) => {
-        this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
+    this.compassRegistry = new CompassRegistry({
+      damoclesDir: path.join(homeDir, ".damocles"),
+      extensionPath: extensionUri.fsPath,
+    });
+    this.compassRegistry.onStatusChange((folderKey, status) => {
+      this.postToFolderPanels(folderKey, { type: "compassStatusUpdate", status });
+    });
+    this.compassRegistry.onProgress((folderKey, event) => {
+      this.postToFolderPanels(folderKey, {
+        type: "compassBuildProgress",
+        current: event.current,
+        total: event.total,
+        phase: event.phase,
+        ...(event.label ? { label: event.label } : {}),
       });
-      this.compassService.onProgress((event) => {
-        this.panelManager.broadcast({
-          type: 'compassBuildProgress',
-          current: event.current,
-          total: event.total,
-          phase: event.phase,
-          ...(event.label ? { label: event.label } : {}),
-        });
-      });
-      this.compassService.registerViews(context);
-    } else {
-      this.compassService = null;
-    }
+    });
+    this.compassViews = new CompassViews({
+      acquireActive: () => {
+        const service = this.compassFor(this.compassViewsTarget().key);
+        this.refreshCompassViews();
+        return service;
+      },
+    });
+    this.compassViews.register();
+    this.compassRegistry.onDidChangeServices(() => this.refreshCompassViews());
     this.browserService.onElementPickedFromToolbar((element) => {
       const delivered = this.panelManager.postToActivePanel({ type: 'browserElementPicked', element });
       if (!delivered) {
@@ -105,8 +113,7 @@ export class ChatPanelProvider {
     });
 
     this.sessionManager = new SessionManager({
-      workspacePath: this.workspacePath,
-      getEnabledMcpServers: () => this.settingsManager.getEnabledMcpServers(),
+      getEnabledMcpServers: (folderKey) => this.settingsManager.getEnabledMcpServers(folderKey),
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
@@ -121,17 +128,16 @@ export class ChatPanelProvider {
         };
       },
       postMessage,
-      setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
-      addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
+      setupSessionWatcher: (folderKey) => this.storageManager.setupSessionWatcher(folderKey),
+      addOrUpdateSession: (sessionId, folderKey) => this.storageManager.addOrUpdateSession(sessionId, folderKey),
       getMemoryService: () => this.memoryService,
       getRawBrowserService: () => this.browserService,
-      getCompassService: () => this.compassService,
+      getCompassService: (folderKey) => this.startCompassFor(folderKey),
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
       secrets: this.context.secrets,
     });
 
     this.messageRouter = new MessageRouter({
-      workspacePath: this.workspacePath,
       postMessage,
       getPanels: () => this.panelManager.getPanels(),
       storageManager: this.storageManager,
@@ -141,26 +147,34 @@ export class ChatPanelProvider {
       context: this.context,
       memoryService: this.memoryService,
       browserService: this.browserService,
-      ...(this.compassService ? { compassService: this.compassService } : {}),
+      compassRegistry: this.compassRegistry,
       voiceService: this.voiceService,
+      folderRegistry: this.folderRegistry,
+      switchPanelFolder: (panelId, folderKey, reason, afterSwitch) =>
+        this.panelManager.switchPanelFolder(panelId, folderKey, reason, afterSwitch),
+      postWorkspaceFolderState: (panelId) => this.panelManager.postWorkspaceFolderState(panelId),
     });
 
     this.panelManager = new PanelManager({
       extensionUri: this.extensionUri,
-      createSessionForPanel: async (host, permissionHandler, panelId, forkContext) => {
+      folderRegistry: this.folderRegistry,
+      createSessionForPanel: async (host, permissionHandler, panelId, folder, forkContext) => {
         const onSpawnFork = (args: import("../../shared/types/session").ForkSpawnArgs) =>
           this.panelManager.showForked(args).then(() => undefined);
         const session = await this.sessionManager.createSessionForPanel(
           host,
           permissionHandler,
           panelId,
+          folder,
           onSpawnFork,
           forkContext,
         );
+        // The session start may have started this folder's index before the panel joined the map.
+        for (const msg of this.compassStatusMessages(folder.key)) this.panelManager.postMessage(host, msg);
         // Live MCP status: push fresh runtime status to this panel whenever a server connects/disconnects,
         // so the panel reflects connecting → connected automatically (no manual refresh).
         session.setMcpStatusListener(() => {
-          this.pushMcpStatus(session, host);
+          this.pushMcpStatus(session, host, folder.key);
         });
         return session;
       },
@@ -174,40 +188,45 @@ export class ChatPanelProvider {
       cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
       cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
       sendThinkingForPanel: (host, panelId) => this.settingsManager.sendThinkingForPanel(host, panelId),
-      getInitialMessages: () => {
-        const msgs: ExtensionToWebviewMessage[] = [];
-        if (this.compassService?.isEnabled) {
-          msgs.push({ type: 'compassStatusUpdate', status: this.compassService.getStatus() });
-        }
-        return msgs;
+      getInitialMessages: (folder) => this.compassStatusMessages(folder.key),
+      onActivePanelChanged: () => this.refreshCompassViews(),
+      sendFolderState: async (instance) => {
+        await this.workspaceManager.sendCustomSlashCommands(instance.host, instance.folder);
+        this.panelManager.postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
+        this.settingsManager.sendMcpConfig(instance.host, instance.folder.key);
+        for (const msg of this.compassStatusMessages(instance.folder.key)) this.panelManager.postMessage(instance.host, msg);
+        // The webview keeps the @-mention file list it already loaded until a new list replaces it.
+        await this.workspaceManager.sendWorkspaceFiles(instance.host, instance.folder);
       },
+      releaseFolder: (key) => this.releaseFolder(key),
       inheritSettingsFromPanel: (sourcePanelId, newPanelId) => {
         this.settingsManager.setActiveModelForPanel(newPanelId, this.settingsManager.getActiveModelForPanel(sourcePanelId));
         this.settingsManager.copyPanelThinkingStateTo(sourcePanelId, newPanelId);
       },
-      loadHistory: (sessionId, host, session) =>
-        this.historyManager.loadSessionHistory(sessionId, host, session),
+      loadHistory: (cwd, sessionId, host, session) =>
+        this.historyManager.loadSessionHistory(cwd, sessionId, host, session),
     });
+
+    // A removed folder's resources are released by `releaseFolder`, once no session runs there.
+    this.context.subscriptions.push(this.folderRegistry.onDidChange(({ added, removed, relabelled }) => {
+      this.refreshCompassViews();
+      if (added.length === 0 && removed.length === 0 && !relabelled) return;
+      this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
+      this.storageManager.reloadFolders().catch((err) => log("[ChatPanelProvider] Failed to re-list sessions: %O", err));
+    }));
 
     void this.storageManager.setupSessionWatcher();
 
-    if (this.compassService?.isEnabled) {
-      this.compassService.ensureInitialized().catch(err => {
-        log('[ChatPanelProvider] Compass init failed: %O', err);
-      });
-    }
+    // A single-folder window indexes its folder at startup, before any panel targets it.
+    if (!this.folderRegistry.isMultiRoot) this.startCompassFor(this.folderRegistry.defaultTarget().key);
+    this.refreshCompassViews();
 
-    this.settingsManager.setOnMcpConfigChange(() => {
-      this.panelManager.broadcast(this.settingsManager.buildMcpConfigUpdate());
-      // Reconcile live MCP connections on a .mcp.json change — no session restart (US-014.9).
-      const enabled = this.settingsManager.getEnabledMcpServers();
-      for (const [, instance] of this.panelManager.getPanels()) {
-        instance.session.setMcpServers(enabled);
-        // The broadcast above describes config only, so every enabled server reads as `idle`. Without
-        // this the panel would sit on that placeholder until some unrelated event pushed real status.
-        this.pushMcpStatus(instance.session, instance.host);
-      }
-    });
+    this.settingsManager.setOnMcpConfigChange(() => this.refeedMcpPanels());
+
+    this.context.subscriptions.push(this.folderRegistry.onDidChange(({ added, removed }) => {
+      if (added.length === 0 && removed.length === 0) return;
+      this.settingsManager.handleMcpFoldersChanged().catch((err) => log("[ChatPanelProvider] MCP reload after a folder change failed:", err));
+    }));
 
     // Granting workspace trust unblocks workspace `.mcp.json` servers (M3). The re-read has to come
     // first: trust decides what `loadConfig` samples, not only what the trust gate withholds
@@ -220,12 +239,7 @@ export class ChatPanelProvider {
     this.context.subscriptions.push(
       vscode.workspace.onDidGrantWorkspaceTrust(async () => {
         await this.settingsManager.loadMcpConfig();
-        this.panelManager.broadcast(this.settingsManager.buildMcpConfigUpdate());
-        const enabled = this.settingsManager.getEnabledMcpServers();
-        for (const [, instance] of this.panelManager.getPanels()) {
-          instance.session.setMcpServers(enabled);
-          this.pushMcpStatus(instance.session, instance.host);
-        }
+        this.refeedMcpPanels();
       }),
     );
 
@@ -235,7 +249,7 @@ export class ChatPanelProvider {
         this.settingsManager.sendThinkingForPanel(instance.host, panelId);
       }
     });
-    this.settingsManager.setupMcpWatcher(this.workspacePath);
+    this.settingsManager.setupMcpWatcher();
 
     this.settingsManager.loadMcpConfig().catch((err) => {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
@@ -260,10 +274,72 @@ export class ChatPanelProvider {
    * reject on a server that is mid-teardown; every caller here is a fire-and-forget listener, and an
    * unhandled rejection from one would be an unhandled promise rejection in the extension host.
    */
-  private pushMcpStatus(session: ChatSession, host: WebviewHost): void {
-    this.settingsManager.sendMcpStatus(session, host).catch(err => {
+  private pushMcpStatus(session: ChatSession, host: WebviewHost, folderKey: string): void {
+    this.settingsManager.sendMcpStatus(session, host, folderKey).catch(err => {
       log('[ChatPanelProvider] Failed to push MCP status: %s', err instanceof Error ? err.message : 'Unknown error');
     });
+  }
+
+  /**
+   * Give every panel its own folder's MCP list and scope, so a folder's servers never reach another
+   * folder's panels. Live connections reconcile with no session restart (US-014.9).
+   */
+  private refeedMcpPanels(): void {
+    for (const [, instance] of this.panelManager.getPanels()) {
+      const folderKey = instance.folder.key;
+      this.panelManager.postMessage(instance.host, this.settingsManager.buildMcpConfigUpdate(folderKey));
+      instance.session.setMcpServers(this.settingsManager.getEnabledMcpServers(folderKey));
+      // The config update describes config only, so every enabled server reads as `idle` until real
+      // status is pushed.
+      this.pushMcpStatus(instance.session, instance.host, folderKey);
+    }
+  }
+
+  /** The steps run independently, so one failing leaks none of the folder's other resources. */
+  private async releaseFolder(key: string): Promise<void> {
+    const steps: Array<() => unknown> = [
+      () => this.workspaceManager.disposeFolder(key),
+      () => this.compassRegistry.release(key),
+      () => (PiRuntime.exists ? PiRuntime.get().disposeFolder(key) : undefined),
+    ];
+    for (const result of await Promise.allSettled(steps.map(async (step) => step()))) {
+      if (result.status === "rejected") log("[ChatPanelProvider] releasing folder %s failed: %O", key, result.reason);
+    }
+  }
+
+  private compassStatusMessages(folderKey: string): ExtensionToWebviewMessage[] {
+    const service = this.compassFor(folderKey);
+    return service?.isEnabled ? [{ type: "compassStatusUpdate", status: service.getStatus() }] : [];
+  }
+
+  /** The folder's Compass service, created without a worker; null for a folder that is not open or has no project. */
+  private compassFor(folderKey: string): CompassService | null {
+    const target = this.folderRegistry.resolve(folderKey);
+    return target ? this.compassRegistry.acquire(target) : null;
+  }
+
+  /** As `compassFor`, and starts the folder's worker when Compass is enabled in a trusted window. */
+  private startCompassFor(folderKey: string): CompassService | null {
+    const target = this.folderRegistry.resolve(folderKey);
+    return target ? this.compassRegistry.start(target) : null;
+  }
+
+  private postToFolderPanels(folderKey: string, message: ExtensionToWebviewMessage): void {
+    for (const [, instance] of this.panelManager.getPanels()) {
+      if (instance.folder.key === folderKey) this.panelManager.postMessage(instance.host, message);
+    }
+  }
+
+  /** The last-focused panel's folder, or the default target when no panel has been focused. */
+  private compassViewsTarget(): FolderTarget {
+    return this.panelManager.getActivePanelFolder() ?? this.folderRegistry.defaultTarget();
+  }
+
+  private refreshCompassViews(): void {
+    // The views never create a service themselves, so a folder no panel targets starts no worker.
+    const target = this.compassViewsTarget();
+    const service = this.compassRegistry.get(target.key) ?? null;
+    this.compassViews.setActive(service, this.folderRegistry.isMultiRoot ? target.label : undefined);
   }
 
   private dispatchTtsForReply(text: string): void {
@@ -291,8 +367,8 @@ export class ChatPanelProvider {
     await this.panelManager.show();
   }
 
-  async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
-    await this.panelManager.restorePanel(panel);
+  async restorePanel(panel: vscode.WebviewPanel, workspaceFolderKey: string | undefined): Promise<void> {
+    await this.panelManager.restorePanel(panel, workspaceFolderKey);
   }
 
   async restoreBrowserPanel(panel: vscode.WebviewPanel, url: string): Promise<void> {
@@ -325,7 +401,8 @@ export class ChatPanelProvider {
    * host went away. The synchronous disposals still run first and unconditionally.
    */
   async dispose(): Promise<void> {
-    this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
+    this.compassViews.dispose();
+    this.compassRegistry.dispose().catch((err: unknown) => log("[ChatPanelProvider] compass dispose error: %O", err));
     this.memoryService.dispose();
     const browserClosed = this.browserService.dispose().catch((err: unknown) => log('[ChatPanelProvider] browser dispose error: %O', err));
     this.storageManager.dispose();
@@ -333,6 +410,7 @@ export class ChatPanelProvider {
     this.settingsManager.dispose();
     this.voiceService.dispose();
     this.panelManager.dispose();
+    this.folderRegistry.dispose();
     await browserClosed;
   }
 }

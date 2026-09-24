@@ -83,8 +83,8 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
     vi.useRealTimers();
   });
 
-  function buildTracker(workspaceRoot: string = ROOT): FileChangeTracker {
-    tracker = new FileChangeTracker(db, writeQueue, workspaceRoot);
+  function buildTracker(workspaceRoots: string | string[] = ROOT): FileChangeTracker {
+    tracker = new FileChangeTracker(db, writeQueue, typeof workspaceRoots === 'string' ? [workspaceRoots] : workspaceRoots);
     tracker.initialize();
     return tracker;
   }
@@ -206,6 +206,88 @@ describe('FileChangeTracker — Slice 11 file-staleness correctness', () => {
 
     expect(staleness(db, mine)).toBe(1);
     expect(staleness(db, theirs)).toBe(0); // other workspace's row was never indexed by this tracker
+  });
+
+  it("bumps observations in every open folder, resolving relative paths against the row's own folder", async () => {
+    const SECOND = path.resolve('/second-repo');
+    const inFirst = seedObservation(db, { filesModified: ['notes.ts'], workspace: ROOT });
+    const inSecond = seedObservation(db, { filesModified: ['notes.ts'], workspace: SECOND });
+    buildTracker([ROOT, SECOND]);
+
+    latestWatcher().emitChange(path.resolve(SECOND, 'notes.ts'));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, inSecond)).toBe(1);
+    expect(staleness(db, inFirst)).toBe(0);
+
+    latestWatcher().emitChange(path.resolve(ROOT, 'notes.ts'));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, inFirst)).toBe(1);
+    expect(staleness(db, inSecond)).toBe(1);
+  });
+
+  it('marks only the edited folder\'s observation stale when two open folders hold the same relative path', async () => {
+    const SECOND = path.resolve('/second-repo');
+    const relPath = path.join('src', 'index.ts');
+    // Stored under a moved checkout, so only the suffix index can match each row.
+    const inFirst = seedObservation(db, { filesModified: [path.resolve('/old-first', relPath)], workspace: ROOT });
+    const inSecond = seedObservation(db, { filesModified: [path.resolve('/old-second', relPath)], workspace: SECOND });
+    buildTracker([ROOT, SECOND]);
+
+    latestWatcher().emitChange(path.resolve(ROOT, relPath));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, inFirst)).toBe(1);
+    expect(staleness(db, inSecond)).toBe(0);
+
+    latestWatcher().emitChange(path.resolve(SECOND, relPath));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, inFirst)).toBe(1);
+    expect(staleness(db, inSecond)).toBe(1);
+  });
+
+  it('matches a suffix in the innermost open folder when one folder is nested in another', async () => {
+    const NESTED = path.join(ROOT, 'packages', 'web');
+    const relPath = path.join('src', 'index.ts');
+    const inOuter = seedObservation(db, { filesModified: [path.resolve('/old-outer', relPath)], workspace: ROOT });
+    const inNested = seedObservation(db, { filesModified: [path.resolve('/old-nested', relPath)], workspace: NESTED });
+    buildTracker([ROOT, NESTED]);
+
+    latestWatcher().emitChange(path.join(NESTED, relPath));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, inNested)).toBe(1);
+    expect(staleness(db, inOuter)).toBe(0);
+  });
+
+  it('setWorkspaceRoots rebuilds the index for the new folder set', async () => {
+    const SECOND = path.resolve('/second-repo');
+    const inFirst = seedObservation(db, { filesModified: ['first.ts'], workspace: ROOT });
+    const inSecond = seedObservation(db, { filesModified: ['second.ts'], workspace: SECOND });
+    buildTracker([ROOT]);
+
+    tracker.setWorkspaceRoots([SECOND]);
+    latestWatcher().emitChange(path.resolve(SECOND, 'second.ts'));
+    latestWatcher().emitChange(path.resolve(ROOT, 'first.ts'));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+
+    expect(staleness(db, inSecond)).toBe(1);
+    expect(staleness(db, inFirst)).toBe(0); // the removed folder's rows left the index
+  });
+
+  it('trackObservation resolves a relative path against the folder it is given', async () => {
+    const SECOND = path.resolve('/second-repo');
+    buildTracker([ROOT, SECOND]);
+    const id = seedObservation(db, { workspace: SECOND });
+    tracker.trackObservation(id, [], ['live.ts'], SECOND);
+
+    latestWatcher().emitChange(path.resolve(SECOND, 'live.ts'));
+    vi.advanceTimersByTime(5000);
+    await writeQueue.drain();
+    expect(staleness(db, id)).toBe(1);
   });
 
   it('excludes forgotten and superseded rows from the reverse index (R15)', async () => {

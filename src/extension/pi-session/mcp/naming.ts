@@ -45,14 +45,16 @@ export function formatMcpToolName(serverPrefix: string, toolName: string): strin
  * Two passes, because one pass lets a derived prefix steal a real server's name: given
  * `["my.server", "my-server", "my_server_2"]`, `my.server` would take `my_server_2` and push aside the
  * server actually called that. Claiming every base first confines suffixes to unclaimed prefixes.
+ *
+ * `reserved` holds prefixes another manager already assigned; a server whose base is reserved gets a suffix.
  */
-export function buildServerPrefixMap(serverNames: string[]): Map<string, string> {
+export function buildServerPrefixMap(serverNames: string[], reserved?: ReadonlySet<string>): Map<string, string> {
   const sorted = [...serverNames].sort();
   const bases = sorted.map(name => ({ name, base: sanitizeServerName(name) }));
   const claimedBases = new Set(bases.map(entry => entry.base));
 
   const assigned = new Map<string, string>();
-  const used = new Set<string>();
+  const used = new Set<string>(reserved);
   for (const { name, base } of bases) {
     if (used.has(base)) continue;
     used.add(base);

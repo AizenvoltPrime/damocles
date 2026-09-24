@@ -949,6 +949,52 @@ describe('SlashCommandService asset-source precedence', () => {
     });
   });
 
+  // A panel on folder B gets a service built for B; nothing it lists or watches may come from A.
+  describe('one service per folder', () => {
+    let other = '';
+
+    beforeEach(() => {
+      other = fs.mkdtempSync(path.join(nodeOs.tmpdir(), 'scs-ws-b-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(other, { recursive: true, force: true });
+    });
+
+    it("lists only its own folder's project assets beside the user ones", async () => {
+      writeCommand(ws, '.damocles/commands', 'acmd', 'folder A');
+      writeSkill(ws, '.damocles/skills', 'askill', 'folder A');
+      writeCommand(other, '.damocles/commands', 'bcmd', 'folder B');
+      writeSkill(other, '.damocles/skills', 'bskill', 'folder B');
+      writeCommand(H.home, '.damocles/commands', 'usercmd', 'user');
+
+      const svc = makeService(other);
+
+      expect((await svc.getCommands()).map((c) => c.name).sort()).toEqual(['bcmd', 'usercmd']);
+      expect((await svc.getSkills()).map((s) => s.name)).toEqual(['bskill']);
+      expect(await svc.findCommand('acmd')).toBeUndefined();
+      expect(await svc.findSkill('askill')).toBeUndefined();
+    });
+
+    it('anchors its project watchers on its own folder and never on another', () => {
+      const created: unknown[] = [];
+      const spy = vi
+        .spyOn(vscode.workspace, 'createFileSystemWatcher')
+        .mockImplementation(((globPattern: vscode.GlobPattern) => {
+          created.push(globPattern);
+          return new FakeFileSystemWatcher();
+        }) as unknown as typeof vscode.workspace.createFileSystemWatcher);
+      try {
+        makeService(other);
+        const anchors = created.map(describePattern).filter((d) => d.startsWith('path:'));
+        expect(anchors).toHaveLength(SOURCE_FOLDERS.length * 3);
+        expect(anchors.every((d) => d.startsWith(`path:${other}|`))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe('no workspace folder open', () => {
     it('scans only the user scope and badges nothing as project', async () => {
       writeSkill(H.home, '.damocles/skills', 'userskill', 'user version');

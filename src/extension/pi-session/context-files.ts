@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { folderKey } from '../workspace-folders/folder-key';
 
 /**
  * Relocates the user-global instructions file from pi's `agentDir` (`~/.damocles/pi/agent/`, an
@@ -57,19 +58,10 @@ export function resolveGlobalContextFile(homeDir: string): { path: string; conte
   return undefined;
 }
 
-/**
- * Resolved absolute form, case-folded only on win32, where the filesystem is case-insensitive and a
- * drive letter may legitimately differ in case between two sides of a comparison.
- */
-function normalizePathKey(target: string): string {
-  const resolved = path.resolve(target);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
 /** Whether `p` is `dir` itself or lies beneath it, so a sibling like `agentX` is not caught. */
 function isUnder(p: string, dir: string): boolean {
-  const resolved = normalizePathKey(p);
-  const resolvedDir = normalizePathKey(dir);
+  const resolved = folderKey(p);
+  const resolvedDir = folderKey(dir);
   return resolved === resolvedDir || resolved.startsWith(resolvedDir + path.sep);
 }
 
@@ -98,9 +90,9 @@ export function overrideGlobalContextFile(
   // pi's own dedupe (`seenPaths`) only ever covered the agentDir global and is discarded before the
   // override runs, so the swapped-in path must be excluded here: a workspace at or under `~/.damocles/`
   // puts the same file in the ancestor walk, which would otherwise repeat the instructions.
-  const globalKey = normalizePathKey(global.path);
+  const globalKey = folderKey(global.path);
   return [
     global,
-    ...base.filter((entry) => !isUnder(entry.path, opts.agentDir) && normalizePathKey(entry.path) !== globalKey),
+    ...base.filter((entry) => !isUnder(entry.path, opts.agentDir) && folderKey(entry.path) !== globalKey),
   ];
 }

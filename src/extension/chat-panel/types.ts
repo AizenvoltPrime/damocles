@@ -5,6 +5,7 @@ import type { IdeContextManager } from "./ide-context-manager";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { HistoryMessage } from "../../shared/types/content";
 import type { ForkContext, RewindHistoryItem, StoredSession } from "../../shared/types/session";
+import type { FolderTarget } from "../workspace-folders/folder-registry";
 
 export const SESSIONS_PAGE_SIZE = 20;
 
@@ -18,6 +19,8 @@ export interface WebviewHost {
   readonly onDidChangeActive: vscode.Event<void>;
   reveal(): void;
   close(): void;
+  /** Names the panel's folder in its tab title or view description; undefined shows no folder. */
+  setFolderLabel(label: string | undefined): void;
 }
 
 const NO_OP_EVENT: vscode.Event<void> = () => ({ dispose: () => {} });
@@ -51,6 +54,7 @@ export function createPanelHost(panel: vscode.WebviewPanel): WebviewHost {
     },
     reveal: () => panel.reveal(),
     close: () => panel.dispose(),
+    setFolderLabel: (label) => { panel.title = label === undefined ? "Damocles" : `Damocles · ${label}`; },
   };
 }
 
@@ -65,12 +69,15 @@ export function createViewHost(view: vscode.WebviewView): WebviewHost {
     onDidChangeActive: NO_OP_EVENT,
     reveal: () => view.show(),
     close: () => {},
+    setFolderLabel: (label) => { view.description = label ?? ""; },
   };
 }
 
 export interface HostInstance {
   host: WebviewHost;
+  /** Replaced, never mutated, when the panel switches folder; read it from the instance, not a copy. */
   session: ChatSession;
+  folder: FolderTarget;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   disposables: vscode.Disposable[];

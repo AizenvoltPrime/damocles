@@ -133,6 +133,23 @@ export const useCompassStore = defineStore('compass', () => {
 		helpOpen.value = open;
 	}
 
+	/** Drops what the panel's previous folder indexed and closes its views; edge filters and help survive. */
+	function clearFolderData(): void {
+		status.value = null;
+		activePanel.value = null;
+		searchQuery.value = '';
+		searchKind.value = null;
+		searchResults.value = [];
+		searchLoading.value = false;
+		graphData.value = null;
+		graphCommunityFilter.value = null;
+		graphLoading.value = false;
+		blastRadius.value = null;
+		validationResult.value = null;
+		validationLoading.value = false;
+		buildProgress.value = null;
+	}
+
 	function $reset(): void {
 		status.value = null;
 		activePanel.value = null;
@@ -187,6 +204,7 @@ export const useCompassStore = defineStore('compass', () => {
 		setHelpOpen,
 		setEdgeKindVisible,
 		setAllEdgeKindsVisible,
+		clearFolderData,
 		$reset,
 	};
 });

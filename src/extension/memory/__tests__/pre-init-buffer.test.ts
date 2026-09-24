@@ -26,12 +26,22 @@ vi.mock('../database', async (importActual) => {
   };
 });
 
-// The sub-call runner reaches PiRuntime; stub it so init never touches the model layer.
+// The sub-call runner reaches PiRuntime; stub it so init never touches the model layer. A test may
+// swap `runnerHolder.run` to make extraction succeed.
+const runnerHolder = vi.hoisted(() => ({
+  run: null as null | ((req: { purpose: string }) => Promise<{ value: unknown; failure?: string }>),
+}));
 vi.mock('../subcall-runner', () => ({
-  createMemorySubCallRunner: () => ({ run: vi.fn(async () => ({ value: null, failure: 'no-model' as const })) }),
+  createMemorySubCallRunner: () => ({
+    run: vi.fn(async (req: { purpose: string }) =>
+      runnerHolder.run ? runnerHolder.run(req) : { value: null, failure: 'no-model' as const }),
+  }),
 }));
 
 import { MemoryService } from '../index';
+
+/** A Windows fsPath with a drive letter and backslashes, which must reach the DB unchanged. */
+const RAW_FS_PATH = String.raw`C:\Repos\App`;
 
 function countCandidates(db: DatabaseInstance): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM memory_candidates').get() as { n: number };
@@ -44,6 +54,7 @@ function makeTurn(promptIndex: number): {
   userText: string;
   assistantText: string;
   files: string[];
+  workspace: string;
 } {
   return {
     sessionId: 'sess-buffer',
@@ -51,6 +62,7 @@ function makeTurn(promptIndex: number): {
     userText: `user ${promptIndex}`,
     assistantText: `assistant ${promptIndex}`,
     files: [],
+    workspace: '/ws/buffered',
   };
 }
 
@@ -86,6 +98,8 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
     const db = service.database!;
     expect(countCandidates(db)).toBe(3);
     expect(service.getPendingCount()).toBe(3);
+    const workspaces = db.prepare('SELECT DISTINCT workspace FROM memory_candidates').all() as { workspace: string | null }[];
+    expect(workspaces).toEqual([{ workspace: '/ws/buffered' }]);
   });
 
   it('drops the oldest beyond the 50-candidate cap but never throws', async () => {
@@ -106,11 +120,14 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
 
   it('a turn enqueued after init lands directly without buffering', async () => {
     await service.ensureInitialized();
-    service.enqueueTurnCandidate(makeTurn(100));
+    service.enqueueTurnCandidate({ ...makeTurn(100), workspace: RAW_FS_PATH });
     await new Promise((r) => setTimeout(r, 50));
 
     const db = service.database!;
     expect(countCandidates(db)).toBe(1);
+    // The folder's raw fsPath is stored verbatim, so memory workspace strings stay byte-identical.
+    const row = db.prepare('SELECT workspace FROM memory_candidates').get() as { workspace: string };
+    expect(row.workspace).toBe(RAW_FS_PATH);
   });
 
   it('chain forget/unforget works for a legacy row with NULL root_id (deep nit)', async () => {
@@ -228,5 +245,103 @@ describe('MemoryService C9 — consolidation failure backoff', () => {
     db.prepare('DELETE FROM memory_candidates').run();
     await service.triggerConsolidation();
     expect(failures()).toBe(0);
+  });
+});
+
+describe('MemoryService — consolidation files memories under the folder its conversation ran in', () => {
+  let service: MemoryService;
+  let scheduledDelays: number[];
+  let setTimeoutSpy: ReturnType<typeof vi.spyOn>;
+
+  function seed(db: DatabaseInstance, workspace: string | null, createdAt: number): void {
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+       VALUES (?, 'sess-folder', 0, 'which bundler?', 'esbuild', '[]', ?, 0, 0, 0, ?)`,
+    ).run(crypto.randomUUID(), workspace, createdAt);
+  }
+
+  function projectMemoryWorkspaces(db: DatabaseInstance): (string | null)[] {
+    return (db.prepare("SELECT workspace FROM memories WHERE scope = 'project' ORDER BY created_at, rowid").all() as {
+      workspace: string | null;
+    }[]).map((r) => r.workspace);
+  }
+
+  beforeEach(() => {
+    dbHolder.path = path.join(os.tmpdir(), `damocles-folder-${crypto.randomUUID()}.db`);
+    let n = 0;
+    runnerHolder.run = async (req) => {
+      if (req.purpose === 'extract') {
+        n += 1;
+        return { value: { memories: [{ kind: 'fact', scope: 'project', content: `bundler fact number ${n}` }] } };
+      }
+      if (req.purpose === 'profile') return { value: { static: '', dynamic: '' } };
+      return { value: { contradicts: false, merged_ids: [], content: '' } };
+    };
+    service = new MemoryService('/ext');
+    scheduledDelays = [];
+    setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((_fn: (...a: unknown[]) => void, delay?: number) => {
+      scheduledDelays.push(delay ?? 0);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
+  });
+
+  afterEach(() => {
+    setTimeoutSpy.mockRestore();
+    runnerHolder.run = null;
+    service.dispose();
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        fs.unlinkSync(dbHolder.path + suffix);
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  it('files every turn under its own folder, and a manual run takes every folder in one go', async () => {
+    service.setFallbackWorkspace(() => '/ws/default');
+    await service.ensureInitialized();
+    const db = service.database!;
+    seed(db, '/ws/b', 1);
+    seed(db, '/ws/c', 2);
+
+    scheduledDelays = [];
+    await service.triggerConsolidation();
+    expect(projectMemoryWorkspaces(db)).toEqual(['/ws/b', '/ws/c']);
+    expect(service.getPendingCount()).toBe(0);
+    expect(scheduledDelays).not.toContain(180_000);
+  });
+
+  it('takes one folder per background pass, re-arming the idle timer while others remain', async () => {
+    service.setFallbackWorkspace(() => '/ws/default');
+    await service.ensureInitialized();
+    const db = service.database!;
+    seed(db, '/ws/b', 1);
+    seed(db, '/ws/c', 2);
+    const runPass = (): Promise<void> =>
+      (service as unknown as { runConsolidation: (o: { reason: 'idle' }) => Promise<void> }).runConsolidation({ reason: 'idle' });
+
+    scheduledDelays = [];
+    await runPass();
+    expect(projectMemoryWorkspaces(db)).toEqual(['/ws/b']);
+    expect(service.getPendingCount()).toBe(1);
+    expect(scheduledDelays).toContain(180_000);
+
+    scheduledDelays = [];
+    await runPass();
+    expect(projectMemoryWorkspaces(db)).toEqual(['/ws/b', '/ws/c']);
+    expect(service.getPendingCount()).toBe(0);
+    expect(scheduledDelays).not.toContain(180_000);
+  });
+
+  it('files a legacy candidate without a folder under the window fallback, e.g. home in a no-folder window', async () => {
+    service.setFallbackWorkspace(() => '/home/user');
+    await service.ensureInitialized();
+    const db = service.database!;
+    seed(db, null, 1);
+
+    await service.triggerConsolidation();
+    expect(projectMemoryWorkspaces(db)).toEqual(['/home/user']);
+    expect(service.getPanelMemories(null, '/home/user').map((m) => m.content)).toEqual(['bundler fact number 1']);
   });
 });

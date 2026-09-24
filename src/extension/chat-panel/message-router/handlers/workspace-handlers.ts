@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import * as path from "path";
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
@@ -14,7 +14,11 @@ function hasPathTraversal(slug: string): boolean {
 }
 
 export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { workspacePath, postMessage, workspaceManager, historyManager, setLanguagePreference } = deps;
+  const { postMessage, workspaceManager, historyManager, setLanguagePreference } = deps;
+
+  /** A folder list computed after the panel switched away would overwrite the new folder's list. */
+  const stillOnDispatchFolder = (ctx: HandlerContext): boolean =>
+    deps.getPanels().get(ctx.panelId)?.folder.key === ctx.folder.key;
 
   return {
     openSettings: () => {
@@ -29,7 +33,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
     openSessionLog: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
-      const filePath = sessionId ? await resolveSessionFilePath(workspacePath, sessionId) : null;
+      const filePath = sessionId ? await resolveSessionFilePath(ctx.folder.fsPath, sessionId) : null;
       if (!filePath) {
         vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
         return;
@@ -45,7 +49,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
         const sessionId = ctx.session.persistenceSessionId;
         if (!sessionId) throw new Error("No active session");
-        const filePath = await findAgentFile(subagentsDir(ensurePiSessionDir(workspacePath), sessionId), msg.agentId);
+        const filePath = await findAgentFile(subagentsDir(ensurePiSessionDir(ctx.folder.fsPath), sessionId), msg.agentId);
         if (!filePath) {
           vscode.window.showInformationMessage(
             vscode.l10n.t("This agent has no log file. A log is written only after the agent's first reply."),
@@ -100,7 +104,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         canSelectMany: false,
         filters: { Markdown: ["md"] },
         title: vscode.l10n.t("Select Plan File to Inject"),
-        defaultUri: vscode.Uri.file(workspacePath),
+        defaultUri: vscode.Uri.file(ctx.folder.fsPath),
       });
 
       if (!fileResult || fileResult.length === 0) return;
@@ -164,12 +168,13 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {
-      await workspaceManager.sendWorkspaceFiles(ctx.host);
+      const message = await workspaceManager.workspaceFilesMessage(ctx.folder);
+      if (stillOnDispatchFolder(ctx)) postMessage(ctx.host, message);
     },
 
     openFile: async (msg, ctx) => {
       if (msg.type !== "openFile") return;
-      await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line);
+      await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line, ctx.folder);
     },
 
     openSystemPrompt: async (_msg, ctx) => {
@@ -194,29 +199,30 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openRewindDiff: async (msg, ctx) => {
       if (msg.type !== "openRewindDiff") return;
       const sessionId = ctx.session.currentSessionId;
-      const sanitizedPath = workspaceManager.resolveWorkspaceFilePath(msg.filePath);
+      const sanitizedPath = workspaceManager.resolveWorkspaceFilePath(msg.filePath, ctx.folder);
       if (!sanitizedPath) {
-        log("[MessageRouter] Rejecting rewind diff for out-of-workspace path:", msg.filePath);
+        log("[MessageRouter] Rejecting rewind diff for a path outside the panel folder:", msg.filePath);
         return;
       }
       if (!sessionId) {
-        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath, undefined, ctx.folder);
         return;
       }
       try {
         const beforeContent = await historyManager.getFileCheckpointContent(
+          ctx.folder.fsPath,
           sessionId,
           msg.userMessageId,
           sanitizedPath,
         );
         if (beforeContent === null) {
-          await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+          await workspaceManager.handleOpenFile(ctx.host, sanitizedPath, undefined, ctx.folder);
           return;
         }
         await workspaceManager.showRewindDiff(sanitizedPath, beforeContent);
       } catch (err) {
         log("[MessageRouter] Error opening rewind diff:", err);
-        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath, undefined, ctx.folder);
       }
     },
 
@@ -226,7 +232,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     requestCustomSlashCommands: async (_msg, ctx) => {
-      await workspaceManager.sendCustomSlashCommands(ctx.host);
+      const message = await workspaceManager.customSlashCommandsMessage(ctx.folder);
+      if (stillOnDispatchFolder(ctx)) postMessage(ctx.host, message);
     },
 
     requestSteerTargets: (_msg, ctx) => {

@@ -3,6 +3,7 @@ import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
+import type { McpScope } from "../../session-types";
 import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
@@ -38,7 +39,7 @@ export class SettingsManager {
 
   constructor(config: SettingsManagerConfig) {
     this.postMessage = config.postMessage;
-    this.mcpManager = new McpManager(config.workspaceState);
+    this.mcpManager = new McpManager(config.workspaceState, config.folders);
     this.browserManager = new BrowserManager();
     this.configManager = new ConfigManager(config.postMessage);
     this.modelManager = new ModelManager(config.postMessage);
@@ -51,8 +52,13 @@ export class SettingsManager {
     this.mcpManager.setOnConfigChange(callback);
   }
 
-  setupMcpWatcher(workspacePath: string): void {
-    this.mcpManager.setupWatcher(workspacePath);
+  setupMcpWatcher(): void {
+    this.mcpManager.setupWatcher();
+  }
+
+  /** Re-watch and reload after a folder add or remove; the reload notifies the config-change callback. */
+  async handleMcpFoldersChanged(): Promise<void> {
+    return this.mcpManager.handleFoldersChanged();
   }
 
   dispose(): void {
@@ -71,16 +77,16 @@ export class SettingsManager {
     this.modelManager.setOnDefaultModelChanged(callback);
   }
 
-  async setServerEnabled(serverName: string, enabled: boolean): Promise<void> {
-    return this.mcpManager.setServerEnabled(serverName, enabled);
+  async setServerEnabled(folderKey: string, serverName: string, enabled: boolean): Promise<void> {
+    return this.mcpManager.setServerEnabled(folderKey, serverName, enabled);
   }
 
-  getEnabledMcpServers(): Record<string, McpServerConfig> {
-    return this.mcpManager.getEnabledServers();
+  getEnabledMcpServers(folderKey: string): McpScope {
+    return this.mcpManager.getEnabledServers(folderKey);
   }
 
-  getMcpServersForUI(): McpServerStatusInfo[] {
-    return this.mcpManager.getServersForUI();
+  getMcpServersForUI(folderKey: string): McpServerStatusInfo[] {
+    return this.mcpManager.getServersForUI(folderKey);
   }
 
   getMcpConfigLoaded(): boolean {
@@ -92,13 +98,15 @@ export class SettingsManager {
   }
 
   /**
-   * Add / edit / remove a server in `~/.damocles/mcp.json`, the only MCP file Damocles writes. The
-   * shadowing-name map the collision policy needs comes from the manager here rather than from the
-   * message handler, so the policy's inputs stay inside the settings layer. Each throws a
-   * human-readable `Error` on a rejected definition or name collision, having written nothing.
+   * Add / edit / remove a server in `~/.damocles/mcp.json`, the only MCP file Damocles writes.
+   * `folderKey` is the acting panel's folder: a name that folder's own files win is refused there,
+   * while a name defined only in another folder is accepted. The shadowing-name map comes from the
+   * manager here rather than from the message handler, so the policy's inputs stay inside the settings
+   * layer. Each throws a human-readable `Error` on a rejected definition or name collision, having
+   * written nothing.
    */
-  async addMcpServer(serverName: string, config: McpServerConfig): Promise<void> {
-    return addDamoclesMcpServer(serverName, config, this.mcpManager.getShadowingServerNames());
+  async addMcpServer(folderKey: string, serverName: string, config: McpServerConfig): Promise<void> {
+    return addDamoclesMcpServer(serverName, config, this.mcpManager.getShadowingServerNames(folderKey));
   }
 
   /**
@@ -110,9 +118,9 @@ export class SettingsManager {
    * Both run after the write, so a rejected write moves nothing, and before the caller reloads the
    * config, so the reload sees the updated disabled set.
    */
-  async updateMcpServer(serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
-    const previousNames = this.mcpManager.getServerNames();
-    await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getShadowingServerNames());
+  async updateMcpServer(folderKey: string, serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
+    const previousNames = this.mcpManager.getUserServerNames();
+    await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getShadowingServerNames(folderKey));
 
     if (newServerName === undefined || newServerName === serverName) return;
     await this.mcpManager.carryDisabledServerThroughRename(serverName, newServerName);
@@ -131,35 +139,35 @@ export class SettingsManager {
     await this.mcpManager.pruneDisabledServer(serverName);
   }
 
-  async sendMcpStatus(session: ChatSession, host: WebviewHost): Promise<void> {
+  async sendMcpStatus(session: ChatSession, host: WebviewHost, folderKey: string): Promise<void> {
     const sdkStatuses = await session.getMcpServerStatus();
-    const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
+    const mcpEntries = this.mcpManager.buildRuntimeStatus(folderKey, sdkStatuses);
     const mcpEnabled = vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
     this.postMessage(host, {
       type: "mcpServerStatus",
       servers: mcpEntries,
       mcpEnabled,
-      configErrors: this.mcpManager.getConfigErrors(),
-      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(),
+      configErrors: this.mcpManager.getConfigErrors(folderKey),
+      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(folderKey),
     });
   }
 
   /**
-   * The config-update message. Built in one place because it is both posted to a single host and
-   * broadcast to every panel, and a field added to only one of those paths would leave some panels
-   * showing stale state.
+   * The config-update message for a panel in `folderKey`. Built in one place because it is both posted
+   * to a single host and sent to every panel, and a field added to only one of those paths would leave
+   * some panels showing stale state.
    */
-  buildMcpConfigUpdate(): Extract<ExtensionToWebviewMessage, { type: "mcpConfigUpdate" }> {
+  buildMcpConfigUpdate(folderKey: string): Extract<ExtensionToWebviewMessage, { type: "mcpConfigUpdate" }> {
     return {
       type: "mcpConfigUpdate",
-      servers: this.getMcpServersForUI(),
-      configErrors: this.mcpManager.getConfigErrors(),
-      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(),
+      servers: this.getMcpServersForUI(folderKey),
+      configErrors: this.mcpManager.getConfigErrors(folderKey),
+      localMcpUnignored: this.mcpManager.getLocalMcpUnignored(folderKey),
     };
   }
 
-  sendMcpConfig(host: WebviewHost): void {
-    this.postMessage(host, this.buildMcpConfigUpdate());
+  sendMcpConfig(host: WebviewHost, folderKey: string): void {
+    this.postMessage(host, this.buildMcpConfigUpdate(folderKey));
   }
 
   loadBrowserState(): void {

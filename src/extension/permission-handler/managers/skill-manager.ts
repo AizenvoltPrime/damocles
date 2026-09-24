@@ -36,7 +36,7 @@ export class SkillManager {
       return buildAllowResult(input);
     }
 
-    const skillDescription = await loadSkillDescription(skillName);
+    const skillDescription = await loadSkillDescription(skillName, this.state.workspacePath);
     const result = await this.requestSkillApprovalFromWebview(skillName, skillDescription, context);
 
     if (!result.approved) {

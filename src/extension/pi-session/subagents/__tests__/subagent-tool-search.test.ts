@@ -339,6 +339,7 @@ const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAge
 function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor, 'piName'>): McpToolDescriptor {
   return {
     serverName: 'git',
+    serverId: `test/${over.serverName ?? 'git'}`,
     kind: 'tool',
     originalName: over.piName.split('__').slice(2).join('__'),
     description: '',

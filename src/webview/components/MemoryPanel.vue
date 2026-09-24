@@ -3,6 +3,7 @@ import { ref, computed, watch, reactive, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { MemoryTier, MemoryEntry, SearchResult } from '@shared/types/memory';
 import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useMemoryStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useVSCode } from '@/composables/useVSCode';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
 import { formatMemoryForCopy } from '@/lib/format-memory-copy';
@@ -49,6 +50,7 @@ const { zIndex, root, titleId } = useOverlayDialog(requestClose);
 
 const { t } = useI18n();
 const store = useMemoryStore();
+const settingsStore = useSettingsStore();
 const { postMessage } = useVSCode();
 
 const activeTab = ref<TabId>('all');
@@ -281,6 +283,17 @@ function toggleProfile() {
     syncProfileDrafts();
   }
 }
+
+// A search and a project profile draft belong to the folder they were made in; Save would write the
+// draft into the new folder's profile. Global drafts are not folder-bound and stay.
+watch(() => settingsStore.panelWorkspaceFolderKey, () => {
+  searchInput.value = '';
+  profileDirty.projectStatic = false;
+  profileDirty.projectDynamic = false;
+  profilePending.projectStatic = false;
+  profilePending.projectDynamic = false;
+  syncProfileDrafts();
+});
 
 function saveProfileSection(scope: 'project' | 'global', section: 'static' | 'dynamic', content: string) {
   postMessage({ type: 'setProfileSection', scope, section, content });

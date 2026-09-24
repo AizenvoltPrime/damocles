@@ -14,11 +14,11 @@ const SIGN_IN_CANCELLED = "__claude_signin_cancelled__";
 /**
  * Webview-driven Claude auth across all three modes: API key, subscription · allowance (plugin),
  * and subscription · extra usage (built-in). The same OAuth token serves both subscription modes;
- * installing/removing the pi-anthropic-oauth plugin flips the billing bucket without re-login. pi
+ * installing/removing the subscription plugin flips the billing bucket without re-login. pi
  * owns and refreshes the grant — Damocles never copies or refreshes the token.
  */
 export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, getPanels, workspacePath } = deps;
+  const { postMessage, getPanels } = deps;
   let busy = false;
   let signInAbort: AbortController | null = null;
   let signInInFlight: Promise<void> | null = null;
@@ -69,19 +69,19 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
     }
   }
 
-  const runtime = (): PiRuntime => PiRuntime.get(workspacePath, PI_AGENT_DIR);
+  const runtime = (): PiRuntime => PiRuntime.get();
 
   return {
     getClaudeAuthStatus: (_msg, ctx) => {
       postMessage(ctx.host, statusChanged(readClaudeAuthFromDisk(PI_AGENT_DIR)));
     },
 
-    claudeSignIn: async (msg) => {
+    claudeSignIn: async (msg, ctx) => {
       if (msg.type !== "claudeSignIn") return;
       const useAllowance = msg.useAllowance;
       const abort = new AbortController();
       signInAbort = abort;
-      const run = runOp(() => runtime().signInSubscription(useAllowance, buildLoginInteraction(abort.signal)));
+      const run = runOp(() => runtime().signInSubscription(ctx.folder.fsPath, useAllowance, buildLoginInteraction(abort.signal)));
       signInInFlight = run;
       try {
         await run;
@@ -91,10 +91,10 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
       }
     },
 
-    claudeSetBilling: async (msg) => {
+    claudeSetBilling: async (msg, ctx) => {
       if (msg.type !== "claudeSetBilling") return;
       const useAllowance = msg.useAllowance;
-      await runOp(() => runtime().setSubscriptionBilling(useAllowance));
+      await runOp(() => runtime().setSubscriptionBilling(ctx.folder.fsPath, useAllowance));
     },
 
     claudeSetApiKey: async (msg) => {

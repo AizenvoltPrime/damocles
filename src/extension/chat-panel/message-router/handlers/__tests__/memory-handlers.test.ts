@@ -20,11 +20,10 @@ function makeHarness(setProfileResult: boolean) {
     getProfile,
   };
   const deps = {
-    workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     memoryService,
   } as unknown as HandlerDependencies;
-  const ctx = { host: { id: "panel-1" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
+  const ctx = { folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true }, host: { id: "panel-1" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
   const handlers = createMemoryHandlers(deps);
   return { sent, setProfileSection, getProfile, handlers, ctx };
 }
@@ -84,11 +83,10 @@ describe("createMemoryHandlers — setProfileSection (T10 boolean contract)", ()
   it("posts a memoryError (no source) when the memory system is disabled", async () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const deps = {
-      workspacePath: "/cwd",
       postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
       memoryService: { isEnabled: false },
     } as unknown as HandlerDependencies;
-    const ctx = { host: { id: "p" }, session: { memorySessionId: "s" } } as unknown as HandlerContext;
+    const ctx = { folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true }, host: { id: "p" }, session: { memorySessionId: "s" } } as unknown as HandlerContext;
     const handlers = createMemoryHandlers(deps);
 
     await handlers.setProfileSection!(
@@ -124,11 +122,10 @@ function makeCrudHarness(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   const deps = {
-    workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     memoryService,
   } as unknown as HandlerDependencies;
-  const ctx = { host: { id: "p" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
+  const ctx = { folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true }, host: { id: "p" }, session: { memorySessionId: "sess-1" } } as unknown as HandlerContext;
   const handlers = createMemoryHandlers(deps);
   return { sent, memoryService, handlers, ctx };
 }
@@ -172,11 +169,10 @@ describe("createMemoryHandlers — createMemory (T5 + kind)", () => {
   it("posts memoryError(source:'panel') when memory is disabled so the panel resets its pending create", async () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const deps = {
-      workspacePath: "/cwd",
       postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
       memoryService: { isEnabled: false },
     } as unknown as HandlerDependencies;
-    const ctx = { host: { id: "p" }, session: { memorySessionId: "s" } } as unknown as HandlerContext;
+    const ctx = { folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true }, host: { id: "p" }, session: { memorySessionId: "s" } } as unknown as HandlerContext;
     const handlers = createMemoryHandlers(deps);
 
     await handlers.createMemory!({ type: "createMemory", tier: "project", content: "c" }, ctx);
@@ -229,20 +225,6 @@ describe("createMemoryHandlers — correlation ids + guards", () => {
     const h = makeCrudHarness({ saveMemory: vi.fn(async () => null) });
     await h.handlers.createMemory!({ type: "createMemory", tier: "project", content: "c", requestId: "req-9" }, h.ctx);
     expect(h.sent).toContainEqual({ type: "memoryError", source: "panel", message: "Failed to create memory.", requestId: "req-9" });
-  });
-
-  it("rejects a project-scoped create with no workspace instead of orphaning a NULL-workspace row", async () => {
-    const sent: ExtensionToWebviewMessage[] = [];
-    const memoryService = { isEnabled: true, ensureInitialized: vi.fn(async () => {}), saveMemory: vi.fn() };
-    const deps = {
-      workspacePath: "",
-      postMessage: (_h: unknown, m: ExtensionToWebviewMessage) => { sent.push(m); },
-      memoryService,
-    } as unknown as HandlerDependencies;
-    const ctx = { host: { id: "p" }, session: { memorySessionId: "s" } } as unknown as HandlerContext;
-    await createMemoryHandlers(deps).createMemory!({ type: "createMemory", tier: "project", content: "c", requestId: "r" }, ctx);
-    expect(memoryService.saveMemory).not.toHaveBeenCalled();
-    expect(sent).toContainEqual({ type: "memoryError", source: "panel", message: "Open a workspace folder to save a project-scoped memory.", requestId: "r" });
   });
 
   it("forgetMemory passes exactId=true so the panel never content-matches a stale id", async () => {
@@ -313,6 +295,32 @@ describe("createMemoryHandlers — keyset pagination (T18)", () => {
     await h.handlers.requestMemories!({ type: "requestMemories" }, h.ctx);
     const update = h.sent.find((m) => m.type === "memoriesUpdate");
     expect(update).toMatchObject({ type: "memoriesUpdate", observationCursor: cursor });
+  });
+});
+
+describe("createMemoryHandlers — reads follow the panel folder", () => {
+  it("requestMemories loads the panel folder's project memories and observations", async () => {
+    const h = makeCrudHarness();
+    const ctx = { ...h.ctx, folder: { key: "/ws/b", fsPath: "/ws/b", name: "b", label: "b", projectScope: true } } as unknown as HandlerContext;
+    await h.handlers.requestMemories!({ type: "requestMemories" }, ctx);
+    expect(h.memoryService.getPanelMemories).toHaveBeenCalledWith("sess-1", "/ws/b");
+    expect(h.memoryService.getObservationPage).toHaveBeenCalledWith("/ws/b");
+  });
+
+  it("a no-folder window saves a project memory under the home target, where its reads look", async () => {
+    const h = makeCrudHarness();
+    const ctx = { ...h.ctx, folder: { key: "/home/user", fsPath: "/home/user", name: "user", label: "user", projectScope: false } } as unknown as HandlerContext;
+    await h.handlers.createMemory!({ type: "createMemory", tier: "project", content: "c", requestId: "r" }, ctx);
+    expect(h.memoryService.saveMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", workspace: "/home/user" }));
+    expect(h.sent).toContainEqual(expect.objectContaining({ type: "memoryCreated", requestId: "r" }));
+  });
+
+  it("a no-folder window reads project memories under the home target, where consolidation files them", async () => {
+    const h = makeCrudHarness({ getPanelMemories: vi.fn(() => [{ ...FACT, workspace: "/home/user" }]) });
+    const ctx = { ...h.ctx, folder: { key: "/home/user", fsPath: "/home/user", name: "user", label: "user", projectScope: false } } as unknown as HandlerContext;
+    await h.handlers.requestMemories!({ type: "requestMemories" }, ctx);
+    expect(h.memoryService.getPanelMemories).toHaveBeenCalledWith("sess-1", "/home/user");
+    expect(h.sent.find((m) => m.type === "memoriesUpdate")).toMatchObject({ memories: [{ workspace: "/home/user" }] });
   });
 });
 

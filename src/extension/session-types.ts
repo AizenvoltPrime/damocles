@@ -10,6 +10,16 @@ import type { TeamService } from './team';
 import type { CompassService } from './compass';
 import type { ForkContext, ForkSpawnArgs } from '../shared/types/session';
 
+/** MCP servers one panel may use, split by scope so user-scope servers share one connection window-wide. */
+export interface McpScope {
+  /** Enabled user-scope servers visible in at least one open folder; fed to the one process-wide user manager. */
+  userUnion: Record<string, McpServerConfig>;
+  /** Keys of `userUnion` visible in this panel's folder (not shadowed by a folder-scope entry there). */
+  userVisible: string[];
+  /** This folder's enabled, trust-permitted folder-scope servers. */
+  folder: Record<string, McpServerConfig>;
+}
+
 /** Options for creating a chat session. */
 export interface SessionOptions {
   cwd: string;
@@ -18,7 +28,7 @@ export interface SessionOptions {
   onSessionIdChange?: (sessionId: string | null) => void;
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpScope?: McpScope;
   model?: string;
   /** The workspace default model ("Default for new panels"), distinct from this panel's active model. */
   getDefaultModel?: () => string;

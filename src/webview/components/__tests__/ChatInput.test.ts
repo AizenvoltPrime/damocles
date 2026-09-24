@@ -4,6 +4,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ChatInput from '../ChatInput.vue';
 import { i18n } from '@/i18n';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 
 /**
  * An IME commits its candidate with Enter. That keydown arrives with `isComposing` true, and on Windows
@@ -141,5 +142,59 @@ describe('the composer during an IME composition, beyond Enter', () => {
     await wrapper.vm.$nextTick();
 
     expect(popupSelectedIndex(wrapper)).toBe(0);
+  });
+});
+
+describe('the composer while a workspace folder switch is pending', () => {
+  const FOLDERS = [
+    { key: 'c:/ws/a', name: 'a', label: 'a', path: 'C:/ws/a' },
+    { key: 'c:/ws/b', name: 'b', label: 'b', path: 'C:/ws/b' },
+  ];
+
+  function pendingSwitch(): void {
+    const store = useSettingsStore();
+    store.setWorkspaceFolders(FOLDERS, 'c:/ws/a', 'c:/ws/a');
+    store.requestPanelWorkspaceFolder('c:/ws/b');
+  }
+
+  const sendButton = (wrapper: VueWrapper) => wrapper.findAll('button').at(-1)!;
+
+  it('neither sends nor queues, disables Send, and keeps the draft for the new folder', async () => {
+    pendingSwitch();
+    const wrapper = composer();
+    const textarea = await type(wrapper, 'follow up');
+
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('send')).toBeUndefined();
+    expect(wrapper.emitted('queue')).toBeUndefined();
+    expect(textarea.value).toBe('follow up');
+    expect(sendButton(wrapper).attributes('disabled')).toBeDefined();
+  });
+
+  it('does not queue behind a running turn either, and keeps Stop usable', async () => {
+    pendingSwitch();
+    const wrapper = composer();
+    await wrapper.setProps({ isProcessing: true });
+    expect(sendButton(wrapper).attributes('disabled')).toBeUndefined();
+
+    const textarea = await type(wrapper, 'follow up');
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('queue')).toBeUndefined();
+  });
+
+  it('sends again once the extension answers', async () => {
+    pendingSwitch();
+    const wrapper = composer();
+    useSettingsStore().setWorkspaceFolders(FOLDERS, 'c:/ws/b', 'c:/ws/a');
+    const textarea = await type(wrapper, 'hello');
+
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('send')).toHaveLength(1);
   });
 });

@@ -20,7 +20,7 @@ import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '.
 import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
- * The configured-hooks wiring threaded from `PiRuntime` (US-004/005/006). Optional — the factory works
+ * The configured-hooks wiring threaded from `FolderRuntime` (US-004/005/006). Optional — the factory works
  * without it (tests, no config) and every per-event handler is `hasEntries`-gated for zero cost (FR-14).
  */
 export interface HooksWiring {
@@ -68,7 +68,7 @@ function buildPreToolUseGate(
   };
 }
 
-/** Lookup the gate uses to route a process-global `tool_call` event to the right panel by sessionId. */
+/** Lookup the gate uses to route a folder-wide `tool_call` event to the right panel by sessionId. */
 export interface PanelRegistryReader {
   get(sessionId: string): PanelGateContext | undefined;
   /** Every registered panel. Used only where a hook has no session id to route by — see the ToolSearch
@@ -82,11 +82,11 @@ export interface CheckpointRegistryReader {
 }
 
 /**
- * The single shared Damocles pi extension (B1: one per process, registered via
+ * The Damocles pi extension, one per folder loader (registered via
  * `resourceLoaderOptions.extensionFactories`). It owns the cross-cutting hooks that pi intentionally
  * ships without — the permission gate (`tool_call`) and the plan-mode system-prompt injection
- * (`before_agent_start`). Because it is process-global, every hook routes to the correct panel by
- * `ctx.sessionManager.getSessionId()` → `registry`.
+ * (`before_agent_start`). Every panel on the folder shares it, so every hook routes to the correct
+ * panel by `ctx.sessionManager.getSessionId()` → `registry`.
  */
 export function createDamoclesExtensionFactory(
   registry: PanelRegistryReader,
@@ -130,9 +130,8 @@ export function createDamoclesExtensionFactory(
     const toolSearch = createToolSearchTool({
       deferrable: (sessionId) => registry.get(sessionId)?.deferrableTools?.() ?? null,
       activate: (sessionId, names) => registry.get(sessionId)?.activateDeferredTools?.(names),
-      // The description getter carries no session id, but it does not need one: which subsystems are
-      // enabled is a WORKSPACE fact (`damocles.browser.enabled`, compass, MCP, `tools.disabled`), so
-      // every panel here resolves the same deferrable set. Any registered panel therefore answers
+      // The description getter carries no session id: every panel registered here shares one folder, and
+      // its enabled subsystems and MCP servers are the same for each, so any registered panel answers
       // correctly. Null before any panel registers → list every built-in group.
       //
       // Answered from the PANEL, never from `pi.getAllTools()`: that materializes `description` for
@@ -162,7 +161,7 @@ export function createDamoclesExtensionFactory(
     // exactly this instance's entry, called from its own `session_shutdown` below. Nothing infers
     // deadness from a thrown `assertActive`. That handler is only reachable for an instance a session
     // BINDS; a reload with no bind following it (compat-dir watcher, subscription-plugin swap) mints an
-    // instance that receives no session event, so `PiRuntime` retires that one instead.
+    // instance that receives no session event, so `FolderRuntime` retires that one instead.
     const republishToolSearch = (): void => pi.registerTool(toolSearch);
     // Declared outside the try so the `session_shutdown` handler below can close over it: registration
     // is conditional on the initial publish succeeding, but the teardown handler is not.
@@ -177,7 +176,7 @@ export function createDamoclesExtensionFactory(
     }
 
     // The republisher is the only thing this instance owns outright, so it is the only thing retired
-    // here. The event handlers stay registered: this instance is process-global and a session shutdown
+    // here. The event handlers stay registered: this instance is shared by the folder and a session shutdown
     // says nothing about the other sessions bound to it, or about the one that binds it next.
     //
     // Retire on EVERY shutdown reason, `'reload'` INCLUDED — a deliberate divergence from the

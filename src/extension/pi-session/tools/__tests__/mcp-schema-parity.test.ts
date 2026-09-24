@@ -18,6 +18,7 @@ function descriptor(overrides: Partial<McpToolDescriptor> = {}): McpToolDescript
   return {
     piName: 'mcp__git__commit',
     serverName: 'git',
+    serverId: 'test/git',
     kind: 'tool',
     originalName: 'commit',
     description: 'Create a commit',

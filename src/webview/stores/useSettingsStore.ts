@@ -4,6 +4,7 @@ import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCom
 import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
+import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
 import {
   DEFAULT_TTS_VOICE,
   DEFAULT_WAKE_SENSITIVITY,
@@ -11,6 +12,7 @@ import {
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
+import { useVSCode } from '@/composables/useVSCode';
 
 /**
  * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
@@ -78,6 +80,7 @@ const LIVE_MCP_STATUSES = new Set<McpServerStatusInfo["status"]>([
 ]);
 
 export const useSettingsStore = defineStore('settings', () => {
+  const { postMessage } = useVSCode();
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
   const baseAvailableModels = ref<ModelInfo[]>([]);
 
@@ -133,6 +136,12 @@ export const useSettingsStore = defineStore('settings', () => {
   const claudeAuthError = ref<string | null>(null);
   const stepfunConfigured = ref(false);
   const deepseekConfigured = ref(false);
+  const workspaceFolders = ref<WorkspaceFolderInfo[]>([]);
+  const panelWorkspaceFolderKey = ref<string>("");
+  const defaultWorkspaceFolderKey = ref<string>("");
+  const isMultiRoot = computed(() => workspaceFolders.value.length >= 2);
+  // The extension answers every setPanelWorkspaceFolder with a workspaceFolderUpdate, which clears this.
+  const workspaceFolderSwitchPending = ref(false);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -376,6 +385,19 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseekConfigured.value = configured;
   }
 
+  function setWorkspaceFolders(folders: WorkspaceFolderInfo[], panelFolderKey: string, defaultFolderKey: string) {
+    workspaceFolders.value = folders;
+    panelWorkspaceFolderKey.value = panelFolderKey;
+    defaultWorkspaceFolderKey.value = defaultFolderKey;
+    workspaceFolderSwitchPending.value = false;
+  }
+
+  function requestPanelWorkspaceFolder(folderKey: string) {
+    if (workspaceFolderSwitchPending.value || folderKey === panelWorkspaceFolderKey.value) return;
+    workspaceFolderSwitchPending.value = true;
+    postMessage({ type: 'setPanelWorkspaceFolder', folderKey });
+  }
+
   function setPendingOpenAIModel(model: string | null) {
     pendingOpenAIModel.value = model;
   }
@@ -422,6 +444,10 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseekConfigured.value = false;
     pendingOpenAIModel.value = null;
     openaiModelPricing.value = {};
+    workspaceFolders.value = [];
+    panelWorkspaceFolderKey.value = "";
+    defaultWorkspaceFolderKey.value = "";
+    workspaceFolderSwitchPending.value = false;
   }
 
   return {
@@ -510,6 +536,13 @@ export const useSettingsStore = defineStore('settings', () => {
     setPendingOpenAIModel,
     openaiModelPricing,
     setOpenAIModelPricing,
+    workspaceFolders,
+    panelWorkspaceFolderKey,
+    defaultWorkspaceFolderKey,
+    isMultiRoot,
+    workspaceFolderSwitchPending,
+    setWorkspaceFolders,
+    requestPanelWorkspaceFolder,
     $reset,
   };
 });

@@ -191,14 +191,18 @@ function validateRows(
  * would overwrite a different server. The form rejects both. A name imported from Claude (user or
  * local scope) or Codex is deliberately overridable and produces no error.
  *
+ * `servers` is this panel's own folder merge, and the host refuses per folder too: the write path
+ * checks the name against the acting panel's folder, so a name only another folder defines is accepted
+ * by both.
+ *
  * `SHADOWING_SOURCES` is the STATIC precedence, which holds only while the workspace is trusted. An
  * untrusted workspace folds the repo-authored sources below `~/.damocles/mcp.json` instead of at their
- * rank, so they stop outranking it and the host's `getShadowingServerNames()` returns nothing for them.
+ * rank, so they stop outranking it and the host's `getShadowingServerNames(folderKey)` omits them.
  * `untrusted` marks exactly those demoted entries, which is why it is checked before the static set.
  *
  * `SHADOWING_SOURCES` is derived from the source order in `@shared/types/mcp`, and the host's
- * `assertNotShadowed` rejects against the fold that actually ran, so this inline hint cannot drift
- * from the rule the write path enforces.
+ * `assertNotShadowed` rejects against the folder's fold that actually ran, so this inline hint cannot
+ * drift from the rule the write path enforces.
  */
 function validateNameCollision(
   name: string,

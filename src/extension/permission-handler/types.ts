@@ -42,6 +42,13 @@ export interface PendingApproval {
   request: ExtensionToWebviewMessage;
   diffId?: string;
   parentToolUseId?: string | null;
+  /** The panel's project folder when the prompt was raised; a rule the user saves from it belongs there. */
+  workspacePath: string | null;
+}
+
+/** An approval the user's answer settled, as opposed to a stale id that matched nothing pending. */
+export interface SettledApproval {
+  workspacePath: string | null;
 }
 
 export interface QuestionResult {

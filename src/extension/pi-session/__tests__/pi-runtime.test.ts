@@ -3,12 +3,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import type { ModelRuntime, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { PiRuntime, type LiveSessionMutator } from '../pi-runtime';
-import type { PanelGateContext } from '../permission-gate';
-import type { CheckpointService } from '../checkpoint-service';
-import { nodeSupportsPi, PI_MIN_NODE_MAJOR } from '../pi-loader';
+import { FolderRuntime } from '../folder-runtime';
+import { McpClientManager } from '../mcp/mcp-client-manager';
+import { initPiLoader, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
+import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
 
 /**
  * Capture what `logger.ts` ACTUALLY writes, not the format-string arguments — the credential leak this
@@ -30,406 +31,676 @@ describe('PiRuntime singleton (B1)', () => {
   });
 
   it('returns one shared instance regardless of get() arguments', () => {
-    const a = PiRuntime.get('/tmp/workspace-a');
-    const b = PiRuntime.get('/tmp/workspace-b');
+    const a = PiRuntime.get('/tmp/agent-a');
+    const b = PiRuntime.get('/tmp/agent-b');
     expect(a).toBe(b);
+    expect(a.agentDir).toBe('/tmp/agent-a');
     expect(PiRuntime.exists).toBe(true);
   });
 
   it('disposeInstance clears the singleton so a fresh instance can be created', async () => {
-    const a = PiRuntime.get('/tmp/workspace-a');
+    const a = PiRuntime.get();
     await PiRuntime.disposeInstance();
     expect(PiRuntime.exists).toBe(false);
-    const c = PiRuntime.get('/tmp/workspace-a');
+    const c = PiRuntime.get();
     expect(c).not.toBe(a);
   });
-});
 
-describe('per-session registries are released by their owner only', () => {
-  afterEach(async () => {
-    await PiRuntime.disposeInstance();
-  });
+  it("a late unregister from a session's previous mutator leaves the new owner's entry", () => {
+    // Two panels can hold one session id, on different folders; the mutator registry is process-wide.
+    const runtime = PiRuntime.get();
+    const older = {} as LiveSessionMutator;
+    const newer = {} as LiveSessionMutator;
+    runtime.registerSessionMutator('sess-x', older);
+    runtime.registerSessionMutator('sess-x', newer);
 
-  type Registries = {
-    _panelRegistry: Map<string, unknown>;
-    _checkpointRegistry: Map<string, unknown>;
-    _sessionMutators: Map<string, unknown>;
-    _activeToolRefreshers: Map<string, unknown>;
-  };
-  const entries = (runtime: PiRuntime) => {
-    const r = runtime as unknown as Registries;
-    return [r._panelRegistry, r._checkpointRegistry, r._sessionMutators, r._activeToolRefreshers].map((m) => m.get('sess-x'));
-  };
-  const owner = () => ({
-    gate: {} as PanelGateContext,
-    checkpoints: {} as CheckpointService,
-    mutator: {} as LiveSessionMutator,
-    refresh: () => {},
-  });
-  const register = (runtime: PiRuntime, o: ReturnType<typeof owner>) => {
-    runtime.registerPanel('sess-x', o.gate);
-    runtime.registerCheckpointService('sess-x', o.checkpoints);
-    runtime.registerSessionMutator('sess-x', o.mutator);
-    runtime.registerActiveToolRefresher('sess-x', o.refresh);
-  };
-  const unregister = (runtime: PiRuntime, o: ReturnType<typeof owner>) => {
-    runtime.unregisterPanel('sess-x', o.gate);
-    runtime.unregisterCheckpointService('sess-x', o.checkpoints);
-    runtime.unregisterSessionMutator('sess-x', o.mutator);
-    runtime.unregisterActiveToolRefresher('sess-x', o.refresh);
-  };
+    runtime.unregisterSessionMutator('sess-x', older);
+    expect(runtime.getSessionMutator('sess-x')).toBe(newer);
 
-  it("a late unregister from the previous owner leaves the new owner's entry in all four registries", () => {
-    // Two panels can hold one session id; the older closing after the newer registered must not strip
-    // the newer's gate, or every tool call there hits the fail-closed fallback.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const older = owner();
-    const newer = owner();
-    register(runtime, older);
-    register(runtime, newer);
-
-    unregister(runtime, older);
-
-    const [gate, checkpoints, mutator, refresh] = entries(runtime);
-    expect(gate).toBe(newer.gate);
-    expect(checkpoints).toBe(newer.checkpoints);
-    expect(mutator).toBe(newer.mutator);
-    expect(refresh).toBe(newer.refresh);
-  });
-
-  it("the current owner's unregister still removes its entries", () => {
-    const runtime = PiRuntime.get('/tmp/ws');
-    const only = owner();
-    register(runtime, only);
-
-    unregister(runtime, only);
-
-    expect(entries(runtime)).toEqual([undefined, undefined, undefined, undefined]);
-  });
-});
-
-describe('ToolSearch republishers', () => {
-  afterEach(async () => {
-    await PiRuntime.disposeInstance();
-  });
-
-  /** Register through the PUBLIC seam an extension instance actually uses, keeping its disposer. */
-  const publish = (runtime: PiRuntime, fn: () => void): (() => void) => runtime.registerToolSearchRepublisher(fn);
-
-  /**
-   * The only private reach-through here, and only for SIZE — growth is invisible from the public
-   * surface, since a disposed closure that no longer fires looks identical to one still held. All
-   * behaviour is asserted through the public seam.
-   */
-  const registeredCount = (runtime: PiRuntime): number =>
-    (runtime as unknown as { _toolSearchRepublishers: Set<() => void> })._toolSearchRepublishers.size;
-
-  it('fires EVERY registered extension instance, not just the newest', () => {
-    // `prepareSessionExtensions` reloads the resource loader per session, so each panel's session binds
-    // its own extension instance while earlier panels keep theirs. A single-slot field held only the
-    // last one, leaving every earlier panel's ToolSearch description frozen for the session's life —
-    // silently, because that instance is live rather than stale.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const fired: string[] = [];
-    publish(runtime, () => fired.push('panelA'));
-    publish(runtime, () => fired.push('panelB'));
-
-    runtime.republishToolSearch();
-
-    expect(fired).toEqual(['panelA', 'panelB']);
-  });
-
-  it('the returned disposer removes exactly its own entry and leaves peers firing', () => {
-    // "Exactly its own" is the load-bearing half: a disposer that cleared the set, or keyed off anything
-    // but closure identity, would silently freeze every live panel's menu.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const fired: string[] = [];
-    const disposeA = publish(runtime, () => fired.push('panelA'));
-    publish(runtime, () => fired.push('panelB'));
-    publish(runtime, () => fired.push('panelC'));
-
-    disposeA();
-    runtime.republishToolSearch();
-
-    expect(fired).toEqual(['panelB', 'panelC']);
-    expect(registeredCount(runtime)).toBe(2);
-
-    // Double-disposal is a real path (shutdown then teardown) and must not disturb peers.
-    disposeA();
-    fired.length = 0;
-    runtime.republishToolSearch();
-    expect(fired).toEqual(['panelB', 'panelC']);
-    expect(registeredCount(runtime)).toBe(2);
-  });
-
-  it('a throwing republisher is NOT retired: it stays registered, retries next time, and never aborts its peers', () => {
-    // Guards the old design's worst failure: a LIVE panel whose `registerTool` failed for any unrelated
-    // reason was dropped permanently, freezing its menu with no further error. A throw now means only
-    // "unexpected" — the entry survives, and the catch still stops one failure aborting its peers.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const fired: string[] = [];
-    let attempts = 0;
-    let failing = true;
-    publish(runtime, () => {
-      attempts++;
-      if (failing) throw new Error('extension context is no longer active');
-      fired.push('recovered');
-    });
-    publish(runtime, () => fired.push('live'));
-
-    runtime.republishToolSearch();
-    expect(attempts).toBe(1);
-    expect(fired).toEqual(['live']); // the throw did not abort its peer
-    expect(registeredCount(runtime)).toBe(2); // and did not retire the thrower
-
-    runtime.republishToolSearch();
-    expect(attempts).toBe(2); // still registered, so it is invoked again
-    expect(fired).toEqual(['live', 'live']);
-
-    // Once the transient condition clears it republishes normally — what delete-on-throw made impossible.
-    failing = false;
-    fired.length = 0;
-    runtime.republishToolSearch();
-    expect(fired).toEqual(['recovered', 'live']);
-    expect(registeredCount(runtime)).toBe(2);
-  });
-
-  it('does not grow across repeated teardowns — the count tracks live instances, not lifetime registrations', () => {
-    // Opening/closing/resetting panels re-runs the factory each time; with no deterministic removal the
-    // set only grew. After N cycles the count must equal the number of LIVE instances.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const fired: string[] = [];
-    publish(runtime, () => fired.push('survivor'));
-    // Baseline for the loop below. Asserting the disposer is a function would pin nothing (the return
-    // type says so); this fails if registration itself regresses.
-    expect(registeredCount(runtime)).toBe(1);
-
-    for (let i = 0; i < 20; i++) {
-      const dispose = publish(runtime, () => fired.push(`transient-${i}`));
-      expect(registeredCount(runtime)).toBe(2);
-      dispose();
-      expect(registeredCount(runtime)).toBe(1);
-    }
-
-    expect(registeredCount(runtime)).toBe(1);
-    runtime.republishToolSearch();
-    expect(fired).toEqual(['survivor']);
-  });
-
-  it('dispose() clears the republisher registry, not just the active-tool refreshers', async () => {
-    // Both are per-live-instance registries. Clearing only one is harmless while the singleton is nulled
-    // right after, but it reads as "republishers outlive teardown" — the inference that made the orphan.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const fired: string[] = [];
-    const dispose = publish(runtime, () => fired.push('gone'));
-
-    await runtime.dispose();
-
-    expect(registeredCount(runtime)).toBe(0);
-    runtime.republishToolSearch();
-    expect(fired).toEqual([]);
-    // A shutdown in flight when the runtime went down disposes afterwards; `Set.delete` on a cleared set
-    // is inert, so this must not throw.
-    expect(() => dispose()).not.toThrow();
+    runtime.unregisterSessionMutator('sess-x', newer);
+    expect(runtime.getSessionMutator('sess-x')).toBeUndefined();
   });
 });
 
 /**
- * B1: the lifetime of an extension instance NO session ever binds. Only a bound instance receives
- * `session_shutdown`, so only it can retire itself. The three bare reload paths (compat watcher,
- * `_hotReloadExtensions`, `_removeSubscriptionPlugin`) and the instance minted at init are unbound, so
- * the runtime retires them — and must never do so to one that HAS gone live.
+ * The subscription plugin switch, across every folder loader. Every case asserts the invariant that
+ * settings list a subscription plugin only if that plugin registered `anthropic`, plus the order of
+ * settings writes, reloads and provider resets that keeps it true across a failure at any step.
+ *
+ * The fake keeps pi's split between in-memory and on-disk settings: `flush` writes the user settings'
+ * memory to disk (or records a write error), `reload` re-reads the disk, and each folder loader's
+ * `reload` re-reads the disk before loading, as pi's resource loader does. Two folder loaders share one
+ * `ModelRuntime`, whose `registerProvider` merges over the previous registration, as pi's does.
  */
-describe('unbound extension instances (B1)', () => {
+describe('subscription plugin migration', () => {
+  // Folder creation needs the loaded pi module; the cold import takes seconds, so it is paid once here.
+  beforeAll(async () => {
+    if (!(await initPiLoader())) throw new Error('pi failed to load');
+  }, 60_000);
+
+  const CURRENT = SUBSCRIPTION_SOURCE;
+  const LEGACY = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth@8f82a2d207e12bfd313092d78333c594554f26fb';
+  const LEGACY_REPO = LEGACY_SUBSCRIPTION_REPOS[0]!;
+  type LoadBehavior = 'register' | 'none' | 'error';
+  type Entry = string | { source: string; extensions?: string[] };
+  type Pending = { name: string; config: Record<string, unknown>; extensionPath: string };
+
+  interface Harness {
+    runtime: PiRuntime;
+    calls: string[];
+    /** In-memory user packages. */
+    memory: Entry[];
+    /** User packages as written to settings.json. */
+    disk: Entry[];
+    providers: Map<string, Record<string, unknown>>;
+    cloneDir(source: string): string;
+    behavior: { current: LoadBehavior; legacy: LoadBehavior };
+    startupErrors: { path: string; error: string }[];
+    failInstall: boolean;
+    failLegacyRemove: boolean;
+    failNextFlush: boolean;
+    failNextReload: boolean;
+    /** Resolves when the install may proceed; lets a case act while a swap is in flight. */
+    installGate: Promise<void>;
+    folders: FolderRuntime[];
+    /** Create a folder runtime whose loader follows the harness, labelled by the last path segment. */
+    addFolder(label: string): FolderRuntime;
+  }
+
+  const tmpRoots: string[] = [];
+  const spies: Array<{ mockRestore(): void }> = [];
+  const restoreSpies = (): void => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
+  };
   afterEach(async () => {
+    restoreSpies();
     await PiRuntime.disposeInstance();
+    for (const dir of tmpRoots.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  const registeredCount = (runtime: PiRuntime): number =>
-    (runtime as unknown as { _toolSearchRepublishers: Set<() => void> })._toolSearchRepublishers.size;
+  const sourceOf = (e: Entry): string => (typeof e === 'string' ? e : e.source);
+  const identity = (source: string): string => source.replace(/[@#].*$/, '');
+  const diskSources = (h: Harness): string[] => h.disk.map(sourceOf);
 
-  interface FakeLoader {
-    /** Republisher calls, in order, labelled by the instance that owns them. */
-    fired: string[];
-    failNextReload: () => void;
+  function writeClone(dir: string): void {
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'src', 'index.ts'), '');
   }
 
-  /**
-   * Stands in for `AgentSessionServices` so the reload paths are drivable without booting pi. Faithful
-   * in the two respects the fix depends on: factories run INSIDE `reload()` (so a reload can identify
-   * the instance it just minted), and the reload keeps awaiting afterwards, so overlapping reloads
-   * interleave — an atomic fake would make the serialization test vacuous. The `init` instance goes
-   * through the same seam `_doInit` uses, adoption included.
-   */
-  function attachFakeServices(runtime: PiRuntime): FakeLoader {
-    const fired: string[] = [];
-    let failNext = false;
-    let seq = 0;
-    const services = {
-      resourceLoader: {
-        reload: async (): Promise<void> => {
-          await Promise.resolve();
-          if (failNext) {
-            failNext = false;
-            throw new Error('packageManager.resolve failed');
-          }
-          const id = `instance-${++seq}`;
-          runtime.registerToolSearchRepublisher(() => fired.push(id));
-          await Promise.resolve();
-        },
-        extendResources: () => undefined,
-        getExtensions: () => ({ runtime: { pendingProviderRegistrations: [] } }),
+  function setup(opts: { packages: Entry[]; clones: string[]; folders?: string[] }): Harness {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-sub-mig-'));
+    tmpRoots.push(root);
+    const calls: string[] = [];
+    const runtime = PiRuntime.get(root);
+    const writeErrors: { scope: string; error: Error }[] = [];
+
+    const modelRuntime = {
+      registerProvider: (name: string, config: Record<string, unknown>) => {
+        calls.push(`register:${name}:${String(config['tag'])}`);
+        h.providers.set(name, { ...h.providers.get(name), ...config });
       },
-      // 0.85's `refresh` resolves a `ModelsRefreshResult`, which `_hotReloadExtensions` now reads.
-      modelRuntime: { registerProvider: () => undefined, refresh: async () => ({ aborted: false, errors: new Map() }) },
+      unregisterProvider: (name: string) => {
+        calls.push(`unregister:${name}`);
+        h.providers.delete(name);
+      },
+      getRegisteredProviderConfig: (name: string) => h.providers.get(name),
+      refresh: async () => {
+        calls.push('refresh');
+        return { aborted: false, errors: new Map() };
+      },
     };
+
+    /** What a loader reading the current disk registers: one `anthropic` per listed subscription plugin. */
+    function load(): { pending: Pending[]; errors: { path: string; error: string }[] } {
+      const pending: Pending[] = [];
+      const errors: { path: string; error: string }[] = [];
+      for (const entry of h.disk) {
+        const source = sourceOf(entry);
+        const kind = classifySubscriptionSource(source);
+        if (kind !== 'current' && kind !== 'legacy') continue;
+        const behavior = h.behavior[kind];
+        if (behavior === 'none') continue;
+        const extensionPath = path.join(h.cloneDir(source), 'src', 'index.ts');
+        const config = kind === 'legacy' ? { tag: kind, oauth: true } : { tag: kind };
+        pending.push({ name: 'anthropic', config, extensionPath });
+        if (behavior === 'error') errors.push({ path: extensionPath, error: 'boom' });
+      }
+      return { pending, errors };
+    }
+
+    function attachLoader(folder: FolderRuntime, label: string): void {
+      const runtimeState = { pendingProviderRegistrations: [] as Pending[] };
+      let reloadErrors: { path: string; error: string }[] | null = null;
+      (folder as unknown as { _services: unknown })._services = {
+        settingsManager: { isProjectTrusted: () => true },
+        resourceLoader: {
+          reload: async () => {
+            calls.push(`reload:${label}`);
+            if (h.failNextReload) {
+              h.failNextReload = false;
+              throw new Error('git clone failed');
+            }
+            const loaded = load();
+            runtimeState.pendingProviderRegistrations.push(...loaded.pending);
+            reloadErrors = loaded.errors;
+          },
+          extendResources: () => undefined,
+          getExtensions: () => ({ runtime: runtimeState, errors: reloadErrors ?? h.startupErrors }),
+        },
+      };
+    }
+
+    const h: Harness = {
+      runtime,
+      calls,
+      memory: [...opts.packages],
+      disk: [...opts.packages],
+      providers: new Map(),
+      cloneDir: (source) => path.join(root, 'git', 'github.com', 'AizenvoltPrime', identity(source).split('/').pop()!),
+      behavior: { current: 'register', legacy: 'register' },
+      startupErrors: [],
+      failInstall: false,
+      failLegacyRemove: false,
+      failNextFlush: false,
+      failNextReload: false,
+      installGate: Promise.resolve(),
+      folders: [],
+      addFolder: (label) => {
+        const folder = new FolderRuntime({
+          pi: {} as PiCodingAgentModule,
+          cwd: path.join(root, 'ws', label),
+          agentDir: root,
+          modelRuntime: modelRuntime as unknown as ModelRuntime,
+          userMcp: new McpClientManager(),
+          createFolderMcp: (reservedPrefixes) => new McpClientManager({ reservedPrefixes }),
+          renameSession: async () => undefined,
+        });
+        attachLoader(folder, label);
+        h.folders.push(folder);
+        return folder;
+      },
+    };
+    for (const source of opts.clones) writeClone(h.cloneDir(source));
+
+    const userSettings = {
+      getGlobalSettings: () => ({ packages: [...h.memory] }),
+      setPackages: (packages: Entry[]) => {
+        calls.push('setPackages');
+        h.memory = [...packages];
+      },
+      flush: async () => {
+        calls.push('flush');
+        if (h.failNextFlush) {
+          h.failNextFlush = false;
+          writeErrors.push({ scope: 'global', error: new Error('settings.json is locked') });
+          return;
+        }
+        h.disk = [...h.memory];
+      },
+      drainErrors: () => writeErrors.splice(0),
+      reload: async () => {
+        h.memory = [...h.disk];
+      },
+    };
+
+    const fakePm = {
+      getInstalledPath: (source: string) => {
+        const dir = h.cloneDir(source);
+        return fs.existsSync(dir) ? dir : undefined;
+      },
+      addSourceToSettings: (source: string) => {
+        calls.push(`addSettings:${source}`);
+        const i = h.memory.findIndex((p) => identity(sourceOf(p)) === identity(source));
+        if (i === -1) h.memory.push(source);
+        else h.memory[i] = source;
+        return true;
+      },
+      removeSourceFromSettings: (source: string) => {
+        calls.push(`removeSettings:${identity(source)}`);
+        const before = h.memory.length;
+        h.memory = h.memory.filter((p) => identity(sourceOf(p)) !== identity(source));
+        return h.memory.length !== before;
+      },
+      install: async (source: string) => {
+        calls.push(`install:${source}`);
+        await h.installGate;
+        if (h.failInstall) throw new Error('network down');
+        writeClone(h.cloneDir(source));
+      },
+      remove: async (source: string) => {
+        calls.push(`remove:${identity(source)}`);
+        if (h.failLegacyRemove && identity(source) === LEGACY_REPO) throw new Error('EPERM');
+        fs.rmSync(h.cloneDir(source), { recursive: true, force: true });
+      },
+    };
+
     const internals = runtime as unknown as {
-      _services: unknown;
+      _modelRuntime: unknown;
+      _userSettings: unknown;
+      _userMcp: unknown;
       _initPromise: Promise<void>;
-      _trackCurrentInstanceAsUnbound(): void;
     };
-    internals._services = services;
-    // `init()` returns an existing `_initPromise` untouched, so this makes every `await this.init()`
-    // inside the reload paths a no-op instead of booting pi.
+    internals._modelRuntime = modelRuntime;
+    internals._userSettings = userSettings;
+    internals._userMcp = { onToolsChanged: () => () => undefined, dispose: async () => undefined };
     internals._initPromise = Promise.resolve();
-    runtime.registerToolSearchRepublisher(() => fired.push('init'));
-    internals._trackCurrentInstanceAsUnbound();
-    return { fired, failNextReload: () => { failNext = true; } };
+    spies.push(vi.spyOn(runtime as unknown as { _packageManager(): unknown }, '_packageManager').mockReturnValue(fakePm));
+
+    // A folder created through `folder()` gets a harness loader, and pi's services creation flushes that
+    // loader's registrations into the shared model runtime, as `createAgentSessionServices` does.
+    spies.push(vi.spyOn(FolderRuntime.prototype, 'createServices').mockImplementation(async function (this: FolderRuntime) {
+      const label = path.basename(this.cwd);
+      calls.push(`create:${label}`);
+      attachLoader(this, label);
+      h.folders.push(this);
+      await this.reloadBare();
+      const ext = this.services.resourceLoader.getExtensions();
+      for (const { name, config } of ext.runtime.pendingProviderRegistrations) modelRuntime.registerProvider(name, config as Record<string, unknown>);
+      ext.runtime.pendingProviderRegistrations = [];
+    }));
+
+    const registered = runtime as unknown as { _folders: Map<string, FolderRuntime>; _folderPromises: Map<string, Promise<FolderRuntime>> };
+    for (const label of opts.folders ?? ['A', 'B']) {
+      const folder = h.addFolder(label);
+      registered._folders.set(folder.key, folder);
+      registered._folderPromises.set(folder.key, Promise.resolve(folder));
+    }
+    return h;
   }
 
-  /** A REAL bare call site (`_installSubscriptionPlugin` reaches it on every allowance install), driven
-   *  directly because all three bare sites are private or watcher-timed. Using the call site rather than
-   *  `_reloadResources('bare')` means the test also pins that the site passes `'bare'`. */
-  const bareReload = (runtime: PiRuntime): Promise<void> =>
-    (runtime as unknown as { _hotReloadExtensions(): Promise<void> })._hotReloadExtensions();
+  type Ops = {
+    _reconcileSubscriptionPin(pi: unknown, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<void>;
+    _setPluginInstalled(pi: unknown, installed: boolean): Promise<void>;
+  };
+  const reconcile = (h: Harness): Promise<void> => (h.runtime as unknown as Ops)._reconcileSubscriptionPin({}, h.folders, h.folders[0]!);
+  const toggle = (h: Harness, allowance: boolean): Promise<void> => (h.runtime as unknown as Ops)._setPluginInstalled({}, allowance);
 
-  it('two bare reloads leave exactly ONE unbound republisher, not two', async () => {
-    // Requirement #1. Each bare reload mints an instance nothing will bind; the previous one is dead the
-    // moment it is superseded, so the set must track the loader's CURRENT instance and nothing older.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  /** Each step appears after the one before it. */
+  function expectOrder(calls: string[], steps: string[]): void {
+    let from = 0;
+    for (const step of steps) {
+      const at = calls.indexOf(step, from);
+      expect(at, `${step} after index ${from} in ${calls.join(', ')}`).toBeGreaterThanOrEqual(0);
+      from = at + 1;
+    }
+  }
 
-    await bareReload(runtime);
-    await bareReload(runtime);
+  const reloads = (h: Harness): string[] => h.calls.filter((c) => c.startsWith('reload:'));
 
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['instance-2']);
-    expect(registeredCount(runtime)).toBe(1);
+  /** A legacy-only install whose legacy plugin is registered, as at startup. */
+  function legacyInstall(): Harness {
+    const h = setup({ packages: [LEGACY], clones: [LEGACY] });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+    return h;
+  }
 
-    // ...and it stays at one however long the window lives. Growth is the symptom a user sees as an
-    // ever-longer list of dead `registerTool` calls on every skill-file edit.
-    loader.fired.length = 0;
-    await bareReload(runtime);
-    await bareReload(runtime);
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['instance-4']);
-    expect(registeredCount(runtime)).toBe(1);
+  it('(a) migrates a legacy-only install: acquire, swap, verify, then delete the legacy clone', async () => {
+    const h = legacyInstall();
+
+    await reconcile(h);
+
+    expectOrder(h.calls, [
+      `install:${CURRENT}`,
+      `removeSettings:${LEGACY_REPO}`,
+      'flush',
+      'reload:A',
+      'reload:B',
+      'unregister:anthropic',
+      'register:anthropic:current',
+      'refresh',
+    ]);
+    expect(diskSources(h)).toEqual([CURRENT]);
+    // Without the unregister, pi's merge would keep the legacy registration's `oauth`.
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(false);
   });
 
-  it('a session-bound reload retires the previous BARE instance and keeps the one it mints', async () => {
-    // Requirement #2. `prepareSessionExtensions` reloads immediately before a bind, so the instance that
-    // binds is always the freshest one and any bare instance before it can never bind. The bound
-    // instance must NOT be retired at reload time — it has a session to serve.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it('(a2) the provider reset and flush cover every folder loader, with no gap between them', async () => {
+    const h = legacyInstall();
 
-    await runtime.prepareSessionExtensions(); // first session: binds the init instance, no reload
-    await bareReload(runtime); // instance-1, unbound
-    await runtime.prepareSessionExtensions(); // second session: reload → instance-2, then binds it
+    await reconcile(h);
 
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['init', 'instance-2']);
-    expect(registeredCount(runtime)).toBe(2);
+    // One reset of the shared runtime, then each loader's registration, back to back: no await between
+    // the unregister and the registers, or the built-in provider would serve a request in between.
+    const unregister = h.calls.indexOf('unregister:anthropic');
+    expect(h.calls.filter((c) => c === 'unregister:anthropic')).toHaveLength(1);
+    expect(h.calls.slice(unregister, unregister + 3)).toEqual(['unregister:anthropic', 'register:anthropic:current', 'register:anthropic:current']);
+    expect(h.calls.filter((c) => c === 'refresh')).toHaveLength(1);
+    for (const folder of h.folders) {
+      expect(folder.services.resourceLoader.getExtensions().runtime.pendingProviderRegistrations).toEqual([]);
+    }
   });
 
-  it('NEVER retires a live session-bound panel’s republisher, however many reloads follow', async () => {
-    // Requirement #3, and the regression that would break the whole feature: a live panel whose
-    // republisher was retired keeps a ToolSearch description frozen at whatever pi last wrapped, with no
-    // error anywhere — precisely the failure v2.18.0 exists to fix.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it('(b) leaves the working legacy plugin alone when the install fails', async () => {
+    const h = legacyInstall();
+    h.failInstall = true;
 
-    await runtime.prepareSessionExtensions(); // panel A binds the init instance
-    await runtime.prepareSessionExtensions(); // panel B binds instance-1
+    await expect(reconcile(h)).resolves.toBeUndefined();
 
-    await bareReload(runtime); // instance-2
-    await bareReload(runtime); // instance-3
-    await bareReload(runtime); // instance-4
-
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['init', 'instance-1', 'instance-4']);
-    expect(registeredCount(runtime)).toBe(3);
+    expect(h.calls.filter((c) => c.startsWith('removeSettings') || c.startsWith('reload:') || c.startsWith('unregister'))).toEqual([]);
+    expect(diskSources(h)).toEqual([LEGACY]);
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
   });
 
-  it('hands the startup instance to the first session instead of retiring it', async () => {
-    // The startup ordering that makes "bare" and "about to be bound" the same instance:
-    // `_reconcileSubscriptionPin` hot-reloads during `_doInit` — every allowance user hits it on a pin
-    // bump — and pi's `_buildRuntime` binds whatever the loader holds, so the first session binds THAT
-    // instance. Retiring it on the next reload would freeze the first panel opened in the window.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it.each([
+    ['registers no anthropic provider', 'none' as const, 'registered no anthropic provider'],
+    ['reports a load error in its clone', 'error' as const, 'boom'],
+  ])('(c/d) rolls back to the legacy plugin when the new one %s', async (_label, behavior, reason) => {
+    for (const via of ['reconcile', 'toggle'] as const) {
+      const h = legacyInstall();
+      h.behavior.current = behavior;
 
-    await bareReload(runtime); // startup reconcile: instance-1 supersedes the init instance
-    await runtime.prepareSessionExtensions(); // first session binds instance-1 without reloading
-    await bareReload(runtime); // instance-2 must not touch the now-bound instance-1
+      if (via === 'reconcile') {
+        const logged = logLines.length;
+        await expect(reconcile(h)).resolves.toBeUndefined();
+        expect(logLines.slice(logged).join('\n')).toContain('subscription reconcile failed');
+      } else {
+        await expect(toggle(h, true)).rejects.toThrow(`subscription plugin failed to load: ${reason}`);
+      }
 
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['instance-1', 'instance-2']);
-    expect(registeredCount(runtime)).toBe(2);
+      expect(diskSources(h)).toEqual([LEGACY]);
+      expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
+      // The verify pass and the rollback each reload both loaders.
+      expect(reloads(h)).toEqual(['reload:A', 'reload:B', 'reload:A', 'reload:B']);
+      expect(h.calls.lastIndexOf('register:anthropic:legacy')).toBeGreaterThan(h.calls.lastIndexOf('reload:B'));
+      expect(h.providers.get('anthropic')).toEqual({ tag: 'legacy', oauth: true });
+      restoreSpies();
+      await PiRuntime.disposeInstance();
+    }
   });
 
-  it('a failed session-bound reload releases the instance the session binds instead of retiring it', async () => {
-    // `prepareSessionExtensions` swallows a reload failure and the session binds the runtime the loader
-    // still holds — the instance a previous bare reload minted. It is bound now, so the runtime must
-    // drop its claim on it rather than retire it when the next reload lands.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it('(e) unlists the new plugin and falls back to the built-in provider when there is no legacy', async () => {
+    const h = setup({ packages: [], clones: [] });
+    h.behavior.current = 'none';
 
-    await runtime.prepareSessionExtensions(); // first session binds the init instance
-    await bareReload(runtime); // instance-1, unbound
-    loader.failNextReload();
-    await runtime.prepareSessionExtensions(); // reload throws → the session binds instance-1
-    await bareReload(runtime); // instance-2
+    await expect(toggle(h, true)).rejects.toThrow('registered no anthropic provider');
 
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['init', 'instance-1', 'instance-2']);
+    expect(diskSources(h)).toEqual([]);
+    expect(h.providers.has('anthropic')).toBe(false);
+    expectOrder(h.calls, ['reload:A', 'reload:B', `removeSettings:${identity(CURRENT)}`, 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
   });
 
-  it('a failed BARE reload keeps its claim on the instance still in place', async () => {
-    // The mirror case: nothing was superseded, so the tracked instance is still the loader's and still
-    // unbound. Dropping the claim here would strand it for the life of the window.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it('(f) with a healthy pin and a listed legacy entry, swaps without reinstalling', async () => {
+    const h = setup({ packages: [CURRENT, LEGACY], clones: [CURRENT, LEGACY] });
 
-    await bareReload(runtime); // instance-1
-    loader.failNextReload();
-    await expect(bareReload(runtime)).rejects.toThrow('packageManager.resolve failed');
-    await bareReload(runtime); // instance-2 supersedes instance-1, which must still be retired
+    await toggle(h, true);
 
-    runtime.republishToolSearch();
-    expect(loader.fired).toEqual(['instance-2']);
-    expect(registeredCount(runtime)).toBe(1);
+    expect(h.calls.some((c) => c.startsWith('install:'))).toBe(false);
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(false);
   });
 
-  it('overlapping reloads serialize, so neither adopts the other’s instance', async () => {
-    // Requirement #5. A billing toggle (bare, not queued by its caller) and a panel starting
-    // (session-bound) can be issued in the same tick. `_reloadResources` queues both on `_reloadSync`;
-    // without that, each reload would read "the instance I just minted" from a slot the other had
-    // already overwritten — and adopting a SESSION-BOUND instance as unbound retires a live panel.
-    const runtime = PiRuntime.get('/tmp/ws');
-    const loader = attachFakeServices(runtime);
+  it('(g) does nothing for a healthy, registered pin with no legacy', async () => {
+    const h = setup({ packages: [CURRENT], clones: [CURRENT] });
+    h.providers.set('anthropic', { tag: 'current' });
 
-    await runtime.prepareSessionExtensions(); // panel A binds the init instance
+    await toggle(h, true);
+    await reconcile(h);
 
-    const bare = bareReload(runtime);
-    const bound = runtime.prepareSessionExtensions();
-    await Promise.all([bare, bound]);
+    expect(h.calls).toEqual([]);
+  });
 
-    runtime.republishToolSearch();
-    // The bare instance minted first is retired by the session-bound reload that follows it; panel A and
-    // the newly bound instance both survive.
-    expect(loader.fired).toEqual(['init', 'instance-2']);
-    expect(registeredCount(runtime)).toBe(2);
+  it.each([
+    ['legacy only', [LEGACY]],
+    ['both listed', [CURRENT, LEGACY]],
+  ])('(h) switching to extra usage removes every subscription entry (%s)', async (_label, packages) => {
+    const h = setup({ packages, clones: packages });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+
+    await toggle(h, false);
+
+    expect(diskSources(h)).toEqual([]);
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(false);
+    expect(fs.existsSync(h.cloneDir(CURRENT))).toBe(false);
+    // Every loader reloads before the reset, or one still holding the plugin re-flushes it at its next bind.
+    expectOrder(h.calls, [`removeSettings:${LEGACY_REPO}`, 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
+    expect(h.providers.has('anthropic')).toBe(false);
+  });
+
+  it('(i) a failed legacy clone delete after a successful swap keeps the settings correct', async () => {
+    const h = legacyInstall();
+    h.failLegacyRemove = true;
+
+    await expect(reconcile(h)).resolves.toBeUndefined();
+
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
+  });
+
+  it('(j) unlists a current plugin that failed to load at startup', async () => {
+    const h = setup({ packages: [CURRENT], clones: [CURRENT] });
+    h.providers.set('anthropic', { tag: 'current' });
+    h.startupErrors.push({ path: path.join(h.cloneDir(CURRENT), 'src', 'index.ts'), error: 'SyntaxError' });
+    const logged = logLines.length;
+
+    await reconcile(h);
+
+    expect(diskSources(h)).toEqual([]);
+    expectOrder(h.calls, [`removeSettings:${identity(CURRENT)}`, 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
+    expect(h.providers.has('anthropic')).toBe(false);
+    expect(logLines.slice(logged).join('\n')).toContain('subscription plugin failed to load');
+  });
+
+  it('(j2) unlists a current plugin that loaded but registered no anthropic provider at startup', async () => {
+    const h = setup({ packages: [CURRENT], clones: [CURRENT] });
+
+    await reconcile(h);
+
+    expect(diskSources(h)).toEqual([]);
+    expect(h.calls).toContain('unregister:anthropic');
+  });
+
+  it('(k) deletes an orphan legacy clone with no provider change', async () => {
+    const h = setup({ packages: [], clones: [LEGACY] });
+
+    await reconcile(h);
+
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(false);
+    expect(h.calls).toEqual([`remove:${LEGACY_REPO}`]);
+  });
+
+  it('(l) a settings write that fails at the swap aborts before any reload or delete', async () => {
+    const h = legacyInstall();
+    h.failNextFlush = true;
+
+    await expect(toggle(h, true)).rejects.toThrow('settings write failed');
+
+    expect(reloads(h)).toEqual([]);
+    expect(diskSources(h)).toEqual([LEGACY]);
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'legacy', oauth: true });
+  });
+
+  it('(m) a verify reload that throws rolls back to the legacy plugin', async () => {
+    const h = legacyInstall();
+    h.failNextReload = true;
+
+    await expect(toggle(h, true)).rejects.toThrow('subscription plugin failed to load: git clone failed');
+
+    expect(diskSources(h)).toEqual([LEGACY]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'legacy', oauth: true });
+    expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(true);
+  });
+
+  it('(n) a failed repair of a listed plugin whose clone is gone unlists it', async () => {
+    const h = setup({ packages: [CURRENT], clones: [] });
+    h.providers.set('anthropic', { tag: 'current' });
+    h.failInstall = true;
+
+    await expect(toggle(h, true)).rejects.toThrow('network down');
+
+    expect(diskSources(h)).toEqual([]);
+    expect(h.providers.has('anthropic')).toBe(false);
+  });
+
+  it('(o) rollback does not relist a legacy entry whose clone another window deleted', async () => {
+    const h = legacyInstall();
+    h.behavior.current = 'none';
+    const realRemove = fs.rmSync;
+    // The legacy clone disappears between the swap and the rollback.
+    h.calls.push = function (this: string[], ...items: string[]) {
+      if (items.some((i) => i.startsWith('reload:')) && !this.some((c) => c.startsWith('reload:'))) {
+        realRemove(h.cloneDir(LEGACY), { recursive: true, force: true });
+      }
+      return Array.prototype.push.apply(this, items);
+    };
+
+    await expect(toggle(h, true)).rejects.toThrow('registered no anthropic provider');
+
+    expect(diskSources(h)).toEqual([]);
+    expect(h.providers.has('anthropic')).toBe(false);
+  });
+
+  it('(p) rollback restores a legacy object entry with its filters', async () => {
+    const entry = { source: LEGACY, extensions: ['src/index.ts'] };
+    const h = setup({ packages: [entry], clones: [LEGACY] });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+    h.behavior.current = 'none';
+
+    await expect(toggle(h, true)).rejects.toThrow();
+
+    expect(h.disk).toEqual([entry]);
+  });
+
+  it('(q) a later folder whose loader fails to load the plugin unlists it across every folder', async () => {
+    const h = setup({ packages: [CURRENT], clones: [CURRENT], folders: ['A'] });
+    h.providers.set('anthropic', { tag: 'current' });
+    (h.runtime as unknown as { _pinReconciled: boolean })._pinReconciled = true;
+    h.behavior.current = 'error';
+
+    const b = await h.runtime.folder(path.join(path.dirname(h.folders[0]!.cwd), 'B'));
+
+    expect(diskSources(h)).toEqual([]);
+    expectOrder(h.calls, ['create:B', `removeSettings:${identity(CURRENT)}`, 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
+    expect(h.providers.has('anthropic')).toBe(false);
+    expect(h.runtime.folders()).toEqual([h.folders[0], b]);
+  });
+
+  /** A promise and the function that settles it, so a case can hold one step open. */
+  function deferred(): { promise: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it.each([
+    ['commits', 'register' as const, [CURRENT], { tag: 'current' }],
+    ['rolls back', 'none' as const, [LEGACY], { tag: 'legacy', oauth: true }],
+  ])('a folder requested mid-reconcile is created only after the reconcile %s', async (_label, behavior, listed, provider) => {
+    const h = setup({ packages: [LEGACY], clones: [LEGACY], folders: [] });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+    h.behavior.current = behavior;
+    const install = deferred();
+    h.installGate = install.promise;
+    const ws = path.join(path.dirname(h.cloneDir(LEGACY)), 'ws');
+
+    const first = h.runtime.folder(path.join(ws, 'A'));
+    await vi.waitFor(() => expect(h.calls).toContain(`install:${CURRENT}`));
+    const second = h.runtime.folder(path.join(ws, 'B'));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).not.toContain('create:B');
+    install.release();
+    await Promise.all([first, second]);
+
+    // The swap's last step (evicting the legacy clone, or the rollback's provider reset) precedes B.
+    const swapEnd = behavior === 'register' ? h.calls.indexOf(`remove:${LEGACY_REPO}`) : h.calls.lastIndexOf('refresh');
+    expect(swapEnd).toBeGreaterThanOrEqual(0);
+    expect(h.calls.indexOf('create:B')).toBeGreaterThan(swapEnd);
+    expect(diskSources(h)).toEqual(listed);
+    // B flushed from settings already swapped, so no stale `oauth` merged back over the reset provider.
+    expect(h.providers.get('anthropic')).toEqual(provider);
+  });
+
+  it('an allowance toggle issued while a folder is being created downloads at once, then swaps after it and reloads it too', async () => {
+    const h = setup({ packages: [LEGACY], clones: [LEGACY], folders: ['A'] });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+    (h.runtime as unknown as { _pinReconciled: boolean })._pinReconciled = true;
+    const creating = deferred();
+    const create = FolderRuntime.prototype.createServices as unknown as { getMockImplementation(): (this: FolderRuntime) => Promise<void> };
+    const flushOnCreate = create.getMockImplementation();
+    vi.spyOn(FolderRuntime.prototype, 'createServices').mockImplementation(async function (this: FolderRuntime) {
+      await creating.promise;
+      await flushOnCreate.call(this);
+    });
+    const a = h.folders[0]!;
+
+    const b = h.runtime.folder(path.join(path.dirname(a.cwd), 'B'));
+    await new Promise((r) => setTimeout(r, 0));
+    const billing = h.runtime.setSubscriptionBilling(a.cwd, true);
+    await vi.waitFor(() => expect(h.calls).toContain(`install:${CURRENT}`));
+    expect(h.calls).not.toContain('flush');
+    creating.release();
+    await Promise.all([b, billing]);
+
+    expectOrder(h.calls, [`install:${CURRENT}`, 'create:B', 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
+  });
+
+  it('a folder requested while the plugin downloads is created without waiting for the download', async () => {
+    const h = setup({ packages: [LEGACY], clones: [LEGACY], folders: ['A'] });
+    h.providers.set('anthropic', { tag: 'legacy', oauth: true });
+    (h.runtime as unknown as { _pinReconciled: boolean })._pinReconciled = true;
+    const install = deferred();
+    h.installGate = install.promise;
+    const a = h.folders[0]!;
+
+    const billing = h.runtime.setSubscriptionBilling(a.cwd, true);
+    await vi.waitFor(() => expect(h.calls).toContain(`install:${CURRENT}`));
+    const created = await Promise.race([
+      h.runtime.folder(path.join(path.dirname(a.cwd), 'B')),
+      new Promise<'blocked'>((r) => setTimeout(() => r('blocked'), 1000)),
+    ]);
+    expect(created).not.toBe('blocked');
+    expect(h.runtime.folders()).toContain(created);
+    install.release();
+    await billing;
+
+    expectOrder(h.calls, [`install:${CURRENT}`, 'create:B', 'flush', 'reload:A', 'reload:B', 'unregister:anthropic', 'refresh']);
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
+  });
+
+  it('two concurrent allowance toggles download the plugin once, never side by side', async () => {
+    const h = setup({ packages: [], clones: [], folders: ['A'] });
+    (h.runtime as unknown as { _pinReconciled: boolean })._pinReconciled = true;
+    const install = deferred();
+    h.installGate = install.promise;
+    const a = h.folders[0]!;
+
+    const first = h.runtime.setSubscriptionBilling(a.cwd, true);
+    const second = h.runtime.setSubscriptionBilling(a.cwd, true);
+    await vi.waitFor(() => expect(h.calls).toContain(`install:${CURRENT}`));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls.filter((c) => c.startsWith('install:'))).toHaveLength(1);
+    install.release();
+    await Promise.all([first, second]);
+
+    expect(h.calls.filter((c) => c.startsWith('install:'))).toHaveLength(1);
+    expect(diskSources(h)).toEqual([CURRENT]);
+  });
+
+  it('a toggle to extra usage issued during a download applies after the allowance switch it follows', async () => {
+    const h = setup({ packages: [], clones: [], folders: ['A'] });
+    (h.runtime as unknown as { _pinReconciled: boolean })._pinReconciled = true;
+    const install = deferred();
+    h.installGate = install.promise;
+    const a = h.folders[0]!;
+
+    const on = h.runtime.setSubscriptionBilling(a.cwd, true);
+    await vi.waitFor(() => expect(h.calls).toContain(`install:${CURRENT}`));
+    const off = h.runtime.setSubscriptionBilling(a.cwd, false);
+    await new Promise((r) => setTimeout(r, 0));
+    install.release();
+    await Promise.all([on, off]);
+
+    expect(diskSources(h)).toEqual([]);
+    expect(fs.existsSync(h.cloneDir(CURRENT))).toBe(false);
+    expect(h.providers.has('anthropic')).toBe(false);
   });
 });
 
@@ -473,9 +744,9 @@ describe('PiRuntime.syncCustomProviders', () => {
     };
   }
 
-  /** The only private reach-through: `_services` is built by `init()`, which boots pi. */
+  /** The only private reach-through: `_modelRuntime` is built by `init()`, which boots pi. */
   function attach(runtime: PiRuntime, modelRuntime: FakeRuntime): void {
-    (runtime as unknown as { _services: unknown })._services = { modelRuntime: modelRuntime as unknown as ModelRuntime };
+    (runtime as unknown as { _modelRuntime: ModelRuntime })._modelRuntime = modelRuntime as unknown as ModelRuntime;
   }
 
   const secrets =
@@ -507,7 +778,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   }
 
   it('returns empty lists and no timeout before the runtime is initialized', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     const getSecret = vi.fn(async () => 'k');
 
     expect(await runtime.syncCustomProviders(getSecret)).toEqual({ wired: [], notWired: [], timedOut: false });
@@ -515,7 +786,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 
   it('returns empty lists and no timeout once disposed', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     attach(runtime, fakeModelRuntime());
     (runtime as unknown as { _disposed: boolean })._disposed = true;
     const getSecret = vi.fn(async () => 'k');
@@ -525,7 +796,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 
   it('reports every wired provider, an empty notWired, and no timeout on the happy path', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     attach(runtime, fakeModelRuntime());
     const timeoutSpy = stubTimeout(new AbortController().signal);
 
@@ -536,7 +807,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 
   it('reports timedOut when a hanging credential operation is cut short by the deadline', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     const timeout = new AbortController();
     stubTimeout(timeout.signal);
     const { applyStarted, setRuntimeApiKey } = hangingApply();
@@ -556,7 +827,7 @@ describe('PiRuntime.syncCustomProviders', () => {
     // The `!` in `aborted && !this._syncAbort.signal.aborted` is the whole difference between telling
     // the user their model was downgraded and telling a closing window nothing. Inverting or dropping
     // it flips exactly this test against the previous one.
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     stubTimeout(new AbortController().signal);
     const { applyStarted, setRuntimeApiKey } = hangingApply();
     attach(runtime, fakeModelRuntime({ setRuntimeApiKey }));
@@ -572,7 +843,7 @@ describe('PiRuntime.syncCustomProviders', () => {
     // Hardcoding `false` here told the caller "did not time out" on the one path where it certainly
     // had, so `PiSession.start` skipped the fallback warning — the exact silent downgrade this
     // release removes.
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     stubTimeout(AbortSignal.abort());
     attach(
       runtime,
@@ -587,7 +858,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 
   it('does not claim a timeout when the outer catch saw a plain failure', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     stubTimeout(AbortSignal.abort());
     attach(
       runtime,
@@ -602,7 +873,7 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 
   it('never writes a credential carried by the failure the outer catch logs (A1)', async () => {
-    const runtime = PiRuntime.get('/tmp/ws');
+    const runtime = PiRuntime.get();
     stubTimeout(AbortSignal.abort());
     attach(
       runtime,
@@ -625,138 +896,3 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 });
 
-describe('createSubagentSession store', () => {
-  const made: string[] = [];
-  const tempDir = (prefix: string): string => {
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-    made.push(dir);
-    return dir;
-  };
-
-  afterEach(async () => {
-    await PiRuntime.disposeInstance();
-    for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  const assistantMessage = (provider: string, model: string) =>
-    ({
-      role: 'assistant',
-      content: [{ type: 'text', text: 'done' }],
-      api: 'anthropic-messages',
-      provider,
-      model,
-      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-      stopReason: 'stop',
-      timestamp: Date.now(),
-    }) as unknown as Parameters<SessionManager['appendMessage']>[0];
-
-  const baseOpts = (workspace: string) => ({
-    cwd: workspace,
-    systemPrompt: 'probe',
-    tools: [],
-    customTools: [],
-    extensionFactory: () => {},
-  });
-
-  /** A signed-in reasoning model from the runtime's own catalog, so the reopen check can resolve it. */
-  async function reasoningModel(runtime: PiRuntime) {
-    await runtime.services!.modelRuntime.setRuntimeApiKey('anthropic', 'test-key');
-    const model = runtime.services!.modelRuntime.getModels('anthropic').find((m) => m.reasoning);
-    if (!model) throw new Error('no anthropic reasoning model in the catalog');
-    expect(runtime.services!.modelRuntime.hasConfiguredAuth('anthropic')).toBe(true);
-    return model;
-  }
-
-  it('a file store writes into the given dir under the given id, from the first assistant message on', async () => {
-    const workspace = tempDir('damocles-store-ws-');
-    const agentDir = tempDir('damocles-store-agent-');
-    const storeDir = path.join(workspace, 'sess-1', 'subagents');
-    const runtime = PiRuntime.get(workspace, agentDir);
-
-    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
-    const file = session.sessionManager.getSessionFile()!;
-    expect(path.dirname(file)).toBe(storeDir);
-    expect(path.basename(file)).toMatch(/_agent-1\.jsonl$/);
-    expect(session.sessionManager.getSessionId()).toBe('agent-1');
-    expect(fs.existsSync(file)).toBe(false);
-
-    session.sessionManager.appendCustomEntry('damocles-agent-launch', { agentId: 'agent-1' });
-    session.sessionManager.appendMessage(assistantMessage('anthropic', 'claude'));
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { type: string; id: string });
-    expect(lines[0]).toMatchObject({ type: 'session', id: 'agent-1' });
-    expect(lines.map((l) => l.type)).toContain('custom');
-    runtime.forgetSubagentSession(session);
-  }, 60_000);
-
-  it('reopen restores the messages, the recorded model and the thinking level from the file', async () => {
-    const workspace = tempDir('damocles-store-ws-');
-    const agentDir = tempDir('damocles-store-agent-');
-    const storeDir = path.join(workspace, 'sess-1', 'subagents');
-    const runtime = PiRuntime.get(workspace, agentDir);
-    await runtime.init();
-    const model = await reasoningModel(runtime);
-
-    const session = await runtime.createSubagentSession({
-      ...baseOpts(workspace),
-      model,
-      thinkingLevel: 'medium',
-      store: { kind: 'file', dir: storeDir, id: 'agent-1' },
-    });
-    session.sessionManager.appendCustomEntry('damocles-agent-launch', { agentId: 'agent-1' });
-    session.sessionManager.appendMessage(assistantMessage(model.provider, model.id));
-    const file = session.sessionManager.getSessionFile()!;
-    runtime.forgetSubagentSession(session);
-
-    const reopened = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } });
-    expect(reopened.sessionManager.getSessionFile()).toBe(file);
-    expect(reopened.sessionManager.getSessionId()).toBe('agent-1');
-    expect(reopened.messages.map((m) => m.role)).toEqual(['assistant']);
-    expect(reopened.model?.provider).toBe(model.provider);
-    expect(reopened.model?.id).toBe(model.id);
-    expect(reopened.thinkingLevel).toBe('medium');
-    expect(() => runtime.assertResumableModel(file, 'agent-1')).not.toThrow();
-    runtime.forgetSubagentSession(reopened);
-  }, 60_000);
-
-  it('reopen throws the resume error, instead of falling back, when the recorded model is unavailable', async () => {
-    const workspace = tempDir('damocles-store-ws-');
-    const agentDir = tempDir('damocles-store-agent-');
-    const storeDir = path.join(workspace, 'sess-1', 'subagents');
-    const runtime = PiRuntime.get(workspace, agentDir);
-    await runtime.init();
-    await reasoningModel(runtime);
-
-    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
-    session.sessionManager.appendMessage(assistantMessage('anthropic', 'no-such-model'));
-    const file = session.sessionManager.getSessionFile()!;
-    runtime.forgetSubagentSession(session);
-
-    const error = 'Cannot resume "agent-1": its model anthropic/no-such-model is not configured or not signed in.';
-    await expect(
-      runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
-    ).rejects.toThrow(error);
-    expect(() => runtime.assertResumableModel(file, 'agent-1')).toThrow(error);
-  }, 60_000);
-
-  it('reopen throws the resume error when the recorded model exists but its provider is not signed in', async () => {
-    const workspace = tempDir('damocles-store-ws-');
-    const agentDir = tempDir('damocles-store-agent-');
-    const storeDir = path.join(workspace, 'sess-1', 'subagents');
-    const runtime = PiRuntime.get(workspace, agentDir);
-    await runtime.init();
-    const models = runtime.services!.modelRuntime;
-    const signedOut = models.getModels().find((m) => !models.hasConfiguredAuth(m.provider));
-    if (!signedOut) throw new Error('every catalog provider is signed in, so no signed-out model can be recorded');
-
-    const session = await runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'file', dir: storeDir, id: 'agent-1' } });
-    session.sessionManager.appendMessage(assistantMessage(signedOut.provider, signedOut.id));
-    const file = session.sessionManager.getSessionFile()!;
-    runtime.forgetSubagentSession(session);
-
-    const error = `Cannot resume "agent-1": its model ${signedOut.provider}/${signedOut.id} is not configured or not signed in.`;
-    expect(() => runtime.assertResumableModel(file, 'agent-1')).toThrow(error);
-    await expect(
-      runtime.createSubagentSession({ ...baseOpts(workspace), store: { kind: 'reopen', path: file, agentId: 'agent-1' } }),
-    ).rejects.toThrow(error);
-  }, 60_000);
-});

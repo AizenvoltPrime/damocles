@@ -8,9 +8,11 @@ import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
-import type { CompassService } from "../../compass";
+import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { HostInstance, WebviewHost } from "../types";
+import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
+import type { AfterFolderSwitch, FolderSwitchReason } from "../panel-manager";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
 export interface HandlerContext {
@@ -19,6 +21,7 @@ export interface HandlerContext {
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   panelId: string;
+  folder: FolderTarget;
 }
 
 export type MessageHandler = (
@@ -34,7 +37,6 @@ export type PostMessageFn = (
 ) => void;
 
 export interface HandlerDependencies {
-  workspacePath: string;
   postMessage: PostMessageFn;
   getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
@@ -46,7 +48,20 @@ export interface HandlerDependencies {
   setLanguagePreference: (locale: string) => Promise<void>;
   memoryService: MemoryService;
   browserService?: BrowserService;
-  compassService?: CompassService;
+  /** Compass handlers act on the service of the requesting panel's folder. */
+  compassRegistry?: CompassRegistry;
   voiceService?: VoiceService;
   markUserTypedDuringTurn?: () => void;
+  folderRegistry: WorkspaceFolderRegistry;
+  /**
+   * Resolves to the panel's instance on its new folder; a handler continues with it, never with `ctx.session`.
+   * Work that must reach the new session before the webview's queued messages goes in `afterSwitch`.
+   */
+  switchPanelFolder: (
+    panelId: string,
+    folderKey: string,
+    reason: FolderSwitchReason,
+    afterSwitch?: AfterFolderSwitch,
+  ) => Promise<HostInstance | undefined>;
+  postWorkspaceFolderState: (panelId: string) => void;
 }

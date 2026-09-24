@@ -189,3 +189,40 @@ describe('useSessionStore.setSessionState', () => {
     expect(store.sessionState).toBe('requires_action');
   });
 });
+
+describe('useSessionStore.updateStoredSessions: sessions from several folders', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const beta = { key: '/work/beta', label: 'beta' };
+  const alpha = { key: '/work/alpha', label: 'alpha' };
+
+  it('keeps each session\'s folder through a first page and a later one', () => {
+    const store = useSessionStore();
+    store.updateStoredSessions([{ id: 'b-1', timestamp: 3, preview: 'b', workspaceFolder: beta }], true, true, 1);
+    store.updateStoredSessions([{ id: 'a-1', timestamp: 2, preview: 'a', workspaceFolder: alpha }], false, false, 2);
+
+    expect(store.storedSessions.map((s) => [s.id, s.workspaceFolder?.label])).toEqual([['b-1', 'beta'], ['a-1', 'alpha']]);
+  });
+
+  it('drops a repeated id from a later page, so one conversation lists once whatever folder reported it', () => {
+    const store = useSessionStore();
+    store.updateStoredSessions([{ id: 'b-1', timestamp: 3, preview: 'b', workspaceFolder: beta }], true, true, 1);
+    store.updateStoredSessions([
+      { id: 'b-1', timestamp: 3, preview: 'b', workspaceFolder: beta },
+      { id: 'a-1', timestamp: 2, preview: 'a', workspaceFolder: alpha },
+    ], false, false, 3);
+
+    expect(store.storedSessions.map((s) => s.id)).toEqual(['b-1', 'a-1']);
+  });
+
+  it('a first page after a folder was removed replaces the list, so its sessions disappear', () => {
+    const store = useSessionStore();
+    store.updateStoredSessions([
+      { id: 'b-1', timestamp: 3, preview: 'b', workspaceFolder: beta },
+      { id: 'a-1', timestamp: 2, preview: 'a', workspaceFolder: alpha },
+    ], true, false, 2);
+    store.updateStoredSessions([{ id: 'a-1', timestamp: 2, preview: 'a', workspaceFolder: alpha }], true, false, 1);
+
+    expect(store.storedSessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+});

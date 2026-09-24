@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { buildUserDenyResult, buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../utils';
 import { ApprovalManager } from '../managers/approval-manager';
 import { SkillManager } from '../managers/skill-manager';
@@ -6,8 +6,29 @@ import { PermissionState } from '../state';
 import type { CanUseToolContext, PostMessageFn } from '../types';
 import type { DiffManager } from '../diff-manager';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { PermissionHandler } from '../index';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 vi.mock('../../skills/utils', () => ({ loadSkillDescription: async () => undefined }));
+
+// User-scope settings resolve through `os.homedir()`; a temp dir keeps the developer's own rules out.
+const H = vi.hoisted(() => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const nodeFs = require('fs') as typeof import('fs');
+  const nodeOs = require('os') as typeof import('os');
+  const nodePath = require('path') as typeof import('path');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  const root = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'dam-deny-'));
+  return { root, home: nodePath.join(root, 'home') };
+});
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  const homedir = () => H.home;
+  return { ...actual, homedir, default: { ...actual, homedir } };
+});
 
 function makeDiffManager(): DiffManager {
   return {
@@ -178,5 +199,45 @@ describe('SkillManager — infra failures must not end the turn', () => {
     const result = await pending;
 
     expect(result.interrupt).toBe(true);
+  });
+});
+
+/**
+ * The full `canUseTool` path for a shell call, in two panels of one multi-root window. A rule in
+ * folder B's own settings runs the command unasked in B, and must never reach a panel on folder A.
+ */
+describe("PermissionHandler.canUseTool applies only the panel folder's rules", () => {
+  const folderA = path.join(H.root, 'a');
+  const folderB = path.join(H.root, 'b');
+  const npmTest = { command: 'npm test' };
+
+  afterAll(() => {
+    fs.rmSync(H.root, { recursive: true, force: true });
+  });
+
+  function makeHandler(workspacePath: string): { handler: PermissionHandler; posted: ExtensionToWebviewMessage[] } {
+    (vscode.workspace as unknown as Record<string, unknown>)['registerTextDocumentContentProvider'] = () => ({ dispose: () => undefined });
+    const handler = new PermissionHandler(vscode.Uri.file(H.root) as unknown as vscode.Uri);
+    const posted: ExtensionToWebviewMessage[] = [];
+    handler.setPostMessage((m) => posted.push(m));
+    handler.setWorkspacePath(workspacePath);
+    return { handler, posted };
+  }
+
+  it('auto-allows in B and asks in A', async () => {
+    fs.mkdirSync(path.join(folderA, '.damocles'), { recursive: true });
+    fs.mkdirSync(path.join(folderB, '.damocles'), { recursive: true });
+    fs.writeFileSync(path.join(folderB, '.damocles', 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash(npm test)'] } }));
+
+    const b = makeHandler(folderB);
+    const inB = await b.handler.canUseTool('Bash', npmTest, ctx('tb'));
+    expect(inB.behavior).toBe('allow');
+    expect(b.posted.filter((m) => m.type === 'requestPermission')).toHaveLength(0);
+
+    const a = makeHandler(folderA);
+    const pending = a.handler.canUseTool('Bash', npmTest, ctx('ta'));
+    await vi.waitFor(() => expect(a.posted.filter((m) => m.type === 'requestPermission')).toHaveLength(1));
+    await a.handler.resolveApproval('ta', false, { customMessage: 'not here' });
+    expect((await pending).behavior).toBe('deny');
   });
 });

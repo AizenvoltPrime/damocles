@@ -27,5 +27,9 @@
   "Reload Window": "Reload Window",
   "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.",
   "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.",
-  "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them."
+  "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.",
+  "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Switch this panel to {0}? This starts a new conversation. The current one stays in history.",
+  "Start new conversation": "Start new conversation",
+  "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.": "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.",
+  "Damocles could not start a session in {0}: {1}": "Damocles could not start a session in {0}: {1}"
 }

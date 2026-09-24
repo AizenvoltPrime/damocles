@@ -17,6 +17,12 @@ export const window = {
     dispose: () => {},
   }),
   registerTreeDataProvider: () => ({ dispose: () => {} }),
+  createTreeView: (id: string, options: { treeDataProvider: unknown }) => ({
+    id,
+    treeDataProvider: options.treeDataProvider,
+    description: undefined as string | undefined,
+    dispose: () => {},
+  }),
   createQuickPick: () => ({
     placeholder: '',
     matchOnDescription: false,

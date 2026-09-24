@@ -86,7 +86,7 @@ function makeCtx(
     profileManager: new ProfileManager(db, writeQueue, runner),
     instanceId: 'test-instance',
     reason: 'switch',
-    workspace: WORKSPACE,
+    fallbackWorkspace: () => WORKSPACE,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},
@@ -1044,5 +1044,101 @@ describe('runConsolidation — C11 disposed guard', () => {
     expect(countConsumedCandidates(db)).toBe(0);
     expect(run).not.toHaveBeenCalled();
     expect(countAllLiveMemories(db)).toBe(0);
+  });
+});
+
+describe('runConsolidation — a batch holds one folder and files under it', () => {
+  const FOLDER_B = '/tmp/folder-b';
+  const FOLDER_C = '/tmp/folder-c';
+  let db: DatabaseInstance;
+
+  beforeEach(async () => {
+    db = await createTestMemoryDb();
+  });
+
+  /** `order` sequences candidates; timestamps stay recent so maintenance never prunes them mid-test. */
+  function seedIn(sessionId: string, workspace: string | null, order: number): string {
+    const id = crypto.randomUUID();
+    const createdAt = Date.now() + order;
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+       VALUES (?, ?, 0, 'Which bundler?', 'esbuild.', '[]', ?, 0, 0, 0, ?)`,
+    ).run(id, sessionId, workspace, createdAt);
+    return id;
+  }
+
+  function consumed(id: string): number {
+    return (db.prepare('SELECT consumed FROM memory_candidates WHERE id = ?').get(id) as { consumed: number }).consumed;
+  }
+
+  function projectWorkspaces(): (string | null)[] {
+    return (db.prepare("SELECT workspace FROM memories WHERE scope = 'project'").all() as { workspace: string | null }[])
+      .map((r) => r.workspace);
+  }
+
+  it('claims only the oldest candidate\'s folder and files project memories there, whatever the window\'s own folder', async () => {
+    const b1 = seedIn('s-b', FOLDER_B, 1);
+    const c1 = seedIn('s-c', FOLDER_C, 2);
+    const b2 = seedIn('s-b', FOLDER_B, 3);
+
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const result = await runConsolidation(makeCtx(db, runner, { sessionId: undefined, reason: 'idle' }));
+
+    expect(result.candidatesReviewed).toBe(2);
+    expect([consumed(b1), consumed(b2), consumed(c1)]).toEqual([1, 1, 0]);
+    expect(projectWorkspaces()).toEqual([FOLDER_B]);
+
+    // The next pass takes the remaining folder, even though the fallback names another one.
+    const { runner: runner2 } = makeRunner({ memories: [{ kind: 'fact', scope: 'project', content: 'Folder C ships a CLI.' }] });
+    await runConsolidation(makeCtx(db, runner2, { sessionId: undefined, reason: 'idle' }));
+    expect(consumed(c1)).toBe(1);
+    expect(projectWorkspaces().sort()).toEqual([FOLDER_B, FOLDER_C]);
+  });
+
+  it('files a legacy candidate without a folder under fallbackWorkspace, in its own batch', async () => {
+    const legacy = seedIn('s-old', null, 1);
+    const named = seedIn('s-new', WORKSPACE, 2);
+
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const result = await runConsolidation(makeCtx(db, runner, { sessionId: undefined, reason: 'idle', fallbackWorkspace: () => WORKSPACE }));
+
+    expect(result.candidatesReviewed).toBe(1);
+    expect([consumed(legacy), consumed(named)]).toEqual([1, 0]);
+    expect(projectWorkspaces()).toEqual([WORKSPACE]);
+  });
+
+  it('a session-scoped pass keeps its session filter within the folder group', async () => {
+    const otherSessionOlder = seedIn('s-other', FOLDER_C, 1);
+    const mine = seedIn('s-mine', FOLDER_B, 2);
+    const otherSessionSameFolder = seedIn('s-other', FOLDER_B, 3);
+
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    await runConsolidation(makeCtx(db, runner, { sessionId: 's-mine' }));
+
+    expect([consumed(otherSessionOlder), consumed(mine), consumed(otherSessionSameFolder)]).toEqual([0, 1, 0]);
+    expect(projectWorkspaces()).toEqual([FOLDER_B]);
+  });
+
+  it('primes existing memories and regenerates the project profile for the claimed folder', async () => {
+    const now = Date.now();
+    for (const [content, ws] of [['Folder B uses esbuild for bundling', FOLDER_B], ['Folder C uses webpack for bundling', FOLDER_C]] as const) {
+      const id = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO memories (id, kind, scope, content, content_hash, root_id, workspace, is_latest, forgotten, created_at, updated_at)
+         VALUES (?, 'fact', 'project', ?, ?, ?, ?, 1, 0, ?, ?)`,
+      ).run(id, content, id, id, ws, now, now);
+    }
+    seedIn(SESSION_ID, FOLDER_B, 1);
+
+    const { runner, run } = makeRunner(ESBUILD_EXTRACTION);
+    const ctx = makeCtx(db, runner);
+    const updateProfile = vi.spyOn(ctx.profileManager, 'updateProfile');
+    await runConsolidation(ctx);
+
+    const extractCall = run.mock.calls.find(([req]) => (req as MemorySubCallRequest).purpose === 'extract');
+    const prompt = (extractCall![0] as MemorySubCallRequest).prompt;
+    expect(prompt).toContain('Folder B uses esbuild');
+    expect(prompt).not.toContain('Folder C uses webpack');
+    expect(updateProfile).toHaveBeenCalledWith('project', FOLDER_B);
   });
 });

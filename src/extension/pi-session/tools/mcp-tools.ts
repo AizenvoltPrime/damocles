@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition, ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
-import type { McpClientManager } from '../mcp/mcp-client-manager';
+import type { McpToolSource } from '../mcp/tool-source';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { ElicitationUI } from '../mcp/elicitation-handler';
 import { transformMcpContent } from '../mcp/content';
@@ -33,7 +33,7 @@ function isSchemaObject(value: unknown): value is Record<string, unknown> {
 export function buildMcpPiTool(
   pi: PiCodingAgentModule,
   descriptor: McpToolDescriptor,
-  manager: McpClientManager,
+  manager: McpToolSource,
   opts?: { elicitationUi?: ElicitationUI; frozen?: boolean },
 ): ToolDefinition {
   const rawSchema = isSchemaObject(descriptor.inputSchema)
@@ -64,6 +64,8 @@ export function buildMcpPiTool(
           {
             ...(signal ? { signal } : {}),
             ...(elicitationUi ? { elicitationUi } : {}),
+            // A frozen snapshot's read-only classification belongs to this server, so the name must not reach another.
+            ...(opts?.frozen ? { expectedServerId: descriptor.serverId } : {}),
           },
         );
         const content = transformMcpContent(result.content);
@@ -74,10 +76,9 @@ export function buildMcpPiTool(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log('[McpTools] %s failed: %O', descriptor.piName, err);
-        // `callTool` throws two shapes of "the tool is gone" — the descriptor was already absent
-        // (mcp-client-manager.ts:567) or a reconcile removed it while `ensureConnected` was awaited
-        // (line 574). Both are detected by asking the manager for the descriptor rather than by
-        // matching the message text: one check, no coupling to wording.
+        // `callTool` throws when the tool is gone: its descriptor is absent, or (for a frozen snapshot)
+        // now belongs to another server. Both are detected by asking the manager for the descriptor
+        // rather than by matching the message text: one check, no coupling to wording.
         //
         // Whether that is PERMANENT depends on which caller built this tool, and getting it wrong is a
         // real cost in both directions. For a frozen nested snapshot it is permanent — the agent's
@@ -86,7 +87,8 @@ export function buildMcpPiTool(
         // stays registered, `rebuildDescriptors` re-adds the descriptor when the server returns, and
         // `callTool` resolves live — so telling a user who toggled a server off and on that a working
         // capability is permanently dead, in wording engineered to prevent retries, is simply false.
-        const gone = manager.getToolDescriptor(descriptor.piName) === undefined;
+        const live = manager.getToolDescriptor(descriptor.piName);
+        const gone = live === undefined || (opts?.frozen === true && live.serverId !== descriptor.serverId);
         const text = !gone
           ? `MCP tool "${descriptor.piName}" failed: ${message}`
           : opts?.frozen
@@ -186,7 +188,7 @@ export const EMPTY_NESTED_MCP_TOOLSET: NestedMcpToolset = Object.freeze({
  */
 export function buildNestedMcpToolset(
   pi: PiCodingAgentModule,
-  manager: McpClientManager | null,
+  manager: McpToolSource | null,
   opts: NestedMcpToolsetOptions,
 ): NestedMcpToolset {
   if (manager === null) return EMPTY_NESTED_MCP_TOOLSET;
@@ -235,11 +237,11 @@ export function buildNestedMcpToolset(
  */
 export class McpToolRegistrar {
   private readonly pi: PiCodingAgentModule;
-  private readonly manager: McpClientManager;
+  private readonly manager: McpToolSource;
   private livePi: ExtensionAPI | null = null;
   private registered = new Set<string>();
 
-  constructor(pi: PiCodingAgentModule, manager: McpClientManager) {
+  constructor(pi: PiCodingAgentModule, manager: McpToolSource) {
     this.pi = pi;
     this.manager = manager;
   }

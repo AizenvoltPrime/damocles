@@ -1,10 +1,8 @@
 import { parentPort } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
-import * as os from 'os';
 import type { WorkerRequest, WorkerEvent } from './worker-protocol';
-import { VALIDATION_BUSY_MESSAGE } from './worker-protocol';
+import { LIGHT_REQUEST_TYPES, VALIDATION_BUSY_MESSAGE } from './worker-protocol';
 import type { IndexStatus, CompassConfig } from './types';
 import { setGrammarDir, clearParsers } from './parser-manager';
 import { GraphStore } from './database';
@@ -19,7 +17,7 @@ import {
 	handleBlastRadius, handleReviewContext,
 	handleBuild, handleDeadCode,
 } from './mcp-handlers';
-import { mapWithConcurrency } from './util';
+import { mapWithConcurrency, compassIndexPath } from './util';
 import { createWorkerCore } from './worker-core';
 
 if (!parentPort) throw new Error('compass-worker must run as a worker thread');
@@ -29,25 +27,6 @@ const port = parentPort;
 let store: GraphStore | null = null;
 let workspacePath = '';
 let config: CompassConfig = { excludePatterns: [], autoReindex: true };
-
-const LIGHT_TYPES: Set<WorkerRequest['type']> = new Set([
-	'getStatus',
-	'getGraphTerms',
-	'mcp:context',
-	'mcp:search',
-	'mcp:query',
-	'mcp:stats',
-	'mcp:blastRadius',
-	'mcp:reviewContext',
-	'mcp:deadCode',
-	'webview:search',
-	'webview:graph',
-	'webview:blastRadius',
-	'tree:files',
-	'tree:nodesByFile',
-	'tree:edgesForSymbol',
-	'serialize',
-]);
 
 let indexingInProgress = false;
 
@@ -108,8 +87,7 @@ async function handleInit(msg: Extract<WorkerRequest, { type: 'init' }>): Promis
 	setGrammarDir(path.join(msg.extensionPath, 'resources', 'grammars'));
 
 	try {
-		const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 12);
-		const dbPath = path.join(os.homedir(), '.damocles', 'compass', hash, 'graph.db');
+		const dbPath = compassIndexPath(workspacePath);
 		const openStore = new GraphStore(dbPath);
 		store = openStore;
 		await openStore.open(msg.extensionPath);
@@ -415,7 +393,7 @@ port.on('message', (msg: WorkerRequest) => {
 		send({ type: 'response', id: msg.id, ok: true, data: { busy: true, message: VALIDATION_BUSY_MESSAGE } });
 		return;
 	}
-	if (LIGHT_TYPES.has(msg.type)) {
+	if (LIGHT_REQUEST_TYPES.has(msg.type)) {
 		core.enqueueLight(msg);
 	} else {
 		core.enqueueHeavy(msg);

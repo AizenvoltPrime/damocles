@@ -42,6 +42,7 @@ vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 
 import * as vscode from "vscode";
 import { McpManager } from "../mcp-manager";
+import { connectedIn, folderTarget } from "./mcp-folder-fixtures";
 import { localMcpConfigPath } from "../mcp-config-import";
 
 const workspaceState = {
@@ -51,6 +52,7 @@ const workspaceState = {
 } as unknown as vscode.Memento;
 
 const LOCAL_MCP_PATH = localMcpConfigPath(fakeWorkspace);
+const WS = folderTarget(fakeWorkspace);
 
 /** A trailing comma, the mistake a hand-edit actually makes, beside a value shaped like a token. */
 const BROKEN_LOCAL_FILE = [
@@ -72,7 +74,7 @@ function writeLocalFile(content: string): void {
 }
 
 async function loadedManager(): Promise<McpManager> {
-  const manager = new McpManager(workspaceState);
+  const manager = new McpManager(workspaceState, () => [WS]);
   await manager.loadConfig();
   return manager;
 }
@@ -87,18 +89,16 @@ beforeAll(() => {
   fs.writeFileSync(path.join(fakeHome, ".codex", "config.toml"), '[mcp_servers.fromCodex]\ncommand = "cx"\n', "utf-8");
   writeJson(path.join(fakeWorkspace, ".mcp.json"), { mcpServers: { fromWorkspace: { command: "ws" } } });
 
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: fakeWorkspace } }];
-});
+  });
 
 afterAll(() => {
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [];
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
 describe("McpManager: an unparseable <ws>/.damocles/mcp.local.json", () => {
   it("reports it exactly once, with the ~-collapsed path and the line to fix", async () => {
     writeLocalFile(BROKEN_LOCAL_FILE);
-    const errors = (await loadedManager()).getConfigErrors();
+    const errors = (await loadedManager()).getConfigErrors(WS.key);
 
     expect(errors).toHaveLength(1);
     expect(errors[0]!.path).toBe(LOCAL_MCP_PATH);
@@ -113,7 +113,7 @@ describe("McpManager: an unparseable <ws>/.damocles/mcp.local.json", () => {
     writeLocalFile(BROKEN_LOCAL_FILE);
     const manager = await loadedManager();
 
-    expect(Object.keys(manager.getEnabledServers()).sort()).toEqual([
+    expect(Object.keys(connectedIn(manager, WS.key)).sort()).toEqual([
       "fromClaude", "fromClaudeLocal", "fromCodex", "fromDamocles", "fromWorkspace",
     ]);
   });
@@ -121,7 +121,7 @@ describe("McpManager: an unparseable <ws>/.damocles/mcp.local.json", () => {
   it("carries no file content into the error or the log, which is written to disk", async () => {
     logMock.mockClear();
     writeLocalFile(BROKEN_LOCAL_FILE);
-    const errors = (await loadedManager()).getConfigErrors();
+    const errors = (await loadedManager()).getConfigErrors(WS.key);
 
     // This file is the one place the brief expects plaintext credentials, and V8 embeds a window of
     // the source in some JSON.parse messages. Only the location may cross.
@@ -133,17 +133,17 @@ describe("McpManager: an unparseable <ws>/.damocles/mcp.local.json", () => {
     writeLocalFile(JSON.stringify({ mcpServers: { fromWorkspace: { command: "local-wins" } } }));
     const manager = await loadedManager();
 
-    expect(manager.getConfigErrors()).toEqual([]);
-    expect(manager.getEnabledServers()["fromWorkspace"]).toEqual({ command: "local-wins" });
-    expect(manager.getServersForUI().find(s => s.name === "fromWorkspace")?.source).toBe("damocles-local");
+    expect(manager.getConfigErrors(WS.key)).toEqual([]);
+    expect(connectedIn(manager, WS.key)["fromWorkspace"]).toEqual({ command: "local-wins" });
+    expect(manager.getServersForUI(WS.key).find(s => s.name === "fromWorkspace")?.source).toBe("damocles-local");
   });
 
   it("treats an absent file as no servers rather than an error", async () => {
     fs.rmSync(LOCAL_MCP_PATH, { force: true });
     const manager = await loadedManager();
 
-    expect(manager.getConfigErrors()).toEqual([]);
-    expect(manager.getEnabledServers()["fromWorkspace"]).toEqual({ command: "ws" });
+    expect(manager.getConfigErrors(WS.key)).toEqual([]);
+    expect(connectedIn(manager, WS.key)["fromWorkspace"]).toEqual({ command: "ws" });
   });
 });
 
@@ -152,21 +152,21 @@ describe("McpManager: the gitignore leak flag reaches the panel payload", () => 
     writeLocalFile(JSON.stringify({ mcpServers: {} }));
     execMock.mockResolvedValue({ stdout: "!! .damocles/mcp.local.json\n", stderr: "" });
 
-    expect((await loadedManager()).getLocalMcpUnignored()).toBe(false);
+    expect((await loadedManager()).getLocalMcpUnignored(WS.key)).toBe(false);
   });
 
   it("goes true when git reports it committable, which is what the panel warning renders", async () => {
     writeLocalFile(JSON.stringify({ mcpServers: {} }));
     execMock.mockResolvedValue({ stdout: "?? .damocles/mcp.local.json\n", stderr: "" });
 
-    expect((await loadedManager()).getLocalMcpUnignored()).toBe(true);
+    expect((await loadedManager()).getLocalMcpUnignored(WS.key)).toBe(true);
   });
 
   it("stays false with no file on disk, and never asks git", async () => {
     fs.rmSync(LOCAL_MCP_PATH, { force: true });
     execMock.mockClear();
 
-    expect((await loadedManager()).getLocalMcpUnignored()).toBe(false);
+    expect((await loadedManager()).getLocalMcpUnignored(WS.key)).toBe(false);
     expect(execMock).not.toHaveBeenCalled();
   });
 });
@@ -209,11 +209,11 @@ describe("McpManager: what the watchers cover", () => {
     execMock.mockResolvedValue({ stdout: "?? .damocles/mcp.local.json\n", stderr: "" });
 
     const manager = await loadedManager();
-    expect(manager.getLocalMcpUnignored()).toBe(true);
+    expect(manager.getLocalMcpUnignored(WS.key)).toBe(true);
 
     const recorder = recordWatchers();
     try {
-      manager.setupWatcher(fakeWorkspace);
+      manager.setupWatcher();
       const index = recorder.patterns.indexOf(".gitignore");
       expect(index, `no watcher for .gitignore, only ${recorder.patterns.join(", ")}`).toBeGreaterThanOrEqual(0);
 
@@ -224,7 +224,7 @@ describe("McpManager: what the watchers cover", () => {
       recorder.watchers[index]!.emitChange();
       await vi.waitFor(() => expect(reloaded).toBe(true));
 
-      expect(manager.getLocalMcpUnignored()).toBe(false);
+      expect(manager.getLocalMcpUnignored(WS.key)).toBe(false);
     } finally {
       recorder.restore();
       manager.dispose();
@@ -234,10 +234,10 @@ describe("McpManager: what the watchers cover", () => {
   it("watches both project MCP files and both user-global ones, and not ~/.claude.json", async () => {
     // Claude Code rewrites `~/.claude.json` continuously, and every event here re-drives
     // `setMcpServers()` on the live client. Reload config is how a change there is picked up.
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     const recorder = recordWatchers();
     try {
-      manager.setupWatcher(fakeWorkspace);
+      manager.setupWatcher();
 
       expect(recorder.patterns).toContain(".mcp.json");
       expect(recorder.patterns).toContain(".damocles/mcp.local.json");

@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import type { SecretStorage } from 'vscode';
 import type { McpSdkBundle } from '../mcp-sdk-loader';
 import type { McpServerDefinition } from '../types';
+import type { McpAuthIdentity } from '../mcp-auth';
 
 const mocks = vi.hoisted(() => ({
   openExternal: vi.fn<(uri: unknown) => Promise<boolean>>(),
@@ -60,6 +63,27 @@ function oauthDefinition(oauth?: McpServerDefinition['oauth']): McpServerDefinit
   return def;
 }
 
+const at = (serverName: string, url = serverUrl): McpAuthIdentity => ({ serverName, serverUrl: url });
+
+const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
+/** The keychain key credentials were stored under before they were keyed by URL. */
+const nameKey = (serverName: string): string => `damocles.mcp.oauth.sha256-${sha256(serverName)}`;
+
+function secretStorage(store: Map<string, string>): SecretStorage {
+  return {
+    keys: async () => [...store.keys()],
+    get: async (k: string) => store.get(k),
+    store: async (k: string, v: string) => {
+      store.set(k, v);
+    },
+    delete: async (k: string) => {
+      store.delete(k);
+    },
+    onDidChange: () => ({ dispose() {} }),
+  } as unknown as SecretStorage;
+}
+
 describe('mcp oauth', () => {
   const originalOAuthDir = process.env['MCP_OAUTH_DIR'];
   let authDir: string;
@@ -87,87 +111,131 @@ describe('mcp oauth', () => {
   });
 
   describe('mcp-auth storage', () => {
-    it('saves, retrieves, and URL-validates auth entries', async () => {
+    it('saves and retrieves an entry per server identity', async () => {
       const auth = await import('../mcp-auth');
-      await auth.saveAuthEntry('s', { tokens: { accessToken: 'tok' }, serverUrl }, serverUrl);
-      expect((await auth.getAuthEntry('s'))?.tokens?.accessToken).toBe('tok');
-      expect((await auth.getAuthForUrl('s', serverUrl))?.tokens?.accessToken).toBe('tok');
-      expect(await auth.getAuthForUrl('s', 'https://other.example.com')).toBeUndefined();
-    });
-
-    it('returns undefined when the stored entry has no serverUrl', async () => {
-      const auth = await import('../mcp-auth');
-      await auth.saveAuthEntry('legacy', { tokens: { accessToken: 'tok' } });
-      expect(await auth.getAuthForUrl('legacy', serverUrl)).toBeUndefined();
+      await auth.saveAuthEntry(at('s'), { tokens: { accessToken: 'tok' } });
+      expect((await auth.getAuthEntry(at('s')))?.tokens?.accessToken).toBe('tok');
+      expect(await auth.getAuthEntry(at('s', 'https://other.example.com'))).toBeUndefined();
     });
 
     it('clears a corrupt keychain entry instead of silently discarding it (M3)', async () => {
       const auth = await import('../mcp-auth');
       const store = new Map<string, string>();
-      auth.setMcpSecretStorage({
-        get: async (k: string) => store.get(k),
-        store: async (k: string, v: string) => {
-          store.set(k, v);
-        },
-        delete: async (k: string) => {
-          store.delete(k);
-        },
-        onDidChange: () => ({ dispose() {} }),
-      } as unknown as import('vscode').SecretStorage);
+      auth.setMcpSecretStorage(secretStorage(store));
 
-      await auth.saveAuthEntry('corrupt', { tokens: { accessToken: 't' }, serverUrl }, serverUrl);
+      await auth.saveAuthEntry(at('corrupt'), { tokens: { accessToken: 't' } });
       const key = [...store.keys()][0]!;
       store.set(key, '{ not valid json');
 
-      expect(await auth.getAuthEntry('corrupt')).toBeUndefined();
+      expect(await auth.getAuthEntry(at('corrupt'))).toBeUndefined();
       expect(store.has(key)).toBe(false);
-    });
-
-    it('clears URL-bound state when tokens move to a different server URL', async () => {
-      const auth = await import('../mcp-auth');
-      await auth.saveAuthEntry(
-        'm',
-        {
-          tokens: { accessToken: 'old' },
-          clientInfo: { clientId: 'c' },
-          codeVerifier: 'v',
-          oauthState: 'st',
-          serverUrl: 'https://old.example.com',
-        },
-        'https://old.example.com',
-      );
-      await auth.updateTokens('m', { accessToken: 'new' }, 'https://new.example.com');
-      expect(await auth.getAuthForUrl('m', 'https://old.example.com')).toBeUndefined();
-      const moved = await auth.getAuthForUrl('m', 'https://new.example.com');
-      expect(moved?.tokens?.accessToken).toBe('new');
-      expect(moved?.clientInfo).toBeUndefined();
-      expect(moved?.codeVerifier).toBeUndefined();
-      expect(moved?.oauthState).toBeUndefined();
     });
 
     it('reports token expiry and presence', async () => {
       const auth = await import('../mcp-auth');
-      expect(await auth.isTokenExpired('none')).toBeNull();
-      await auth.updateTokens('no-exp', { accessToken: 't' });
-      expect(await auth.isTokenExpired('no-exp')).toBe(false);
-      await auth.updateTokens('exp', { accessToken: 't', expiresAt: 1 });
-      expect(await auth.isTokenExpired('exp')).toBe(true);
-      expect(await auth.hasStoredTokens('exp')).toBe(true);
-      expect(await auth.hasStoredTokens('missing')).toBe(false);
+      expect(await auth.isTokenExpired(at('none'))).toBeNull();
+      await auth.updateTokens(at('no-exp'), { accessToken: 't' });
+      expect(await auth.isTokenExpired(at('no-exp'))).toBe(false);
+      await auth.updateTokens(at('exp'), { accessToken: 't', expiresAt: 1 });
+      expect(await auth.isTokenExpired(at('exp'))).toBe(true);
+      expect(await auth.hasStoredTokens(at('exp'))).toBe(true);
+      expect(await auth.hasStoredTokens(at('missing'))).toBe(false);
     });
 
     it('selectively clears tokens, client info, and all credentials', async () => {
       const auth = await import('../mcp-auth');
-      await auth.updateTokens('c', { accessToken: 't' });
-      await auth.updateClientInfo('c', { clientId: 'id' });
-      await auth.clearTokens('c');
-      expect((await auth.getAuthEntry('c'))?.tokens).toBeUndefined();
-      expect((await auth.getAuthEntry('c'))?.clientInfo?.clientId).toBe('id');
-      await auth.clearClientInfo('c');
-      expect((await auth.getAuthEntry('c'))?.clientInfo).toBeUndefined();
-      await auth.updateTokens('c', { accessToken: 't' });
-      await auth.clearAllCredentials('c');
-      expect(await auth.getAuthEntry('c')).toBeUndefined();
+      await auth.updateTokens(at('c'), { accessToken: 't' });
+      await auth.updateClientInfo(at('c'), { clientId: 'id' });
+      await auth.clearTokens(at('c'));
+      expect((await auth.getAuthEntry(at('c')))?.tokens).toBeUndefined();
+      expect((await auth.getAuthEntry(at('c')))?.clientInfo?.clientId).toBe('id');
+      await auth.clearClientInfo(at('c'));
+      expect((await auth.getAuthEntry(at('c')))?.clientInfo).toBeUndefined();
+      await auth.updateTokens(at('c'), { accessToken: 't' });
+      await auth.clearAllCredentials(at('c'));
+      expect(await auth.getAuthEntry(at('c'))).toBeUndefined();
+    });
+  });
+
+  describe('two folders defining a same-named server at different URLs', () => {
+    const urlA = 'https://a.example.com/mcp';
+    const urlB = 'https://b.example.com/mcp';
+
+    it('keeps each login, so the last one does not sign the other folder out', async () => {
+      const { McpOAuthProvider } = await import('../mcp-oauth-provider');
+      const folderA = new McpOAuthProvider(makeSdk(), 'api', urlA, {}, { onRedirect: async () => {} });
+      const folderB = new McpOAuthProvider(makeSdk(), 'api', urlB, {}, { onRedirect: async () => {} });
+
+      await folderA.saveTokens({ access_token: 'token-a', token_type: 'Bearer' });
+      await folderA.saveClientInformation({ client_id: 'client-a', redirect_uris: ['http://127.0.0.1:19876/callback'] });
+      await folderB.saveTokens({ access_token: 'token-b', token_type: 'Bearer' });
+
+      expect((await folderA.tokens())?.access_token).toBe('token-a');
+      expect((await folderA.clientInformation())?.client_id).toBe('client-a');
+      expect((await folderB.tokens())?.access_token).toBe('token-b');
+    });
+
+    it("signing out of one folder's server leaves the other's tokens", async () => {
+      const { removeAuth, getAuthStatus } = await import('../mcp-auth-flow');
+      const { updateTokens } = await import('../mcp-auth');
+      await updateTokens(at('api', urlA), { accessToken: 'token-a' });
+      await updateTokens(at('api', urlB), { accessToken: 'token-b' });
+
+      await removeAuth('api', urlA);
+
+      expect(await getAuthStatus('api', urlA)).toBe('not_authenticated');
+      expect(await getAuthStatus('api', urlB)).toBe('authenticated');
+    });
+
+    it("runs each folder's login, never handing one folder the other's in-flight flow", async () => {
+      let finish!: () => void;
+      mocks.sdkAuth.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve('AUTHORIZED'); }));
+      const { authenticate } = await import('../mcp-auth-flow');
+      const cc = (url: string): McpServerDefinition => ({
+        url,
+        auth: 'oauth',
+        oauth: { grantType: 'client_credentials', clientId: 'cc', clientSecret: 'sec' },
+      });
+
+      const loginA = authenticate(makeSdk(), 'api', urlA, cc(urlA));
+      await vi.waitFor(() => expect(mocks.sdkAuth).toHaveBeenCalledTimes(1));
+      const loginB = authenticate(makeSdk(), 'api', urlB, cc(urlB));
+      await vi.waitFor(() => expect(mocks.sdkAuth).toHaveBeenCalledTimes(2));
+      finish();
+
+      await expect(Promise.all([loginA, loginB])).resolves.toEqual(['authenticated', 'authenticated']);
+      expect(mocks.sdkAuth.mock.calls.map(([, opts]) => (opts as { serverUrl: string }).serverUrl)).toEqual([urlA, urlB]);
+    });
+  });
+
+  describe('migration from name-keyed credentials', () => {
+    it('moves a name-keyed keychain entry to its identity, once, and leaves another URL signed out', async () => {
+      const auth = await import('../mcp-auth');
+      const store = new Map<string, string>([
+        [nameKey('api'), JSON.stringify({ tokens: { accessToken: 'old' }, serverUrl })],
+        [nameKey('unbound'), JSON.stringify({ tokens: { accessToken: 'no-url' } })],
+      ]);
+
+      auth.setMcpSecretStorage(secretStorage(store));
+
+      expect((await auth.getAuthEntry(at('api')))?.tokens?.accessToken).toBe('old');
+      expect(await auth.getAuthEntry(at('api', 'https://other.example.com'))).toBeUndefined();
+      expect(store.has(nameKey('api'))).toBe(false);
+      expect(store.has(nameKey('unbound'))).toBe(false);
+      expect(store.size).toBe(1);
+    });
+
+    it('moves a pre-keychain on-disk entry into the keychain and deletes the file', async () => {
+      const auth = await import('../mcp-auth');
+      const dir = join(authDir, `sha256-${sha256('disk')}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'tokens.json'), JSON.stringify({ tokens: { accessToken: 'from-disk' }, serverUrl }));
+      const store = new Map<string, string>();
+
+      auth.setMcpSecretStorage(secretStorage(store));
+
+      expect((await auth.getAuthEntry(at('disk')))?.tokens?.accessToken).toBe('from-disk');
+      expect(existsSync(dir)).toBe(false);
     });
   });
 
@@ -209,15 +277,11 @@ describe('mcp oauth', () => {
       );
       expect(await cfg.clientInformation()).toEqual({ client_id: 'cfg', client_secret: 'cfg-sec' });
 
-      await auth.saveAuthEntry('stored', { clientInfo: { clientId: 'stored-id', clientSecret: 's' }, serverUrl }, serverUrl);
+      await auth.saveAuthEntry(at('stored'), { clientInfo: { clientId: 'stored-id', clientSecret: 's' } });
       const stored = new McpOAuthProvider(makeSdk(), 'stored', serverUrl, {}, { onRedirect: async () => {} });
       expect((await stored.clientInformation())?.client_id).toBe('stored-id');
 
-      await auth.saveAuthEntry(
-        'exp',
-        { clientInfo: { clientId: 'x', clientSecret: 's', clientSecretExpiresAt: 1 }, serverUrl },
-        serverUrl,
-      );
+      await auth.saveAuthEntry(at('exp'), { clientInfo: { clientId: 'x', clientSecret: 's', clientSecretExpiresAt: 1 } });
       const expired = new McpOAuthProvider(makeSdk(), 'exp', serverUrl, {}, { onRedirect: async () => {} });
       expect(await expired.clientInformation()).toBeUndefined();
     });
@@ -250,7 +314,7 @@ describe('mcp oauth', () => {
           captured = url;
         },
       });
-      await auth.updateOAuthState('rs', 'state', serverUrl);
+      await auth.updateOAuthState(at('rs'), 'state');
       const target = new URL('https://auth.example.com/authorize');
       await withState.redirectToAuthorization(target);
       expect(captured).toBe(target);
@@ -352,7 +416,7 @@ describe('mcp oauth', () => {
       expect(mocks.openExternal).toHaveBeenCalledTimes(1);
       expect(mocks.finishAuth).toHaveBeenCalledWith('auth-code');
       expect(mocks.transportClose).toHaveBeenCalledTimes(1);
-      expect(await getOAuthState('web')).toBeUndefined();
+      expect(await getOAuthState(at('web'))).toBeUndefined();
       expect(mocks.ensureCallbackServer).toHaveBeenCalledWith(
         expect.objectContaining({ strictPort: false, reserveState: true, oauthState: expect.any(String) }),
       );
@@ -405,13 +469,13 @@ describe('mcp oauth', () => {
     it('reports auth status and removes credentials', async () => {
       const { getAuthStatus, removeAuth } = await import('../mcp-auth-flow');
       const { updateTokens } = await import('../mcp-auth');
-      expect(await getAuthStatus('absent')).toBe('not_authenticated');
-      await updateTokens('ok', { accessToken: 't', expiresAt: Date.now() / 1000 + 3600 });
-      expect(await getAuthStatus('ok')).toBe('authenticated');
-      await updateTokens('stale', { accessToken: 't', expiresAt: Date.now() / 1000 - 3600 });
-      expect(await getAuthStatus('stale')).toBe('expired');
-      await removeAuth('ok');
-      expect(await getAuthStatus('ok')).toBe('not_authenticated');
+      expect(await getAuthStatus('absent', serverUrl)).toBe('not_authenticated');
+      await updateTokens(at('ok'), { accessToken: 't', expiresAt: Date.now() / 1000 + 3600 });
+      expect(await getAuthStatus('ok', serverUrl)).toBe('authenticated');
+      await updateTokens(at('stale'), { accessToken: 't', expiresAt: Date.now() / 1000 - 3600 });
+      expect(await getAuthStatus('stale', serverUrl)).toBe('expired');
+      await removeAuth('ok', serverUrl);
+      expect(await getAuthStatus('ok', serverUrl)).toBe('not_authenticated');
     });
   });
 

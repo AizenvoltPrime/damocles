@@ -209,6 +209,26 @@ export interface ValidationCategoryResult {
 
 export const VALIDATION_BUSY_MESSAGE = 'Compass graph is being rebuilt — retry when indexing completes';
 
+/** Requests the worker runs ahead of queued heavy work; every other type waits its turn behind a build. */
+export const LIGHT_REQUEST_TYPES: ReadonlySet<string> = new Set<WorkerRequest['type']>([
+	'getStatus',
+	'getGraphTerms',
+	'mcp:context',
+	'mcp:search',
+	'mcp:query',
+	'mcp:stats',
+	'mcp:blastRadius',
+	'mcp:reviewContext',
+	'mcp:deadCode',
+	'webview:search',
+	'webview:graph',
+	'webview:blastRadius',
+	'tree:files',
+	'tree:nodesByFile',
+	'tree:edgesForSymbol',
+	'serialize',
+]);
+
 export interface WebviewValidationBusy {
 	busy: true;
 	message: string;

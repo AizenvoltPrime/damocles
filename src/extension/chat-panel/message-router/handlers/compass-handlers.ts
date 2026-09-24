@@ -1,15 +1,20 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { log } from '../../../../extension/logger';
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
+import type { CompassService } from '../../../../extension/compass';
+import { isWithinRoot } from '../../../../extension/compass/util';
 import type { ValidationIssue, CompassValidationResult, CompassSearchResult, CompassGraphData, CompassBlastRadiusResult } from '../../../../shared/types/compass';
 import type { WebviewValidationResponse, WebviewValidationBusy } from '../../../../extension/compass/worker-protocol';
 
 export function createCompassHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-	const { compassService, postMessage } = deps;
+	const { compassRegistry, postMessage } = deps;
+	// The panel's own folder, never another folder's index.
+	const serviceFor = (ctx: HandlerContext): CompassService | undefined => compassRegistry?.get(ctx.folder.key);
 
 	return {
-		requestCompassReindex: async () => {
+		requestCompassReindex: async (_msg, ctx) => {
+			const compassService = serviceFor(ctx);
 			if (!compassService) return;
 			try {
 				await compassService.triggerReindex();
@@ -20,6 +25,7 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 		compassSearch: async (msg, ctx) => {
 			if (msg.type !== 'compassSearch') return;
+			const compassService = serviceFor(ctx);
 			if (!compassService?.isEnabled) return;
 			try {
 				await compassService.ensureInitialized();
@@ -36,6 +42,7 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 		compassRequestGraph: async (msg, ctx) => {
 			if (msg.type !== 'compassRequestGraph') return;
+			const compassService = serviceFor(ctx);
 			if (!compassService?.isEnabled) return;
 			try {
 				await compassService.ensureInitialized();
@@ -69,15 +76,10 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 		compassRequestBlastRadius: async (msg, ctx) => {
 			if (msg.type !== 'compassRequestBlastRadius') return;
+			const compassService = serviceFor(ctx);
 			if (!compassService?.isEnabled) return;
-			const workspaceFolders = vscode.workspace.workspaceFolders;
-			if (!workspaceFolders || workspaceFolders.length === 0) return;
-			const resolvedBlast = path.resolve(msg.filePath).replace(/\\/g, '/').toLowerCase();
-			const withinWorkspace = workspaceFolders.some(f => {
-				const root = f.uri.fsPath.replace(/\\/g, '/').toLowerCase();
-				return resolvedBlast.startsWith(root + '/') || resolvedBlast === root;
-			});
-			if (!withinWorkspace) return;
+			// The panel folder's index holds only that folder's files.
+			if (!isWithinRoot(path.resolve(msg.filePath), ctx.folder.fsPath)) return;
 			try {
 				await compassService.ensureInitialized();
 				const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
@@ -97,6 +99,7 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 		},
 
 		compassRequestValidation: async (_msg, ctx) => {
+			const compassService = serviceFor(ctx);
 			if (!compassService?.isEnabled) {
 				postMessage(ctx.host, {
 					type: 'compassValidationResult',
@@ -257,9 +260,9 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 				}
 
 				const workspaceFiles = rawValidation.workspaceFiles;
-				const workspaceNormalized = workspaceFiles.map(f => path.relative(deps.workspacePath, f).replace(/\\/g, '/'));
+				const workspaceNormalized = workspaceFiles.map(f => path.relative(ctx.folder.fsPath, f).replace(/\\/g, '/'));
 				const graphRelative = new Set(validation.filePaths.map(p => {
-					const rel = path.relative(deps.workspacePath, path.resolve(deps.workspacePath, p));
+					const rel = path.relative(ctx.folder.fsPath, path.resolve(ctx.folder.fsPath, p));
 					return rel.replace(/\\/g, '/');
 				}));
 				const missing = workspaceNormalized.filter(f => !graphRelative.has(f));

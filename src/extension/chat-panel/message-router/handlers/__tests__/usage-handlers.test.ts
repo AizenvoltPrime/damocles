@@ -20,7 +20,6 @@ import type { ExtensionToWebviewMessage } from "../../../../../shared/types/mess
 function setup() {
   const posted: ExtensionToWebviewMessage[] = [];
   const deps = {
-    workspacePath: "/ws",
     postMessage: vi.fn((_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); }),
   } as unknown as HandlerDependencies;
   const ctx = { host: {} } as unknown as HandlerContext;

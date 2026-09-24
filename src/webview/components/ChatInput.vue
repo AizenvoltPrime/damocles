@@ -312,7 +312,8 @@ function toggleIdeContext() {
 }
 
 function handleSend() {
-  if (!canSend.value) return;
+  // A prompt sent mid-switch would land in a fresh session in another folder; the draft stays in the box.
+  if (!canSend.value || settingsStore.workspaceFolderSwitchPending) return;
   const text = inputText.value.trim();
   addEntry(text);
 
@@ -590,7 +591,7 @@ onUnmounted(() => {
 
             <!-- Send/Stop button -->
             <Button
-              :disabled="!canSend && !isProcessing"
+              :disabled="canSend ? settingsStore.workspaceFolderSwitchPending : !isProcessing"
               size="icon"
               class="w-8 h-8 rounded-lg"
               :class="isProcessing && !canSend ? 'bg-destructive hover:bg-destructive/80 border-destructive' : ''"

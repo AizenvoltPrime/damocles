@@ -159,24 +159,28 @@ export async function getPiSessionMetadata(cwd: string, sessionId: string): Prom
 }
 
 /**
- * Recent unique user prompts across the workspace's pi sessions, newest first (the up-arrow prompt
- * history). Reads only the pi tree (FR-1); the SDK `extractPromptHistory` is never called on pi.
+ * Recent unique user prompts across the pi sessions of every folder in `cwds`, in the order of
+ * `sessions` (newest first; the up-arrow prompt history). Reads only the pi tree (FR-1); the SDK
+ * `extractPromptHistory` is never called on pi.
  */
-export async function extractPiPromptHistory(cwd: string, sessions: StoredSession[]): Promise<string[]> {
+export async function extractPiPromptHistory(cwds: readonly string[], sessions: StoredSession[]): Promise<string[]> {
   const pi = await initPiLoader();
   if (!pi) return [];
-  const dir = ensurePiSessionDir(cwd);
 
-  // One readdir → id→path map, so each session resolves in O(1). Resolving per session via
-  // `resolvePiSessionFile` would readdir the whole store once per session — O(files²) on the hot path.
-  let idToPath: Map<string, string>;
-  try {
-    const files = await fs.promises.readdir(dir);
-    idToPath = new Map(
-      files.filter((f) => f.endsWith('.jsonl')).map((f) => [piSessionIdFromFile(f), path.join(dir, f)]),
-    );
-  } catch {
-    return [];
+  // One readdir per folder into an id→path map, so each session resolves in O(1). Resolving per session
+  // via `resolvePiSessionFile` would readdir the whole store once per session, O(files²) on the hot path.
+  const idToPath = new Map<string, string>();
+  for (const cwd of cwds) {
+    const dir = ensurePiSessionDir(cwd);
+    try {
+      const files = await fs.promises.readdir(dir);
+      for (const f of files) {
+        const id = piSessionIdFromFile(f);
+        if (f.endsWith('.jsonl') && !idToPath.has(id)) idToPath.set(id, path.join(dir, f));
+      }
+    } catch {
+      continue;
+    }
   }
 
   const seen = new Set<string>();
@@ -187,7 +191,7 @@ export async function extractPiPromptHistory(cwd: string, sessions: StoredSessio
     const filePath = idToPath.get(session.id);
     if (!filePath) continue;
     try {
-      const sm = pi.SessionManager.open(filePath, dir);
+      const sm = pi.SessionManager.open(filePath, path.dirname(filePath));
       const branch = sm.getBranch(sm.getLeafId() ?? undefined);
       // A user message whose typed slash command was expanded is recorded here as what the user typed
       // (`/example what is the day`), not the stored expansion (`Hello day is Tuesday`).

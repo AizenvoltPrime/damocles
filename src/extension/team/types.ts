@@ -6,7 +6,7 @@ import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamRunSummary } from '../../shared/types/team';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
-import type { SubagentSessionStore } from '../pi-session/pi-runtime';
+import type { SubagentSessionStore } from '../pi-session/folder-runtime';
 
 /** Selects which role slot a spawned specialist runs under — `implementor` or `reviewer` role settings
  *  (model + reasoning effort), set by the lead on spawn. Re-exported from the resolver, which itself

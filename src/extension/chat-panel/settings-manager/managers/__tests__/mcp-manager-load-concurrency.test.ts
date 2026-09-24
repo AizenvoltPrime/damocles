@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 
 /**
  * Whether `loadConfig()` asks git while the config files are still being read, or waits for them.
@@ -22,12 +22,15 @@ vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
 import * as vscode from "vscode";
 import { McpManager } from "../mcp-manager";
+import { folderTarget } from "./mcp-folder-fixtures";
 
 const workspaceState = {
   get: <T>(_key: string, defaultValue?: T): T => defaultValue as T,
   update: (): Promise<void> => Promise.resolve(),
   keys: (): readonly string[] => [],
 } as unknown as vscode.Memento;
+
+const WS = folderTarget("/ws/project");
 
 /** Let every already-queued microtask run, without advancing time. */
 const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -58,16 +61,11 @@ beforeEach(() => {
     () => new Promise<string>((resolve) => { pendingReads.push({ resolve: (contents) => resolve(contents) }); }),
   );
   vscode.__setTrusted(true);
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: "/ws/project" } }];
-});
-
-afterAll(() => {
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [];
 });
 
 describe("McpManager.loadConfig scheduling", () => {
   it("asks git while the config reads are still outstanding", async () => {
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     const load = manager.loadConfig();
 
     await flush();
@@ -84,7 +82,7 @@ describe("McpManager.loadConfig scheduling", () => {
     // A narrower claim than the test above, and deliberately so: this one is satisfied by the
     // `Promise.all` inside `readGlobalMcpSources`, so it stays green even if the caller serialises
     // everything. It pins the inner fan-out, not the outer scheduling.
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     const load = manager.loadConfig();
 
     await flush();
@@ -98,7 +96,7 @@ describe("McpManager.loadConfig scheduling", () => {
   it("does not ask git at all when the workspace is untrusted, even though the reads still run", async () => {
     // Pins the assertion above to scheduling rather than to the check being unconditional.
     vscode.__setTrusted(false);
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     const load = manager.loadConfig();
 
     await flush();

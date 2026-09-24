@@ -87,6 +87,11 @@ export type McpElicitationHandler = (
 export interface McpToolDescriptor {
   piName: string;
   serverName: string;
+  /**
+   * Opaque identity of the serving manager plus server name. A `piName` can pass to a different
+   * server when prefixes move, so a frozen snapshot compares this, never `piName` or `serverName`.
+   */
+  serverId: string;
   kind: 'tool' | 'resource';
   /** Original MCP tool name (kind='tool'). */
   originalName: string;

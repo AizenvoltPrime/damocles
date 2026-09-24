@@ -12,12 +12,12 @@ function isValidSkillName(skillName: string): boolean {
   return ASSET_SEGMENT_RE.test(skillName);
 }
 
-export async function loadSkillDescription(skillName: string): Promise<string | undefined> {
+/** `workspacePath` is the panel's project folder, or null when it has no project scope. */
+export async function loadSkillDescription(skillName: string, workspacePath: string | null): Promise<string | undefined> {
   if (!isValidSkillName(skillName)) {
     return undefined;
   }
 
-  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
   const trusted = vscode.workspace.isTrusted;
 
   // A standalone reader rather than a call into SlashCommandService: the only caller is the permission

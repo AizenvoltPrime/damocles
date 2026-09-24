@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.31.0] - 2026-09-24
+
+### Added
+
+- **Each panel can work in its own workspace folder.** In a window with several folders, pick a panel's folder in Settings or from the chip in the chat header, and a default for new panels. Each chat tab shows its folder's name. Instructions files, tools, shell, skills, commands, agents, hooks, permission rules, @-mentions, memory, MCP servers, Compass index, checkpoints and history come from that folder. Changing folder mid-conversation asks first and starts a new conversation, and the prompt box does not send until the switch completes. History lists every open folder's sessions with a folder label, and resuming one moves the panel to its folder. Disabling a project MCP server affects only that folder. Windows with one folder or none behave as before.
+
+### Changed
+
+- **Allowance mode uses a new plugin.** Subscription allowance now runs through `pi-anthropic-auth`, which adds Claude Code's billing attribution to pi's own Anthropic transport. Existing allowance installs switch to it on the first start after updating, with no re-login. That first start takes longer while the plugin downloads. If the download fails, the previous plugin keeps working and Damocles retries on the next start. Loading a tool group with `ToolSearch` mid-conversation keeps the cached system prompt and initial tools, where the previous plugin invalidated the cached prompt for that request. Continuing a conversation started before the update shows a dropped-thinking notice on each turn, because Anthropic discards reasoning written under the previous plugin. The conversation continues normally.
+- **If the allowance plugin fails to load, Damocles switches to extra usage.** The auth panel then reads extra usage instead of allowance, and the error is in the Damocles output channel. Selecting allowance again retries and shows the error.
+
+### Fixed
+
+- **Plan files whose path contains "pi" open.** The previous allowance plugin rewrote the word "pi" in the system prompt, so a plan path such as `...-upgrade-the-pi-runtime-....md` reached the model changed and the plan could not be read.
+- **Memories land in the right project.** A memory extracted from a conversation is filed under that conversation's folder, even when another window runs the extraction. In a window with no folder open, extracted project memories now show in the Memory panel.
+- **Skill approvals end with the conversation.** Choosing **Yes, don't ask again** on a skill kept it approved after you cleared the conversation, so it ran without a prompt in the next one. Clearing the conversation or changing the panel's folder now asks again.
+
+### Security
+
+- **Restricted Mode now blocks repository pi configuration and permission rules.** In an untrusted workspace, Damocles no longer installs packages listed in the repository's `.pi/settings.json`, runs code from `.pi/extensions`, or uses its shell settings, skills, prompts or `APPEND_SYSTEM.md`. This covers subagents too. It also ignores the permission rules in the repository's `.damocles/settings*.json` and `.claude/settings*.json`, so only your user rules apply. All of these load once you trust the workspace, with no reload.
+
 ## [2.30.0] - 2026-09-23
 
 ### Added
@@ -4103,6 +4124,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.31.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.30.0...v2.31.0
 [2.30.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.29.0...v2.30.0
 [2.29.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.28.0...v2.29.0
 [2.28.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.27.0...v2.28.0

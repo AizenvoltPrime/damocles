@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { createApp } from 'vue';
+import { createApp, defineComponent, ref } from 'vue';
+import { mount } from '@vue/test-utils';
 import { createHandlerRegistry } from '../../handler-registry';
 import type { HandlerRegistry, HandlerContext, StoreContext } from '../../types';
 import { i18n } from '@/i18n';
@@ -20,8 +21,16 @@ import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
 import { useElicitationStore } from '@/stores/useElicitationStore';
 import { useBtwStore } from '@/stores/useBtwStore';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useMemoryStore } from '@/stores/useMemoryStore';
+import { useCompassStore } from '@/stores/useCompassStore';
+import { useMessageHandler } from '../../index';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { StoredSession } from '@shared/types/session';
+import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
+
+const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
+vi.mock('vue-sonner', () => ({ toast: toastMock }));
 
 /**
  * A session reset must close whatever tool overlay was open.
@@ -30,8 +39,8 @@ import type { StoredSession } from '@shared/types/session';
  * free at both reset sites. It lives on `useUIStore` now, and these handlers never call
  * `uiStore.$reset()`, so the clearing has to be an explicit `uiStore.collapseTool()` in each handler.
  * Without it a stale id survives a session switch and can later resolve against an unrelated call that
- * happens to carry the same id. Both reset sites are driven, because they are hand-kept in sync and a
- * line dropped from one of them would otherwise ship green.
+ * happens to carry the same id. Both reset sites are driven, because each adds its own steps around the
+ * shared reset.
  */
 
 function context(): HandlerContext {
@@ -51,6 +60,9 @@ function context(): HandlerContext {
     elicitationStore: useElicitationStore(),
     btwStore: useBtwStore(),
     teamStore: useTeamStore(),
+    settingsStore: useSettingsStore(),
+    memoryStore: useMemoryStore(),
+    compassStore: useCompassStore(),
   } as unknown as StoreContext;
 
   let state: Record<string, unknown> = {};
@@ -58,7 +70,7 @@ function context(): HandlerContext {
     stores,
     refs: { messageContainerRef: { value: null }, chatInputRef: { value: null } },
     vscode: {
-      postMessage: () => {},
+      postMessage: vi.fn(),
       getState: <T,>() => state as T,
       setState: <T,>(next: T) => {
         state = next as Record<string, unknown>;
@@ -239,5 +251,288 @@ describe('every sequence the extension publisher can produce', () => {
 
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
     expect(ctx.stores.uiStore.isProcessing).toBe(false);
+  });
+});
+
+const FOLDERS: WorkspaceFolderInfo[] = [
+  { key: 'c:\\work\\client\\app', name: 'app', label: 'app (client)', path: 'C:\\work\\client\\app' },
+  { key: 'c:\\work\\server\\app', name: 'app', label: 'app (server)', path: 'C:\\work\\server\\app' },
+];
+const [CLIENT, SERVER] = FOLDERS as [WorkspaceFolderInfo, WorkspaceFolderInfo];
+
+function folderUpdate(panelFolderKey: string, switched?: boolean): ExtensionToWebviewMessage {
+  return {
+    type: 'workspaceFolderUpdate',
+    folders: FOLDERS,
+    panelFolderKey,
+    defaultFolderKey: CLIENT.key,
+    ...(switched !== undefined && { switched }),
+  };
+}
+
+/** A panel that has a conversation on screen and a persisted session, as a folder switch finds it. */
+function contextWithConversation(): HandlerContext {
+  const ctx = context();
+  const { sessionStore, streamingStore } = ctx.stores;
+  streamingStore.addUserMessage('the conversation on screen');
+  sessionStore.setCurrentSession('s-1');
+  sessionStore.setSelectedSession('s-1', 'Refactor');
+  ctx.vscode.setState({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
+  return ctx;
+}
+
+describe('workspaceFolderUpdate', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('switched: clears the conversation, forgets the session, keeps the new folder and names it in a toast', () => {
+    const ctx = contextWithConversation();
+    const { sessionStore, streamingStore, settingsStore } = ctx.stores;
+
+    dispatch(folderUpdate(SERVER.key, true), ctx);
+
+    expect(streamingStore.messages).toEqual([]);
+    expect(sessionStore.currentSessionId).toBeNull();
+    expect(sessionStore.selectedSessionId).toBeNull();
+    expect(settingsStore.panelWorkspaceFolderKey).toBe(SERVER.key);
+    expect(ctx.vscode.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: SERVER.key });
+    expect(toastMock.success).toHaveBeenCalledTimes(1);
+    expect(toastMock.success).toHaveBeenCalledWith(i18n.global.t('toast.workspaceFolderSwitched', { folder: 'app (server)' }));
+    // vue-i18n returns the bare key for a missing entry, which the equality above would also accept.
+    expect(toastMock.success.mock.calls[0]?.[0]).toContain('app (server)');
+  });
+
+  it('without switched: leaves the conversation alone and shows no toast', () => {
+    // A cancelled modal re-posts the current folder without `switched`; the conversation must survive it.
+    const ctx = contextWithConversation();
+    const { sessionStore, streamingStore, settingsStore } = ctx.stores;
+
+    dispatch(folderUpdate(CLIENT.key), ctx);
+
+    expect(streamingStore.messages).toHaveLength(1);
+    expect(sessionStore.selectedSessionId).toBe('s-1');
+    expect(settingsStore.panelWorkspaceFolderKey).toBe(CLIENT.key);
+    expect(ctx.vscode.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('switched: false behaves like an absent flag', () => {
+    const ctx = contextWithConversation();
+
+    dispatch(folderUpdate(CLIENT.key, false), ctx);
+
+    expect(ctx.stores.streamingStore.messages).toHaveLength(1);
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+
+  it('starts with no folders and not multi-root, so nothing folder-related renders before the first payload', () => {
+    const store = useSettingsStore();
+    expect(store.workspaceFolders).toEqual([]);
+    expect(store.isMultiRoot).toBe(false);
+  });
+
+  it('stores the folders, the panel key and the default key', () => {
+    const ctx = context();
+
+    dispatch({ type: 'workspaceFolderUpdate', folders: FOLDERS, panelFolderKey: SERVER.key, defaultFolderKey: CLIENT.key }, ctx);
+
+    const store = ctx.stores.settingsStore;
+    expect(store.workspaceFolders).toEqual(FOLDERS);
+    expect(store.panelWorkspaceFolderKey).toBe(SERVER.key);
+    expect(store.defaultWorkspaceFolderKey).toBe(CLIENT.key);
+    expect(store.isMultiRoot).toBe(true);
+  });
+
+  it('is not multi-root with one folder, which is also what a no-folder window sends', () => {
+    const ctx = context();
+
+    dispatch({ type: 'workspaceFolderUpdate', folders: [CLIENT], panelFolderKey: CLIENT.key, defaultFolderKey: CLIENT.key }, ctx);
+
+    expect(ctx.stores.settingsStore.isMultiRoot).toBe(false);
+  });
+
+  it('persists a changed panel key into webview state without dropping the saved session', () => {
+    const ctx = contextWithConversation();
+
+    dispatch(folderUpdate(SERVER.key), ctx);
+
+    expect(ctx.vscode.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: SERVER.key });
+  });
+
+  // The extension answers every setPanelWorkspaceFolder with one of these, including a cancel and a failure.
+  it.each([
+    ['a confirmed switch', true],
+    ['a cancel or a failure', undefined],
+  ])('ends a pending switch on %s', (_name, switched) => {
+    const ctx = contextWithConversation();
+    const { settingsStore } = ctx.stores;
+    settingsStore.setWorkspaceFolders(FOLDERS, CLIENT.key, CLIENT.key);
+    settingsStore.requestPanelWorkspaceFolder(SERVER.key);
+    expect(settingsStore.workspaceFolderSwitchPending).toBe(true);
+
+    dispatch(folderUpdate(switched ? SERVER.key : CLIENT.key, switched), ctx);
+
+    expect(settingsStore.workspaceFolderSwitchPending).toBe(false);
+  });
+});
+
+describe('workspaceFolderUpdate drops the previous folder Compass data', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  /** A Compass graph panel open on the client folder, with every folder-bound field populated. */
+  function contextWithCompass(): HandlerContext {
+    const ctx = contextWithConversation();
+    const { compassStore } = ctx.stores;
+    compassStore.updateStatus({ state: 'ready' } as never);
+    compassStore.setGraphData({ nodes: [{ file_path: 'C:/work/client/app/main.ts' }], edges: [], communities: [] } as never);
+    compassStore.setSearchResults([{ qualified_name: 'client.main' }] as never);
+    compassStore.searchQuery = 'main';
+    compassStore.graphCommunityFilter = 3;
+    compassStore.setBlastRadius({ changedFiles: [] } as never);
+    compassStore.setValidationResult({ issues: [] } as never);
+    compassStore.buildProgress = { current: 1, total: 2, phase: 'parse' };
+    compassStore.setActivePanel('graph');
+    compassStore.setEdgeKindVisible('CALLS', false);
+    return ctx;
+  }
+
+  it('switched: clears the graph, search, blast radius, validation, progress and status, and closes the view', () => {
+    const ctx = contextWithCompass();
+    const { compassStore } = ctx.stores;
+
+    dispatch(folderUpdate(SERVER.key, true), ctx);
+
+    expect(compassStore.graphData).toBeNull();
+    expect(compassStore.searchResults).toEqual([]);
+    expect(compassStore.searchQuery).toBe('');
+    expect(compassStore.graphCommunityFilter).toBeNull();
+    expect(compassStore.blastRadius).toBeNull();
+    expect(compassStore.validationResult).toBeNull();
+    expect(compassStore.buildProgress).toBeNull();
+    expect(compassStore.status).toBeNull();
+    expect(compassStore.activePanel).toBeNull();
+    // A view preference, not folder data.
+    expect(compassStore.visibleEdgeKinds.has('CALLS')).toBe(false);
+  });
+
+  it('without switched: keeps the Compass data', () => {
+    const ctx = contextWithCompass();
+
+    dispatch(folderUpdate(CLIENT.key), ctx);
+
+    expect(ctx.stores.compassStore.graphData).not.toBeNull();
+    expect(ctx.stores.compassStore.activePanel).toBe('graph');
+  });
+});
+
+describe('workspaceFolderUpdate reloads the Memory panel for the new folder', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  const OLD_MEMORY = { id: 'm-old', tier: 'project', kind: 'fact', scope: 'project', content: 'old folder fact', sessionId: null, workspace: '/old', createdAt: 1, updatedAt: 1, tags: [] } as never;
+
+  it('switched with the Memory panel open: drops the previous folder memories and profile and re-requests both', () => {
+    const ctx = contextWithConversation();
+    const { memoryStore, uiStore } = ctx.stores;
+    memoryStore.setMemories([OLD_MEMORY], true, { createdAt: 1, id: 'm-old' });
+    memoryStore.setProfile({ static: 'old project', dynamic: '' }, { static: 'global', dynamic: '' });
+    memoryStore.setKindFilter('fact');
+    uiStore.openMemoryPanel();
+
+    dispatch(folderUpdate(SERVER.key, true), ctx);
+
+    expect(memoryStore.memories).toEqual([]);
+    expect(memoryStore.observationCursor).toBeNull();
+    expect(memoryStore.profile.project.static).toBe('');
+    expect(memoryStore.kindFilter).toBe('fact');
+    expect(ctx.vscode.postMessage).toHaveBeenCalledWith({ type: 'requestMemories' });
+    expect(ctx.vscode.postMessage).toHaveBeenCalledWith({ type: 'getProfile' });
+  });
+
+  it('switched with the Memory panel closed: clears without requesting, since opening the panel requests', () => {
+    const ctx = contextWithConversation();
+    ctx.stores.memoryStore.setMemories([OLD_MEMORY]);
+
+    dispatch(folderUpdate(SERVER.key, true), ctx);
+
+    expect(ctx.stores.memoryStore.memories).toEqual([]);
+    expect(ctx.vscode.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
+  });
+
+  it('without switched: keeps the loaded memories and requests nothing', () => {
+    const ctx = contextWithConversation();
+    ctx.stores.memoryStore.setMemories([OLD_MEMORY]);
+    ctx.stores.uiStore.openMemoryPanel();
+
+    dispatch(folderUpdate(CLIENT.key), ctx);
+
+    expect(ctx.stores.memoryStore.memories).toHaveLength(1);
+    expect(ctx.vscode.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
+  });
+});
+
+describe('conversationCleared', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
+
+  it('clears the conversation and the persisted session, keeps the folder key, and toasts its own message', () => {
+    const ctx = contextWithConversation();
+    const { sessionStore, streamingStore } = ctx.stores;
+
+    dispatch({ type: 'conversationCleared' }, ctx);
+
+    expect(streamingStore.messages).toEqual([]);
+    expect(sessionStore.selectedSessionId).toBeNull();
+    expect(ctx.vscode.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: CLIENT.key });
+    expect(toastMock.success).toHaveBeenCalledWith(i18n.global.t('toast.conversationCleared'));
+  });
+});
+
+describe('ready', () => {
+  const api = (globalThis as unknown as {
+    acquireVsCodeApi: () => { postMessage: (m: unknown) => void; getState: () => unknown };
+  }).acquireVsCodeApi();
+  const unmounts: (() => void)[] = [];
+
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    while (unmounts.length) unmounts.pop()?.();
+    vi.restoreAllMocks();
+  });
+
+  function mountHandler(savedState: unknown): unknown[] {
+    const posted: unknown[] = [];
+    vi.spyOn(api, 'getState').mockReturnValue(savedState);
+    vi.spyOn(api, 'postMessage').mockImplementation((m: unknown) => void posted.push(m));
+    const Host = defineComponent({
+      setup() {
+        useMessageHandler({ messageContainerRef: ref(null), chatInputRef: ref(null) });
+        return () => null;
+      },
+    });
+    const wrapper = mount(Host, { global: { plugins: [i18n] } });
+    unmounts.push(() => wrapper.unmount());
+    return posted;
+  }
+
+  it('carries the persisted folder key so a restored panel returns to its folder', () => {
+    const posted = mountHandler({ sessionId: 's-1', workspaceFolderKey: SERVER.key });
+
+    expect(posted).toContainEqual({ type: 'ready', savedSessionId: 's-1', savedWorkspaceFolderKey: SERVER.key });
+  });
+
+  it('omits the key when nothing was persisted', () => {
+    const posted = mountHandler(undefined);
+
+    expect(posted).toContainEqual({ type: 'ready' });
   });
 });

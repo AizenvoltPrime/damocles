@@ -65,7 +65,7 @@ describe('Slice 8 C4 — runMaintenance wires sweepConflictChecks BEFORE maybeVa
       profileManager: new ProfileManager(db, writeQueue, benignRunner),
       reason: 'switch',
       sessionId: 'sess-x',
-      workspace: '/tmp/ws',
+      fallbackWorkspace: () => '/tmp/ws',
       autoExtractEnabled: true,
       trigger: 'auto',
       onNoModel: () => {},

@@ -9,7 +9,7 @@ type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
 type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 
 // Shared so the desynced-index heal can DROP + recreate the FTS table with identical DDL.
 const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -146,10 +146,18 @@ ALTER TABLE memories ADD COLUMN needs_conflict_check INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_memories_needs_conflict_check ON memories(needs_conflict_check) WHERE needs_conflict_check = 1;
 `;
 
+// Candidates carry the folder their conversation ran in, so whichever window consolidates files the
+// extraction there. NULL marks a pre-V4 row, filed under the consolidating window's default folder.
+const MIGRATION_V4 = `
+ALTER TABLE memory_candidates ADD COLUMN workspace TEXT;
+CREATE INDEX IF NOT EXISTS idx_candidates_consumed_workspace ON memory_candidates(consumed, workspace);
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
   3: MIGRATION_V3,
+  4: MIGRATION_V4,
 };
 
 export interface OpenDatabaseOptions {

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
+import { restoredWorkspaceFolderKey } from "./chat-panel/panel-manager";
 import { initLogger, log, showLog } from "./logger";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
@@ -192,9 +193,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer("damocles.chat", {
-      async deserializeWebviewPanel(panel: vscode.WebviewPanel, _state: unknown) {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown) {
         try {
-          await chatPanelProvider?.restorePanel(panel);
+          await chatPanelProvider?.restorePanel(panel, restoredWorkspaceFolderKey(state));
         } catch (err) {
           log(`[Deserializer] Panel restoration failed: ${err}`);
         }

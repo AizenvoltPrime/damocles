@@ -12,14 +12,14 @@ import { DEFAULT_AGENTS } from '../subagents/default-agents';
 import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 /**
- * Slice 3 §3.2 — the nested deferred baseline in `PiRuntime.createSubagentSession`.
+ * Slice 3 §3.2 — the nested deferred baseline in `FolderRuntime.createSubagentSession`.
  *
  * This is the slice's central acceptance criterion: an Explore subagent's FIRST request must omit every
  * browser name while still carrying ToolSearch, and `tools:` must keep the browser names so they stay in
  * pi's registry and remain reachable later.
  *
  * The suite has two halves, deliberately:
- *  1. Against a mocked pi, exercising the real `PiRuntime.createSubagentSession` — this is what proves
+ *  1. Against a mocked pi, exercising the real `FolderRuntime.createSubagentSession` — this is what proves
  *     the CALL happens, with the right argument, at the right point in the lifecycle.
  *  2. Against a REAL pi `AgentSession`, proving that what `setActiveToolsByName` writes is what a turn
  *     would actually carry. Asserting only on the mocked call would leave "does the baseline survive to
@@ -68,9 +68,13 @@ const H = vi.hoisted(() => {
       __extensionFactories: opts?.resourceLoaderOptions?.extensionFactories ?? [],
       cwd: '/cwd',
       agentDir: '/agent',
-      settingsManager: { getPackages: () => [], getGlobalSettings: () => ({}), getProjectSettings: () => ({}) },
+      settingsManager: { getPackages: () => [], getGlobalSettings: () => ({}), getProjectSettings: () => ({}), isProjectTrusted: () => true },
       modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
-      resourceLoader: { extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
+      resourceLoader: {
+        extendResources: vi.fn(),
+        reload: vi.fn(async () => undefined),
+        getExtensions: () => ({ errors: [], runtime: { pendingProviderRegistrations: [] } }),
+      },
       diagnostics: [],
     })),
     createAgentSessionFromServices: vi.fn(async (opts: { tools?: string[]; services?: { __extensionFactories?: unknown[] } }) => {
@@ -94,7 +98,8 @@ const H = vi.hoisted(() => {
       return { session: makeSession(opts.tools ?? [], registered) };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    ModelRuntime: { create: vi.fn(async () => ({ getAvailableSnapshot: () => [] })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
   };
   return { created, sessions, fakePi, restored };
@@ -131,8 +136,8 @@ const failingFactory: ExtensionFactory = (() => {
 }) as unknown as ExtensionFactory;
 
 async function createNested(tools: string[], extensionFactory: ExtensionFactory = toolSearchFactory) {
-  const runtime = PiRuntime.get('/cwd', '/fake/agent');
-  await runtime.createSubagentSession({
+  const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+  await folder.createSubagentSession({
     cwd: '/cwd',
     systemPrompt: 'sp',
     tools,
@@ -485,8 +490,8 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
 
   /** Spawn the way `agent-manager.ts` composes a spawn: `tools: [...toolset.names, ...mcp.names]`. */
   async function createWithMcp(baseTools: string[], mcpToolNames: string[] = MCP_NAMES, extensionFactory = toolSearchFactory) {
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    await runtime.createSubagentSession({
+    const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+    await folder.createSubagentSession({
       cwd: '/cwd',
       systemPrompt: 'sp',
       // The ONLY place MCP names are stated. `createSubagentSession` derives its own deferral input
@@ -548,8 +553,8 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
     // the one place the class is observable at runtime. A diagnostic, not a guard — the spawn still
     // proceeds, because a missing tool must not kill an agent.
     logLines.length = 0;
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    await runtime.createSubagentSession({
+    const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+    await folder.createSubagentSession({
       cwd: '/cwd',
       systemPrompt: 'sp',
       tools: ['read', ...MCP_NAMES],
@@ -568,8 +573,8 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
     // The other half: a diagnostic that fires on healthy spawns is noise nobody reads, which is how a
     // real one gets missed.
     logLines.length = 0;
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    await runtime.createSubagentSession({
+    const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+    await folder.createSubagentSession({
       cwd: '/cwd',
       systemPrompt: 'sp',
       tools: ['read', ...MCP_NAMES],

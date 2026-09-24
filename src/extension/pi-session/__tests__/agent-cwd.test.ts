@@ -13,7 +13,7 @@ import { PiRuntime } from '../pi-runtime';
  *
  * Two independent facts are pinned, and they are not the same fact:
  *
- *  1. `sessionManager.getCwd()` is the workspace. This is Damocles': `PiRuntime.createSubagentSession`
+ *  1. `sessionManager.getCwd()` is the workspace. This is Damocles': `FolderRuntime.createSubagentSession`
  *     passes the cwd to `SessionManager.inMemory(...)`, and dropping the argument makes pi default it
  *     to `process.cwd()`. Reverting that call site fails this.
  *
@@ -66,9 +66,9 @@ describe('in-memory session cwd', () => {
     fs.writeFileSync(path.join(workspace, 'marker.txt'), 'workspace marker');
     expect(workspace).not.toBe(process.cwd());
 
-    const runtime = PiRuntime.get(workspace, agentDir);
+    const folder = await PiRuntime.get(agentDir).folder(workspace);
 
-    const subagent = await runtime.createSubagentSession({
+    const subagent = await folder.createSubagentSession({
       cwd: workspace,
       systemPrompt: 'probe',
       tools: ['read'],

@@ -2,58 +2,50 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PI_AGENT_DIR } from './agent-dir';
 
-/**
- * The third-party pi extension that adds Claude Pro/Max subscription support. Damocles neither
- * authors nor ships it (FR-2): it is installed into pi's user scope via the package manager, and
- * pi's loader registers the Claude Pro/Max provider.
- *
- * The plugin is a request-shaping LAYER, not a separate credential. The Claude OAuth token
- * (`sk-ant-oat…`) is identical whether or not the plugin is present — the plugin makes each request
- * look like the real Claude Code CLI (`user-agent: claude-code/…`, Claude-Code betas, "You are
- * Claude Code" identity), which Anthropic bills against the subscription's included ALLOWANCE.
- * Without the plugin, pi-ai's built-in anthropic provider sends `user-agent: claude-cli/…`, which
- * Anthropic METERS as extra usage on the same token. So toggling the plugin switches the billing
- * bucket for one shared token, with no re-login.
- */
-const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth';
+// The plugin wraps pi-ai's Anthropic transport and adds Claude Code's billing block, which bills the
+// subscription's included allowance; the same OAuth token without it meters as extra usage.
+const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-auth';
 
-// Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
-// fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
-//
-// The plugin replaces pi's built-in anthropic provider, so it builds the outbound request itself and
-// must satisfy pi's current provider contract. Since pi 0.86 that means reading the prompt and the
-// tool loadout off the transcript's system messages; a commit older than this one reads the removed
-// `context.systemPrompt`/`context.tools` and ships requests with no tools and no prompt.
-//
-// Nothing in CI clones this sha, so whether the commit it names honours that contract is verified by
-// reading the plugin, not by a test. Re-read it before bumping.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@8f82a2d207e12bfd313092d78333c594554f26fb`;
+// `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
+// Before bumping, run the plugin's tests against Damocles' pi version; nothing in this repo's CI clones it.
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@62891b65b37330c9d3fbd3c6e23148893487f988`;
 
-/**
- * Whether a persisted pi package entry names the subscription plugin at anything other than the
- * currently pinned commit — i.e. a pin left behind by an older Damocles build (any `@<sha>`, the
- * legacy `#<sha>` form, or an unpinned clone).
- *
- * This exists because pi keys git packages by a REF-AGNOSTIC identity (`git:{host}/{path}`), so a
- * stale entry is invisible to every "is it installed?" check: the clone dir and
- * `PackageManager.getInstalledPath` both report present while `settings.json` still pins the old
- * sha, and pi's startup `resolve()` resets the clone back to it.
- *
- * The trailing-character test keeps a sibling repo that merely shares this prefix
- * (`…/pi-anthropic-oauth-something`) from matching.
- */
-export function isStaleSubscriptionPin(source: string): boolean {
-  if (source === SUBSCRIPTION_SOURCE || !source.startsWith(SUBSCRIPTION_REPO)) return false;
-  const committish = source.slice(SUBSCRIPTION_REPO.length);
+// pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
+export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = ['https://github.com/AizenvoltPrime/pi-anthropic-oauth'];
+
+export type SubscriptionSourceKind = 'current' | 'stale' | 'legacy' | 'unrelated';
+
+// The committish test keeps a sibling repo that shares the prefix (`…-experimental`) from matching.
+function namesRepo(source: string, repo: string): boolean {
+  if (!source.startsWith(repo)) return false;
+  const committish = source.slice(repo.length);
   return committish === '' || committish.startsWith('@') || committish.startsWith('#');
+}
+
+export function classifySubscriptionSource(source: string): SubscriptionSourceKind {
+  if (source === SUBSCRIPTION_SOURCE) return 'current';
+  if (namesRepo(source, SUBSCRIPTION_REPO)) return 'stale';
+  if (LEGACY_SUBSCRIPTION_REPOS.some((repo) => namesRepo(source, repo))) return 'legacy';
+  return 'unrelated';
+}
+
+export function listedSubscriptionKinds(
+  packages: readonly (string | { source: string })[],
+): ReadonlySet<Exclude<SubscriptionSourceKind, 'unrelated'>> {
+  const kinds = new Set<Exclude<SubscriptionSourceKind, 'unrelated'>>();
+  for (const pkg of packages) {
+    const kind = classifySubscriptionSource(typeof pkg === 'string' ? pkg : pkg.source);
+    if (kind !== 'unrelated') kinds.add(kind);
+  }
+  return kinds;
 }
 
 /**
  * Active Claude auth mode:
- * - `none` — no credential stored.
- * - `apikey` — Anthropic API key (bills the API account).
- * - `allowance` — subscription OAuth + plugin loaded (`claude-code/…` → included allowance).
- * - `extra` — subscription OAuth without the plugin (`claude-cli/…` → metered extra usage).
+ * - `none`: no credential stored.
+ * - `apikey`: Anthropic API key (bills the API account).
+ * - `allowance`: subscription OAuth with a subscription plugin listed (bills the included allowance).
+ * - `extra`: subscription OAuth with no plugin listed (metered extra usage).
  */
 export type ClaudeAuthMode = 'none' | 'apikey' | 'allowance' | 'extra';
 
@@ -76,13 +68,20 @@ export function readClaudeAuthFromDisk(agentDir: string = PI_AGENT_DIR): ClaudeA
   }
 
   if (credType === 'api_key') return { mode: 'apikey' };
-  if (credType === 'oauth') return { mode: isPluginInstalledOnDisk(agentDir) ? 'allowance' : 'extra' };
+  if (credType === 'oauth') return { mode: isPluginListedOnDisk(agentDir) ? 'allowance' : 'extra' };
   return { mode: 'none' };
 }
 
-function isPluginInstalledOnDisk(agentDir: string): boolean {
+// A legacy-only entry reads as allowance: that is what it bills until migrated.
+function isPluginListedOnDisk(agentDir: string): boolean {
   try {
-    return fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8').includes('pi-anthropic-oauth');
+    const parsed = JSON.parse(fs.readFileSync(path.join(agentDir, 'settings.json'), 'utf8')) as { packages?: unknown };
+    if (!Array.isArray(parsed.packages)) return false;
+    const packages = parsed.packages.filter(
+      (p): p is string | { source: string } =>
+        typeof p === 'string' || (typeof p === 'object' && p !== null && typeof (p as { source?: unknown }).source === 'string'),
+    );
+    return listedSubscriptionKinds(packages).size > 0;
   } catch {
     return false;
   }

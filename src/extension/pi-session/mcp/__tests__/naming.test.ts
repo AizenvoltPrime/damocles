@@ -158,3 +158,31 @@ describe('remapMcpToolNamesForRename', () => {
     expect(remapMcpToolNamesForRename(names, ['docs'], 'docs', 'docs')).toEqual(names);
   });
 });
+
+describe('buildServerPrefixMap — reserved prefixes', () => {
+  it('suffixes a server whose prefix another manager already holds (AC4.3)', () => {
+    const map = buildServerPrefixMap(['my.server', 'docs'], new Set(['my_server']));
+    expect(map.get('my.server')).toBe('my_server_2');
+    expect(map.get('docs')).toBe('docs');
+  });
+
+  it('skips reserved suffixes too, and keeps a real server name unclaimed by derived ones', () => {
+    const map = buildServerPrefixMap(['a-b', 'a_b_3'], new Set(['a_b', 'a_b_2']));
+    expect(map.get('a-b')).toBe('a_b_4');
+    expect(map.get('a_b_3')).toBe('a_b_3');
+  });
+
+  it('is unchanged when nothing is reserved', () => {
+    const names = ['my-server', 'my.server', 'my_server_2', 'docs'];
+    expect(buildServerPrefixMap(names, new Set())).toEqual(buildServerPrefixMap(names));
+  });
+
+  it('gives a typical user+folder split the same names one combined map did (AC4.7)', () => {
+    const user = ['github', 'context7', 'brave-search'];
+    const folder = ['playwright', 'my-db'];
+    const combined = buildServerPrefixMap([...user, ...folder]);
+    const userMap = buildServerPrefixMap(user);
+    const folderMap = buildServerPrefixMap(folder, new Set(userMap.values()));
+    expect(new Map([...userMap, ...folderMap])).toEqual(combined);
+  });
+});

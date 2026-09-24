@@ -1,13 +1,5 @@
-import type {
-  AgentSession,
-  AgentSessionServices,
-  ExtensionFactory,
-  PackageManager,
-  SessionManager,
-  ToolDefinition,
-} from '@earendil-works/pi-coding-agent';
+import type { ModelRuntime, PackageManager, PackageSource, SettingsManager } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, AuthInteraction } from '@earendil-works/pi-ai';
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -15,32 +7,25 @@ import * as vscode from 'vscode';
 import { log } from '../logger';
 import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
-import { CONTEXT_FILE_CANDIDATES, overrideGlobalContextFile } from './context-files';
-import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
-import { assetSourceDirs, assetSources, type AssetSourceName } from '../asset-sources';
-import { HooksConfigService, type DispatchDeps } from './hooks';
+import { CONTEXT_FILE_CANDIDATES } from './context-files';
+import { assetSources } from '../asset-sources';
 import { renamePiSession } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
-import { isMcpToolName } from './mcp/naming';
-import { McpToolRegistrar } from './tools/mcp-tools';
-import { createMcpAuthProviderFactory } from './mcp/mcp-auth-flow';
-import type { PanelGateContext } from './permission-gate';
-import type { CheckpointService } from './checkpoint-service';
+import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
-import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
 import { describeAuthError } from './describe-error';
 import { isAbortError } from './web-access/util';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import {
+  LEGACY_SUBSCRIPTION_REPOS,
   SUBSCRIPTION_SOURCE,
-  isStaleSubscriptionPin,
+  classifySubscriptionSource,
+  listedSubscriptionKinds,
   readClaudeAuthFromDisk,
   type ClaudeAuthStatus,
 } from './subscription';
 import { forceRemoveDir } from './fs-remove';
-import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
-import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
 import {
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
@@ -48,6 +33,8 @@ import {
   readOpenAIAuthFromDisk,
   type OpenAIAuthStatus,
 } from './openai-auth';
+import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
+import { folderKey } from '../workspace-folders/folder-key';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -63,119 +50,34 @@ function keyInteraction(key: string): AuthInteraction {
   return { prompt: async () => key, notify: () => {} };
 }
 
-/** An existing asset resource directory plus its source attribution (for pi's resource source info). */
-interface AssetResourceEntry {
-  path: string;
-  source: AssetSourceName;
-  scope: 'project' | 'user';
+interface HotReloadResult {
+  /** Provider name to the path of the extension whose registration succeeded. */
+  registered: ReadonlyMap<string, string>;
+  errors: readonly ExtensionLoadError[];
 }
 
-/**
- * Existing asset resource directories for a given kind ('skills' | 'commands') across every source
- * (`.damocles` first, then `.claude` + `.codex` ordered by `damocles.assetSourcePrecedence`), project
- * (`<cwd>`) then user-global (`~`) within each. Codex maps 'commands' → `.codex/prompts`. Project dirs
- * are dropped in an untrusted workspace so a repo cannot inject system-prompt text through a `SKILL.md`.
- * Only existing dirs are returned so the loader never warns on a missing one. Additive to pi-native
- * dirs; pi-native sources outrank these, and earlier dirs in this list outrank later ones (pi's loader
- * is first-wins on a name collision).
- */
-function assetResourceEntries(cwd: string, kind: 'skills' | 'commands'): AssetResourceEntry[] {
-  const trusted = vscode.workspace.isTrusted;
-  return assetSourceDirs(kind, { workspacePath: cwd, homeDir: os.homedir() })
-    .filter((d) => trusted || d.scope !== 'project')
-    .map((d) => ({ path: d.dir, source: d.source, scope: d.scope }))
-    .filter((e) => existsSync(e.path));
+/** Every MCP manager, user or folder, gets the same OAuth wiring; elicitation is routed inside the manager. */
+function newMcpManager(reservedPrefixes?: () => ReadonlySet<string>): McpClientManager {
+  return new McpClientManager({
+    authProviderFactoryBuilder: createMcpAuthProviderFactory,
+    ...(reservedPrefixes ? { reservedPrefixes } : {}),
+  });
 }
 
-function assetResourcePaths(cwd: string, kind: 'skills' | 'commands'): string[] {
-  return assetResourceEntries(cwd, kind).map((e) => e.path);
+function packageSourceString(pkg: PackageSource): string {
+  return typeof pkg === 'string' ? pkg : pkg.source;
 }
 
-/**
- * Inputs for a nested subagent session (Phase 5). The session reuses the parent runtime's
- * `modelRuntime` (so auth and the curated model list propagate with no second provider-registration
- * pass) while carrying its OWN system prompt, tool allowlist, and a per-subagent gate-routing
- * extension factory.
- */
-export interface PiCreateSubagentSessionOptions {
-  cwd: string;
-  /** The fully-built system prompt — `buildAgentPrompt` already merged the parent prompt for append mode. */
-  systemPrompt: string;
-  model?: Model<Api>;
-  thinkingLevel?: ThinkingLevel;
-  /** Resolved Damocles active-set tool names (mixed-case; see resolveAgentToolset). */
-  tools: string[];
-  /** Damocles custom tool definitions (Edit, PowerShell, Task tools, memory/compass/browser). */
-  customTools: ToolDefinition[];
-  /** pi built-in tool names to exclude (always ['edit'] — replaced by the custom Edit). */
-  excludeTools?: string[];
-  /** The per-subagent gate-routing extension factory (createSubagentExtensionFactory). */
-  extensionFactory: ExtensionFactory;
-  /** Where the nested session persists. `file` creates `<dir>/<ts>_<id>.jsonl`; `reopen` opens an
-   *  existing session file. pi writes nothing until the session's first assistant message. */
-  store: SubagentSessionStore;
+function namesCurrentRepo(source: string): boolean {
+  const kind = classifySubscriptionSource(source);
+  return kind === 'current' || kind === 'stale';
 }
 
-/** `reopen` takes model and thinking level from the file, so it must not be given `model`/`thinkingLevel`.
- *  `agentId` names the agent in the error thrown when the recorded model is unavailable. */
-export type SubagentSessionStore =
-  | { kind: 'memory' }
-  | { kind: 'file'; dir: string; id: string }
-  | { kind: 'reopen'; path: string; agentId: string };
-
-/**
- * The deferred tools a restored transcript had loaded: every successful ToolSearch result's `matches`,
- * plus every tool it called. The set is not persisted, and a fresh session's transcript is empty.
- */
-export function activatedToolsFromMessages(messages: readonly unknown[]): Set<string> {
-  const out = new Set<string>();
-  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
-  for (const message of messages) {
-    if (!isRecord(message)) continue;
-    if (message['role'] === 'toolResult' && message['toolName'] === TOOL_TOOL_SEARCH && message['isError'] !== true) {
-      const details = message['details'];
-      const matches = isRecord(details) ? details['matches'] : undefined;
-      if (Array.isArray(matches)) for (const name of matches) if (typeof name === 'string') out.add(name);
-    } else if (message['role'] === 'assistant' && Array.isArray(message['content'])) {
-      for (const block of message['content']) {
-        if (isRecord(block) && block['type'] === 'toolCall' && typeof block['name'] === 'string') out.add(block['name']);
-      }
-    }
-  }
-  return out;
+function isInsideDir(file: string, dir: string): boolean {
+  const rel = path.relative(dir, file);
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
-/**
- * Whether a session will bind the extension instance this reload mints. `'session-bound'` instances
- * retire themselves on `session_shutdown`; `'bare'` ones never receive it, so the runtime retires them
- * when the next reload supersedes them. Stated per call site because the reload itself does identical
- * work either way — the difference is only in what the caller does next.
- */
-type ReloadBinding = 'session-bound' | 'bare';
-
-function disposeSessionSafe(session: AgentSession): void {
-  try {
-    session.dispose();
-  } catch (err) {
-    log('[PiRuntime] session dispose error: %O', err);
-  }
-}
-
-/**
- * The single per-process owner of pi's runtime (blocker B1).
- *
- * pi's API/OAuth provider registries are module-level process-global singletons; provider
- * registration happens once, during `createAgentSessionServices` (which loads extensions from
- * the agent dir and flushes their pending provider registrations). One Node process hosts every
- * VS Code extension and may host several Damocles windows/sessions, so exactly one PiRuntime
- * must own that registration. Multiple concurrent `AgentSession`s (Team agents, btw, subagents)
- * are expected and supported — they all share this runtime's one `AgentSessionServices`.
- *
- * Subscription auth is owned entirely by pi + the user-installed pi-anthropic-oauth plugin:
- * `signInSubscription` drives pi's native OAuth login and persists the grant; pi refreshes it
- * itself. Damocles never copies or refreshes the token, so the subscription is self-sufficient on
- * every platform and unaffected by removal of the Claude SDK.
- */
 /**
  * The live rename/tag surface a panel registers for its open session, so a mutation initiated from any
  * panel routes to the owning panel's live SessionManager rather than a second file-writer that would
@@ -189,84 +91,63 @@ export interface LiveSessionMutator {
   detachFromDeletedSession(): Promise<void>;
 }
 
+/**
+ * The single per-process owner of pi's runtime (blocker B1).
+ *
+ * pi's API/OAuth provider registries are module-level process-global singletons, and one Node process
+ * hosts every VS Code extension and may host several Damocles windows/sessions, so exactly one
+ * `ModelRuntime` must own provider registration and auth. Every workspace folder a panel targets gets a
+ * `FolderRuntime` (its own loader, context files, skills, hooks) built on that shared `ModelRuntime`.
+ *
+ * Subscription auth is owned by pi: `signInSubscription` drives pi's native OAuth login and pi
+ * refreshes the grant; the subscription plugin only selects the billing bucket.
+ */
 export class PiRuntime {
   private static _instance: PiRuntime | null = null;
 
-  private _services: AgentSessionServices | null = null;
   private _initPromise: Promise<void> | null = null;
-  private _primaryCwd: string;
   private readonly _agentDir: string;
-  /** Live nested subagent sessions (Phase 5), disposed on completion or on runtime dispose. */
-  private readonly _subagentSessions = new Set<AgentSession>();
-  /** Per-panel gate context, keyed by pi sessionId. The shared Damocles extension routes through it. */
-  private readonly _panelRegistry = new Map<string, PanelGateContext>();
-  /** Per-session checkpoint engine driver, keyed by pi sessionId (US-013b). Routed like the gate. */
-  private readonly _checkpointRegistry = new Map<string, CheckpointService>();
+  private _modelRuntime: ModelRuntime | null = null;
+  /** User-scope settings for package operations; the subscription plugin is only ever listed there. */
+  private _userSettings: SettingsManager | null = null;
+  /** Creation promises by folder key, so concurrent `folder()` calls share one creation. */
+  private readonly _folderPromises = new Map<string, Promise<FolderRuntime>>();
+  /** Folder runtimes whose creation (including its subscription check) has finished. */
+  private readonly _folders = new Map<string, FolderRuntime>();
+  /** Folder creation flushes provider registrations into the shared `ModelRuntime`, and subscription
+   *  operations unregister and re-register them, so all of them run one at a time on this chain. */
+  private _providerSync: Promise<void> = Promise.resolve();
+  /** Subscription switches run one at a time, download included, so they apply in request order and
+   *  never write the clone dir concurrently: pi's `installGit` has no lock of its own. */
+  private _subscriptionSync: Promise<void> = Promise.resolve();
+  /** The startup subscription repair runs once, when the first folder runtime has a loader to check. */
+  private _pinReconciled = false;
   /** Per-session live rename/tag mutator, keyed by pi sessionId — lets a rename/tag from ANY panel
    *  route to the panel that owns the session (cross-panel anti-fork; US-012). */
   private readonly _sessionMutators = new Map<string, LiveSessionMutator>();
-  /** The single workspace-level markdown-subagent source of truth (one watcher per agent dir), shared
-   *  by every panel's subagent manager (Phase 5 §4.6). Built lazily — needs pi for `parseFrontmatter`. */
-  private _workspaceAgents: WorkspaceAgentRegistry | null = null;
-  /** Process/workspace-scoped MCP client (Phase 6), created in `_doInit`; eager-connects on setMcpServers. */
-  private _mcpClientManager: McpClientManager | null = null;
-  /** Registers MCP tools into the shared extension's live `pi` (reload-safe; mid-session top-up). */
-  private _mcpRegistrar: McpToolRegistrar | null = null;
-  /** Config-driven hooks (loads/watches `~/.damocles/hooks.json` + `<ws>/.damocles/hooks.json`). */
-  private _hooksConfig: HooksConfigService | null = null;
-  /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
-  private readonly _activeToolRefreshers = new Map<string, () => void>();
-  /** Re-registers ToolSearch so pi re-wraps it and re-materializes its description getter. A SET, not a
-   *  single slot: each reload mints a fresh instance while earlier panels keep their bound one, so a
-   *  single slot would freeze every earlier panel's description — silently, its runtime being live
-   *  rather than stale.
-   *
-   *  Retirement is deterministic, never inferred from a throw, and has exactly two owners:
-   *  session-bound instances call their own disposer from `session_shutdown`; unbound ones (bare
-   *  reload, or `_doInit` before any session exists) are held in `_unboundRepublisherDisposer` and
-   *  retired by the runtime when superseded — or released if a session binds them after all. */
-  private readonly _toolSearchRepublishers = new Set<() => void>();
-  /** The disposer handed to the extension instance the loader currently holds, WHEN nothing has bound
-   *  that instance. Non-null means "this instance is unowned: retire it when it is superseded". Null
-   *  means the current instance is session-bound (or about to be) and owns its own retirement. */
-  private _unboundRepublisherDisposer: (() => void) | null = null;
-  /** Scratch slot letting a reload identify the instance IT just minted — the factory runs inside
-   *  `resourceLoader.reload()`, which hands nothing back. Only valid immediately after an awaited
-   *  reload, hence `_reloadSync`: an overlapping reload could adopt the other's instance, and adopting
-   *  a session-bound one as unbound would retire a live panel and freeze its menu. */
-  private _lastRegisteredRepublisherDisposer: (() => void) | null = null;
-  /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
-  private _reloadSync: Promise<void> = Promise.resolve();
-  /** Watchers on the `.damocles`/`.claude`/`.codex` skill+command roots. They fire `_reloadResources`
-   *  so the agent's loaded skills/prompts hot-reload when an asset dir is created, edited, or deleted,
-   *  with no window reload. */
-  private readonly _assetWatchers: vscode.FileSystemWatcher[] = [];
-  private _assetDebounce: NodeJS.Timeout | null = null;
-  /** The additional resource roots handed to pi's loader. pi aliases these arrays rather than copying
-   *  them and re-reads them on every `reload()`, so they are only ever updated in place. */
-  private readonly _additionalSkillPaths: string[] = [];
-  private readonly _additionalPromptTemplatePaths: string[] = [];
-  /** Granting trust admits the project-scope asset dirs, which need a reload to reach the loader. */
+  /** The one manager for user-scope MCP servers, created in `init()`; every folder's view reads it. */
+  private _userMcp: McpClientManager | null = null;
+  /** Watchers on the user-scope skill/command roots and the global instructions file. */
+  private readonly _userWatchers: vscode.FileSystemWatcher[] = [];
+  private _userDebounce: NodeJS.Timeout | null = null;
+  /** Granting trust admits every folder's project layer, which needs a reload to reach its loader. */
   private _trustListener: vscode.Disposable | null = null;
-  /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
-  private _sessionsCreated = 0;
   /** Cancels an in-flight custom-provider credential sync on dispose, so a closing window does not
    *  leave a credential operation running against the shared `auth.json` lock. */
   private readonly _syncAbort = new AbortController();
   private _disposed = false;
 
-  private constructor(primaryCwd: string, agentDir: string) {
+  private constructor(agentDir: string) {
     if (PiRuntime._instance) {
       throw new Error('PiRuntime already constructed — there must be exactly one per process (B1)');
     }
-    this._primaryCwd = primaryCwd;
     this._agentDir = agentDir;
   }
 
   /** Get (lazily creating) the process-wide PiRuntime singleton. */
-  static get(primaryCwd: string = process.cwd(), agentDir: string = PI_AGENT_DIR): PiRuntime {
+  static get(agentDir: string = PI_AGENT_DIR): PiRuntime {
     if (!PiRuntime._instance) {
-      PiRuntime._instance = new PiRuntime(primaryCwd, agentDir);
+      PiRuntime._instance = new PiRuntime(agentDir);
     }
     return PiRuntime._instance;
   }
@@ -288,31 +169,9 @@ export class PiRuntime {
     return this._agentDir;
   }
 
-  /** The shared services, or `null` before `init()` resolves. */
-  get services(): AgentSessionServices | null {
-    return this._services;
-  }
-
-  /** Register/replace the gate context for a panel's pi session (called on start + rebind). */
-  registerPanel(sessionId: string, ctx: PanelGateContext): void {
-    if (sessionId) this._panelRegistry.set(sessionId, ctx);
-  }
-
-  /** Drop a panel's gate context (called on session rebind for the old id, and on dispose). Only the
-   *  registrant's own entry goes: another panel may since have registered the same session id. */
-  unregisterPanel(sessionId: string, ctx: PanelGateContext): void {
-    if (sessionId && this._panelRegistry.get(sessionId) === ctx) this._panelRegistry.delete(sessionId);
-  }
-
-  /** Register/replace the checkpoint engine driver for a panel's pi session (US-013b). */
-  registerCheckpointService(sessionId: string, service: CheckpointService): void {
-    if (sessionId) this._checkpointRegistry.set(sessionId, service);
-  }
-
-  /** Drop a session's checkpoint driver (on session rebind for the old id, and on dispose), only if it
-   *  is still `service`. */
-  unregisterCheckpointService(sessionId: string, service: CheckpointService): void {
-    if (sessionId && this._checkpointRegistry.get(sessionId) === service) this._checkpointRegistry.delete(sessionId);
+  /** The model runtime every folder shares, or `null` before `init()` resolves. */
+  get modelRuntime(): ModelRuntime | null {
+    return this._modelRuntime;
   }
 
   /** Register/replace the live mutator for a panel's pi session (called on start + rebind). A panel
@@ -333,227 +192,159 @@ export class PiRuntime {
     return this._sessionMutators.get(sessionId);
   }
 
-  /** The process/workspace-scoped MCP client, or null before `init()` (Phase 6). */
-  getMcpClientManager(): McpClientManager | null {
-    return this._mcpClientManager;
+  /** The user-scope MCP manager, or null before `init()`. Panels read tools through their folder's view instead. */
+  getUserMcp(): McpClientManager | null {
+    return this._userMcp;
   }
 
-  /** The configured-hooks dispatch deps (US-008): threaded into subagent/team gate factories so PreToolUse/
-   *  PostToolUse + subagent_end fire for nested agents too. Null before `init()`. */
-  getHooksDispatchDeps(): DispatchDeps | null {
-    return this._hooksConfig ? { config: this._hooksConfig, workspaceRoot: this._primaryCwd, userHome: os.homedir() } : null;
-  }
-
-  /** Register a live session's active-tool refresher so MCP tool changes re-apply its active set. */
-  registerActiveToolRefresher(sessionId: string, refresh: () => void): void {
-    if (sessionId) this._activeToolRefreshers.set(sessionId, refresh);
-  }
-
-  /** Drop a session's active-tool refresher (on rebind for the old id, and on dispose), only if it is
-   *  still `refresh`. */
-  unregisterActiveToolRefresher(sessionId: string, refresh: () => void): void {
-    if (sessionId && this._activeToolRefreshers.get(sessionId) === refresh) this._activeToolRefreshers.delete(sessionId);
+  /** Every folder runtime whose creation has finished. */
+  folders(): FolderRuntime[] {
+    return [...this._folders.values()];
   }
 
   /**
-   * Register one instance's ToolSearch republisher and hand back a disposer for exactly that entry.
-   * Ownership is explicit rather than inferred from a failed call. Double-disposal is inert and the
-   * entry is keyed by closure identity, so a disposer can never evict a peer's.
+   * The folder runtime for `cwd`, created on first request. `cwd` is kept raw, since session dirs and
+   * hook payloads use that exact string; the map key is its `folderKey`.
    */
-  registerToolSearchRepublisher(republish: () => void): () => void {
-    this._toolSearchRepublishers.add(republish);
-    const dispose = (): void => {
-      this._toolSearchRepublishers.delete(republish);
-    };
-    this._lastRegisteredRepublisherDisposer = dispose;
-    return dispose;
+  folder(cwd: string): Promise<FolderRuntime> {
+    if (this._disposed) return Promise.reject(new Error('PiRuntime has been disposed'));
+    const key = folderKey(cwd);
+    const existing = this._folderPromises.get(key);
+    if (existing) return existing;
+    const created: Promise<FolderRuntime> = this.init().then(() =>
+      this._withProviderSync(() => this._createFolder(cwd, () => this._folderPromises.get(key) === created)),
+    );
+    this._folderPromises.set(key, created);
+    // A failed creation must not stick, so a later request retries; its caller still sees the rejection.
+    created.catch(() => {
+      if (this._folderPromises.get(key) === created) this._folderPromises.delete(key);
+    });
+    return created;
   }
 
-  /**
-   * Take ownership of the instance the loader currently holds, no session having bound it. Called after
-   * `createAgentSessionServices` (the first session may be minutes away, and `_reconcileSubscriptionPin`
-   * can supersede it first) and after a bare reload. Such an instance can never receive
-   * `session_shutdown`, so the runtime is the only party left that can retire it.
-   */
-  private _trackCurrentInstanceAsUnbound(): void {
-    this._unboundRepublisherDisposer = this._lastRegisteredRepublisherDisposer;
-    this._lastRegisteredRepublisherDisposer = null;
-  }
-
-  /**
-   * Ask pi to re-wrap ToolSearch so its description getter runs again. Needed because a wrap copies
-   * `description` as a plain string (`wrapToolDefinition`), so the model keeps reading the inventory
-   * captured at the last wrap — a subsystem toggled off mid-session would stay advertised otherwise.
-   * The catch exists solely so one failing republisher cannot abort its peers or the toggle that
-   * triggered it. It is NOT a retirement mechanism — entries leave only through their disposer — so a
-   * throw here is unexpected, and the entry stays registered to be retried next time.
-   */
-  republishToolSearch(): void {
-    for (const republish of [...this._toolSearchRepublishers]) {
-      try {
-        republish();
-      } catch (err) {
-        log('[PiRuntime] ToolSearch republish threw unexpectedly for a registered extension instance: %O', err);
-      }
-    }
-  }
-
-  private _refreshAllActiveTools(): void {
-    for (const refresh of this._activeToolRefreshers.values()) {
-      try {
-        refresh();
-      } catch (err) {
-        log('[PiRuntime] active-tool refresher threw: %O', err);
-      }
-    }
-  }
-
-  /**
-   * Recompute the additional resource roots in place, so the next `reload()` rebuilds its base set
-   * from the dirs that exist right now, in `assetSourceDirs` order (project ahead of user within a
-   * source). pi aliases these arrays rather than copying them
-   * (`resource-loader.ts:264-265`) and re-reads them per reload (`:468`, `:483`), which is what makes
-   * an in-place splice reach it. Reassigning the fields, or handing pi a fresh array, would leave the
-   * loader on the stale one.
-   *
-   * This has to happen before the reload rather than after it. `extendResources` merges primary-first
-   * (`resource-loader.ts:355-358`), so a dir that reaches the loader only through that call lands
-   * BEHIND the base entries and loses a name collision it should win. That is reachable two ways: a
-   * trust grant admitting the project dirs, and a project asset dir created after init, which is the
-   * case the asset watchers exist for.
-   */
-  private _refreshAdditionalResourcePaths(): void {
-    const skills = assetResourcePaths(this._primaryCwd, 'skills');
-    this._additionalSkillPaths.splice(0, this._additionalSkillPaths.length, ...skills);
-    const commands = assetResourcePaths(this._primaryCwd, 'commands');
-    this._additionalPromptTemplatePaths.splice(0, this._additionalPromptTemplatePaths.length, ...commands);
-  }
-
-  /**
-   * Push the current `.damocles`/`.claude`/`.codex` skill + command directories into the live resource
-   * loader via `extendResources` (which re-scans immediately). Every reload already rebuilds the base
-   * set from the same recomputed dirs, so this is a no-op on the path list itself. What it adds is the
-   * per-dir source/scope metadata pi's resource-source info reports, which `reload()` does not carry.
-   * Re-applied after init and after every `reload()` (via `_reloadResources`). existsSync-filtered, so
-   * absent dirs add nothing and produce no "path does not exist" warning.
-   */
-  private applyAssetResources(): void {
-    const loader = this._services?.resourceLoader;
-    if (!loader) return;
-    const toEntries = (kind: 'skills' | 'commands') =>
-      assetResourceEntries(this._primaryCwd, kind).map((e) => ({
-        path: e.path,
-        metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const },
-      }));
-    const skillPaths = toEntries('skills');
-    const promptPaths = toEntries('commands');
-    if (skillPaths.length === 0 && promptPaths.length === 0) return;
+  /** Dispose the folder runtime for `key` (its folder left the workspace). Waits out an in-flight creation. */
+  async disposeFolder(key: string): Promise<void> {
+    const pending = this._folderPromises.get(key);
+    if (!pending) return;
+    this._folderPromises.delete(key);
+    this._folders.delete(key);
+    let folder: FolderRuntime;
     try {
-      loader.extendResources({ skillPaths, promptPaths });
-    } catch (err) {
-      log('[PiRuntime] applyAssetResources failed: %O', err);
+      folder = await pending;
+    } catch {
+      // The creation failure already surfaced to its own caller, and there is nothing to dispose.
+      return;
     }
+    await folder.dispose();
   }
 
-  /**
-   * Reload the resource loader, serialized against every other reload. `binding` tells the reload
-   * whether a session will bind the instance it is about to mint — see `ReloadBinding`.
-   *
-   * Serialization lives here, not at the call sites, so no caller can forget it: the scratch slot
-   * identifying "the instance this reload minted" holds one value, and overlapping reloads would let
-   * one adopt the other's. The rejection still reaches the caller; the chain is kept alive with a
-   * swallowing continuation so one failed reload can't poison later ones.
-   */
-  private _reloadResources(binding: ReloadBinding): Promise<void> {
-    const run = this._reloadSync.then(() => this._runResourceReload(binding));
-    this._reloadSync = run.then(
+  private _withProviderSync<T>(op: () => Promise<T>): Promise<T> {
+    const run = this._providerSync.then(op);
+    // Kept alive past a failure so one rejected operation cannot block every later one; the caller still
+    // sees the rejection through `run`.
+    this._providerSync = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
   }
 
-  /** Recompute the additional resource roots, reload the resource loader, retire/adopt the republisher
-   *  of the instance the reload replaces or mints, then re-apply the asset dirs (the reload drops the
-   *  `extendResources` source/scope metadata, so it has to be re-pushed each time). */
-  private async _runResourceReload(binding: ReloadBinding): Promise<void> {
-    if (this._disposed || !this._services) return;
-    this._refreshAdditionalResourcePaths();
-    // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
-    // that below would hand the runtime a disposer for a live panel.
-    this._lastRegisteredRepublisherDisposer = null;
-    await this._services.resourceLoader.reload();
-    // Only past here is the outgoing instance definitively superseded. On a throw we never arrive — pi
-    // never rebuilt, so that instance is still live and stays tracked rather than retired.
-    this._unboundRepublisherDisposer?.();
-    this._unboundRepublisherDisposer = null;
-    if (binding === 'bare') this._trackCurrentInstanceAsUnbound();
-    else this._lastRegisteredRepublisherDisposer = null;
-    this.applyAssetResources();
+  private _withSubscriptionSync<T>(op: () => Promise<T>): Promise<T> {
+    const run = this._subscriptionSync.then(op);
+    this._subscriptionSync = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
-   * Watch the `.damocles`/`.claude`/`.codex` skill + command roots (project + user) so the agent's
-   * loaded resources hot-reload when an asset dir is created, edited, or deleted, matching the
-   * slash-command menu's own watcher. Routes through a full `_reloadResources()` (not a bare
-   * `applyAssetResources()`): `extendResources` is additive and can never drop a resource, so a
-   * deletion, of a single file or of a whole asset dir, only takes effect once the loader's base set is
-   * recomputed and the surviving dirs re-extended. Debounced; `_reloadResources` serializes it so an
-   * `extendResources` can't interleave with an in-flight reload, and the `.catch` keeps a failed reload
-   * from surfacing as an unhandled rejection.
-   *
-   * Project watchers stay registered in an untrusted workspace: the reload they fire still excludes
-   * project dirs, so the only cost is a redundant reload.
-   *
-   * The user-global instructions file (`~/.damocles/AGENTS.md` and its siblings) is watched too, since
-   * the same reload is what re-runs the context-file override.
-   *
-   * BARE: a skill-file edit starts no session, so the runtime owns retiring the instance this mints.
+   * Build a folder's services on the shared `ModelRuntime`, then check the subscription plugin against
+   * its loader before anyone can start a session on it. Runs on `_providerSync`.
    */
-  private _setupAssetWatchers(): void {
+  private async _createFolder(cwd: string, isCurrent: () => boolean): Promise<FolderRuntime> {
+    if (this._disposed) throw new Error('PiRuntime has been disposed');
+    const pi = getPiCodingAgent();
+    if (!pi || !this._modelRuntime || !this._userMcp) throw new Error('PiRuntime.folder: runtime not initialized');
+    const folder = new FolderRuntime({
+      pi,
+      cwd,
+      agentDir: this._agentDir,
+      modelRuntime: this._modelRuntime,
+      userMcp: this._userMcp,
+      createFolderMcp: (reservedPrefixes) => newMcpManager(reservedPrefixes),
+      renameSession: async (sessionId, sessionCwd, newName) => {
+        const mutator = this.getSessionMutator(sessionId);
+        if (mutator) await mutator.renameActiveSession(newName);
+        else await renamePiSession(sessionCwd, sessionId, newName);
+      },
+    });
+    try {
+      await folder.createServices();
+    } catch (err) {
+      await folder.dispose();
+      throw err;
+    }
+    // A window closing mid-creation disposes every folder it finds; stop before touching the plugin.
+    if (this._disposed) return folder;
+    const folders = [...this.folders(), folder];
+    if (!this._pinReconciled) {
+      this._pinReconciled = true;
+      await this._reconcileSubscriptionPin(pi, folders, folder);
+    } else {
+      await this._unlistFailedPluginLoad(pi, folders, folder);
+    }
+    // A trust grant during creation reached only the folders already published.
+    const settings = folder.services.settingsManager;
+    if (vscode.workspace.isTrusted && !settings.isProjectTrusted()) {
+      settings.setProjectTrusted(true);
+      await folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
+    }
+    // A folder removed mid-creation stays out of the map; `disposeFolder` disposes it once this resolves.
+    if (isCurrent()) this._folders.set(folder.key, folder);
+    return folder;
+  }
+
+  /**
+   * Watch the user-scope skill + command roots and the user-global instructions file
+   * (`~/.damocles/AGENTS.md` and its siblings), and reload every folder's loader when they change: each
+   * loader carries the user dirs and re-runs the context-file override on reload. A full reload, not
+   * `extendResources`, because only a reload can drop a deleted resource.
+   *
+   * The user dirs sit outside every workspace folder, and a plain string glob reports no event from
+   * there. Anchoring the pattern on the dir's own Uri is what makes these fire.
+   */
+  private _setupUserWatchers(): void {
     const onChange = () => {
-      if (this._assetDebounce) clearTimeout(this._assetDebounce);
-      this._assetDebounce = setTimeout(() => {
-        this._reloadResources('bare').catch((err) => log('[PiRuntime] asset watcher reload failed: %O', err));
+      if (this._userDebounce) clearTimeout(this._userDebounce);
+      this._userDebounce = setTimeout(() => {
+        for (const folder of this.folders()) {
+          folder.reloadBare().catch((err) => log('[PiRuntime] user asset watcher reload failed (%s): %O', folder.cwd, err));
+        }
       }, 300);
     };
     for (const source of assetSources()) {
       for (const sub of [source.skills, source.commands]) {
-        this._assetWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this._primaryCwd, `${sub}/**`)));
-        // The user dirs sit outside every workspace folder, and a plain string glob reports no event
-        // from there. Anchoring the pattern on the dir's own Uri is what makes these fire.
         const userDir = vscode.Uri.file(path.join(os.homedir(), sub));
-        this._assetWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(userDir, '**')));
+        this._userWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(userDir, '**')));
       }
     }
     const globalContextDir = vscode.Uri.file(path.join(os.homedir(), '.damocles'));
-    this._assetWatchers.push(
+    this._userWatchers.push(
       vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(globalContextDir, `{${CONTEXT_FILE_CANDIDATES.join(',')}}`),
       ),
     );
-    for (const watcher of this._assetWatchers) {
+    for (const watcher of this._userWatchers) {
       watcher.onDidCreate(onChange);
       watcher.onDidChange(onChange);
       watcher.onDidDelete(onChange);
     }
   }
 
-  /** Reader handed to the shared extension factory so the process-global gate can route by sessionId. */
-  private _panelRegistryReader(): PanelRegistryReader {
-    return {
-      get: (sessionId: string) => this._panelRegistry.get(sessionId),
-      values: () => this._panelRegistry.values(),
-    };
-  }
-
-  /** Reader handed to the extension factory so checkpoint lifecycle hooks route by sessionId. */
-  private _checkpointRegistryReader(): CheckpointRegistryReader {
-    return { get: (sessionId: string) => this._checkpointRegistry.get(sessionId) };
-  }
-
   /**
-   * Load pi, seed the Damocles-owned agent dir, and create the one shared services object.
+   * Load pi, seed the Damocles-owned agent dir, and create the shared model runtime, user settings and
+   * MCP client. No folder services are built here; `folder()` builds them on demand.
    * Idempotent: concurrent and repeat callers share a single in-flight initialization.
    */
   init(): Promise<void> {
@@ -570,103 +361,24 @@ export class PiRuntime {
     const pi = await initPiLoader();
     if (!pi) throw new Error('PiRuntime.init: pi coding-agent failed to load');
     ensurePiAgentDir(this._agentDir, cacheWarmingSetting());
-
-    // Phase 6: the process/workspace-scoped MCP client + its tool registrar. Created before services so
-    // the shared extension factory can register MCP tools on every runtime (reload-safe). The manager
-    // loads the MCP SDK + eager-connects only once `setMcpServers` feeds it the enabled set.
-    this._mcpClientManager = new McpClientManager({ authProviderFactoryBuilder: createMcpAuthProviderFactory });
-    this._mcpRegistrar = new McpToolRegistrar(pi, this._mcpClientManager);
-    this._mcpClientManager.onToolsChanged(() => {
-      this._mcpRegistrar?.syncRegistration();
-      this._refreshAllActiveTools();
+    this._modelRuntime = await pi.ModelRuntime.create({
+      authPath: path.join(this._agentDir, 'auth.json'),
+      modelsPath: path.join(this._agentDir, 'models.json'),
     });
-
-    // Config-driven hooks (US-001..009): one workspace-scoped service per runtime, watching the global +
-    // project `hooks.json`. The rename callback prefers the live session mutator (anti-fork) so a
-    // UserPromptSubmit `sessionTitle` hook never forks the open session's branch.
-    this._hooksConfig = new HooksConfigService(this._primaryCwd);
-    const hooksWiring = {
-      config: this._hooksConfig,
-      workspaceRoot: this._primaryCwd,
-      userHome: os.homedir(),
-      renameSession: async (sessionId: string, cwd: string, newName: string): Promise<void> => {
-        const mutator = this.getSessionMutator(sessionId);
-        if (mutator) await mutator.renameActiveSession(newName);
-        else await renamePiSession(cwd, sessionId, newName);
-      },
-    };
-
-    this._refreshAdditionalResourcePaths();
-    this._services = await pi.createAgentSessionServices({
-      cwd: this._primaryCwd,
-      agentDir: this._agentDir,
-      // The single shared Damocles extension (permission gate + plan-mode injection + MCP tool
-      // registration). Registered via the shared services so there is exactly one per process (B1); pi
-      // re-applies extensionFactories on `resourceLoader.reload()`, so it survives reloads (FR-7).
-      resourceLoaderOptions: {
-        extensionFactories: [
-          createDamoclesExtensionFactory(
-            this._panelRegistryReader(),
-            this._checkpointRegistryReader(),
-            (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
-            hooksWiring,
-            (republish) => this.registerToolSearchRepublisher(republish),
-          ),
-        ],
-        // US-016: surface `.damocles` + `.claude` + `.codex` skills and slash commands (commands = pi
-        // prompt templates; Codex commands live under `.codex/prompts`) as additional resource roots,
-        // additive to pi-native dirs (agentDir + cwd/.pi); pi-native sources outrank these on a name
-        // collision, `.damocles` outranks the other two, and `damocles.assetSourcePrecedence` orders
-        // Claude vs Codex among them.
-        additionalSkillPaths: this._additionalSkillPaths,
-        additionalPromptTemplatePaths: this._additionalPromptTemplatePaths,
-        agentsFilesOverride: (base) => ({
-          agentsFiles: overrideGlobalContextFile(base.agentsFiles, {
-            agentDir: this._agentDir,
-            homeDir: os.homedir(),
-            // Read per call, never captured: the trust-grant reload re-runs this closure, and that is
-            // what surfaces the project instructions file with no window reload.
-            trusted: vscode.workspace.isTrusted,
-          }),
-        }),
-        // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover
-        // packages can't load tools/commands or fire event handlers. The inline factory extension (the
-        // Damocles extension itself — permission gate, checkpoint hooks, MCP registration; tagged
-        // `<inline:…>`) MUST be preserved, so filter only the path-loaded packages. Skills/prompts load
-        // normally. (Wiping the whole array silently disabled checkpoints/gate/MCP — never do that.)
-        extensionsOverride: (base) => ({
-          ...base,
-          extensions: base.extensions.filter((e) => e.path.startsWith('<inline:')),
-        }),
-      },
-    });
-    // A window closing mid-init has already run `dispose()`, which awaits this promise before tearing
-    // down. Stop here rather than register watchers and install plugins for a runtime nobody can use.
-    if (this._disposed) return;
-    // `createAgentSessionServices` already ran the factory above, so an extension instance exists with
-    // no session bound to it and none guaranteed to arrive: `_reconcileSubscriptionPin` below can
-    // supersede it with a bare reload before the first panel ever opens. Adopt it now — otherwise that
-    // very first startup reload strands its republisher for the life of the window.
-    this._trackCurrentInstanceAsUnbound();
-    for (const diag of this._services.diagnostics) {
-      log('[PiRuntime] services diagnostic (%s): %s', diag.type, diag.message);
-    }
-    // Attach the source/scope metadata for the `.damocles`/`.claude`/`.codex` roots, and watch those
-    // dirs so a skill or command created later reaches the agent with no window reload.
-    this.applyAssetResources();
-    this._setupAssetWatchers();
-    // The paths above were computed against the trust state at init, which excluded every project dir
-    // in a restricted window. The reload recomputes them.
-    //
-    // BARE: a trust grant starts no session, so the runtime owns retiring the instance this mints.
+    this._userSettings = pi.SettingsManager.create(this._agentDir, this._agentDir);
+    // The manager loads the MCP SDK + eager-connects only once `setMcpServers` feeds it the enabled set.
+    this._userMcp = newMcpManager();
+    this._setupUserWatchers();
+    // Folder settings managers were created with the trust state of their creation, which excluded the
+    // project layer in a restricted window; each reload re-reads it once trusted.
     this._trustListener =
       vscode.workspace.onDidGrantWorkspaceTrust?.(() => {
-        this._reloadResources('bare').catch((err) => log('[PiRuntime] trust-grant reload failed: %O', err));
+        for (const folder of this.folders()) {
+          folder.services.settingsManager.setProjectTrusted(true);
+          folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
+        }
       }) ?? null;
-    // Runs after services exist (the package manager needs their settingsManager), so the stale plugin
-    // has already loaded — `_installSubscriptionPlugin` hot-reloads extensions to swap it out.
-    await this._reconcileSubscriptionPin(pi);
-    log('[PiRuntime] initialized (agentDir=%s, cwd=%s)', this._agentDir, this._primaryCwd);
+    log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
   }
 
   /**
@@ -677,226 +389,7 @@ export class PiRuntime {
   async refreshWebSearch(): Promise<void> {
     if (this._disposed) return;
     await this.init();
-    this._refreshAllActiveTools();
-  }
-
-  /**
-   * Refresh the shared extension runtime before a new `AgentSession` binds to it. pi binds every
-   * session to the resourceLoader's single extension runtime (we share one services per process — B1),
-   * and `AgentSession.dispose()` marks that runtime stale on session replacement (reset/clear →
-   * `newSession`). Without a fresh runtime, the replacement session's extension-registered MCP tools
-   * (`mcp__{server}__{tool}`) throw "extension ctx is stale". `reload()` mints a fresh runtime and
-   * re-applies the Damocles extension factory (which re-registers MCP tools) (FR-7). `_sessionsCreated` is on the
-   * process singleton, so only the process's first-ever session reuses the pristine `init()` runtime
-   * and is skipped — every later session, including the first in a second panel, reloads. reload()
-   * only swaps the loader's current runtime; it does NOT invalidate other panels' already-bound live
-   * sessions (they keep their captured runner; invalidation happens solely on AgentSession.dispose()),
-   * so the per-session reload is what gives concurrent panels runtime isolation. Serialized with
-   * web-search toggles; non-fatal on error (a failed reload just risks the stale-ctx error rather than
-   * aborting session creation).
-   *
-   * It is also the only announcement that a bind is coming, so it is where ownership of that instance's
-   * republisher passes from the runtime to the instance (see `ReloadBinding`). The handover must happen
-   * on EVERY exit path, including the two that never reload — otherwise the runtime keeps a disposer
-   * for a now-live instance and the next reload freezes that panel's menu, silently.
-   */
-  async prepareSessionExtensions(): Promise<void> {
-    await this.init();
-    if (this._sessionsCreated++ === 0) {
-      // The first session binds the pristine `init()` runtime without reloading — possibly the instance
-      // a startup bare reload (`_reconcileSubscriptionPin`) minted. Release WITHOUT retiring: it is
-      // about to go session-bound and will retire itself on `session_shutdown`.
-      this._unboundRepublisherDisposer = null;
-      return;
-    }
-    try {
-      await this._reloadResources('session-bound');
-    } catch (err) {
-      // The reload never completed, so the instance the loader holds is the one about to be bound.
-      this._unboundRepublisherDisposer = null;
-      log('[PiRuntime] per-session extension reload failed (web tools may be unavailable): %O', err);
-    }
-  }
-
-  /**
-   * Create a nested subagent `AgentSession` (Phase 5, US-018.2). Builds per-subagent services that
-   * REUSE the parent runtime's `modelRuntime` (so auth and the curated model list propagate; the
-   * provider-registration pass inside `createAgentSessionServices` only re-upserts the already-present
-   * provider configs on the shared runtime — no duplicate providers) while carrying
-   * the subagent's own `systemPromptOverride`, tool allowlist, and gate-routing extension factory.
-   *
-   * `noContextFiles/noSkills/noPromptTemplates/noThemes` prevent AGENTS.md/CLAUDE.md re-appending after
-   * the system-prompt override — required for `prompt_mode: replace` and read-only agents to behave.
-   * The session persists per `opts.store` and has auto-compaction off.
-   */
-  async createSubagentSession(opts: PiCreateSubagentSessionOptions): Promise<AgentSession> {
-    await this.init();
-    const pi = getPiCodingAgent();
-    if (!pi || !this._services) throw new Error('PiRuntime.createSubagentSession: runtime not initialized');
-
-    // Isolate compaction (US-030): pi's auto-compaction flag lives on the settings manager, shared by
-    // every session. A nested subagent/team/btw session must NEVER inherit the main panel's toggle, so
-    // it gets its own in-memory settings manager seeded from the shared config with compaction forced off
-    // (all other user settings — thinking budgets, packages, enabled models — are preserved).
-    const shared = this._services.settingsManager;
-    const isolatedSettings = pi.SettingsManager.inMemory({
-      ...shared.getGlobalSettings(),
-      ...shared.getProjectSettings(),
-      compaction: { enabled: false },
-    });
-
-    const services = await pi.createAgentSessionServices({
-      cwd: opts.cwd,
-      agentDir: this._agentDir,
-      modelRuntime: this._services.modelRuntime,
-      settingsManager: isolatedSettings,
-      resourceLoaderOptions: {
-        extensionFactories: [opts.extensionFactory],
-        systemPromptOverride: () => opts.systemPrompt,
-        // Suppress the AGENTS.md/CLAUDE.md re-append that would otherwise follow systemPromptOverride.
-        appendSystemPromptOverride: () => [],
-        noContextFiles: true,
-        // No `agentsFilesOverride` here: pi applies it AFTER the `noContextFiles` check
-        // (resource-loader.ts:515-524), so an override would repopulate the list `noContextFiles`
-        // just emptied and hand `prompt_mode: replace` agents the context they must not see.
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-      },
-    });
-    for (const diag of services.diagnostics) {
-      log('[PiRuntime] subagent services diagnostic (%s): %s', diag.type, diag.message);
-    }
-
-    // This agent's MCP set, DERIVED from `tools` rather than passed alongside it. Both spawn paths
-    // build `tools` as `[...nonMcpNames, ...snapshot.names]`, so the filter reproduces the snapshot
-    // exactly — and unlike a parallel option it cannot be forgotten, which would silently hand the
-    // agent every MCP tool active from turn one.
-    const mcpToolNames = opts.tools.filter(isMcpToolName);
-
-    // A name in `tools:` with no matching `customTools` definition is dropped by pi with NO error, no
-    // warning and no log — the single failure mode this whole delivery mechanism has. Every nested
-    // spawn funnels through here, so this is the one place the class is observable at runtime. It is a
-    // diagnostic, not a guard: the spawn proceeds (a missing tool must not kill an agent), but the
-    // "can't happen" state stops being invisible when it happens.
-    const defined = new Set(opts.customTools.map((tool) => tool.name));
-    const orphans = mcpToolNames.filter((name) => !defined.has(name));
-    if (orphans.length > 0) {
-      log('[PiRuntime] %d mcp name(s) in tools: with no customTool definition (pi drops these silently): %o', orphans.length, orphans);
-    }
-
-    const store = opts.store;
-    if (store.kind === 'reopen' && (opts.model || opts.thinkingLevel)) {
-      throw new Error('PiRuntime.createSubagentSession: a reopened session takes its model and thinking level from its file');
-    }
-    // Same cwd the services above were built with, so `getCwd()` and the agent's cwd agree.
-    const sessionManager =
-      store.kind === 'file' ? pi.SessionManager.create(opts.cwd, store.dir, { id: store.id })
-      : store.kind === 'reopen' ? pi.SessionManager.open(store.path, undefined, opts.cwd)
-      : pi.SessionManager.inMemory(opts.cwd);
-    // Resolved here because pi, given no model, falls back to another one with only a
-    // `modelFallbackMessage`; thinking signatures are model-specific, so a resume must not switch models.
-    // With no `thinkingLevel`, pi restores the file's last thinking_level_change entry.
-    const model = store.kind === 'reopen' ? this.resolveRecordedModel(sessionManager, store.agentId) : opts.model;
-
-    const { session } = await pi.createAgentSessionFromServices({
-      services,
-      sessionManager,
-      ...(model ? { model } : {}),
-      ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
-      tools: opts.tools,
-      customTools: opts.customTools,
-      ...(opts.excludeTools ? { excludeTools: opts.excludeTools } : {}),
-    });
-
-    // Seed the deferred baseline: browser/compass/web AND this agent's frozen `mcp__*` set start
-    // INACTIVE, ToolSearch loads them on demand.
-    // Post-construction and not a create-time option because `CreateAgentSessionFromServicesOptions`
-    // exposes only `tools`/`excludeTools`/`noTools`/`customTools` — `initialActiveToolNames` exists
-    // solely on the lower-level `AgentSessionConfig`, which this factory does not surface (it derives
-    // that field from `options.tools` itself). `setActiveToolsByName` is therefore the correct seam.
-    //
-    // The deferred names MUST stay in `opts.tools`: pi freezes `options.tools` into `_allowedToolNames`
-    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web — or any
-    // `mcp__*` name — from `tools:` would remove it from the registry entirely, and
-    // `setActiveToolsByName` silently ignores unknown names, so it could never be brought back.
-    // `tools:` stays the full ELIGIBLE set; only the ACTIVE set narrows here. For MCP the same name
-    // must ALSO appear in `customTools` (that is where its definition comes from in a nested session);
-    // a name in `tools:` with no matching definition is dropped with no error at all.
-    //
-    // Residual fragility: with `allowedToolNames` set, `_refreshToolRegistry` takes the
-    // `if (allowedToolNames)` branch (agent-session.js:1996) and force-activates every allowed tool,
-    // undoing this baseline. Verified it still cannot fire after this line in a nested session:
-    //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
-    //    agent-session.js:143) and merged into the registry INSIDE `_refreshToolRegistry` itself
-    //    (line 1949), which the constructor's `_buildRuntime` runs (line 2047). So the MCP tools are
-    //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
-    //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
-    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:151-152 "registerTool() is
-    //    valid during extension load; refresh is only needed post-bind").
-    //  - There is no MCP registrar here by design: nested sessions never bind the shared Damocles
-    //    extension factory, and MCP arrives as `customTools` precisely to keep it that way.
-    // If a future change registers a tool into a LIVE nested session (post-bind `registerTool`, or
-    // anything calling `session.reload()`), re-apply this baseline after it.
-    //
-    // Gated on ToolSearch being REGISTERED, not merely allowed: the subagent factory registers it
-    // fail-soft, so a registration that threw would otherwise strip every browser/compass/web tool from the
-    // active set while deleting the only mechanism that could bring them back — a permanent, silent
-    // capability loss for the agent's whole lifetime. Deferral is only ever safe when the loader
-    // actually exists. This also covers the empty-deferrable case (the factory skips registration).
-    const hasToolSearch = session.getAllTools().some((tool) => tool.name === TOOL_TOOL_SEARCH);
-    if (hasToolSearch) {
-      session.setActiveToolsByName(
-        initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, mcpToolNames), activatedToolsFromMessages(session.messages)),
-      );
-    }
-
-    session.setAutoCompactionEnabled(false);
-    this._subagentSessions.add(session);
-    return session;
-  }
-
-  /** Throw the resume error unless the model recorded in the agent session file `path` is usable. */
-  assertResumableModel(path: string, agentId: string): void {
-    const pi = getPiCodingAgent();
-    if (!pi || !this._services) throw new Error('PiRuntime.assertResumableModel: runtime not initialized');
-    this.resolveRecordedModel(pi.SessionManager.open(path, undefined, this._primaryCwd), agentId);
-  }
-
-  /** The model a session file last recorded (pi's own rule: last model change or assistant message). */
-  private resolveRecordedModel(sessionManager: SessionManager, agentId: string): Model<Api> {
-    const modelRuntime = this._services?.modelRuntime;
-    if (!modelRuntime) throw new Error('PiRuntime.resolveRecordedModel: runtime not initialized');
-    const recorded = sessionManager.buildSessionContext().model;
-    if (!recorded) throw new Error(`Cannot resume "${agentId}": its session records no model.`);
-    const model = modelRuntime.getModel(recorded.provider, recorded.modelId);
-    if (!model || !modelRuntime.hasConfiguredAuth(model.provider)) {
-      throw new Error(`Cannot resume "${agentId}": its model ${recorded.provider}/${recorded.modelId} is not configured or not signed in.`);
-    }
-    return model;
-  }
-
-  /** Dispose and forget a nested subagent session (called on completion / manager dispose). */
-  forgetSubagentSession(session: AgentSession): void {
-    if (this._subagentSessions.delete(session)) {
-      disposeSessionSafe(session);
-    }
-  }
-
-  /**
-   * The single workspace-level markdown-subagent registry, built once on first access (Phase 5 §4.6).
-   * Requires the runtime to be initialized and pi loaded (for `parseFrontmatter`). Shared by every
-   * panel's subagent manager so there is exactly one source of truth and one watcher per agent dir.
-   */
-  getWorkspaceAgentRegistry(): WorkspaceAgentRegistry {
-    if (!this._workspaceAgents) {
-      const pi = getPiCodingAgent();
-      if (!pi || !this._services) {
-        throw new Error('PiRuntime.getWorkspaceAgentRegistry: runtime not initialized');
-      }
-      this._workspaceAgents = new WorkspaceAgentRegistry(this._primaryCwd, pi.parseFrontmatter);
-    }
-    return this._workspaceAgents;
+    for (const folder of this.folders()) folder.refreshActiveTools();
   }
 
   /**
@@ -912,10 +405,10 @@ export class PiRuntime {
    * `notWired` means "configured, but not live"; a provider in NEITHER list simply has no secret.
    */
   async syncCustomProviders(getSecret: SecretResolver): Promise<{ wired: string[]; notWired: string[]; timedOut: boolean }> {
-    if (this._disposed || !this._services) return { wired: [], notWired: [], timedOut: false };
+    if (this._disposed || !this._modelRuntime) return { wired: [], notWired: [], timedOut: false };
     try {
       const { wired, aborted, notWired } = await syncCustomProviders({
-        modelRuntime: this._services.modelRuntime,
+        modelRuntime: this._modelRuntime,
         getSecret,
         signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
       });
@@ -935,38 +428,42 @@ export class PiRuntime {
   }
 
   /**
-   * Re-discover extensions and register any newly-added providers into the LIVE services, without
-   * recreating services or disposing in-flight sessions. Mirrors how `createAgentSessionServices`
-   * flushes `pendingProviderRegistrations`, so installing the subscription plugin mid-session does not
-   * tear down Team/btw/subagent conversations (B1: re-register providers on the shared runtime).
-   * Finishes with a non-networked refresh so the new providers become resolvable at once.
-   *
-   * NOTE: as of `@earendil-works/pi-coding-agent@0.82.0` the shipped build also exposes the native-provider
-   * channel (`pendingNativeProviderRegistrations` / `registerNativeProvider`), not just
-   * `pendingProviderRegistrations`. No Damocles extension registers a native provider, so there is nothing
-   * to flush on that channel — the provider-config pass below stays the only one needed. Do not add a
-   * native-provider flush pass unless a Damocles extension starts registering native providers; it would
-   * otherwise loop over a permanently empty array.
+   * Re-discover extensions in every folder's loader and flush their provider registrations into the
+   * shared model runtime, without recreating services or disposing in-flight sessions, so a plugin swap
+   * does not tear down Team/btw/subagent conversations. No Damocles extension registers a native
+   * provider, so only the provider-config channel is flushed.
    */
-  private async _hotReloadExtensions(): Promise<void> {
-    if (!this._services) return;
-    // BARE: a plugin install is not a session start, so nothing binds the instance this mints.
-    await this._reloadResources('bare');
-    const { modelRuntime } = this._services;
-    const extensionsResult = this._services.resourceLoader.getExtensions();
-    for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
-      try {
-        modelRuntime.registerProvider(name, config);
-      } catch (err) {
-        log('[PiRuntime] provider re-register failed (%s): %s', name, describeAuthError(err));
+  private async _hotReloadExtensions(folders: readonly FolderRuntime[]): Promise<HotReloadResult> {
+    const modelRuntime = this._modelRuntime;
+    if (!modelRuntime) return { registered: new Map(), errors: [] };
+    for (const folder of folders) await folder.reloadBare();
+    const loaded = folders.filter((f) => !f.disposed).map((f) => f.services.resourceLoader.getExtensions());
+    // `registerProvider` merges over the previous registration, so a replaced plugin's fields would
+    // survive; unregistering first gives cold-start parity. No await may separate the unregister loop
+    // from the register loop, or the built-in provider would serve a request in between.
+    const names = new Set(loaded.flatMap((ext) => ext.runtime.pendingProviderRegistrations.map((p) => p.name)));
+    for (const name of names) modelRuntime.unregisterProvider(name);
+    const registered = new Map<string, string>();
+    for (const ext of loaded) {
+      for (const { name, config, extensionPath } of ext.runtime.pendingProviderRegistrations) {
+        try {
+          modelRuntime.registerProvider(name, config);
+          registered.set(name, extensionPath);
+        } catch (err) {
+          log('[PiRuntime] provider re-register failed (%s): %s', name, describeAuthError(err));
+        }
       }
+      ext.runtime.pendingProviderRegistrations = [];
     }
-    extensionsResult.runtime.pendingProviderRegistrations = [];
-    // 0.85 reports per-provider composition failures instead of throwing; unread, a provider whose
-    // catalog silently fails to compose is invisible until a request against it fails.
+    const errors = loaded.flatMap((ext) => ext.errors);
+    for (const { path: extPath, error } of errors) {
+      log('[PiRuntime] extension failed to load (%s): %s', extPath, error);
+    }
+    // pi reports per-provider composition failures instead of throwing.
     const refreshed = await modelRuntime.refresh({ allowNetwork: false });
     for (const [provider, err] of refreshed.errors) log('[PiRuntime] hot-reload refresh: provider %s failed: %s', provider, describeAuthError(err));
     if (refreshed.aborted) log('[PiRuntime] hot-reload refresh aborted before completing');
+    return { registered, errors };
   }
 
   /**
@@ -975,39 +472,37 @@ export class PiRuntime {
    */
   async setAnthropicApiKey(key: string): Promise<ClaudeAuthStatus> {
     await this.init();
-    if (!this._services) throw new Error('PiRuntime.setAnthropicApiKey: runtime not initialized');
+    if (!this._modelRuntime) throw new Error('PiRuntime.setAnthropicApiKey: runtime not initialized');
     // `login` persists the api_key credential (overwriting any OAuth grant under 'anthropic') and
     // refreshes the runtime — no explicit refresh needed.
-    await this._services.modelRuntime.login('anthropic', 'api_key', keyInteraction(key));
+    await this._modelRuntime.login('anthropic', 'api_key', keyInteraction(key));
     return this.getClaudeAuthStatus();
   }
 
   /**
    * Sign in to the Claude Pro/Max subscription via pi's native OAuth (the `interaction` opens the
-   * browser / collects a pasted code). `useAllowance` selects the billing bucket: with the plugin the
-   * request looks like the Claude Code CLI (included allowance); without it pi-ai's built-in provider
-   * meters the same token as extra usage. `login` persists and refreshes the grant itself.
+   * browser / collects a pasted code). `useAllowance` selects the billing bucket: the subscription
+   * plugin bills the included allowance, pi-ai's built-in provider meters the same token as extra usage.
+   * `cwd` is the requesting panel's folder: the plugin switch verifies against a live loader.
    */
-  async signInSubscription(useAllowance: boolean, interaction: AuthInteraction): Promise<ClaudeAuthStatus> {
-    await this.init();
+  async signInSubscription(cwd: string, useAllowance: boolean, interaction: AuthInteraction): Promise<ClaudeAuthStatus> {
+    await this.folder(cwd);
     const pi = getPiCodingAgent();
-    if (!pi || !this._services) throw new Error('PiRuntime.signInSubscription: runtime not initialized');
-
+    if (!pi || !this._modelRuntime) throw new Error('PiRuntime.signInSubscription: runtime not initialized');
     await this._setPluginInstalled(pi, useAllowance);
-    if (!this._services) throw new Error('PiRuntime.signInSubscription: services missing after plugin change');
-    await this._services.modelRuntime.login('anthropic', 'oauth', interaction);
+    await this._modelRuntime.login('anthropic', 'oauth', interaction);
     log('[PiRuntime] subscription sign-in complete (allowance=%s)', useAllowance);
     return this.getClaudeAuthStatus();
   }
 
   /**
-   * Switch the subscription billing bucket WITHOUT re-login: install/remove the plugin to flip
-   * allowance ↔ extra usage on the already-stored token.
+   * Switch the subscription billing bucket on the already-stored token, with no re-login. `cwd` is the
+   * requesting panel's folder: the plugin switch verifies against a live loader.
    */
-  async setSubscriptionBilling(useAllowance: boolean): Promise<ClaudeAuthStatus> {
-    await this.init();
+  async setSubscriptionBilling(cwd: string, useAllowance: boolean): Promise<ClaudeAuthStatus> {
+    await this.folder(cwd);
     const pi = getPiCodingAgent();
-    if (!pi || !this._services) throw new Error('PiRuntime.setSubscriptionBilling: runtime not initialized');
+    if (!pi) throw new Error('PiRuntime.setSubscriptionBilling: runtime not initialized');
     await this._setPluginInstalled(pi, useAllowance);
     log('[PiRuntime] subscription billing set (allowance=%s)', useAllowance);
     return this.getClaudeAuthStatus();
@@ -1015,8 +510,8 @@ export class PiRuntime {
 
   /** Clear any stored Anthropic credential (API key or OAuth grant). */
   async signOutAnthropic(): Promise<ClaudeAuthStatus> {
-    if (this._services) {
-      await this._services.modelRuntime.logout('anthropic');
+    if (this._modelRuntime) {
+      await this._modelRuntime.logout('anthropic');
       log('[PiRuntime] anthropic signed out');
     }
     return this.getClaudeAuthStatus();
@@ -1037,14 +532,14 @@ export class PiRuntime {
     await this.init();
     const mode = this.getClaudeAuthStatus().mode;
     if (mode !== 'allowance' && mode !== 'extra') return undefined;
-    return (await this._services!.modelRuntime.getAuth('anthropic'))?.auth.apiKey;
+    return (await this._modelRuntime!.getAuth('anthropic'))?.auth.apiKey;
   }
 
   /** OAuth access token for the Codex usage endpoint. Gated on the codex grant. */
   async getCodexAccessToken(): Promise<string | undefined> {
     await this.init();
     if (!this.getOpenAIAuthStatus().codex) return undefined;
-    return (await this._services!.modelRuntime.getAuth(OPENAI_CODEX_PROVIDER))?.auth.apiKey;
+    return (await this._modelRuntime!.getAuth(OPENAI_CODEX_PROVIDER))?.auth.apiKey;
   }
 
   /**
@@ -1053,18 +548,18 @@ export class PiRuntime {
    */
   async setOpenAIApiKey(key: string): Promise<OpenAIAuthStatus> {
     await this.init();
-    if (!this._services) throw new Error('PiRuntime.setOpenAIApiKey: runtime not initialized');
+    if (!this._modelRuntime) throw new Error('PiRuntime.setOpenAIApiKey: runtime not initialized');
     // `login` persists the api_key credential under 'openai' and refreshes; the 'openai-codex' grant
     // is a separate provider and is left intact.
-    await this._services.modelRuntime.login(OPENAI_API_PROVIDER, 'api_key', keyInteraction(key));
+    await this._modelRuntime.login(OPENAI_API_PROVIDER, 'api_key', keyInteraction(key));
     return this.getOpenAIAuthStatus();
   }
 
   /** Clear the stored OpenAI API key, leaving any codex OAuth grant intact. */
   async clearOpenAIApiKey(): Promise<OpenAIAuthStatus> {
-    if (this._services) {
+    if (this._modelRuntime) {
       // `logout('openai')` clears only the API-key provider; 'openai-codex' is untouched.
-      await this._services.modelRuntime.logout(OPENAI_API_PROVIDER);
+      await this._modelRuntime.logout(OPENAI_API_PROVIDER);
       log('[PiRuntime] openai api key cleared');
     }
     return this.getOpenAIAuthStatus();
@@ -1079,21 +574,21 @@ export class PiRuntime {
    */
   async signInCodex(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
     await this.init();
-    if (!this._services) throw new Error('PiRuntime.signInCodex: runtime not initialized');
+    if (!this._modelRuntime) throw new Error('PiRuntime.signInCodex: runtime not initialized');
     const wrapped: AuthInteraction = {
       ...(interaction.signal ? { signal: interaction.signal } : {}),
       prompt: (prompt) => (prompt.type === 'select' ? Promise.resolve(OPENAI_CODEX_BROWSER_LOGIN) : interaction.prompt(prompt)),
       notify: (event) => interaction.notify(event),
     };
-    await this._services.modelRuntime.login(OPENAI_CODEX_PROVIDER, 'oauth', wrapped);
+    await this._modelRuntime.login(OPENAI_CODEX_PROVIDER, 'oauth', wrapped);
     log('[PiRuntime] codex sign-in complete');
     return this.getOpenAIAuthStatus();
   }
 
   /** Clear the stored codex OAuth grant, leaving any OpenAI API key intact. */
   async signOutCodex(): Promise<OpenAIAuthStatus> {
-    if (this._services) {
-      await this._services.modelRuntime.logout(OPENAI_CODEX_PROVIDER);
+    if (this._modelRuntime) {
+      await this._modelRuntime.logout(OPENAI_CODEX_PROVIDER);
       log('[PiRuntime] codex signed out');
     }
     return this.getOpenAIAuthStatus();
@@ -1110,127 +605,297 @@ export class PiRuntime {
     return readOpenAIAuthFromDisk(this._agentDir);
   }
 
-  /** Install (allowance) or remove (extra usage) the pi-anthropic-oauth plugin to match the target. */
-  private async _setPluginInstalled(pi: PiCodingAgentModule, installed: boolean): Promise<void> {
-    const installedNow = this._isSubscriptionInstalled(pi);
-    if (installed && !installedNow) await this._installSubscriptionPlugin(pi);
-    else if (!installed && installedNow) await this._removeSubscriptionPlugin(pi);
-  }
-
-  private _packageManager(pi: PiCodingAgentModule): PackageManager {
-    if (!this._services) throw new Error('PiRuntime._packageManager: runtime not initialized');
-    return new pi.DefaultPackageManager({
-      cwd: this._primaryCwd,
-      agentDir: this._agentDir,
-      settingsManager: this._services.settingsManager,
+  /**
+   * Switch to allowance (the pinned plugin) or extra usage (no subscription plugin). The clone download
+   * runs before the switch joins `_providerSync`, so a folder opened meanwhile is not held up by the
+   * network. The startup reconcile, the only other clone writer, has finished by then: every caller
+   * first awaits `folder(cwd)`.
+   */
+  private _setPluginInstalled(pi: PiCodingAgentModule, installed: boolean): Promise<void> {
+    return this._withSubscriptionSync(async () => {
+      const acquired = installed && (await this._prefetchSubscriptionPlugin(pi));
+      await this._withProviderSync(() => this._applyPluginInstalled(pi, installed, acquired));
     });
   }
 
   /**
-   * Whether a clone dir holds a loadable plugin rather than the debris of a partially-failed removal.
-   * `_removeSubscriptionPlugin`'s retrying delete can still lose a locked subtree on Windows, leaving
-   * a directory that satisfies `existsSync` while `src/index.ts` — the entry pi loads — is gone.
+   * Download the pinned plugin unless the pin already looks healthy; returns whether it downloaded.
+   * Reads the in-memory settings, since a reload here would race `_providerSync`'s writes; the queued
+   * switch reloads and re-checks, and downloads there if this guessed wrong.
+   */
+  private async _prefetchSubscriptionPlugin(pi: PiCodingAgentModule): Promise<boolean> {
+    const pm = this._packageManager(pi);
+    if (this._isAllowancePinHealthy(pm)) return false;
+    try {
+      await this._acquireSubscriptionPlugin(pm);
+    } catch (err) {
+      await this._withProviderSync(async () => {
+        await this._settings().reload();
+        await this._unlistMissingClone(pm, this.folders());
+      });
+      throw err;
+    }
+    return true;
+  }
+
+  /** Runs on `_providerSync`. `acquired`: the pinned clone was just downloaded and is not listed yet. */
+  private async _applyPluginInstalled(pi: PiCodingAgentModule, installed: boolean, acquired: boolean): Promise<void> {
+    await this._settings().reload();
+    const folders = this.folders();
+    const pm = this._packageManager(pi);
+    const kinds = listedSubscriptionKinds(this._userPackages());
+    if (installed) {
+      if (this._isAllowancePinHealthy(pm) && !kinds.has('legacy')) return;
+      await this._switchToAllowancePlugin(pi, folders, acquired);
+    } else if (kinds.size > 0 || pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user') || this._hasLegacyClone(pm)) {
+      await this._removeSubscriptionPlugin(pi, folders);
+    }
+  }
+
+  private _settings(): SettingsManager {
+    if (!this._userSettings) throw new Error('PiRuntime._settings: runtime not initialized');
+    return this._userSettings;
+  }
+
+  private _packageManager(pi: PiCodingAgentModule): PackageManager {
+    return new pi.DefaultPackageManager({
+      cwd: this._agentDir,
+      agentDir: this._agentDir,
+      settingsManager: this._settings(),
+    });
+  }
+
+  // User scope only: Damocles writes only there.
+  private _userPackages(): PackageSource[] {
+    return [...(this._settings().getGlobalSettings().packages ?? [])];
+  }
+
+  private _listedSources(): string[] {
+    return this._userPackages().map(packageSourceString);
+  }
+
+  // pi queues settings writes and reports failures through drainErrors, never by throwing. A step must
+  // not reload or delete on top of a write that never reached disk, because reload re-reads the disk.
+  private async _flushSettings(): Promise<void> {
+    const settings = this._settings();
+    await settings.flush();
+    const errors = settings.drainErrors();
+    for (const err of errors) log('[PiRuntime] settings write failed (%s): %s', err.scope, err.error.message);
+    const userErrors = errors.filter((e) => e.scope === 'global');
+    if (userErrors.length > 0) throw new Error(`settings write failed: ${userErrors.map((e) => e.error.message).join('; ')}`);
+  }
+
+  /**
+   * Whether a clone dir holds a loadable plugin rather than the debris of a partially-failed removal,
+   * which on Windows can satisfy `existsSync` while `src/index.ts` is gone.
    */
   private _isSubscriptionCloneIntact(cloneDir: string): boolean {
     return existsSync(path.join(cloneDir, 'package.json')) && existsSync(path.join(cloneDir, 'src', 'index.ts'));
   }
 
-  private async _installSubscriptionPlugin(pi: PiCodingAgentModule): Promise<void> {
-    const pm = this._packageManager(pi);
-    // pi's installGit treats any existing dir as a working clone and switches to `git fetch`, which
-    // aborts on debris (no repo to fetch into). Clear it so the plain `git clone` path runs instead.
+  private _isAllowancePinHealthy(pm: PackageManager): boolean {
+    if (!this._listedSources().includes(SUBSCRIPTION_SOURCE)) return false;
+    return this._isCurrentCloneIntact(pm);
+  }
+
+  private _isCurrentCloneIntact(pm: PackageManager): boolean {
+    const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+    return cloneDir !== undefined && this._isSubscriptionCloneIntact(cloneDir);
+  }
+
+  private _hasLegacyClone(pm: PackageManager): boolean {
+    return LEGACY_SUBSCRIPTION_REPOS.some((repo) => pm.getInstalledPath(repo, 'user') !== undefined);
+  }
+
+  private async _acquireSubscriptionPlugin(pm: PackageManager): Promise<void> {
+    // pi's installGit treats any existing dir as a working clone and runs `git fetch`, which aborts on debris.
     const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
     if (cloneDir && !this._isSubscriptionCloneIntact(cloneDir)) {
       await forceRemoveDir(cloneDir);
       log('[PiRuntime] cleared unusable subscription clone at %s', cloneDir);
     }
-    await pm.installAndPersist(SUBSCRIPTION_SOURCE);
+    await pm.install(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] installed %s', SUBSCRIPTION_SOURCE);
-    await this._hotReloadExtensions();
   }
 
-  /**
-   * Repair the allowance plugin on startup when what is on disk no longer matches what is pinned —
-   * either an older committish or a clone that cannot load. `settings.json` listing the package is the
-   * gate, so extra-usage and api-key users are untouched.
-   *
-   * Neither drift self-heals otherwise. A sha bump is invisible because pi keys git packages by a
-   * ref-agnostic identity: the clone dir still exists, so `_setPluginInstalled` early-returns,
-   * `installAndPersist` never runs, `settings.json` keeps the old committish, and pi's startup
-   * `resolve()` fetches the clone back down to it. Removal debris hides the same way — the dir exists,
-   * so every "installed?" check says yes while requests quietly stream as `claude-cli/…` (metered extra
-   * usage) under a UI that still reads "allowance". `addSourceToSettings` rewrites a same-identity entry
-   * in place, so re-installing re-pins without leaving a duplicate.
-   *
-   * Fail-soft: this clones over the network, and an unreachable GitHub must not take the runtime down.
-   */
-  private async _reconcileSubscriptionPin(pi: PiCodingAgentModule): Promise<void> {
-    if (!this._services) return;
-    const pinned = this._services.settingsManager
-      .getPackages()
-      .map((pkg) => (typeof pkg === 'string' ? pkg : pkg.source))
-      .find((source) => source === SUBSCRIPTION_SOURCE || isStaleSubscriptionPin(source));
-    if (!pinned) return;
+  // A listed entry whose clone is gone loads nothing; a stale clone that is still intact keeps working.
+  private async _unlistMissingClone(pm: PackageManager, folders: readonly FolderRuntime[]): Promise<void> {
+    if (!this._listedSources().some(namesCurrentRepo) || this._isCurrentCloneIntact(pm)) return;
+    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+    await this._flushSettings();
+    await this._reloadAfterUnlist(folders);
+  }
 
-    const cloneDir = this._packageManager(pi).getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
-    const healthy = pinned === SUBSCRIPTION_SOURCE && cloneDir !== undefined && this._isSubscriptionCloneIntact(cloneDir);
-    if (healthy) return;
-
-    try {
-      await this._installSubscriptionPlugin(pi);
-      log('[PiRuntime] reconciled subscription plugin to %s (was %s)', SUBSCRIPTION_SOURCE, pinned);
-    } catch (err) {
-      log('[PiRuntime] subscription reconcile failed (allowance may be billing as extra usage): %O', err);
+  // Best-effort: pi loads only listed packages, so a leftover clone is inert until the next reconcile.
+  private async _evictLegacyClones(pm: PackageManager): Promise<void> {
+    for (const repo of LEGACY_SUBSCRIPTION_REPOS) {
+      try {
+        const cloneDir = pm.getInstalledPath(repo, 'user');
+        if (!cloneDir) continue;
+        await forceRemoveDir(cloneDir);
+        // Prunes the update marker and empty parent dirs.
+        await pm.remove(repo);
+        log('[PiRuntime] deleted legacy subscription clone %s', cloneDir);
+      } catch (err) {
+        log('[PiRuntime] legacy subscription clone delete failed (%s): %O', repo, err);
+      }
     }
   }
 
-  /**
-   * Remove the plugin and restore pi-ai's built-in anthropic provider on the live runtime, so the
-   * stored OAuth token streams as `claude-cli/…` (extra usage). `unregisterProvider` drops the
-   * plugin's override; its internal refresh is fire-and-forget, so an explicit awaited refresh
-   * follows — the caller returns an auth status the UI acts on immediately, and the next request
-   * must already stream through the plugin-free provider set (no racing snapshot).
-   */
-  private async _removeSubscriptionPlugin(pi: PiCodingAgentModule): Promise<void> {
-    if (!this._services) throw new Error('PiRuntime._removeSubscriptionPlugin: runtime not initialized');
-    const pm = this._packageManager(pi);
-    // pi's removeGit does a single `rmSync(cloneDir, { force: true })` with no `maxRetries`, so on
-    // Windows a transient handle on the git tree (Search indexer / antivirus / a lingering git child)
-    // surfaces as EPERM and aborts the whole toggle — settings never get cleaned. Clear the clone
-    // ourselves with a retrying remove first; pi's removeGit then early-returns on the missing dir and
-    // proceeds straight to pruning the settings entry.
+  /** Errors the loader recorded for files inside the current plugin's clone. */
+  private _subscriptionLoadErrors(pm: PackageManager, errors: readonly ExtensionLoadError[]): ExtensionLoadError[] {
     const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
-    if (cloneDir) await forceRemoveDir(cloneDir);
-    await pm.removeAndPersist(SUBSCRIPTION_SOURCE);
-    log('[PiRuntime] removed %s', SUBSCRIPTION_SOURCE);
-    // BARE: a billing-bucket switch is not a session start, so nothing binds the instance this mints.
-    await this._reloadResources('bare');
-    this._services.modelRuntime.unregisterProvider('anthropic');
-    const refreshed = await this._services.modelRuntime.refresh({ allowNetwork: false });
-    for (const [provider, err] of refreshed.errors) log('[PiRuntime] plugin-removal refresh: provider %s failed: %s', provider, describeAuthError(err));
-    if (refreshed.aborted) log('[PiRuntime] plugin-removal refresh aborted before completing');
+    return cloneDir ? errors.filter((e) => isInsideDir(e.path, cloneDir)) : [];
   }
 
   /**
-   * Whether the pi-anthropic-oauth plugin is installed AND loadable in pi's user scope. Debris from a
-   * partially-failed removal must read as absent, otherwise switching back to allowance early-returns
-   * on it and silently leaves the user on extra-usage billing.
+   * Hot-reload every folder after a plugin was unlisted; unless the reload re-registers `anthropic`, fall
+   * back to the built-in provider. Every loader reloads first: one still holding the plugin would
+   * re-flush it at its next session bind.
    */
-  private _isSubscriptionInstalled(pi: PiCodingAgentModule): boolean {
-    if (!this._isPackageInstalled(pi, SUBSCRIPTION_SOURCE)) return false;
-    const cloneDir = this._packageManager(pi).getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
-    return cloneDir !== undefined && this._isSubscriptionCloneIntact(cloneDir);
+  private async _reloadAfterUnlist(folders: readonly FolderRuntime[]): Promise<void> {
+    let registered = false;
+    try {
+      registered = (await this._hotReloadExtensions(folders)).registered.has('anthropic');
+    } finally {
+      if (!registered && this._modelRuntime) {
+        this._modelRuntime.unregisterProvider('anthropic');
+        // `unregisterProvider`'s own refresh is fire-and-forget; the caller reports status right after.
+        const refreshed = await this._modelRuntime.refresh({ allowNetwork: false });
+        for (const [provider, err] of refreshed.errors) log('[PiRuntime] provider-reset refresh: provider %s failed: %s', provider, describeAuthError(err));
+        if (refreshed.aborted) log('[PiRuntime] provider-reset refresh aborted before completing');
+      }
+    }
   }
 
-  /** Whether a package `source` is installed in pi's user scope (safe: false on any failure). */
-  private _isPackageInstalled(pi: PiCodingAgentModule, source: string): boolean {
-    if (!this._services) return false;
-    try {
-      return this._packageManager(pi).getInstalledPath(source, 'user') !== undefined;
-    } catch (err) {
-      log('[PiRuntime] installed check failed for %s: %O', source, err);
-      return false;
+  /**
+   * Make the pinned plugin the only listed subscription plugin. Legacy entries stay on disk until the
+   * new plugin is verified registered, so a failure rolls back to them with no network; a failure
+   * before the swap leaves them untouched. Settings never list a plugin that did not register.
+   * `acquired` skips the download when the caller already made it outside `_providerSync`.
+   */
+  private async _switchToAllowancePlugin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], acquired = false): Promise<void> {
+    const pm = this._packageManager(pi);
+    if (!acquired && !this._isAllowancePinHealthy(pm)) {
+      try {
+        await this._acquireSubscriptionPlugin(pm);
+      } catch (err) {
+        await this._unlistMissingClone(pm, folders);
+        throw err;
+      }
     }
+
+    const legacyEntries = this._userPackages().filter((p) => classifySubscriptionSource(packageSourceString(p)) === 'legacy');
+    pm.addSourceToSettings(SUBSCRIPTION_SOURCE);
+    for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
+    await this._flushSettings();
+
+    let failure: string;
+    try {
+      const { registered, errors } = await this._hotReloadExtensions(folders);
+      const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+      const pluginErrors = this._subscriptionLoadErrors(pm, errors);
+      const registeredFrom = registered.get('anthropic');
+      const listed = listedSubscriptionKinds(this._userPackages());
+      if (registeredFrom && cloneDir && isInsideDir(registeredFrom, cloneDir) && pluginErrors.length === 0 && listed.has('current') && !listed.has('legacy')) {
+        await this._evictLegacyClones(pm);
+        log('[PiRuntime] subscription plugin active: %s', SUBSCRIPTION_SOURCE);
+        return;
+      }
+      failure =
+        pluginErrors.length > 0 ? pluginErrors.map((e) => e.error).join('; ')
+        : registeredFrom ? `anthropic was registered by ${registeredFrom}`
+        : 'registered no anthropic provider';
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+
+    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+    // Another window may have deleted a legacy clone meanwhile; relisting it would make pi re-clone it.
+    const restorable = legacyEntries.filter((e) => pm.getInstalledPath(packageSourceString(e), 'user') !== undefined);
+    if (restorable.length > 0) this._settings().setPackages([...this._userPackages(), ...restorable]);
+    await this._flushSettings();
+    await this._reloadAfterUnlist(folders);
+    throw new Error(`subscription plugin failed to load: ${failure}`);
+  }
+
+  /**
+   * Unlist a current plugin that `created`'s loader failed to load, or that left `anthropic`
+   * unregistered: it would bill as extra usage while the settings report allowance. Returns whether it
+   * unlisted.
+   */
+  private async _unlistBrokenPlugin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<boolean> {
+    const pm = this._packageManager(pi);
+    const kinds = listedSubscriptionKinds(this._userPackages());
+    if (!kinds.has('current') || !this._isAllowancePinHealthy(pm)) return false;
+    const loadErrors = this._subscriptionLoadErrors(pm, created.getExtensionErrors());
+    const unregistered = !kinds.has('legacy') && !this._modelRuntime?.getRegisteredProviderConfig('anthropic');
+    if (loadErrors.length === 0 && !unregistered) return false;
+    for (const e of loadErrors) log('[PiRuntime] subscription plugin failed to load, switching to extra usage (%s): %s', e.path, e.error);
+    if (unregistered) log('[PiRuntime] subscription plugin registered no anthropic provider, switching to extra usage');
+    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+    await this._flushSettings();
+    await this._reloadAfterUnlist(folders);
+    return true;
+  }
+
+  /**
+   * Repair the subscription plugin once per process, against the first folder runtime's loader. pi keys
+   * git packages by repo identity, so neither a re-pin nor a replaced repo self-heals: the old entry
+   * stays listed and pi resets the clone to it. Fail-soft, since it clones over the network.
+   */
+  private async _reconcileSubscriptionPin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<void> {
+    try {
+      await this._settings().reload();
+      if (await this._unlistBrokenPlugin(pi, folders, created)) return;
+      const pm = this._packageManager(pi);
+      const kinds = listedSubscriptionKinds(this._userPackages());
+
+      if (kinds.has('stale') || kinds.has('legacy') || (kinds.has('current') && !this._isAllowancePinHealthy(pm))) {
+        await this._switchToAllowancePlugin(pi, folders);
+        log('[PiRuntime] reconciled subscription plugin to %s', SUBSCRIPTION_SOURCE);
+        return;
+      }
+
+      if (kinds.size === 0 && this._hasLegacyClone(pm)) await this._evictLegacyClones(pm);
+    } catch (err) {
+      log('[PiRuntime] subscription reconcile failed: %O', err);
+    }
+  }
+
+  /** A later folder's loader may fail to load the plugin the first one loaded; the same unlist applies. */
+  private async _unlistFailedPluginLoad(pi: PiCodingAgentModule, folders: readonly FolderRuntime[], created: FolderRuntime): Promise<void> {
+    try {
+      await this._settings().reload();
+      await this._unlistBrokenPlugin(pi, folders, created);
+    } catch (err) {
+      log('[PiRuntime] subscription load check failed (%s): %O', created.cwd, err);
+    }
+  }
+
+  /**
+   * Unlist every subscription plugin and fall back to pi-ai's built-in anthropic provider (extra usage).
+   * Settings change before any directory is deleted, so a Windows EPERM on the clone cannot leave the
+   * plugin listed.
+   */
+  private async _removeSubscriptionPlugin(pi: PiCodingAgentModule, folders: readonly FolderRuntime[]): Promise<void> {
+    const pm = this._packageManager(pi);
+    pm.removeSourceFromSettings(SUBSCRIPTION_SOURCE);
+    for (const repo of LEGACY_SUBSCRIPTION_REPOS) pm.removeSourceFromSettings(repo);
+    await this._flushSettings();
+    try {
+      const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+      if (cloneDir) {
+        // pi's removeGit uses a single non-retrying rmSync, which hits EPERM on Windows.
+        await forceRemoveDir(cloneDir);
+        await pm.remove(SUBSCRIPTION_SOURCE);
+      }
+    } catch (err) {
+      log('[PiRuntime] subscription clone delete failed: %O', err);
+    }
+    await this._evictLegacyClones(pm);
+    log('[PiRuntime] removed subscription plugin');
+    await this._reloadAfterUnlist(folders);
   }
 
   /**
@@ -1242,10 +907,13 @@ export class PiRuntime {
    * when Anthropic is authed, else a mini-class model on an authed OpenAI path. `null` when nothing is
    * configured, so callers fail soft. Routed through `resolvePiModel`, so the fallback lands on the
    * canonical provider — never a gateway/reseller duplicate.
+   *
+   * Also `null` until a folder runtime exists: subscription plugin providers are flushed into the model
+   * runtime when the first folder's services are created.
    */
   private _resolveSmallFastModel(): Model<Api> | null {
-    if (!this._services) return null;
-    const registry = this._services.modelRuntime;
+    const registry = this._modelRuntime;
+    if (!registry || this._folders.size === 0) return null;
     const explore = resolveExploreSectionModel(registry);
     // The user's Explore effort setting intentionally does NOT apply to background memory sub-calls;
     // those run at a fixed medium (injected in runStructuredCompletion). Consume the model only.
@@ -1271,16 +939,16 @@ export class PiRuntime {
    * (OAuth bearer token or API key, incl. refresh) and provider headers itself.
    */
   async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<T | null> {
-    // Only run when the runtime is already live (a session initialized the shared services). We do NOT
-    // boot pi here — sub-calls happen during/after a session, so `_services` is set in practice; this
-    // keeps background memory tasks fail-soft (and never spins up pi from a test). Fully guarded.
+    // Only run once a session's folder runtime is live. We do NOT boot pi here — sub-calls happen
+    // during/after a session, so a folder exists in practice; this keeps background memory tasks
+    // fail-soft (and never spins up pi from a test). Fully guarded.
     try {
-      if (!this._services) return null;
+      const modelRuntime = this._modelRuntime;
       const model = this._resolveSmallFastModel();
-      if (!model) return null;
+      if (!modelRuntime || !model) return null;
       // Fail soft when the model's provider has no configured credential (mirrors the old "no API key"
       // guard) — completeSimple would otherwise error trying to resolve auth.
-      if (!this._services.modelRuntime.hasConfiguredAuth(model.provider)) {
+      if (!modelRuntime.hasConfiguredAuth(model.provider)) {
         log('[PiRuntime] runStructuredCompletion: no configured credential for provider %s', model.provider);
         return null;
       }
@@ -1290,7 +958,7 @@ export class PiRuntime {
       // ThinkingLevel to the pi-ai one `completeSimple` accepts, which has no `off`).
       const reasoning = exploreThinkingLevel(model, 'medium');
       const complete: PiCompleteFn = (m, c, o) =>
-        this._services!.modelRuntime.completeSimple(m, c, {
+        modelRuntime.completeSimple(m, c, {
           ...o,
           ...(reasoning && reasoning !== 'off' ? { reasoning } : {}),
         });
@@ -1312,36 +980,43 @@ export class PiRuntime {
         // init failure already surfaced to its own caller
       }
     }
-    for (const session of this._subagentSessions) disposeSessionSafe(session);
-    this._subagentSessions.clear();
-    this._workspaceAgents?.dispose();
-    this._workspaceAgents = null;
-    if (this._mcpClientManager) {
+    const pending = [...this._folderPromises.values()];
+    this._folderPromises.clear();
+    this._folders.clear();
+    for (const creation of pending) {
+      let folder: FolderRuntime;
       try {
-        await this._mcpClientManager.dispose();
+        folder = await creation;
+      } catch {
+        // creation failure already surfaced to its own caller
+        continue;
+      }
+      await folder.dispose();
+    }
+    if (this._userMcp) {
+      try {
+        await this._userMcp.dispose();
       } catch (err) {
         log('[PiRuntime] MCP client dispose error: %O', err);
       }
     }
-    this._mcpClientManager = null;
-    this._mcpRegistrar = null;
-    this._hooksConfig?.dispose();
-    this._hooksConfig = null;
-    if (this._assetDebounce) {
-      clearTimeout(this._assetDebounce);
-      this._assetDebounce = null;
+    this._userMcp = null;
+    // OAuth state is process-global; only after every manager is gone can no login still need it.
+    try {
+      await shutdownOAuth();
+    } catch (err) {
+      log('[PiRuntime] OAuth shutdown error: %O', err);
     }
-    for (const watcher of this._assetWatchers) watcher.dispose();
-    this._assetWatchers.length = 0;
+    if (this._userDebounce) {
+      clearTimeout(this._userDebounce);
+      this._userDebounce = null;
+    }
+    for (const watcher of this._userWatchers) watcher.dispose();
+    this._userWatchers.length = 0;
     this._trustListener?.dispose();
     this._trustListener = null;
-    this._activeToolRefreshers.clear();
-    // Cleared alongside the refreshers, not left behind: both are per-live-instance registries, and a
-    // half-cleared pair invites the inference that republishers are somehow exempt from teardown.
-    this._toolSearchRepublishers.clear();
-    this._unboundRepublisherDisposer = null;
-    this._lastRegisteredRepublisherDisposer = null;
-    this._services = null;
+    this._modelRuntime = null;
+    this._userSettings = null;
     this._initPromise = null;
   }
 }

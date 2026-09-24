@@ -22,13 +22,16 @@ import {
 } from './metadata-cache';
 import { formatMcpToolName, buildServerPrefixMap, resourceNameToToolName } from './naming';
 import { parallelLimit } from './utils';
-import { supportsOAuth, authenticateMcpServer, shutdownOAuth, revokeAndRemoveAuth } from './mcp-auth-flow';
+import { supportsOAuth, authenticateMcpServer, revokeAndRemoveAuth } from './mcp-auth-flow';
 import { createElicitationHandler, type ElicitationUI } from './elicitation-handler';
+import type { McpToolCallOptions, McpToolSource } from './tool-source';
 import { log } from '../../logger';
 
 const FAILURE_BACKOFF_MS = 60_000;
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const EAGER_CONNECT_CONCURRENCY = 4;
+
+let managerCount = 0;
 
 export interface McpClientManagerOptions {
   authProviderFactory?: AuthProviderFactory;
@@ -39,6 +42,8 @@ export interface McpClientManagerOptions {
   healthCheckMs?: number;
   /** Test seam: override the connection-pool constructor (avoids spawning real processes). */
   serverManagerFactory?: (options: McpServerManagerOptions) => McpServerManager;
+  /** Prefixes another manager's tools already use in the same panels; call `refreshReservedPrefixes` when it changes. */
+  reservedPrefixes?: () => ReadonlySet<string>;
 }
 
 export interface McpCallResult {
@@ -47,12 +52,13 @@ export interface McpCallResult {
 }
 
 /**
- * Process/workspace-scoped MCP client (PiRuntime-owned). Loads the SDK, eagerly connects enabled
- * servers, maintains the pi-facing tool descriptors (live tools/list, cache fallback), and exposes
- * cancellable tool/resource calls. The shared Damocles extension registers tools from the
- * descriptors and re-registers them whenever `onToolsChanged` fires.
+ * One MCP connection pool: `PiRuntime` owns the user-scope one, each `FolderRuntime` its folder's.
+ * Loads the SDK, eagerly connects enabled servers, maintains the pi-facing tool descriptors (live
+ * tools/list, cache fallback), and exposes cancellable tool/resource calls. Panels reach it only
+ * through their folder's `FolderMcpView`.
  */
-export class McpClientManager {
+export class McpClientManager implements McpToolSource {
+  private readonly managerId = `mcp${++managerCount}`;
   private sdk: McpSdkBundle | null = null;
   private serverManager: McpServerManager | null = null;
   private lifecycle: McpLifecycleManager | null = null;
@@ -97,6 +103,7 @@ export class McpClientManager {
   private readonly idleTimeoutMinutes: number;
   private readonly healthCheckMs: number;
   private readonly serverManagerFactory: (options: McpServerManagerOptions) => McpServerManager;
+  private readonly reservedPrefixes: (() => ReadonlySet<string>) | undefined;
 
   constructor(options: McpClientManagerOptions = {}) {
     if (options.authProviderFactory) this.authProviderFactory = options.authProviderFactory;
@@ -105,6 +112,7 @@ export class McpClientManager {
     this.idleTimeoutMinutes = options.idleTimeoutMinutes ?? 10;
     this.healthCheckMs = options.healthCheckMs ?? 30_000;
     this.serverManagerFactory = options.serverManagerFactory ?? ((o) => new McpServerManager(o));
+    this.reservedPrefixes = options.reservedPrefixes;
   }
 
   /** Register a callback fired whenever the registered tool set changes (connect / list_changed). */
@@ -118,8 +126,9 @@ export class McpClientManager {
   }
 
   /**
-   * The single elicitation handler installed on every MCP client (the connections are process-shared
-   * across panels). It routes each `elicitation/create` to the UI of the in-flight tool call for that
+   * The single elicitation handler installed on every MCP client of this manager, whose connections
+   * are shared by every panel it serves: all panels for the user manager, that folder's panels for a
+   * folder manager. It routes each `elicitation/create` to the UI of the in-flight tool call for that
    * server, so a server prompt renders in the panel that triggered it (H2). With no active call (a
    * server eliciting unsolicited) it declines.
    */
@@ -339,10 +348,32 @@ export class McpClientManager {
     this.servers = new Map(
       Object.entries(servers).map(([name, cfg]) => [name, normalizeServerConfig(cfg)]),
     );
-    this.serverPrefixes = buildServerPrefixMap([...this.servers.keys()]);
+    this.serverPrefixes = this.computePrefixes();
     // A config change can alter each server's cache identity (configHash); drop memoized metadata.
     this.metadataMemo.clear();
     this.rebuildDescriptors();
+  }
+
+  private computePrefixes(): Map<string, string> {
+    return buildServerPrefixMap([...this.servers.keys()], this.reservedPrefixes?.());
+  }
+
+  /** Re-read the `reservedPrefixes` provider; renames this manager's tools and emits only if a prefix moved, returning whether one did. */
+  refreshReservedPrefixes(): boolean {
+    const next = this.computePrefixes();
+    const changed =
+      next.size !== this.serverPrefixes.size ||
+      [...next].some(([name, prefix]) => this.serverPrefixes.get(name) !== prefix);
+    if (!changed) return false;
+    this.serverPrefixes = next;
+    this.rebuildDescriptors();
+    this.emitToolsChanged();
+    return true;
+  }
+
+  /** The tool-name prefix assigned to an enabled server, or undefined if the server is not enabled here. */
+  serverPrefix(name: string): string | undefined {
+    return this.serverPrefixes.get(name);
   }
 
   private registerLifecycleServers(): void {
@@ -464,6 +495,7 @@ export class McpClientManager {
     const next = new Map<string, McpToolDescriptor>();
     for (const [name, def] of this.servers) {
       const prefix = this.serverPrefixes.get(name) ?? name;
+      const serverId = `${this.managerId}/${name}`;
       const { tools, resources } = this.metadataFor(name, def);
 
       for (const tool of tools) {
@@ -472,6 +504,7 @@ export class McpClientManager {
         next.set(piName, {
           piName,
           serverName: name,
+          serverId,
           kind: 'tool',
           originalName: tool.name,
           description: tool.description ?? '',
@@ -494,6 +527,7 @@ export class McpClientManager {
           next.set(piName, {
             piName,
             serverName: name,
+            serverId,
             kind: 'resource',
             originalName: base,
             resourceUri: resource.uri,
@@ -569,16 +603,19 @@ export class McpClientManager {
   async callTool(
     piName: string,
     args: Record<string, unknown>,
-    opts: { signal?: AbortSignal; timeoutMs?: number; elicitationUi?: ElicitationUI } = {},
+    opts: McpToolCallOptions = {},
   ): Promise<McpCallResult> {
     const descriptor = this.descriptors.get(piName);
     if (!descriptor) throw new Error(`Unknown MCP tool "${piName}"`);
     if (!this.serverManager) throw new Error('MCP client is not initialized');
+    const servesExpected = (d: McpToolDescriptor | undefined): boolean =>
+      d !== undefined && (opts.expectedServerId === undefined || d.serverId === opts.expectedServerId);
+    if (!servesExpected(descriptor)) throw new Error(`MCP tool "${piName}" is no longer available`);
 
     await this.ensureConnected(descriptor.serverName);
-    // A reconcile during the await above may have removed this tool; don't run a stale tool the model
-    // still holds in context against a server being torn down (M6).
-    if (!this.descriptors.has(piName)) {
+    // A reconcile during the await above may have removed or reassigned this tool; don't run a stale tool
+    // the model still holds in context against a server being torn down (M6).
+    if (!servesExpected(this.descriptors.get(piName))) {
       throw new Error(`MCP tool "${piName}" is no longer available`);
     }
     const callOpts = {
@@ -678,11 +715,6 @@ export class McpClientManager {
     }
     this.descriptors.clear();
     this.toolsChangedListeners.clear();
-    try {
-      await shutdownOAuth();
-    } catch (error) {
-      log('[McpClientManager] OAuth shutdown error: %O', error);
-    }
   }
 }
 

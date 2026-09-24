@@ -43,7 +43,6 @@ function harness(): {
     }),
   } as unknown as ChatSession;
   const manager = new HistoryManager({
-    workspacePath: '/ws',
     postMessage: (_h, m) => posted.push(m),
   });
   return { manager, host, session, posted };
@@ -57,7 +56,7 @@ describe('HistoryManager.loadSessionHistory', () => {
   it('delivers account state to the restored panel with no turn', async () => {
     const { manager, host, session, posted } = harness();
 
-    await manager.loadSessionHistory('s1', host, session);
+    await manager.loadSessionHistory('/ws', 's1', host, session);
 
     const account = posted.filter((m) => m.type === 'accountInfo');
     expect(account).toHaveLength(1);
@@ -70,10 +69,24 @@ describe('HistoryManager.loadSessionHistory', () => {
   it('delivers it after the replay, so the transcript never lands on top of it', async () => {
     const { manager, host, session, posted } = harness();
 
-    await manager.loadSessionHistory('s1', host, session);
+    await manager.loadSessionHistory('/ws', 's1', host, session);
 
     const types = posted.map((m) => m.type);
     expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('sessionCleared'));
     expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('done'));
+  });
+});
+
+/** A conversation resumed from another folder is read from that folder's session dir, not the asking panel's. */
+describe('HistoryManager reads the folder it is given', () => {
+  it('replays and seeds checkpoints from the session\'s own folder', async () => {
+    const store = await import('../../pi-session/session-store');
+    const { manager, host, session } = harness();
+
+    await manager.loadSessionHistory('/work/beta', 's-b', host, session);
+    await manager.extractRewindableUserIds('/work/beta', 's-b');
+
+    expect(vi.mocked(store.loadPiSessionHistory).mock.calls.at(-1)?.slice(0, 2)).toEqual(['/work/beta', 's-b']);
+    expect(vi.mocked(store.getPiRewindableUserIds)).toHaveBeenLastCalledWith('/work/beta', 's-b');
   });
 });

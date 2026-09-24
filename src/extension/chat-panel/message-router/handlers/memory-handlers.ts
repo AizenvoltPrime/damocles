@@ -37,11 +37,11 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
    * Load the panel's memory list from live memory-graph rows (incl. global preferences and forgotten
    * rows for the toggle) plus the first page of observations.
    */
-  function loadPanel(sessionId: string): { memories: MemoryEntry[]; hasMoreObservations: boolean; observationCursor: ObservationCursor | null } {
+  function loadPanel(sessionId: string, workspace: string): { memories: MemoryEntry[]; hasMoreObservations: boolean; observationCursor: ObservationCursor | null } {
     const svc = deps.memoryService;
-    if (!svc || !deps.workspacePath) return { memories: [], hasMoreObservations: false, observationCursor: null };
-    const graph = svc.getPanelMemories(sessionId, deps.workspacePath);
-    const observations = svc.getObservationPage(deps.workspacePath);
+    if (!svc || !workspace) return { memories: [], hasMoreObservations: false, observationCursor: null };
+    const graph = svc.getPanelMemories(sessionId, workspace);
+    const observations = svc.getObservationPage(workspace);
     return {
       memories: [...graph, ...observations.entries],
       hasMoreObservations: observations.hasMore,
@@ -61,20 +61,20 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const panel = loadPanel(ctx.session.memorySessionId);
+      const panel = loadPanel(ctx.session.memorySessionId, ctx.folder.fsPath);
       postMessage(ctx.host, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
     },
 
     requestMoreObservations: async (msg, ctx) => {
       if (msg.type !== "requestMoreObservations") return;
 
-      if (!deps.memoryService?.isEnabled || !deps.workspacePath) {
+      if (!deps.memoryService?.isEnabled || !ctx.folder.fsPath) {
         postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       await deps.memoryService.ensureInitialized();
-      const { entries, hasMore, nextCursor } = deps.memoryService.getObservationPage(deps.workspacePath, msg.cursor);
+      const { entries, hasMore, nextCursor } = deps.memoryService.getObservationPage(ctx.folder.fsPath, msg.cursor);
       postMessage(ctx.host, { type: "moreObservationsLoaded", observations: entries, hasMore, nextCursor });
     },
 
@@ -91,13 +91,6 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       const tier = msg.tier;
       let memory: MemoryEntry | null = null;
 
-      // A project-scoped row needs a workspace, else it saves with NULL workspace and getPanelMemories
-      // never returns it — the user sees "created" for a memory that never appears. Fail loudly instead.
-      if (tier === "project" && !deps.workspacePath) {
-        postMessage(ctx.host, { type: "memoryError", source: "panel", message: "Open a workspace folder to save a project-scoped memory.", ...(requestId ? { requestId } : {}) });
-        return;
-      }
-
       if (tier === "note") {
         memory = await deps.memoryService.addNote(msg.content, msg.tags);
       } else {
@@ -107,7 +100,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
           kind: msg.kind ?? "fact",
           scope,
           sessionId: ctx.session.memorySessionId,
-          workspace: deps.workspacePath,
+          workspace: ctx.folder.fsPath,
           ...(msg.tags ? { tags: msg.tags } : {}),
         });
       }
@@ -172,7 +165,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       const query = {
         ...msg.query,
         ...(msg.query.limit !== undefined ? { limit: Math.min(Math.max(msg.query.limit, 1), 100) } : {}),
-        workspace: deps.workspacePath,
+        workspace: ctx.folder.fsPath,
         sessionId: ctx.session.memorySessionId,
         allWorkspaces: false,
       };
@@ -287,7 +280,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const project = deps.memoryService.getProfile("project", deps.workspacePath);
+      const project = deps.memoryService.getProfile("project", ctx.folder.fsPath);
       const global = deps.memoryService.getProfile("global", "");
       postMessage(ctx.host, { type: "profileData", project, global });
     },
@@ -301,7 +294,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       await deps.memoryService.ensureInitialized();
-      const workspace = msg.scope === "project" ? deps.workspacePath : "";
+      const workspace = msg.scope === "project" ? ctx.folder.fsPath : "";
       const ok = await deps.memoryService.setProfileSection(msg.scope, workspace, msg.section, msg.content);
       if (!ok) {
         // Targeted failure so the panel clears ONLY this section's pending flag (keeping the draft),
@@ -309,7 +302,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         postMessage(ctx.host, { type: "profileSectionError", scope: msg.scope, section: msg.section, message: "Failed to save profile section." });
         return;
       }
-      const project = deps.memoryService.getProfile("project", deps.workspacePath);
+      const project = deps.memoryService.getProfile("project", ctx.folder.fsPath);
       const global = deps.memoryService.getProfile("global", "");
       // savedSection scopes the panel's confirm+re-seed to this section only.
       postMessage(ctx.host, { type: "profileData", project, global, savedSection: { scope: msg.scope, section: msg.section } });

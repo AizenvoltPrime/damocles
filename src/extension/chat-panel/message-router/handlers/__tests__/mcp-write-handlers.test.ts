@@ -3,11 +3,16 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 /** Captured so a rejection can be proved never to log the config it rejected. */
 const logMock = vi.hoisted(() => vi.fn());
 vi.mock("../../../../logger", () => ({ log: logMock }));
+vi.mock("../../../settings-manager/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../settings-manager/utils")>()),
+  updateConfigAtEffectiveScope: vi.fn(async () => {}),
+}));
 
 import { createSettingsHandlers } from "../settings-handlers";
 import { McpWriteError } from "../../../settings-manager/managers/mcp-config-write";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
+import type { McpScope } from "../../../../session-types";
 
 /**
  * The three `~/.damocles/mcp.json` handlers. What matters here is the *wiring* the brief specifies —
@@ -20,7 +25,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../..
 function setup(failure?: Error) {
   const calls: string[] = [];
   const posted: ExtensionToWebviewMessage[] = [];
-  const fedServers: Record<string, unknown>[] = [];
+  const fedServers: McpScope[] = [];
 
   const mutation = vi.fn(async () => {
     calls.push("write");
@@ -31,29 +36,33 @@ function setup(failure?: Error) {
     addMcpServer: mutation,
     updateMcpServer: mutation,
     deleteMcpServer: mutation,
+    setServerEnabled: vi.fn(async () => {}),
     loadMcpConfig: vi.fn(async () => { calls.push("loadMcpConfig"); }),
-    getEnabledMcpServers: vi.fn(() => ({ docs: { command: "docs-server" } })),
-    buildMcpConfigUpdate: vi.fn(() => {
+    getEnabledMcpServers: vi.fn((folderKey: string): McpScope => ({
+      userUnion: { docs: { command: "docs-server" } },
+      userVisible: ["docs"],
+      folder: { [`${folderKey}-only`]: { command: folderKey } },
+    })),
+    buildMcpConfigUpdate: vi.fn((folderKey: string) => {
       calls.push("buildMcpConfigUpdate");
-      return { type: "mcpConfigUpdate", servers: [], configErrors: [] } as const;
+      return { type: "mcpConfigUpdate", servers: [{ name: `${folderKey}-only`, status: "idle", enabled: true }], configErrors: [] } as const;
     }),
     sendMcpStatus: vi.fn(async () => { calls.push("sendMcpStatus"); }),
   };
 
   const host = {};
+  const folder = { key: "a" };
+  const session = {
+    setMcpServers: (scope: McpScope) => { calls.push("setMcpServers"); fedServers.push(scope); },
+  };
   const deps = {
     postMessage: (_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); },
     settingsManager,
     // One open panel, so the config refresh can be observed as a broadcast rather than a targeted post.
-    getPanels: () => new Map([["panel-1", { host }]]),
+    getPanels: () => new Map([["panel-1", { host, session, folder }]]),
   } as unknown as HandlerDependencies;
 
-  const ctx = {
-    host,
-    session: {
-      setMcpServers: (servers: Record<string, unknown>) => { calls.push("setMcpServers"); fedServers.push(servers); },
-    },
-  } as unknown as HandlerContext;
+  const ctx = { host, session, folder } as unknown as HandlerContext;
 
   const handlers = createSettingsHandlers(deps);
   const run = (msg: WebviewToExtensionMessage) => handlers[msg.type]!(msg, ctx);
@@ -77,7 +86,7 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
     expect(calls).toEqual([
       "write", "loadMcpConfig", "setMcpServers", "buildMcpConfigUpdate", "sendMcpStatus",
     ]);
-    expect(fedServers[0]).toEqual({ docs: { command: "docs-server" } });
+    expect(fedServers[0]).toEqual({ userUnion: { docs: { command: "docs-server" } }, userVisible: ["docs"], folder: { "a-only": { command: "a" } } });
     expect(acks(posted)).toEqual([{ type: "mcpWriteResult", requestId: REQ, ok: true }]);
   });
 
@@ -92,12 +101,68 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
     expect(posted.filter(m => m.type === "mcpConfigUpdate")).toHaveLength(1);
   });
 
+  it("feeds and refreshes every panel with its own folder's scope and list, never the acting panel's", async () => {
+    // A user-scope write changes every folder's scope, and each folder has its own MCP client.
+    const { settingsManager } = setup();
+    const otherPosted: ExtensionToWebviewMessage[] = [];
+    const otherFed: unknown[] = [];
+    const otherHost = {};
+    const panels = new Map<string, unknown>([
+      ["panel-1", { host: {}, session: { setMcpServers: () => {} }, folder: { key: "a" } }],
+      ["panel-2", { host: otherHost, session: { setMcpServers: (scope: unknown) => { otherFed.push(scope); } }, folder: { key: "b" } }],
+    ]);
+    const handlers = createSettingsHandlers({
+      postMessage: (target: unknown, msg: ExtensionToWebviewMessage) => { if (target === otherHost) otherPosted.push(msg); },
+      settingsManager,
+      getPanels: () => panels,
+    } as unknown as HandlerDependencies);
+
+    await handlers.mcpReloadConfig!({ type: "mcpReloadConfig" }, { host: {}, session: { setMcpServers: () => {} }, folder: { key: "a" } } as unknown as HandlerContext);
+
+    expect(otherFed).toEqual([{ userUnion: { docs: { command: "docs-server" } }, userVisible: ["docs"], folder: { "b-only": { command: "b" } } }]);
+    const update = otherPosted.find((m): m is Extract<ExtensionToWebviewMessage, { type: "mcpConfigUpdate" }> => m.type === "mcpConfigUpdate");
+    expect(update?.servers.map(server => server.name)).toEqual(["b-only"]);
+  });
+
+  it.each([
+    ["toggleMcpServer", { type: "toggleMcpServer", serverName: "docs", enabled: false }],
+    ["setMcpEnabled", { type: "setMcpEnabled", enabled: false }],
+  ] as const)("%s feeds every panel the scope of that panel's own folder", async (_label, msg) => {
+    const { settingsManager } = setup();
+    const fed = new Map<string, McpScope[]>([["a", []], ["b", []]]);
+    const panel = (key: string) => ({
+      host: {},
+      session: { setMcpServers: (scope: McpScope) => { fed.get(key)!.push(scope); } },
+      folder: { key },
+    });
+    const panels = new Map<string, unknown>([["panel-1", panel("a")], ["panel-2", panel("b")]]);
+    const handlers = createSettingsHandlers({
+      postMessage: () => {},
+      settingsManager,
+      getPanels: () => panels,
+    } as unknown as HandlerDependencies);
+
+    await handlers[msg.type]!(msg, panels.get("panel-1") as HandlerContext);
+
+    expect(settingsManager.getEnabledMcpServers.mock.calls.map(([key]) => key).sort()).toEqual(["a", "b"]);
+    expect(fed.get("a")).toEqual([settingsManager.getEnabledMcpServers("a")]);
+    expect(fed.get("b")).toEqual([settingsManager.getEnabledMcpServers("b")]);
+  });
+
+  it("checks a new name against the acting panel's folder", async () => {
+    const { run, settingsManager } = setup();
+
+    await run({ type: "mcpAddServer", requestId: REQ, serverName: "docs", config: STDIO });
+
+    expect(settingsManager.addMcpServer).toHaveBeenCalledWith("a", "docs", STDIO);
+  });
+
   it("passes the pre-rename name and the new name through to the update", async () => {
     const { run, settingsManager } = setup();
 
     await run({ type: "mcpUpdateServer", requestId: REQ, serverName: "docs", newServerName: "handbook", config: STDIO });
 
-    expect(settingsManager.updateMcpServer).toHaveBeenCalledWith("docs", "handbook", STDIO);
+    expect(settingsManager.updateMcpServer).toHaveBeenCalledWith("a", "docs", "handbook", STDIO);
   });
 
   it("passes undefined as the new name for an in-place edit", async () => {
@@ -105,7 +170,7 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
 
     await run({ type: "mcpUpdateServer", requestId: REQ, serverName: "docs", config: STDIO });
 
-    expect(settingsManager.updateMcpServer).toHaveBeenCalledWith("docs", undefined, STDIO);
+    expect(settingsManager.updateMcpServer).toHaveBeenCalledWith("a", "docs", undefined, STDIO);
   });
 
   it("applies the same reload-and-refeed sequence on delete", async () => {

@@ -1,13 +1,13 @@
 /**
- * workspace-agent-registry.ts — The single workspace-level source of truth for markdown subagents.
+ * workspace-agent-registry.ts — The source of truth for one workspace folder's markdown subagents.
  *
- * One process/workspace owns one `WorkspaceAgentRegistry` (built lazily by `PiRuntime`). It loads the
+ * Each workspace folder owns one `WorkspaceAgentRegistry` (built lazily by `FolderRuntime`). It loads the
  * embedded defaults overlaid with project and global agents (pi-set and Claude-set locations — see
- * `agentDiscoveryDirs`), and runs exactly ONE filesystem watcher per agent directory — workspace-level,
- * never per-panel, so multiple open panels never multi-watch the same dirs. On any change (or a
- * workspace-trust grant) it reloads the registry in place and notifies subscribers; the shared
- * `AgentRegistry` instance is mutated via `register()`, so every `AgentManager` holding a reference to
- * it sees the reload automatically.
+ * `agentDiscoveryDirs`), and runs one filesystem watcher per agent directory for the folder, never per
+ * panel. The user-global agent dirs are therefore watched once per registry, so N open folders watch
+ * them N times. On any change (or a workspace-trust grant) it reloads the registry in place and notifies
+ * subscribers; the shared `AgentRegistry` instance is mutated via `register()`, so every `AgentManager`
+ * holding a reference to it sees the reload automatically.
  */
 
 import { homedir } from 'node:os';

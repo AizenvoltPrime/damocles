@@ -35,6 +35,8 @@ import * as vscode from "vscode";
 import { mcpSourceOrder, SHADOWING_SOURCES } from "@shared/types/mcp";
 import type { McpServerSource, McpServerStatusInfo } from "@shared/types/mcp";
 import { McpManager } from "../mcp-manager";
+import { MCP_SCOPE_BY_SOURCE } from "../mcp-config-import";
+import { folderTarget } from "./mcp-folder-fixtures";
 
 /** The disabled-server set lives in workspaceState; nothing here disables anything. */
 const workspaceState = {
@@ -49,6 +51,7 @@ function writeJson(target: string, value: unknown): void {
 }
 
 let servers: Map<string, McpServerStatusInfo>;
+const WS = folderTarget(fakeWorkspace);
 
 /**
  * Exactly one uniquely-named server per source, so a name identifies the source it came from. The
@@ -86,15 +89,12 @@ beforeAll(async () => {
     mcpServers: { fromLocalDamocles: { command: "local-server" } },
   });
 
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [{ uri: { fsPath: fakeWorkspace } }];
-
-  const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
   await manager.loadConfig();
-  servers = new Map(manager.getServersForUI().map(s => [s.name, s]));
+  servers = new Map(manager.getServersForUI(WS.key).map(s => [s.name, s]));
 });
 
 afterAll(() => {
-  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [];
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
@@ -181,27 +181,20 @@ describe("McpManager: getShadowingServerNames", () => {
     expect([...SHADOWING_SOURCES].sort()).toEqual([...expected].sort());
   });
 
-  it("returns the names of every source that outranks ~/.damocles/mcp.json, and nothing else", async () => {
-    const manager = new McpManager(workspaceState);
+  it("returns the folder's names from every source that outranks ~/.damocles/mcp.json there", async () => {
+    const manager = new McpManager(workspaceState, () => [WS]);
     await manager.loadConfig();
 
-    const shadowing = manager.getShadowingServerNames();
+    const shadowing = manager.getShadowingServerNames(WS.key);
     const expected = sourcesAboveDamocles();
 
-    // The write path rejects these names, so if the manager and the shared set ever disagreed
-    // Damocles would persist a server the merge immediately hides.
-    expect(expected.length).toBe(2);
-    expect([...shadowing.keys()].sort()).toEqual(expected.map(source => SERVER_BY_SOURCE[source]).sort());
+    expect(expected.every(source => MCP_SCOPE_BY_SOURCE[source] === "folder")).toBe(true);
     expect([...shadowing.entries()].sort()).toEqual(
       expected.map(source => [SERVER_BY_SOURCE[source], source] as const).sort(),
     );
   });
 
   it("returns the same names when assetSourcePrecedence flips, since the tie-break sits below damocles", async () => {
-    // A hardcoded `['workspace','damocles-local']` would also pass the test above. Flipping the setting
-    // reorders `mcpSourceOrder`'s bottom half, so only a derivation that actually reads the array
-    // survives both runs, and only the derived one moves if a seventh source ever lands above
-    // `damocles`.
     const original = vscode.workspace.getConfiguration;
     const withPrecedence = async (precedence: string): Promise<string[]> => {
       (vscode.workspace as { getConfiguration: unknown }).getConfiguration = (section?: string) => ({
@@ -209,9 +202,9 @@ describe("McpManager: getShadowingServerNames", () => {
           section === "damocles" && key === "assetSourcePrecedence" ? precedence : defaultValue,
         update: () => Promise.resolve(),
       });
-      const manager = new McpManager(workspaceState);
+      const manager = new McpManager(workspaceState, () => [WS]);
       await manager.loadConfig();
-      return [...manager.getShadowingServerNames().keys()].sort();
+      return [...manager.getShadowingServerNames(WS.key).keys()].sort();
     };
 
     try {
@@ -225,10 +218,10 @@ describe("McpManager: getShadowingServerNames", () => {
   });
 
   it("leaves every overridable source out, since damocles outranks them", async () => {
-    const manager = new McpManager(workspaceState);
+    const manager = new McpManager(workspaceState, () => [WS]);
     await manager.loadConfig();
 
-    const shadowing = manager.getShadowingServerNames();
+    const shadowing = manager.getShadowingServerNames(WS.key);
     const order = mcpSourceOrder("claude");
     const overridable = order.slice(0, order.indexOf("damocles") + 1);
 

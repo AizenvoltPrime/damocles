@@ -27,22 +27,39 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
   }
 
   /**
-   * Re-read the merged sources after a write, re-feed the live MCP client, and refresh every panel.
+   * Feed every panel its own folder's MCP scope. Every panel, not the acting one: a user-scope toggle,
+   * a write or the master switch changes every folder's scope, and each folder has its own client.
+   */
+  function feedMcpScopes(): void {
+    for (const [, instance] of getPanels()) {
+      instance.session.setMcpServers(settingsManager.getEnabledMcpServers(instance.folder.key));
+    }
+  }
+
+  /** Each panel gets its own folder's server list, config errors and leak warning, never another folder's. */
+  function sendMcpConfigToPanels(): void {
+    for (const [, instance] of getPanels()) {
+      postMessage(instance.host, settingsManager.buildMcpConfigUpdate(instance.folder.key));
+    }
+  }
+
+  /**
+   * Re-read the merged sources after a write, re-feed the live MCP clients, and refresh every panel.
    *
-   * A broadcast rather than a post to the acting panel: the watcher covers `path.dirname(...)` of the
-   * user-global files, and a non-recursive watcher over a directory that did not exist when it was
-   * created never fires — leaving a second panel offering Edit for something already deleted.
+   * Every panel rather than the acting one: the watcher covers `path.dirname(...)` of the user-global
+   * files, and a non-recursive watcher over a directory that did not exist when it was created never
+   * fires, leaving a second panel offering Edit for something already deleted.
    */
   async function applyMcpConfigChange(ctx: HandlerContext): Promise<void> {
     try {
       await settingsManager.loadMcpConfig();
-      ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+      feedMcpScopes();
     } finally {
       // In a `finally` so a failed reload still answers the panel: the Reload button's in-flight state
       // ends on `mcpConfigUpdate`, and the error alone would leave it spinning until its lost-ack
       // timeout. Rethrown, so a failed write is still acknowledged as one.
-      broadcast(settingsManager.buildMcpConfigUpdate());
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      sendMcpConfigToPanels();
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
     }
   }
 
@@ -72,7 +89,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       postMessage(ctx.host, { type: "mcpWriteResult", requestId, ok: false, error });
       // The panel renders the reason inline against the still-open form, so no notification here — a
       // toast as well would say the same thing twice.
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
     }
   }
 
@@ -336,11 +353,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     toggleMcpServer: async (msg, ctx) => {
       if (msg.type !== "toggleMcpServer") return;
       try {
-        await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
-        ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+        await settingsManager.setServerEnabled(ctx.folder.key, msg.serverName, msg.enabled);
+        feedMcpScopes();
         // Push live status now (shows "connecting"); the MCP status listener auto-pushes "connected"
         // once the background connect settles.
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       } catch (err) {
         log("[MessageRouter] Error toggling MCP server:", err);
         postMessage(ctx.host, {
@@ -348,7 +365,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save MCP server setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       }
     },
 
@@ -361,14 +378,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     mcpAddServer: async (msg, ctx) => {
       if (msg.type !== "mcpAddServer") return;
       await runMcpWrite(ctx, msg.requestId, msg.serverName, "adding", async () => {
-        await settingsManager.addMcpServer(msg.serverName, msg.config);
+        await settingsManager.addMcpServer(ctx.folder.key, msg.serverName, msg.config);
       });
     },
 
     mcpUpdateServer: async (msg, ctx) => {
       if (msg.type !== "mcpUpdateServer") return;
       await runMcpWrite(ctx, msg.requestId, msg.serverName, "updating", async () => {
-        await settingsManager.updateMcpServer(msg.serverName, msg.newServerName, msg.config);
+        await settingsManager.updateMcpServer(ctx.folder.key, msg.serverName, msg.newServerName, msg.config);
       });
     },
 
@@ -382,7 +399,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     reconnectMcpServer: async (msg, ctx) => {
       if (msg.type !== "reconnectMcpServer") return;
       const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       if (!success) {
         postMessage(ctx.host, {
           type: "notification",
@@ -395,7 +412,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     authenticateMcpServer: async (msg, ctx) => {
       if (msg.type !== "authenticateMcpServer") return;
       const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       if (!success) {
         postMessage(ctx.host, {
           type: "notification",
@@ -424,7 +441,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           notificationType: "error",
         });
       } finally {
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       }
     },
 
@@ -440,7 +457,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           notificationType: "error",
         });
       } finally {
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       }
     },
 
@@ -449,7 +466,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     },
 
     requestMcpStatus: async (_msg, ctx) => {
-      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
     },
 
     setMcpEnabled: async (msg, ctx) => {
@@ -458,8 +475,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await updateConfigAtEffectiveScope("damocles", "mcp.enabled", msg.enabled);
         // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
         // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
-        ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        feedMcpScopes();
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       } catch (err) {
         log("[MessageRouter] Error setting MCP enabled:", err);
         postMessage(ctx.host, {
@@ -467,7 +484,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save MCP setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
       }
     },
 

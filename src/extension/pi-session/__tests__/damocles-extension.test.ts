@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createDamoclesExtensionFactory, type CheckpointRegistryReader, type PanelRegistryReader } from '../damocles-extension';
-import { PiRuntime } from '../pi-runtime';
+import { FolderRuntime } from '../folder-runtime';
+import type { PiCodingAgentModule } from '../pi-loader';
+import { McpClientManager } from '../mcp/mcp-client-manager';
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CheckpointService, type CheckpointTreeReader } from '../checkpoint-service';
 import { DAMOCLES_CHECKPOINT_ENTRY } from '../session-store/constants';
 import type { PanelGateContext } from '../permission-gate';
@@ -775,17 +778,28 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
   /**
    * The two halves joined. Everything above tests the extension against a fake seam and
-   * `pi-runtime.test.ts` tests `PiRuntime` against fake closures, so a mismatch at the join — the
+   * `folder-runtime.test.ts` tests `FolderRuntime` against fake closures, so a mismatch at the join — the
    * extension registering one closure and retiring a different one, or the runtime never seeing the
    * retirement — would pass both suites while reproducing the original bug exactly.
    */
-  describe('republisher wiring end to end (real PiRuntime)', () => {
+  describe('republisher wiring end to end (real FolderRuntime)', () => {
+    let runtime: FolderRuntime | null = null;
     afterEach(async () => {
-      await PiRuntime.disposeInstance();
+      await runtime?.dispose();
+      runtime = null;
     });
 
     it('a retired instance produces NO further wrap when the runtime republishes', async () => {
-      const runtime = PiRuntime.get('/tmp/ws');
+      const folder = new FolderRuntime({
+        pi: {} as PiCodingAgentModule,
+        cwd: '/tmp/ws',
+        agentDir: '/tmp/agent',
+        modelRuntime: {} as ModelRuntime,
+        userMcp: new McpClientManager(),
+        createFolderMcp: (reservedPrefixes) => new McpClientManager({ reservedPrefixes }),
+        renameSession: async () => undefined,
+      });
+      runtime = folder;
       const { pi, wraps, emit } = piCapturingToolSearch();
       let names = ['BrowserOpen', 'CompassSearch'];
       const panel = { deferrableTools: () => ({ names, loaded: new Set<string>(), mcpGroups: new Map() }) } as unknown as PanelGateContext;
@@ -795,7 +809,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         noCheckpoints(),
         undefined,
         undefined,
-        (republish) => runtime.registerToolSearchRepublisher(republish),
+        (republish) => folder.registerToolSearchRepublisher(republish),
       )(pi as never);
 
       // Ordering, not just identity: each wrap must carry the inventory as of the moment it happened.
@@ -804,7 +818,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       expect(wraps()[0]).toContain('CompassSearch');
 
       names = ['BrowserOpen'];
-      runtime.republishToolSearch();
+      folder.republishToolSearch();
       expect(wraps()).toHaveLength(2);
       expect(wraps()[1]).not.toContain('CompassSearch');
       expect(wraps()[1]).toContain('BrowserOpen');
@@ -814,7 +828,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       // The whole point: once the instance has retired itself, the runtime holds nothing that can wrap
       // ToolSearch again. Before v2.18.0 this produced a third wrap into an unreferenced runtime, for
       // the rest of the window, on every single toggle.
-      runtime.republishToolSearch();
+      folder.republishToolSearch();
       expect(wraps()).toHaveLength(2);
     });
   });

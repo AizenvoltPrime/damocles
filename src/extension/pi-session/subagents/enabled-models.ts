@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as vscode from 'vscode';
 import { PI_AGENT_DIR } from '../agent-dir';
 import { log } from '../../logger';
 
@@ -45,10 +46,11 @@ function readField(path: string): string[] | undefined {
   return undefined;
 }
 
-/** Read enabledModels from pi's settings — project-local overrides global. */
+/** Read enabledModels from pi's settings — project-local overrides global. A restricted window ignores
+ *  the project file, as pi's own settings manager does. */
 export function readEnabledModels(cwd: string): string[] | undefined {
   const [project, global] = settingsPaths(cwd);
-  return readField(project) ?? readField(global);
+  return (vscode.workspace.isTrusted ? readField(project) : undefined) ?? readField(global);
 }
 
 /**

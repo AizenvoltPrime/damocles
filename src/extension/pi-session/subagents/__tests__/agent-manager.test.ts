@@ -19,7 +19,7 @@ import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentInvocationData } from '../../agent-records';
-import type { PiCreateSubagentSessionOptions } from '../../pi-runtime';
+import type { PiCreateSubagentSessionOptions } from '../../folder-runtime';
 import type { ExtensionToWebviewMessage } from '../../../../shared/types/messages';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsp from 'node:fs/promises';
@@ -1073,6 +1073,7 @@ describe('AgentManager → capability-gated prompt blocks', () => {
 function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor, 'piName'>): McpToolDescriptor {
   return {
     serverName: 'git',
+    serverId: `test/${over.serverName ?? 'git'}`,
     kind: 'tool',
     originalName: over.piName.split('__').slice(2).join('__'),
     description: `desc of ${over.piName}`,

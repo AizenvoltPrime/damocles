@@ -21,7 +21,7 @@ import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
 import { TEAM_CREATE_TOOL } from '../../../shared/tool-names';
 import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
-import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
+import type { PiCreateSubagentSessionOptions } from '../folder-runtime';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames } from '../tools/deferred-tools';
 import type { NestedMcpToolset } from '../tools/mcp-tools';

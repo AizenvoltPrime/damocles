@@ -135,6 +135,7 @@ const H = vi.hoisted(() => {
         // both of these before any turn runs.
         getShellCommandPrefix: vi.fn(() => undefined),
         getShellPath: vi.fn(() => undefined),
+        isProjectTrusted: vi.fn(() => true),
       },
       modelRuntime: {
         getAvailableSnapshot: () => [{ id: 'claude-opus-5-5', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
@@ -197,7 +198,8 @@ const H = vi.hoisted(() => {
       };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
-    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })), create: vi.fn(() => ({ kind: 'settings' })) },
+    ModelRuntime: { create: vi.fn(async () => services.modelRuntime) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
@@ -224,6 +226,18 @@ const H = vi.hoisted(() => {
 // The AI title sub-call, controllable per test. Defaults to "no title", so every other turn-driving
 // test leaves the auto-title path inert; the title tests swap in their own resolution timing.
 const TITLE = vi.hoisted(() => ({ impl: async (): Promise<string | null> => null }));
+/** Sessions read MCP only through their folder runtime's view, so stubbing it there reaches every panel. */
+function stubPanelMcp(source: McpToolSource | null): void {
+  const folders = PiRuntime.get('/fake/agent').folders();
+  if (folders.length === 0) throw new Error('stubPanelMcp: no folder runtime yet');
+  for (const folder of folders) vi.spyOn(folder, 'mcp', 'get').mockReturnValue(source as McpToolSource);
+}
+
+/** The finished folder runtime every session in this file starts on. */
+function cwdFolder(): FolderRuntime | undefined {
+  return PiRuntime.get('/fake/agent').folders().find((folder) => folder.cwd === '/cwd');
+}
+
 vi.mock('../session-title', () => ({ generateSessionTitle: () => TITLE.impl() }));
 
 vi.mock('../pi-loader', () => ({
@@ -284,6 +298,7 @@ vi.mock('../fork-agent-data', async (importOriginal) => {
 import * as vscode from 'vscode';
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
+import { FolderRuntime } from '../folder-runtime';
 import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
@@ -303,6 +318,10 @@ import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mo
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
+import type { McpToolSource } from '../mcp/tool-source';
+import { FolderMcpView } from '../mcp/folder-mcp-view';
+import { managerWithFake } from '../mcp/__tests__/fake-server-manager';
+import { createToolSearchTool, type DeferrableSnapshot, type ToolSearchDetails } from '../tools/tool-search-tool';
 import { reconcileInterruptions, type NoticeMessage } from '../interruption-notice';
 import { copyForkAgentData } from '../fork-agent-data';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE } from '../session-store/constants';
@@ -346,7 +365,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     expect(H.captured.services.length).toBeGreaterThanOrEqual(1);
-    expect(H.captured.services[0]).toBe(PiRuntime.get('/cwd', '/fake/agent').services);
+    expect(H.captured.services[0]).toBe(cwdFolder()!.services);
     expect(H.captured.services[0]).toBe(H.getServices());
   });
 
@@ -448,11 +467,10 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     // Seed the live full set with one read-only-ish and one non-read MCP name via the real runtime
-    // singleton — `fullActiveToolNames()` reads `getMcpClientManager().allToolNames()` live each call.
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    // folder view — `fullActiveToolNames()` reads its `allToolNames()` live each call.
+    stubPanelMcp({
       allToolNames: () => ['mcp__ctx7__query_docs', 'mcp__git__commit'],
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
 
     const live = H.getLastSession()!;
     const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
@@ -513,10 +531,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
   // --- MCP first-connect: reloadForMcpToolChange (frozen-allowlist fix) ------------------------------
   function seedMcpNames(names: string[]): void {
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => names,
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
   }
 
   it('MCP tools-changed: registry already current → re-applies active set, NO reload (single-panel fix)', async () => {
@@ -1024,7 +1041,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // synchronous methods
     s.getPlanFilePath();
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
-    s.setModel('claude-opus-5-5'); s.setMcpServers({});
+    s.setModel('claude-opus-5-5'); s.setMcpServers({ userUnion: {}, userVisible: [], folder: {} });
     s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
@@ -1273,6 +1290,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       userText: 'hi',
       assistantText: 'done',
       files: [],
+      // The session's own folder, so another window's consolidation files it there.
+      workspace: '/cwd',
     });
     await session.dispose();
   });
@@ -1641,6 +1660,156 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   });
 });
 
+describe('PiSession MCP scope feed', () => {
+  const SCOPE_X = { userUnion: { ux: { command: 'ux' } }, userVisible: ['ux'], folder: { fx: { command: 'fx' } } };
+  const SCOPE_Y = { userUnion: { uy: { command: 'uy' } }, userVisible: [], folder: { fy: { command: 'fy' } } };
+  const spies: Array<{ mockRestore(): void }> = [];
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Record both reconciles without connecting anything. */
+  async function spyManagers() {
+    const runtime = PiRuntime.get('/fake/agent');
+    await runtime.init();
+    const user = vi.spyOn(runtime.getUserMcp()!, 'reconcile').mockResolvedValue();
+    const folder = vi.spyOn(FolderRuntime.prototype, 'reconcileFolder').mockResolvedValue();
+    spies.push(user, folder);
+    return { runtime, user, folder };
+  }
+
+  it('a scope set while start() waits on its folder runtime reaches both managers once the session binds', async () => {
+    const { runtime, user, folder } = await spyManagers();
+    let open!: () => void;
+    const held = new Promise<void>((resolve) => { open = resolve; });
+    const folderOf = runtime.folder.bind(runtime);
+    spies.push(vi.spyOn(runtime, 'folder').mockImplementationOnce(async (cwd) => {
+      await held;
+      return folderOf(cwd);
+    }));
+    const session = new PiSession(makeOptions([]));
+
+    const starting = session.initializeEarly();
+    session.setMcpServers(SCOPE_X);
+    expect(user).not.toHaveBeenCalled();
+    expect(folder).not.toHaveBeenCalled();
+    open();
+    await starting;
+
+    expect(user).toHaveBeenLastCalledWith(SCOPE_X.userUnion);
+    expect(folder).toHaveBeenLastCalledWith(SCOPE_X.folder, SCOPE_X.userVisible);
+  });
+
+  it.each(['reset', 'clear'] as const)('a replacement session after %s re-applies the latest scope, not the creation-time one', async (replace) => {
+    const { user, folder } = await spyManagers();
+    const session = new PiSession(makeOptions([], { mcpScope: SCOPE_X }));
+    await session.initializeEarly();
+    session.setMcpServers(SCOPE_Y);
+    const firstSession = H.getLastSession();
+    user.mockClear();
+    folder.mockClear();
+
+    session[replace]();
+    await vi.waitFor(() => expect(H.getLastSession()).not.toBe(firstSession));
+    await vi.waitFor(() => expect(user).toHaveBeenCalled());
+
+    expect(user).toHaveBeenLastCalledWith(SCOPE_Y.userUnion);
+    expect(folder).toHaveBeenLastCalledWith(SCOPE_Y.folder, SCOPE_Y.userVisible);
+  });
+
+  it("sends the user part to the process-wide manager and the folder part to the session's folder", async () => {
+    const { user, folder } = await spyManagers();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    session.setMcpServers(SCOPE_X);
+
+    expect(user.mock.calls).toEqual([[SCOPE_X.userUnion]]);
+    expect(folder.mock.calls).toEqual([[SCOPE_X.folder, SCOPE_X.userVisible]]);
+    expect(folder.mock.contexts[0]).toBe(cwdFolder());
+  });
+});
+
+describe("PiSession's ToolSearch snapshot reads its own folder's MCP", () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it("folder B's panel offers and resolves beta and the shared user server, never folder A's alpha", async () => {
+    const tools = { alpha: [{ name: 'a_run' }], beta: [{ name: 'b_run' }], shared: [{ name: 'ping' }] };
+    const user = managerWithFake(tools);
+    const folderA = managerWithFake(tools);
+    const folderB = managerWithFake(tools);
+    const viewA = new FolderMcpView(user.manager, folderA.manager);
+    const viewB = new FolderMcpView(user.manager, folderB.manager);
+    try {
+      await user.manager.reconcile({ shared: { command: 'shared' } });
+      viewA.setUserVisible(['shared']);
+      viewB.setUserVisible(['shared']);
+      await folderA.manager.reconcile({ alpha: { command: 'alpha' } });
+      await folderB.manager.reconcile({ beta: { command: 'beta' } });
+      const a = new PiSession(makeOptions([]));
+      const b = new PiSession(makeOptions([], { cwd: '/b' }));
+      await a.initializeEarly();
+      await b.initializeEarly();
+      const folderOf = (cwd: string) => PiRuntime.get('/fake/agent').folders().find((folder) => folder.cwd === cwd)!;
+      vi.spyOn(folderOf('/cwd'), 'mcp', 'get').mockReturnValue(viewA);
+      vi.spyOn(folderOf('/b'), 'mcp', 'get').mockReturnValue(viewB);
+      type Gate = { deferrableTools(): DeferrableSnapshot; activateDeferredTools(names: string[]): void };
+      const gateOf = (cwd: string, session: PiSession): Gate =>
+        (folderOf(cwd) as unknown as { _panelRegistryReader(): { get(id: string): Gate | undefined } })
+          ._panelRegistryReader().get(session.currentSessionId!)!;
+
+      const gateB = gateOf('/b', b);
+      const snapB = gateB.deferrableTools();
+      expect(snapB.names).toEqual(expect.arrayContaining(['mcp__beta__b_run', 'mcp__shared__ping']));
+      expect(snapB.names.filter((name) => name.includes('alpha'))).toEqual([]);
+      expect([...snapB.mcpGroups.keys()].sort()).toEqual(['beta', 'shared']);
+      expect([...(snapB.mcpDescriptions?.keys() ?? [])].sort()).toEqual(['mcp__beta__b_run', 'mcp__shared__ping']);
+      expect([...gateOf('/cwd', a).deferrableTools().mcpGroups.keys()].sort()).toEqual(['alpha', 'shared']);
+
+      // Wired the way the folder's Damocles extension wires ToolSearch to a registered panel.
+      const tool = createToolSearchTool({
+        deferrable: () => gateB.deferrableTools(),
+        activate: (_id, names) => gateB.activateDeferredTools(names),
+        inventory: () => ({ names: snapB.names, ...(snapB.mcpDescriptions ? { mcpDescriptions: snapB.mcpDescriptions } : {}) }),
+      });
+      expect(tool.description).toContain('mcp__beta__b_run');
+      expect(tool.description).not.toContain('alpha');
+      const ctx = { sessionManager: { getSessionId: () => b.currentSessionId } } as never;
+      const result = (await tool.execute('tc-1', { tools: ['mcp__alpha__a_run', 'alpha'] }, undefined, undefined, ctx)) as unknown as { details?: ToolSearchDetails };
+      expect(result.details?.matches ?? []).toEqual([]);
+    } finally {
+      viewA.dispose();
+      viewB.dispose();
+      await Promise.all([user.manager.dispose(), folderA.manager.dispose(), folderB.manager.dispose()]);
+    }
+  });
+
+  it("a session writes under its panel's raw folder path, not the folder key", async () => {
+    const raw = 'C:\\Work\\MyRepo';
+    const session = new PiSession(makeOptions([], { cwd: raw }));
+    await session.initializeEarly();
+
+    const [folder] = PiRuntime.get('/fake/agent').folders();
+    expect(folder!.key).not.toBe(raw);
+    expect(H.fakePi.SessionManager.create).toHaveBeenLastCalledWith(raw, `/fake/agent/sessions/${raw}`);
+    expect(H.fakePi.createAgentSessionRuntime.mock.lastCall![1]).toMatchObject({ cwd: raw });
+  });
+});
+
 describe('PiSession runtime registration with two panels on one session id', () => {
   beforeEach(() => {
     H.seq.length = 0;
@@ -1663,21 +1832,123 @@ describe('PiSession runtime registration with two panels on one session id', () 
 
     await older.dispose();
 
-    const runtime = PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+    const runtime = PiRuntime.get('/fake/agent');
+    const folder = cwdFolder() as unknown as {
       _panelRegistryReader(): { get(id: string): { permissionHandler: unknown } | undefined };
       _checkpointRegistryReader(): { get(id: string): unknown };
       _activeToolRefreshers: Map<string, () => void>;
-      getSessionMutator(id: string): unknown;
     };
-    // The reader is the one the shared extension's tool_call handler routes through.
-    expect(runtime._panelRegistryReader().get('sess-shared')?.permissionHandler).toBe(newerOptions.permissionHandler);
-    expect(runtime._checkpointRegistryReader().get('sess-shared')).toBe((newer as unknown as { checkpointService: unknown }).checkpointService);
+    // The reader is the one the folder extension's tool_call handler routes through.
+    expect(folder._panelRegistryReader().get('sess-shared')?.permissionHandler).toBe(newerOptions.permissionHandler);
+    expect(folder._checkpointRegistryReader().get('sess-shared')).toBe((newer as unknown as { checkpointService: unknown }).checkpointService);
     expect(runtime.getSessionMutator('sess-shared')).toBe(newer);
-    expect(runtime._activeToolRefreshers.has('sess-shared')).toBe(true);
+    expect(folder._activeToolRefreshers.has('sess-shared')).toBe(true);
 
     await newer.dispose();
-    expect(runtime._panelRegistryReader().get('sess-shared')).toBeUndefined();
+    expect(folder._panelRegistryReader().get('sess-shared')).toBeUndefined();
     expect(runtime.getSessionMutator('sess-shared')).toBeUndefined();
+  });
+
+  describe('dispose while start() is still running', () => {
+    function gate(): { wait: Promise<void>; open: () => void } {
+      let open!: () => void;
+      const wait = new Promise<void>((resolve) => { open = resolve; });
+      return { wait, open };
+    }
+
+    /** What a late start would leave behind: a bound runtime, a registration, an announced session id. */
+    function leftovers(session: PiSession, sessionIds: string[]) {
+      const folder = cwdFolder() as unknown as { _panelRegistry: Map<string, unknown> } | undefined;
+      return {
+        runtime: (session as unknown as { runtime: unknown }).runtime,
+        panels: folder?._panelRegistry.size ?? 0,
+        announced: sessionIds,
+        currentSessionId: session.currentSessionId,
+      };
+    }
+
+    it('a start held on its folder runtime binds nothing once the session is disposed', async () => {
+      const held = gate();
+      const runtime = PiRuntime.get('/fake/agent');
+      const folderOf = runtime.folder.bind(runtime);
+      vi.spyOn(runtime, 'folder').mockImplementationOnce(async (cwd) => {
+        await held.wait;
+        return folderOf(cwd);
+      });
+      const sessionIds: string[] = [];
+      const session = new PiSession(makeOptions([], { onSessionIdChange: (id) => void sessionIds.push(id ?? "") }));
+      const runtimesBefore = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+
+      const starting = session.initializeEarly();
+      await session.dispose();
+      held.open();
+      await starting;
+
+      expect(H.fakePi.createAgentSessionRuntime.mock.calls.length).toBe(runtimesBefore);
+      expect(leftovers(session, sessionIds)).toEqual({ runtime: null, panels: 0, announced: [], currentSessionId: null });
+    });
+
+    it('a runtime created after dispose is released and never bound, registered or announced', async () => {
+      const held = gate();
+      const create = H.fakePi.createAgentSessionRuntime;
+      const createRuntime = create.getMockImplementation()!;
+      let created: { disposed: boolean } | undefined;
+      create.mockImplementationOnce(async (factory, opts) => {
+        await held.wait;
+        const made = await createRuntime(factory, opts);
+        created = made as unknown as { disposed: boolean };
+        return made;
+      });
+      const sessionIds: string[] = [];
+      const session = new PiSession(makeOptions([], { onSessionIdChange: (id) => void sessionIds.push(id ?? "") }));
+
+      const runtimesBefore = create.mock.calls.length;
+      const starting = session.initializeEarly();
+      await vi.waitFor(() => expect(create.mock.calls.length).toBe(runtimesBefore + 1));
+      await session.dispose();
+      held.open();
+      await starting;
+
+      expect(created?.disposed).toBe(true);
+      expect(H.seq).not.toContain('subscribe');
+      expect((PiRuntime.get('/fake/agent') as unknown as { _sessionMutators: Map<string, unknown> })._sessionMutators.size).toBe(0);
+      expect(leftovers(session, sessionIds)).toEqual({ runtime: null, panels: 0, announced: [], currentSessionId: null });
+    });
+
+    it('a stale caller cannot restart a disposed session', async () => {
+      const session = new PiSession(makeOptions([]));
+      const runtimesBefore = H.fakePi.createAgentSessionRuntime.mock.calls.length;
+      await session.dispose();
+
+      await expect((session as unknown as { ensureStarted(): Promise<void> }).ensureStarted()).rejects.toThrow('PiSession: session was disposed');
+      expect(H.fakePi.createAgentSessionRuntime.mock.calls.length).toBe(runtimesBefore);
+    });
+  });
+
+  it('hasConversation is true only for a pending resume or fork, a running turn, or a session with messages', async () => {
+    // The panel asks before replacing the session on a folder switch, so a false positive nags and a
+    // false negative discards a conversation without asking.
+    const fresh = new PiSession(makeOptions([]));
+    expect(fresh.hasConversation()).toBe(false);
+    await fresh.initializeEarly();
+    expect(fresh.hasConversation()).toBe(false);
+    (H.getLastSession() as unknown as { messages: unknown[] }).messages.push({ role: 'user', content: 'hi' });
+    expect(fresh.hasConversation()).toBe(true);
+    await fresh.dispose();
+
+    const resuming = new PiSession(makeOptions([]));
+    resuming.setResumeSession('sess-stored');
+    expect(resuming.hasConversation()).toBe(true);
+    await resuming.dispose();
+
+    const forked = new PiSession(makeOptions([], { forkContext: { piBranchedSessionId: 'sess-branch' } as NonNullable<SessionOptions['forkContext']> }));
+    expect(forked.hasConversation()).toBe(true);
+    await forked.dispose();
+
+    const running = new PiSession(makeOptions([]));
+    (running as unknown as { processingFlag: boolean }).processingFlag = true;
+    expect(running.hasConversation()).toBe(true);
+    await running.dispose();
   });
 
   it('holdsSession names the target of a resume switch before the switch lands', async () => {
@@ -1720,7 +1991,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
   /** Drive the pre-settlement coordinator through the registered panel context (the real dispatch path). */
   async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
     const live = H.getLastSession()!;
-    const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+    const panel = (cwdFolder() as unknown as {
       _panelRegistry: Map<string, { onBeforeSettle?: (e: SettleEvt) => Promise<unknown> }>;
     })._panelRegistry.get(live.sessionId as string)!;
     return panel.onBeforeSettle!(event);
@@ -2489,7 +2760,7 @@ describe('plan-mode active set — exclusion model', () => {
  * what actually reached `session.setActiveToolsByName`.
  */
 describe('PiSession — ToolSearch activation survives every recompute (Slice 2)', () => {
-  // `PiRuntime` is a per-cwd SINGLETON: without disposing it between cases, a later session reuses the
+  // `PiRuntime` is a process SINGLETON: without disposing it between cases, a later session reuses the
   // previous test's runtime and `H.getLastSession()` returns a stale session that this panel never
   // bound — every active-set assertion then reads an array nobody wrote. Mirrors the lifecycle block.
   beforeEach(() => {
@@ -2528,14 +2799,13 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => ['mcp__ctx7__query_docs'],
       // `deferrableToolsSnapshot()` also asks the CLIENT for statuses and blurbs (never pi's registry —
       // that recurses through ToolSearch's own description getter), so both are stubbed.
       getServerStatuses: () => [],
       getAllToolDescriptors: () => [],
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
     const live = H.getLastSession()!;
 
     session.refreshActiveTools();
@@ -2588,8 +2858,8 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    const republish = vi.spyOn(runtime, 'republishToolSearch');
+    const folder = cwdFolder()!;
+    const republish = vi.spyOn(folder, 'republishToolSearch');
 
     session.refreshActiveTools();
 
@@ -2608,12 +2878,12 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
    *
    * The chain is FOUR hops, and no test covered it end to end before this slice:
    *   `extension.ts` onDidChangeConfiguration → `PiRuntime.refreshWebSearch()`
-   *     → `_refreshAllActiveTools()` → the refresher `PiSession.bindSession` registered
+   *     → `FolderRuntime.refreshActiveTools()` → the refresher `PiSession.bindSession` registered
    *     → `PiSession.reloadForMcpToolChange()` → `refreshActiveTools()` → `republishToolSearch()`
    *
    * Entry is `refreshWebSearch()` — the seam `extension.ts`'s one-line listener calls — and everything
    * after it is the REAL wiring, not a spy. That matters because each hop was individually plausible
-   * while the composition was unpinned: `_refreshAllActiveTools` iterates a map a session must have
+   * while the composition was unpinned: `refreshActiveTools` iterates a map a session must have
    * registered itself into, and `reloadForMcpToolChange` only reaches `refreshActiveTools` on its
    * registry-current fast path. A break anywhere in the middle is silent — the toggle appears to work,
    * the active set is right, and only the advertised menu is wrong.
@@ -2622,9 +2892,9 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     const live = H.getLastSession()!;
-    const republish = vi.spyOn(runtime, 'republishToolSearch');
+    const republish = vi.spyOn(cwdFolder()!, 'republishToolSearch');
 
     await runtime.refreshWebSearch();
 
@@ -2705,12 +2975,11 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => ['mcp__ctx7__query_docs', 'mcp__ctx7__resolve_id'],
       getServerStatuses: () => [],
       getAllToolDescriptors: () => [],
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
     const live = H.getLastSession()!;
     // Put the MCP names in the registry so `reloadForMcpToolChange` takes its fast path and re-applies
     // the set inline; the orphaned path defers the apply and would leave this event undriven.
@@ -2789,14 +3058,13 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => ['mcp__ctx7__query_docs'],
       getServerStatuses: () => [],
       // The snapshot sources MCP blurbs from the CLIENT, never from pi's tool registry (reading that
       // from ToolSearch's description getter recurses), so the stub must answer this too.
       getAllToolDescriptors: () => [{ piName: 'mcp__ctx7__query_docs', description: 'Query library docs' }],
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
 
     const snap = session.deferrableToolsSnapshot();
     for (const n of BROWSER_PI_TOOL_NAMES) expect(snap.names, n).toContain(n);
@@ -2989,8 +3257,8 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
  * Slice 1 (nested MCP) — the TEAM half, through the REAL `PiSession.buildTeamEngine()` (criterion 7).
  *
  * Every assertion below goes through the real engine's real `buildAgentToolset` arrow and the real
- * `buildExtensionFactory` arrow, with the runtime's MCP client manager stubbed at the seam `PiSession`
- * actually reads (`PiRuntime.getMcpClientManager`). Nothing about the snapshot is faked: the
+ * `buildExtensionFactory` arrow, with the panel's MCP source stubbed at the seam `PiSession`
+ * actually reads (`FolderRuntime.mcp`). Nothing about the snapshot is faked: the
  * definitions are built by the real `buildNestedMcpToolset` from the real descriptors, so what a team
  * specialist would receive is what is asserted.
  */
@@ -3071,15 +3339,14 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const session = new PiSession(opts);
     await session.initializeEarly();
 
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
     let live = [...descriptors];
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => live.map((d) => d.piName),
       getServerStatuses: () => [],
       getAllToolDescriptors: () => [...live],
       getToolDescriptor: (piName: string) => live.find((d) => d.piName === piName),
       callTool: mcpCallTool,
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
 
     return { session, cfg, setDescriptors: (next: typeof descriptors) => { live = [...next]; } };
   }
@@ -3357,14 +3624,13 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+    stubPanelMcp({
       allToolNames: () => MCP_DESCRIPTORS.map((d) => d.piName),
       getServerStatuses: () => [],
       getAllToolDescriptors: () => [...MCP_DESCRIPTORS],
       getToolDescriptor: (piName: string) => MCP_DESCRIPTORS.find((d) => d.piName === piName),
       callTool: mcpCallTool,
-    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    } as unknown as McpToolSource);
 
     const engine = session.buildTeamEngine(); // ONE engine, built before the toggle
     const on = engine.buildAgentToolset(teamCtx('agent-1'));
@@ -3414,8 +3680,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
-    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue(null as never);
+    stubPanelMcp(null);
 
     const engine = session.buildTeamEngine();
     let built!: ReturnType<typeof engine.buildAgentToolset>;
@@ -4005,7 +4270,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
   /** Arm dollar enforcement: a `maxBudgetUsd` setting AND a dollar-metered credential (the gate is a
    *  no-op on a flat subscription, so both are required for the pre-prompt block to run at all). */
   function withBudget(limit: number): void {
-    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' });
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' });
     vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(((section?: string) => ({
       get: (key: string, def?: unknown) => (section === 'damocles' && key === 'maxBudgetUsd' ? limit : def),
       update: () => Promise.resolve(),
@@ -4015,7 +4280,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
   /** Drive `onBeforeSettle` through the registered panel context (the real dispatch path). */
   async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
     const live = H.getLastSession()!;
-    const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+    const panel = (cwdFolder() as unknown as {
       _panelRegistry: Map<string, { onBeforeSettle?: (e: SettleEvt) => Promise<unknown> }>;
     })._panelRegistry.get(live.sessionId as string)!;
     return panel.onBeforeSettle!(event);
@@ -4454,7 +4719,7 @@ describe('PiSession custom-provider fallback warning', () => {
   type SyncResult = { wired: string[]; notWired: string[]; timedOut: boolean };
 
   function stubSync(result: SyncResult): PiRuntime {
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     vi.spyOn(runtime, 'syncCustomProviders').mockResolvedValue(result);
     return runtime;
   }
@@ -4850,7 +5115,7 @@ describe('team role dollar billing', () => {
   async function billingFor(mode: string): Promise<boolean> {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode } as never);
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode } as never);
     const resolved = session.resolveTeamRole('lead');
     await session.dispose();
     return resolved.dollarBilled;
@@ -4876,7 +5141,7 @@ describe('PiSession account state publication', () => {
     H.resetServices();
     // Earlier suites leave auth spies on the runtime singleton, and these assert exact chip values.
     vi.restoreAllMocks();
-    vi.spyOn(PiRuntime.get('/cwd', '/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'none' });
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'none' });
   });
   afterEach(async () => {
     await PiRuntime.disposeInstance();
@@ -4889,7 +5154,7 @@ describe('PiSession account state publication', () => {
 
   /** What the builder produces from the session's live inputs, read through its public surface. */
   function expectedFor(session: PiSession, preferApiKey = false): AccountInfo {
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     return buildAccountInfo({
       modelValue: session.currentModel ?? '',
       modelInfo: session.getModelInfo(),
@@ -4922,7 +5187,7 @@ describe('PiSession account state publication', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: false });
     registerOpenAIModel();
 
@@ -4950,7 +5215,7 @@ describe('PiSession account state publication', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' });
 
     session.publishAccountInfo();
@@ -4964,7 +5229,7 @@ describe('PiSession account state publication', () => {
     let preferApiKey = false;
     const session = new PiSession(makeOptions(messages, { getPreferOpenAIApiKey: () => preferApiKey }));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, codex: true });
     registerOpenAIModel();
     session.setModel('gpt-6-sol');
@@ -4981,7 +5246,7 @@ describe('PiSession account state publication', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
-    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const runtime = PiRuntime.get('/fake/agent');
     expect(published(messages)).toEqual(expectedFor(session));
 
     vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'extra' });

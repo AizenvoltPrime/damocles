@@ -108,7 +108,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
       }
     });
 
-    const savedState = getState<{ sessionId?: string; sessionName?: string }>();
+    const savedState = getState<{ sessionId?: string; sessionName?: string; workspaceFolderKey?: string }>();
     if (savedState?.sessionId) {
       sessionStore.setSelectedSession(savedState.sessionId, savedState.sessionName ?? null);
       sessionStore.setResumedSession(savedState.sessionId);
@@ -116,6 +116,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     postMessage({
       type: "ready",
       ...(savedState?.sessionId !== undefined && { savedSessionId: savedState.sessionId }),
+      ...(savedState?.workspaceFolderKey !== undefined && { savedWorkspaceFolderKey: savedState.workspaceFolderKey }),
     });
     postMessage({ type: "requestVoiceConfig" });
     postMessage({ type: "requestExploreKeyStatus" });

@@ -3,6 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { CompassService, type CompassWorkerFactory, type CompassWorkerLike } from '../index';
+import { CompassViews } from '../compass-views';
+import { CompassRegistry } from '../compass-registry';
+import type { FolderTarget } from '../../workspace-folders/folder-registry';
 
 const { __setTrusted, __trustEmitter, __watchers } = vscode as unknown as {
 	__setTrusted: (v: boolean) => void;
@@ -36,13 +39,15 @@ function enableCompassSetting(): void {
 	} as never);
 }
 
-function fakeContext(): vscode.ExtensionContext {
-	return { subscriptions: [] } as unknown as vscode.ExtensionContext;
-}
-
 let created: Array<ReturnType<typeof makeWorker>>;
 let factory: CompassWorkerFactory;
 let service: CompassService | null;
+let views: CompassViews | null;
+let registry: CompassRegistry | null;
+
+function target(fsPath: string): FolderTarget {
+	return { key: fsPath, fsPath, name: fsPath, label: fsPath, projectScope: true };
+}
 
 beforeEach(() => {
 	created = [];
@@ -52,6 +57,8 @@ beforeEach(() => {
 		return w;
 	};
 	service = null;
+	views = null;
+	registry = null;
 	__watchers.length = 0;
 	__setTrusted(true);
 	enableCompassSetting();
@@ -59,6 +66,8 @@ beforeEach(() => {
 
 afterEach(async () => {
 	await service?.dispose();
+	views?.dispose();
+	await registry?.dispose();
 	__trustEmitter.clear();
 	__setTrusted(true);
 	vi.restoreAllMocks();
@@ -108,57 +117,70 @@ describe('CompassService workspace trust', () => {
 
 	it('registers no views, status bar, or commands in an untrusted workspace', () => {
 		__setTrusted(false);
-		const registerTree = vi.spyOn(vscode.window, 'registerTreeDataProvider');
+		const createTree = vi.spyOn(vscode.window, 'createTreeView');
 		const registerCommand = vi.spyOn(vscode.commands, 'registerCommand');
-		service = new CompassService('/ws', '/damocles', '/ext', factory);
+		const createStatusBar = vi.spyOn(vscode.window, 'createStatusBarItem');
 
-		const context = fakeContext();
-		service.registerViews(context);
+		views = new CompassViews();
+		views.register();
 
-		expect(registerTree).not.toHaveBeenCalled();
+		expect(createTree).not.toHaveBeenCalled();
 		expect(registerCommand).not.toHaveBeenCalled();
-		expect(context.subscriptions).toHaveLength(0);
+		expect(createStatusBar).not.toHaveBeenCalled();
 	});
 
-	it('starts indexing when trust is granted, with no window reload', async () => {
+	it('registers the views deferred by the untrusted start when trust is granted', () => {
 		__setTrusted(false);
-		service = new CompassService('/ws', '/damocles', '/ext', factory);
-		await service.ensureInitialized();
+		views = new CompassViews();
+		views.register();
+
+		const registerCommand = vi.spyOn(vscode.commands, 'registerCommand');
+		__setTrusted(true);
+		__trustEmitter.fire();
+
+		expect(registerCommand.mock.calls.map(c => c[0])).toContain('damocles.compass.rebuild');
+	});
+
+	it('registers the views once when trust is granted after a trusted start', () => {
+		const registerCommand = vi.spyOn(vscode.commands, 'registerCommand');
+		views = new CompassViews();
+		views.register();
+		const afterFirst = registerCommand.mock.calls.length;
+		expect(afterFirst).toBeGreaterThan(0);
+
+		__trustEmitter.fire();
+
+		expect(registerCommand.mock.calls).toHaveLength(afterFirst);
+	});
+
+	it('starts no worker for a registry folder in an untrusted workspace, then indexes it once trust is granted', async () => {
+		__setTrusted(false);
+		registry = new CompassRegistry({ damoclesDir: '/damocles', extensionPath: '/ext', workerFactory: factory });
+
+		registry.start(target('/ws-a'));
+		await Promise.resolve();
 		expect(created).toHaveLength(0);
 
 		__setTrusted(true);
 		__trustEmitter.fire();
 		await vi.waitFor(() => expect(created).toHaveLength(1));
 
-		expect(created[0]!.messages[0]).toMatchObject({ type: 'init', workspacePath: '/ws' });
+		expect(created[0]!.messages[0]).toMatchObject({ type: 'init', workspacePath: '/ws-a' });
 	});
 
-	it('registers the views deferred by the untrusted start when trust is granted', async () => {
+	it('starts no worker on a trust grant for a folder whose start was never requested', async () => {
 		__setTrusted(false);
-		service = new CompassService('/ws', '/damocles', '/ext', factory);
-		const context = fakeContext();
-		service.registerViews(context);
-		expect(context.subscriptions).toHaveLength(0);
+		registry = new CompassRegistry({ damoclesDir: '/damocles', extensionPath: '/ext', workerFactory: factory });
 
-		const registerCommand = vi.spyOn(vscode.commands, 'registerCommand');
+		registry.acquire(target('/ws-a'));
+		registry.start(target('/ws-b'));
 		__setTrusted(true);
 		__trustEmitter.fire();
 		await vi.waitFor(() => expect(created).toHaveLength(1));
+		await new Promise(resolve => setTimeout(resolve, 10));
 
-		expect(context.subscriptions.length).toBeGreaterThan(0);
-		expect(registerCommand.mock.calls.map(c => c[0])).toContain('damocles.compass.rebuild');
-	});
-
-	it('registers the views once when trust is granted after a trusted start', () => {
-		service = new CompassService('/ws', '/damocles', '/ext', factory);
-		const context = fakeContext();
-		service.registerViews(context);
-		const afterFirst = context.subscriptions.length;
-		expect(afterFirst).toBeGreaterThan(0);
-
-		__trustEmitter.fire();
-
-		expect(context.subscriptions).toHaveLength(afterFirst);
+		expect(created).toHaveLength(1);
+		expect(created[0]!.messages[0]).toMatchObject({ type: 'init', workspacePath: '/ws-b' });
 	});
 
 	it('unsubscribes from trust grants on dispose', async () => {

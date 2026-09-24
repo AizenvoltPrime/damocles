@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { log } from '../logger';
+import { homeDirectory } from '../workspace-folders/folder-registry';
 import { openDatabaseAsync, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
 import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } from './query-expansion';
 import { NoteManager } from './managers/note-manager';
@@ -46,6 +47,8 @@ interface TurnCandidate {
   userText: string;
   assistantText: string;
   files: string[];
+  /** The raw folder fsPath the conversation ran in; consolidation files its extractions there. */
+  workspace: string;
 }
 
 /** Cap on buffered pre-init turn candidates; oldest dropped so a failing init cannot leak memory. */
@@ -84,6 +87,9 @@ export class MemoryService {
   /** Ordered live-progress events of the in-flight pass, replayed when a panel reopens the overlay mid-pass. */
   private currentPhaseEvents: ConsolidationPhaseEvent[] = [];
   private disposed = false;
+  /** Folders whose observations the file-change tracker indexes. */
+  private workspaceRoots: readonly string[] = [];
+  private fallbackWorkspace: () => string = homeDirectory;
   /** Guards the stale-injection-DB sweep so repeated init calls don't re-sweep. */
   private staleSweepDone = false;
   /** Consecutive failed/released passes; drives the idle-timer backoff. Reset to 0 on any non-failed pass. */
@@ -98,6 +104,18 @@ export class MemoryService {
 
   // node:sqlite has no bundled asset to resolve, so `_extensionPath` is unused (kept for call-site compat).
   constructor(_extensionPath: string) {}
+
+  /** The open folders' raw fsPaths; the file-change tracker rebuilds its index when they change. */
+  setWorkspaceRoots(roots: readonly string[]): void {
+    if (roots.length === this.workspaceRoots.length && roots.every((r, i) => r === this.workspaceRoots[i])) return;
+    this.workspaceRoots = [...roots];
+    this.fileChangeTracker?.setWorkspaceRoots(this.workspaceRoots);
+  }
+
+  /** Where consolidation files legacy candidates stored without a folder: the window's default folder. */
+  setFallbackWorkspace(fallback: () => string): void {
+    this.fallbackWorkspace = fallback;
+  }
 
   /** Register the sink that broadcasts consolidation activity to every open panel. */
   setConsolidationBroadcast(broadcast: (msg: ExtensionToWebviewMessage) => void): void {
@@ -231,7 +249,7 @@ export class MemoryService {
     this.observationManager = new ObservationManager(this.db);
     this.retrievalManager = new RetrievalManager(this.db, this.runner);
     this.injectionManager = new InjectionManager(this.db, this.profileManager, this.runner);
-    this.fileChangeTracker = new FileChangeTracker(this.db, this.writeQueue, this.currentWorkspace);
+    this.fileChangeTracker = new FileChangeTracker(this.db, this.writeQueue, this.workspaceRoots);
     this.fileChangeTracker.initialize();
 
     // Bound accumulation of never-explicitly-deleted per-session injection DBs. Fire-and-forget once
@@ -440,7 +458,7 @@ export class MemoryService {
     if (!db || !writeQueue || !observationManager) return null;
     const result = await writeQueue.run(() => observationManager.addRichObservation(sessionId, workspace, input));
     if (result) {
-      this.fileChangeTracker?.trackObservation(result.id, input.filesRead ?? [], input.filesModified ?? []);
+      this.fileChangeTracker?.trackObservation(result.id, input.filesRead ?? [], input.filesModified ?? [], workspace);
       this._expandSearchTerms(result.id, {
         content: input.content,
         title: input.title,
@@ -776,10 +794,6 @@ export class MemoryService {
     return vscode.workspace.getConfiguration('damocles.memory').get<number>('autoExtract.idleSeconds', 180);
   }
 
-  private get currentWorkspace(): string {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-  }
-
   /**
    * Persist one completed turn as an extraction candidate (no write when memory/auto-extract is off).
    * No LLM runs here — the row is enqueued and the idle timer armed for a later batch pass.
@@ -790,6 +804,7 @@ export class MemoryService {
     userText: string;
     assistantText: string;
     files: string[];
+    workspace: string;
   }): void {
     if (this.disposed || !this.isEnabled || !this.autoExtractEnabled) return;
     if (!this.db || !this.writeQueue) {
@@ -814,8 +829,8 @@ export class MemoryService {
     if (!this.writeQueue) return Promise.resolve();
     return this.writeQueue.run(() => {
       db.prepare(
-        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
+        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
       ).run(
         crypto.randomUUID(),
         args.sessionId,
@@ -823,6 +838,7 @@ export class MemoryService {
         args.userText,
         args.assistantText,
         JSON.stringify(args.files),
+        args.workspace,
         Date.now(),
       );
     });
@@ -905,7 +921,7 @@ export class MemoryService {
           instanceId: this.instanceId,
           reason: opts.reason,
           ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
-          workspace: this.currentWorkspace,
+          fallbackWorkspace: () => this.fallbackWorkspace(),
           autoExtractEnabled: manual || this.autoExtractEnabled,
           trigger,
           // Skip the pass if the service disposed between scheduling and execution, so it never
@@ -937,6 +953,15 @@ export class MemoryService {
             this.armIdleTimer();
           } else {
             this.consecutiveConsolidationFailures = 0;
+            // A pass claims one folder's turns; other folders' (or over-budget) turns need another pass,
+            // which a manual run takes now and a background run leaves to the idle timer.
+            if (result.candidatesReviewed > 0 && this.getPendingCount() > 0) {
+              if (manual) {
+                this.pendingConsolidation = mergePendingConsolidation(this.pendingConsolidation, { reason: 'manual', forceExtract: true });
+              } else {
+                this.armIdleTimer();
+              }
+            }
           }
         }
       } finally {

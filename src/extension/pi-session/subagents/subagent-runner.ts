@@ -4,7 +4,7 @@
  * Adapted from @tintinweb/pi-subagents `agent-runner.ts` (MIT, © 2026 tintinweb; see
  * THIRD-PARTY-NOTICES.md). The heavy session-construction logic (resource loader, extension filtering,
  * model resolution) moved out: the caller supplies a `createSession` thunk that builds the nested
- * session via `PiRuntime.createSubagentSession`. Worktree isolation and `inherit_context` are dropped.
+ * session via `FolderRuntime.createSubagentSession`. Worktree isolation and `inherit_context` are dropped.
  * What remains is upstream's lifecycle: abort forwarding, graceful turn-limit enforcement, usage
  * accumulation, response-text collection, and the conversation formatter.
  */

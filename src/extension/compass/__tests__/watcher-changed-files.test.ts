@@ -44,6 +44,7 @@ describe('CompassService watcher changedFiles accumulation', () => {
 	let fireCreate: WatcherHandler;
 	let fireDelete: WatcherHandler;
 	let watcherInstances: Array<{ dispose: ReturnType<typeof vi.fn> }>;
+	let watcherPatterns: unknown[];
 
 	function incrementalUpdates(worker: FakeWorker): PostedMessage[] {
 		return worker.posted.filter(m => m.type === 'incrementalUpdate');
@@ -61,7 +62,9 @@ describe('CompassService watcher changedFiles accumulation', () => {
 			update: () => Promise.resolve(),
 		} as unknown as ReturnType<typeof vscode.workspace.getConfiguration>);
 		watcherInstances = [];
-		vi.spyOn(vscode.workspace, 'createFileSystemWatcher').mockImplementation(() => {
+		watcherPatterns = [];
+		vi.spyOn(vscode.workspace, 'createFileSystemWatcher').mockImplementation((pattern) => {
+			watcherPatterns.push(pattern);
 			const instance = {
 				onDidChange: (_handler: WatcherHandler) => ({ dispose: () => {} }),
 				onDidCreate: (handler: WatcherHandler) => { fireCreate = handler; return { dispose: () => {} }; },
@@ -180,6 +183,15 @@ describe('CompassService watcher changedFiles accumulation', () => {
 		const updates = incrementalUpdates(workers[0]!);
 		expect(updates).toHaveLength(1);
 		expect(updates[0]!.changedFiles).toBeUndefined();
+	});
+
+	it('anchors the watcher to its own folder, so another folder\'s edits never reach this index', () => {
+		expect(watcherPatterns).toHaveLength(1);
+		const pattern = watcherPatterns[0] as vscode.RelativePattern;
+		expect(pattern).toBeInstanceOf(vscode.RelativePattern);
+		// The mock keeps the constructor's base argument; a folder Uri base is what scopes events to that folder.
+		expect((pattern as unknown as { base: { fsPath: string } }).base.fsPath).toBe('/test/workspace');
+		expect(pattern.pattern).toMatch(/^\*\*\/\*\.\{.*\bts\b.*\}$/);
 	});
 
 	it('disposes the previous FileSystemWatcher when init re-runs after a crash', async () => {

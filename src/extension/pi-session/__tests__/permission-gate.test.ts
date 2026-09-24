@@ -687,6 +687,7 @@ function nestedDescriptor(piName: string, readOnly: boolean): McpToolDescriptor 
   return {
     piName,
     serverName: piName.split('__')[1] ?? 'git',
+    serverId: `test/${piName.split('__')[1] ?? 'git'}`,
     kind: 'tool',
     originalName: piName.split('__').slice(2).join('__'),
     description: `desc of ${piName}`,

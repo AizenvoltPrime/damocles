@@ -3,12 +3,12 @@
  * OAuth credential storage for MCP servers, backed by VS Code SecretStorage (the OS keychain) so
  * long-lived bearer tokens and client secrets never sit in plaintext on disk (M1). The store is
  * injected via `setMcpSecretStorage`; before injection (and in unit tests) an in-process map stands
- * in. Legacy on-disk entries (`<MCP_OAUTH_DIR>/sha256-<hash>/tokens.json`) are migrated into the
- * keychain on first read and then deleted. Read-modify-write per server is serialized.
+ * in. Credentials are keyed by server identity (name + URL), because two workspace folders can each
+ * define a same-named server at a different URL. Read-modify-write per identity is serialized.
  */
 import type { SecretStorage } from "vscode";
 import { createHash } from "crypto";
-import { existsSync, readFileSync, rmSync } from "fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
 import { MCP_OAUTH_DIR } from "./paths";
 import { log } from "../../logger";
@@ -37,31 +37,107 @@ export interface AuthEntry {
   clientInfo?: StoredClientInfo;
   codeVerifier?: string;
   oauthState?: string;
-  /** Track the URL these credentials are for. */
+  /** The URL a name-keyed entry was bound to; only the migration to identity keys reads it. */
   serverUrl?: string;
 }
 
+/** The server a credential belongs to. Same-named servers at different URLs never share one. */
+export interface McpAuthIdentity {
+  serverName: string;
+  serverUrl: string;
+}
+
 const KEY_PREFIX = "damocles.mcp.oauth.";
+/** The key format before credentials were keyed by URL: `sha256-<name hash>`. */
+const NAME_KEYED = /^damocles\.mcp\.oauth\.sha256-([0-9a-f]{64})$/;
+const LEGACY_DIR_NAME = /^sha256-([0-9a-f]{64})$/;
 
 let secretStore: SecretStorage | undefined;
 const memoryStore = new Map<string, string>();
 let warnedNoKeychain = false;
+let migration: Promise<void> = Promise.resolve();
 
-/** Inject the VS Code SecretStorage (OS keychain) backing the credential store (called at activation). */
-export function setMcpSecretStorage(storage: SecretStorage): void {
-  secretStore = storage;
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** The SecretStorage key for a server (name hashed to a stable, opaque key). */
-function storageKey(serverName: string): string {
-  if (typeof serverName !== "string") {
-    throw new Error(`Invalid MCP server name: ${JSON.stringify(serverName)}`);
+/**
+ * The name half equals the name-keyed format's hash, so the migration can re-key an entry from its
+ * old key and its stored URL without knowing the server name.
+ */
+function identityKey(nameHash: string, serverUrl: string): string {
+  return `${KEY_PREFIX}sha256-${nameHash}-${sha256(serverUrl)}`;
+}
+
+function storageKey(id: McpAuthIdentity): string {
+  if (typeof id.serverName !== "string" || typeof id.serverUrl !== "string") {
+    throw new Error(`Invalid MCP server identity: ${JSON.stringify(id)}`);
   }
-  const hash = createHash("sha256").update(serverName, "utf8").digest("hex");
-  return `${KEY_PREFIX}sha256-${hash}`;
+  return identityKey(sha256(id.serverName), id.serverUrl);
+}
+
+/**
+ * Inject the VS Code SecretStorage (OS keychain) backing the credential store (called at activation),
+ * and re-key every name-keyed entry to its identity key before any credential is read.
+ */
+export function setMcpSecretStorage(storage: SecretStorage): void {
+  secretStore = storage;
+  migration = migrateNameKeyedEntries(storage).catch((error) => {
+    log("[McpAuth] Migrating stored MCP sign-ins failed; servers signed in before this version must authenticate again: %O", error);
+  });
+}
+
+/** Base directory for the pre-keychain on-disk OAuth storage (read-only migration source). */
+function legacyBaseDir(): string {
+  const override = process.env["MCP_OAUTH_DIR"]?.trim();
+  return override ? override : MCP_OAUTH_DIR;
+}
+
+/**
+ * One-time move of every name-keyed credential, from the keychain and from the pre-keychain
+ * `<MCP_OAUTH_DIR>/sha256-<name hash>/tokens.json` files, to its identity key. An entry never bound to
+ * a URL could not be used and is dropped. An identity key already present wins.
+ */
+async function migrateNameKeyedEntries(store: SecretStorage): Promise<void> {
+  const rekey = async (nameHash: string, raw: string): Promise<void> => {
+    let entry: AuthEntry;
+    try {
+      entry = JSON.parse(raw) as AuthEntry;
+    } catch (error) {
+      log("[McpAuth] Dropping an unparseable stored MCP sign-in: %O", error);
+      return;
+    }
+    if (typeof entry.serverUrl !== "string") return;
+    const key = identityKey(nameHash, entry.serverUrl);
+    if ((await store.get(key)) === undefined) await store.store(key, raw);
+  };
+
+  for (const key of await store.keys()) {
+    const match = NAME_KEYED.exec(key);
+    if (!match) continue;
+    const raw = await store.get(key);
+    if (raw !== undefined) await rekey(match[1]!, raw);
+    await store.delete(key);
+  }
+
+  const base = legacyBaseDir();
+  if (!existsSync(base)) return;
+  for (const dirName of readdirSync(base)) {
+    const match = LEGACY_DIR_NAME.exec(dirName);
+    if (!match) continue;
+    const dir = join(base, dirName);
+    const file = join(dir, "tokens.json");
+    if (existsSync(file)) await rekey(match[1]!, readFileSync(file, "utf-8"));
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      log("[McpAuth] Failed to remove legacy auth dir %s: %O", dir, error);
+    }
+  }
 }
 
 async function readRaw(key: string): Promise<string | undefined> {
+  await migration;
   if (secretStore) return secretStore.get(key);
   if (!warnedNoKeychain) {
     warnedNoKeychain = true;
@@ -71,6 +147,7 @@ async function readRaw(key: string): Promise<string | undefined> {
 }
 
 async function writeRaw(key: string, value: string): Promise<void> {
+  await migration;
   if (secretStore) {
     await secretStore.store(key, value);
     return;
@@ -79,6 +156,7 @@ async function writeRaw(key: string, value: string): Promise<void> {
 }
 
 async function deleteRaw(key: string): Promise<void> {
+  await migration;
   if (secretStore) {
     await secretStore.delete(key);
     return;
@@ -88,9 +166,9 @@ async function deleteRaw(key: string): Promise<void> {
 
 const keyChains = new Map<string, Promise<unknown>>();
 
-/** Serialize a read-modify-write sequence for one server so concurrent updates can't clobber each other. */
-function withKeyLock<T>(serverName: string, task: () => Promise<T>): Promise<T> {
-  const key = storageKey(serverName);
+/** Serialize a read-modify-write sequence for one identity so concurrent updates can't clobber each other. */
+function withKeyLock<T>(id: McpAuthIdentity, task: () => Promise<T>): Promise<T> {
+  const key = storageKey(id);
   const prev = keyChains.get(key) ?? Promise.resolve();
   const run = prev.then(task, task);
   keyChains.set(
@@ -103,188 +181,88 @@ function withKeyLock<T>(serverName: string, task: () => Promise<T>): Promise<T> 
   return run;
 }
 
-/** Base directory for legacy on-disk OAuth storage (read-only migration source). */
-function legacyBaseDir(): string {
-  const override = process.env["MCP_OAUTH_DIR"]?.trim();
-  return override ? override : MCP_OAUTH_DIR;
-}
-
-function legacyServerDir(serverName: string): string {
-  const hash = createHash("sha256").update(serverName, "utf8").digest("hex");
-  return join(legacyBaseDir(), `sha256-${hash}`);
-}
-
-/**
- * Import a pre-SecretStorage on-disk entry into the keychain (once), then delete the plaintext dir.
- * Returns the migrated entry, or undefined when there is nothing to migrate.
- */
-async function migrateLegacyEntry(serverName: string, key: string): Promise<AuthEntry | undefined> {
-  const dir = legacyServerDir(serverName);
-  const filePath = join(dir, "tokens.json");
-  if (!existsSync(filePath)) return undefined;
-  let entry: AuthEntry | undefined;
-  try {
-    entry = JSON.parse(readFileSync(filePath, "utf-8")) as AuthEntry;
-  } catch (error) {
-    log("[McpAuth] Failed to parse legacy auth entry for %s: %O", serverName, error);
-    entry = undefined;
-  }
-  if (entry && Object.keys(entry).length > 0) {
-    await writeRaw(key, JSON.stringify(entry));
-  }
-  try {
-    rmSync(dir, { recursive: true, force: true });
-  } catch (error) {
-    log("[McpAuth] Failed to remove legacy auth dir for %s: %O", serverName, error);
-  }
-  return entry && Object.keys(entry).length > 0 ? entry : undefined;
-}
-
-async function readEntry(serverName: string): Promise<AuthEntry | undefined> {
-  const key = storageKey(serverName);
+async function readEntry(id: McpAuthIdentity): Promise<AuthEntry | undefined> {
+  const key = storageKey(id);
   const raw = await readRaw(key);
-  if (raw !== undefined) {
-    try {
-      return JSON.parse(raw) as AuthEntry;
-    } catch (error) {
-      // A corrupt blob is unrecoverable and indistinguishable from "never authenticated". Clear it so it
-      // can't wedge every future read, and surface it as a warning — the server then re-authenticates.
-      log("[McpAuth] Corrupt auth entry for %s; clearing it to force re-authentication: %O", serverName, error);
-      await deleteRaw(key);
-      return undefined;
-    }
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as AuthEntry;
+  } catch (error) {
+    // A corrupt blob is unrecoverable and indistinguishable from "never authenticated". Clear it so it
+    // can't wedge every future read, and surface it as a warning — the server then re-authenticates.
+    log("[McpAuth] Corrupt auth entry for %s; clearing it to force re-authentication: %O", id.serverName, error);
+    await deleteRaw(key);
+    return undefined;
   }
-  return migrateLegacyEntry(serverName, key);
 }
 
-async function writeEntry(serverName: string, entry: AuthEntry): Promise<void> {
-  await writeRaw(storageKey(serverName), JSON.stringify(entry));
+async function writeEntry(id: McpAuthIdentity, entry: AuthEntry): Promise<void> {
+  await writeRaw(storageKey(id), JSON.stringify(entry));
 }
 
-/** Get the raw auth entry for a server (no URL validation). */
-export function getAuthEntry(serverName: string): Promise<AuthEntry | undefined> {
-  return readEntry(serverName);
-}
-
-/**
- * Get the auth entry only if it is bound to the given server URL. Resolves to undefined when no
- * URL is stored (legacy) or the URL has changed (credentials no longer valid for this server).
- */
-export async function getAuthForUrl(serverName: string, serverUrl: string): Promise<AuthEntry | undefined> {
-  const entry = await readEntry(serverName);
-  if (!entry) return undefined;
-  if (!entry.serverUrl) return undefined;
-  if (entry.serverUrl !== serverUrl) return undefined;
-  return entry;
-}
-
-/** Persist an auth entry, stamping it with `serverUrl` when provided. */
-export function saveAuthEntry(serverName: string, entry: AuthEntry, serverUrl?: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    if (serverUrl) entry.serverUrl = serverUrl;
-    await writeEntry(serverName, entry);
+/** Read-modify-write one identity's entry under its lock, creating it when absent. */
+function updateEntry(id: McpAuthIdentity, mutate: (entry: AuthEntry) => void): Promise<void> {
+  return withKeyLock(id, async () => {
+    const entry = (await readEntry(id)) ?? {};
+    mutate(entry);
+    await writeEntry(id, entry);
   });
 }
 
-/** Remove all credentials for a server (keychain entry + any residual legacy dir). */
-export function removeAuthEntry(serverName: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    await deleteRaw(storageKey(serverName));
-    const dir = legacyServerDir(serverName);
-    if (existsSync(dir)) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch (error) {
-        log("[McpAuth] Failed to remove legacy auth dir for %s: %O", serverName, error);
-      }
-    }
-  });
-}
-
-/** Update tokens for a server, clearing stale URL-bound state when the URL changes. */
-export function updateTokens(serverName: string, tokens: StoredTokens, serverUrl?: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = (await readEntry(serverName)) ?? {};
-    if (serverUrl && entry.serverUrl !== serverUrl) {
-      delete entry.clientInfo;
-      delete entry.codeVerifier;
-      delete entry.oauthState;
-    }
-    entry.tokens = tokens;
-    if (serverUrl) entry.serverUrl = serverUrl;
-    await writeEntry(serverName, entry);
-  });
-}
-
-/** Update dynamic client info, clearing stale URL-bound state when the URL changes. */
-export function updateClientInfo(serverName: string, clientInfo: StoredClientInfo, serverUrl?: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = (await readEntry(serverName)) ?? {};
-    if (serverUrl && entry.serverUrl !== serverUrl) {
-      delete entry.tokens;
-      delete entry.codeVerifier;
-      delete entry.oauthState;
-    }
-    entry.clientInfo = clientInfo;
-    if (serverUrl) entry.serverUrl = serverUrl;
-    await writeEntry(serverName, entry);
-  });
-}
-
-/** Update the PKCE code verifier, clearing stale URL-bound state when the URL changes. */
-export function updateCodeVerifier(serverName: string, codeVerifier: string, serverUrl?: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = (await readEntry(serverName)) ?? {};
-    if (serverUrl && entry.serverUrl !== serverUrl) {
-      delete entry.tokens;
-      delete entry.clientInfo;
-      delete entry.oauthState;
-    }
-    entry.codeVerifier = codeVerifier;
-    if (serverUrl) entry.serverUrl = serverUrl;
-    await writeEntry(serverName, entry);
-  });
-}
-
-/** Clear the PKCE code verifier for a server. */
-export function clearCodeVerifier(serverName: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = await readEntry(serverName);
+/** Clear fields of an existing entry; no entry means nothing to clear and nothing is written. */
+function clearFields(id: McpAuthIdentity, fields: readonly (keyof AuthEntry)[]): Promise<void> {
+  return withKeyLock(id, async () => {
+    const entry = await readEntry(id);
     if (!entry) return;
-    delete entry.codeVerifier;
-    await writeEntry(serverName, entry);
+    for (const field of fields) delete entry[field];
+    await writeEntry(id, entry);
   });
 }
 
-/** Update the CSRF state, clearing stale URL-bound state when the URL changes. */
-export function updateOAuthState(serverName: string, state: string, serverUrl?: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = (await readEntry(serverName)) ?? {};
-    if (serverUrl && entry.serverUrl !== serverUrl) {
-      delete entry.tokens;
-      delete entry.clientInfo;
-      delete entry.codeVerifier;
-    }
-    entry.oauthState = state;
-    if (serverUrl) entry.serverUrl = serverUrl;
-    await writeEntry(serverName, entry);
-  });
+/** The auth entry stored for a server identity. */
+export function getAuthEntry(id: McpAuthIdentity): Promise<AuthEntry | undefined> {
+  return readEntry(id);
 }
 
-/** Get the stored CSRF state for a server. */
-export async function getOAuthState(serverName: string): Promise<string | undefined> {
-  const entry = await readEntry(serverName);
+/** Persist a whole auth entry for a server identity. */
+export function saveAuthEntry(id: McpAuthIdentity, entry: AuthEntry): Promise<void> {
+  return withKeyLock(id, () => writeEntry(id, entry));
+}
+
+/** Remove all credentials for a server identity. */
+export function removeAuthEntry(id: McpAuthIdentity): Promise<void> {
+  return withKeyLock(id, () => deleteRaw(storageKey(id)));
+}
+
+export function updateTokens(id: McpAuthIdentity, tokens: StoredTokens): Promise<void> {
+  return updateEntry(id, (entry) => { entry.tokens = tokens; });
+}
+
+export function updateClientInfo(id: McpAuthIdentity, clientInfo: StoredClientInfo): Promise<void> {
+  return updateEntry(id, (entry) => { entry.clientInfo = clientInfo; });
+}
+
+export function updateCodeVerifier(id: McpAuthIdentity, codeVerifier: string): Promise<void> {
+  return updateEntry(id, (entry) => { entry.codeVerifier = codeVerifier; });
+}
+
+export function clearCodeVerifier(id: McpAuthIdentity): Promise<void> {
+  return clearFields(id, ["codeVerifier"]);
+}
+
+/** Store the CSRF state of the flow in progress. */
+export function updateOAuthState(id: McpAuthIdentity, state: string): Promise<void> {
+  return updateEntry(id, (entry) => { entry.oauthState = state; });
+}
+
+/** The stored CSRF state of the flow in progress, if any. */
+export async function getOAuthState(id: McpAuthIdentity): Promise<string | undefined> {
+  const entry = await readEntry(id);
   return entry?.oauthState;
 }
 
-/** Clear the stored CSRF state for a server. */
-export function clearOAuthState(serverName: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = await readEntry(serverName);
-    if (!entry) return;
-    delete entry.oauthState;
-    await writeEntry(serverName, entry);
-  });
+export function clearOAuthState(id: McpAuthIdentity): Promise<void> {
+  return clearFields(id, ["oauthState"]);
 }
 
 /** Treat a token as expired this many seconds early so one expiring mid-request doesn't yield a 401 (L6). */
@@ -294,40 +272,30 @@ const TOKEN_EXPIRY_SKEW_SECONDS = 30;
  * Whether stored tokens are expired. null when no tokens exist, false when no expiry or not
  * expired, true when expired (within a small clock-skew margin).
  */
-export async function isTokenExpired(serverName: string): Promise<boolean | null> {
-  const entry = await readEntry(serverName);
+export async function isTokenExpired(id: McpAuthIdentity): Promise<boolean | null> {
+  const entry = await readEntry(id);
   if (!entry?.tokens) return null;
   if (!entry.tokens.expiresAt) return false;
   return entry.tokens.expiresAt < Date.now() / 1000 + TOKEN_EXPIRY_SKEW_SECONDS;
 }
 
-/** Whether a server has any stored tokens. */
-export async function hasStoredTokens(serverName: string): Promise<boolean> {
-  const entry = await readEntry(serverName);
+/** Whether a server identity has any stored tokens. */
+export async function hasStoredTokens(id: McpAuthIdentity): Promise<boolean> {
+  const entry = await readEntry(id);
   return !!entry?.tokens;
 }
 
-/** Clear all credentials for a server. */
-export function clearAllCredentials(serverName: string): Promise<void> {
-  return removeAuthEntry(serverName);
+/** Clear all credentials for a server identity. */
+export function clearAllCredentials(id: McpAuthIdentity): Promise<void> {
+  return removeAuthEntry(id);
 }
 
-/** Clear only the dynamic client info for a server. */
-export function clearClientInfo(serverName: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = await readEntry(serverName);
-    if (!entry) return;
-    delete entry.clientInfo;
-    await writeEntry(serverName, entry);
-  });
+/** Clear only the dynamic client info for a server identity. */
+export function clearClientInfo(id: McpAuthIdentity): Promise<void> {
+  return clearFields(id, ["clientInfo"]);
 }
 
-/** Clear only the tokens for a server. */
-export function clearTokens(serverName: string): Promise<void> {
-  return withKeyLock(serverName, async () => {
-    const entry = await readEntry(serverName);
-    if (!entry) return;
-    delete entry.tokens;
-    await writeEntry(serverName, entry);
-  });
+/** Clear only the tokens for a server identity. */
+export function clearTokens(id: McpAuthIdentity): Promise<void> {
+  return clearFields(id, ["tokens"]);
 }

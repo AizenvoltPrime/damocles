@@ -2,7 +2,7 @@ import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
 import type { PermissionUpdate } from '../../../shared/types/permissions';
 import { registerAbortablePrompt, type PermissionState } from '../state';
-import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier } from '../types';
+import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
@@ -171,6 +171,7 @@ export class ApprovalManager {
             request,
             diffId: toolUseId,
             ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+            workspacePath: this.state.workspacePath,
           });
 
           this.getNotifier()?.({
@@ -245,6 +246,7 @@ export class ApprovalManager {
             cleanup,
             request,
             ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+            workspacePath: this.state.workspacePath,
           });
 
           this.getNotifier()?.({
@@ -266,10 +268,10 @@ export class ApprovalManager {
     toolUseId: string,
     approved: boolean,
     options?: { customMessage?: string; updatedPermissions?: PermissionUpdate[] }
-  ): Promise<void> {
+  ): Promise<SettledApproval | null> {
     const pending = this.state.removePendingApproval(toolUseId);
     if (!pending) {
-      return;
+      return null;
     }
 
     try {
@@ -288,5 +290,6 @@ export class ApprovalManager {
         ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
       });
     }
+    return { workspacePath: pending.workspacePath };
   }
 }

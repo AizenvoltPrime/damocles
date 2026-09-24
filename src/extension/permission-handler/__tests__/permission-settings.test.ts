@@ -6,16 +6,15 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 const logMock = vi.hoisted(() => vi.fn());
 vi.mock('../../logger', () => ({ log: logMock }));
 
-const { tmpRoot } = vi.hoisted(() => {
+const { tmpRoot, home } = vi.hoisted(() => {
   /* eslint-disable @typescript-eslint/no-require-imports */
   const nodeFs = require('fs') as typeof import('fs');
   const nodeOs = require('os') as typeof import('os');
   const nodePath = require('path') as typeof import('path');
   /* eslint-enable @typescript-eslint/no-require-imports */
-  return { tmpRoot: nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'dam-perm-settings-')) };
+  const root = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'dam-perm-settings-'));
+  return { tmpRoot: root, home: nodePath.join(root, 'home') };
 });
-
-const home = path.join(tmpRoot, 'home');
 const workspace = path.join(tmpRoot, 'workspace');
 
 vi.mock('os', async (importOriginal) => {
@@ -23,7 +22,9 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => home };
 });
 
+import * as vscode from 'vscode';
 import { loadPermissionsByPriority } from '../permission-settings';
+import { PermissionHandler } from '../index';
 
 /** The eight read locations, most-specific first — mirrors the order under test. */
 const ORDERED_FILES = [
@@ -151,5 +152,47 @@ describe('loadPermissionsByPriority — unusable files', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
+  });
+});
+
+/**
+ * Each panel's handler reads the project rules of that panel's folder. `folderB` sits next to the
+ * main workspace, the way a second root of a multi-root window does.
+ */
+describe('PermissionHandler follows the panel folder', () => {
+  const folderB = path.join(tmpRoot, 'folder-b');
+  const npmTest = { command: 'npm test' };
+
+  function makeHandler(): PermissionHandler {
+    // The handler's diff manager registers a content provider the shared mock does not define.
+    (vscode.workspace as unknown as Record<string, unknown>)['registerTextDocumentContentProvider'] = () => ({ dispose: () => undefined });
+    return new PermissionHandler(vscode.Uri.file(tmpRoot) as unknown as vscode.Uri);
+  }
+
+  beforeEach(() => {
+    fs.rmSync(folderB, { recursive: true, force: true });
+    writeSettings([folderB, '.damocles', 'settings.json'], { allow: ['Bash(npm test)'] });
+  });
+
+  it("allows B's rule in a panel on B and asks in a panel on the other folder", async () => {
+    const onB = makeHandler();
+    const onA = makeHandler();
+    onB.setWorkspacePath(folderB);
+    onA.setWorkspacePath(workspace);
+
+    expect(await onB.evaluatePermission('Bash', npmTest)).toBe('allow');
+    expect(await onA.evaluatePermission('Bash', npmTest)).toBe('ask');
+  });
+
+  it('drops the previous folder\'s rules as soon as the panel moves', async () => {
+    const handler = makeHandler();
+    handler.setWorkspacePath(folderB);
+    expect(await handler.evaluatePermission('Bash', npmTest)).toBe('allow');
+
+    handler.setWorkspacePath(workspace);
+    expect(await handler.evaluatePermission('Bash', npmTest)).toBe('ask');
+
+    handler.setWorkspacePath(null);
+    expect(await handler.evaluatePermission('Bash', npmTest)).toBe('ask');
   });
 });

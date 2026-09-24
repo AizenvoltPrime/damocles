@@ -3,26 +3,37 @@ import * as vscode from 'vscode';
 import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
+import { folderKey } from '../../workspace-folders/folder-key';
+import { isWithinRoot } from '../../compass/util';
 
 const CHANGE_DEBOUNCE_MS = 5000;
 
 export class FileChangeTracker {
   private db: DatabaseInstance;
   private writeQueue: MemoryWriteQueue;
-  private workspaceRoot: string;
+  private workspaceRoots: readonly string[];
   // Full-path index: normalized absolute forward-slash lowercase path → observation ids.
   private fileToObservations = new Map<string, Set<string>>();
-  // Suffix fallback index (last-2-segment key): lets an event path whose full normalized form misses
-  // still match by trailing suffix. Trade-off: can over-mark a same-suffix file in another directory,
+  // Suffix fallback index (last-2-segment key) per observation folder, keyed by `folderKey`: lets an
+  // event path whose full normalized form misses still match by trailing suffix within the folder that
+  // contains it. Trade-off: can over-mark a same-suffix file in another directory of that folder,
   // deliberately preferred over never marking stale.
-  private fileToObservationsBySuffix = new Map<string, Set<string>>();
+  private suffixIndexByFolder = new Map<string, Map<string, Set<string>>>();
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private disposables: vscode.Disposable[] = [];
 
-  constructor(db: DatabaseInstance, writeQueue: MemoryWriteQueue, workspaceRoot: string) {
+  constructor(db: DatabaseInstance, writeQueue: MemoryWriteQueue, workspaceRoots: readonly string[]) {
     this.db = db;
     this.writeQueue = writeQueue;
-    this.workspaceRoot = workspaceRoot;
+    this.workspaceRoots = [...workspaceRoots];
+  }
+
+  /** Re-scope the index to the open folders' observations. */
+  setWorkspaceRoots(workspaceRoots: readonly string[]): void {
+    this.workspaceRoots = [...workspaceRoots];
+    this.fileToObservations.clear();
+    this.suffixIndexByFolder.clear();
+    this.buildReverseIndex();
   }
 
   initialize(): void {
@@ -56,14 +67,22 @@ export class FileChangeTracker {
     this.debounceTimers.clear();
   }
 
-  trackObservation(id: string, filesRead: string[], filesModified: string[]): void {
+  /** `workspace` is the observation's own folder, which its relative stored paths resolve against. */
+  trackObservation(id: string, filesRead: string[], filesModified: string[], workspace: string): void {
     const allFiles = [...filesRead, ...filesModified];
+    const folder = folderKey(workspace);
     for (const file of allFiles) {
-      const normalized = this.normalizePath(file);
+      const normalized = this.normalizePath(file, workspace);
       if (!normalized) continue;
       this.addToIndex(this.fileToObservations, normalized, id);
       const suffix = this.suffixKey(normalized);
-      if (suffix) this.addToIndex(this.fileToObservationsBySuffix, suffix, id);
+      if (!suffix) continue;
+      let suffixIndex = this.suffixIndexByFolder.get(folder);
+      if (!suffixIndex) {
+        suffixIndex = new Map();
+        this.suffixIndexByFolder.set(folder, suffixIndex);
+      }
+      this.addToIndex(suffixIndex, suffix, id);
     }
   }
 
@@ -83,9 +102,12 @@ export class FileChangeTracker {
       ids.delete(id);
       if (ids.size === 0) this.fileToObservations.delete(key);
     }
-    for (const [key, ids] of this.fileToObservationsBySuffix) {
-      ids.delete(id);
-      if (ids.size === 0) this.fileToObservationsBySuffix.delete(key);
+    for (const [folder, suffixIndex] of this.suffixIndexByFolder) {
+      for (const [key, ids] of suffixIndex) {
+        ids.delete(id);
+        if (ids.size === 0) suffixIndex.delete(key);
+      }
+      if (suffixIndex.size === 0) this.suffixIndexByFolder.delete(folder);
     }
   }
 
@@ -100,20 +122,21 @@ export class FileChangeTracker {
 
   private buildReverseIndex(): void {
     // Only live, latest observations participate; forgotten/superseded rows must not accumulate count.
-    // Scope to this workspace: suffix matching means a file edited here would otherwise bump staleness
-    // on same-named files' observations in unrelated workspaces.
-    const rows = this.db.prepare(
-      `SELECT id, files_read, files_modified FROM memories
+    // Scope to the open folders: suffix matching means a file edited here would otherwise bump
+    // staleness on same-named files' observations in unrelated workspaces.
+    const roots = this.workspaceRoots;
+    const rows = roots.length === 0 ? [] : this.db.prepare(
+      `SELECT id, workspace, files_read, files_modified FROM memories
        WHERE kind = 'observation'
        AND forgotten = 0 AND is_latest = 1
-       AND workspace = ?
+       AND workspace IN (${roots.map(() => '?').join(',')})
        AND (files_read != '[]' OR files_modified != '[]')`
-    ).all(this.workspaceRoot) as Pick<MemoryRow, 'id' | 'files_read' | 'files_modified'>[];
+    ).all(...roots) as (Pick<MemoryRow, 'id' | 'files_read' | 'files_modified'> & { workspace: string })[];
 
     for (const row of rows) {
       const filesRead = this.parseJsonArray(row.files_read);
       const filesModified = this.parseJsonArray(row.files_modified);
-      this.trackObservation(row.id, filesRead, filesModified);
+      this.trackObservation(row.id, filesRead, filesModified, row.workspace);
     }
 
     const uniqueObservations = new Set<string>();
@@ -129,7 +152,7 @@ export class FileChangeTracker {
     const normalized = this.normalizePath(fsPath);
     if (!normalized) return;
 
-    const observationIds = this.lookupObservations(normalized);
+    const observationIds = this.lookupObservations(fsPath, normalized);
     if (observationIds.size === 0) return;
 
     const existing = this.debounceTimers.get(normalized);
@@ -151,7 +174,7 @@ export class FileChangeTracker {
     const normalized = this.normalizePath(fsPath);
     if (!normalized) return;
 
-    const observationIds = this.lookupObservations(normalized);
+    const observationIds = this.lookupObservations(fsPath, normalized);
     if (observationIds.size === 0) return;
 
     const pending = this.debounceTimers.get(normalized);
@@ -163,18 +186,28 @@ export class FileChangeTracker {
     this.incrementStaleness([...observationIds]);
   }
 
-  /** Resolve an event path to observation ids, unioning full-path and suffix-index hits. */
-  private lookupObservations(normalized: string): Set<string> {
+  /** Resolve an event path to observation ids, unioning full-path hits and suffix hits in its own folder. */
+  private lookupObservations(fsPath: string, normalized: string): Set<string> {
     const result = new Set<string>();
     const full = this.fileToObservations.get(normalized);
     if (full) for (const id of full) result.add(id);
 
     const suffix = this.suffixKey(normalized);
-    if (suffix) {
-      const suffixHit = this.fileToObservationsBySuffix.get(suffix);
+    const folder = this.containingFolder(fsPath);
+    if (suffix && folder !== null) {
+      const suffixHit = this.suffixIndexByFolder.get(folder)?.get(suffix);
       if (suffixHit) for (const id of suffixHit) result.add(id);
     }
     return result;
+  }
+
+  /** The `folderKey` of the innermost open folder containing `fsPath`, so a nested folder wins over its parent. */
+  private containingFolder(fsPath: string): string | null {
+    let best: string | null = null;
+    for (const root of this.workspaceRoots) {
+      if (isWithinRoot(fsPath, root) && (best === null || root.length > best.length)) best = root;
+    }
+    return best === null ? null : folderKey(best);
   }
 
   /**
@@ -194,12 +227,16 @@ export class FileChangeTracker {
   }
 
   /**
-   * Full-path index key: resolve relative stored paths against the workspace root (so `src/foo.ts`
-   * and an absolute `<root>/src/foo.ts` collapse to one key), then forward-slash + lowercase.
+   * Full-path index key: resolve relative stored paths against `workspace` (so `src/foo.ts` and an
+   * absolute `<root>/src/foo.ts` collapse to one key), then forward-slash + lowercase. Event paths
+   * from the watcher are absolute, so they never need a workspace.
    */
-  private normalizePath(filePath: string): string | null {
+  private normalizePath(filePath: string, workspace?: string): string | null {
     if (!filePath) return null;
-    const abs = path.isAbsolute(filePath) ? filePath : path.resolve(this.workspaceRoot, filePath);
+    let abs: string;
+    if (path.isAbsolute(filePath)) abs = filePath;
+    else if (workspace !== undefined) abs = path.resolve(workspace, filePath);
+    else return null;
     return abs.replace(/\\/g, '/').toLowerCase();
   }
 

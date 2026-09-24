@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { resolveEnabledModels, isModelInScope } from '../enabled-models';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { __setTrusted } from 'vscode';
+import { resolveEnabledModels, isModelInScope, readEnabledModels } from '../enabled-models';
 
 const registry = {
   getAvailableSnapshot: () => [
@@ -51,5 +55,31 @@ describe('resolveEnabledModels / isModelInScope', () => {
     dynamic.models.push({ provider: 'anthropic', id: 'gpt-x', name: 'GPT-X' });
     const after = resolveEnabledModels(['anthropic/gpt-x'], dynamic);
     expect(after && isModelInScope({ provider: 'anthropic', id: 'gpt-x' }, after)).toBe(true);
+  });
+});
+
+describe('readEnabledModels trust gate', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    __setTrusted(true);
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function projectWith(models: string[]): string {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-enabled-'));
+    dirs.push(cwd);
+    fs.mkdirSync(path.join(cwd, '.pi'));
+    fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ enabledModels: models }));
+    return cwd;
+  }
+
+  it('reads the project file in a trusted window', () => {
+    expect(readEnabledModels(projectWith(['probe/project-only-model']))).toEqual(['probe/project-only-model']);
+  });
+
+  it('ignores the project file in a restricted window', () => {
+    const cwd = projectWith(['probe/project-only-model']);
+    __setTrusted(false);
+    expect(readEnabledModels(cwd) ?? []).not.toContain('probe/project-only-model');
   });
 });

@@ -172,6 +172,9 @@
     "confirmRemoveAction": "Remove all"
   },
   "settings": {
+    "workspaceFolder": "Workspace folder",
+    "workspaceFolderDescription": "The agent reads and edits files in this folder. Switching starts a new conversation.",
+    "defaultWorkspaceFolderDescription": "New panels open in this folder.",
     "title": "Settings",
     "thisPanel": "This panel",
     "defaultForNewPanels": "Default for new panels",
@@ -279,6 +282,7 @@
     }
   },
   "session": {
+    "folderLabel": "Folder: {folder}",
     "selectSession": "Select a session ({n})",
     "renameSession": "Rename session",
     "deleteSession": "Delete session",
@@ -1029,6 +1033,7 @@
     "recent": "Recent agents:"
   },
   "toast": {
+    "workspaceFolderSwitched": "Switched to folder {folder}",
     "conversationCleared": "Conversation cleared",
     "interrupted": "Message interrupted - prompt restored to input",
     "rewindFiles": "Files rewound successfully",

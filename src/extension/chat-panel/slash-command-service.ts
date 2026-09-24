@@ -36,7 +36,7 @@ export class SlashCommandService {
   private trustListener: vscode.Disposable | null = null;
   private configListener: vscode.Disposable | null = null;
 
-  /** The open workspace folder, or null when none is open, in which case there is no project scope. */
+  /** The folder whose project assets are listed, or null for a target with no project scope. */
   private workspacePath: string | null;
 
   constructor(workspacePath: string | null) {

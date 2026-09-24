@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import type { StoredNode, StoredEdge, IndexStatus } from './types';
 import type { CompassService } from './index';
+import { isWithinRoot } from './util';
 
 const KIND_ICON: Record<string, string> = {
 	File: 'file',
@@ -156,12 +157,18 @@ class GroupItem extends vscode.TreeItem {
 export class CompassTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
 	private readonly _onDidChange = new vscode.EventEmitter<vscode.TreeItem | undefined | null>();
 	readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null> = this._onDidChange.event;
-	private readonly compassService: CompassService;
-	private readonly workspaceRoot: string;
+	private compassService: CompassService | null;
+	private workspaceRoot: string;
 
-	constructor(compassService: CompassService, workspaceRoot: string) {
+	constructor(compassService: CompassService | null, workspaceRoot: string) {
 		this.compassService = compassService;
 		this.workspaceRoot = workspaceRoot;
+	}
+
+	setService(compassService: CompassService | null, workspaceRoot: string): void {
+		this.compassService = compassService;
+		this.workspaceRoot = workspaceRoot;
+		this.refresh();
 	}
 
 	refresh(): void {
@@ -177,18 +184,19 @@ export class CompassTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
 	}
 
 	async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-		const status = this.compassService.getStatus();
-		if (status.state !== 'ready') return [];
+		const service = this.compassService;
+		if (!service || service.getStatus().state !== 'ready') return [];
+		const workspaceRoot = this.workspaceRoot;
 
 		if (!element) {
-			const files = await this.compassService.treeGetFiles();
+			const files = await service.treeGetFiles();
 			return files
 				.sort((a, b) => a.localeCompare(b))
-				.map(f => new FileItem(f, this.workspaceRoot));
+				.map(f => new FileItem(f, workspaceRoot));
 		}
 
 		if (element instanceof FileItem) {
-			const nodes = await this.compassService.treeGetNodesByFile(element.filePath) as StoredNode[];
+			const nodes = await service.treeGetNodesByFile(element.filePath) as StoredNode[];
 			return nodes
 				.filter(n => n.kind !== 'File')
 				.sort((a, b) => a.line_start - b.line_start)
@@ -196,7 +204,7 @@ export class CompassTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
 		}
 
 		if (element instanceof SymbolItem) {
-			const data = await this.compassService.treeGetEdgesForSymbol(element.qualifiedName) as {
+			const data = await service.treeGetEdgesForSymbol(element.qualifiedName) as {
 				outgoing: Array<{ edge: StoredEdge; target: { file_path: string; line_start: number } | null }>;
 				incoming: Array<{ edge: StoredEdge; source: { file_path: string; line_start: number } | null }>;
 			};
@@ -303,39 +311,44 @@ export class CompassStatusBar implements vscode.Disposable {
 }
 
 export function registerBlastRadiusCommand(
-	context: vscode.ExtensionContext,
-	compassService: CompassService,
+	getService: () => CompassService | null,
 	blastRadiusProvider: BlastRadiusTreeProvider,
-): void {
-	context.subscriptions.push(
-		vscode.commands.registerCommand('damocles.compass.showBlastRadius', async () => {
-			const status = compassService.getStatus();
-			if (status.state !== 'ready') {
-				vscode.window.showWarningMessage('Compass: No graph database loaded.');
-				return;
-			}
+): vscode.Disposable {
+	return vscode.commands.registerCommand('damocles.compass.showBlastRadius', async () => {
+		const compassService = getService();
+		if (compassService?.getStatus().state !== 'ready') {
+			vscode.window.showWarningMessage('Compass: No graph database loaded.');
+			return;
+		}
 
-			const editor = vscode.window.activeTextEditor;
-			if (!editor) {
-				vscode.window.showWarningMessage('Open a file first');
-				return;
-			}
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) {
+			vscode.window.showWarningMessage('Open a file first');
+			return;
+		}
 
-			const filePath = editor.document.uri.fsPath;
-			const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
-			const impact = await compassService.webviewBlastRadius(filePath, depth) as {
-				changed_nodes: StoredNode[];
-				impacted_nodes: StoredNode[];
-				impacted_files: string[];
-			};
-
-			blastRadiusProvider.setResults(impact.changed_nodes, impact.impacted_nodes);
-			vscode.commands.executeCommand('damocles.compass.blastRadius.focus');
-
-			const impactedFileCount = new Set(impact.impacted_nodes.map(n => n.file_path)).size;
-			vscode.window.showInformationMessage(
-				`Blast radius: ${impact.impacted_nodes.length} nodes across ${impactedFileCount} files`,
+		const filePath = editor.document.uri.fsPath;
+		if (!isWithinRoot(filePath, compassService.workspacePath)) {
+			vscode.window.showWarningMessage(
+				`Compass: ${path.basename(filePath)} is outside ${path.basename(compassService.workspacePath)}, the folder the Compass views show.`,
 			);
-		}),
-	);
+			return;
+		}
+		const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
+		const impact = await compassService.webviewBlastRadius(filePath, depth) as {
+			changed_nodes: StoredNode[];
+			impacted_nodes: StoredNode[];
+			impacted_files: string[];
+		};
+		// The views moved to another folder during the query, so this result describes a graph they no longer show.
+		if (getService() !== compassService) return;
+
+		blastRadiusProvider.setResults(impact.changed_nodes, impact.impacted_nodes);
+		vscode.commands.executeCommand('damocles.compass.blastRadius.focus');
+
+		const impactedFileCount = new Set(impact.impacted_nodes.map(n => n.file_path)).size;
+		vscode.window.showInformationMessage(
+			`Blast radius: ${impact.impacted_nodes.length} nodes across ${impactedFileCount} files`,
+		);
+	});
 }

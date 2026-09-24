@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { McpClientManager, isSupervised } from '../mcp-client-manager';
 import type { McpServerManager, ServerConnection, McpServerManagerOptions } from '../server-manager';
 import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition } from '../types';
-import { authenticateMcpServer, revokeAndRemoveAuth } from '../mcp-auth-flow';
+import { authenticateMcpServer, revokeAndRemoveAuth, shutdownOAuth } from '../mcp-auth-flow';
 
 // The reauthenticate/signOut methods call module-level fns that touch real OAuth/SecretStorage.
 // Stub those; PRESERVE the real `supportsOAuth` (pure config logic the methods branch on).
@@ -11,6 +11,7 @@ vi.mock('../mcp-auth-flow', async (orig) => ({
   removeAuth: vi.fn(async () => {}),
   revokeAndRemoveAuth: vi.fn(async () => {}),
   authenticateMcpServer: vi.fn(async () => ({ ok: true })),
+  shutdownOAuth: vi.fn(async () => {}),
 }));
 
 /** Let the serialized op chain drain (a couple of microtask + macrotask turns settle enqueued reconnects). */
@@ -458,6 +459,48 @@ describe('McpClientManager', () => {
 
     expect(fakes.fake.connect.mock.calls.length).toBe(connectsBefore);
     manager = undefined; // already disposed
+  });
+});
+
+describe('McpClientManager reserved prefixes', () => {
+  it('names its tools around the prefixes the provider reserves', async () => {
+    const { factory } = buildFake({ 'my-server': { tools: [{ name: 'go' }] } });
+    manager = new McpClientManager({ serverManagerFactory: factory, reservedPrefixes: () => new Set(['my_server']) });
+    await manager.reconcile({ 'my-server': { command: 'x' } });
+
+    expect(manager.allToolNames()).toEqual(['mcp__my_server_2__go']);
+    expect(manager.serverPrefix('my-server')).toBe('my_server_2');
+    expect(manager.serverPrefix('absent')).toBeUndefined();
+  });
+
+  it('refreshReservedPrefixes renames and emits only when a prefix moves', async () => {
+    const { factory, fake } = buildFake({ 'my-server': { tools: [{ name: 'go' }] } });
+    let reserved = new Set<string>();
+    manager = new McpClientManager({ serverManagerFactory: factory, reservedPrefixes: () => reserved });
+    await manager.reconcile({ 'my-server': { command: 'x' } });
+    const changed = vi.fn();
+    manager.onToolsChanged(changed);
+
+    manager.refreshReservedPrefixes();
+    expect(changed).not.toHaveBeenCalled();
+
+    reserved = new Set(['my_server']);
+    manager.refreshReservedPrefixes();
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(manager.allToolNames()).toEqual(['mcp__my_server_2__go']);
+    // A rename is a naming change only; the live connection stays.
+    expect(fake.connect).toHaveBeenCalledTimes(1);
+    expect(fake.close).not.toHaveBeenCalled();
+  });
+
+  it('dispose leaves process-global OAuth state to its owner, since other managers may still use it', async () => {
+    const { factory } = buildFake({});
+    manager = new McpClientManager({ serverManagerFactory: factory });
+    await manager.reconcile({});
+    await manager.dispose();
+    manager = undefined;
+
+    expect(shutdownOAuth).not.toHaveBeenCalled();
   });
 });
 

@@ -6,18 +6,16 @@ import type { WebviewHost } from "./types";
 import { loadPiSessionHistory, getPiRewindableUserIds, getPiRewindHistory, getPiFileCheckpointContent } from "../pi-session/session-store";
 
 export interface HistoryManagerConfig {
-  workspacePath: string;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
 }
 
+/** Every read takes as `cwd` the folder whose session dir holds the session. */
 export class HistoryManager {
-  private readonly workspacePath: string;
   private readonly postMessage: HistoryManagerConfig["postMessage"];
   private readonly inflight = new Map<WebviewHost, AbortController>();
   private readonly wiredHosts = new WeakSet<WebviewHost>();
 
   constructor(config: HistoryManagerConfig) {
-    this.workspacePath = config.workspacePath;
     this.postMessage = config.postMessage;
   }
 
@@ -46,32 +44,33 @@ export class HistoryManager {
     return ctrl;
   }
 
-  async loadSessionHistory(sessionId: string, host: WebviewHost, session: ChatSession): Promise<void> {
+  async loadSessionHistory(cwd: string, sessionId: string, host: WebviewHost, session: ChatSession): Promise<void> {
     const ctrl = this.beginReplay(host);
     const t0 = Date.now();
 
     // The pi tree-store loader emits sessionCleared itself. The fork-prefix path is unused
     // on pi — a forked panel resumes an already-truncated branched session file (US-013c).
-    await loadPiSessionHistory(this.workspacePath, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
+    await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
     // The replay contract carries no account state, and a restored panel may never run a turn.
     session.publishAccountInfo();
     log(`[history] pi full-load ${sessionId} in ${Date.now() - t0}ms`);
   }
 
-  async extractRewindableUserIds(sessionId: string): Promise<string[]> {
-    return getPiRewindableUserIds(this.workspacePath, sessionId);
+  async extractRewindableUserIds(cwd: string, sessionId: string): Promise<string[]> {
+    return getPiRewindableUserIds(cwd, sessionId);
   }
 
-  async extractRewindHistory(sessionId: string): Promise<RewindHistoryItem[]> {
-    return getPiRewindHistory(this.workspacePath, sessionId);
+  async extractRewindHistory(cwd: string, sessionId: string): Promise<RewindHistoryItem[]> {
+    return getPiRewindHistory(cwd, sessionId);
   }
 
   async getFileCheckpointContent(
+    cwd: string,
     sessionId: string,
     userMessageId: string,
     filePath: string,
   ): Promise<string | null> {
-    return getPiFileCheckpointContent(this.workspacePath, sessionId, userMessageId, filePath);
+    return getPiFileCheckpointContent(cwd, sessionId, userMessageId, filePath);
   }
 }

@@ -5,11 +5,11 @@ import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
-import type { CompassService } from "../../compass";
+import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import type { HostInstance, WebviewHost } from "../types";
-import type { HandlerContext, HandlerRegistry } from "./types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
 import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
@@ -17,7 +17,6 @@ import { log } from "../../logger";
 const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
 
 export interface MessageRouterConfig {
-  workspacePath: string;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
@@ -27,8 +26,11 @@ export interface MessageRouterConfig {
   context: vscode.ExtensionContext;
   memoryService: MemoryService;
   browserService?: BrowserService;
-  compassService?: CompassService;
+  compassRegistry?: CompassRegistry;
   voiceService?: VoiceService;
+  folderRegistry: HandlerDependencies["folderRegistry"];
+  switchPanelFolder: HandlerDependencies["switchPanelFolder"];
+  postWorkspaceFolderState: HandlerDependencies["postWorkspaceFolderState"];
 }
 
 export class MessageRouter {
@@ -41,7 +43,6 @@ export class MessageRouter {
     this.postMessage = config.postMessage;
 
     this.handlers = createHandlerRegistry({
-      workspacePath: config.workspacePath,
       postMessage: config.postMessage,
       getPanels: config.getPanels,
       storageManager: config.storageManager,
@@ -53,8 +54,11 @@ export class MessageRouter {
       setLanguagePreference: (locale: string) => this.setLanguagePreference(config.context, locale),
       memoryService: config.memoryService,
       ...(config.browserService ? { browserService: config.browserService } : {}),
-      ...(config.compassService ? { compassService: config.compassService } : {}),
+      ...(config.compassRegistry ? { compassRegistry: config.compassRegistry } : {}),
       ...(config.voiceService ? { voiceService: config.voiceService } : {}),
+      folderRegistry: config.folderRegistry,
+      switchPanelFolder: config.switchPanelFolder,
+      postWorkspaceFolderState: config.postWorkspaceFolderState,
     });
   }
 
@@ -79,6 +83,7 @@ export class MessageRouter {
       permissionHandler: instance.permissionHandler,
       ideContextManager: instance.ideContextManager,
       panelId,
+      folder: instance.folder,
     };
 
     const handler = this.handlers[message.type];

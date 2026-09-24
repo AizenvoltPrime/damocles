@@ -11,7 +11,7 @@ import type {
   McpStdioServerConfig,
 } from "../../../../shared/types/mcp";
 import type { AssetSourcePrecedence } from "../../../asset-sources";
-import type { McpServerEntry } from "../types";
+import type { McpServerEntry, McpServerScope } from "../types";
 import { log } from "../../../logger";
 
 // Precedence is declared in the shared module so the webview form reads the same order. Re-exported
@@ -39,9 +39,12 @@ export interface McpSourceServers {
   servers: Record<string, McpServerConfig>;
 }
 
-/** The user-global sources in precedence order, plus any config file that failed to parse. */
+/** The user-scope sources, Claude Code's local scope per requested folder, and any Damocles file that failed to parse. */
 export interface GlobalMcpSources {
   sources: McpSourceServers[];
+  claudeLocal: ReadonlyMap<string, Record<string, McpServerConfig>>;
+  /** Not surfaced on the panel, but tells a caller the Claude local scope is unknown rather than empty. */
+  claudeLocalUnreadable: boolean;
   errors: McpConfigError[];
 }
 
@@ -73,6 +76,16 @@ export const REPO_AUTHORED_BY_SOURCE: Record<McpServerSource, boolean> = {
   codex: false,
   "claude-local": false,
   "damocles-local": true,
+};
+
+/** `folder` sources are read once per open folder; `user` sources once per window. */
+export const MCP_SCOPE_BY_SOURCE: Record<McpServerSource, McpServerScope> = {
+  workspace: "folder",
+  damocles: "user",
+  claude: "user",
+  codex: "user",
+  "claude-local": "folder",
+  "damocles-local": "folder",
 };
 
 /**
@@ -223,39 +236,44 @@ function stripTrailingSeparator(target: string): string {
  * directory in different case resolve to the last one written rather than to whichever the object
  * happened to list first.
  */
-function claudeLocalScope(
+function claudeLocalScopes(
   document: Record<string, unknown>,
-  workspaceRoot: string,
-): Record<string, McpServerConfig> {
+  workspaceRoots: readonly string[],
+): Map<string, Record<string, McpServerConfig>> {
   const projects = document["projects"];
-  if (!isTable(projects)) return {};
-
   const byNormalizedKey = new Map<string, unknown>();
-  for (const [key, project] of Object.entries(projects)) {
-    byNormalizedKey.set(normalizeProjectKey(key), project);
+  if (isTable(projects)) {
+    for (const [key, project] of Object.entries(projects)) {
+      byNormalizedKey.set(normalizeProjectKey(key), project);
+    }
   }
 
-  const project = byNormalizedKey.get(normalizeProjectKey(workspaceRoot));
-  return isTable(project) ? coerceServerMap(project["mcpServers"]) : {};
+  return new Map(workspaceRoots.map(root => {
+    const project = byNormalizedKey.get(normalizeProjectKey(root));
+    return [root, isTable(project) ? coerceServerMap(project["mcpServers"]) : {}];
+  }));
 }
 
 /** Both Claude Code MCP scopes, as read from one parse of `~/.claude.json`. */
 export interface ClaudeMcpScopes {
   /** Claude Desktop, then the top level of `~/.claude.json`, which wins a name collision. */
   user: Record<string, McpServerConfig>;
-  /** `projects[<workspaceRoot>]`, or empty with no workspace and on no matching key. */
-  local: Record<string, McpServerConfig>;
+  /** `projects[<root>]` for every requested root, keyed by the root as passed; empty on no matching key. */
+  local: ReadonlyMap<string, Record<string, McpServerConfig>>;
+  /** `~/.claude.json` exists but could not be read or parsed, so `local` is empty for lack of data. */
+  localUnreadable: boolean;
 }
 
 /**
  * Read both Claude Code scopes together. `~/.claude.json` is where Claude Code accretes per-project
  * history and is routinely several megabytes, and `loadConfig` re-runs on every watcher event, so the
- * file is read and parsed exactly once per call and both scopes come off that one document.
+ * file is read and parsed exactly once per call and every folder's local scope comes off that one
+ * document.
  *
  * A `~/.claude.json` that fails to parse is logged by the reader and contributes nothing to either
  * scope; it is not surfaced on the panel, because it is another tool's file and theirs to fix.
  */
-export async function readClaudeMcpScopes(workspaceRoot: string | undefined): Promise<ClaudeMcpScopes> {
+export async function readClaudeMcpScopes(workspaceRoots: readonly string[]): Promise<ClaudeMcpScopes> {
   const [desktop, global] = await Promise.all([
     readMcpServersFromFile(CLAUDE_DESKTOP_CONFIG_PATH),
     readJsonConfigFile(CLAUDE_GLOBAL_CONFIG_PATH),
@@ -263,7 +281,8 @@ export async function readClaudeMcpScopes(workspaceRoot: string | undefined): Pr
   const document = global.document;
   return {
     user: { ...desktop, ...(document ? coerceServerMap(document["mcpServers"]) : {}) },
-    local: document && workspaceRoot !== undefined ? claudeLocalScope(document, workspaceRoot) : {},
+    local: document ? claudeLocalScopes(document, workspaceRoots) : new Map(workspaceRoots.map(root => [root, {}])),
+    localUnreadable: global.error !== null,
   };
 }
 
@@ -395,53 +414,61 @@ export function orderMcpSources(
 }
 
 /**
- * The MCP sources that do not depend on workspace trust. `workspaceRoot` is needed for Claude Code's
- * local scope, which is keyed by project path inside the user-global `~/.claude.json`; with no folder
- * open there is no key to look up and that source contributes nothing. Each reader degrades to `{}` on
- * its own, so one unreadable ecosystem never costs you the others.
+ * The MCP sources that live in the user's home directory. Claude Code's local scope is keyed by
+ * project path inside `~/.claude.json`, so it is returned per requested root rather than as a batch;
+ * with no folder open there is no key to look up. Each reader degrades to `{}` on its own, so one
+ * unreadable ecosystem never costs you the others.
  *
  * The batches come back in no particular order. Ranking happens once, in the caller, which has to
- * place the two working-tree files among these anyway.
+ * place each folder's files among these anyway.
  */
 export async function readGlobalMcpSources(
-  workspaceRoot: string | undefined,
+  workspaceRoots: readonly string[],
 ): Promise<GlobalMcpSources> {
   const [claude, codex, damocles] = await Promise.all([
-    readClaudeMcpScopes(workspaceRoot),
+    readClaudeMcpScopes(workspaceRoots),
     readCodexMcpServers(),
     readDamoclesMcpServers(),
   ]);
   return {
     sources: [
       { source: "claude", servers: claude.user },
-      { source: "claude-local", servers: claude.local },
       { source: "codex", servers: codex },
       { source: "damocles", servers: damocles.servers },
     ],
+    claudeLocal: claude.local,
+    claudeLocalUnreadable: claude.localUnreadable,
     // Only the file Damocles owns is surfaced. The Claude and Codex imports are other tools' files:
     // a parse failure there is logged, but is theirs to fix and not worth a notice in this panel.
     errors: damocles.error ? [damocles.error] : [],
   };
 }
 
+/** Names disabled per scope: user-scope entries read `user`, folder-scope entries read `folder`. */
+export interface McpDisabledNames {
+  user: ReadonlySet<string>;
+  folder: ReadonlySet<string>;
+}
+
 /**
  * Fold provenance-tagged server maps into the entry list, lowest precedence FIRST: a later source
  * overwrites an earlier one on a name collision, so precedence reads off the caller's array order.
- * `readonly` comes from `READONLY_BY_SOURCE`, and the Damocles-owned disabled set applies to every
- * source alike.
+ * `readonly` and `scope` come from the source, and each entry reads the disabled list of its scope.
  */
 export function mergeMcpEntries(
   sources: readonly McpSourceServers[],
-  disabled: ReadonlySet<string>,
+  disabled: McpDisabledNames,
 ): McpServerEntry[] {
   const merged = new Map<string, McpServerEntry>();
   for (const { source, servers } of sources) {
+    const scope = MCP_SCOPE_BY_SOURCE[source];
     for (const [name, config] of Object.entries(servers)) {
       merged.set(name, {
         name,
         config,
-        enabled: !disabled.has(name),
+        enabled: !disabled[scope].has(name),
         source,
+        scope,
         readonly: READONLY_BY_SOURCE[source],
       });
     }

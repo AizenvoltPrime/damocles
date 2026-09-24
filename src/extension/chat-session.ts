@@ -1,5 +1,5 @@
-import type { ContentInput, RewindOption } from './session-types';
-import type { McpServerConfig, McpServerStatusInfo } from '../shared/types/mcp';
+import type { ContentInput, McpScope, RewindOption } from './session-types';
+import type { McpServerStatusInfo } from '../shared/types/mcp';
 import type { ToolsSnapshot } from '../shared/types/tools';
 import type { UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
@@ -44,6 +44,8 @@ export interface ChatSession {
 
   /** Whether this session is on, starting on, or switching to stored session `sessionId`. */
   holdsSession(sessionId: string): boolean;
+  /** True when a resume or fork target is pending, a turn is processing, or the live session has messages. */
+  hasConversation(): boolean;
   setResumeSession(sessionId: string | null): void;
   initializeEarly(): Promise<void>;
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
@@ -101,7 +103,7 @@ export interface ChatSession {
   getMcpToolInfoMarkdown(piName: string): string | undefined;
 
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
-  setMcpServers(mcpServers: Record<string, McpServerConfig>): void;
+  setMcpServers(scope: McpScope): void;
   /** Register a listener fired whenever live MCP runtime status changes (connect/disconnect/list-change),
    * so the webview reflects connecting → connected without a manual refresh. */
   setMcpStatusListener(listener: () => void): void;

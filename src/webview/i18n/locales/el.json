@@ -172,6 +172,9 @@
     "confirmRemoveAction": "Διαγραφή όλων"
   },
   "settings": {
+    "workspaceFolder": "Φάκελος χώρου εργασίας",
+    "workspaceFolderDescription": "Ο πράκτορας διαβάζει και αλλάζει αρχεία σε αυτόν τον φάκελο. Η αλλαγή φακέλου ξεκινά νέα συνομιλία.",
+    "defaultWorkspaceFolderDescription": "Τα νέα panels ανοίγουν σε αυτόν τον φάκελο.",
     "title": "Ρυθμίσεις",
     "thisPanel": "Αυτό το panel",
     "defaultForNewPanels": "Προεπιλογή για νέα panels",
@@ -279,6 +282,7 @@
     }
   },
   "session": {
+    "folderLabel": "Φάκελος: {folder}",
     "selectSession": "Επιλέξτε συνεδρία ({n})",
     "renameSession": "Μετονομασία συνεδρίας",
     "deleteSession": "Διαγραφή συνεδρίας",
@@ -1029,6 +1033,7 @@
     "recent": "Πρόσφατοι agents:"
   },
   "toast": {
+    "workspaceFolderSwitched": "Μετάβαση στον φάκελο {folder}",
     "conversationCleared": "Η συνομιλία διαγράφηκε",
     "interrupted": "Το μήνυμα διακόπηκε - η εντολή επαναφέρθηκε στην είσοδο",
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",

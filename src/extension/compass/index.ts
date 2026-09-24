@@ -7,13 +7,12 @@ import type { ICompassService, IndexStatus, CompassConfig } from './types';
 import { CODE_EXTENSIONS } from './types';
 import { createWatcherFileFilter } from './detect';
 import type { WorkerEvent, WorkerProgressEvent } from './worker-protocol';
-import { TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
+import { LIGHT_REQUEST_TYPES, TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
 
 export type { WorkerProgressEvent } from './worker-protocol';
-import { CompassTreeProvider, BlastRadiusTreeProvider, CompassStatusBar, registerBlastRadiusCommand } from './tree-provider';
-import { BlastRadiusDecorations } from './editor-decorations';
 
 interface PendingRequest {
+	type: string;
 	resolve: (data: unknown) => void;
 	reject: (err: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
@@ -34,6 +33,17 @@ export const WORKER_RETRY_BASE_DELAY_MS = 1_000;
 export const MAX_WATCHED_CHANGED_FILES = 500;
 
 const defaultWorkerFactory: CompassWorkerFactory = (workerPath) => new Worker(workerPath);
+
+/**
+ * The single Compass gate, read by tool eligibility, the system prompt block, the webview handlers,
+ * the views and indexing itself. Trust belongs here rather than at those call sites because Compass
+ * walks and reads the whole workspace tree and runs git inside it, so an untrusted workspace must not
+ * reach the point of being read at all.
+ */
+export function isCompassEnabled(): boolean {
+	if (!vscode.workspace.isTrusted) return false;
+	return vscode.workspace.getConfiguration('damocles.compass').get<boolean>('enabled', false);
+}
 
 export class CompassService implements ICompassService {
 	private _config: CompassConfig;
@@ -57,14 +67,9 @@ export class CompassService implements ICompassService {
 	private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _pendingChangedFiles = new Set<string>();
 	private _isIndexableFile: (filePath: string) => boolean;
-	private _treeProvider: CompassTreeProvider | null = null;
-	private _blastRadiusProvider: BlastRadiusTreeProvider | null = null;
-	private _statusBar: CompassStatusBar | null = null;
-	private _decorations: BlastRadiusDecorations | null = null;
-	private _viewDisposables: vscode.Disposable[] = [];
-	private _viewContext: vscode.ExtensionContext | null = null;
-	private _viewsRegistered = false;
 	private _trustListener: vscode.Disposable | null = null;
+	/** Set by the first `ensureInitialized`; a trust grant starts only a service something asked to start. */
+	private _startRequested = false;
 
 	constructor(workspacePath: string, _damoclesDir: string, extensionPath: string, workerFactory: CompassWorkerFactory = defaultWorkerFactory) {
 		this._workspacePath = workspacePath;
@@ -80,27 +85,27 @@ export class CompassService implements ICompassService {
 		this._trustListener = vscode.workspace.onDidGrantWorkspaceTrust?.(() => this._onWorkspaceTrustGranted()) ?? null;
 	}
 
-	/**
-	 * The single flag every consumer reads: tool eligibility, the system prompt block, the webview
-	 * handlers, the views, and indexing itself. Trust belongs here rather than at those call sites
-	 * because Compass walks and reads the whole workspace tree and runs git inside it, so an untrusted
-	 * workspace must not reach the point of being read at all.
-	 */
 	get isEnabled(): boolean {
-		if (!vscode.workspace.isTrusted) return false;
-		return vscode.workspace.getConfiguration('damocles.compass').get<boolean>('enabled', false);
+		return isCompassEnabled();
 	}
 
 	get config(): CompassConfig {
 		return this._config;
 	}
 
-	onStatusChange(callback: (status: IndexStatus) => void): void {
-		this._statusChangeCallbacks.push(callback);
+	/** The raw folder path the index is keyed on. */
+	get workspacePath(): string {
+		return this._workspacePath;
 	}
 
-	onProgress(callback: (event: WorkerProgressEvent) => void): void {
+	onStatusChange(callback: (status: IndexStatus) => void): vscode.Disposable {
+		this._statusChangeCallbacks.push(callback);
+		return { dispose: () => { this._statusChangeCallbacks = this._statusChangeCallbacks.filter(cb => cb !== callback); } };
+	}
+
+	onProgress(callback: (event: WorkerProgressEvent) => void): vscode.Disposable {
 		this._progressCallbacks.push(callback);
+		return { dispose: () => { this._progressCallbacks = this._progressCallbacks.filter(cb => cb !== callback); } };
 	}
 
 	private _emitStatus(): void {
@@ -110,6 +115,7 @@ export class CompassService implements ICompassService {
 
 	async ensureInitialized(): Promise<void> {
 		if (this._disposed) return;
+		this._startRequested = true;
 		if (!this.isEnabled) return;
 		if (this._workspacePath === os.homedir()) return;
 		if (this._cachedStatus.state === 'failed') return;
@@ -153,6 +159,7 @@ export class CompassService implements ICompassService {
 			extensionPath: this._extensionPath,
 			config: this._config,
 		}, TIMEOUTS.init);
+		if (this._disposed) return;
 
 		this._consecutiveFailures = 0;
 
@@ -222,6 +229,13 @@ export class CompassService implements ICompassService {
 		}, delayMs);
 	}
 
+	private _heavyRequestInFlight(): boolean {
+		for (const pending of this._pendingRequests.values()) {
+			if (!LIGHT_REQUEST_TYPES.has(pending.type)) return true;
+		}
+		return false;
+	}
+
 	private _rejectAllPending(err: Error): void {
 		for (const [id, pending] of this._pendingRequests) {
 			clearTimeout(pending.timer);
@@ -244,6 +258,7 @@ export class CompassService implements ICompassService {
 				reject(new Error(`Compass worker request timeout (${msg['type']}, ${resolvedTimeout}ms)`));
 			}, resolvedTimeout);
 			this._pendingRequests.set(id, {
+				type: String(msg['type']),
 				resolve: (data) => resolve(data as T),
 				reject: (err) => reject(err),
 				timer,
@@ -255,7 +270,10 @@ export class CompassService implements ICompassService {
 	private _setupWatcher(): void {
 		this._watcher?.dispose();
 		const extensions = [...CODE_EXTENSIONS].map(e => e.slice(1)).join(',');
-		this._watcher = vscode.workspace.createFileSystemWatcher(`**/*.{${extensions}}`);
+		// Anchored to this folder, so another folder's edits never reach this index.
+		this._watcher = vscode.workspace.createFileSystemWatcher(
+			new vscode.RelativePattern(vscode.Uri.file(this._workspacePath), `**/*.{${extensions}}`),
+		);
 		this._watcher.onDidChange(uri => this._onFileChange(uri));
 		this._watcher.onDidCreate(uri => this._onFileChange(uri));
 		this._watcher.onDidDelete(uri => this._onFileChange(uri));
@@ -381,95 +399,19 @@ export class CompassService implements ICompassService {
 		return this._sendRequest({ type: 'tree:edgesForSymbol', qualifiedName });
 	}
 
-	/** Deferred startup: the views and the index were both withheld while the workspace was untrusted. */
+	/** Deferred startup: the index was withheld while the workspace was untrusted. */
 	private _onWorkspaceTrustGranted(): void {
-		if (this._disposed) return;
+		if (this._disposed || !this._startRequested) return;
 		if (!this.isEnabled) return;
-		if (this._viewContext) this.registerViews(this._viewContext);
 		this.ensureInitialized().catch(err => {
 			log('[CompassService] Init after trust grant failed: %O', err);
 		});
-	}
-
-	registerViews(context: vscode.ExtensionContext): void {
-		// Held so a later trust grant can register the views the untrusted call skipped.
-		this._viewContext = context;
-		if (!this.isEnabled) return;
-		if (this._viewsRegistered) return;
-		this._viewsRegistered = true;
-
-		this._treeProvider = new CompassTreeProvider(this, this._workspacePath);
-		this._blastRadiusProvider = new BlastRadiusTreeProvider();
-		this._statusBar = new CompassStatusBar();
-		this._decorations = new BlastRadiusDecorations();
-
-		this._viewDisposables.push(
-			vscode.window.registerTreeDataProvider('damocles.compass.explorer', this._treeProvider),
-			vscode.window.registerTreeDataProvider('damocles.compass.blastRadius', this._blastRadiusProvider),
-			this._statusBar,
-			this._decorations,
-		);
-
-		this._viewDisposables.push(
-			vscode.commands.registerCommand('damocles.compass.rebuild', () => {
-				this.triggerReindex().catch(err => {
-					log('[CompassService] Rebuild command failed: %O', err);
-				});
-			}),
-			vscode.commands.registerCommand('damocles.compass.search', async () => {
-				if (this._cachedStatus.state !== 'ready') {
-					vscode.window.showWarningMessage('Compass: Graph not built yet.');
-					return;
-				}
-				const pick = vscode.window.createQuickPick();
-				pick.placeholder = 'Search for functions, classes, files, types…';
-				pick.matchOnDescription = true;
-				let timer: ReturnType<typeof setTimeout> | undefined;
-				pick.onDidChangeValue(value => {
-					if (timer) clearTimeout(timer);
-					if (!value) { pick.items = []; return; }
-					timer = setTimeout(async () => {
-						const results = await this.webviewSearch(value, undefined, 20) as Array<{ node: { name: string; kind: string; file_path: string; line_start: number }; score: number }>;
-						pick.items = results.map(r => ({
-							label: `$(${r.node.kind === 'Function' ? 'symbol-method' : r.node.kind === 'Class' ? 'symbol-class' : r.node.kind === 'Type' ? 'symbol-interface' : r.node.kind === 'Test' ? 'beaker' : 'file'}) ${r.node.name}`,
-							description: r.node.kind,
-							detail: `${r.node.file_path}:${r.node.line_start}`,
-							node: r.node,
-						} as vscode.QuickPickItem & { node: typeof r.node }));
-					}, 100);
-				});
-				pick.onDidAccept(() => {
-					const selected = pick.selectedItems[0] as (vscode.QuickPickItem & { node?: { file_path: string; line_start: number } }) | undefined;
-					pick.dispose();
-					if (selected?.node) {
-						const line = Math.max(0, selected.node.line_start - 1);
-						vscode.window.showTextDocument(vscode.Uri.file(selected.node.file_path), {
-							selection: new vscode.Range(line, 0, line, 0),
-						});
-					}
-				});
-				pick.onDidHide(() => { if (timer) clearTimeout(timer); pick.dispose(); });
-				pick.show();
-			}),
-		);
-
-		registerBlastRadiusCommand(context, this, this._blastRadiusProvider);
-
-		this.onStatusChange(() => {
-			this._treeProvider?.refresh();
-			this._statusBar?.update(this._cachedStatus);
-		});
-
-		this._statusBar.show();
-		for (const d of this._viewDisposables) context.subscriptions.push(d);
 	}
 
 	async dispose(): Promise<void> {
 		this._disposed = true;
 		this._trustListener?.dispose();
 		this._trustListener = null;
-		this._viewContext = null;
-		this._viewsRegistered = false;
 		if (this._debounceTimer) {
 			clearTimeout(this._debounceTimer);
 			this._debounceTimer = null;
@@ -482,21 +424,17 @@ export class CompassService implements ICompassService {
 		this._consecutiveFailures = 0;
 		this._watcher?.dispose();
 		this._watcher = null;
-		this._decorations?.dispose();
-		this._decorations = null;
-		this._statusBar?.dispose();
-		this._statusBar = null;
-		this._treeProvider?.dispose();
-		this._treeProvider = null;
-		this._blastRadiusProvider?.dispose();
-		this._blastRadiusProvider = null;
 
 		const worker = this._worker;
 		if (worker) {
-			try {
-				await this._sendRequest({ type: 'dispose' }, TIMEOUTS.dispose);
-			} catch (err) {
-				log('[CompassService] Failed to dispose worker gracefully: %O', err);
+			// A dispose request queues behind heavy work until it times out, and the WAL store already
+			// holds every committed write, so a busy worker is terminated at once.
+			if (!this._heavyRequestInFlight()) {
+				try {
+					await this._sendRequest({ type: 'dispose' }, TIMEOUTS.dispose);
+				} catch (err) {
+					log('[CompassService] Failed to dispose worker gracefully: %O', err);
+				}
 			}
 			worker.terminate();
 			this._worker = null;

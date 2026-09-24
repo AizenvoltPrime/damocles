@@ -4,6 +4,7 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { useVSCode } from "@/composables/useVSCode";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL, exploreSupportedEffortLevels, parseCacheWarmingMode, thinkingDisableApplies } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
@@ -167,7 +168,17 @@ const settingsStore = useSettingsStore();
 const {
   pendingOpenAIModel,
   openaiAuthStatus: pendingAuthStatus,
+  workspaceFolders,
+  panelWorkspaceFolderKey,
+  defaultWorkspaceFolderKey,
+  isMultiRoot,
 } = storeToRefs(settingsStore);
+const { postMessage } = useVSCode();
+
+function handleDefaultWorkspaceFolderChange(folderKey: string) {
+  if (folderKey === defaultWorkspaceFolderKey.value) return;
+  postMessage({ type: "setDefaultWorkspaceFolder", folderKey });
+}
 
 const openaiAuthPanelRef = ref<HTMLElement | null>(null);
 const openaiAuthHighlight = ref(false);
@@ -464,6 +475,21 @@ function handleDeleteExploreApiKey() {
           {{ t("settings.thisPanel") }}
         </h3>
 
+        <div v-if="isMultiRoot" class="mb-5">
+          <Label id="panel-workspace-folder-label" for="panel-workspace-folder-trigger" class="block mb-2 text-primary font-medium">{{ t("settings.workspaceFolder") }}</Label>
+          <Select :model-value="panelWorkspaceFolderKey" @update:model-value="settingsStore.requestPanelWorkspaceFolder">
+            <SelectTrigger id="panel-workspace-folder-trigger" aria-labelledby="panel-workspace-folder-label" class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="folder in workspaceFolders" :key="folder.key" :value="folder.key">
+                {{ folder.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">{{ t("settings.workspaceFolderDescription") }}</p>
+        </div>
+
         <!-- Model (This Panel) -->
         <div class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
@@ -535,6 +561,21 @@ function handleDeleteExploreApiKey() {
         <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
           {{ t("settings.defaultForNewPanels") }}
         </h3>
+
+        <div v-if="isMultiRoot" class="mb-5">
+          <Label id="default-workspace-folder-label" for="default-workspace-folder-trigger" class="block mb-2 text-primary font-medium">{{ t("settings.workspaceFolder") }}</Label>
+          <Select :model-value="defaultWorkspaceFolderKey" @update:model-value="handleDefaultWorkspaceFolderChange">
+            <SelectTrigger id="default-workspace-folder-trigger" aria-labelledby="default-workspace-folder-label" class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="folder in workspaceFolders" :key="folder.key" :value="folder.key">
+                {{ folder.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">{{ t("settings.defaultWorkspaceFolderDescription") }}</p>
+        </div>
 
         <!-- Default Model -->
         <div class="mb-5">

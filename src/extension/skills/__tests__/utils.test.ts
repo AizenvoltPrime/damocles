@@ -17,7 +17,6 @@ import * as vscode from 'vscode';
 import { loadSkillDescription } from '../utils';
 
 const realFsRead = vscode.workspace.fs.readFile;
-const realFolders = vscode.workspace.workspaceFolders;
 const realIsTrusted = vscode.workspace.isTrusted;
 
 let readFile: ReturnType<typeof vi.fn>;
@@ -47,15 +46,11 @@ describe('loadSkillDescription', () => {
     // the name-guard test can prove no filesystem access happened at all.
     readFile = vi.fn(async (uri: { fsPath: string }) => new Uint8Array(fs.readFileSync(uri.fsPath)));
     (vscode.workspace as { fs: unknown }).fs = { readFile };
-    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
-      { uri: vscode.Uri.file(ws), name: 'ws', index: 0 },
-    ];
     setTrusted(true);
   });
 
   afterEach(() => {
     (vscode.workspace as { fs: unknown }).fs = { readFile: realFsRead };
-    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = realFolders;
     vscode.__setTrusted(realIsTrusted);
     fs.rmSync(ws, { recursive: true, force: true });
     fs.rmSync(H.home, { recursive: true, force: true });
@@ -64,43 +59,62 @@ describe('loadSkillDescription', () => {
 
   it('resolves a description from a project .damocles skill', async () => {
     writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
-    await expect(loadSkillDescription('demo')).resolves.toBe('from damocles project');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from damocles project');
+  });
+
+  // The panel's folder decides the project scope, not the window's first folder.
+  it('reads the project skill of the folder it is given and never another open folder', async () => {
+    const other = fs.mkdtempSync(path.join(nodeOs.tmpdir(), 'skill-ws-b-'));
+    try {
+      writeSkill(ws, '.damocles/skills', 'demo', 'from folder A');
+      writeSkill(other, '.damocles/skills', 'demo', 'from folder B');
+      await expect(loadSkillDescription('demo', other)).resolves.toBe('from folder B');
+      await expect(loadSkillDescription('demo', ws)).resolves.toBe('from folder A');
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('reads only the user scope when the panel has no project folder', async () => {
+    writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
+    writeSkill(H.home, '.damocles/skills', 'demo', 'from damocles user');
+    await expect(loadSkillDescription('demo', null)).resolves.toBe('from damocles user');
   });
 
   it('resolves a description from a project .codex skill', async () => {
     writeSkill(ws, '.codex/skills', 'demo', 'from codex project');
-    await expect(loadSkillDescription('demo')).resolves.toBe('from codex project');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from codex project');
   });
 
   it('resolves a description from a user-scope .damocles skill', async () => {
     writeSkill(H.home, '.damocles/skills', 'demo', 'from damocles user');
-    await expect(loadSkillDescription('demo')).resolves.toBe('from damocles user');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from damocles user');
   });
 
   it('lets .damocles shadow .claude when both define the skill', async () => {
     writeSkill(ws, '.claude/skills', 'demo', 'from claude project');
     writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
-    await expect(loadSkillDescription('demo')).resolves.toBe('from damocles project');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from damocles project');
   });
 
   it('lets a project skill shadow the same-named user skill', async () => {
     writeSkill(H.home, '.damocles/skills', 'demo', 'from damocles user');
     writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
-    await expect(loadSkillDescription('demo')).resolves.toBe('from damocles project');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from damocles project');
   });
 
   it('returns no project description in an untrusted workspace', async () => {
     writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
     writeSkill(ws, '.claude/skills', 'demo', 'from claude project');
     setTrusted(false);
-    await expect(loadSkillDescription('demo')).resolves.toBeUndefined();
+    await expect(loadSkillDescription('demo', ws)).resolves.toBeUndefined();
   });
 
   it('still resolves a user-scope description in an untrusted workspace', async () => {
     writeSkill(ws, '.damocles/skills', 'demo', 'from damocles project');
     writeSkill(H.home, '.claude/skills', 'demo', 'from claude user');
     setTrusted(false);
-    await expect(loadSkillDescription('demo')).resolves.toBe('from claude user');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from claude user');
   });
 
   // A blank value is no value. Reading across the line break would show the next frontmatter key as
@@ -113,7 +127,7 @@ describe('loadSkillDescription', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\n${line}\nname: demo\n---\n\nbody\n`, 'utf8');
 
-    await expect(loadSkillDescription('demo')).resolves.toBeUndefined();
+    await expect(loadSkillDescription('demo', ws)).resolves.toBeUndefined();
   });
 
   // A blank description is as good as an absent one, so the search has to keep going.
@@ -123,7 +137,7 @@ describe('loadSkillDescription', () => {
     fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: demo\ndescription:\n---\n\nbody\n', 'utf8');
     writeSkill(ws, '.claude/skills', 'demo', 'from claude project');
 
-    await expect(loadSkillDescription('demo')).resolves.toBe('from claude project');
+    await expect(loadSkillDescription('demo', ws)).resolves.toBe('from claude project');
   });
 
   it('does not match a key that merely ends in description', async () => {
@@ -135,21 +149,21 @@ describe('loadSkillDescription', () => {
       'utf8',
     );
 
-    await expect(loadSkillDescription('demo')).resolves.toBeUndefined();
+    await expect(loadSkillDescription('demo', ws)).resolves.toBeUndefined();
   });
 
   it('returns undefined for a skill with no description frontmatter', async () => {
     const dir = path.join(ws, '.damocles/skills', 'demo');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: demo\n---\n\nbody\n', 'utf8');
-    await expect(loadSkillDescription('demo')).resolves.toBeUndefined();
+    await expect(loadSkillDescription('demo', ws)).resolves.toBeUndefined();
   });
 
   // The approval prompt shows no description for a name this reader rejects, so it has to accept every
   // name the scanner can list.
   it('resolves a description for a dotted skill name', async () => {
     writeSkill(ws, '.damocles/skills', 'foo.bar', 'dotted skill');
-    await expect(loadSkillDescription('foo.bar')).resolves.toBe('dotted skill');
+    await expect(loadSkillDescription('foo.bar', ws)).resolves.toBe('dotted skill');
   });
 
   it.each(['foo..bar', '.hidden', 'foo.'])(
@@ -159,7 +173,7 @@ describe('loadSkillDescription', () => {
       fs.mkdirSync(path.dirname(planted), { recursive: true });
       fs.writeFileSync(planted, '---\ndescription: planted\n---\n', 'utf8');
 
-      await expect(loadSkillDescription(name)).resolves.toBeUndefined();
+      await expect(loadSkillDescription(name, ws)).resolves.toBeUndefined();
       expect(readFile).not.toHaveBeenCalled();
     },
   );
@@ -173,7 +187,7 @@ describe('loadSkillDescription', () => {
       fs.mkdirSync(path.dirname(planted), { recursive: true });
       fs.writeFileSync(planted, '---\ndescription: planted\n---\n', 'utf8');
 
-      await expect(loadSkillDescription(name)).resolves.toBeUndefined();
+      await expect(loadSkillDescription(name, ws)).resolves.toBeUndefined();
       expect(readFile).not.toHaveBeenCalled();
     },
   );

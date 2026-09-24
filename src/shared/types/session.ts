@@ -271,4 +271,6 @@ export interface StoredSession {
   messageCount?: number;
   tag?: string;
   createdAt?: number;
+  /** The open folder whose session dir holds this session, with that folder's disambiguated label. */
+  workspaceFolder?: { key: string; label: string };
 }

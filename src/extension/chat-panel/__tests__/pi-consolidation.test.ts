@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /** Capture the options PiSession is constructed with, so we can drive its onSessionIdChange callback. */
-let capturedOptions: { onSessionIdChange?: (id: string | null) => void } | null = null;
+let capturedOptions: { cwd?: string; onSessionIdChange?: (id: string | null) => void } | null = null;
 
 vi.mock('../../pi-session/pi-session', () => ({
   PiSession: class {
-    constructor(options: { onSessionIdChange?: (id: string | null) => void }) {
+    constructor(options: { cwd?: string; onSessionIdChange?: (id: string | null) => void }) {
       capturedOptions = options;
     }
   },
@@ -23,11 +23,12 @@ const setupWatcher = vi.fn(async () => undefined);
 const addOrUpdate = vi.fn(async () => undefined);
 const postMessage = vi.fn();
 
+const REPO = { key: '/repo', fsPath: '/repo', name: 'repo', label: 'repo', projectScope: true };
+
 function makeManager(): SessionManager {
   const config = {
-    workspacePath: '/repo',
     getMcpConfigLoaded: () => true,
-    getEnabledMcpServers: () => ({}),
+    getEnabledMcpServers: () => ({ userUnion: {}, userVisible: [], folder: {} }),
     getActiveModelForPanel: () => 'claude-opus-4-8',
     getDefaultModel: () => 'claude-opus-4-8',
     getPreferOpenAIApiKey: () => false,
@@ -57,7 +58,7 @@ describe('SessionManager pi consolidation-on-switch (US-006b)', () => {
 
   it('migrates + consolidates memory when the pi session id changes', async () => {
     const manager = makeManager();
-    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1');
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', REPO);
 
     expect(capturedOptions?.onSessionIdChange).toBeTypeOf('function');
     capturedOptions!.onSessionIdChange!('pi-session-42');
@@ -69,9 +70,17 @@ describe('SessionManager pi consolidation-on-switch (US-006b)', () => {
     expect(consolidateSession).toHaveBeenCalledWith('pi-session-42');
   });
 
+  it('runs the session in the raw folder fsPath, the workspace its memory candidates are filed under', async () => {
+    const manager = makeManager();
+    const folder = { key: String.raw`c:\repos\app`, fsPath: String.raw`C:\Repos\App`, name: 'App', label: 'App', projectScope: true };
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', folder);
+
+    expect(capturedOptions?.cwd).toBe(folder.fsPath);
+  });
+
   it('does not consolidate when the session id is null', async () => {
     const manager = makeManager();
-    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1');
+    await manager.createSessionForPanel({} as never, { getPermissionMode: () => 'default' } as never, 'panel-1', REPO);
 
     capturedOptions!.onSessionIdChange!(null);
     await Promise.resolve();

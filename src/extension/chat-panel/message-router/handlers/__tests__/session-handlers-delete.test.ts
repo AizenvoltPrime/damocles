@@ -16,7 +16,7 @@ vi.mock('vscode', () => ({
 vi.mock('../../../../pi-session/session-store', () => ({
   renamePiSession: vi.fn(),
   tagPiSession: vi.fn(),
-  deletePiSession: vi.fn(async () => { H.order.push('rm-file'); }),
+  deletePiSession: vi.fn(async (cwd: string) => { H.order.push(cwd === '/ws' ? 'rm-file' : `rm-file:${cwd}`); }),
 }));
 
 vi.mock('../../../../pi-session/pi-runtime', () => ({
@@ -52,30 +52,50 @@ describe('deleteSession — detaches the owning writer before removing the file'
     return { detached: () => count };
   }
 
-  function harness(thisPanelSessionId: string | null) {
+  type OtherPanel = { panelId: string; holding: string };
+
+  function harness(thisPanelSessionId: string | null, opts: { others?: OtherPanel[]; sessionFolder?: string; recordLookup?: boolean } = {}) {
     const session = {
       persistenceSessionId: thisPanelSessionId,
+      holdsSession: (id: string) => id === thisPanelSessionId,
       detachFromDeletedSession: async () => {
         await new Promise((r) => setTimeout(r, 0));
         H.order.push('detach:this-panel');
       },
     };
+    const panels = new Map<string, unknown>([['p1', { session }]]);
+    for (const other of opts.others ?? []) {
+      panels.set(other.panelId, {
+        session: {
+          holdsSession: (id: string) => id === other.holding,
+          detachFromDeletedSession: async () => {
+            await new Promise((r) => setTimeout(r, 0));
+            H.order.push(`detach:${other.panelId}`);
+          },
+        },
+      });
+    }
+    const sessionFolder = opts.sessionFolder;
     const deps = {
-      workspacePath: '/ws',
       postMessage: () => undefined,
+      getPanels: () => panels,
       storageManager: {
+        folderOf: async () => {
+          if (opts.recordLookup) H.order.push('folder-lookup');
+          return sessionFolder ? { key: sessionFolder, fsPath: sessionFolder } : undefined;
+        },
         invalidateSessionsCache: () => undefined,
         getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
       },
       settingsManager: {},
       getLanguagePreference: () => 'en',
     } as unknown as Parameters<typeof createSessionHandlers>[0];
-    const ctx = { session, host: {}, panelId: 'p1', permissionHandler: {} } as never;
+    const ctx = { folder: { key: '/ws', fsPath: '/ws', name: 'ws', label: 'ws', projectScope: true }, session, host: {}, panelId: 'p1', permissionHandler: {} } as never;
     return { deps, ctx };
   }
 
-  async function runDelete(thisPanelSessionId: string | null, target: string): Promise<void> {
-    const { deps, ctx } = harness(thisPanelSessionId);
+  async function runDelete(thisPanelSessionId: string | null, target: string, opts: Parameters<typeof harness>[1] = {}): Promise<void> {
+    const { deps, ctx } = harness(thisPanelSessionId, opts);
     await createSessionHandlers(deps).deleteSession!({ type: 'deleteSession', sessionId: target } as never, ctx);
   }
 
@@ -131,5 +151,23 @@ describe('deleteSession — detaches the owning writer before removing the file'
   it('deletes a session no panel holds without detaching anything', async () => {
     await runDelete('sess-mine', 'sess-cold');
     expect(H.order).toEqual(['rm-file']);
+  });
+
+  it('detaches another panel that only points at the session as its resume target', async () => {
+    // No mutator is registered before start(), so only the panel map knows this panel would go on to
+    // open the file being removed.
+    await runDelete('sess-mine', 'sess-pending', { others: [{ panelId: 'p2', holding: 'sess-pending' }] });
+    expect(H.order).toEqual(['detach:p2', 'rm-file']);
+  });
+
+  it("removes the session from its own folder's store when the panel is on another folder", async () => {
+    await runDelete('sess-mine', 'sess-b', { sessionFolder: '/work/beta' });
+    expect(H.order).toEqual(['rm-file:/work/beta']);
+  });
+
+  it('looks up the session folder before detaching, so no await separates the detach from the rm', async () => {
+    registerOwner('sess-1');
+    await runDelete('sess-mine', 'sess-1', { recordLookup: true });
+    expect(H.order).toEqual(['folder-lookup', 'detach:sess-1', 'rm-file']);
   });
 });

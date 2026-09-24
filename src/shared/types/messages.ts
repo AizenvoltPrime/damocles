@@ -26,6 +26,7 @@ import type { MemoryInjectionDisplay } from './context-injection';
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
+import type { WorkspaceFolderInfo } from './workspace-folders';
 
 // Re-exported from ./memory (its true home) so existing transport-layer imports keep working.
 export type { ObservationCursor } from './memory';
@@ -45,10 +46,12 @@ export type WebviewToExtensionMessage =
       parentToolUseId?: string;
       updatedPermissions?: PermissionUpdate[];
     }
-  | { type: "ready"; savedSessionId?: string }
+  | { type: "ready"; savedSessionId?: string; savedWorkspaceFolderKey?: string }
   | { type: "requestModels" }
   | { type: "setActiveModel"; model: string }
   | { type: "setDefaultModel"; model: string }
+  | { type: "setPanelWorkspaceFolder"; folderKey: string }
+  | { type: "setDefaultWorkspaceFolder"; folderKey: string }
   | { type: "setPanelThinkingDisabled"; disabled: boolean }
   | { type: "setPanelEffort"; effort: EffortLevel | null; model: string }
   | { type: "setPanelMaxThinkingTokens"; tokens: number | null; model: string }
@@ -412,6 +415,9 @@ export type ExtensionToWebviewMessage =
   | { type: "consolidationProgress"; event: ConsolidationPhaseEvent }
   | { type: "consolidationResult"; result: ConsolidationResult }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
+  // `switched` is set only when the panel moved to a new folder with a fresh conversation; without it the
+  // message is state only, and the webview reverts any optimistic selection to `panelFolderKey`.
+  | { type: "workspaceFolderUpdate"; folders: WorkspaceFolderInfo[]; panelFolderKey: string; defaultFolderKey: string; switched?: boolean }
   | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }
   | { type: "contextInjectionLoaded"; promptIndex: number; memoryData: MemoryInjectionDisplay | null }
   | { type: "contextInjectionStarted"; promptIndex: number }

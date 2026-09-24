@@ -50,7 +50,9 @@ export class EvaluatorManager {
       }
     }
 
-    const permissions = await this.getPermissions(workspacePath);
+    // A repository's own settings files could allow anything, so they count only once the window is
+    // trusted. Read per call: granting trust changes the cache key, so the next call reloads.
+    const permissions = await this.getPermissions(vscode.workspace.isTrusted ? workspacePath : null);
     const patternResult = this.matchAgainstPatterns(toolName, input, permissions);
 
     if (patternResult === 'deny') {
@@ -80,9 +82,8 @@ export class EvaluatorManager {
 
   /**
    * Cached per workspace, not just per age: the eight paths this resolves are half workspace-relative,
-   * so a hit for a different workspace would answer with another project's rules. One handler serves
-   * one workspace today, which is why this has never bitten — the key makes that an invariant rather
-   * than a coincidence.
+   * and a panel's handler moves to another workspace when the panel switches folder, so a hit for the
+   * previous workspace would answer with another project's rules.
    */
   private async getPermissions(workspacePath: string | null): Promise<FilePermissions[]> {
     const now = Date.now();

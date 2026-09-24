@@ -1,7 +1,6 @@
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { SubscriptionUsageData } from "../../../../shared/types/usage";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
-import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { fetchSubscriptionUsage } from "../../../pi-session/subscription-usage";
 
 /**
@@ -13,7 +12,7 @@ export function createUsageHandlers(deps: HandlerDependencies): Partial<HandlerR
     requestSubscriptionUsage: async (_msg, ctx) => {
       let data: SubscriptionUsageData;
       try {
-        data = await fetchSubscriptionUsage(PiRuntime.get(deps.workspacePath, PI_AGENT_DIR));
+        data = await fetchSubscriptionUsage(PiRuntime.get());
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         data = {

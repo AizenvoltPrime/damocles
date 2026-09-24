@@ -51,6 +51,7 @@ interface MemoryStoreShape {
   profileSectionError: Ref<{ key: ProfileSectionKey; token: number } | null>;
   setProfile: (project: UserProfile, global: UserProfile, savedSection?: ProfileSectionRef) => void;
   setProfileSectionError: (scope: 'project' | 'global', section: 'static' | 'dynamic') => void;
+  clearFolderData: () => void;
   $reset: () => void;
 }
 
@@ -161,12 +162,17 @@ export const useMemoryStore = defineStore('memory', (): MemoryStoreShape => {
     createSettlement.value = { requestId, ok };
   }
 
+  // Set by clearFolderData until the next dispatch, so a reply to a search run in the previous folder never lands.
+  let searchWithdrawn = false;
+
   function setPendingSearchQuery(query: string | null): void {
     pendingSearchQuery.value = query;
+    if (query !== null) searchWithdrawn = false;
   }
 
   // Drop results whose query no longer matches the latest dispatched search (out-of-order A→B land).
   function setSearchResults(results: SearchResult[], query?: string): void {
+    if (searchWithdrawn) return;
     if (query !== undefined && pendingSearchQuery.value !== null && query !== pendingSearchQuery.value) return;
     searchResults.value = results;
     pendingSearchQuery.value = null;
@@ -212,6 +218,20 @@ export const useMemoryStore = defineStore('memory', (): MemoryStoreShape => {
     profileSectionError.value = { key, token: (profileSectionError.value?.token ?? 0) + 1 };
   }
 
+  /** Drops everything loaded for the panel's previous folder; the user's filters survive. */
+  function clearFolderData(): void {
+    memories.value = [];
+    searchResults.value = [];
+    hasMoreObservations.value = false;
+    loadingObservations.value = false;
+    observationCursor.value = null;
+    pendingSearchQuery.value = null;
+    searchWithdrawn = true;
+    versionHistory.value = {};
+    relatedMemories.value = {};
+    profile.value = { project: emptyProfile(), global: emptyProfile() };
+  }
+
   function $reset(): void {
     memories.value = [];
     searchResults.value = [];
@@ -221,6 +241,7 @@ export const useMemoryStore = defineStore('memory', (): MemoryStoreShape => {
     observationCursor.value = null;
     createSettlement.value = null;
     pendingSearchQuery.value = null;
+    searchWithdrawn = false;
     kindFilter.value = 'all';
     scopeFilter.value = 'all';
     showForgotten.value = false;
@@ -270,6 +291,7 @@ export const useMemoryStore = defineStore('memory', (): MemoryStoreShape => {
     profileSectionError,
     setProfile,
     setProfileSectionError,
+    clearFolderData,
     $reset,
   };
 });

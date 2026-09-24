@@ -54,6 +54,7 @@ export class PermissionState {
   permissionRequiredNotifier: PermissionRequiredNotifier | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;
+  workspacePath: string | null = null;
   sessionAborting = false;
   /** Fired on every add and every remove so a listener re-derives from the maps, never from a count. */
   onPendingChanged: (() => void) | null = null;

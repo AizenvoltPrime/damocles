@@ -8,11 +8,11 @@ import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, Creat
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
-import type { SessionOptions, ContentInput, RewindOption } from "../session-types";
+import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
-import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
+import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { SteerTargetInfo } from "../../shared/types/subagents";
 import type { TeamService } from "../team";
@@ -21,6 +21,7 @@ import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, mig
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
+import type { FolderRuntime } from "./folder-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
 import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
@@ -88,7 +89,7 @@ import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt, renderSections, resolveSkillFileReadTool, type DamoclesPromptSections } from "./agent-start";
-import type { McpClientManager } from "./mcp/mcp-client-manager";
+import type { McpToolSource } from "./mcp/tool-source";
 import { isMcpToolName } from "./mcp/naming";
 import { buildNestedMcpToolset, type NestedMcpToolset } from "./tools/mcp-tools";
 import { isWebSearchEnabled } from "./web-access";
@@ -138,7 +139,7 @@ const ABORTED_AGENTS_SETTLE_TIMEOUT_MS = 10_000;
 
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
- * whose factory reuses the process-singleton `PiRuntime.services` (B1) and a `PiStreamAdapter` that
+ * whose factory reuses its folder's `FolderRuntime.services` and a `PiStreamAdapter` that
  * reproduces the existing webview message contract. Deferred subsystems degrade gracefully — no
  * method reachable from a live handler throws (FR-10).
  */
@@ -150,6 +151,8 @@ export class PiSession implements ChatSession {
   private readonly uiContext: WebviewExtensionUIContext;
 
   private runtime: AgentSessionRuntime | null = null;
+  /** This panel folder's pi services, resolved by `start()`; null until then. */
+  private folder: FolderRuntime | null = null;
   private unsubscribe: (() => void) | null = null;
   private startPromise: Promise<void> | null = null;
   /** In-flight session replacement (reset/clear → newSession); a following sendMessage awaits it. */
@@ -163,7 +166,7 @@ export class PiSession implements ChatSession {
   private mcpReloadRerunRequested = false;
   /** A tools-changed arrived while busy: reload deferred, flushed at the next turn (`sendMessage`). */
   private mcpReloadPendingAfterTurn = false;
-  /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
+  /** The pi sessionId currently registered in the folder runtime's panel registry (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
   /** The exact gate context and tool refresher registered under `registeredSessionId`; unregistering
    *  hands them back so a late release cannot evict another panel's entry for the same id. */
@@ -171,8 +174,8 @@ export class PiSession implements ChatSession {
   private registeredToolRefresher: (() => void) | null = null;
   /** Debounce key for `permission_required` (US-009): one notification per (sessionId, turn). */
   private _lastPermissionNotifyKey: string | null = null;
-  /** Feed the initial enabled MCP servers once; later changes flow via live setMcpServers (US-014.9). */
-  private mcpServersFed = false;
+  /** The latest MCP scope fed to this panel; applied once the folder runtime exists. */
+  private mcpScope: McpScope | undefined;
   /** Pushes fresh MCP runtime status to this panel's webview on every connect/disconnect (no manual refresh). */
   private _mcpStatusListener: (() => void) | null = null;
   /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
@@ -265,6 +268,7 @@ export class PiSession implements ChatSession {
   constructor(options: SessionOptions) {
     this.options = options;
     this.cwd = options.cwd;
+    this.mcpScope = options.mcpScope;
     this.modelValue = options.model ?? "";
     this.permissionMode = "default";
     this.adapter = new PiStreamAdapter({
@@ -297,6 +301,8 @@ export class PiSession implements ChatSession {
   // ---- lifecycle ----------------------------------------------------------
 
   private ensureStarted(): Promise<void> {
+    // A panel replaces a disposed session rather than reviving it, so a stale caller must fail here.
+    if (this._disposed) return Promise.reject(new Error("PiSession: session was disposed"));
     if (!this.startPromise)
       this.startPromise = this.start().catch((err) => {
         this.startPromise = null;
@@ -305,12 +311,25 @@ export class PiSession implements ChatSession {
     return this.startPromise;
   }
 
+  /** The folder runtime, for paths that only run once `start()` has resolved it. */
+  private requireFolder(): FolderRuntime {
+    if (this.folder === null) throw new Error("PiSession: folder runtime used before start()");
+    return this.folder;
+  }
+
+  /** A folder switch disposes a session while its webview stays live, so a start that outlived its
+   *  session must not bind, register or announce anything. */
+  private throwIfDisposedDuringStart(): void {
+    if (this._disposed) throw new Error("PiSession: session was disposed during start");
+  }
+
   private async start(): Promise<void> {
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    await piRuntime.init();
+    const piRuntime = PiRuntime.get();
+    const folder = await piRuntime.folder(this.cwd);
+    this.throwIfDisposedDuringStart();
+    this.folder = folder;
     const pi = getPiCodingAgent();
-    const services = piRuntime.services;
-    if (!pi || !services) throw new Error("PiSession.start: pi runtime not initialized");
+    if (!pi) throw new Error("PiSession.start: pi runtime not initialized");
 
     // Wire native custom providers (StepFun/DeepSeek/OpenRouter/Gemini) from secrets so subagents AND a
     // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Deliberately still AWAITED
@@ -322,6 +341,7 @@ export class PiSession implements ChatSession {
     if (this.options.secrets) {
       const secrets = this.options.secrets;
       ({ notWired: notWiredProviders, timedOut: syncTimedOut } = await piRuntime.syncCustomProviders((key) => secrets.get(key)));
+      this.throwIfDisposedDuringStart();
     }
 
     const requestedModel = this.modelValue;
@@ -330,18 +350,16 @@ export class PiSession implements ChatSession {
 
     // Native subagent engine (Phase 5): a cross-turn per-PiSession registry + manager, created before the
     // factory so the primary session's customTools include the three subagent tools.
-    this.ensureSubagentEngine(pi);
+    this.ensureSubagentEngine(pi, folder);
 
     const factory: CreateAgentSessionRuntimeFactory = async (opts) => {
-      const sharedRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-      // Refresh the shared extension runtime so each session binds to its own fresh runtime — a
+      // Refresh the folder's extension runtime so each session binds to its own fresh runtime — a
       // disposed session marks its runtime stale, and reload() (verified) only swaps the loader's
       // current runtime without invalidating other panels' already-bound live sessions, so this also
-      // isolates concurrent panels. Skipped only for the process's first-ever session (which uses the
-      // pristine init runtime); the first session in every later panel still reloads.
-      await sharedRuntime.prepareSessionExtensions();
-      const shared = sharedRuntime.services;
-      if (!shared) throw new Error("PiSession factory: pi services unavailable (B1)");
+      // isolates concurrent panels. Skipped only for the folder's first session (which uses the
+      // pristine creation runtime); every later session on the same folder reloads.
+      await folder.prepareSessionExtensions();
+      const shared = folder.services;
       // Filled in below, once this factory call's session exists. The tools are built before it does, so
       // the note delivery reads it through a thunk; binding it here and not to `this.runtime` is what
       // keeps a leftover shell call's note in the conversation that ran the command.
@@ -390,9 +408,16 @@ export class PiSession implements ChatSession {
     const forkResumeId = fork && !fork.consumed ? fork.piBranchedSessionId : undefined;
     const resumeTargetId = this.resumeSessionId ?? forkResumeId ?? null;
     const resumePath = resumeTargetId ? await resolvePiSessionFile(this.cwd, resumeTargetId) : null;
+    this.throwIfDisposedDuringStart();
     if (resumePath && forkResumeId && fork) fork.consumed = true;
     const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir) : pi.SessionManager.create(this.cwd, sessionDir);
-    this.runtime = await pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager });
+    const runtime = await pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager });
+    if (this._disposed) {
+      // dispose() already ran with no runtime to tear down, so this one is ours to release.
+      await runtime.dispose();
+      this.throwIfDisposedDuringStart();
+    }
+    this.runtime = runtime;
 
     this.bindSession(this.runtime.session);
     // Continue the token/budget meter from the resumed session's loaded total rather than zero.
@@ -448,17 +473,17 @@ export class PiSession implements ChatSession {
     );
     // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
     // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
-    // (see PiRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
+    // (see FolderRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
     this.applyCompactionConfig();
     this.applyCacheWarmingConfig();
 
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const folder = this.requireFolder();
     const sessionId = session.sessionId;
     if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
       // Gate on the id ACTUALLY changing: a rebind onto the same session (refresh, mode change) must
       // keep whatever ToolSearch loaded, while a replacement session starts from the deferred baseline.
       this.toolSearchActivated.clear();
-      this.unregisterFromRuntime(piRuntime, this.registeredSessionId);
+      this.unregisterFromRuntime(folder, this.registeredSessionId);
       // A replacement session gets a fresh checkpoint driver + rewindable set.
       this.checkpointService?.dispose();
       this.checkpointService = null;
@@ -482,11 +507,11 @@ export class PiSession implements ChatSession {
       deferrableTools: () => this.deferrableToolsSnapshot(),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
     };
-    piRuntime.registerPanel(sessionId, gate);
+    folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
-    piRuntime.registerSessionMutator(sessionId, this);
+    PiRuntime.get().registerSessionMutator(sessionId, this);
     // On MCP tools-changed, re-apply this session's active set and push fresh MCP status (no manual
     // refresh). `reloadForMcpToolChange` also rebuilds an orphaned-runtime session whose registry never
     // got the new tools (multi-panel); it's a plain refresh when not orphaned.
@@ -494,7 +519,7 @@ export class PiSession implements ChatSession {
       this.reloadForMcpToolChange();
       this._mcpStatusListener?.();
     };
-    piRuntime.registerActiveToolRefresher(sessionId, refreshTools);
+    folder.registerActiveToolRefresher(sessionId, refreshTools);
     this.registeredToolRefresher = refreshTools;
     this.registeredSessionId = sessionId;
 
@@ -505,8 +530,8 @@ export class PiSession implements ChatSession {
     // debounce key) are the primary panel's — the approval surfaces on the primary, and the parent tool-use
     // id identifies the subagent. This is an observe-only notification, so the primary identity is benign.
     this.options.permissionHandler.setPermissionRequiredNotifier((info) => {
-      const deps = PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps();
-      if (!deps || !deps.config.hasEntries("permission_required")) return;
+      const deps = folder.getHooksDispatchDeps();
+      if (!deps.config.hasEntries("permission_required")) return;
       const turnKey = `${sessionId}:${this.currentPromptIndex}`;
       if (this._lastPermissionNotifyKey === turnKey) return;
       this._lastPermissionNotifyKey = turnKey;
@@ -533,28 +558,23 @@ export class PiSession implements ChatSession {
     // message_start. `hydrate` re-surfaces any checkpoints already in a resumed/forked session tree so
     // it is immediately rewindable; for a fresh session it is a no-op.
     this.checkpointService = new CheckpointService({ cwd: this.cwd, onCheckpointReady: (id) => this.addCheckpoint(id) });
-    piRuntime.registerCheckpointService(sessionId, this.checkpointService);
+    folder.registerCheckpointService(sessionId, this.checkpointService);
     this.checkpointService.hydrate(session.sessionManager);
 
     // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
     this.uiContext.cancelAll();
     void session.bindExtensions({ uiContext: this.uiContext, mode: "rpc" }).catch((err) => log("[PiSession] bindExtensions failed: %O", err));
 
-    // Feed the initial enabled MCP servers to the shared client once (Phase 6). The manager persists
-    // across session replacements (it lives on the runtime singleton), so a reset/clear must NOT re-feed
-    // the now-stale creation-time set — live toggles + the .mcp.json watcher own subsequent changes.
-    if (!this.mcpServersFed) {
-      this.mcpServersFed = true;
-      this.setMcpServers(this.options.mcpServers ?? {});
-    }
+    // The latest scope, never the creation-time one: a live feed may have arrived before the folder existed.
+    if (this.mcpScope) this.applyMcpScope(this.mcpScope);
   }
 
   /** Release every runtime registry entry this panel registered under `sessionId`. */
-  private unregisterFromRuntime(piRuntime: PiRuntime, sessionId: string): void {
-    if (this.registeredGate) piRuntime.unregisterPanel(sessionId, this.registeredGate);
-    if (this.checkpointService) piRuntime.unregisterCheckpointService(sessionId, this.checkpointService);
-    piRuntime.unregisterSessionMutator(sessionId, this);
-    if (this.registeredToolRefresher) piRuntime.unregisterActiveToolRefresher(sessionId, this.registeredToolRefresher);
+  private unregisterFromRuntime(folder: FolderRuntime, sessionId: string): void {
+    if (this.registeredGate) folder.unregisterPanel(sessionId, this.registeredGate);
+    if (this.checkpointService) folder.unregisterCheckpointService(sessionId, this.checkpointService);
+    PiRuntime.get().unregisterSessionMutator(sessionId, this);
+    if (this.registeredToolRefresher) folder.unregisterActiveToolRefresher(sessionId, this.registeredToolRefresher);
     this.registeredGate = null;
     this.registeredToolRefresher = null;
   }
@@ -565,9 +585,8 @@ export class PiSession implements ChatSession {
    * model rather than an unusable Claude/gateway one). Leaves the model unset if nothing is authed.
    */
   private resolveInitialModel(piRuntime: PiRuntime): void {
-    const services = piRuntime.services;
-    if (!services) return;
-    const registry = services.modelRuntime;
+    const registry = piRuntime.modelRuntime;
+    if (!registry) return;
     const openai = piRuntime.getOpenAIAuthStatus();
 
     const preferApiKey = this.preferOpenAIApiKey();
@@ -1102,8 +1121,8 @@ export class PiSession implements ChatSession {
    * configured trigger percent. Called on bind and on the config-change handler.
    */
   private applyCompactionConfig(): void {
-    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
-    if (!sm) return;
+    if (this.folder === null) return;
+    const sm = this.folder.services.settingsManager;
     const cfg = this.autoCompactConfig();
     sm.setCompactionEnabled(cfg.enabled);
     if (cfg.enabled) this.refreshCompactionReserve(cfg);
@@ -1115,8 +1134,8 @@ export class PiSession implements ChatSession {
    * field from the one `applyOverrides` writes, so only `setCacheWarmingMode` has any effect here.
    */
   private applyCacheWarmingConfig(): void {
-    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
-    if (!sm) return;
+    if (this.folder === null) return;
+    const sm = this.folder.services.settingsManager;
     sm.setCacheWarmingMode(cacheWarmingSetting());
   }
 
@@ -1129,9 +1148,8 @@ export class PiSession implements ChatSession {
    * that is intentional and harmless precisely because each panel re-asserts its own value at turn start.
    */
   private refreshCompactionReserve(cfg = this.autoCompactConfig()): void {
-    if (!cfg.enabled) return;
-    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
-    if (!sm) return;
+    if (!cfg.enabled || this.folder === null) return;
+    const sm = this.folder.services.settingsManager;
     const budget = resolveCompactionBudget(cfg, this.modelValue, this.contextWindowForCurrentModel());
     sm.applyOverrides({
       compaction: {
@@ -1146,7 +1164,7 @@ export class PiSession implements ChatSession {
   /** Read per call, never cached, so a settings edit lands without a reload. The shared manager is right
    *  in every context: the per-subagent one is seeded from the same settings and overrides `compaction`. */
   private shellOptions(): ShellOptions {
-    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
+    const sm = this.folder?.services.settingsManager;
     const commandPrefix = sm?.getShellCommandPrefix();
     const shellPath = sm?.getShellPath();
     return {
@@ -1245,7 +1263,7 @@ export class PiSession implements ChatSession {
     // owned by the panel, so the panel disposes it.
     this.options.teamService?.dispose();
     // Tear down the subagent engine: abort + dispose all nested sessions; unsubscribe from the shared
-    // workspace registry (which is owned by PiRuntime and shared across panels — never disposed here).
+    // folder registry (which is owned by FolderRuntime and shared across panels — never disposed here).
     this.subagentManager?.dispose();
     this.subagentManager = null;
     this.agentRegistry = null;
@@ -1253,15 +1271,15 @@ export class PiSession implements ChatSession {
     this._agentsUnsub = null;
     this._configUnsub?.dispose();
     this._configUnsub = null;
-    // Abort any in-flight `/btw` asides. They run as direct `createSubagentSession`s on the
-    // process-singleton PiRuntime (not this.runtime, not the AgentManager), so nothing above reaches
+    // Abort any in-flight `/btw` asides. They run as direct `createSubagentSession`s on the folder
+    // runtime (not this.runtime, not the AgentManager), so nothing above reaches
     // them — without this they keep streaming their model call until full extension shutdown.
     if (this.btwSessions.size > 0) {
-      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+      const folder = this.requireFolder();
       for (const { session, ac } of this.btwSessions.values()) {
         ac.abort();
         void session.abort().catch(() => {});
-        piRuntime.forgetSubagentSession(session);
+        folder.forgetSubagentSession(session);
       }
       this.btwSessions.clear();
     }
@@ -1269,12 +1287,12 @@ export class PiSession implements ChatSession {
     // emits `session_shutdown` to the extension runner, and a handler on that still needs a live
     // checkpoint service, so the service is only torn down after.
     if (this.registeredSessionId) {
-      this.unregisterFromRuntime(PiRuntime.get(this.cwd, PI_AGENT_DIR), this.registeredSessionId);
+      this.unregisterFromRuntime(this.requireFolder(), this.registeredSessionId);
       this.registeredSessionId = null;
     }
     try {
       // The runtime owns the AgentSession it created via the factory and disposes it here; the
-      // session was never registered with PiRuntime (createSession), so there is nothing to forget.
+      // session was never registered with the folder runtime (createSession), so there is nothing to forget.
       await this.runtime?.dispose();
     } catch (err) {
       log("[PiSession] dispose failed: %O", err);
@@ -1381,10 +1399,10 @@ export class PiSession implements ChatSession {
 
   setModel(model?: string): void {
     if (!model) return;
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    const services = piRuntime.services;
-    if (!services || !this.runtime) return;
-    const resolution = resolvePiModel(model, services.modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    const piRuntime = PiRuntime.get();
+    const modelRuntime = piRuntime.modelRuntime;
+    if (!modelRuntime || !this.runtime) return;
+    const resolution = resolvePiModel(model, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (resolution.authRequired) {
       this.emit({ type: "openaiAuthRequired", modelValue: model });
       return;
@@ -1425,7 +1443,7 @@ export class PiSession implements ChatSession {
    */
   async getSupportedCommands(): Promise<SlashCommandInfo[]> {
     await this.ensureStarted().catch(() => undefined);
-    const loader = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.resourceLoader;
+    const loader = this.folder?.services.resourceLoader;
     if (!loader) return [];
 
     const commands: SlashCommandInfo[] = [];
@@ -1483,6 +1501,13 @@ export class PiSession implements ChatSession {
     // `resumeSessionId` also names the target of a switch still in flight, while `currentSessionId`
     // reports the session being left until the switch lands.
     return this.currentSessionId === sessionId || this.resumeSessionId === sessionId;
+  }
+
+  hasConversation(): boolean {
+    const fork = this.options.forkContext;
+    if (this.resumeSessionId !== null || (fork && !fork.consumed && fork.piBranchedSessionId)) return true;
+    if (this.processingFlag) return true;
+    return (this.runtime?.session.messages.length ?? 0) > 0;
   }
 
   get memorySessionId(): string {
@@ -1581,8 +1606,7 @@ export class PiSession implements ChatSession {
       const exchange = firstExchangeForTitle(session);
       if (!exchange) return;
 
-      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-      const title = await generateSessionTitle(exchange, piRuntime);
+      const title = await generateSessionTitle(exchange, PiRuntime.get());
       // Re-check the name: a user /rename may have landed during the async completion (it outranks).
       if (!title || session.sessionManager.getSessionName()) return;
       // The completion is an unbounded async window in which a reset/clear/delete can replace or
@@ -1714,6 +1738,7 @@ export class PiSession implements ChatSession {
         userText: exchange.userText,
         assistantText: exchange.assistantText,
         files: [],
+        workspace: this.cwd,
       });
     } catch (err) {
       log("[PiSession] enqueueMemoryCandidate failed: %O", err);
@@ -1796,9 +1821,9 @@ export class PiSession implements ChatSession {
     return fullActiveToolNamesFrom(this.toolStatusDeps());
   }
 
-  /** The process/workspace-scoped MCP client (Phase 6), or null before the runtime initializes. */
-  private mcpClientManager(): McpClientManager | null {
-    return PiRuntime.get(this.cwd, PI_AGENT_DIR).getMcpClientManager();
+  /** This panel's folder MCP view, or null before `start()` resolves the folder. */
+  private mcpClientManager(): McpToolSource | null {
+    return this.folder?.mcp ?? null;
   }
 
   /** Master MCP switch — `damocles.mcp.enabled` (default true: "configured = active", Claude-Code parity). */
@@ -1816,7 +1841,7 @@ export class PiSession implements ChatSession {
    *  subsystem toggled off mid-session stays advertised in the inventory the model reads. */
   refreshActiveTools(): void {
     this.applyActiveToolsForMode(this.permissionMode);
-    PiRuntime.get(this.cwd, PI_AGENT_DIR).republishToolSearch();
+    this.folder?.republishToolSearch();
   }
 
   /**
@@ -1976,17 +2001,16 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Create the per-PiSession subagent manager once, bound to the workspace-level shared registry
-   * (Phase 5 §4.6: one source of truth, one watcher per agent dir, owned by PiRuntime). The manager
-   * holds the SAME registry instance, so a reload (which mutates it via `register()`) is seen
-   * automatically. Subscribe so this panel re-emits availability + trust status when the shared
+   * Create the per-PiSession subagent manager once, bound to the folder's shared registry (one per
+   * folder, owned by FolderRuntime). The manager holds the SAME registry instance, so a reload (which
+   * mutates it via `register()`) is seen automatically. Subscribe so this panel re-emits availability + trust status when the shared
    * registry reloads (file change or workspace-trust grant).
    */
-  private ensureSubagentEngine(pi: PiCodingAgentModule): void {
+  private ensureSubagentEngine(pi: PiCodingAgentModule, folder: FolderRuntime): void {
     if (this.subagentManager) return;
-    const wsAgents = PiRuntime.get(this.cwd, PI_AGENT_DIR).getWorkspaceAgentRegistry();
+    const wsAgents = folder.getWorkspaceAgentRegistry();
     this.agentRegistry = wsAgents.getRegistry();
-    this.subagentManager = new AgentManager(this.buildSubagentEngine(pi), this.maxConcurrentSetting());
+    this.subagentManager = new AgentManager(this.buildSubagentEngine(pi, folder), this.maxConcurrentSetting());
     this.emitCustomAgents();
     this.emit({ type: "projectTrust", trusted: this.projectScopeTrusted() });
     this._agentsUnsub = wsAgents.onChange(() => {
@@ -2024,12 +2048,12 @@ export class PiSession implements ChatSession {
   }
 
   /** Build the deps the AgentManager needs to run one subagent (model policy + budget owned here). */
-  private buildSubagentEngine(pi: PiCodingAgentModule): SubagentEngine {
+  private buildSubagentEngine(pi: PiCodingAgentModule, folder: FolderRuntime): SubagentEngine {
     return {
       cwd: this.cwd,
       registry: this.agentRegistry!,
-      createSession: (opts) => PiRuntime.get(this.cwd, PI_AGENT_DIR).createSubagentSession(opts),
-      forgetSession: (session) => PiRuntime.get(this.cwd, PI_AGENT_DIR).forgetSubagentSession(session),
+      createSession: (opts) => folder.createSubagentSession(opts),
+      forgetSession: (session) => folder.forgetSubagentSession(session),
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.permissionMode === "plan",
       postMessage: (m) => this.emit(m),
@@ -2054,7 +2078,7 @@ export class PiSession implements ChatSession {
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
-      getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
+      getHooksDispatch: () => folder.getHooksDispatchDeps(),
     };
   }
 
@@ -2072,7 +2096,7 @@ export class PiSession implements ChatSession {
 
   /** Throw the resume error unless the model recorded in the agent session file at `path` is usable. */
   assertResumableModel(path: string, agentId: string): void {
-    PiRuntime.get(this.cwd, PI_AGENT_DIR).assertResumableModel(path, agentId);
+    this.requireFolder().assertResumableModel(path, agentId);
   }
 
   /** Tell the model which agents were interrupted before the next user prompt. */
@@ -2241,10 +2265,9 @@ export class PiSession implements ChatSession {
    * `enabledModels` scope is enforced (out-of-scope → fail soft).
    */
   private resolveSubagentModel(agentConfig: AgentConfig): ResolvedSubagentModel {
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    const services = piRuntime.services;
-    if (!services) return { error: "pi runtime not initialized" };
-    const registry = services.modelRuntime;
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelRuntime;
+    if (!registry) return { error: "pi runtime not initialized" };
     const openai = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
     const scope = resolveEnabledModels(readEnabledModels(this.cwd), registry);
@@ -2326,15 +2349,20 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Feed the merged enabled-server set to the process/workspace MCP client (Phase 6). First call
-   * eager-connects + warms tools from cache; later calls reconcile without a session restart.
-   * Elicitation is routed per tool call (via `ctx.ui`) so a server prompt renders in the panel whose
-   * call triggered it (H2) — not bound here, since the client is shared across this workspace's panels.
+   * Feed this panel's MCP scope: user servers to the shared user manager, the folder partition to this
+   * folder's manager. Both reconciles skip an unchanged set, so every panel may feed on every change.
    */
-  setMcpServers(servers: Record<string, McpServerConfig>): void {
-    const manager = this.mcpClientManager();
-    if (!manager) return;
-    manager.initialize(servers);
+  setMcpServers(scope: McpScope): void {
+    this.mcpScope = scope;
+    if (this.folder) this.applyMcpScope(scope);
+  }
+
+  private applyMcpScope(scope: McpScope): void {
+    const userMcp = PiRuntime.get().getUserMcp();
+    const folder = this.folder;
+    if (!userMcp || !folder) return;
+    void userMcp.reconcile(scope.userUnion);
+    void folder.reconcileFolder(scope.folder, scope.userVisible);
     this.refreshActiveTools();
   }
 
@@ -2562,8 +2590,9 @@ export class PiSession implements ChatSession {
    * `subagent_end`. Observe-only, lazy (no cost unless a hook is configured), fail-soft.
    */
   private emitForkHook(entryId: string | null, parentSessionId: string, sourceFile: string | undefined, newSessionId: string | undefined): void {
-    const deps = PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps();
-    if (!deps || !deps.config.hasEntries("session_before_fork")) return;
+    if (this.folder === null) return;
+    const deps = this.folder.getHooksDispatchDeps();
+    if (!deps.config.hasEntries("session_before_fork")) return;
     const payload = buildForkPayload(
       { session_id: parentSessionId, transcript_path: sourceFile ?? "", cwd: this.cwd },
       { parentSessionId, ...(entryId ? { entryId } : {}), ...(newSessionId ? { newSessionId } : {}) },
@@ -2701,7 +2730,7 @@ export class PiSession implements ChatSession {
 
   /** The resource loader, or null before the runtime initializes. */
   private resourceLoader(): import("@earendil-works/pi-coding-agent").ResourceLoader | null {
-    return PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.resourceLoader ?? null;
+    return this.folder?.services.resourceLoader ?? null;
   }
 
   // ---- btw / team (deferred) ----------------------------------------------
@@ -2720,13 +2749,14 @@ export class PiSession implements ChatSession {
       this.emit({ type: "btwError", btwId, message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
       return;
     }
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    const services = piRuntime.services;
-    if (!services || !this.runtime) {
+    const piRuntime = PiRuntime.get();
+    const modelRuntime = piRuntime.modelRuntime;
+    const folder = this.folder;
+    if (!modelRuntime || !folder || !this.runtime) {
       this.emit({ type: "btwError", btwId, message: "Start a conversation first" });
       return;
     }
-    const resolution = resolvePiModel(this.modelValue, services.modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    const resolution = resolvePiModel(this.modelValue, modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (!resolution.model || resolution.authed === false) {
       this.emit({ type: "btwError", btwId, message: `Model ${this.modelValue} is unavailable for btw` });
       return;
@@ -2739,7 +2769,7 @@ export class PiSession implements ChatSession {
     const ac = new AbortController();
     let session: AgentSession;
     try {
-      session = await piRuntime.createSubagentSession({
+      session = await folder.createSubagentSession({
         cwd: this.cwd,
         systemPrompt: BTW_SYSTEM_PROMPT,
         model: resolution.model,
@@ -2776,7 +2806,7 @@ export class PiSession implements ChatSession {
     } finally {
       unsub();
       this.btwSessions.delete(btwId);
-      piRuntime.forgetSubagentSession(session);
+      folder.forgetSubagentSession(session);
     }
   }
 
@@ -2806,9 +2836,9 @@ export class PiSession implements ChatSession {
    *  and each effort is parsed + run through `migrateLegacyEffortValue` so a renamed level (e.g. DeepSeek
    *  `xhigh → max`) migrates instead of silently coercing to null. */
   private teamModelDeps(): TeamModelDeps {
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    const services = piRuntime.services;
-    if (!services) throw new Error("pi runtime not initialized");
+    const piRuntime = PiRuntime.get();
+    const registry = piRuntime.modelRuntime;
+    if (!registry) throw new Error("pi runtime not initialized");
     const cfg = vscode.workspace.getConfiguration('damocles');
     const activeModel = this.modelValue;
     const roleSetting = (role: TeamRole): TeamRoleSetting => {
@@ -2822,7 +2852,7 @@ export class PiSession implements ChatSession {
       return { model, effort };
     };
     return {
-      registry: services.modelRuntime,
+      registry,
       openai: piRuntime.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
       activeModel,
@@ -2851,9 +2881,10 @@ export class PiSession implements ChatSession {
   buildTeamEngine(): TeamEngine {
     const pi = getPiCodingAgent();
     if (!pi) throw new Error("pi runtime not loaded");
+    const folder = this.requireFolder();
     return {
-      createSession: (opts) => PiRuntime.get(this.cwd, PI_AGENT_DIR).createSubagentSession(opts),
-      forgetSession: (session) => PiRuntime.get(this.cwd, PI_AGENT_DIR).forgetSubagentSession(session),
+      createSession: (opts) => folder.createSubagentSession(opts),
+      forgetSession: (session) => folder.forgetSubagentSession(session),
       // ONE call per spawn for all three: the agent's names, its customTools (with the MCP definitions
       // appended, exactly as the `team_*` tools are) and the frozen snapshot everything else derives
       // from. `mcp.names` is NOT in `toolNames` — the caller concatenates them, so there is exactly one
@@ -2897,7 +2928,7 @@ export class PiSession implements ChatSession {
         deferrableToolNames: deferredToolNames([...this.teamAgentBaseToolNames(), ...mcp.names], mcp.names),
         mcpDescriptions: mcp.descriptions,
         isMcpReadOnly: mcp.isReadOnly,
-        ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
+        hooks: folder.getHooksDispatchDeps(),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
@@ -3106,7 +3137,7 @@ export class PiSession implements ChatSession {
 
   /** Snapshot the live auth state the account/billing pure functions consume. */
   private accountBillingDeps(): AccountBillingDeps {
-    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const piRuntime = PiRuntime.get();
     return {
       modelValue: this.modelValue,
       modelInfo: this.getModelInfo(this.modelValue),

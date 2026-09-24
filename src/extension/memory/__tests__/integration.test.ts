@@ -32,12 +32,18 @@ interface RerankItem {
   snippet: string;
 }
 
-function seedCandidate(db: DatabaseInstance, sessionId: string, userText: string, assistantText: string): string {
+function seedCandidate(
+  db: DatabaseInstance,
+  sessionId: string,
+  userText: string,
+  assistantText: string,
+  workspace: string | null = null,
+): string {
   const id = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at)
-     VALUES (?, ?, ?, ?, ?, '[]', 0, 0, 0, ?)`,
-  ).run(id, sessionId, 0, userText, assistantText, Date.now());
+    `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+     VALUES (?, ?, ?, ?, ?, '[]', ?, 0, 0, 0, ?)`,
+  ).run(id, sessionId, 0, userText, assistantText, workspace, Date.now());
   return id;
 }
 
@@ -122,7 +128,7 @@ function makeCtx(
     instanceId: 'test-instance',
     reason: 'switch',
     sessionId: SESSION_ID,
-    workspace: WORKSPACE,
+    fallbackWorkspace: () => WORKSPACE,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: handle.onNoModel,
@@ -179,6 +185,25 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     );
     const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling');
     expect(catalog.context).toContain(ESBUILD_CONTENT);
+  });
+
+  it('a turn from a folder another window runs is filed, retrieved and injected there, not under the consolidating window folder', async () => {
+    const OTHER_FOLDER = '/repo/other-window';
+    seedCandidate(db, 'session-other-window', 'Which bundler?', 'esbuild bundles the extension.', OTHER_FOLDER);
+
+    const handle = makeRunner([{ kind: 'fact', content: ESBUILD_CONTENT, scope: 'project', tags: ['build'] }]);
+    // The consolidating window's own default folder is WORKSPACE.
+    await runConsolidation(makeCtx(db, handle, { sessionId: 'session-other-window', fallbackWorkspace: () => WORKSPACE }));
+
+    const stored = db.prepare('SELECT * FROM memories WHERE is_latest = 1 AND forgotten = 0').get() as MemoryRow;
+    expect(stored.workspace).toBe(OTHER_FOLDER);
+
+    const retrieval = new RetrievalManager(db, handle.runner);
+    expect((await retrieval.search({ query: 'how is the extension bundled', workspace: OTHER_FOLDER })).map(r => r.id)).toContain(stored.id);
+    expect((await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE })).map(r => r.id)).not.toContain(stored.id);
+
+    const injection = new InjectionManager(db, new ProfileManager(db, new MemoryWriteQueue(), handle.runner), handle.runner);
+    expect((await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling')).context).not.toContain(ESBUILD_CONTENT);
   });
 
   it('ranks the relevant extracted fact first via the rerank sub-call', async () => {

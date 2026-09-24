@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HostInstance } from "../../types";
 import { log } from "../../../logger";
 import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
 import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
-import { claimStoredSession } from "../../session-ownership";
+import { claimStoredSession, findStoredSessionHolder } from "../../session-ownership";
 
 /**
  * The live mutation surface (rename, tag, delete-detach) for a session open in any panel, or
@@ -15,7 +16,11 @@ function liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
 }
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { workspacePath, postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
+  const { postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
+
+  /** The session's own folder, from any open folder; an id no open folder holds can only be the panel's own. */
+  const sessionCwd = async (sessionId: string, panelCwd: string): Promise<string> =>
+    (await storageManager.folderOf(sessionId))?.fsPath ?? panelCwd;
 
   return {
     ready: async (msg, ctx) => {
@@ -39,7 +44,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       settingsManager.sendAvailableModels(ctx.session, ctx.host);
       settingsManager.sendOpenAIModelPricing(ctx.host);
-      settingsManager.sendMcpConfig(ctx.host);
+      settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
@@ -52,20 +57,38 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         log("[MessageRouter] Error pre-loading prompt history:", err);
       }
 
+      deps.postWorkspaceFolderState(ctx.panelId);
+
       const savedSessionId = msg.type === "ready" ? msg.savedSessionId : undefined;
+      const savedFolderKey = msg.type === "ready" ? msg.savedWorkspaceFolderKey : undefined;
+      // A saved conversation or folder the host did not open in moves the panel there.
+      const sessionFolder = savedSessionId && !findStoredSessionHolder(deps.getPanels(), ctx, savedSessionId)
+        ? await storageManager.folderOf(savedSessionId)
+        : undefined;
+      const target = sessionFolder
+        ?? (savedFolderKey !== undefined ? deps.folderRegistry.resolve(savedFolderKey) : undefined)
+        ?? ctx.folder;
       // A restored panel whose conversation another panel already holds opens empty instead.
-      if (savedSessionId && !claimStoredSession(deps.getPanels(), ctx, savedSessionId)) {
+      const resumeSaved = async (instance: Pick<HostInstance, "host" | "session" | "folder">): Promise<boolean> => {
+        if (!savedSessionId) return false;
+        if (claimStoredSession(deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
         try {
-          await deps.historyManager.loadSessionHistory(savedSessionId, ctx.host, ctx.session);
-          postMessage(ctx.host, { type: "sessionStarted", sessionId: savedSessionId });
+          await deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session);
+          postMessage(instance.host, { type: "sessionStarted", sessionId: savedSessionId });
         } catch (err) {
-          if (err instanceof Error && err.name === 'AbortError') return;
+          if (err instanceof Error && err.name === 'AbortError') return true;
           log("[MessageRouter] Error auto-resuming session:", err);
-          postMessage(ctx.host, { type: "sessionStarted", sessionId: savedSessionId });
+          postMessage(instance.host, { type: "sessionStarted", sessionId: savedSessionId });
         }
-      } else {
-        await ctx.session.initializeEarly();
+        return true;
+      };
+
+      if (target.key !== ctx.folder.key) {
+        // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
+        await deps.switchPanelFolder(ctx.panelId, target.key, "restore", resumeSaved);
+        return;
       }
+      if (!(await resumeSaved(ctx))) await ctx.session.initializeEarly();
     },
 
     renameSession: async (msg, ctx) => {
@@ -77,7 +100,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         if (mutator) {
           await mutator.renameActiveSession(msg.newName);
         } else {
-          await renamePiSession(workspacePath, msg.sessionId, msg.newName);
+          await renamePiSession(await sessionCwd(msg.sessionId, ctx.folder.fsPath), msg.sessionId, msg.newName);
         }
         postMessage(ctx.host, {
           type: "sessionRenamed",
@@ -111,7 +134,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         if (mutator) {
           await mutator.setActiveSessionTag(msg.tag);
         } else {
-          await tagPiSession(workspacePath, msg.sessionId, msg.tag);
+          await tagPiSession(await sessionCwd(msg.sessionId, ctx.folder.fsPath), msg.sessionId, msg.tag);
         }
         postMessage(ctx.host, {
           type: "sessionTagged",
@@ -133,17 +156,21 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "deleteSession") return;
       try {
         // Every holder of this session must stop writing BEFORE the file goes, else its next append
-        // resurrects the path as a header-less file. Detach the registered owner AND this panel
-        // (deduped when they are the same object), since this panel may only POINT at the session as a
-        // not-yet-started resume/fork target, which registers nothing. A detach that fails throws,
-        // which aborts the delete rather than removing a file someone can still write to.
+        // resurrects the path as a header-less file. Detach the registered owner, the other panel that
+        // holds it, AND this panel (deduped when they are the same object), since a panel may only POINT
+        // at the session as a not-yet-started resume/fork target, which registers nothing. A detach that
+        // fails throws, which aborts the delete rather than removing a file someone can still write to.
+        // Resolved first: an await between the detach and the rm would let another panel claim the session.
+        const cwd = await sessionCwd(msg.sessionId, ctx.folder.fsPath);
         const holders = new Set<{ detachFromDeletedSession(): Promise<void> }>();
         const registered = liveSessionMutator(msg.sessionId);
         if (registered) holders.add(registered);
+        const otherPanel = findStoredSessionHolder(deps.getPanels(), ctx, msg.sessionId);
+        if (otherPanel) holders.add(otherPanel.session);
         if (ctx.session.persistenceSessionId === msg.sessionId) holders.add(ctx.session);
         await Promise.all([...holders].map((h) => h.detachFromDeletedSession()));
 
-        await deletePiSession(workspacePath, msg.sessionId);
+        await deletePiSession(cwd, msg.sessionId);
         // The file is now gone — that's the deletion truth. Memory cleanup is best-effort secondary
         // work; a failure here must not flip the UI back to "delete failed" for an already-gone session.
         try {

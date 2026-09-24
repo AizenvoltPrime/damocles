@@ -7,15 +7,19 @@ import * as path from 'path';
 // version (the real value-import path needs Node >=22). The fake pi exposes only what _doInit uses.
 const H = vi.hoisted(() => {
   const createServicesSpy = vi.fn();
+  const settingsCreateSpy = vi.fn((_cwd: string, _agentDir: string, options?: { projectTrusted: boolean }) => ({ options }));
+  const modelRuntime = { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) };
   const fakePi = {
     createAgentSessionServices: createServicesSpy,
+    SettingsManager: { create: settingsCreateSpy },
+    ModelRuntime: { create: vi.fn(async () => modelRuntime) },
     DefaultPackageManager: class {
       getInstalledPath(): string | undefined {
         return undefined;
       }
     },
   };
-  return { createServicesSpy, fakePi, ctrl: { loadable: true }, home: '' };
+  return { createServicesSpy, settingsCreateSpy, modelRuntime, fakePi, ctrl: { loadable: true }, home: '' };
 });
 
 // The user-scope asset dirs are resolved through `os.homedir()`. Redirect it to a temp dir so the
@@ -44,6 +48,7 @@ vi.mock('../agent-dir', async (importOriginal) => ({
 import * as vscode from 'vscode';
 import { __trustEmitter, __watchers, type FakeFileSystemWatcher } from 'vscode';
 import { PiRuntime } from '../pi-runtime';
+import { FolderRuntime } from '../folder-runtime';
 
 const realIsTrusted = vscode.workspace.isTrusted;
 
@@ -69,8 +74,8 @@ function skillPathsOf(extendResources: ReturnType<typeof vi.fn>): string[] {
   return arg.skillPaths.map((s) => s.path);
 }
 
-const registeredCount = (runtime: PiRuntime): number =>
-  (runtime as unknown as { _toolSearchRepublishers: Set<() => void> })._toolSearchRepublishers.size;
+const registeredCount = (folder: FolderRuntime): number =>
+  (folder as unknown as { _toolSearchRepublishers: Set<() => void> })._toolSearchRepublishers.size;
 
 interface LoaderProbe {
   /** The loader's effective skill-path order: the reload base plus whatever extendResources merged in. */
@@ -87,14 +92,20 @@ interface LoaderProbe {
  * read live on every call, and `extendResources` merges its argument primary-first with dedupe, which
  * is what `mergePaths` does in pi's `resource-loader.ts`. The `extendResources` argument on its own
  * cannot show the order the agent ends up with. Every reload also mints a republisher, as pi's
- * extension factory does, so the runtime's retire and adopt bookkeeping is observable.
+ * extension factory does, so the folder runtime's retire and adopt bookkeeping is observable.
  */
-function trackLoader(runtime: PiRuntime): LoaderProbe {
+function trackLoader(): LoaderProbe {
   const probe: LoaderProbe = { skillPaths: [], fired: [], extendCalls: 0 };
   let seq = 0;
+  const creating: FolderRuntime[] = [];
+  const createServices = FolderRuntime.prototype.createServices;
+  vi.spyOn(FolderRuntime.prototype, 'createServices').mockImplementation(async function (this: FolderRuntime) {
+    creating.push(this);
+    await createServices.call(this);
+  });
   const mint = (): void => {
     const id = `instance-${++seq}`;
-    runtime.registerToolSearchRepublisher(() => probe.fired.push(id));
+    creating.at(-1)!.registerToolSearchRepublisher(() => probe.fired.push(id));
   };
   H.createServicesSpy.mockImplementation(async (options: unknown) => {
     const additional = (options as { resourceLoaderOptions: { additionalSkillPaths: string[] } })
@@ -104,6 +115,7 @@ function trackLoader(runtime: PiRuntime): LoaderProbe {
     return {
       ...fakeServices(),
       resourceLoader: {
+        getExtensions: noExtensions,
         reload: vi.fn(async () => {
           probe.skillPaths = [...additional];
           mint();
@@ -130,13 +142,15 @@ function watcherFor(base: string, glob: string): FakeFileSystemWatcher {
   return found;
 }
 
+const noExtensions = () => ({ errors: [], runtime: { pendingProviderRegistrations: [] } });
+
 function fakeServices() {
   return {
     cwd: '/cwd',
     agentDir: '/agent',
-    settingsManager: { getPackages: () => [] },
+    settingsManager: { getPackages: () => [], setProjectTrusted: vi.fn(), isProjectTrusted: vi.fn(() => true) },
     modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
-    resourceLoader: { extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
+    resourceLoader: { getExtensions: noExtensions, extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],
   };
 }
@@ -153,6 +167,7 @@ describe('PiRuntime.init lifecycle', () => {
   beforeEach(() => {
     H.ctrl.loadable = true;
     H.createServicesSpy.mockReset();
+    H.settingsCreateSpy.mockClear();
     H.createServicesSpy.mockResolvedValue(fakeServices());
     H.home = tempDir('pi-home-');
     setTrusted(true);
@@ -160,6 +175,7 @@ describe('PiRuntime.init lifecycle', () => {
     __watchers.length = 0;
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     await PiRuntime.disposeInstance();
     __trustEmitter.clear();
     setTrusted(realIsTrusted);
@@ -169,30 +185,55 @@ describe('PiRuntime.init lifecycle', () => {
     }
   });
 
-  it('creates services exactly once across concurrent and repeat init() calls', async () => {
-    const runtime = PiRuntime.get('/cwd', '/agent');
+  it('creates no folder services on init, and one set per folder across concurrent and repeat requests', async () => {
+    const runtime = PiRuntime.get('/agent');
     await Promise.all([runtime.init(), runtime.init()]);
-    await runtime.init();
+    expect(H.createServicesSpy).not.toHaveBeenCalled();
+
+    const [a, again] = await Promise.all([runtime.folder('/cwd'), runtime.folder('/cwd')]);
+    await runtime.folder('/cwd');
+    expect(again).toBe(a);
     expect(H.createServicesSpy).toHaveBeenCalledTimes(1);
+
+    await runtime.folder('/other');
+    expect(H.createServicesSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('builds every folder on the one shared model runtime', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder('/cwd');
+    await runtime.folder('/other');
+
+    expect(runtime.modelRuntime).toBe(H.modelRuntime);
+    for (const [options] of H.createServicesSpy.mock.calls) {
+      expect((options as { modelRuntime: unknown }).modelRuntime).toBe(H.modelRuntime);
+    }
+  });
+
+  it('keeps package operations on user-scope settings rooted at the agent dir', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/agent', '/agent');
   });
 
   it('clears the cached promise on failure so a later init() retries', async () => {
     H.ctrl.loadable = false;
-    const runtime = PiRuntime.get('/cwd', '/agent');
+    const runtime = PiRuntime.get('/agent');
     await expect(runtime.init()).rejects.toThrow(/failed to load/);
 
     H.ctrl.loadable = true;
     await expect(runtime.init()).resolves.toBeUndefined();
-    expect(H.createServicesSpy).toHaveBeenCalledTimes(1);
-    expect(runtime.services).not.toBeNull();
+    expect(runtime.modelRuntime).not.toBeNull();
   });
 
   it('rejects init() after dispose (no resurrection of a disposed runtime)', async () => {
-    const runtime = PiRuntime.get('/cwd', '/agent');
+    const runtime = PiRuntime.get('/agent');
     await runtime.init();
     await runtime.dispose();
-    expect(runtime.services).toBeNull();
+    expect(runtime.modelRuntime).toBeNull();
     await expect(runtime.init()).rejects.toThrow(/disposed/);
+    await expect(runtime.folder('/cwd')).rejects.toThrow(/disposed/);
   });
 
   it('pushes a project .codex/skills dir into the loader via extendResources on init', async () => {
@@ -200,10 +241,10 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(cwd, '.codex/skills', 'demo');
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    await runtime.init();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     expect(extendResources).toHaveBeenCalled();
     expect(skillPathsOf(extendResources)).toContain(path.join(cwd, '.codex', 'skills'));
@@ -216,10 +257,10 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(cwd, '.codex/skills', 'demo');
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    await runtime.init();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     const paths = skillPathsOf(extendResources);
     const damocles = paths.indexOf(path.join(cwd, '.damocles', 'skills'));
@@ -242,15 +283,99 @@ describe('PiRuntime.init lifecycle', () => {
     setTrusted(false);
 
     const extendResources = vi.fn();
-    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { extendResources, reload: vi.fn(async () => undefined) } });
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { getExtensions: noExtensions, extendResources, reload: vi.fn(async () => undefined) } });
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    await runtime.init();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     const paths = skillPathsOf(extendResources);
     expect(paths.filter((p) => p.startsWith(cwd))).toEqual([]);
     expect(paths).toContain(path.join(H.home, '.damocles', 'skills'));
     expect(paths).toContain(path.join(H.home, '.claude', 'skills'));
+  });
+
+  // pi's project layer (`.pi/settings.json` packages, `.pi/extensions`) installs and runs repo code.
+  it.each([true, false])('hands pi a settings manager whose project trust matches the window (trusted=%s)', async (trusted) => {
+    setTrusted(trusted);
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder('/cwd');
+
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/cwd', '/agent', { projectTrusted: trusted });
+    const created = H.settingsCreateSpy.mock.results.at(-1)?.value;
+    expect((H.createServicesSpy.mock.calls[0]?.[0] as { settingsManager: unknown }).settingsManager).toBe(created);
+  });
+
+  it('trusts the project layer before the trust-grant reload', async () => {
+    setTrusted(false);
+    const services = fakeServices();
+    const order: string[] = [];
+    services.settingsManager.setProjectTrusted.mockImplementation(() => void order.push('trusted'));
+    services.resourceLoader.reload.mockImplementation(async () => void order.push('reload'));
+    H.createServicesSpy.mockResolvedValue(services);
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder('/cwd');
+
+    setTrusted(true);
+    __trustEmitter.fire();
+
+    await vi.waitFor(() => expect(order).toEqual(['trusted', 'reload']));
+    expect(services.settingsManager.setProjectTrusted).toHaveBeenCalledWith(true);
+  });
+
+  it('trusts a folder whose creation was still running when trust was granted', async () => {
+    setTrusted(false);
+    let projectTrusted = true;
+    const order: string[] = [];
+    const services = fakeServices();
+    services.settingsManager.isProjectTrusted.mockImplementation(() => projectTrusted);
+    services.settingsManager.setProjectTrusted.mockImplementation((trusted: boolean) => {
+      projectTrusted = trusted;
+      order.push('trusted');
+    });
+    services.resourceLoader.reload.mockImplementation(async () => void order.push('reload'));
+    let created!: () => void;
+    H.createServicesSpy.mockImplementationOnce(async (options: { settingsManager: { options: { projectTrusted: boolean } } }) => {
+      projectTrusted = options.settingsManager.options.projectTrusted;
+      await new Promise<void>((resolve) => { created = resolve; });
+      return services;
+    });
+    const runtime = PiRuntime.get('/agent');
+
+    const creating = runtime.folder('/cwd');
+    await vi.waitFor(() => expect(H.createServicesSpy).toHaveBeenCalled());
+    expect(projectTrusted).toBe(false);
+    // The grant lands while the folder is not yet published, so the listener cannot reach it.
+    setTrusted(true);
+    __trustEmitter.fire();
+    created();
+    const folder = await creating;
+
+    expect(folder.services.settingsManager.isProjectTrusted()).toBe(true);
+    expect(order).toEqual(['trusted', 'reload']);
+  });
+
+  it('trusts every folder’s project layer before that folder’s trust-grant reload', async () => {
+    setTrusted(false);
+    const order: string[] = [];
+    const servicesFor = (label: string) => {
+      const services = fakeServices();
+      services.settingsManager.setProjectTrusted.mockImplementation(() => void order.push(`trusted:${label}`));
+      services.resourceLoader.reload.mockImplementation(async () => void order.push(`reload:${label}`));
+      return services;
+    };
+    H.createServicesSpy.mockResolvedValueOnce(servicesFor('a')).mockResolvedValueOnce(servicesFor('b'));
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder('/a');
+    await runtime.folder('/b');
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/a', '/agent', { projectTrusted: false });
+    expect(H.settingsCreateSpy).toHaveBeenCalledWith('/b', '/agent', { projectTrusted: false });
+
+    setTrusted(true);
+    __trustEmitter.fire();
+
+    await vi.waitFor(() => expect(order).toHaveLength(4));
+    expect(order.indexOf('trusted:a')).toBeLessThan(order.indexOf('reload:a'));
+    expect(order.indexOf('trusted:b')).toBeLessThan(order.indexOf('reload:b'));
   });
 
   // The additional paths are computed once at services construction, so admitting the project dirs
@@ -263,9 +388,9 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(H.home, '.damocles/skills', 'userskill');
     setTrusted(false);
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    const probe = trackLoader(runtime);
-    await runtime.init();
+    const probe = trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     expect(probe.skillPaths).toEqual([path.join(H.home, '.damocles', 'skills')]);
 
@@ -286,9 +411,9 @@ describe('PiRuntime.init lifecycle', () => {
     const cwd = tempDir('pi-latedir-');
     makeSkill(H.home, '.damocles/skills', 'userskill');
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    const probe = trackLoader(runtime);
-    await runtime.init();
+    const probe = trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     expect(probe.skillPaths).toEqual([path.join(H.home, '.damocles', 'skills')]);
 
@@ -313,18 +438,18 @@ describe('PiRuntime.init lifecycle', () => {
     makeSkill(cwd, '.damocles/skills', 'projectskill');
     setTrusted(false);
 
-    const runtime = PiRuntime.get(cwd, '/agent');
-    const probe = trackLoader(runtime);
-    await runtime.init();
-    expect(registeredCount(runtime)).toBe(1);
+    const probe = trackLoader();
+    const runtime = PiRuntime.get('/agent');
+    const folder = await runtime.folder(cwd);
+    expect(registeredCount(folder)).toBe(1);
 
     setTrusted(true);
     __trustEmitter.fire();
     await vi.waitFor(() => expect(probe.extendCalls).toBe(1));
 
-    runtime.republishToolSearch();
+    folder.republishToolSearch();
     expect(probe.fired).toEqual(['instance-2']);
-    expect(registeredCount(runtime)).toBe(1);
+    expect(registeredCount(folder)).toBe(1);
 
     // A second grant-driven reload has to retire instance-2 in turn, which it can only do if the
     // first one was adopted rather than stranded.
@@ -332,14 +457,14 @@ describe('PiRuntime.init lifecycle', () => {
     __trustEmitter.fire();
     await vi.waitFor(() => expect(probe.extendCalls).toBe(2));
 
-    runtime.republishToolSearch();
+    folder.republishToolSearch();
     expect(probe.fired).toEqual(['instance-3']);
-    expect(registeredCount(runtime)).toBe(1);
+    expect(registeredCount(folder)).toBe(1);
   });
 
   it('disposes the trust listener, so a granted trust cannot reload a disposed runtime', async () => {
-    const runtime = PiRuntime.get('/cwd', '/agent');
-    await runtime.init();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder('/cwd');
     expect(__trustEmitter.cbs.length).toBeGreaterThan(0);
 
     await PiRuntime.disposeInstance();
@@ -351,8 +476,8 @@ describe('PiRuntime.init lifecycle', () => {
   // user-scope watcher registered that way never fires and the edit only lands on the next reload.
   it('anchors every user-scope asset watcher on a Uri and registers no bare glob', async () => {
     const cwd = tempDir('pi-watchers-');
-    const runtime = PiRuntime.get(cwd, '/agent');
-    await runtime.init();
+    const runtime = PiRuntime.get('/agent');
+    await runtime.folder(cwd);
 
     expect(__watchers.filter((w) => !(w.globPattern instanceof vscode.RelativePattern))).toEqual([]);
 

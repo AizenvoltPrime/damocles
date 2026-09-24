@@ -33,6 +33,7 @@ const teamMcpManager = {
     {
       piName: 'mcp__srv__read',
       serverName: 'srv',
+      serverId: 'test/srv',
       kind: 'tool',
       originalName: 'read',
       description: 'read a thing',
@@ -42,6 +43,7 @@ const teamMcpManager = {
     {
       piName: 'mcp__srv__write',
       serverName: 'srv',
+      serverId: 'test/srv',
       kind: 'tool',
       originalName: 'write',
       description: 'write a thing',

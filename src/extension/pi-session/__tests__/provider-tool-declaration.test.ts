@@ -16,22 +16,18 @@ import {
 import { getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { buildAgentStartResult } from '../agent-start';
-import { SUBSCRIPTION_SOURCE, isStaleSubscriptionPin } from '../subscription';
 import type { PanelGateContext } from '../permission-gate';
 
 /**
  * What a provider actually receives.
  *
- * Damocles replaces pi's built-in Anthropic provider with a registered one (the Claude Pro/Max
- * subscription plugin) via `pi.registerProvider(id, { api, streamSimple })`, so that provider — not
- * pi-ai — builds the outbound request. Since pi 0.86 a provider is handed a `TranscriptContext`:
- * `{ messages }` alone, with the system prompt and the tool loadout carried by the transcript's
- * system messages. A provider that looks anywhere else sends no tools and no prompt, and the model
- * reports having none.
+ * A provider registered with `pi.registerProvider(id, { api, streamSimple })` receives a
+ * `TranscriptContext`: `{ messages }` alone, with the system prompt and the tool loadout carried by the
+ * transcript's system messages. The subscription plugin registers this way to wrap pi-ai's transport.
  *
- * `agent.state.tools` and the transcript's `toolsAdded` are both populated in that failure, so
- * neither is evidence. These tests assert at the provider boundary instead: what a registered
- * provider can recover from the context it is given, and what that means for the request it builds.
+ * `agent.state.tools` and the transcript's `toolsAdded` are both populated even when a provider reads
+ * neither, so these tests assert at the provider boundary instead: what a registered provider can
+ * recover from the context it is given, and what that means for the request it builds.
  */
 
 const CAPTURE_TOOLS: ToolDefinition[] = [
@@ -199,21 +195,5 @@ describe('tool schemas reach the provider', () => {
     expect(captured.systemPrompt).toContain('AI coding agent');
     expect(captured.systemPrompt).toContain('<damocles_tone>');
     expect(captured.systemPrompt).not.toContain('operating inside pi');
-  });
-});
-
-/**
- * The other half of the same contract. The stub provider above reads the transcript by construction,
- * so nothing up there can tell whether the plugin a Pro/Max user actually runs does. Only the pinned
- * commit decides that: `96126a02…` predates pi 0.86 and reads the removed `context.systemPrompt` /
- * `context.tools`, so a request it builds carries no prompt and no tools.
- */
-describe('the pinned subscription plugin', () => {
-  const preContractPin = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth@96126a022ff30bd80fb94703ad76381edc130311';
-
-  it('is not the pre-0.86 commit that reads the removed context fields', () => {
-    expect(SUBSCRIPTION_SOURCE).not.toBe(preContractPin);
-    // Reverting the pin flips this to false, because `isStaleSubscriptionPin` exempts the current pin.
-    expect(isStaleSubscriptionPin(preContractPin)).toBe(true);
   });
 });

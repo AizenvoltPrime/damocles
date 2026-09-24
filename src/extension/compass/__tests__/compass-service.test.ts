@@ -123,6 +123,23 @@ describe('CompassService', () => {
 		service.onStatusChange(() => { callCount++; });
 		expect(callCount).toBe(0);
 	});
+
+	it('exposes the raw folder path its index is keyed on', () => {
+		const service = new CompassService('C:\\Work\\Mixed Case', '/test/damocles', '/test/extension');
+		expect(service.workspacePath).toBe('C:\\Work\\Mixed Case');
+	});
+
+	it('stops notifying a status listener once its subscription is disposed', () => {
+		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
+		const kept: string[] = [];
+		const dropped: string[] = [];
+		service.onStatusChange((s) => kept.push(s.state));
+		const subscription = service.onStatusChange((s) => dropped.push(s.state));
+		subscription.dispose();
+		(service as unknown as { _emitStatus: () => void })._emitStatus();
+		expect(kept.length).toBeGreaterThan(0);
+		expect(dropped).toEqual([]);
+	});
 });
 
 // ============================================================

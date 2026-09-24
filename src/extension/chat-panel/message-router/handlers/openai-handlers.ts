@@ -76,11 +76,11 @@ function toSnapshot(status: OpenAIAuthStatus): {
  * relays UI intent and broadcasts state. The prefer-api-key precedence stays a workspaceState flag.
  */
 export function createOpenAIHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, getPanels, context, workspacePath } = deps;
+  const { postMessage, getPanels, context } = deps;
   let codexBusy = false;
   let codexAbort: AbortController | null = null;
 
-  const runtime = (): PiRuntime => PiRuntime.get(workspacePath, PI_AGENT_DIR);
+  const runtime = (): PiRuntime => PiRuntime.get();
 
   function broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of getPanels()) {
@@ -89,12 +89,12 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
   }
 
   /**
-   * Live status once pi's services are populated, otherwise the disk mirror. `PiRuntime.exists` flips
+   * Live status once pi's model runtime exists, otherwise the disk mirror. `PiRuntime.exists` flips
    * true as soon as the singleton is constructed — before `init()` resolves — so we additionally gate
-   * on `services` being live to avoid reporting a spurious "not configured" during the init window.
+   * on the model runtime being live to avoid reporting a spurious "not configured" during the init window.
    */
   function readStatus(): OpenAIAuthStatus {
-    return PiRuntime.exists && runtime().services
+    return PiRuntime.exists && runtime().modelRuntime
       ? runtime().getOpenAIAuthStatus()
       : readOpenAIAuthFromDisk(PI_AGENT_DIR);
   }

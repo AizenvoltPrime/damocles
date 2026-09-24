@@ -20,14 +20,14 @@ const H = vi.hoisted(() => {
     notify(event: unknown): void;
   }
   const runtime = {
-    signInSubscription: vi.fn(async (_useAllowance: boolean, _i: AuthInteractionLike): Promise<ClaudeAuthStatus> => ({ mode: "allowance" })),
-    setSubscriptionBilling: vi.fn(async (): Promise<ClaudeAuthStatus> => ({ mode: "extra" })),
+    signInSubscription: vi.fn(async (_cwd: string, _useAllowance: boolean, _i: AuthInteractionLike): Promise<ClaudeAuthStatus> => ({ mode: "allowance" })),
+    setSubscriptionBilling: vi.fn(async (_cwd: string, _useAllowance: boolean): Promise<ClaudeAuthStatus> => ({ mode: "extra" })),
     setAnthropicApiKey: vi.fn(async (): Promise<ClaudeAuthStatus> => ({ mode: "apikey" })),
     signOutAnthropic: vi.fn(async (): Promise<ClaudeAuthStatus> => ({ mode: "none" })),
   };
   return { runtime };
 });
-type AuthInteractionLike = Parameters<typeof H.runtime.signInSubscription>[1];
+type AuthInteractionLike = Parameters<typeof H.runtime.signInSubscription>[2];
 
 vi.mock("../../../../pi-session/pi-runtime", () => ({
   PiRuntime: { get: () => H.runtime, exists: true },
@@ -80,11 +80,11 @@ function makeDeps(sent: ExtensionToWebviewMessage[]): {
   const host = { id: "panel-1" } as unknown as HandlerContext["host"];
   const publishAccountInfo = vi.fn();
   const deps = {
-    workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
   } as unknown as HandlerDependencies;
-  return { deps, ctx: { host } as HandlerContext, publishAccountInfo };
+  const folder = { key: "/ws/b", fsPath: "/ws/B", name: "B", label: "B", projectScope: true };
+  return { deps, ctx: { host, folder } as HandlerContext, publishAccountInfo };
 }
 
 describe("createClaudeAuthHandlers", () => {
@@ -107,7 +107,8 @@ describe("createClaudeAuthHandlers", () => {
     await handlers.claudeSignIn!({ type: "claudeSignIn", useAllowance: true }, ctx);
 
     expect(H.runtime.signInSubscription).toHaveBeenCalledTimes(1);
-    expect(H.runtime.signInSubscription.mock.calls[0]![0]).toBe(true);
+    // The plugin switch verifies against the requesting panel's folder runtime.
+    expect(H.runtime.signInSubscription.mock.calls[0]!.slice(0, 2)).toEqual(["/ws/B", true]);
     expect(sent).toEqual([
       { type: "claudeAuthBusy", busy: true },
       { type: "claudeAuthStatusChanged", mode: "allowance" },
@@ -118,7 +119,7 @@ describe("createClaudeAuthHandlers", () => {
   it("claudeSignIn broadcasts a benign cancel when the interaction prompt is dismissed", async () => {
     // pi drives the paste-the-redirect-URL fallback: it invokes interaction.prompt, which hits
     // showInputBox → undefined (Escape) → the SIGN_IN_CANCELLED sentinel → claudeAuthCancelled.
-    H.runtime.signInSubscription.mockImplementationOnce(async (_useAllowance, interaction: AuthInteractionLike) => {
+    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
       await interaction.prompt({ type: "manual_code", message: "Paste the redirect URL" });
       return { mode: "allowance" };
     });
@@ -131,7 +132,7 @@ describe("createClaudeAuthHandlers", () => {
 
   it("claudeSignIn opens the browser on an auth_url notification", async () => {
     const vscode = await import("vscode");
-    H.runtime.signInSubscription.mockImplementationOnce(async (_useAllowance, interaction: AuthInteractionLike) => {
+    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
       interaction.notify({ type: "auth_url", url: "https://claude.ai/oauth/authorize" });
       return { mode: "extra" };
     });
@@ -194,7 +195,7 @@ describe("createClaudeAuthHandlers", () => {
           promptOpened();
         }),
     );
-    H.runtime.signInSubscription.mockImplementationOnce(async (_useAllowance, interaction: AuthInteractionLike) => {
+    H.runtime.signInSubscription.mockImplementationOnce(async (_cwd, _useAllowance, interaction: AuthInteractionLike) => {
       await interaction.prompt({ type: "manual_code", message: "Paste the redirect URL" });
       return { mode: "allowance" };
     });
@@ -222,6 +223,8 @@ describe("createClaudeAuthHandlers", () => {
 
     it("claudeSetBilling republishes to every panel", async () => {
       await handlers.claudeSetBilling!({ type: "claudeSetBilling", useAllowance: false }, ctx);
+
+      expect(H.runtime.setSubscriptionBilling).toHaveBeenCalledWith("/ws/B", false);
 
       expect(publishAccountInfo).toHaveBeenCalledTimes(1);
     });

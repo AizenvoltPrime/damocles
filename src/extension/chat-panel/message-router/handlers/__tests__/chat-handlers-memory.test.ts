@@ -14,13 +14,13 @@ function makeHarness(memoryOverrides: Record<string, unknown>) {
     ...memoryOverrides,
   };
   const deps = {
-    workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     memoryService,
     storageManager: { broadcastPromptHistoryEntry: vi.fn() },
     markUserTypedDuringTurn: vi.fn(),
   } as unknown as HandlerDependencies;
   const ctx = {
+    folder: { key: "/cwd", fsPath: "/cwd", name: "ws", label: "ws", projectScope: true },
     host: { id: "panel-1" },
     session: { memorySessionId: "sess-1", currentPromptIndex: 0, sendMessage: vi.fn() },
   } as unknown as HandlerContext;
@@ -57,5 +57,21 @@ describe("chat /remember + /note null-save feedback (M1)", () => {
     await send(h, "/note a knowledge base entry");
     expect(h.sent).toContainEqual({ type: "memoryError", message: "Failed to save note." });
     expect(h.sent.some((m) => m.type === "memoryCreated")).toBe(false);
+  });
+});
+
+describe("chat /remember project: files under the panel folder", () => {
+  it("saves a project memory under the panel folder's raw fsPath", async () => {
+    const h = makeHarness({ saveMemory: vi.fn(async () => FACT) });
+    h.ctx.folder = { key: "/ws/b", fsPath: "/ws/b", name: "b", label: "b", projectScope: true };
+    await send(h, "/remember project: folder B ships a CLI");
+    expect(h.memoryService.saveMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", workspace: "/ws/b" }));
+  });
+
+  it("a no-folder window saves project memories under the home target the Memory panel reads", async () => {
+    const h = makeHarness({ saveMemory: vi.fn(async () => FACT) });
+    h.ctx.folder = { key: "/home/user", fsPath: "/home/user", name: "user", label: "user", projectScope: false };
+    await send(h, "/remember project: prefer pnpm");
+    expect(h.memoryService.saveMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", workspace: "/home/user" }));
   });
 });

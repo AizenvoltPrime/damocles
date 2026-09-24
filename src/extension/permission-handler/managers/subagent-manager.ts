@@ -37,8 +37,4 @@ export class SubagentManager {
       }
     }
   }
-
-  clearSubagentAutoApprovals(): void {
-    this.state.autoApprovedSubagents.clear();
-  }
 }

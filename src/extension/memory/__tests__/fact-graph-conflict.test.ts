@@ -388,8 +388,11 @@ describe('Slice 8 C14 — identical created_at contradictions tiebreak by higher
   });
 });
 
+/** Bump with each new memory-DB migration. */
+const LATEST_SCHEMA_VERSION = 4;
+
 describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial index, version bump)', () => {
-  it('a fresh fully-migrated DB has the NOT NULL DEFAULT 0 column, the partial index, and schema version 3', async () => {
+  it('a fresh fully-migrated DB has the NOT NULL DEFAULT 0 column and the partial index', async () => {
     const db = await createTestMemoryDb();
 
     const cols = db.prepare('PRAGMA table_info(memories)').all() as Array<{
@@ -410,7 +413,7 @@ describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial 
     expect(idx!.sql).toMatch(/WHERE\s+needs_conflict_check\s*=\s*1/i);
 
     const version = (db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v;
-    expect(version).toBe(3);
+    expect(version).toBe(LATEST_SCHEMA_VERSION);
 
     // A row inserted without the column defaults to 0 (what migrating rows inherit).
     const id = crypto.randomUUID();
@@ -429,6 +432,7 @@ describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial 
     raw.exec('PRAGMA foreign_keys = ON');
     raw.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
     raw.exec('CREATE TABLE memories (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL)');
+    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0)');
     raw.exec("INSERT INTO memories (id, created_at) VALUES ('legacy-row', 1)");
     raw.exec('INSERT INTO schema_version (version) VALUES (1)');
     raw.exec('INSERT INTO schema_version (version) VALUES (2)');
@@ -439,23 +443,54 @@ describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial 
 
     runMigrations(db);
 
-    // v3 applied: column present, legacy row back-filled to 0, version 3, index created.
+    // v3 applied: column present, legacy row back-filled to 0, index created.
     const after = (db.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>).map((c) => c.name);
     expect(after).toContain('needs_conflict_check');
     expect(
       (db.prepare("SELECT needs_conflict_check AS n FROM memories WHERE id = 'legacy-row'").get() as { n: number }).n,
     ).toBe(0);
-    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(3);
+    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(LATEST_SCHEMA_VERSION);
     const idx = db.prepare(
       "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_memories_needs_conflict_check'",
     ).get() as { sql: string } | undefined;
     expect(idx).toBeDefined();
     expect(idx!.sql).toMatch(/WHERE\s+needs_conflict_check\s*=\s*1/i);
 
-    // Idempotent: a second runMigrations does not throw or bump past 3.
+    // Idempotent: a second runMigrations does not throw or bump the version.
     expect(() => runMigrations(db)).not.toThrow();
-    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(3);
+    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(LATEST_SCHEMA_VERSION);
 
+    db.close();
+  });
+});
+
+describe('migration v4 schema (memory_candidates.workspace + claim index)', () => {
+  it('a fresh DB has a nullable workspace column on memory_candidates and the (consumed, workspace) index', async () => {
+    const db = await createTestMemoryDb();
+    const cols = db.prepare('PRAGMA table_info(memory_candidates)').all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+    const col = cols.find((c) => c.name === 'workspace');
+    expect(col).toBeDefined();
+    expect(col!.notnull).toBe(0);
+    expect(col!.dflt_value).toBeNull();
+
+    const idxCols = (db.prepare("PRAGMA index_info('idx_candidates_consumed_workspace')").all() as Array<{ name: string }>).map((c) => c.name);
+    expect(idxCols).toEqual(['consumed', 'workspace']);
+  });
+
+  it('applies onto a v3 database, leaving existing candidates with a NULL workspace', () => {
+    const raw = new DatabaseSync(':memory:');
+    raw.exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+    raw.exec('CREATE TABLE memory_candidates (id TEXT PRIMARY KEY, consumed INTEGER NOT NULL DEFAULT 0)');
+    raw.exec("INSERT INTO memory_candidates (id) VALUES ('legacy-candidate')");
+    for (const v of [1, 2, 3]) raw.exec(`INSERT INTO schema_version (version) VALUES (${v})`);
+
+    const db = createDatabaseWrapper(raw);
+    runMigrations(db);
+
+    const row = db.prepare("SELECT workspace FROM memory_candidates WHERE id = 'legacy-candidate'").get() as { workspace: string | null };
+    expect(row.workspace).toBeNull();
+    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(4);
+    expect(() => runMigrations(db)).not.toThrow();
     db.close();
   });
 });

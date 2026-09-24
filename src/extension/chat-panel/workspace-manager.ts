@@ -11,51 +11,60 @@ import type {
   SlashCommandItem,
   WorkspaceFileInfo,
 } from "../../shared/types/commands";
-import type { WebviewHost } from "./types";
+import type { HostInstance, WebviewHost } from "./types";
+import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
 
 export interface WorkspaceManagerConfig {
-  workspacePath: string;
-  /** The open workspace folder, or null when none is open. Asset discovery skips project scope then. */
-  projectPath: string | null;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
-  broadcastToAllPanels: (message: ExtensionToWebviewMessage) => void;
+  getPanels: () => Map<string, HostInstance>;
 }
 
 export class WorkspaceManager {
-  private readonly workspacePath: string;
   private readonly postMessage: WorkspaceManagerConfig["postMessage"];
-  private readonly broadcastToAllPanels: WorkspaceManagerConfig["broadcastToAllPanels"];
-  private readonly slashCommandService: SlashCommandService;
+  private readonly getPanels: WorkspaceManagerConfig["getPanels"];
+  /** One per folder a panel has targeted, keyed by folder key; each watches only its own project dirs. */
+  private readonly slashCommandServices = new Map<string, SlashCommandService>();
   private readonly rewindDiffProvider: RewindDiffProvider;
 
   constructor(config: WorkspaceManagerConfig) {
-    this.workspacePath = config.workspacePath;
     this.postMessage = config.postMessage;
-    this.broadcastToAllPanels = config.broadcastToAllPanels;
-    this.slashCommandService = new SlashCommandService(config.projectPath);
+    this.getPanels = config.getPanels;
     this.rewindDiffProvider = new RewindDiffProvider();
-
-    this.slashCommandService.setOnCacheInvalidate(() => {
-      void this.broadcastSlashCommands();
-    });
   }
 
-  async broadcastSlashCommands(): Promise<void> {
+  private slashCommandService(folder: FolderTarget): SlashCommandService {
+    const existing = this.slashCommandServices.get(folder.key);
+    if (existing) return existing;
+    const service = new SlashCommandService(folder.projectScope ? folder.fsPath : null);
+    service.setOnCacheInvalidate(() => {
+      void this.broadcastSlashCommands(folder);
+    });
+    this.slashCommandServices.set(folder.key, service);
+    return service;
+  }
+
+  broadcastToFolder(key: string, message: ExtensionToWebviewMessage): void {
+    for (const [, instance] of this.getPanels()) {
+      if (instance.folder.key === key) this.postMessage(instance.host, message);
+    }
+  }
+
+  private async broadcastSlashCommands(folder: FolderTarget): Promise<void> {
     try {
-      const commands = await this.getCustomSlashCommands();
-      this.broadcastToAllPanels({ type: "customSlashCommands", commands });
+      const commands = await this.getCustomSlashCommands(folder);
+      this.broadcastToFolder(folder.key, { type: "customSlashCommands", commands });
     } catch (err) {
       log("[WorkspaceManager] Error broadcasting slash commands:", err);
     }
   }
 
-  async findSkill(name: string): Promise<SkillInfo | undefined> {
-    return this.slashCommandService.findSkill(name);
+  async findSkill(name: string, folder: FolderTarget): Promise<SkillInfo | undefined> {
+    return this.slashCommandService(folder).findSkill(name);
   }
 
-  async findCommand(name: string): Promise<CustomSlashCommandInfo | undefined> {
-    return this.slashCommandService.findCommand(name);
+  async findCommand(name: string, folder: FolderTarget): Promise<CustomSlashCommandInfo | undefined> {
+    return this.slashCommandService(folder).findCommand(name);
   }
 
   /**
@@ -63,9 +72,10 @@ export class WorkspaceManager {
    * `.claude`/`.codex`, and project before user within a source. A builtin always runs, so a custom
    * asset that collides with one would otherwise show a row that resolves to something else.
    */
-  async getCustomSlashCommands(): Promise<SlashCommandItem[]> {
-    const customCommands = await this.slashCommandService.getCommands();
-    const skills = await this.slashCommandService.getSkills();
+  async getCustomSlashCommands(folder: FolderTarget): Promise<SlashCommandItem[]> {
+    const service = this.slashCommandService(folder);
+    const customCommands = await service.getCommands();
+    const skills = await service.getSkills();
     const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name.toLowerCase()));
     const allCommands = [
       ...BUILTIN_SLASH_COMMANDS,
@@ -75,14 +85,17 @@ export class WorkspaceManager {
     return allCommands.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async sendCustomSlashCommands(host: WebviewHost): Promise<void> {
+  async customSlashCommandsMessage(folder: FolderTarget): Promise<ExtensionToWebviewMessage> {
     try {
-      const commands = await this.getCustomSlashCommands();
-      this.postMessage(host, { type: "customSlashCommands", commands });
+      return { type: "customSlashCommands", commands: await this.getCustomSlashCommands(folder) };
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom slash commands:", err);
-      this.postMessage(host, { type: "customSlashCommands", commands: BUILTIN_SLASH_COMMANDS });
+      return { type: "customSlashCommands", commands: BUILTIN_SLASH_COMMANDS };
     }
+  }
+
+  async sendCustomSlashCommands(host: WebviewHost, folder: FolderTarget): Promise<void> {
+    this.postMessage(host, await this.customSlashCommandsMessage(folder));
   }
 
   /**
@@ -94,36 +107,39 @@ export class WorkspaceManager {
     this.postMessage(host, { type: "customAgents", agents: [] });
   }
 
-  async getWorkspaceFiles(): Promise<WorkspaceFileInfo[]> {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
+  async getWorkspaceFiles(folder: FolderTarget): Promise<WorkspaceFileInfo[]> {
+    if (!folder.projectScope) {
       log("[WorkspaceManager] getWorkspaceFiles: no workspace folder open, returning []");
       return [];
     }
-    const files = await listWorkspaceFiles(workspaceFolder.uri.fsPath);
+    const files = await listWorkspaceFiles(folder.fsPath);
     return files.map((f: FileResult) => ({
       relativePath: f.relativePath,
       isDirectory: f.isDirectory,
     }));
   }
 
-  async sendWorkspaceFiles(host: WebviewHost): Promise<void> {
+  async workspaceFilesMessage(folder: FolderTarget): Promise<ExtensionToWebviewMessage> {
     try {
-      const files = await this.getWorkspaceFiles();
-      this.postMessage(host, { type: "workspaceFiles", files });
+      return { type: "workspaceFiles", files: await this.getWorkspaceFiles(folder) };
     } catch (err) {
       log("[WorkspaceManager] Error fetching workspace files:", err);
-      this.postMessage(host, { type: "workspaceFiles", files: [] });
+      return { type: "workspaceFiles", files: [] };
     }
   }
 
-  async openFile(filePath: string, line?: number): Promise<void> {
+  async sendWorkspaceFiles(host: WebviewHost, folder: FolderTarget): Promise<void> {
+    this.postMessage(host, await this.workspaceFilesMessage(folder));
+  }
+
+  async openFile(filePath: string, line: number | undefined, folder: FolderTarget): Promise<void> {
     // Tool cards carry the path the agent used, which for pi's write/edit tools is cwd-relative with no
-    // `./` prefix. Resolve any relative path against the workspace so `Uri.file` doesn't anchor it at the
-    // drive root (`\hello_world.ts`). DELIBERATELY no workspace-containment guard here (unlike the rewind
-    // diff): the agent legitimately reads/writes files outside the workspace, and this only opens a file
-    // in the editor (no write), so absolute and `..` paths must resolve to the real file the card names.
-    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(this.workspacePath, filePath);
+    // `./` prefix. The agent's cwd is the panel's folder, so a relative path resolves against it and
+    // `Uri.file` does not anchor it at the drive root (`\hello_world.ts`). Deliberately no containment
+    // guard here (unlike the rewind diff): the agent legitimately reads/writes files outside the folder,
+    // and this only opens a file in the editor (no write), so absolute and `..` paths must resolve to the
+    // real file the card names.
+    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(folder.fsPath, filePath);
 
     const uri = vscode.Uri.file(resolvedPath);
     const doc = await vscode.workspace.openTextDocument(uri);
@@ -136,9 +152,9 @@ export class WorkspaceManager {
     }
   }
 
-  async handleOpenFile(_host: WebviewHost, filePath: string, line?: number): Promise<void> {
+  async handleOpenFile(_host: WebviewHost, filePath: string, line: number | undefined, folder: FolderTarget): Promise<void> {
     try {
-      await this.openFile(filePath, line);
+      await this.openFile(filePath, line, folder);
     } catch (err) {
       log("[WorkspaceManager] Error opening file:", err);
       vscode.window.showErrorMessage(vscode.l10n.t("Could not open file: {0}", filePath));
@@ -152,22 +168,29 @@ export class WorkspaceManager {
   }
 
   /**
-   * Resolves a webview-supplied file path to an absolute path contained in the workspace.
-   * Returns null if the path escapes the workspace (path traversal defense).
+   * Resolves a webview-supplied file path to an absolute path contained in the panel's folder.
+   * Returns null if the path escapes that folder (path traversal defense).
    */
-  resolveWorkspaceFilePath(filePath: string): string | null {
-    if (!this.workspacePath) return null;
+  resolveWorkspaceFilePath(filePath: string, folder: FolderTarget): string | null {
+    if (!folder.fsPath) return null;
     const absolute = path.isAbsolute(filePath)
       ? path.resolve(filePath)
-      : path.resolve(this.workspacePath, filePath);
-    const workspaceRoot = path.resolve(this.workspacePath);
+      : path.resolve(folder.fsPath, filePath);
+    const workspaceRoot = path.resolve(folder.fsPath);
     const relative = path.relative(workspaceRoot, absolute);
     if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
     return absolute;
   }
 
+  /** Drop the slash-command service of a folder that left the workspace. */
+  disposeFolder(key: string): void {
+    this.slashCommandServices.get(key)?.dispose();
+    this.slashCommandServices.delete(key);
+  }
+
   dispose(): void {
-    this.slashCommandService.dispose();
+    for (const service of this.slashCommandServices.values()) service.dispose();
+    this.slashCommandServices.clear();
     this.rewindDiffProvider.dispose();
   }
 }

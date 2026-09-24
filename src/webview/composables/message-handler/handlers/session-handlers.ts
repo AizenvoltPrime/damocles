@@ -3,7 +3,43 @@ import { i18n } from "@/i18n";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
-import type { HandlerRegistry, ScrollBehavior } from "../types";
+import type { HandlerContext, HandlerRegistry, ScrollBehavior } from "../types";
+
+/** Every path that drops the conversation runs this, so a store added here is cleared on all of them. */
+function resetConversationStores(ctx: HandlerContext): void {
+  const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
+
+  streamingStore.$reset();
+  subagentStore.$reset();
+  questionStore.$reset();
+  formStore.$reset();
+  permissionStore.$reset();
+  planViewStore.$reset();
+  taskStore.$reset();
+  contextInjectionStore.$reset();
+  contextUsageStore.$reset();
+  subscriptionUsageStore.$reset();
+  elicitationStore.$reset();
+  btwStore.$reset();
+  useBackgroundTaskStore().$reset();
+  useTeamStore().$reset();
+  useConsolidationStore().$reset();
+  uiStore.collapseTool();
+  uiStore.setTasksPanelCollapsed(true);
+  sessionStore.clearSessionData();
+  sessionStore.setCurrentSession(null);
+}
+
+function resetConversationState(ctx: HandlerContext): void {
+  const { uiStore, sessionStore } = ctx.stores;
+  const { vscode } = ctx;
+
+  resetConversationStores(ctx);
+  sessionStore.setResumedSession(null);
+  sessionStore.setSelectedSession(null);
+  vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
+  uiStore.setProcessing(false);
+}
 
 export function createSessionHandlers(): Partial<HandlerRegistry> {
   return {
@@ -49,34 +85,16 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore } = ctx.stores;
       const { vscode } = ctx;
 
-      streamingStore.$reset();
-      subagentStore.$reset();
-      questionStore.$reset();
-      formStore.$reset();
-      permissionStore.$reset();
-      planViewStore.$reset();
-      taskStore.$reset();
-      contextInjectionStore.$reset();
-      contextUsageStore.$reset();
-      subscriptionUsageStore.$reset();
-      elicitationStore.$reset();
-      btwStore.$reset();
-      useBackgroundTaskStore().$reset();
-      useTeamStore().$reset();
-      useConsolidationStore().$reset();
-      uiStore.collapseTool();
-      sessionStore.clearSessionData();
-      sessionStore.setCurrentSession(null);
+      resetConversationStores(ctx);
 
       if (!sessionStore.currentResumedSessionId) {
         sessionStore.setSelectedSession(null);
         vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
       }
       sessionStore.setResumedSession(null);
-      uiStore.setTasksPanelCollapsed(true);
 
       if (msg.pendingMessage) {
         streamingStore.addUserMessage(msg.pendingMessage.content, false, undefined, undefined, msg.pendingMessage.correlationId);
@@ -88,33 +106,27 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     conversationCleared: (_msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
-      const { vscode } = ctx;
-
-      streamingStore.$reset();
-      subagentStore.$reset();
-      questionStore.$reset();
-      formStore.$reset();
-      permissionStore.$reset();
-      planViewStore.$reset();
-      taskStore.$reset();
-      contextInjectionStore.$reset();
-      contextUsageStore.$reset();
-      subscriptionUsageStore.$reset();
-      elicitationStore.$reset();
-      btwStore.$reset();
-      useBackgroundTaskStore().$reset();
-      useTeamStore().$reset();
-      useConsolidationStore().$reset();
-      uiStore.collapseTool();
-      sessionStore.clearSessionData();
-      sessionStore.setCurrentSession(null);
-      sessionStore.setResumedSession(null);
-      sessionStore.setSelectedSession(null);
-      vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
-      uiStore.setProcessing(false);
-      uiStore.setTasksPanelCollapsed(true);
+      resetConversationState(ctx);
       toast.success(i18n.global.t("toast.conversationCleared"));
+    },
+
+    workspaceFolderUpdate: (msg, ctx) => {
+      const { vscode } = ctx;
+      ctx.stores.settingsStore.setWorkspaceFolders(msg.folders, msg.panelFolderKey, msg.defaultFolderKey);
+      if (msg.switched) {
+        resetConversationState(ctx);
+        // Project memories and the project profile belong to the folder, so reload them for the new one.
+        ctx.stores.memoryStore.clearFolderData();
+        // The extension re-sends the new folder's Compass status after this update.
+        ctx.stores.compassStore.clearFolderData();
+        if (ctx.stores.uiStore.showMemoryPanel) {
+          vscode.postMessage({ type: "requestMemories" });
+          vscode.postMessage({ type: "getProfile" });
+        }
+        const folder = msg.folders.find((f) => f.key === msg.panelFolderKey);
+        toast.success(i18n.global.t("toast.workspaceFolderSwitched", { folder: folder?.label ?? msg.panelFolderKey }));
+      }
+      vscode.setState({ ...vscode.getState<{ workspaceFolderKey?: string }>(), workspaceFolderKey: msg.panelFolderKey });
     },
 
     sessionCancelled: (_msg, ctx) => {

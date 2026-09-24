@@ -27,5 +27,9 @@
   "Reload Window": "Επαναφόρτωση παραθύρου",
   "Damocles could not reach {0} in time, so \"{1}\" is unavailable and \"{2}\" is being used instead.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και χρησιμοποιείται το \"{2}\" στη θέση του.",
   "Damocles could not reach {0} in time, so \"{1}\" is unavailable and no signed-in model could be selected.": "Το Damocles δεν μπόρεσε να επικοινωνήσει έγκαιρα με το {0}, οπότε το \"{1}\" δεν είναι διαθέσιμο και δεν ήταν δυνατή η επιλογή άλλου συνδεδεμένου μοντέλου.",
-  "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "Αυτός ο χώρος εργασίας δεν είναι έμπιστος, οπότε οι δεξιότητες και οι εντολές του έργου δεν φορτώνονται. Καταστήστε τον χώρο εργασίας έμπιστο για να τις εκτελέσετε."
+  "This workspace is not trusted, so project skills and commands are not loaded. Trust the workspace to run them.": "Αυτός ο χώρος εργασίας δεν είναι έμπιστος, οπότε οι δεξιότητες και οι εντολές του έργου δεν φορτώνονται. Καταστήστε τον χώρο εργασίας έμπιστο για να τις εκτελέσετε.",
+  "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Να μεταφερθεί αυτό το panel στο {0}; Θα ξεκινήσει νέα συνομιλία. Η τρέχουσα παραμένει στο ιστορικό.",
+  "Start new conversation": "Έναρξη νέας συνομιλίας",
+  "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.": "Ο φάκελος {0} αφαιρέθηκε από τον χώρο εργασίας, οπότε ένα panel του Damocles μεταφέρθηκε στο {1} και ξεκίνησε νέα συνομιλία. Η προηγούμενη παραμένει στο ιστορικό.",
+  "Damocles could not start a session in {0}: {1}": "Το Damocles δεν μπόρεσε να ξεκινήσει συνεδρία στο {0}: {1}"
 }

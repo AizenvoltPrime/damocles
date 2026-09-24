@@ -8,7 +8,7 @@
  * mode) — and stamps the spawning `Agent` tool-call id as `parentToolUseId` so any approval prompt
  * attaches to the subagent card rather than the primary stream.
  *
- * Unlike the primary path, this does NOT route through `PiRuntime._panelRegistry` (a subagent session
+ * Unlike the primary path, this does NOT route through `FolderRuntime._panelRegistry` (a subagent session
  * is not a panel); the gate context is captured directly in the closure. When configured-hooks dispatch
  * deps are supplied (US-008), the same factory also fires PreToolUse/PostToolUse for the subagent's tool
  * calls and `subagent_end` (= Claude Code SubagentStop) on completion — reusing the primary helpers.

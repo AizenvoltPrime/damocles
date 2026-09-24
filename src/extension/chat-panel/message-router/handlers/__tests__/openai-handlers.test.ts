@@ -4,6 +4,8 @@ import type { OpenAIAuthStatus } from "../../../../pi-session/openai-auth";
 const H = vi.hoisted(() => {
   const fakePi = {
     createAgentSessionServices: vi.fn(),
+    ModelRuntime: { create: vi.fn() },
+    SettingsManager: { create: vi.fn(() => ({})) },
     DefaultPackageManager: class {
       getInstalledPath(): string | undefined {
         return undefined;
@@ -107,7 +109,7 @@ interface AuthInteractionLike {
 type Cred = { type: string; key?: string; expires?: number };
 
 /**
- * One modelRuntime-backed mock of the services the PiRuntime facade owns. login/logout persist into an
+ * One mock of the model runtime the PiRuntime facade owns. login/logout persist into an
  * internal cred map AND refresh the stubbed disk mirror, mirroring pi's "write auth.json, then resolve".
  * `login('openai','api_key',<interaction>)` reads the key back from the interaction's prompt (the way
  * PiRuntime.setOpenAIApiKey passes `keyInteraction(key)`), so assertions can verify the key flows through.
@@ -155,18 +157,7 @@ function makeServices() {
     completeSimple: vi.fn(async () => ({})),
   };
 
-  return {
-    creds,
-    modelRuntime,
-    services: {
-      cwd: "/cwd",
-      agentDir: "/agent",
-      modelRuntime,
-      settingsManager: { getPackages: () => [] },
-      resourceLoader: {},
-      diagnostics: [],
-    },
-  };
+  return { creds, modelRuntime };
 }
 
 function makeDeps(sent: ExtensionToWebviewMessage[]): {
@@ -178,7 +169,6 @@ function makeDeps(sent: ExtensionToWebviewMessage[]): {
   const workspaceState = new Map<string, unknown>();
   const publishAccountInfo = vi.fn();
   const deps = {
-    workspacePath: "/cwd",
     postMessage: (_host: unknown, message: ExtensionToWebviewMessage) => { sent.push(message); },
     getPanels: () => new Map([["panel-1", { host, session: { publishAccountInfo } }]]) as unknown as Map<string, never>,
     context: {
@@ -202,8 +192,8 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
     H.ctrl.loadable = true;
     H.disk.value = { apiKey: false, codex: false };
     mock = makeServices();
-    H.fakePi.createAgentSessionServices = vi.fn().mockResolvedValue(mock.services);
-    PiRuntime.get("/cwd", "/fake/agent");
+    H.fakePi.ModelRuntime.create = vi.fn().mockResolvedValue(mock.modelRuntime);
+    PiRuntime.get("/fake/agent");
     sent = [];
     const built = makeDeps(sent);
     handlers = createOpenAIHandlers(built.deps);
@@ -419,7 +409,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
   });
 
   it("clearOpenAIApiKey logs out 'openai' only and acks", async () => {
-    await PiRuntime.get("/cwd", "/fake/agent").init();
+    await PiRuntime.get("/fake/agent").init();
     mock.creds["openai"] = { type: "api_key", key: "sk-stored" };
     mock.creds["openai-codex"] = { type: "oauth", expires: 1 };
 
@@ -436,7 +426,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
   });
 
   it("signOutCodex logs out the codex grant and re-broadcasts", async () => {
-    await PiRuntime.get("/cwd", "/fake/agent").init();
+    await PiRuntime.get("/fake/agent").init();
     mock.creds["openai-codex"] = { type: "oauth", expires: 1 };
 
     await handlers.signOutCodex!({ type: "signOutCodex" }, ctx);
@@ -460,7 +450,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
     });
 
     it("clearOpenAIApiKey republishes to every panel", async () => {
-      await PiRuntime.get("/cwd", "/fake/agent").init();
+      await PiRuntime.get("/fake/agent").init();
       mock.creds["openai"] = { type: "api_key", key: "sk-stored" };
 
       await handlers.clearOpenAIApiKey!({ type: "clearOpenAIApiKey", requestId: "r5" }, ctx);
@@ -469,7 +459,7 @@ describe("createOpenAIHandlers (modelRuntime-backed)", () => {
     });
 
     it("signOutCodex republishes to every panel", async () => {
-      await PiRuntime.get("/cwd", "/fake/agent").init();
+      await PiRuntime.get("/fake/agent").init();
       mock.creds["openai-codex"] = { type: "oauth", expires: 1 };
 
       await handlers.signOutCodex!({ type: "signOutCodex" }, ctx);

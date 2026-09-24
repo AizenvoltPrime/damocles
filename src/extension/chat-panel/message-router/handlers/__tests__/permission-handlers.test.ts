@@ -14,7 +14,17 @@ vi.mock("fs/promises", () => ({
 
 vi.mock("../../../session-file-path", () => ({ resolveSessionFilePath: vi.fn(async () => null) }));
 
+const syncRules = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../../../settings-manager/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../settings-manager/utils")>()),
+  syncPermissionRulesToSettings: syncRules,
+}));
+
 import { createPermissionHandlers } from "../permission-handlers";
+import { ApprovalManager } from "../../../../permission-handler/managers/approval-manager";
+import { PermissionState } from "../../../../permission-handler/state";
+import type { DiffManager } from "../../../../permission-handler/diff-manager";
+import type { PermissionUpdate } from "../../../../../shared/types/permissions";
 import { buildPlanImplementationMessage } from "../../utils";
 import { computePlanFilePath } from "../../../../paths";
 import type { HandlerContext, HandlerDependencies } from "../../types";
@@ -50,11 +60,10 @@ function setup() {
     sendModelForPanel: vi.fn(),
   };
   const deps = {
-    workspacePath: "/ws",
     postMessage: vi.fn(),
     settingsManager,
   } as unknown as HandlerDependencies;
-  const ctx = { host: {}, session, permissionHandler, panelId: "p1" } as unknown as HandlerContext;
+  const ctx = { folder: { key: "/ws", fsPath: "/ws", name: "ws", label: "ws", projectScope: true }, host: {}, session, permissionHandler, panelId: "p1" } as unknown as HandlerContext;
   return { session, permissionHandler, settingsManager, deps, ctx };
 }
 
@@ -152,5 +161,54 @@ describe("approvePlan — normal approve (no clear context)", () => {
     expect(session.getPlanContent).not.toHaveBeenCalled();
     expect(session.getPlanFilePath).not.toHaveBeenCalled();
     expect(permissionHandler.resolvePlanApproval).toHaveBeenCalledWith("t1", true, expect.anything());
+  });
+});
+
+describe("approveEdit — saving an always-allow rule", () => {
+  const RULE: PermissionUpdate[] = [{
+    type: "addRules",
+    rules: [{ toolName: "Bash", ruleContent: "git:*" }],
+    behavior: "allow",
+    destination: "localSettings",
+  }];
+
+  function approvalSetup() {
+    syncRules.mockClear();
+    const state = new PermissionState();
+    const diffManager = { closeDiffView: async () => undefined } as unknown as DiffManager;
+    const manager = new ApprovalManager(state, diffManager, () => vi.fn());
+    const { deps, ctx } = setup();
+    const permissionHandler = {
+      autoApproveSubagent: vi.fn(),
+      resolveApproval: manager.resolveApproval.bind(manager),
+    };
+    const approveEdit = createPermissionHandlers(deps).approveEdit!;
+    const answer = (toolUseId: string) => approveEdit(
+      { type: "approveEdit", toolUseId, approved: true, updatedPermissions: RULE } as never,
+      { ...ctx, permissionHandler } as unknown as HandlerContext,
+    );
+    return { state, manager, answer };
+  }
+
+  const shellCall = (toolUseID: string) => ({ signal: new AbortController().signal, toolUseID, parentToolUseId: null });
+
+  it("saves to the folder the prompt was raised in, not the one the panel shows when the click lands", async () => {
+    const { state, manager, answer } = approvalSetup();
+    state.workspacePath = "/folder-a";
+    const toolCall = manager.handleShellPermission("Bash", { command: "git status" }, shellCall("t1"));
+    state.workspacePath = "/folder-b";
+
+    await answer("t1");
+
+    expect((await toolCall).behavior).toBe("allow");
+    expect(syncRules).toHaveBeenCalledWith(RULE, "/folder-a");
+  });
+
+  it("saves nothing for a click that matches no pending approval", async () => {
+    const { answer } = approvalSetup();
+
+    await answer("gone");
+
+    expect(syncRules).not.toHaveBeenCalled();
   });
 });

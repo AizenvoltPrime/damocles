@@ -96,7 +96,7 @@ function makeCtx(
     instanceId: 'test-instance',
     reason: 'switch',
     sessionId: SESSION_ID,
-    workspace: WORKSPACE,
+    fallbackWorkspace: () => WORKSPACE,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},

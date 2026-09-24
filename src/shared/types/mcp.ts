@@ -112,8 +112,9 @@ export function mcpSourceOrder(precedence: "claude" | "codex"): McpSourceOrder {
  * would be hidden by the merge. Either precedence argument yields this same set: the tie-break only
  * permutes `claude` and `codex`, and both rank below `damocles`.
  *
- * This is the static precedence. An untrusted workspace demotes repo-authored sources below
- * `damocles`, and the host reads that effective rank off the fold it actually ran.
+ * This is the static precedence. Both members are folder sources, so they shadow only in their own
+ * folder, and an untrusted workspace demotes them below `damocles`; the host reads the effective rank
+ * off each folder's actual fold.
  */
 export const SHADOWING_SOURCES: ReadonlySet<McpServerSource> =
   new Set(SOURCE_ORDER_CLAUDE_WINS.slice(SOURCE_ORDER_CLAUDE_WINS.indexOf("damocles") + 1));

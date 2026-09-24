@@ -68,7 +68,8 @@ export interface ConsolidationCtx {
   profileManager: ProfileManager;
   reason: ConsolidationReason;
   sessionId?: string;
-  workspace: string;
+  /** Folder for legacy candidates stored without one: the consolidating window's default folder. */
+  fallbackWorkspace: () => string;
   /** When false, the pass runs maintenance but extracts nothing. */
   autoExtractEnabled: boolean;
   /** Whether this pass was user-initiated ('manual') or background ('auto'). */
@@ -82,6 +83,11 @@ export interface ConsolidationCtx {
    * pass scheduled just before disposal cannot claim a batch the service will never release.
    */
   isDisposed?: () => boolean;
+}
+
+/** A pass's context once its batch is claimed: `workspace` is the folder every claimed turn ran in. */
+interface ClaimedPassCtx extends ConsolidationCtx {
+  workspace: string;
 }
 
 /** A candidate claimed for this consolidation pass. */
@@ -222,17 +228,28 @@ export const EXTRACTION_SCHEMA: Record<string, unknown> = {
  * claims at least one turn so an oversized turn can't stall the queue (clipped at prompt-build time).
  * Scopes to one session when `sessionId` is supplied. A successful pass commits the reservation; a
  * failure releases it — so `consumed = 1` means "in-flight or done", never "lost".
+ *
+ * A batch holds one folder's turns only, the folder of the oldest unconsumed candidate, so the pass
+ * files every extraction under the folder its conversation ran in. Other folders wait for a later pass.
  */
-function claimCandidates(ctx: ConsolidationCtx): Promise<ClaimedCandidate[]> {
+function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCandidate[]; workspace: string | null }> {
   return ctx.writeQueue.run(() => {
-    const where = ctx.sessionId !== undefined ? 'consumed = 0 AND session_id = ?' : 'consumed = 0';
-    const selectParams: unknown[] = ctx.sessionId !== undefined ? [ctx.sessionId] : [];
+    const sessionWhere = ctx.sessionId !== undefined ? 'consumed = 0 AND session_id = ?' : 'consumed = 0';
+    const sessionParams: unknown[] = ctx.sessionId !== undefined ? [ctx.sessionId] : [];
+
+    const head = ctx.db
+      .prepare(`SELECT workspace FROM memory_candidates WHERE ${sessionWhere} ORDER BY created_at LIMIT 1`)
+      .get(...sessionParams) as { workspace: string | null } | undefined;
+    if (!head) return { candidates: [], workspace: null };
 
     const rows = ctx.db
-      .prepare(`SELECT id, user_text, assistant_text, session_id FROM memory_candidates WHERE ${where} ORDER BY created_at LIMIT ?`)
-      .all(...selectParams, CANDIDATE_BATCH_LIMIT) as ClaimedRow[];
+      .prepare(
+        `SELECT id, user_text, assistant_text, session_id FROM memory_candidates
+          WHERE ${sessionWhere} AND workspace IS ? ORDER BY created_at LIMIT ?`,
+      )
+      .all(...sessionParams, head.workspace, CANDIDATE_BATCH_LIMIT) as ClaimedRow[];
 
-    if (rows.length === 0) return [];
+    if (rows.length === 0) return { candidates: [], workspace: null };
 
     const claimed: ClaimedCandidate[] = [];
     let tokens = 0;
@@ -250,7 +267,7 @@ function claimCandidates(ctx: ConsolidationCtx): Promise<ClaimedCandidate[]> {
       .prepare(`UPDATE memory_candidates SET consumed = 1, claimed_by = ?, claimed_at = ? WHERE id IN (${placeholders})`)
       .run(ctx.instanceId, Date.now(), ...ids);
 
-    return claimed;
+    return { candidates: claimed, workspace: head.workspace ?? ctx.fallbackWorkspace() };
   });
 }
 
@@ -342,7 +359,7 @@ const EXISTING_MATCH_TOKEN_CAP = 20;
  * deduped by content, and capped at {@link EXISTING_MEMORY_LIMIT}. Only an empty MATCH falls back to
  * recency; a real DB error propagates.
  */
-function loadExistingMemoriesForExtraction(ctx: ConsolidationCtx, candidates: ClaimedCandidate[]): string[] {
+function loadExistingMemoriesForExtraction(ctx: ClaimedPassCtx, candidates: ClaimedCandidate[]): string[] {
   const recentQuery = `SELECT content FROM memories
         WHERE is_latest = 1 AND forgotten = 0
           AND kind IN ('fact', 'preference', 'episode')
@@ -450,7 +467,7 @@ function toNewMemoryFields(memory: ExtractedMemory, workspace: string, sessionId
  * callback, because {@link FactGraphManager.resolveConflict} self-acquires the lock and would deadlock.
  */
 async function persistExtracted(
-  ctx: ConsolidationCtx,
+  ctx: ClaimedPassCtx,
   memory: ExtractedMemory,
   batchSessionId: string | null,
 ): Promise<ConsolidationPersistOutcome> {
@@ -494,7 +511,7 @@ async function runMaintenance(ctx: ConsolidationCtx): Promise<{ promoted: number
   return { promoted, decayed: forgotten, pruned };
 }
 
-async function updateProfiles(ctx: ConsolidationCtx): Promise<void> {
+async function updateProfiles(ctx: ClaimedPassCtx): Promise<void> {
   await ctx.profileManager.updateProfile('project', ctx.workspace);
   await ctx.profileManager.updateProfile('global', '');
 }
@@ -547,14 +564,15 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     await reclaimExpiredClaims(ctx);
 
     let candidates: ClaimedCandidate[] = [];
+    let workspace: string | null = null;
     if (ctx.autoExtractEnabled) {
-      candidates = await claimCandidates(ctx);
+      ({ candidates, workspace } = await claimCandidates(ctx));
     }
     candidatesReviewed = candidates.length;
     phase({ phase: 'claim', status: 'done', meta: { count: candidatesReviewed } });
 
     // Nothing to extract: auto-extract off, or an empty queue. Run maintenance only, end `empty`.
-    if (!ctx.autoExtractEnabled || candidates.length === 0) {
+    if (!ctx.autoExtractEnabled || candidates.length === 0 || workspace === null) {
       const reason = !ctx.autoExtractEnabled ? 'auto-extract off' : 'no queued turns';
       phase({ phase: 'extract', status: 'skipped', meta: { reason } });
       phase({ phase: 'persist', status: 'skipped', meta: { reason } });
@@ -564,8 +582,9 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     }
 
     claimedIds = candidates.map(c => c.id);
+    const pass: ClaimedPassCtx = { ...ctx, workspace };
     const batchSessionId = uniqueNonNullSession(candidates);
-    const existing = loadExistingMemoriesForExtraction(ctx, candidates);
+    const existing = loadExistingMemoriesForExtraction(pass, candidates);
     const prompt = buildExtractionPrompt(candidates, existing);
 
     // PHASE 2 — EXTRACT (one LLM call; the slow step, ~5–20s). Can throw, or yield null/no-model.
@@ -624,7 +643,7 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     const extracted: ConsolidationExtractedMemory[] = [];
     for (const memory of extraction.value.memories) {
       try {
-        const outcome = await persistExtracted(ctx, memory, batchSessionId);
+        const outcome = await persistExtracted(pass, memory, batchSessionId);
         extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome });
       } catch (err) {
         extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome: 'invalid' });
@@ -646,7 +665,7 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     // already persisted, so the status stays `extracted`.
     phase({ phase: 'profiles', status: 'active', meta: { total: 2 } });
     try {
-      await updateProfiles(ctx);
+      await updateProfiles(pass);
       phase({ phase: 'profiles', status: 'done', meta: { done: 2, total: 2 } });
     } catch (err) {
       phase({ phase: 'profiles', status: 'failed', meta: { reason: errorDetail(err) } });

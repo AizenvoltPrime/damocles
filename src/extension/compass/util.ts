@@ -1,3 +1,13 @@
+import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
+
+/** Hashes the raw folder path, so each folder has its own index and existing index paths stay valid. */
+export function compassIndexPath(workspacePath: string): string {
+	const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 12);
+	return path.join(os.homedir(), '.damocles', 'compass', hash, 'graph.db');
+}
+
 export function normalizePath(p: string): string {
 	return p.replace(/\\/g, '/');
 }

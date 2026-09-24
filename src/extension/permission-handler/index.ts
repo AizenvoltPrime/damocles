@@ -13,7 +13,7 @@ import type { ElicitationRequest, ElicitationResult } from '../../shared/types/e
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import type { PermissionResult, CanUseToolContext } from './types';
+import type { PermissionResult, CanUseToolContext, SettledApproval } from './types';
 import { buildUserDenyResult, buildUnaskedDenyResult } from './utils';
 import type { FormValues } from '../../shared/types/forms';
 import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
@@ -86,10 +86,15 @@ export class PermissionHandler {
     this.state.dangerouslySkipPermissions = enabled;
   }
 
-  /** Reset YOLO to the workspace default — used when a panel starts a fresh conversation (clear/strategy switch). */
-  applyDefaultDangerouslySkipPermissions(): void {
+  /**
+   * Start a fresh conversation's permissions: YOLO back to the workspace default and every session-scoped
+   * approval dropped, so none outlives the conversation or folder it was granted in. The mode stays.
+   */
+  resetForNewConversation(): void {
     const config = vscode.workspace.getConfiguration('damocles');
     this.state.dangerouslySkipPermissions = config.get<boolean>('dangerouslySkipPermissions', false);
+    this.state.autoApprovedSkills.clear();
+    this.state.autoApprovedSubagents.clear();
   }
 
   getDangerouslySkipPermissions(): boolean {
@@ -157,8 +162,9 @@ export class PermissionHandler {
     this.subagentManager.autoApproveSubagent(parentToolUseId);
   }
 
-  clearSubagentAutoApprovals(): void {
-    this.subagentManager.clearSubagentAutoApprovals();
+  /** The panel's project folder, or null when it has no project scope; project rules and skills load from it. */
+  setWorkspacePath(workspacePath: string | null): void {
+    this.state.workspacePath = workspacePath;
   }
 
   /**
@@ -170,8 +176,7 @@ export class PermissionHandler {
     toolName: string,
     input: Record<string, unknown>
   ): Promise<'allow' | 'deny' | 'ask'> {
-    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-    return this.evaluatorManager.evaluate(toolName, input, workspacePath);
+    return this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath);
   }
 
   async canUseTool(
@@ -191,9 +196,7 @@ export class PermissionHandler {
       return this.formManager.handleForm(input, context);
     }
 
-    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
-
-    const evaluation = await this.evaluatorManager.evaluate(toolName, input, workspacePath);
+    const evaluation = await this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath);
 
     if (evaluation === 'allow') {
       return { behavior: 'allow', updatedInput: input };
@@ -235,7 +238,7 @@ export class PermissionHandler {
     toolUseId: string,
     approved: boolean,
     options?: { customMessage?: string; updatedPermissions?: PermissionUpdate[] }
-  ): Promise<void> {
+  ): Promise<SettledApproval | null> {
     return this.approvalManager.resolveApproval(toolUseId, approved, options);
   }
 

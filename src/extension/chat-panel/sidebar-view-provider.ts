@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { PanelManager } from "./panel-manager";
+import { restoredWorkspaceFolderKey, type PanelManager } from "./panel-manager";
 import { createViewHost } from "./types";
 
 export class SidebarViewProvider implements vscode.WebviewViewProvider {
@@ -11,7 +11,7 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
 
   async resolveWebviewView(
     webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
+    context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken,
   ): Promise<void> {
     webviewView.webview.options = {
@@ -22,6 +22,8 @@ export class SidebarViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.panelManager.getHtmlContent(webviewView.webview);
 
     const host = createViewHost(webviewView);
-    await this.panelManager.initializeHost(host);
+    // The view has no serializer, so its saved folder arrives here, before its first session is created.
+    const initialFolderKey = restoredWorkspaceFolderKey(context.state);
+    await this.panelManager.initializeHost(host, initialFolderKey !== undefined ? { initialFolderKey } : undefined);
   }
 }

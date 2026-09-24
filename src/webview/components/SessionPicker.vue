@@ -12,8 +12,10 @@ import {
   IconChevronDown,
   IconSearch,
 } from '@/components/icons';
-import { Tag } from 'lucide-vue-next';
+import { Folder, Tag } from 'lucide-vue-next';
+import { storeToRefs } from 'pinia';
 import DeleteSessionModal from './DeleteSessionModal.vue';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { StoredSession } from '@shared/types/session';
 
 const props = defineProps<{
@@ -36,6 +38,11 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const { isMultiRoot } = storeToRefs(useSettingsStore());
+
+function folderLabel(session: StoredSession): string | null {
+  return isMultiRoot.value ? session.workspaceFolder?.label ?? null : null;
+}
 
 const searchQuery = ref('');
 const searchDebounceTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -304,8 +311,18 @@ onUnmounted(() => {
                   {{ session.tag }}
                 </Badge>
               </div>
-              <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">
-                {{ formatTime(session.timestamp) }}
+              <div class="text-muted-foreground flex items-center gap-1.5 min-w-0" :class="{ 'ml-4': selectedSessionId === session.id }">
+                <span class="shrink-0">{{ formatTime(session.timestamp) }}</span>
+                <Badge
+                  v-if="folderLabel(session)"
+                  variant="outline"
+                  class="min-w-0 gap-0.5 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
+                  :title="t('session.folderLabel', { folder: folderLabel(session) })"
+                  data-testid="session-folder-badge"
+                >
+                  <Folder :size="10" class="shrink-0" />
+                  <span class="truncate">{{ folderLabel(session) }}</span>
+                </Badge>
               </div>
             </div>
           </Button>

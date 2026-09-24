@@ -5,11 +5,11 @@ import type { ChatSession } from '../../../chat-session';
 import type { TeamState } from '../../../../shared/types/team';
 
 export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, workspacePath } = deps;
+  const { postMessage } = deps;
 
   // The team running in this panel is read from its runner: its event log has no end yet.
-  const loadTeam = async (session: ChatSession, sessionId: string, teamId: string): Promise<TeamState | null> =>
-    session.teamService?.liveTeamState(teamId) ?? await loadTeamFromHistory(workspacePath, sessionId, teamId);
+  const loadTeam = async (session: ChatSession, cwd: string, sessionId: string, teamId: string): Promise<TeamState | null> =>
+    session.teamService?.liveTeamState(teamId) ?? await loadTeamFromHistory(cwd, sessionId, teamId);
 
   return {
     requestTeamData: async (msg, ctx) => {
@@ -17,7 +17,7 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) return;
       try {
-        const team = await loadTeam(ctx.session, sessionId, msg.teamId);
+        const team = await loadTeam(ctx.session, ctx.folder.fsPath, sessionId, msg.teamId);
         if (team) postMessage(ctx.host, { type: "teamStarted", team });
       } catch (err) {
         console.error('[TeamHandlers] Failed to load team data:', err);
@@ -29,9 +29,9 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) return;
       try {
-        const teamId = await findTeamIdByToolUse(workspacePath, sessionId, msg.toolUseId);
+        const teamId = await findTeamIdByToolUse(ctx.folder.fsPath, sessionId, msg.toolUseId);
         if (!teamId) return;
-        const team = await loadTeam(ctx.session, sessionId, teamId);
+        const team = await loadTeam(ctx.session, ctx.folder.fsPath, sessionId, teamId);
         if (team) postMessage(ctx.host, { type: "teamStarted", team });
       } catch (err) {
         log('[TeamHandlers] Failed to load team by toolUseId %s: %O', msg.toolUseId, err);
@@ -56,7 +56,7 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const sessionId = ctx.session.persistenceSessionId;
       try {
         const messages = sessionId
-          ? await loadAgentConversation(workspacePath, sessionId, msg.teamId, msg.agentId)
+          ? await loadAgentConversation(ctx.folder.fsPath, sessionId, msg.teamId, msg.agentId)
           : [];
         postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages });
       } catch {

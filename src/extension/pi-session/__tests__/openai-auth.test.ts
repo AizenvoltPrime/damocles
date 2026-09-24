@@ -6,6 +6,8 @@ import * as path from 'path';
 const H = vi.hoisted(() => {
   const fakePi = {
     createAgentSessionServices: vi.fn(),
+    ModelRuntime: { create: vi.fn() },
+    SettingsManager: { create: vi.fn(() => ({})) },
     DefaultPackageManager: class {
       getInstalledPath(): string | undefined {
         return undefined;
@@ -79,10 +81,7 @@ function makeServices(agentDir: string) {
     refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
     completeSimple: vi.fn(),
   };
-  return {
-    modelRuntime,
-    services: { cwd: '/cwd', agentDir, modelRuntime, settingsManager: { getPackages: () => [] }, resourceLoader: {}, diagnostics: [] },
-  };
+  return { modelRuntime };
 }
 
 /** A caller-supplied AuthInteraction (the codex select prompt must never reach it — PiRuntime answers it). */
@@ -98,7 +97,7 @@ describe('PiRuntime OpenAI/Codex auth', () => {
     H.ctrl.loadable = true;
     agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-oai-rt-'));
     mock = makeServices(agentDir);
-    H.fakePi.createAgentSessionServices = vi.fn().mockResolvedValue(mock.services);
+    H.fakePi.ModelRuntime.create = vi.fn().mockResolvedValue(mock.modelRuntime);
   });
   afterEach(async () => {
     await PiRuntime.disposeInstance();
@@ -106,7 +105,7 @@ describe('PiRuntime OpenAI/Codex auth', () => {
   });
 
   it('setOpenAIApiKey logs in an api_key under "openai" and reports it', async () => {
-    const rt = PiRuntime.get('/cwd', agentDir);
+    const rt = PiRuntime.get(agentDir);
     const status = await rt.setOpenAIApiKey('sk-test');
     expect(mock.modelRuntime.login).toHaveBeenCalledTimes(1);
     const [provider, type] = mock.modelRuntime.login.mock.calls[0] as [string, string, AuthInteraction];
@@ -116,7 +115,7 @@ describe('PiRuntime OpenAI/Codex auth', () => {
   });
 
   it('signInCodex logs in to "openai-codex" and the wrapped interaction answers select prompts with "browser"', async () => {
-    const rt = PiRuntime.get('/cwd', agentDir);
+    const rt = PiRuntime.get(agentDir);
     await rt.signInCodex(callerInteraction());
     expect(mock.modelRuntime.login).toHaveBeenCalledTimes(1);
     const call = mock.modelRuntime.login.mock.calls[0] as unknown as [string, string, AuthInteraction];
@@ -127,7 +126,7 @@ describe('PiRuntime OpenAI/Codex auth', () => {
   });
 
   it('signInCodex delegates non-select prompts to the caller interaction', async () => {
-    const rt = PiRuntime.get('/cwd', agentDir);
+    const rt = PiRuntime.get(agentDir);
     const caller = callerInteraction();
     (caller.prompt as ReturnType<typeof vi.fn>).mockResolvedValue('pasted-code');
     await rt.signInCodex(caller);
@@ -137,7 +136,7 @@ describe('PiRuntime OpenAI/Codex auth', () => {
   });
 
   it('reports api-key and codex status independently (disk-truth, now-async signouts)', async () => {
-    const rt = PiRuntime.get('/cwd', agentDir);
+    const rt = PiRuntime.get(agentDir);
 
     await rt.setOpenAIApiKey('sk-test');
     expect(rt.getOpenAIAuthStatus()).toEqual({ apiKey: true, codex: false });

@@ -5,7 +5,7 @@ import type { ContentInput } from "../../../session-types";
 import type { MemoryScope } from "../../../../shared/types/memory";
 import { SLASH_INVOCATION_RE } from "../../../../shared/asset-names";
 import { createQueuedMessage } from "../../queue-manager";
-import { claimStoredSession } from "../../session-ownership";
+import { announceHeldElsewhere, claimStoredSession, findStoredSessionHolder } from "../../session-ownership";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
 
@@ -97,7 +97,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           kind: "fact",
           scope: tier,
           sessionId: ctx.session.memorySessionId,
-          workspace: deps.workspacePath,
+          workspace: ctx.folder.fsPath,
         });
 
         if (memory) postMessage(ctx.host, { type: "memoryCreated", memory });
@@ -141,8 +141,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         } else {
           // Both lookups run before any branch: a withheld asset of one kind must not speak for a
           // working asset of the other kind that claims the same name. Both are memoized scans.
-          const skill = await workspaceManager.findSkill(skillName);
-          const command = await workspaceManager.findCommand(skillName);
+          const skill = await workspaceManager.findSkill(skillName, ctx.folder);
+          const command = await workspaceManager.findCommand(skillName, ctx.folder);
           const skillRunnable = skill !== undefined && skill.untrusted !== true;
           const commandRunnable = command !== undefined && command.untrusted !== true;
 
@@ -215,8 +215,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     clearSession: async (_msg, ctx) => {
       ctx.session.clear();
-      ctx.permissionHandler.applyDefaultDangerouslySkipPermissions();
-      ctx.permissionHandler.clearSubagentAutoApprovals();
+      ctx.permissionHandler.resetForNewConversation();
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       postMessage(ctx.host, { type: "conversationCleared" });
     },
@@ -263,24 +262,39 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      const holder = claimStoredSession(deps.getPanels(), ctx, msg.sessionId);
-      if (holder) {
-        holder.host.reveal();
+      const openElsewhere = findStoredSessionHolder(deps.getPanels(), ctx, msg.sessionId);
+      if (openElsewhere) {
+        announceHeldElsewhere();
+        openElsewhere.host.reveal();
         return;
       }
-      // The webview keeps its current conversation on screen until this arrives.
-      postMessage(ctx.host, { type: "resumeAccepted", sessionId: msg.sessionId });
+      // The session file lives under its folder's session dir, so the panel moves there first. The claim
+      // runs inside the switch, so a message the webview sent meanwhile reaches the resumed session.
+      // An unknown session stays on the panel's folder as it is now; `ctx.folder` may predate a switch.
+      const folder = (await storageManager.folderOf(msg.sessionId)) ?? deps.getPanels().get(ctx.panelId)?.folder;
+      if (!folder) return;
+      await deps.switchPanelFolder(ctx.panelId, folder.key, "resume", async (instance) => {
+        // Another panel can claim the session while this one switches; the claim then refuses.
+        const holder = claimStoredSession(deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, msg.sessionId);
+        if (holder) {
+          holder.host.reveal();
+          return false;
+        }
+        // The webview keeps its current conversation on screen until this arrives.
+        postMessage(instance.host, { type: "resumeAccepted", sessionId: msg.sessionId });
 
-      try {
-        await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host, ctx.session);
-        const rewindableIds = await deps.historyManager.extractRewindableUserIds(msg.sessionId);
-        ctx.session.seedCheckpoints(rewindableIds);
-        postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
-      } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return;
-        log("[MessageRouter] Error loading session history:", err);
-        postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
-      }
+        try {
+          await deps.historyManager.loadSessionHistory(instance.folder.fsPath, msg.sessionId, instance.host, instance.session);
+          const rewindableIds = await deps.historyManager.extractRewindableUserIds(instance.folder.fsPath, msg.sessionId);
+          instance.session.seedCheckpoints(rewindableIds);
+          postMessage(instance.host, { type: "sessionStarted", sessionId: msg.sessionId });
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') return true;
+          log("[MessageRouter] Error loading session history:", err);
+          postMessage(instance.host, { type: "sessionStarted", sessionId: msg.sessionId });
+        }
+        return true;
+      });
     },
 
     interrupt: async (_msg, ctx) => {
