@@ -1,6 +1,6 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import type { ContentBlock, HistoryAgentMessage, HistoryToolCall } from '@shared/types/content';
+import type { ContentBlock, HistoryAgentMessage, HistoryToolCall, ImageBlock } from '@shared/types/content';
 import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
@@ -26,9 +26,7 @@ import { extractMidStreamEntryIds } from './mid-stream';
 import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { stripIdeContext } from './ide-context';
-
-type ValidMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
-const VALID_MEDIA_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+import { toImageBlocks } from '../branch-text';
 
 interface PiToolResult {
   text: string;
@@ -67,6 +65,7 @@ interface ReplaySteer {
   agentType?: string;
   description?: string;
   message: string;
+  images?: ImageBlock[];
 }
 type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
 
@@ -99,19 +98,10 @@ function userVisibleText(content: unknown): string {
  *  `overrideText` substitutes the displayed text (the original typed input when a slash command was expanded). */
 function userContentBlocks(content: unknown, overrideText?: string): ContentBlock[] | undefined {
   if (!Array.isArray(content)) return undefined;
-  const images = content.filter(
-    (b): b is { type: 'image'; data: string; mimeType: string } =>
-      !!b && (b as { type?: string }).type === 'image' && VALID_MEDIA_TYPES.has((b as { mimeType?: string }).mimeType ?? ''),
-  );
+  const images = toImageBlocks(content);
   if (images.length === 0) return undefined;
   const text = overrideText ?? userVisibleText(content);
-  return [
-    ...images.map((img) => ({
-      type: 'image' as const,
-      source: { type: 'base64' as const, media_type: img.mimeType as ValidMediaType, data: img.data },
-    })),
-    ...(text ? [{ type: 'text' as const, text }] : []),
-  ];
+  return [...images, ...(text ? [{ type: 'text' as const, text }] : [])];
 }
 
 /**
@@ -169,6 +159,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
           ...(data.agentType ? { agentType: data.agentType } : {}),
           ...(data.description ? { description: data.description } : {}),
           message: data.message,
+          ...(data.images ? { images: data.images } : {}),
         });
       continue;
     }
@@ -427,6 +418,7 @@ export async function loadPiSessionHistory(
       post({
         type: 'userReplay',
         content: msg.message,
+        ...(msg.images ? { contentBlocks: msg.images } : {}),
         isSynthetic: false,
         isInjected: true,
         steerTarget: {

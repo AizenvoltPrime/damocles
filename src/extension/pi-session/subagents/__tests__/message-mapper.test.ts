@@ -34,6 +34,19 @@ describe('piMessagesToHistoryAgentMessages', () => {
     expect(out[2]).toEqual({ role: 'assistant', contentBlocks: [{ type: 'text', text: 'done' }] });
   });
 
+  it('keeps a user turn\'s image parts as image blocks, dropping unsupported media types', () => {
+    const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'look' }, png, { type: 'image', data: 'BBBB', mimeType: 'image/bmp' }] },
+      { role: 'user', content: [png] },
+    ];
+    const block = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
+    expect(piMessagesToHistoryAgentMessages(messages)).toEqual([
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'look' }, block] },
+      { role: 'user', contentBlocks: [block] },
+    ]);
+  });
+
   it('propagates a failed tool result as isError on the tool_use block', () => {
     const messages = [
       { role: 'user', content: 'run it' },

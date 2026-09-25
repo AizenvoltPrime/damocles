@@ -269,6 +269,36 @@ describe('loadPiSessionHistory — steer chip replay (Slice 3)', () => {
     expect(steer!.isInjected).toBe(true);
     expect(steer!.promptIndex).toBe(1);
     expect(steer!.steerTarget).toEqual({ agentId: 'agent-7', agentType: 'coder', description: 'Build parser' });
+    // An entry written before steers carried images still replays, with no image blocks.
+    expect(steer!.contentBlocks).toBeUndefined();
+  });
+
+  const PNG = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
+
+  async function replaySteer(data: unknown): Promise<Array<Extract<ExtensionToWebviewMessage, { type: 'userReplay' }>>> {
+    hoisted.branch = [userMsg('u1', 'first prompt'), steerEntry('agent-7', '', { data })];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-img', (m) => posts.push(m));
+    return posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+  }
+
+  it('replays an image steer with its images as contentBlocks', async () => {
+    const replays = await replaySteer({ agentId: 'agent-7', message: 'look at this', images: [PNG, PNG] });
+    expect(replays[1]).toMatchObject({ content: 'look at this', contentBlocks: [PNG, PNG], isInjected: true, steerTarget: { agentId: 'agent-7' } });
+  });
+
+  it('replays an image-only steer', async () => {
+    const replays = await replaySteer({ agentId: 'agent-7', message: '', images: [PNG] });
+    expect(replays[1]).toMatchObject({ content: '', contentBlocks: [PNG], steerTarget: { agentId: 'agent-7' } });
+  });
+
+  it.each([
+    ['a malformed image', { agentId: 'agent-7', message: 'look', images: [{ type: 'image', source: { type: 'url' } }] }],
+    ['an empty image list', { agentId: 'agent-7', message: 'look', images: [] }],
+    ['a non-array', { agentId: 'agent-7', message: 'look', images: 'AAAA' }],
+    ['neither text nor images', { agentId: 'agent-7', message: '' }],
+  ])('rejects an entry with %s', async (_label, data) => {
+    expect(await replaySteer(data)).toHaveLength(1);
   });
 });
 

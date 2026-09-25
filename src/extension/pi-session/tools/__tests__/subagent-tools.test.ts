@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { validateToolArguments, type Tool } from '@earendil-works/pi-ai';
 import { buildSubagentTools } from '../subagent-tools';
 import { recordResultText } from '../../subagents/status-note';
 import type { AgentManager } from '../../subagents/agent-manager';
@@ -15,8 +16,13 @@ function rec(over: Partial<AgentRecord>): AgentRecord {
 
 describe('recordResultText', () => {
   it('prefixes a line per user steer before the composed result text', () => {
-    const out = recordResultText(rec({ result: 'done', userSteers: ['focus on tests', 'skip UI'] }));
+    const out = recordResultText(rec({ result: 'done', userSteers: [{ message: 'focus on tests' }, { message: 'skip UI' }] }));
     expect(out).toBe('[User steered this agent mid-task: "focus on tests"]\n[User steered this agent mid-task: "skip UI"]\ndone');
+  });
+
+  it('notes the image count of an image steer, and an image-only steer as (no text)', () => {
+    const out = recordResultText(rec({ result: 'done', userSteers: [{ message: 'look at this', imageCount: 2 }, { message: '', imageCount: 1 }] }));
+    expect(out).toBe('[User steered this agent mid-task: "look at this" (+2 images)]\n[User steered this agent mid-task: (no text) (+1 image)]\ndone');
   });
 
   it('is byte-for-byte unchanged when no user steers occurred', () => {
@@ -114,5 +120,21 @@ describe('Agent tool result details', () => {
     expect(recordResultText(rec({ id: 'x1', status: 'stopped', stopReason: 'budget', result: 'half' }))).toBe(
       'half (stopped by the budget limit before completion; output is partial and it cannot be resumed)',
     );
+  });
+});
+
+describe('SteerSubagent arguments', () => {
+  const piStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+  const steerTool = buildSubagentTools(piStub, { getSpawnableAgents: () => [] } as unknown as AgentManager)[2] as unknown as Tool;
+  const validate = (message: string) =>
+    validateToolArguments(steerTool, { type: 'toolCall', id: 'tc', name: steerTool.name, arguments: { agent_id: 'a1', message } });
+
+  // A blank message would deliver the bare marker, which the steering protocol reads as an image-only steer.
+  it.each(['', '   ', '\n\t'])('pi rejects the blank message %j before execute, naming the field', (message) => {
+    expect(() => validate(message)).toThrow('- message: must match pattern');
+  });
+
+  it('accepts a message with text', () => {
+    expect(validate(' focus on tests ')).toEqual({ agent_id: 'a1', message: ' focus on tests ' });
   });
 });

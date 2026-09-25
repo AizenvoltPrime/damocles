@@ -12,9 +12,9 @@
 /** Marker that opens every injected steering message; the subagent system prompt grants it top priority. */
 export const STEER_INSTRUCTION_PREFIX = '[STEERING INSTRUCTION: ABSOLUTE PRIORITY]';
 
-/** Tag a raw steer message with the priority marker for injection into a subagent session. */
+/** Tag a raw steer message with the priority marker. An image-only steer is the marker line alone. */
 export function wrapSteerMessage(message: string): string {
-  return `${STEER_INSTRUCTION_PREFIX}\n${message}`;
+  return message ? `${STEER_INSTRUCTION_PREFIX}\n${message}` : STEER_INSTRUCTION_PREFIX;
 }
 
 const RESUME_CONTEXT =
@@ -32,18 +32,34 @@ export function stripSteerPrefix(text: string): string {
   return text.slice(STEER_INSTRUCTION_PREFIX.length).replace(/^\r?\n/, '');
 }
 
+/** A user `/steer` as the parent or lead learns of it: the images themselves never reach them, only a count. */
+export interface UserSteerNote {
+  message: string;
+  imageCount?: number;
+}
+
+/** `quote` renders a non-empty message; an empty one reads `(no text)`, then an image-count suffix if any. */
+export function describeUserSteer(note: UserSteerNote, quote: (message: string) => string): string {
+  const text = note.message ? quote(note.message) : '(no text)';
+  const count = note.imageCount ?? 0;
+  if (!count) return text;
+  return `${text} (+${count} ${count === 1 ? 'image' : 'images'})`;
+}
+
+const rawQuote = (message: string): string => `"${message}"`;
+
 /**
  * Parent-facing prefix noting each user `/steer` on a subagent's consumed result, so the parent knows
  * the operator redirected the subagent mid-task. Empty when no user steers occurred (output unchanged).
  * Single source of truth for both the foreground (`recordResultText`) and background keep-alive paths.
  */
-export function formatUserSteerPrefix(userSteers: readonly string[] | undefined): string {
+export function formatUserSteerPrefix(userSteers: readonly UserSteerNote[] | undefined): string {
   if (!userSteers?.length) return '';
-  return userSteers.map((message) => `[User steered this agent mid-task: "${message}"]`).join('\n') + '\n';
+  return userSteers.map((note) => `[User steered this agent mid-task: ${describeUserSteer(note, rawQuote)}]`).join('\n') + '\n';
 }
 
 /** The team counterpart of `formatUserSteerPrefix`, prefixed onto a team's result. */
-export function formatTeamUserSteerPrefix(steers: ReadonlyArray<{ memberName: string; message: string }>): string {
+export function formatTeamUserSteerPrefix(steers: ReadonlyArray<UserSteerNote & { memberName: string }>): string {
   if (!steers.length) return '';
-  return steers.map(({ memberName, message }) => `[User steered team member "${memberName}" mid-task: "${message}"]`).join('\n') + '\n';
+  return steers.map((note) => `[User steered team member "${note.memberName}" mid-task: ${describeUserSteer(note, rawQuote)}]`).join('\n') + '\n';
 }

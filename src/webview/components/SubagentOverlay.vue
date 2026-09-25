@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onUnmounted, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
-import type { ContentBlock } from '@shared/types/content';
+import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -27,11 +27,14 @@ import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import SteerImageChips from './SteerImageChips.vue';
+import ImageLightbox from './ImageLightbox.vue';
 import { stripSteerPrefix } from '@shared/steer';
 import { useVSCode } from '@/composables/useVSCode';
 import { useUIStore } from '@/stores/useUIStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
+import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
@@ -56,6 +59,11 @@ const emit = defineEmits<{
 }>();
 
 const isPromptExpanded = ref(false);
+const lightboxImageUrl = ref<string | null>(null);
+
+function openLightbox(block: ImageBlock): void {
+  lightboxImageUrl.value = imageBlockToDataUrl(block);
+}
 const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -202,6 +210,18 @@ const overlayStatusBadge = computed(() => {
   };
 });
 
+// Messages are replaced, never mutated, so a cached array stays correct and keeps the chips' props stable across renders.
+const steerImageCache = new WeakMap<ChatMessage, ImageBlock[]>();
+
+function steerImages(message: ChatMessage): ImageBlock[] {
+  let images = steerImageCache.get(message);
+  if (!images) {
+    images = message.contentBlocks?.filter(isImageBlock) ?? [];
+    steerImageCache.set(message, images);
+  }
+  return images;
+}
+
 const hasLogFile = computed(() => Boolean(props.subagent.sdkAgentId));
 
 function isTextBlock(block: ContentBlock): block is { type: 'text'; text: string } {
@@ -311,6 +331,7 @@ function userMessageText(message: ChatMessage): string {
           <IconPaperPlane :size="14" class="text-warning/80 shrink-0 mt-0.5" />
           <div class="min-w-0 flex-1">
             <div class="text-[11px] uppercase tracking-wide text-warning/80 mb-0.5">{{ t('subagentDisplay.steered') }}</div>
+            <SteerImageChips :images="steerImages(message)" @open-lightbox="openLightbox" />
             <MarkdownRenderer :content="userMessageText(message)" class="text-sm" />
           </div>
         </div>
@@ -378,5 +399,7 @@ function userMessageText(message: ChatMessage): string {
         <p>{{ subagent.status === 'running' ? t('subagentDisplay.working') : t('subagentDisplay.noActivity') }}</p>
       </div>
     </div>
+
+    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
   </OverlayShell>
 </template>

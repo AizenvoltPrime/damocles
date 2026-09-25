@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { TeamState, TeamRunSummary, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
 import type { ToolCall } from '@shared/types/session';
+import { isImageBlock, type ImageBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 import { ownEntry } from '@/utils/ownEntry';
 
@@ -19,6 +20,8 @@ export interface AgentChatMessage {
   thinking?: string;
   toolCalls?: ToolCall[];
   contentBlocks?: TeamAgentContentBlock[];
+  /** A user message's images, kept out of `contentBlocks` so they never enter `messageKey`. */
+  images?: ImageBlock[];
   timestamp: number;
 }
 
@@ -38,6 +41,7 @@ function restoredToolStatus(result: PersistedToolResult | undefined): ToolCall['
 /**
  * Live and reloaded cards build their blocks with the same host function, so equal role and blocks mean
  * the same message. A live message has no entry id to match on: pi appends it after its listeners run.
+ * Images are excluded, so a live and a reloaded copy of an image steer still match.
  */
 function messageKey(message: AgentChatMessage): string {
   return JSON.stringify([message.role, message.contentBlocks ?? [{ type: 'text', text: message.content }]]);
@@ -349,11 +353,13 @@ export const useTeamStore = defineStore('team', () => {
     agentStreaming.value = rest;
   }
 
-  function handleAgentUserMessage(agentId: string, content: string, timestamp: number): void {
+  function handleAgentUserMessage(agentId: string, content: string, timestamp: number, images?: ImageBlock[]): void {
+    const imageBlocks = images?.filter(isImageBlock) ?? [];
     const msg: AgentChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content,
+      ...(imageBlocks.length ? { images: imageBlocks } : {}),
       timestamp,
     };
     const current = agentMessages.value[agentId] ?? [];
@@ -488,7 +494,10 @@ export const useTeamStore = defineStore('team', () => {
       } else if (role === 'user') {
         // No contentBlocks, the same shape `handleAgentUserMessage` builds, so the merge key matches the live copy.
         const userText = turn.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
-        if (userText) messages.push({ id, role: 'user', content: userText, timestamp: Date.now() });
+        const images = turn.filter(isImageBlock);
+        if (userText || images.length) {
+          messages.push({ id, role: 'user', content: userText, ...(images.length ? { images } : {}), timestamp: Date.now() });
+        }
       }
     }
     agentMessages.value = { ...agentMessages.value, [agentId]: mergeAgentHistory(messages, agentMessages.value[agentId] ?? []) };

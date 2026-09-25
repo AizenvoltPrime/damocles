@@ -5,6 +5,7 @@
  * TeamRunner<->AgentRunner seam), so both observe what an agent's session ACTUALLY receives.
  */
 import type { AgentTurnContext, FinishTurn } from '@earendil-works/pi-agent-core';
+import type { ImageContent } from '@earendil-works/pi-ai';
 
 export interface FakeSessionOptions {
   /** Per-`prompt()` behavior: emit assistant text, then resolve at the turn boundary. */
@@ -18,6 +19,7 @@ type Listener = (event: unknown) => void;
 export interface FakePromptOptions {
   streamingBehavior?: 'steer' | 'followUp';
   expandPromptTemplates?: boolean;
+  images?: ImageContent[];
 }
 
 /** The tool-call blocks a turn's assistant message carries, in pi's raw `toolCall` shape. */
@@ -32,6 +34,8 @@ export class FakeSession {
   /** Options for each prompt, index-aligned with `prompts`. */
   readonly promptOptions: Array<FakePromptOptions | undefined> = [];
   isStreaming = false;
+  /** Leaves each steered prompt in pi's queue, undelivered, the state a cancel or a provider error finds it in. */
+  holdSteers = false;
   get isIdle(): boolean { return !this.isStreaming; }
   aborted = false;
   private listeners = new Set<Listener>();
@@ -81,13 +85,20 @@ export class FakeSession {
       // long as delivery takes and anything that reads the count during delivery sees it.
       this.queued.push(text);
       this.onPrompt(text, this);
-      this.queued.shift();
+      if (!this.holdSteers) this.drainSteer(text, options.images);
       return;
     }
     return new Promise<void>((resolve) => {
       this.pendingTurn = resolve;
       this.onPrompt(text, this);
     });
+  }
+
+  /** Mirrors pi starting a queued steer: the user `message_start` drops the first equal text from the mirror. */
+  private drainSteer(text: string, images: ImageContent[] | undefined): void {
+    const index = this.queued.indexOf(text);
+    if (index !== -1) this.queued.splice(index, 1);
+    this.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text }, ...(images ?? [])] } });
   }
 
   /**
@@ -99,9 +110,23 @@ export class FakeSession {
     this.emit({ type: 'agent_start' });
   }
 
+  /**
+   * An abort that lands in a tool call: pi's loop still drains the steering queue into the transcript
+   * before its aborted model call (`agent-loop.js:185-186`). Off by default, which is an abort mid-response.
+   */
+  drainOnAbort = false;
+  /** Steers pi delivered on its way out of an aborted run. */
+  readonly drainedOnAbort: string[] = [];
+
   /** Real pi ends the in-flight turn on abort, so the aborted `prompt()` resolves. */
   async abort(): Promise<void> {
     this.aborted = true;
+    if (this.drainOnAbort) {
+      for (const text of this.queued.splice(0)) {
+        this.drainedOnAbort.push(text);
+        this.emit({ type: 'message_start', message: { role: 'user', content: [{ type: 'text', text }] } });
+      }
+    }
     const resolve = this.pendingTurn;
     this.pendingTurn = null;
     resolve?.();

@@ -16,7 +16,13 @@ import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { SteerTargetInfo } from "../../shared/types/subagents";
 import type { TeamService } from "../team";
-import type { UserContentBlock } from "../../shared/types/content";
+import {
+  isImageBlock,
+  MAX_IMAGE_BASE64_LENGTH,
+  MAX_IMAGES_PER_MESSAGE,
+  type ImageBlock,
+  type UserContentBlock,
+} from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
@@ -136,6 +142,17 @@ const fallbackWarnedRuntimes = new WeakSet<PiRuntime>();
 /** How long a session delete waits for the agents it aborted to stop writing. Aborted runs settle in
  *  milliseconds; this only caps a run whose tool ignores the abort signal. */
 const ABORTED_AGENTS_SETTLE_TIMEOUT_MS = 10_000;
+
+/** Rebuilds each image from its validated fields so no extra property is persisted or forwarded; null when any image is invalid. */
+function parseSteerImages(images: unknown): ImageBlock[] | null {
+  if (!Array.isArray(images) || images.length > MAX_IMAGES_PER_MESSAGE) return null;
+  const parsed: ImageBlock[] = [];
+  for (const image of images) {
+    if (!isImageBlock(image) || image.source.data.length > MAX_IMAGE_BASE64_LENGTH) return null;
+    parsed.push({ type: 'image', source: { type: 'base64', media_type: image.source.media_type, data: image.source.data } });
+  }
+  return parsed;
+}
 
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
@@ -1328,11 +1345,19 @@ export class PiSession implements ChatSession {
    * The user's `/steer` path: a subagent first, then a live team member. `steerSubagent` stays
    * subagent-only because the shell-cancel note path and the `SteerSubagent` tool rely on that.
    */
-  async steerTarget(agentId: string, message: string): Promise<void> {
-    if (!message.trim()) return;
-    const outcome = this.subagentManager?.getRecord(agentId) ? null : this.options.teamService?.steerMember(agentId, message);
+  async steerTarget(agentId: string, rawMessage: string, images: ImageBlock[] | undefined, requestId: string): Promise<void> {
+    const message = rawMessage.trim();
+    // `images` is unvalidated webview input: a malformed payload fails visibly and delivers nothing.
+    const parsedImages = images === undefined ? undefined : parseSteerImages(images);
+    if (parsedImages === null) {
+      this.emit({ type: "subagentSteered", agentId, toolUseId: null, message, requestId, status: 'failed' });
+      return;
+    }
+    const steerImages = parsedImages?.length ? parsedImages : undefined;
+    if (!message && !steerImages) return;
+    const outcome = this.subagentManager?.getRecord(agentId) ? null : this.options.teamService?.steerMember(agentId, message, steerImages);
     if (!outcome) {
-      await this.steerSubagent(agentId, message);
+      await this.steerSubagent(agentId, message, steerImages, requestId);
       return;
     }
     const description = `${outcome.teamTitle} · ${outcome.memberName}`;
@@ -1342,6 +1367,8 @@ export class PiSession implements ChatSession {
       toolUseId: null,
       description,
       message,
+      requestId,
+      ...(steerImages && outcome.status === 'steered' ? { images: steerImages } : {}),
       status: outcome.status,
       team: { teamId: outcome.teamId, teamTitle: outcome.teamTitle, memberName: outcome.memberName, role: outcome.role },
     });
@@ -1349,23 +1376,25 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     if (!session) return;
     try {
-      session.sessionManager.appendCustomEntry(DAMOCLES_STEER_ENTRY, { agentId, description, message });
+      session.sessionManager.appendCustomEntry(DAMOCLES_STEER_ENTRY, { agentId, description, message, ...(steerImages ? { images: steerImages } : {}) });
     } catch (err) {
       log("[PiSession] recordSteer failed: %O", err);
     }
   }
 
-  /** Deliver a user-typed `/steer <id> <message>` directly to a running/queued subagent (no model turn).
+  /** Deliver a user-typed `/steer <id> [message]`, with any pasted images, directly to a running/queued subagent (no model turn).
    *  Emits `subagentSteered` so the webview can echo the amber chip + overlay user message. The emission
    *  lives here (not in AgentManager) because the chip is a USER-action echo — the model's SteerSubagent
    *  tool must never produce chips. On a delivered/queued steer, records it on the subagent's `userSteers`
    *  so the parent becomes aware when it consumes the result. */
-  async steerSubagent(agentId: string, message: string): Promise<void> {
-    // An empty steer carries no instruction and would persist a marker `isSteerData` rejects on reload;
-    // the webview already blocks it, so this is a boundary guard, not a user-facing error path.
-    if (!message.trim()) return;
-    const status = (await this.subagentManager?.steer(agentId, message)) ?? 'not-found';
+  async steerSubagent(agentId: string, message: string, images?: ImageBlock[], requestId?: string): Promise<void> {
+    // A steer with neither text nor images carries no instruction and would persist a marker `isSteerData`
+    // rejects on reload; the webview already blocks it, so this is a boundary guard, not a user-facing error path.
+    if (!message.trim() && !images?.length) return;
+    const status = (await this.subagentManager?.steer(agentId, message, images)) ?? 'not-found';
     const record = this.subagentManager?.getRecord(agentId);
+    const delivered = status === 'steered' || status === 'queued';
+    const imageFields = delivered && images?.length ? { images } : {};
     this.emit({
       type: "subagentSteered",
       agentId,
@@ -1373,10 +1402,12 @@ export class PiSession implements ChatSession {
       ...(record?.type ? { agentType: record.type } : {}),
       ...(record?.description ? { description: record.description } : {}),
       message,
+      ...imageFields,
+      ...(requestId ? { requestId } : {}),
       status,
     });
-    if ((status === 'steered' || status === 'queued') && record) {
-      (record.userSteers ??= []).push(message);
+    if (delivered && record) {
+      (record.userSteers ??= []).push({ message, ...(images?.length ? { imageCount: images.length } : {}) });
       // Persist a standalone marker so a reloaded session replays the amber "You steered" chip in place.
       // Fail-soft, mirroring recordMidStreamMarker: a write error must never break the steer.
       const session = this.runtime?.session;
@@ -1387,6 +1418,7 @@ export class PiSession implements ChatSession {
             ...(record.type ? { agentType: record.type } : {}),
             ...(record.description ? { description: record.description } : {}),
             message,
+            ...imageFields,
           });
         } catch (err) {
           log("[PiSession] recordSteer failed: %O", err);

@@ -3,19 +3,45 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { AgentRunConfig, AgentResult, UndeliveredMessage } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { ImageBlock } from '../../shared/types/content';
 import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { STEER_INSTRUCTION_PREFIX } from '../../shared/steer';
 import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../pi-session/finish-turn';
 import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
 import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName } from '../pi-session/tool-normalization';
+import { extractImages } from '../pi-session/branch-text';
 import { ToolOutputCoalescer } from '../pi-session/tool-output-coalescer';
 import { assistantContentBlocks, toolResultBlock, type PiAssistantBlock } from './content-blocks';
 
 /** Messages queued for one run. `onArrival` is a no-op until the session is open to deliver them. */
 interface RunInbox {
   pending: UndeliveredMessage[];
+  /**
+   * Every message steered into pi and not yet started, in order. pi's own steering queue keeps only
+   * the text, so this is where a queued message's images survive a cancel.
+   */
+  steeredIntoPi: Array<{ text: string; images?: ImageBlock[] }>;
   onArrival: () => void;
+}
+
+/** A user message's text as pi matches it against its steering queue: text parts joined with no separator. */
+function queueMatchText(content: string | ReadonlyArray<{ type: string; text?: string }>): string {
+  if (typeof content === 'string') return content;
+  return content.map((part) => (part.type === 'text' ? part.text ?? '' : '')).join('');
+}
+
+/**
+ * Pairs texts pi hands back from its queues with the images they were steered with. Duplicate texts pair
+ * in order, the same order pi keeps them in.
+ */
+function withSteeredImages(texts: readonly string[], steered: RunInbox['steeredIntoPi']): UndeliveredMessage[] {
+  const unclaimed = [...steered];
+  return texts.map((text) => {
+    const index = unclaimed.findIndex((s) => s.text === text);
+    const images = index === -1 ? undefined : unclaimed.splice(index, 1)[0]!.images;
+    return { text, echoed: true, ...(images ? { images } : {}) };
+  });
 }
 
 /** Tools whose whole point is that the agent stops here, so the engine ends the turn on their result. */
@@ -52,7 +78,7 @@ export class AgentRunner {
     if (config.abortSignal.aborted) return empty('cancelled', null);
 
     // Subscribed before the session opens, so a message sent while it opens is queued, not lost.
-    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], onArrival: () => undefined };
+    const inbox: RunInbox = { pending: [...(config.redeliver ?? [])], steeredIntoPi: [], onArrival: () => undefined };
     const accept = (message: UndeliveredMessage): void => {
       inbox.pending.push(message);
       inbox.onArrival();
@@ -65,22 +91,26 @@ export class AgentRunner {
     });
     // A user note reaches the run here rather than through the bus, so no delivery filter, no self-name
     // filter and no post-teardown subscription can drop it without the caller finding out.
-    const unbindNote = config.bindNoteDelivery((text: string): boolean => {
+    const unbindNote = config.bindNoteDelivery((text, images) => {
       if (config.abortSignal.aborted) return false;
-      this.emitUserMessage(config, text);
-      accept({ text, echoed: true });
+      const withImages = images?.length ? { images } : {};
+      this.emitUserMessage(config, text, images);
+      accept({ text, echoed: true, ...withImages });
       return true;
     });
     let opened: AgentSession | null = null;
-    const unbindUndelivered = config.bindUndelivered(() => [
+    const unbindTakeUndelivered = config.bindTakeUndelivered(() => {
+      // Taken, not read: an aborted tool call lets pi deliver its queue on the way out, and the caller then owns these.
+      const queued = opened?.clearQueue();
+      const fromPi = queued ? withSteeredImages([...queued.steering, ...queued.followUp], inbox.steeredIntoPi) : [];
+      inbox.steeredIntoPi.length = 0;
       // pi's queues hold text the runner already flushed and echoed, and it was queued before the pending list.
-      ...(opened ? [...opened.getSteeringMessages(), ...opened.getFollowUpMessages()].map((text) => ({ text, echoed: true })) : []),
-      ...inbox.pending.map((m) => ({ ...m })),
-    ]);
+      return [...fromPi, ...inbox.pending.map((m) => ({ ...m }))];
+    });
     const release = (): void => {
       unsubscribeBus();
       unbindNote();
-      unbindUndelivered();
+      unbindTakeUndelivered();
     };
 
     let session: AgentSession;
@@ -163,6 +193,12 @@ export class AgentRunner {
       // Messages queued before the run was streaming (redelivered, sent while the session opened or
       // while pi prepared the prompt) join the run here instead of waiting for it to end.
       if (event.type === 'agent_start') inbox.onArrival();
+      // pi drops a started message from its steering queue by the same first-equal-text rule (agent-session.js, `_handleAgentEvent`).
+      if (event.type === 'message_start' && event.message.role === 'user') {
+        const text = queueMatchText(event.message.content);
+        const index = inbox.steeredIntoPi.findIndex((s) => s.text === text);
+        if (text && index !== -1) inbox.steeredIntoPi.splice(index, 1);
+      }
       this.handleSessionEvent(event, config, outputCoalescer, {
         onToolUse: (name) => {
           toolCallCount++;
@@ -195,8 +231,9 @@ export class AgentRunner {
       // retry windows, so a bus message arriving during a retry — which previously saw
       // `isStreaming === false` and re-prompted a still-active session — now correctly steers instead.
       if (session.isStreaming) {
-        for (let text = takeNext(); text !== undefined; text = takeNext()) {
-          void promptQueued(text, { streamingBehavior: 'steer' }).catch(() => {});
+        for (let next = takeNext(); next !== undefined; next = takeNext()) {
+          inbox.steeredIntoPi.push({ text: next.text, ...(next.images ? { images: next.images } : {}) });
+          void promptQueued(next, { streamingBehavior: 'steer' }).catch(() => {});
         }
       } else {
         wake('message');
@@ -212,19 +249,23 @@ export class AgentRunner {
      * `[Message from X]:` prefix, and pi would otherwise dispatch a note beginning with `/` as an
      * extension command and return without ever prompting the agent.
      */
-    const promptQueued = (text: string, options?: { streamingBehavior: 'steer' }): Promise<void> =>
-      session.prompt(text, { ...options, expandPromptTemplates: false });
+    const promptQueued = (message: UndeliveredMessage, options?: { streamingBehavior: 'steer' }): Promise<void> =>
+      session.prompt(message.text, {
+        ...options,
+        ...(message.images?.length ? { images: extractImages(message.images) } : {}),
+        expandPromptTemplates: false,
+      });
 
     /**
      * Removes the next message to deliver, steers first, echoing it if the overlay has not seen it.
      * Never merge messages: a steer's authority covers its whole user message, so peer text must not share one.
      */
-    const takeNext = (): string | undefined => {
+    const takeNext = (): UndeliveredMessage | undefined => {
       const index = Math.max(0, pendingMessages.findIndex((m) => m.text.startsWith(STEER_INSTRUCTION_PREFIX)));
       const [next] = pendingMessages.splice(index, 1);
       if (!next) return undefined;
-      if (!next.echoed) this.emitUserMessage(config, next.text);
-      return next.text;
+      if (!next.echoed) this.emitUserMessage(config, next.text, next.images);
+      return next;
     };
 
     try {
@@ -245,10 +286,9 @@ export class AgentRunner {
           // the one path where pi discards the turn decision. It is already echoed, hence `echoed: true`.
           if (session.pendingMessageCount > 0) {
             const queued = session.clearQueue();
-            for (const text of [...queued.steering, ...queued.followUp]) {
-              pendingMessages.push({ text, echoed: true });
-            }
+            pendingMessages.push(...withSteeredImages([...queued.steering, ...queued.followUp], inbox.steeredIntoPi));
           }
+          inbox.steeredIntoPi.length = 0;
           // One message opens the run; the rest of the queue joins it as steers on its `agent_start`.
           const next = takeNext();
           if (next !== undefined) {
@@ -427,8 +467,12 @@ export class AgentRunner {
     });
   }
 
-  private emitUserMessage(config: AgentRunConfig, content: string): void {
-    config.onMessage({ type: 'teamAgentUserMessage', teamId: config.teamId, agentId: config.agentId, content, timestamp: Date.now() });
+  private emitUserMessage(config: AgentRunConfig, content: string, images?: ImageBlock[]): void {
+    config.onMessage({
+      type: 'teamAgentUserMessage', teamId: config.teamId, agentId: config.agentId, content,
+      ...(images?.length ? { images } : {}),
+      timestamp: Date.now(),
+    });
   }
 
   private emitStatus(

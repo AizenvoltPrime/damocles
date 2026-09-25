@@ -164,14 +164,14 @@ describe('checkSynthesisReadGate', () => {
 describe('formatReviewRoundReadyNotification', () => {
   it('returns null when there are no unreviewed specialists', () => {
     const sp = new Scratchpad();
-    expect(formatReviewRoundReadyNotification([], sp, 'Lead')).toBeNull();
+    expect(formatReviewRoundReadyNotification([], sp, 'Lead', [], [])).toBeNull();
   });
 
   it('marks a never-read authored section as UNREAD', () => {
     const sp = new Scratchpad();
     sp.set('findings', 'body', 'S');
     const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
     expect(msg).toContain('"findings" v1 [UNREAD]');
   });
 
@@ -181,7 +181,7 @@ describe('formatReviewRoundReadyNotification', () => {
     sp.markRead('Lead', 'findings');
     sp.set('findings', 'v2', 'S');
     const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
     expect(msg).toContain('"findings" v2 [STALE — you last read v1]');
   });
 
@@ -190,14 +190,14 @@ describe('formatReviewRoundReadyNotification', () => {
     sp.set('findings', 'v1', 'S');
     sp.markRead('Lead', 'findings');
     const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
     expect(msg).toContain('"findings" v1 [up to date]');
   });
 
   it('notes specialists who authored no sections', () => {
     const sp = new Scratchpad();
     const specialists = [makeAgent({ name: 'Ghost', role: 'specialist' })];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
     expect(msg).toContain('Ghost: no scratchpad section authored');
   });
 
@@ -209,27 +209,24 @@ describe('formatReviewRoundReadyNotification', () => {
       makeAgent({ name: 'Frontend', role: 'specialist' }),
       makeAgent({ name: 'Backend', role: 'specialist' }),
     ];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
     expect(msg).toContain('  - Frontend:');
     expect(msg).toContain('  - Backend:');
   });
 
-  it('omits the pending paragraph when pendingNames is empty or omitted', () => {
+  it('omits the pending paragraph when pendingNames is empty', () => {
     const sp = new Scratchpad();
     sp.set('findings', 'body', 'S');
     const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
-    const msgDefault = formatReviewRoundReadyNotification(specialists, sp, 'Lead')!;
-    const msgEmpty = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [])!;
-    expect(msgDefault).not.toContain('Approval and revision are BLOCKED');
-    expect(msgEmpty).not.toContain('Approval and revision are BLOCKED');
-    expect(msgDefault).toBe(msgEmpty);
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
+    expect(msg).not.toContain('Approval and revision are BLOCKED');
   });
 
   it('appends the pending paragraph when pendingNames has entries', () => {
     const sp = new Scratchpad();
     sp.set('findings', 'body', 'Frontend');
     const specialists = [makeAgent({ name: 'Frontend', role: 'specialist' })];
-    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', ['code-reviewer'])!;
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', ['code-reviewer'], [])!;
     expect(msg).toContain('Approval and revision are BLOCKED until these never-dispatched specialists are resolved: code-reviewer.');
     expect(msg).toContain('Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist');
     const pendingIdx = msg.indexOf('Approval and revision are BLOCKED');
@@ -238,6 +235,131 @@ describe('formatReviewRoundReadyNotification', () => {
     expect(specialistLineIdx).toBeGreaterThan(-1);
     expect(pendingIdx).toBeGreaterThan(specialistLineIdx);
     expect(closingIdx).toBeGreaterThan(pendingIdx);
+  });
+
+  it('lists a steer under its own specialist only, followed by the steer paragraph', () => {
+    const sp = new Scratchpad();
+    const specialists = [
+      makeAgent({ name: 'A', role: 'specialist' }),
+      makeAgent({ name: 'B', role: 'specialist' }),
+    ];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'A', message: 'use v2', attempt: 0 },
+    ])!;
+    expect(msg).toContain('  - A: no scratchpad section authored\n    user steer: "use v2"\n  - B: no scratchpad section authored\n\n');
+    expect(msg.match(/user steer:/g)).toHaveLength(1);
+    expect(msg).toContain("User steers are the user's authoritative changes");
+    expect(msg.indexOf("User steers are")).toBeLessThan(msg.indexOf('After reading'));
+  });
+
+  it('is unchanged when there are no steers', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'S');
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [])!;
+    expect(msg).toBe(
+      '[REVIEW ROUND READY] All dispatched specialists have reported. ' +
+      'Call team_read_scratchpad for every section marked UNREAD or STALE before approving — ' +
+      'the approval gate will reject team_approve_specialist until you do.\n\n' +
+      '  - S: "findings" v1 [UNREAD]' +
+      '\n\nAfter reading, call team_approve_specialist (satisfactory) or team_request_revision (changes needed) for each.',
+    );
+  });
+
+  it('does not list a steer on the lead', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'Lead', message: 'wrap up', attempt: 0 },
+    ])!;
+    expect(msg).not.toContain('user steer');
+    expect(msg).not.toContain('User steers are');
+  });
+
+  it('keeps a multi-line steer on one line', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'first\nsecond', attempt: 0 },
+    ])!;
+    expect(msg).toContain('    user steer: "first\\nsecond"\n');
+  });
+
+  it('keeps several steers in order', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'body', 'S');
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'one', attempt: 0 },
+      { memberName: 'S', message: 'two', attempt: 0 },
+    ])!;
+    expect(msg).toContain('  - S: "findings" v1 [UNREAD]\n    user steer: "one"\n    user steer: "two"');
+  });
+
+  const USER_STEERS = "User steers are the user's authoritative changes";
+  const EARLIER_STEERS = 'Earlier attempt steers went to a previous attempt';
+  const CURRENT_IMAGES = 'Steer images reached only the steered specialist, not you';
+  const EARLIER_IMAGES = 'Their images reached only the attempt that was steered';
+
+  it('labels a steer from an earlier attempt and keeps it out of the steered-task paragraph', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist', attempt: 1 })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'old ask', attempt: 0 },
+    ])!;
+    expect(msg).toContain('  - S: no scratchpad section authored\n    earlier attempt steer (not delivered to this attempt): "old ask"\n\n');
+    expect(msg).not.toContain('user steer:');
+    expect(msg).not.toContain(USER_STEERS);
+    expect(msg).toContain(`${EARLIER_STEERS} of the steered specialist and are not part of the current attempt's task.`);
+    expect(msg.indexOf(EARLIER_STEERS)).toBeLessThan(msg.indexOf('After reading'));
+  });
+
+  it('lists earlier and current attempt steers in order, each with its own paragraph', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist', attempt: 1 })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'old ask', attempt: 0 },
+      { memberName: 'S', message: 'new ask', attempt: 1 },
+    ])!;
+    expect(msg).toContain(
+      '  - S: no scratchpad section authored\n' +
+      '    earlier attempt steer (not delivered to this attempt): "old ask"\n' +
+      '    user steer: "new ask"\n\n' + USER_STEERS,
+    );
+    expect(msg.indexOf(USER_STEERS)).toBeLessThan(msg.indexOf(EARLIER_STEERS));
+  });
+
+  it('tells the lead that images of a current attempt steer reached only the specialist', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: '', imageCount: 2, attempt: 0 },
+    ])!;
+    expect(msg).toContain('    user steer: (no text) (+2 images)');
+    expect(msg).toContain(`${CURRENT_IMAGES}; if its section does not say what they asked for, ask it.`);
+    expect(msg).not.toContain(EARLIER_IMAGES);
+  });
+
+  it('tells the lead that images of an earlier attempt steer reached neither it nor the current attempt', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist', attempt: 1 })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'match this', imageCount: 1, attempt: 0 },
+      { memberName: 'S', message: 'text only', attempt: 1 },
+    ])!;
+    expect(msg).toContain(`${EARLIER_IMAGES}, so neither you nor the current attempt has seen them.`);
+    expect(msg).not.toContain(CURRENT_IMAGES);
+  });
+
+  it('says nothing about images when no listed steer has any', () => {
+    const sp = new Scratchpad();
+    const specialists = [makeAgent({ name: 'S', role: 'specialist' })];
+    const msg = formatReviewRoundReadyNotification(specialists, sp, 'Lead', [], [
+      { memberName: 'S', message: 'text only', attempt: 0 },
+      { memberName: 'Other', message: 'not listed', imageCount: 1, attempt: 0 },
+    ])!;
+    expect(msg).not.toContain(CURRENT_IMAGES);
+    expect(msg).not.toContain(EARLIER_IMAGES);
   });
 });
 

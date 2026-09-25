@@ -10,6 +10,7 @@
 
 import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
 import { mapPiToolName, normalizeToolInput } from '../tool-normalization';
+import { toImageBlocks } from '../branch-text';
 
 interface PiTextBlock {
   type: 'text';
@@ -61,7 +62,10 @@ export function piMessagesToHistoryAgentMessages(messages: readonly unknown[]): 
     const msg = raw as PiMessageLike;
     if (msg.role === 'user') {
       const text = joinText(msg.content);
-      if (text.trim()) out.push({ role: 'user', contentBlocks: [{ type: 'text', text }] });
+      const images = toImageBlocks(msg.content);
+      if (text.trim() || images.length) {
+        out.push({ role: 'user', contentBlocks: [...(text.trim() ? [{ type: 'text' as const, text }] : []), ...images] });
+      }
       continue;
     }
     if (msg.role !== 'assistant') continue; // toolResult messages fold into tool_use blocks

@@ -58,6 +58,7 @@ export interface ChatInputExposed {
   voiceSetRecording: () => void;
   voiceSetDone: () => void;
   voiceSetError: (msg: string) => void;
+  settleSteer: (requestId: string, delivered: boolean) => void;
 }
 
 export interface RefContext {

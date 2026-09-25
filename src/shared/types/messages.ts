@@ -1,4 +1,4 @@
-import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage } from './content';
+import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock } from './content';
 import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErrorInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
@@ -196,7 +196,7 @@ export type WebviewToExtensionMessage =
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
   | { type: "stopBackgroundTask"; taskId: string }
-  | { type: "steerAgent"; agentId: string; message: string }
+  | { type: "steerAgent"; agentId: string; message: string; images?: ImageBlock[]; requestId: string }
   | { type: "requestSteerTargets" }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
@@ -460,7 +460,8 @@ export type ExtensionToWebviewMessage =
   | { type: "btwComplete"; btwId: string; text: string }
   | { type: "btwError"; btwId: string; message: string }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
-  | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }
+  // `requestId` echoes the `steerAgent` this answers; a steer the extension sends on its own carries none.
+  | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; images?: ImageBlock[]; requestId?: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
@@ -477,7 +478,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamCompleted"; teamId: string; status: 'completed' | 'failed' | 'cancelled'; result: string | null; run: import('./team').TeamRunSummary }
   | { type: "teamAgentStreamDelta"; teamId: string; agentId: string; deltaType: 'thinking' | 'text'; text: string }
   | { type: "teamAgentAssistant"; teamId: string; agentId: string; messageId: string; content: import('./team').TeamAgentContentBlock[]; timestamp: number }
-  | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; timestamp: number }
+  | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; images?: ImageBlock[]; timestamp: number }
   | { type: "teamAgentToolProgress"; teamId: string; agentId: string; toolUseId: string; output: string; outputTruncated?: boolean }
   // `metadata` is the team path's only carrier for a tool result's `details`; the other two producers emit `toolMetadata`.
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; metadata?: Record<string, unknown> }

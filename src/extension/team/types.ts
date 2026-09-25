@@ -5,6 +5,8 @@ import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamRunSummary } from '../../shared/types/team';
+import type { ImageBlock } from '../../shared/types/content';
+import type { UserSteerNote } from '../../shared/steer';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
 import type { SubagentSessionStore } from '../pi-session/folder-runtime';
 
@@ -214,7 +216,11 @@ export interface Team {
 export interface UndeliveredMessage {
   text: string;
   echoed: boolean;
+  images?: ImageBlock[];
 }
+
+/** A run's user-note sink: echoes the note and queues it for delivery, or returns false when the run cannot take it. */
+export type NoteSink = (text: string, images?: ImageBlock[]) => boolean;
 
 /** How a run starts: prompt the session, or wait for a message as if a turn had just ended. */
 export type AgentStart = { kind: 'prompt'; text: string } | { kind: 'park' };
@@ -238,12 +244,14 @@ export interface AgentRunConfig {
    * rather than resolved against a dead session. Required, not an optional hook: a construction site
    * that forgets it is exactly how a user note goes back to vanishing with no echo.
    */
-  bindNoteDelivery: (deliver: (text: string) => boolean) => () => void;
+  bindNoteDelivery: (deliver: NoteSink) => () => void;
   /**
-   * Publishes this run's undelivered-message reader and returns its teardown. The reader returns the
-   * runner's pending queue plus pi's steering and follow-up queues, which a cancel would otherwise drop.
+   * Publishes this run's undelivered-message taker and returns its teardown. The taker empties pi's
+   * steering and follow-up queues, since an abort landing in a tool call would otherwise let pi deliver
+   * them on the way out, and returns them ahead of the runner's pending queue. Call it only right
+   * before an abort: a live run never gets the taken messages back.
    */
-  bindUndelivered: (read: () => UndeliveredMessage[]) => () => void;
+  bindTakeUndelivered: (take: () => UndeliveredMessage[]) => () => void;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
   /**
@@ -347,8 +355,12 @@ export interface TeamCheckpoint {
     leadReviewStalls: number;
     lastReviewRoundNotification: string | null;
   };
-  operatorSteers: Array<{ memberName: string; message: string }>;
+  // `attempt` is optional because checkpoints written before steers recorded it must still load.
+  operatorSteers: Array<Omit<OperatorSteer, 'attempt'> & { attempt?: number }>;
 }
+
+/** One user `/steer` a team member's run accepted, and the member attempt that accepted it. */
+export type OperatorSteer = UserSteerNote & { memberName: string; attempt: number };
 
 /** One `scratchpad-update` event, replayed to rebuild the scratchpad. */
 export interface ScratchpadUpdateEvent extends ScratchpadEntry {

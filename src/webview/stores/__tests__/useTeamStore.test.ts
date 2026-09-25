@@ -4,6 +4,7 @@ import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 import type { TeamAgentContentBlock, TeamAgentHistoryMessage } from '@shared/types/team';
 import { wrapSteerMessage } from '@shared/steer';
+import type { ImageBlock } from '@shared/types/content';
 import { useTeamStore } from '../useTeamStore';
 
 /**
@@ -435,6 +436,42 @@ describe('useTeamStore.handleAgentDataLoaded beside live messages', () => {
       ['assistant', 'ok'],
       ['user', 'ok'],
     ]);
+  });
+
+  it('merges the live and reloaded copies of an image steer into one row that keeps its images', () => {
+    const store = useTeamStore();
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const steer = wrapSteerMessage('use this layout');
+    store.handleAgentUserMessage(AGENT, steer, 10, [image]);
+
+    store.handleAgentDataLoaded(AGENT, [...beforeCancel(), persisted('user', { type: 'text', text: steer }, image)]);
+
+    const messages = store.agentMessages[AGENT] ?? [];
+    expect(messages.map((m) => m.content)).toEqual(['do the task', 'started', steer]);
+    expect(messages.at(-1)!.images).toEqual([image]);
+  });
+
+  it('drops a malformed image from a live steer, as the reloaded path does', () => {
+    const store = useTeamStore();
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const empty: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } };
+
+    store.handleAgentUserMessage(AGENT, wrapSteerMessage('look'), 10, [empty, image]);
+    store.handleAgentUserMessage(AGENT, wrapSteerMessage('again'), 11, [empty]);
+
+    const [first, second] = store.agentMessages[AGENT] ?? [];
+    expect(first!.images).toEqual([image]);
+    expect(second).not.toHaveProperty('images');
+  });
+
+  it('keeps the images of a steer that is only in the file', () => {
+    const store = useTeamStore();
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+
+    store.handleAgentDataLoaded(AGENT, [persisted('user', { type: 'text', text: wrapSteerMessage('') }, image)]);
+
+    expect(store.agentMessages[AGENT]).toEqual([expect.objectContaining({ role: 'user', images: [image] })]);
+    expect(store.agentMessages[AGENT]![0]).not.toHaveProperty('contentBlocks');
   });
 
   it('records the member as loaded so the overlay asks for its file once', () => {

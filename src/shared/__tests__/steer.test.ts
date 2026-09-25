@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { STEER_INSTRUCTION_PREFIX, buildResumePrompt, wrapSteerMessage, stripSteerPrefix } from '../steer';
+import {
+  STEER_INSTRUCTION_PREFIX,
+  buildResumePrompt,
+  describeUserSteer,
+  formatTeamUserSteerPrefix,
+  formatUserSteerPrefix,
+  wrapSteerMessage,
+  stripSteerPrefix,
+} from '../steer';
 
 describe('steer message tagging', () => {
   it('wraps a raw message with the priority marker on its own line', () => {
@@ -17,6 +25,45 @@ describe('steer message tagging', () => {
   it('round-trips multi-line messages', () => {
     const msg = 'line one\nline two';
     expect(stripSteerPrefix(wrapSteerMessage(msg))).toBe(msg);
+  });
+
+  it('wraps an empty message (an image-only steer) as the marker line alone', () => {
+    expect(wrapSteerMessage('')).toBe(STEER_INSTRUCTION_PREFIX);
+    expect(stripSteerPrefix(wrapSteerMessage(''))).toBe('');
+  });
+});
+
+describe('describeUserSteer', () => {
+  const quote = (m: string): string => `"${m}"`;
+
+  it('quotes the message and adds nothing without images', () => {
+    expect(describeUserSteer({ message: 'use v2' }, quote)).toBe('"use v2"');
+    expect(describeUserSteer({ message: 'use v2', imageCount: 0 }, quote)).toBe('"use v2"');
+  });
+
+  it('adds a singular or plural image count', () => {
+    expect(describeUserSteer({ message: 'use v2', imageCount: 1 }, quote)).toBe('"use v2" (+1 image)');
+    expect(describeUserSteer({ message: 'use v2', imageCount: 2 }, quote)).toBe('"use v2" (+2 images)');
+  });
+
+  it('reads (no text) for an image-only steer', () => {
+    expect(describeUserSteer({ message: '', imageCount: 1 }, quote)).toBe('(no text) (+1 image)');
+  });
+
+  it('uses the caller quote', () => {
+    expect(describeUserSteer({ message: 'a\nb' }, JSON.stringify)).toBe('"a\\nb"');
+  });
+});
+
+describe('user steer prefixes', () => {
+  it('formatUserSteerPrefix carries the image suffix', () => {
+    expect(formatUserSteerPrefix([{ message: 'use v2', imageCount: 2 }])).toBe('[User steered this agent mid-task: "use v2" (+2 images)]\n');
+  });
+
+  it('formatTeamUserSteerPrefix carries the image suffix and (no text)', () => {
+    expect(formatTeamUserSteerPrefix([{ memberName: 'A', message: '', imageCount: 1 }])).toBe(
+      '[User steered team member "A" mid-task: (no text) (+1 image)]\n',
+    );
   });
 });
 

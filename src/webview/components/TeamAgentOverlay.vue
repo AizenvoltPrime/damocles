@@ -7,12 +7,16 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown, IconClock, IconEye, IconPaperPlane } from '@/components/icons';
 import { STEER_INSTRUCTION_PREFIX, stripSteerPrefix } from '@shared/steer';
 import OverlayShell from './OverlayShell.vue';
+import SteerImageChips from './SteerImageChips.vue';
+import ImageLightbox from './ImageLightbox.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useVSCode } from '@/composables/useVSCode';
+import { imageBlockToDataUrl } from '@/utils/imageUtils';
+import type { ImageBlock } from '@shared/types/content';
 import { getAgentColor, formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
@@ -30,6 +34,12 @@ const agentIndex = computed(() => {
 });
 
 const color = computed(() => getAgentColor(agentIndex.value));
+
+const lightboxImageUrl = ref<string | null>(null);
+
+function openLightbox(block: ImageBlock): void {
+  lightboxImageUrl.value = imageBlockToDataUrl(block);
+}
 
 // The marker opens an operator /steer and a resumed lead's prompt alike, so the label must not name a sender.
 function isSteer(content: string): boolean {
@@ -204,6 +214,7 @@ const AgentIcon = {
             <IconPaperPlane :size="14" class="text-warning/80 shrink-0 mt-0.5" />
             <div class="min-w-0 flex-1">
               <div class="text-[11px] uppercase tracking-wide text-warning/80 mb-0.5">{{ t('subagentDisplay.steered') }}</div>
+              <SteerImageChips :images="msg.images ?? []" @open-lightbox="openLightbox" />
               <MarkdownRenderer :content="stripSteerPrefix(msg.content)" class="text-sm" />
             </div>
           </div>
@@ -258,5 +269,7 @@ const AgentIcon = {
         </div>
       </div>
     </ScrollArea>
+
+    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
   </OverlayShell>
 </template>

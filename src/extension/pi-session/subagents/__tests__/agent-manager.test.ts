@@ -76,6 +76,11 @@ const sessionOpts: PiCreateSubagentSessionOptions[] = [];
 /** Every prompt a nested session was given, in order. */
 const prompts: string[] = [];
 
+/** Every `session.steer` call's arguments, in order. */
+const steerCalls: unknown[][] = [];
+
+const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
 /** A fake engine whose subagent sessions block on a per-spawn gate the test resolves to control timing. */
 function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
   const gates: Gate[] = [];
@@ -86,6 +91,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
   branch.length = 0;
   sessionOpts.length = 0;
   prompts.length = 0;
+  steerCalls.length = 0;
   const engine: SubagentEngine = {
     cwd: '/ws',
     registry: new AgentRegistry(),
@@ -105,7 +111,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         getLastAssistantText: () => '',
         setSessionName: () => {},
         setAutoCompactionEnabled: () => {},
-        steer: async () => {},
+        steer: async (...args: unknown[]) => void steerCalls.push(args),
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
@@ -523,9 +529,33 @@ describe('AgentManager steer', () => {
     expect(mgr.getRecord(queued)!.status).toBe('queued');
     expect(await mgr.steer(queued, 'do X')).toBe('queued');
     const buffered = mgr.getRecord(queued)!.pendingSteers!;
-    expect(buffered).toHaveLength(1);
-    expect(buffered[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(true);
-    expect(buffered[0]).toContain('do X');
+    expect(buffered).toEqual([{ text: wrapSteerMessage('do X') }]);
+    mgr.dispose();
+  });
+
+  it('delivers a running steer\'s images to session.steer as pi ImageContent', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    expect(await mgr.steer(id, 'look', [PNG])).toBe('steered');
+    expect(steerCalls).toEqual([[wrapSteerMessage('look'), [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }]]]);
+    mgr.dispose();
+  });
+
+  it('buffers a queued steer with its images and flushes them to session.steer when the session opens', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+    expect(await mgr.steer(queued, '', [PNG])).toBe('queued');
+    expect(mgr.getRecord(queued)!.pendingSteers).toEqual([{ text: STEER_INSTRUCTION_PREFIX, images: [PNG] }]);
+    await flush();
+    gates[0]!.resolve(); // the first run ends, freeing the slot for the queued one
+    for (let i = 0; i < 5 && gates.length < 2; i++) await flush();
+    expect(mgr.getRecord(queued)!.status).toBe('running');
+    expect(steerCalls).toEqual([[STEER_INSTRUCTION_PREFIX, [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }]]]);
+    expect(mgr.getRecord(queued)!.pendingSteers).toBeUndefined();
     mgr.dispose();
   });
 
@@ -548,7 +578,7 @@ describe('AgentManager steer', () => {
     const queued = mgr.spawn(spec(1)); // queued
     await mgr.steer(queued, 'do X'); // buffers a pending steer
     const record = mgr.getRecord(queued)!;
-    record.userSteers = ['do X']; // PiSession records the parent-awareness note on a queued steer
+    record.userSteers = [{ message: 'do X' }]; // PiSession records the parent-awareness note on a queued steer
     expect(mgr.abort(queued, 'user')).toBe(true);
     expect(record.status).toBe('stopped');
     expect(record.pendingSteers).toBeUndefined();

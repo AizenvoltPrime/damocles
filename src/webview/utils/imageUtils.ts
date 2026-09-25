@@ -1,38 +1,20 @@
-import type { ImageBlock } from '@shared/types/content';
+import {
+  isImageMediaType,
+  MAX_IMAGE_BASE64_LENGTH,
+  type ImageBlock,
+  type ImageMediaType,
+} from '@shared/types/content';
 
 export function imageBlockToDataUrl(block: ImageBlock): string {
   return `data:${block.source.media_type};base64,${block.source.data}`;
 }
 
-const VALID_MEDIA_TYPES: ReadonlySet<string> = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-]);
-
-export function isImageContentBlock(block: unknown): block is ImageBlock {
-  if (typeof block !== 'object' || block === null) return false;
-  const b = block as Record<string, unknown>;
-  if (b.type !== 'image') return false;
-  if (typeof b.source !== 'object' || b.source === null) return false;
-  const src = b.source as Record<string, unknown>;
-  return (
-    src.type === 'base64' &&
-    typeof src.media_type === 'string' &&
-    VALID_MEDIA_TYPES.has(src.media_type) &&
-    typeof src.data === 'string' &&
-    (src.data as string).length > 0
-  );
-}
-
 const SDK_MAX_DIMENSION = 2000;
-const SDK_MAX_BASE64_SIZE = 3_932_160;
 
 export interface ResizedImage {
   dataUrl: string;
   base64Data: string;
-  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+  mediaType: ImageMediaType;
 }
 
 function loadImage(
@@ -89,7 +71,7 @@ function tryCanvasExport(
   quality?: number,
 ): string | null {
   const dataUrl = canvas.toDataURL(mimeType, quality);
-  if (base64Payload(dataUrl).length <= SDK_MAX_BASE64_SIZE) return dataUrl;
+  if (base64Payload(dataUrl).length <= MAX_IMAGE_BASE64_LENGTH) return dataUrl;
   return null;
 }
 
@@ -98,7 +80,7 @@ type SupportedMediaType = ResizedImage['mediaType'];
 const JPEG_QUALITY_CASCADE = [0.85, 0.7, 0.5, 0.3] as const;
 
 export async function resizeImageForSDK(file: File): Promise<ResizedImage> {
-  if (!VALID_MEDIA_TYPES.has(file.type)) {
+  if (!isImageMediaType(file.type)) {
     throw new Error(`Unsupported media type: ${file.type}`);
   }
   const mediaType = file.type as SupportedMediaType;
@@ -110,7 +92,7 @@ export async function resizeImageForSDK(file: File): Promise<ResizedImage> {
 
   if (!needsResize) {
     const base64 = base64Payload(dataUrl);
-    if (base64.length <= SDK_MAX_BASE64_SIZE) {
+    if (base64.length <= MAX_IMAGE_BASE64_LENGTH) {
       return { dataUrl, base64Data: base64, mediaType };
     }
   }

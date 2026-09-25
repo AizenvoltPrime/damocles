@@ -39,6 +39,8 @@ import type {
   TeamMessage,
   TeamRunResult,
   UndeliveredMessage,
+  OperatorSteer,
+  NoteSink,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type {
@@ -49,6 +51,7 @@ import type {
   ScratchpadEntry as WebviewScratchpadEntry,
 } from '../../shared/types/team';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
+import type { ImageBlock } from '../../shared/types/content';
 import { buildResumePrompt, wrapSteerMessage } from '../../shared/steer';
 
 const MAX_AGENTS = 5;
@@ -126,9 +129,6 @@ const TERMINAL_CONTRACT_NUDGE =
   'You ended a turn without a terminal action. If your work is complete and verified, post your final ' +
   'scratchpad and call `team_report_complete` now. If you are waiting on a peer, call `team_standby`; ' +
   'if blocked, message the lead. A bare turn-end is not allowed — do not end again without one of these.';
-/** Exported so the test asserts the delivered text against this function, not a copy. */
-export const operatorSteerLeadNotice = (name: string, message: string): string =>
-  `[OPERATOR STEER] The user steered "${name}": "${message}". Treat it as an authoritative change to ${name}'s task; do not revise it back.`;
 const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
 const CONFLICT_NUDGE_SUFFIX =
   '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
@@ -182,7 +182,7 @@ export class TeamRunner {
   private completionResolved = false;
   // Each running agent's note sink, keyed by agentId, registered by its runner and dropped when that
   // run tears down. A missing entry is the honest answer that no live run can take a user note.
-  private noteSinks = new Map<string, (text: string) => boolean>();
+  private noteSinks = new Map<string, NoteSink>();
   private cancelAttempts = new Map<string, number>();
   private cancellationTimestamps = new Map<string, number>();
   private specialistReviewRounds = new Map<string, number>();
@@ -219,14 +219,15 @@ export class TeamRunner {
   // has six call sites (each closing a documented deadlock hole) with no dedup, so the same state was
   // rendered and re-sent several times per round — each duplicate a full re-prompt of the lead's whole
   // conversation. Comparing the RENDERED STRING rather than enumerating invalidation triggers is what makes
-  // this safe: formatReviewRoundReadyNotification is a pure function of exactly the state the lead must
-  // see (roster, per-section versions, and the lead's own read cursor), so any change worth a re-prompt
-  // necessarily renders differently. Cleared whenever the round is no longer open.
+  // this safe only while formatReviewRoundReadyNotification is a pure function of its arguments and every
+  // input the lead must see is one of them (roster with attempts, per-section versions, the lead's read
+  // cursor, pending names, operator steers). Cleared whenever the round is no longer open.
   private lastReviewRoundNotification: string | null = null;
-  // Every delivered `/steer`, in order, prefixed onto the team's result so the parent sees the redirect.
-  private readonly operatorSteers: Array<{ memberName: string; message: string }> = [];
-  // Each live run's undelivered-message reader, keyed by agentId; same ownership rule as noteSinks.
-  private undeliveredReaders = new Map<string, () => UndeliveredMessage[]>();
+  // Every `/steer` a member's run accepted, in order: listed in the lead's review-round notification and
+  // prefixed onto the team's result so the parent sees the redirect.
+  private readonly operatorSteers: OperatorSteer[] = [];
+  // Each live run's undelivered-message taker, keyed by agentId; same ownership rule as noteSinks.
+  private undeliveredTakers = new Map<string, () => UndeliveredMessage[]>();
   // Resumes of a member's current attempt, keyed by name. A redispatch starts a new attempt at zero.
   private resumeCounts = new Map<string, number>();
   // The role slot each specialist was dispatched under, which a restart without a session file resolves again.
@@ -423,7 +424,7 @@ export class TeamRunner {
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(leadAgent.agentId, deliver),
-      bindUndelivered: (read) => this.bindUndelivered(leadAgent.agentId, read),
+      bindTakeUndelivered: (take) => this.bindTakeUndelivered(leadAgent.agentId, take),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       onTurnEnd: () => {
@@ -846,7 +847,7 @@ export class TeamRunner {
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       bindNoteDelivery: (deliver) => this.bindNoteDelivery(agent.agentId, deliver),
-      bindUndelivered: (read) => this.bindUndelivered(agent.agentId, read),
+      bindTakeUndelivered: (take) => this.bindTakeUndelivered(agent.agentId, take),
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       getReportedSummary: () => this.reportedSummaries.get(name) ?? null,
@@ -1495,7 +1496,8 @@ export class TeamRunner {
     if (!leadName) return this.closeReviewRoundNotification();
 
     const pendingNames = this.getPendingSpecialistNames();
-    const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
+    const notification = formatReviewRoundReadyNotification(
+        unreviewed, this.scratchpad, leadName, pendingNames, this.operatorSteers);
     if (!notification) return this.closeReviewRoundNotification();
     // Suppress a notification the lead already holds verbatim: re-prompting a ~200k-token conversation
     // with text identical to the last one buys nothing. This applies ONLY here — nudgeLeadOnOpenReviewRound
@@ -1560,7 +1562,8 @@ export class TeamRunner {
       const unreviewed = dispatched
         .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name));
       const pendingNames = this.getPendingSpecialistNames();
-      const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
+      const notification = formatReviewRoundReadyNotification(
+        unreviewed, this.scratchpad, leadName, pendingNames, this.operatorSteers);
       if (!notification) return;
       this.leadReviewStalls++;
       this.messageBus.send('system', leadName, notification);
@@ -1725,19 +1728,17 @@ export class TeamRunner {
 
   /**
    * Delivers a user `/steer` through the member's note sink, which echoes it into the overlay and
-   * steers mid-stream, wakes an idle run, or holds it for a session still opening. A steered
-   * specialist's lead is told, so its review does not revise the redirect back.
+   * steers mid-stream, wakes an idle run, or holds it for a session still opening. The lead is not
+   * prompted; it sees a specialist's steers in that specialist's review-round notification.
    */
-  steerMember(agentId: string, message: string): 'steered' | 'finished' | 'not-found' {
+  steerMember(agentId: string, message: string, images?: ImageBlock[]): 'steered' | 'finished' | 'not-found' {
     const agent = this.getMember(agentId);
     if (!agent || agent.status === 'pending') return 'not-found';
     const deliver = this.noteSinks.get(agentId);
-    if (this.completionResolved || !deliver || !deliver(wrapSteerMessage(message))) return 'finished';
-    this.operatorSteers.push({ memberName: agent.name, message });
-    if (agent.role === 'specialist') {
-      const leadName = this.findLeadName();
-      if (leadName) this.messageBus.send('system', leadName, operatorSteerLeadNotice(agent.name, message));
-    }
+    if (this.completionResolved || !deliver || !deliver(wrapSteerMessage(message), images)) return 'finished';
+    this.operatorSteers.push({
+      memberName: agent.name, message, attempt: agent.attempt, ...(images?.length ? { imageCount: images.length } : {}),
+    });
     return 'steered';
   }
 
@@ -1745,7 +1746,7 @@ export class TeamRunner {
     return [...this.agents.values()].find((a) => a.agentId === agentId);
   }
 
-  getOperatorSteers(): ReadonlyArray<{ memberName: string; message: string }> {
+  getOperatorSteers(): ReadonlyArray<OperatorSteer> {
     return this.operatorSteers;
   }
 
@@ -1806,8 +1807,11 @@ export class TeamRunner {
     });
   }
 
-  /** Everything a resume needs that no team event records. */
-  buildCheckpoint(cancelledAt: number): TeamCheckpoint {
+  /**
+   * Everything a resume needs that no team event records. It takes each live member's queued messages,
+   * so only a cancel, right before its abort, may call it.
+   */
+  private buildCheckpoint(cancelledAt: number): TeamCheckpoint {
     return {
       version: 1,
       teamId: this.config.teamId,
@@ -1820,7 +1824,7 @@ export class TeamRunner {
         resumeCount: this.resumeCounts.get(a.name) ?? 0,
         status: this.statusAtCancel(a),
         // A restored member that has not relaunched yet still owes the messages its checkpoint carried.
-        undelivered: this.undeliveredReaders.get(a.agentId)?.() ?? this.restoredUndelivered.get(a.name) ?? [],
+        undelivered: this.undeliveredTakers.get(a.agentId)?.() ?? this.restoredUndelivered.get(a.name) ?? [],
         usage: usageTotals(a),
         toolCallCount: a.toolCallCount,
       })),
@@ -1924,7 +1928,10 @@ export class TeamRunner {
     this.leadReviewStalls = review.leadReviewStalls;
     this.lastReviewRoundNotification = review.lastReviewRoundNotification;
     this.restoredCheckpointAt = checkpoint.cancelledAt;
-    this.operatorSteers.push(...checkpoint.operatorSteers.map((s) => ({ ...s })));
+    // A steer with no recorded attempt is read as the member's attempt at that checkpoint.
+    this.operatorSteers.push(...checkpoint.operatorSteers.map((s) => ({
+      ...s, attempt: s.attempt ?? this.agents.get(s.memberName)?.attempt ?? 0,
+    })));
 
     for (const agent of this.agents.values()) {
       const plan = this.planResume(agent, sessionFiles.get(agent.agentId));
@@ -2143,17 +2150,17 @@ export class TeamRunner {
    * Registers one run's note sink. `redispatchSpecialist` reuses the agentId, so the teardown drops the
    * entry only while it is still this run's, never the next attempt's.
    */
-  private bindNoteDelivery(agentId: string, deliver: (text: string) => boolean): () => void {
+  private bindNoteDelivery(agentId: string, deliver: NoteSink): () => void {
     this.noteSinks.set(agentId, deliver);
     return () => {
       if (this.noteSinks.get(agentId) === deliver) this.noteSinks.delete(agentId);
     };
   }
 
-  private bindUndelivered(agentId: string, read: () => UndeliveredMessage[]): () => void {
-    this.undeliveredReaders.set(agentId, read);
+  private bindTakeUndelivered(agentId: string, take: () => UndeliveredMessage[]): () => void {
+    this.undeliveredTakers.set(agentId, take);
     return () => {
-      if (this.undeliveredReaders.get(agentId) === read) this.undeliveredReaders.delete(agentId);
+      if (this.undeliveredTakers.get(agentId) === take) this.undeliveredTakers.delete(agentId);
     };
   }
 

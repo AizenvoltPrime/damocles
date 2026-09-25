@@ -3,10 +3,9 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { storeToRefs } from "pinia";
 import type { ChatMessage } from "@shared/types/session";
-import type { ImageBlock } from "@shared/types/content";
+import { isImageBlock, type ImageBlock } from "@shared/types/content";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
-import { isImageContentBlock } from "@/utils/imageUtils";
 import { Button } from "@/components/ui/button";
 import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp, IconX } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -45,7 +44,7 @@ const { hasCopied, copyToClipboard } = useCopyToClipboard(2000);
 
 const imageBlocks = computed<ImageBlock[]>(() => {
   if (!props.message.contentBlocks) return [];
-  return props.message.contentBlocks.filter(isImageContentBlock);
+  return props.message.contentBlocks.filter(isImageBlock);
 });
 
 const isInjectedOrQueued = computed(() => props.message.isInjected || props.message.isCombinedQueue || props.message.isQueued);
@@ -169,7 +168,7 @@ onUnmounted(() => {
 
         <div ref="contentRef" class="pr-12 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" :style="scrollAreaStyle">
           <div v-if="imageBlocks.length > 0" class="flex flex-wrap gap-1.5 mb-2">
-            <UserMessageImageChip v-for="img in imageBlocks" :key="img.source.data" :block="img" @open-lightbox="emit('openLightbox', $event)" />
+            <UserMessageImageChip v-for="(img, index) in imageBlocks" :key="index" :block="img" @open-lightbox="emit('openLightbox', $event)" />
           </div>
 
           <MarkdownRenderer v-if="message.content" :content="message.content" class="text-foreground" />

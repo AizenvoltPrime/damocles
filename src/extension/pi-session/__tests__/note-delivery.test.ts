@@ -158,7 +158,7 @@ describe('cancel note delivery targets the agent that ran the command', () => {
     deliveries(h.session, () => h.piSession).subagent('agent-7')(NOTE);
     await vi.waitFor(() => expect(h.steer).toHaveBeenCalledTimes(1));
 
-    expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE);
+    expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE, undefined);
     expect(h.sendUserMessage).not.toHaveBeenCalled();
     expect(h.busSend).not.toHaveBeenCalled();
   });
@@ -362,7 +362,7 @@ describe('each build context supplies its own delivery', () => {
     noteDepsOf(0).deliverUserNote(NOTE);
     await vi.waitFor(() => expect(h.steer).toHaveBeenCalledTimes(1));
 
-    expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE);
+    expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE, undefined);
     expect(h.sendUserMessage).not.toHaveBeenCalled();
   });
 

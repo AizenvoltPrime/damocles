@@ -211,6 +211,34 @@ describe('useSubagentStore nested tool status', () => {
   });
 });
 
+describe('useSubagentStore steer images', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  it('puts a live steer\'s images on its overlay row', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+
+    store.addUserMessageToSubagent('agent-1', 'look', [PNG]);
+
+    expect(defined(store.subagents['agent-1'], 'card').messages.at(-1)).toMatchObject({ role: 'user', content: 'look', contentBlocks: [PNG] });
+  });
+
+  it('keeps a steer\'s images when the sealing snapshot replaces the transcript', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+
+    store.replaceSubagentMessages('agent-1', [
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'the task' }] },
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'look' }, PNG] },
+    ]);
+
+    const rows = defined(store.subagents['agent-1'], 'card').messages;
+    expect(rows.at(-1)).toMatchObject({ role: 'user', contentBlocks: [{ type: 'text', text: 'look' }, PNG] });
+  });
+});
+
 describe('useSubagentStore sealed transcript rehydration', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

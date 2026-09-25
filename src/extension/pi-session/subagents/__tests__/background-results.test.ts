@@ -51,7 +51,7 @@ describe('formatBackgroundResults', () => {
 
   it('prefixes user-steer lines into the record block so the parent sees mid-task redirects', () => {
     const out = formatBackgroundResults([
-      rec({ type: 'Explore', description: 'vehicles', result: 'found A', userSteers: ['focus on tests', 'skip UI'] }),
+      rec({ type: 'Explore', description: 'vehicles', result: 'found A', userSteers: [{ message: 'focus on tests' }, { message: 'skip UI' }] }),
     ]);
     expect(out).toContain('## Explore — vehicles\n[User steered this agent mid-task: "focus on tests"]\n[User steered this agent mid-task: "skip UI"]\nfound A');
   });

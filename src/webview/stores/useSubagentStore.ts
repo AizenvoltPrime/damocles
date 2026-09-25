@@ -2,7 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState, SubagentResult } from '@shared/types/subagents';
-import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
+import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
 export interface StreamingSubagentMessage {
@@ -86,6 +86,8 @@ function buildChatMessagesFromHistory(
         contentBlocks.push({ type: 'thinking', thinking: block.thinking } as ThinkingBlock);
       } else if (block.type === 'text') {
         contentBlocks.push({ type: 'text', text: block.text } as TextBlock);
+      } else if (block.type === 'image') {
+        contentBlocks.push(block);
       } else if (block.type === 'tool_use') {
         contentBlocks.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input } as ToolUseBlock);
         const existing = existingToolStatuses?.get(block.id);
@@ -334,7 +336,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function addUserMessageToSubagent(toolUseId: string, message: string): void {
+  function addUserMessageToSubagent(toolUseId: string, message: string, images?: ImageBlock[]): void {
     const subagent = subagents.value[toolUseId];
     if (!subagent || subagent.messagesSealed) return;
 
@@ -343,6 +345,7 @@ export const useSubagentStore = defineStore('subagent', () => {
       id: `${toolUseId}-steer-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       role: 'user',
       content: message,
+      ...(images?.length ? { contentBlocks: images } : {}),
       timestamp: Date.now(),
     };
 

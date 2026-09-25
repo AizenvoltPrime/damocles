@@ -20,6 +20,7 @@ import { teamAgentToolset } from './team-mcp-fixture';
 import type { TeamEngine } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { TeamState as WebviewTeamState } from '../../../shared/types/team';
+import type { ImageBlock } from '../../../shared/types/content';
 import type { AgentInvocationData } from '../../pi-session/agent-records';
 import { listTeamCheckpoints, teamCheckpointPath, teamCheckpointsDir, teamEventLogPath } from '../../pi-session/agent-records';
 import { piSessionDir } from '../../pi-session/session-store';
@@ -217,11 +218,14 @@ describe('a cancelled team result says whether the team can be resumed', () => {
     const p = panel();
     const { teamId, result } = await runningTeam(p);
     const leadId = p.service.listSteerTargets()[0]!.id;
-    expect(p.service.steerMember(leadId, 'go faster')?.status).toBe('steered');
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    expect(p.service.steerMember(leadId, 'go faster', [image])?.status).toBe('steered');
 
     p.service.cancelTeam(teamId);
 
-    expect(await result).toMatch(new RegExp(`^${escape(teamCancelledHeader(teamId, true))}${escape(formatTeamUserSteerPrefix([{ memberName: 'Lead', message: 'go faster' }]))}`));
+    const prefix = formatTeamUserSteerPrefix([{ memberName: 'Lead', message: 'go faster', imageCount: 1 }]);
+    expect(prefix).toBe('[User steered team member "Lead" mid-task: "go faster" (+1 image)]\n');
+    expect(await result).toMatch(new RegExp(`^${escape(teamCancelledHeader(teamId, true))}${escape(prefix)}`));
   });
 
   it('a cancel whose checkpoint write failed does not offer resume_team', async () => {

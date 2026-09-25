@@ -1,5 +1,6 @@
 import type { Scratchpad, StaleSectionInfo } from './scratchpad';
-import type { TeamAgent } from './types';
+import type { OperatorSteer, TeamAgent } from './types';
+import { describeUserSteer } from '../../shared/steer';
 
 export interface ReadGateDecision {
   ok: boolean;
@@ -177,13 +178,24 @@ export function formatReviewRoundReadyNotification(
   unreviewed: TeamAgent[],
   scratchpad: Scratchpad,
   leadName: string,
-  pendingNames: string[] = [],
+  pendingNames: string[],
+  operatorSteers: ReadonlyArray<OperatorSteer>,
 ): string | null {
   if (unreviewed.length === 0) return null;
+  const currentAttempt = new Map(unreviewed.map(agent => [agent.name, agent.attempt]));
+  const listed = operatorSteers.filter(s => currentAttempt.has(s.memberName));
+  const isCurrent = (s: OperatorSteer): boolean => currentAttempt.get(s.memberName) === s.attempt;
+  const hasImages = (s: OperatorSteer): boolean => (s.imageCount ?? 0) > 0;
+  const current = listed.filter(isCurrent);
+  const earlier = listed.filter(s => !isCurrent(s));
   const specialistLines = unreviewed.map(agent => {
+    const steerLines = listed
+      .filter(s => s.memberName === agent.name)
+      .map(s => `\n    ${isCurrent(s) ? 'user steer' : 'earlier attempt steer (not delivered to this attempt)'}: ` +
+        describeUserSteer(s, JSON.stringify));
     const authored = scratchpad.getSectionsAuthoredBy(agent.name);
     if (authored.length === 0) {
-      return `  - ${agent.name}: no scratchpad section authored`;
+      return `  - ${agent.name}: no scratchpad section authored${steerLines.join('')}`;
     }
     const fragments = authored.map(entry => {
       const readVersion = scratchpad.getReadVersion(leadName, entry.section);
@@ -193,8 +205,24 @@ export function formatReviewRoundReadyNotification(
       else status = 'up to date';
       return `"${entry.section}" v${entry.version} [${status}]`;
     });
-    return `  - ${agent.name}: ${fragments.join(', ')}`;
+    return `  - ${agent.name}: ${fragments.join(', ')}${steerLines.join('')}`;
   });
+  const steerParagraph = current.length > 0
+    ? `\n\nUser steers are the user's authoritative changes to the steered specialist's task. Review against the ` +
+      `steered task and do not request a revision that undoes a steer.` +
+      (current.some(hasImages)
+        ? ` Steer images reached only the steered specialist, not you; if its section does not say what they ` +
+          `asked for, ask it.`
+        : '')
+    : '';
+  const earlierParagraph = earlier.length > 0
+    ? `\n\nEarlier attempt steers went to a previous attempt of the steered specialist and are not part of ` +
+      `the current attempt's task. They are still the user's instructions, so you may fold them into a revision.` +
+      (earlier.some(hasImages)
+        ? ` Their images reached only the attempt that was steered, so neither you nor the current attempt ` +
+          `has seen them.`
+        : '')
+    : '';
   const pendingParagraph = pendingNames.length > 0
     ? `\n\nApproval and revision are BLOCKED until these never-dispatched specialists are resolved: ${pendingNames.join(', ')}. ` +
       `Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`
@@ -204,6 +232,8 @@ export function formatReviewRoundReadyNotification(
     `Call team_read_scratchpad for every section marked UNREAD or STALE before approving — ` +
     `the approval gate will reject team_approve_specialist until you do.\n\n` +
     specialistLines.join('\n') +
+    steerParagraph +
+    earlierParagraph +
     pendingParagraph +
     `\n\nAfter reading, call team_approve_specialist (satisfactory) or team_request_revision (changes needed) for each.`
   );

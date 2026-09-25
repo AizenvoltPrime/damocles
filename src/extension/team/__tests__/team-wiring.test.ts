@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TeamRunner, VERIFICATION_SECTION, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage, operatorSteerLeadNotice } from '../team-runner';
+import { TeamRunner, VERIFICATION_SECTION, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage } from '../team-runner';
 import { STEER_INSTRUCTION_PREFIX, wrapSteerMessage } from '../../../shared/steer';
 import { AgentRunner } from '../agent-runner';
 import { Scratchpad } from '../scratchpad';
@@ -12,6 +12,7 @@ import type { TeamAgent, TeamConfig, TeamRole } from '../types';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { ImageBlock } from '../../../shared/types/content';
 import { teamMembersDir } from '../../pi-session/agent-records';
 import { piSessionDir } from '../../pi-session/session-store';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
@@ -366,7 +367,7 @@ describe('team wiring — the lead is never re-prompted with an identical [REVIE
       abortSignal: new AbortController().signal,
       messageBus: w.messageBus,
       bindNoteDelivery: () => () => undefined,
-      bindUndelivered: () => () => undefined,
+      bindTakeUndelivered: () => () => undefined,
       onMessage: () => undefined,
       teamId: 'team-1',
       keepAlive: () => true,
@@ -686,7 +687,7 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     ]);
   });
 
-  it('delivers the wrapped steer to a running specialist, echoes it once, and tells the lead', async () => {
+  it('delivers the wrapped steer to a running specialist, echoes it once, and does not prompt the lead', async () => {
     const w = makeWiring(['A']);
     const a = startSpecialist(w, 'A');
     await w.settle();
@@ -697,9 +698,101 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     const steer = wrapSteerMessage('switch to the v2 schema');
     expect(deliveredPrompts(a)[0]!.startsWith(steer)).toBe(true);
     expect(w.webviewMessages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === steer)).toHaveLength(1);
-    const toLead = w.messageBus.getAllMessages().filter((m) => m.to === 'Lead');
-    expect(toLead.map((m) => m.content)).toEqual([operatorSteerLeadNotice('A', 'switch to the v2 schema')]);
-    expect(w.runner.getOperatorSteers()).toEqual([{ memberName: 'A', message: 'switch to the v2 schema' }]);
+    expect(w.messageBus.getAllMessages().filter((m) => m.to === 'Lead')).toEqual([]);
+    expect(w.runner.getOperatorSteers()).toEqual([{ memberName: 'A', message: 'switch to the v2 schema', attempt: 0 }]);
+  });
+
+  /** A specialist that keeps working until a steer arrives, then reports complete and ends its turn. */
+  function steeredReporter(w: Wiring, name: string): FakeSession {
+    return new FakeSession({
+      onPrompt: (_t, s) => {
+        if (s.prompts.length === 1) { s.startStreaming(); return; }
+        w.runner.reportComplete(name, `sign-off from ${name}`);
+        s.emit({ type: 'turn_end' });
+      },
+    });
+  }
+
+  function startSteeredReporter(w: Wiring, name: string): FakeSession {
+    const session = steeredReporter(w, name);
+    w.useSession(session);
+    w.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+    return session;
+  }
+
+  function reviewRoundsToLead(w: Wiring): string[] {
+    return w.messageBus.getAllMessages()
+      .filter((m) => m.to === 'Lead' && m.content.includes('[REVIEW ROUND READY]'))
+      .map((m) => m.content);
+  }
+
+  it('lists a specialist steer in the lead review-round notification', async () => {
+    const w = makeWiring(['A']);
+    startSteeredReporter(w, 'A');
+    await w.settle();
+
+    expect(w.runner.steerMember('id-A', 'switch to the v2 schema')).toBe('steered');
+    await until(() => w.runner.getMember('id-A')!.status === 'awaiting-review');
+
+    const rounds = reviewRoundsToLead(w);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toContain('  - A: no scratchpad section authored\n    user steer: "switch to the v2 schema"');
+  });
+
+  it('prompts an image steer with its images, echoes them, and records the image count for the lead', async () => {
+    const w = makeWiring(['A']);
+    const a = startSteeredReporter(w, 'A');
+    await w.settle();
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+
+    expect(w.runner.steerMember('id-A', 'use this layout', [image])).toBe('steered');
+    await a.whenPrompted(2);
+
+    const steer = wrapSteerMessage('use this layout');
+    expect(a.prompts[1]).toBe(steer);
+    expect(a.promptOptions[1]?.images).toEqual([{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }]);
+    const echoes = w.webviewMessages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === steer);
+    expect(echoes).toEqual([expect.objectContaining({ images: [image] })]);
+    expect(w.runner.getOperatorSteers()).toEqual([{ memberName: 'A', message: 'use this layout', imageCount: 1, attempt: 0 }]);
+
+    await until(() => w.runner.getMember('id-A')!.status === 'awaiting-review');
+    const rounds = reviewRoundsToLead(w);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toContain('    user steer: "use this layout" (+1 image)');
+    expect(rounds[0]).toContain('Steer images reached only the steered specialist, not you');
+  });
+
+  it('labels a steer the previous attempt took once the specialist is redispatched, and does not replay it', async () => {
+    const w = makeWiring(['A']);
+    const first = new FakeSession({ onPrompt: (_t, s) => { if (s.prompts.length === 1) s.startStreaming(); } });
+    w.useSession(first);
+    w.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await w.settle();
+    expect(w.runner.steerMember('id-A', 'old ask')).toBe('steered');
+    await first.whenPrompted(2);
+
+    w.runner.cancelSpecialist('A');
+    await until(() => w.runner.getMember('id-A')!.status === 'cancelled');
+    const second = steeredReporter(w, 'A');
+    w.useSession(second);
+    w.runner.redispatchSpecialist('A', 'second task for A that is descriptive enough');
+    await second.whenPrompted(1);
+    expect(w.runner.steerMember('id-A', 'new ask')).toBe('steered');
+    await until(() => w.runner.getMember('id-A')!.status === 'awaiting-review');
+
+    expect(second.prompts.join('\n')).not.toContain('old ask');
+    const rounds = reviewRoundsToLead(w);
+    expect(rounds).toHaveLength(1);
+    expect(rounds[0]).toContain(
+      '  - A: no scratchpad section authored\n' +
+      '    earlier attempt steer (not delivered to this attempt): "old ask"\n' +
+      '    user steer: "new ask"',
+    );
+    expect(rounds[0]).toContain('Earlier attempt steers went to a previous attempt of the steered specialist');
+    expect(w.runner.getOperatorSteers()).toEqual([
+      { memberName: 'A', message: 'old ask', attempt: 0 },
+      { memberName: 'A', message: 'new ask', attempt: 1 },
+    ]);
   });
 
   /** A specialist whose opening turn is held until `release`, so messages queue behind it in the runner. */
@@ -762,8 +855,8 @@ describe('team wiring: a user /steer reaches one member through its note sink', 
     expect(w.runner.listSteerTargets().map((t) => t.id)).toEqual(['id-A']);
     expect(w.runner.steerMember('id-A', 'switch to the v2 schema')).toBe('steered');
     const steer = wrapSteerMessage('switch to the v2 schema');
-    expect(w.runner.getOperatorSteers()).toEqual([{ memberName: 'A', message: 'switch to the v2 schema' }]);
-    expect(w.messageBus.getAllMessages().filter((m) => m.to === 'Lead').map((m) => m.content)).toEqual([operatorSteerLeadNotice('A', 'switch to the v2 schema')]);
+    expect(w.runner.getOperatorSteers()).toEqual([{ memberName: 'A', message: 'switch to the v2 schema', attempt: 0 }]);
+    expect(w.messageBus.getAllMessages().filter((m) => m.to === 'Lead')).toEqual([]);
     open(a);
     await vi.waitFor(() => expect(a.prompts).toHaveLength(3));
 

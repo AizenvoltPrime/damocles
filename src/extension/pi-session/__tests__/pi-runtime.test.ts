@@ -197,7 +197,11 @@ describe('subscription plugin migration', () => {
       memory: [...opts.packages],
       disk: [...opts.packages],
       providers: new Map(),
-      cloneDir: (source) => path.join(root, 'git', 'github.com', 'AizenvoltPrime', identity(source).split('/').pop()!),
+      // pi keys a clone by host and full repo path, so two owners' repos of the same name never share a directory.
+      cloneDir: (source) => {
+        const url = new URL(identity(source));
+        return path.join(root, 'git', url.host, ...url.pathname.split('/').filter(Boolean));
+      },
       behavior: { current: 'register', legacy: 'register' },
       startupErrors: [],
       failInstall: false,

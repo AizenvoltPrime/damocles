@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { McpToolData } from '@shared/types/session';
-import type { ImageBlock } from '@shared/types/content';
+import { isImageBlock, type ImageBlock } from '@shared/types/content';
 import {
   Collapsible,
   CollapsibleContent,
@@ -20,7 +20,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
 import ImageLightbox from './ImageLightbox.vue';
-import { imageBlockToDataUrl, isImageContentBlock } from '@/utils/imageUtils';
+import { imageBlockToDataUrl } from '@/utils/imageUtils';
 
 const { t } = useI18n();
 
@@ -80,7 +80,7 @@ const parsedResult = computed<ParsedMcpResult>(() => {
         typeof (block as { text?: string }).text === 'string'
       ) {
         textParts.push((block as { text: string }).text);
-      } else if (isImageContentBlock(block)) {
+      } else if (isImageBlock(block)) {
         images.push(block);
       }
     }

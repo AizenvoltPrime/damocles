@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { defineComponent } from 'vue';
+import { defineComponent, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ToolCall } from '@shared/types/session';
 import type { TeamAgent, TeamState } from '@shared/types/team';
+import type { ImageBlock } from '@shared/types/content';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import { wrapSteerMessage } from '@shared/steer';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
@@ -97,13 +98,14 @@ function openWith(messages: AgentChatMessage[]) {
   return mountOverlay();
 }
 
-function mountOverlay() {
+function mountOverlay(options: { attachTo?: HTMLElement } = {}) {
   const store = useTeamStore();
   store.restoreTeamFromHistory(team());
   store.openOverlay(TEAM_ID);
   store.openAgentOverlay(AGENT_ID);
 
   return mount(TeamAgentOverlay, {
+    ...options,
     global: {
       plugins: [i18n],
       stubs: {
@@ -135,6 +137,35 @@ describe('a steering message inside a team agent overlay', () => {
     expect(wrapper.text()).toContain('Steered');
     expect(wrapper.text()).not.toContain('You steered');
     expect(wrapper.find('markdown-renderer-stub').attributes('content')).toBe('check the tests');
+  });
+
+  it('shows the images of an image steer as chips, live and after a reload', () => {
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const live = openWith([{ id: 'u-1', role: 'user', content: wrapSteerMessage('use this layout'), images: [image, image], timestamp: 1 }]);
+    expect(live.findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(2);
+    live.unmount();
+
+    setActivePinia(createPinia());
+    useTeamStore().handleAgentDataLoaded(AGENT_ID, [{ id: '0:a1', role: 'user', content: [{ type: 'text', text: wrapSteerMessage('') }, image] }]);
+    expect(mountOverlay().findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(1);
+  });
+
+  it('opens a clicked chip in the lightbox the overlay hosts', async () => {
+    const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    useTeamStore().agentMessages = { [AGENT_ID]: [{ id: 'u-1', role: 'user', content: wrapSteerMessage('use this'), images: [image], timestamp: 1 }] };
+    const wrapper = mountOverlay({ attachTo: document.body });
+
+    await wrapper.findComponent({ name: 'UserMessageImageChip' }).trigger('click');
+    await nextTick();
+
+    expect(document.body.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
+    wrapper.unmount();
+  });
+
+  it('shows no chips for a steer without images', () => {
+    const wrapper = openWith([{ id: 'u-1', role: 'user', content: wrapSteerMessage('check the tests'), timestamp: 1 }]);
+
+    expect(wrapper.findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(0);
   });
 
   it('shows a peer message as plain user text', () => {

@@ -4,14 +4,20 @@ import type { HandlerRegistry } from "../types";
 export function createSubagentHandlers(): Partial<HandlerRegistry> {
   return {
     subagentSteered: (msg, ctx) => {
-      if (msg.status === "steered" || msg.status === "queued") {
-        ctx.stores.streamingStore.addSteerChip(msg.message, {
-          agentId: msg.agentId,
-          ...(msg.agentType !== undefined && { agentType: msg.agentType }),
-          ...(msg.description !== undefined && { description: msg.description }),
-        });
+      const delivered = msg.status === "steered" || msg.status === "queued";
+      if (msg.requestId) ctx.refs.chatInputRef.value?.settleSteer(msg.requestId, delivered);
+      if (delivered) {
+        ctx.stores.streamingStore.addSteerChip(
+          msg.message,
+          {
+            agentId: msg.agentId,
+            ...(msg.agentType !== undefined && { agentType: msg.agentType }),
+            ...(msg.description !== undefined && { description: msg.description }),
+          },
+          { images: msg.images },
+        );
         // A team member's runner already echoes the steer into its overlay.
-        if (msg.toolUseId && !msg.team) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message);
+        if (msg.toolUseId && !msg.team) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message, msg.images);
         return;
       }
       const key = msg.status === "not-found" ? "notFound" : msg.status;

@@ -1,8 +1,7 @@
 import { computed, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice, ToolCall } from '@shared/types/session';
-import type { ContentBlock, ImageBlock } from '@shared/types/content';
+import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_RESUME_TOOL, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
-import { isImageContentBlock } from '@/utils/imageUtils';
 
 export type VirtualItemType =
   | 'user-message'
@@ -97,7 +96,7 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
       maxSeenTimestamp = Math.max(maxSeenTimestamp, msg.timestamp);
 
       if (msg.role === 'user') {
-        const imageBlocks = msg.contentBlocks?.filter(isImageContentBlock);
+        const imageBlocks = msg.contentBlocks?.filter(isImageBlock);
         result.push({
           id: `user-${msg.id}`,
           type: 'user-message',

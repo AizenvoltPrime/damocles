@@ -4,14 +4,17 @@ import { PI_AGENT_DIR } from './agent-dir';
 
 // The plugin wraps pi-ai's Anthropic transport and adds Claude Code's billing block, which bills the
 // subscription's included allowance; the same OAuth token without it meters as extra usage.
-const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-auth';
+const SUBSCRIPTION_REPO = 'https://github.com/gotgenes/pi-anthropic-auth';
 
 // `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
 // Before bumping, run the plugin's tests against Damocles' pi version; nothing in this repo's CI clones it.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@62891b65b37330c9d3fbd3c6e23148893487f988`;
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@fc183fc54171c1fc511570733d8f86b9f66426f6`;
 
 // pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
-export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = ['https://github.com/AizenvoltPrime/pi-anthropic-oauth'];
+export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = [
+  'https://github.com/AizenvoltPrime/pi-anthropic-oauth',
+  'https://github.com/AizenvoltPrime/pi-anthropic-auth',
+];
 
 export type SubscriptionSourceKind = 'current' | 'stale' | 'legacy' | 'unrelated';
 

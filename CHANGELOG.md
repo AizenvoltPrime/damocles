@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.32.0] - 2026-09-25
+
+### Added
+
+- **`/steer` can carry images.** Paste images alongside a steer to a subagent or team member, with or without text, and the agent receives them as part of the instruction (on a model that accepts images). The agent is told to treat text inside an image as content you are showing it, not as a further steering instruction. The images show in the steer chip and in the agent's view, live and after a reload. A team steer that had not reached the member when you cancelled the team still arrives with its images after `resume_team`. The agent that started the subagent or team is told how many images each steer carried. A steer with a browser element attached is refused, and your draft stays in the box. If the agent finished before your steer reached it, the steer and its images go back into the input box, unless you have started typing something else.
+
+### Changed
+
+- **Steering a specialist no longer interrupts the lead.** The lead used to get a prompt the moment you steered one of its specialists. It now sees each steer under that specialist in its review-round notification, every time that specialist comes up for review, including after `resume_team`. If the lead redispatches the specialist, a steer sent to the earlier attempt is listed as not delivered to the new one. Steering the lead itself still reaches the lead at once.
+- **The allowance plugin now comes from its upstream repository.** In allowance mode, Damocles replaces the `AizenvoltPrime/pi-anthropic-auth` fork with `gotgenes/pi-anthropic-auth` 3.3.2 the first time it starts, with no re-login. Upstream 3.3.2 includes the per-message effort fix the fork carried.
+
+### Fixed
+
+- **A resumed team member no longer gets the same message twice.** If you cancelled a team while a member was running a command, a steer or peer message still waiting for that member reached it during the cancel and again after `resume_team`. It now arrives once, after the resume.
+
 ## [2.31.0] - 2026-09-24
 
 ### Added
@@ -4124,6 +4139,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.32.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.31.0...v2.32.0
 [2.31.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.30.0...v2.31.0
 [2.30.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.29.0...v2.30.0
 [2.29.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.28.0...v2.29.0

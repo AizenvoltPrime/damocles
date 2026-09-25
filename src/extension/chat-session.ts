@@ -1,7 +1,7 @@
 import type { ContentInput, McpScope, RewindOption } from './session-types';
 import type { McpServerStatusInfo } from '../shared/types/mcp';
 import type { ToolsSnapshot } from '../shared/types/tools';
-import type { UserContentBlock } from '../shared/types/content';
+import type { ImageBlock, UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
@@ -71,9 +71,9 @@ export interface ChatSession {
   clear(): void;
   dispose(): Promise<void>;
   stopTask(taskId: string): Promise<void>;
-  steerSubagent(agentId: string, message: string): Promise<void>;
+  steerSubagent(agentId: string, message: string, images?: ImageBlock[], requestId?: string): Promise<void>;
   /** Routes a user `/steer` to a subagent or, failing that, a live team member. */
-  steerTarget(agentId: string, message: string): Promise<void>;
+  steerTarget(agentId: string, message: string, images: ImageBlock[] | undefined, requestId: string): Promise<void>;
   listSteerTargets(): SteerTargetInfo[];
 
   sendBtw(btwId: string, question: string): Promise<void>;

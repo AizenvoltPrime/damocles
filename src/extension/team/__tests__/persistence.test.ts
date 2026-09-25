@@ -219,6 +219,27 @@ describe('member card history from the member pi session file', () => {
     ]);
   });
 
+  it('keeps the images of a user turn after its text, dropping an image with an unsupported media type', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'user-images');
+    const steer = '[STEERING INSTRUCTION: ABSOLUTE PRIORITY]';
+    writeMemberAttempt(cwd, 0, [{
+      role: 'user',
+      content: [
+        { type: 'text', text: steer },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        { type: 'image', data: 'AAAA', mimeType: 'image/tiff' },
+      ],
+      timestamp: Date.now(),
+    }, assistantMessage([{ type: 'text', text: 'Using the layout.' }])]);
+
+    const history = await new TeamPersistence(cwd, SESSION_ID).loadAgentConversation(TEAM_ID, AGENT_ID);
+
+    expect(history[0]!.content).toEqual([
+      { type: 'text', text: steer },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+    ]);
+  });
+
   it('keeps message ids distinct across attempts, whose entry ids are unique only within their own file', async () => {
     const cwd = join(DAMOCLES_HOME_DIR, 'attempt-ids');
     const first = writeMemberAttempt(cwd, 0, [userMessage('first try'), assistantMessage([{ type: 'text', text: 'gave up' }])]);
@@ -683,5 +704,47 @@ describe('TeamPersistence checkpoint files', () => {
     expect(isTeamCheckpoint({ ...checkpoint(), cancelledAt: -1 })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), cancelledAt: '1' })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), review: { ...checkpoint().review, reviewedSpecialists: 'dev' } })).toBe(false);
+  });
+
+  describe('steer images and attempts', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const withUndelivered = (undelivered: unknown[]): unknown => ({
+      ...checkpoint(),
+      members: [{ ...checkpoint().members[0]!, undelivered }],
+    });
+    const withSteers = (operatorSteers: unknown[]): unknown => ({ ...checkpoint(), operatorSteers });
+
+    it('accepts a checkpoint written before steers carried images', () => {
+      expect(checkpoint().members[0]!.undelivered[0]).not.toHaveProperty('images');
+      expect(checkpoint().operatorSteers[0]).not.toHaveProperty('imageCount');
+      expect(isTeamCheckpoint(checkpoint())).toBe(true);
+    });
+
+    it('accepts an undelivered steer with images and a steer with an image count', () => {
+      expect(isTeamCheckpoint(withUndelivered([{ text: 'steer', echoed: true, images: [image] }]))).toBe(true);
+      expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: '', imageCount: 2 }]))).toBe(true);
+    });
+
+    it.each([
+      ['not an array', { text: 'steer', echoed: true, images: image }],
+      ['a null entry', { text: 'steer', echoed: true, images: [null] }],
+      ['an unsupported media type', { text: 'steer', echoed: true, images: [{ ...image, source: { ...image.source, media_type: 'image/tiff' } }] }],
+      ['no data', { text: 'steer', echoed: true, images: [{ ...image, source: { type: 'base64', media_type: 'image/png' } }] }],
+    ])('rejects undelivered images that are %s', (_label, undelivered) => {
+      expect(isTeamCheckpoint(withUndelivered([undelivered]))).toBe(false);
+    });
+
+    it.each([['negative', -1], ['fractional', 1.5], ['a string', '2'], ['null', null]])('rejects an image count that is %s', (_label, imageCount) => {
+      expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: 'm', imageCount }]))).toBe(false);
+    });
+
+    it('accepts a steer with the attempt that took it, and one written before steers recorded it', () => {
+      expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: 'm', attempt: 1 }]))).toBe(true);
+      expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: 'm' }]))).toBe(true);
+    });
+
+    it.each([['negative', -1], ['fractional', 0.5], ['a string', '1'], ['null', null]])('rejects a steer attempt that is %s', (_label, attempt) => {
+      expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: 'm', attempt }]))).toBe(false);
+    });
   });
 });

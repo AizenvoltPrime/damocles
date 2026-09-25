@@ -1,3 +1,5 @@
+import type { ImageBlock } from './content';
+
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
 
@@ -51,6 +53,7 @@ export interface ScratchpadEntry {
 export type TeamAgentContentBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
+  | ImageBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; metadata?: Record<string, unknown> };

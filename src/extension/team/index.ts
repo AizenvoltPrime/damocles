@@ -6,6 +6,7 @@ import { TeamPersistence } from './persistence';
 import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
+import type { ImageBlock } from '../../shared/types/content';
 import type { TeamState as WebviewTeamState } from '../../shared/types/team';
 import { agentInvocationsOnBranch, indexTeamMemberFiles, teamEventLogPath, teamMembersDir, type AgentInvocationData } from '../pi-session/agent-records';
 import { piSessionDir } from '../pi-session/session-store';
@@ -290,13 +291,13 @@ export class TeamService {
   }
 
   /** `null` when no running team has this member, so the caller can report its own not-found. */
-  steerMember(agentId: string, message: string): { status: 'steered' | 'finished' | 'not-found'; teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } | null {
+  steerMember(agentId: string, message: string, images?: ImageBlock[]): { status: 'steered' | 'finished' | 'not-found'; teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } | null {
     const runner = this.activeRunner;
     if (!runner || !this.activeTeamId) return null;
     const member = runner.getMember(agentId);
     if (!member) return null;
     return {
-      status: runner.steerMember(agentId, message),
+      status: runner.steerMember(agentId, message, images),
       teamId: this.activeTeamId,
       teamTitle: runner.getTitle(),
       memberName: member.name,

@@ -50,7 +50,7 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     teamAgentUserMessage: (msg) => {
-      useTeamStore().handleAgentUserMessage(msg.agentId, msg.content, msg.timestamp);
+      useTeamStore().handleAgentUserMessage(msg.agentId, msg.content, msg.timestamp, msg.images);
       return { skipScroll: true };
     },
     teamAgentToolResult: (msg) => {

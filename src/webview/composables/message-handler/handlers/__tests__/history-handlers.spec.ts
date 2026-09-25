@@ -44,6 +44,19 @@ function dispatch(msg: ExtensionToWebviewMessage, ctx: HandlerContext, registry 
   handler(msg, ctx);
 }
 
+describe('a replayed steer chip', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  it('keeps its images', () => {
+    const ctx = context();
+    dispatch({ type: 'userReplay', content: 'look', contentBlocks: [PNG], isInjected: true, steerTarget: { agentId: 'a1' }, promptIndex: 0 }, ctx);
+
+    expect(useStreamingStore().messages.at(-1)).toMatchObject({ content: 'look', isReplay: true, contentBlocks: [PNG], steerTarget: { agentId: 'a1' } });
+  });
+});
+
 describe('compactionAborted reaches the transcript', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

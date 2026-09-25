@@ -55,7 +55,9 @@ import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-br
 import { runSubagent, getAgentConversation } from './subagent-runner';
 import { getStatusNote } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
-import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type SubagentType, type ThinkingLevel } from './types';
+import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
+import { extractImages } from '../branch-text';
+import type { ImageBlock } from '../../../shared/types/content';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -187,6 +189,10 @@ interface PreparedRun {
   eligibleToolNames: string[];
   customTools: ToolDefinition[];
   extensionFactory: ExtensionFactory;
+}
+
+function deliverSteer(session: AgentSession, steer: PendingSteer): Promise<void> {
+  return steer.images ? session.steer(steer.text, extractImages(steer.images)) : session.steer(steer.text);
 }
 
 function stillActiveError(id: string, status: string): Error {
@@ -413,10 +419,10 @@ export class AgentManager {
    * treats it as an absolute-priority override of its current task, not an optional note. Applies to
    * both user (`/steer`) and model (`SteerSubagent`) steers — the single delivery chokepoint.
    */
-  async steer(id: string, message: string): Promise<'steered' | 'queued' | 'not-found' | 'finished' | 'failed'> {
+  async steer(id: string, message: string, images?: ImageBlock[]): Promise<'steered' | 'queued' | 'not-found' | 'finished' | 'failed'> {
     const record = this.agents.get(id);
     if (!record) return 'not-found';
-    const wrapped = wrapSteerMessage(message);
+    const wrapped = { text: wrapSteerMessage(message), ...(images?.length ? { images } : {}) };
     if (record.status === 'queued') {
       (record.pendingSteers ??= []).push(wrapped);
       return 'queued';
@@ -424,7 +430,7 @@ export class AgentManager {
     if (record.status !== 'running') return 'finished';
     if (record.session) {
       try {
-        await record.session.steer(wrapped);
+        await deliverSteer(record.session, wrapped);
       } catch (err) {
         log('[AgentManager] steer failed for %s: %O', id, err);
         return 'failed';
@@ -743,7 +749,7 @@ export class AgentManager {
         record.outputFile = session.sessionManager.getSessionFile();
         if (record.pendingSteers?.length) {
           for (const msg of record.pendingSteers) {
-            void session.steer(msg).catch((err) => log('[AgentManager] queued steer flush failed for %s: %O', record.id, err));
+            void deliverSteer(session, msg).catch((err) => log('[AgentManager] queued steer flush failed for %s: %O', record.id, err));
           }
           record.pendingSteers = undefined;
         }

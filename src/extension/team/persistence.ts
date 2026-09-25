@@ -24,6 +24,7 @@ import type {
   TeamPersistenceWriter,
   TeamStatus,
 } from './types';
+import { isImageBlock } from '../../shared/types/content';
 import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentHistoryMessage } from '../../shared/types/team';
 
 /**
@@ -388,7 +389,8 @@ function isCheckpointMember(v: unknown): boolean {
     && isCount(v['resumeCount'])
     && isString(v['status']) && AGENT_STATUSES.has(v['status'])
     && Array.isArray(v['undelivered'])
-    && v['undelivered'].every((m) => isRecord(m) && isString(m['text']) && typeof m['echoed'] === 'boolean')
+    && v['undelivered'].every((m) => isRecord(m) && isString(m['text']) && typeof m['echoed'] === 'boolean'
+      && (m['images'] === undefined || (Array.isArray(m['images']) && m['images'].every(isImageBlock))))
     && isUsage(v['usage'])
     && isCount(v['toolCallCount']);
 }
@@ -413,7 +415,9 @@ export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
     && (review['lastReviewRoundNotification'] === null || isString(review['lastReviewRoundNotification']));
   if (!reviewOk) return false;
   const steers = value['operatorSteers'];
-  return Array.isArray(steers) && steers.every((s) => isRecord(s) && isString(s['memberName']) && isString(s['message']));
+  return Array.isArray(steers) && steers.every((s) => isRecord(s) && isString(s['memberName']) && isString(s['message'])
+    && (s['imageCount'] === undefined || isCount(s['imageCount']))
+    && (s['attempt'] === undefined || isCount(s['attempt'])));
 }
 
 class TeamLogError extends Error {

@@ -1,7 +1,7 @@
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import type { ChatMessage, ToolCall, QueuedMessage } from "@shared/types/session";
-import type { ContentBlock, UserContentBlock } from "@shared/types/content";
+import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
@@ -392,8 +392,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   function addSteerChip(
     message: string,
     steerTarget: ChatMessage['steerTarget'],
-    promptIndex?: number,
-    isReplay = false,
+    { promptIndex, isReplay = false, images }: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined } = {},
   ): ChatMessage {
     const msg: ChatMessage = {
       id: generateId(),
@@ -402,6 +401,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       timestamp: Date.now(),
       isReplay,
       isInjected: true,
+      ...(images?.length ? { contentBlocks: images } : {}),
       ...(steerTarget !== undefined && { steerTarget }),
       ...(promptIndex !== undefined && { promptIndex }),
     };

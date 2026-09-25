@@ -67,7 +67,8 @@ const getResultSchema = Type.Object(
 const steerSchema = Type.Object(
   {
     agent_id: Type.String({ description: 'The id of a running background agent.' }),
-    message: Type.String({ description: 'The steering message to inject into the running agent.' }),
+    // pi validates arguments before execute; a blank message would deliver the bare steer marker.
+    message: Type.String({ description: 'The steering message to inject into the running agent. Must contain text.', pattern: '\\S' }),
   },
   { additionalProperties: false },
 );

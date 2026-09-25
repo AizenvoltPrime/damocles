@@ -4,12 +4,17 @@ import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
 import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
+import { isImageBlock } from "@shared/types/content";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
     userReplay: (msg, ctx) => {
       if (msg.steerTarget) {
-        ctx.stores.streamingStore.addSteerChip(msg.content, msg.steerTarget, msg.promptIndex, true);
+        ctx.stores.streamingStore.addSteerChip(msg.content, msg.steerTarget, {
+          promptIndex: msg.promptIndex,
+          isReplay: true,
+          images: msg.contentBlocks?.filter(isImageBlock),
+        });
         return;
       }
       ctx.stores.streamingStore.addUserMessage(

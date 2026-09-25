@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { MAX_IMAGE_BASE64_LENGTH } from '../../../shared/types/content';
+import { formatUserSteerPrefix, type UserSteerNote } from '../../../shared/steer';
 import type { ForkSpawnArgs } from '../../../shared/types/session';
 import type { AccountInfo, AutoCompactConfig } from '../../../shared/types/settings';
 import type { Agent, AgentTurnContext, AgentTurnDecision, FinishTurn } from '@earendil-works/pi-agent-core';
@@ -2401,7 +2403,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
 
     await session.steerSubagent('agent-1', 'focus on tests');
 
-    expect(steer).toHaveBeenCalledWith('agent-1', 'focus on tests');
+    expect(steer).toHaveBeenCalledWith('agent-1', 'focus on tests', undefined);
     const emitted = messages.find((m) => m.type === 'subagentSteered');
     expect(emitted).toMatchObject({
       type: 'subagentSteered',
@@ -2413,7 +2415,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
       status: 'steered',
     });
     // A delivered steer is recorded on the record so the parent sees it when it consumes the result.
-    expect(record.userSteers).toEqual(['focus on tests']);
+    expect(record.userSteers).toEqual([{ message: 'focus on tests' }]);
     await session.dispose();
   });
 
@@ -2484,7 +2486,7 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
 
     await session.steerSubagent('agent-1', 'skip the UI');
 
-    expect(record.userSteers).toEqual(['skip the UI']);
+    expect(record.userSteers).toEqual([{ message: 'skip the UI' }]);
     await session.dispose();
   });
 
@@ -2523,6 +2525,135 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
     expect(record.userSteers).toBeUndefined();
     await session.dispose();
   });
+
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  function withSubagent(session: PiSession, status: 'steered' | 'queued' = 'steered') {
+    const record: Record<string, unknown> = { type: 'Explore', description: 'find things', toolCallId: 'tool-42' };
+    const steer = vi.fn(async () => status);
+    (session as unknown as { subagentManager: unknown }).subagentManager = { steer, getRecord: vi.fn(() => record), dispose: vi.fn() };
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+    return { record, steer, appendCustomEntry };
+  }
+
+  it('forwards, emits and persists the images, and records their count for the parent', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { record, steer, appendCustomEntry } = withSubagent(session);
+
+    await session.steerTarget('agent-1', 'look at this', [PNG, PNG], 'req-1');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', 'look at this', [PNG, PNG]);
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ message: 'look at this', images: [PNG, PNG], requestId: 'req-1', status: 'steered' });
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', {
+      agentId: 'agent-1',
+      agentType: 'Explore',
+      description: 'find things',
+      message: 'look at this',
+      images: [PNG, PNG],
+    });
+    expect(record.userSteers).toEqual([{ message: 'look at this', imageCount: 2 }]);
+    await session.dispose();
+  });
+
+  it('accepts an image-only steer', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { record, steer } = withSubagent(session, 'queued');
+
+    await session.steerTarget('agent-1', '', [PNG], 'req-1');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', '', [PNG]);
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ message: '', images: [PNG], status: 'queued' });
+    expect(record.userSteers).toEqual([{ message: '', imageCount: 1 }]);
+    await session.dispose();
+  });
+
+  it('still drops a steer with no text and an empty image list', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { steer } = withSubagent(session);
+
+    await session.steerTarget('agent-1', '  ', [], 'req-1');
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(messages.find((m) => m.type === 'subagentSteered')).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('trims the message, so a whitespace-only steer with an image records (no text)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { record, steer, appendCustomEntry } = withSubagent(session);
+
+    await session.steerTarget('agent-1', ' \n ', [PNG], 'req-1');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', '', [PNG]);
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ message: '', images: [PNG] });
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', expect.objectContaining({ message: '' }));
+    expect(formatUserSteerPrefix(record.userSteers as UserSteerNote[])).toBe('[User steered this agent mid-task: (no text) (+1 image)]\n');
+    await session.dispose();
+  });
+
+  it('rebuilds each image, so an extra property reaches neither the agent, the chip nor the session file', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { steer, appendCustomEntry } = withSubagent(session);
+    const padded = { ...PNG, extra: 'x', source: { ...PNG.source, url: 'https://x' } };
+
+    await session.steerTarget('agent-1', 'look', [padded], 'req-1');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', 'look', [PNG]);
+    expect((messages.find((m) => m.type === 'subagentSteered') as { images: unknown[] }).images).toStrictEqual([PNG]);
+    expect(appendCustomEntry.mock.calls[0]![1].images).toStrictEqual([PNG]);
+    await session.dispose();
+  });
+
+  it('echoes no images when the steer was not delivered', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer: vi.fn(async () => 'finished' as const),
+      getRecord: vi.fn(() => ({ toolCallId: 't1' })),
+      dispose: vi.fn(),
+    };
+
+    await session.steerTarget('agent-1', 'too late', [PNG], 'req-1');
+
+    const emitted = messages.find((m) => m.type === 'subagentSteered');
+    expect(emitted).toMatchObject({ status: 'finished' });
+    expect(emitted).not.toHaveProperty('images');
+    await session.dispose();
+  });
+
+  it.each([
+    ['a malformed image', [{ type: 'image', source: { type: 'url', url: 'https://x' } }]],
+    ['an unsupported media type', [{ type: 'image', source: { type: 'base64', media_type: 'image/bmp', data: 'AAAA' } }]],
+    ['a non-array', 'not-an-array'],
+    ['more than ten images', Array.from({ length: 11 }, () => PNG)],
+    ['an image over the base64 cap', [PNG, { ...PNG, source: { ...PNG.source, data: 'A'.repeat(MAX_IMAGE_BASE64_LENGTH + 1) } }]],
+  ])('reports failed and delivers nothing for %s', async (_label, images) => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const { steer, appendCustomEntry } = withSubagent(session);
+
+    await session.steerTarget('agent-1', 'look', images as never, 'req-1');
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(appendCustomEntry).not.toHaveBeenCalled();
+    expect(messages.filter((m) => m.type === 'subagentSteered')).toEqual([
+      { type: 'subagentSteered', agentId: 'agent-1', toolUseId: null, message: 'look', requestId: 'req-1', status: 'failed' },
+    ]);
+    await session.dispose();
+  });
 });
 
 describe('PiSession.steerTarget (/steer routing to team members)', () => {
@@ -2544,19 +2675,38 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const appendCustomEntry = vi.fn();
     (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
 
-    await session.steerTarget('member-1', 'use the new schema');
+    await session.steerTarget('member-1', 'use the new schema', undefined, 'req-1');
 
     expect(subagentSteer).not.toHaveBeenCalled();
-    expect(teamService.steerMember).toHaveBeenCalledWith('member-1', 'use the new schema');
+    expect(teamService.steerMember).toHaveBeenCalledWith('member-1', 'use the new schema', undefined);
+    expect(messages.find((m) => m.type === 'subagentSteered')).not.toHaveProperty('images');
     expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({
       agentId: 'member-1',
       toolUseId: null,
       description: 'Rewrite · backend',
       message: 'use the new schema',
+      requestId: 'req-1',
       status: 'steered',
       team: { teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' },
     });
     expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', { agentId: 'member-1', description: 'Rewrite · backend', message: 'use the new schema' });
+    await session.dispose();
+  });
+
+  it('forwards, emits and persists the images of a team member steer, image-only included', async () => {
+    const png = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'steered', teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerTarget('member-1', '', [png], 'req-1');
+
+    expect(teamService.steerMember).toHaveBeenCalledWith('member-1', '', [png]);
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ message: '', images: [png], status: 'steered' });
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', { agentId: 'member-1', description: 'Rewrite · backend', message: '', images: [png] });
     await session.dispose();
   });
 
@@ -2568,10 +2718,42 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const appendCustomEntry = vi.fn();
     (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
 
-    await session.steerTarget('member-1', 'too late');
+    await session.steerTarget('member-1', 'too late', undefined, 'req-1');
 
     expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ status: 'finished' });
     expect(appendCustomEntry).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  const png = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  it('echoes no images for a member the steer did not reach', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'finished', teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+
+    await session.steerTarget('member-1', 'too late', [png], 'req-1');
+
+    const emitted = messages.find((m) => m.type === 'subagentSteered');
+    expect(emitted).toMatchObject({ status: 'finished' });
+    expect(emitted).not.toHaveProperty('images');
+    await session.dispose();
+  });
+
+  it('hands the member, the chip and the session file the trimmed message', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const teamService = teamServiceStub({ status: 'steered', teamId: 'team-1', teamTitle: 'Rewrite', memberName: 'backend', role: 'specialist' });
+    const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerTarget('member-1', '  ', [png], 'req-1');
+
+    expect(teamService.steerMember).toHaveBeenCalledWith('member-1', '', [png]);
+    expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ message: '', images: [png] });
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', { agentId: 'member-1', description: 'Rewrite · backend', message: '', images: [png] });
     await session.dispose();
   });
 
@@ -2582,9 +2764,9 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const steer = vi.fn(async () => 'steered' as const);
     (session as unknown as { subagentManager: unknown }).subagentManager = { steer, getRecord: vi.fn(() => ({ toolCallId: 't1' })), dispose: vi.fn() };
 
-    await session.steerTarget('agent-1', 'focus');
+    await session.steerTarget('agent-1', 'focus', undefined, 'req-1');
 
-    expect(steer).toHaveBeenCalledWith('agent-1', 'focus');
+    expect(steer).toHaveBeenCalledWith('agent-1', 'focus', undefined);
     expect(teamService.steerMember).not.toHaveBeenCalled();
     await session.dispose();
   });
@@ -2595,7 +2777,7 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
     const session = new PiSession(makeOptions(messages, { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
     await session.initializeEarly();
 
-    await session.steerTarget('ghost', 'hello');
+    await session.steerTarget('ghost', 'hello', undefined, 'req-1');
 
     expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ agentId: 'ghost', status: 'not-found' });
     await session.dispose();
@@ -2611,6 +2793,8 @@ describe('PiSession.steerTarget (/steer routing to team members)', () => {
 
     expect(teamService.steerMember).not.toHaveBeenCalled();
     expect(messages.find((m) => m.type === 'subagentSteered')).toMatchObject({ status: 'not-found' });
+    // Only a user's steerAgent carries an id, so this result settles no held draft in the webview.
+    expect(messages.find((m) => m.type === 'subagentSteered')).not.toHaveProperty('requestId');
     await session.dispose();
   });
 });

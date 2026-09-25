@@ -1,5 +1,6 @@
 import type { TeamAgentContentBlock, TeamAgentHistoryMessage } from '../../shared/types/team';
 import { joinResultText } from '../pi-session/tool-result-text';
+import { toImageBlocks } from '../pi-session/branch-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
 import type { PersistedAgentMessage } from '../pi-session/agent-records';
 
@@ -65,7 +66,7 @@ export function memberHistoryMessages(
     const id = entryIds.get(message);
     if (id === undefined) continue;
     if (message.role === 'user') {
-      out.push({ id, role: 'user', content: [{ type: 'text', text: userText(message['content']) }] });
+      out.push({ id, role: 'user', content: [{ type: 'text', text: userText(message['content']) }, ...toImageBlocks(message['content'])] });
     } else if (message.role === 'assistant' && Array.isArray(message['content'])) {
       const blocks = assistantContentBlocks(message['content'] as PiAssistantBlock[]);
       if (blocks.length > 0) out.push({ id, role: 'assistant', content: blocks });

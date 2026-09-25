@@ -11,6 +11,8 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { AgentStopReason } from '../agent-records';
 import type { LifetimeUsage } from './usage';
+import type { ImageBlock } from '../../../shared/types/content';
+import type { UserSteerNote } from '../../../shared/steer';
 
 export type { ThinkingLevel };
 
@@ -97,6 +99,12 @@ export interface AgentConfig {
   filePath?: string | undefined;
 }
 
+/** A steer already tagged with the priority marker, waiting for the session to open. */
+export interface PendingSteer {
+  text: string;
+  images?: ImageBlock[];
+}
+
 export interface AgentRecord {
   id: string;
   type: SubagentType;
@@ -113,10 +121,10 @@ export interface AgentRecord {
   /** Set when the result was already consumed via GetSubagentResult — suppresses re-notification. */
   resultConsumed?: boolean | undefined;
   /** Steering messages queued before the session was ready. */
-  pendingSteers?: string[] | undefined;
+  pendingSteers?: PendingSteer[] | undefined;
   /** Steering messages issued by the USER via `/steer` (not the model's SteerSubagent tool). Surfaced to
    *  the parent when it consumes this subagent's result, so it knows the user redirected the subagent. */
-  userSteers?: string[] | undefined;
+  userSteers?: UserSteerNote[] | undefined;
   /** The tool_use_id from the original Agent tool call (the webview `parentToolUseId`). */
   toolCallId: string;
   /** Why a `stopped` agent was stopped. */

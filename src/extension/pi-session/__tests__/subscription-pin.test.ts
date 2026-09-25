@@ -9,8 +9,9 @@ import {
   readClaudeAuthFromDisk,
 } from '../subscription';
 
-const repo = 'https://github.com/AizenvoltPrime/pi-anthropic-auth';
+const repo = 'https://github.com/gotgenes/pi-anthropic-auth';
 const legacyRepo = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth';
+const forkRepo = 'https://github.com/AizenvoltPrime/pi-anthropic-auth';
 
 /** pi keys git packages by repo identity, so the classifier is the only thing that spots an old pin or a replaced repo. */
 describe('classifySubscriptionSource', () => {
@@ -43,6 +44,8 @@ describe('classifySubscriptionSource', () => {
     ['the pre-0.86 legacy pin', `${legacyRepo}@96126a022ff30bd80fb94703ad76381edc130311`],
     ['a `#<sha>` legacy pin', `${legacyRepo}#8f82a2d207e12bfd313092d78333c594554f26fb`],
     ['an unpinned legacy clone', legacyRepo],
+    ['the last fork pin', `${forkRepo}@62891b65b37330c9d3fbd3c6e23148893487f988`],
+    ['an unpinned fork clone', forkRepo],
   ])('classifies %s as legacy', (_label, source) => {
     expect(classifySubscriptionSource(source)).toBe('legacy');
   });

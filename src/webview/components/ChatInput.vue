@@ -9,7 +9,7 @@ import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, 
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
-import { useImageAttachments } from "@/composables/useImageAttachments";
+import { useImageAttachments, type ImageAttachment } from "@/composables/useImageAttachments";
 import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
 import { useVoiceInput } from "@/composables/useVoiceInput";
 import { useVSCode } from "@/composables/useVSCode";
@@ -17,6 +17,8 @@ import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import type { CpuFallbackReason } from "@/stores/useVoiceJarvisStore";
+import { useStreamingStore } from "@/stores/useStreamingStore";
+import { parseSteerCommand, type SteerRequest } from "@/utils/steer-command";
 import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
@@ -25,6 +27,7 @@ import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
 const { t } = useI18n();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
+const streamingStore = useStreamingStore();
 const MAX_TEXTAREA_HEIGHT = 200;
 
 const props = defineProps<{
@@ -37,6 +40,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   send: [content: string | UserContentBlock[], includeIdeContext: boolean];
   queue: [content: string | UserContentBlock[]];
+  steer: [steer: SteerRequest, requestId: string];
   cancel: [];
   changeMode: [mode: PermissionMode];
   toggleDangerouslySkipPermissions: [];
@@ -257,7 +261,23 @@ function setInput(value: string) {
   });
 }
 
-defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError });
+const heldSteerDrafts = new Map<string, { text: string; images: ImageAttachment[] }>();
+
+function holdSteerDraft(): string {
+  const requestId = `steer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  heldSteerDrafts.set(requestId, { text: inputText.value, images: [...imageAttachments.value] });
+  return requestId;
+}
+
+function settleSteer(requestId: string, delivered: boolean): void {
+  const draft = heldSteerDrafts.get(requestId);
+  heldSteerDrafts.delete(requestId);
+  if (!draft || delivered || canSend.value) return;
+  inputText.value = draft.text;
+  imageAttachments.value = draft.images;
+}
+
+defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer });
 
 const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value || hasElementAttachments.value);
 
@@ -315,7 +335,6 @@ function handleSend() {
   // A prompt sent mid-switch would land in a fresh session in another folder; the draft stays in the box.
   if (!canSend.value || settingsStore.workspaceFolderSwitchPending) return;
   const text = inputText.value.trim();
-  addEntry(text);
 
   const imageBlocks = imagesToContentBlocks();
   const elementBlocks = elementsToContentBlocks();
@@ -324,7 +343,17 @@ function handleSend() {
     ? [...elementBlocks, ...imageBlocks, ...(text ? [{ type: "text" as const, text }] : [])]
     : text;
 
-  if (props.isProcessing) {
+  // A rejected steer returns before addEntry and the clear below, so the draft stays in the box.
+  const steer = parseSteerCommand(content);
+  if (steer.kind === "usage" || steer.kind === "elements") {
+    streamingStore.addErrorMessage(t(steer.kind === "usage" ? "steerCommand.usage" : "steerCommand.noElements"));
+    return;
+  }
+  addEntry(text);
+
+  if (steer.kind === "steer") {
+    emit("steer", { agentId: steer.agentId, message: steer.message, images: steer.images }, holdSteerDraft());
+  } else if (props.isProcessing) {
     emit("queue", content);
   } else {
     emit("send", content, ideContextEnabled.value);

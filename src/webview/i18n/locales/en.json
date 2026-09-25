@@ -824,7 +824,8 @@
   },
   "steerCommand": {
     "youSteered": "You steered {agent}",
-    "usage": "Usage: /steer <agent> <message>",
+    "usage": "Usage: /steer <agent> <message>, with or without pasted images",
+    "noElements": "A steer can't include browser elements. Remove them and send again.",
     "finished": "That agent already finished. Nothing to steer.",
     "failed": "Steering the agent failed.",
     "notFound": "No running agent matches that id.",
@@ -946,7 +947,8 @@
     "edit": "Edit"
   },
   "imageLightbox": {
-    "enlarged": "Enlarged image"
+    "enlarged": "Enlarged image",
+    "title": "Image preview"
   },
   "imageThumbnail": {
     "attachedImage": "Attached image",

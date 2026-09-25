@@ -258,7 +258,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
     steerAgent: async (msg, ctx) => {
       if (msg.type !== "steerAgent") return;
-      await ctx.session.steerTarget(msg.agentId, msg.message);
+      await ctx.session.steerTarget(msg.agentId, msg.message, msg.images, msg.requestId);
     },
 
   };

@@ -1,5 +1,10 @@
 import { ref, computed } from 'vue';
-import type { ImageBlock } from '@shared/types/content';
+import {
+  isImageMediaType,
+  MAX_IMAGES_PER_MESSAGE,
+  type ImageBlock,
+  type ImageMediaType,
+} from '@shared/types/content';
 import { i18n } from '@/i18n';
 import { resizeImageForSDK } from '@/utils/imageUtils';
 
@@ -7,15 +12,13 @@ export interface ImageAttachment {
   id: string;
   dataUrl: string;
   base64Data: string;
-  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  mediaType: ImageMediaType;
   fileName?: string;
   width: number;
   height: number;
 }
 
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
-const MAX_ATTACHMENTS = 10;
-const SUPPORTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 function loadDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
   const img = new Image();
@@ -33,26 +36,22 @@ export function useImageAttachments() {
   const attachments = ref<ImageAttachment[]>([]);
 
   const hasAttachments = computed(() => attachments.value.length > 0);
-  const canAddMore = computed(() => attachments.value.length < MAX_ATTACHMENTS);
+  const canAddMore = computed(() => attachments.value.length < MAX_IMAGES_PER_MESSAGE);
 
   function generateId(): string {
     return `img-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   }
 
-  function isValidMediaType(type: string): type is ImageAttachment['mediaType'] {
-    return SUPPORTED_TYPES.has(type);
-  }
-
   async function addFromFile(file: File): Promise<{ success: boolean; error?: string }> {
     if (!canAddMore.value) {
-      return { success: false, error: i18n.global.t('imageAttachment.maxAllowed', { n: MAX_ATTACHMENTS }) };
+      return { success: false, error: i18n.global.t('imageAttachment.maxAllowed', { n: MAX_IMAGES_PER_MESSAGE }) };
     }
 
     if (file.size > MAX_IMAGE_SIZE_BYTES) {
       return { success: false, error: i18n.global.t('imageAttachment.tooLarge', { n: MAX_IMAGE_SIZE_BYTES / 1024 / 1024 }) };
     }
 
-    if (!isValidMediaType(file.type)) {
+    if (!isImageMediaType(file.type)) {
       return { success: false, error: i18n.global.t('imageAttachment.unsupportedType') };
     }
 

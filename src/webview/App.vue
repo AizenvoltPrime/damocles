@@ -102,6 +102,7 @@ import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
+import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig } from "@shared/types/mcp";
@@ -375,17 +376,8 @@ function tryDispatchBtw(content: string | UserContentBlock[]): boolean {
   return true;
 }
 
-function tryDispatchSteer(content: string | UserContentBlock[]): boolean {
-  if (typeof content !== "string") return false;
-  const trimmed = content.trim();
-  if (!/^\/steer\b/.test(trimmed)) return false;
-  const steerMatch = trimmed.match(/^\/steer\s+(\S+)\s+(.+)$/s);
-  if (!steerMatch) {
-    streamingStore.addErrorMessage(t("steerCommand.usage"));
-    return true;
-  }
-  postMessage({ type: "steerAgent", agentId: steerMatch[1]!, message: steerMatch[2]! });
-  return true;
+function handleSteer({ agentId, message, images }: SteerRequest, requestId: string) {
+  postMessage({ type: "steerAgent", agentId, message, ...(images.length ? { images } : {}), requestId });
 }
 
 function tryInterceptUsage(content: string | UserContentBlock[]): boolean {
@@ -416,7 +408,6 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
-  if (tryDispatchSteer(content)) return;
 
   postMessage({ type: "sendMessage", content, includeIdeContext });
   uiStore.setProcessing(true);
@@ -425,7 +416,6 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 function handleQueueMessage(content: string | UserContentBlock[]) {
   if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
-  if (tryDispatchSteer(content)) return;
   postMessage({ type: "queueMessage", content });
 }
 
@@ -1313,6 +1303,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :settings-open="showSettingsPanel"
       @send="handleSendMessage"
       @queue="handleQueueMessage"
+      @steer="handleSteer"
       @cancel="handleCancel"
       @change-mode="handleModeChange"
       @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"

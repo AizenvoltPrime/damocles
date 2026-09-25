@@ -1,7 +1,7 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { ContentInput } from '../session-types';
-import type { UserContentBlock } from '../../shared/types/content';
+import { isImageBlock, type ImageBlock, type UserContentBlock } from '../../shared/types/content';
 
 /**
  * Generic, plan-mode-agnostic helpers that read pi message/branch content. `piMessageText` is the
@@ -24,6 +24,17 @@ export function extractImages(content: ContentInput): ImageContent[] {
   return content
     .filter((b): b is Extract<UserContentBlock, { type: 'image' }> => b.type === 'image')
     .map((b) => ({ type: 'image', data: b.source.data, mimeType: b.source.media_type }));
+}
+
+/** The inverse of `extractImages` over a pi message's content: its image parts with a supported media type and non-empty data. */
+export function toImageBlocks(content: unknown): ImageBlock[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .map((part: unknown): unknown => {
+      const p = part as { type?: unknown; data?: unknown; mimeType?: unknown } | null;
+      return p?.type === 'image' ? { type: 'image', source: { type: 'base64', media_type: p.mimeType, data: p.data } } : null;
+    })
+    .filter(isImageBlock);
 }
 
 /** Join the text blocks of a pi message's content (used for the title exchange). */

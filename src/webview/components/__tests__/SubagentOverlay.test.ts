@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from 'vitest';
-import { defineComponent } from 'vue';
+import { computed, defineComponent, h, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
@@ -98,5 +98,92 @@ describe('clicking a tool card inside a subagent overlay', () => {
 
     expect(useUIStore().expandedToolSource).toBe('subagent');
     expect(defined(useExpandedTool().value).name).toBe('Grep');
+  });
+});
+
+describe('a steer row with images', () => {
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  function mountFromStore(id: string) {
+    const state = defined(useSubagentStore().subagents[id], id);
+    return mount(SubagentOverlay, {
+      props: { subagent: state },
+      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+    });
+  }
+
+  it('shows one chip per image on a live steer', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('sub-1', { subagent_type: 'Explore', description: 'find' });
+    store.addUserMessageToSubagent('sub-1', 'look', [PNG, PNG]);
+
+    expect(mountFromStore('sub-1').findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(2);
+  });
+
+  it('shows the chips after the sealing snapshot replaces the transcript', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('sub-1', { subagent_type: 'Explore', description: 'find' });
+    store.replaceSubagentMessages('sub-1', [
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'the task' }] },
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'look' }, PNG] },
+    ]);
+
+    expect(mountFromStore('sub-1').findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(1);
+  });
+
+  it('shows no chips on a text-only steer', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('sub-1', { subagent_type: 'Explore', description: 'find' });
+    store.addUserMessageToSubagent('sub-1', 'look');
+
+    expect(mountFromStore('sub-1').findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(0);
+  });
+});
+
+describe('the image lightbox of a steer row', () => {
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  /** Reads the subagent from the store on every render, the way App passes it, so a store rebuild reaches the overlay. */
+  function mountLive(id: string) {
+    const store = useSubagentStore();
+    const Host = defineComponent({
+      setup() {
+        const state = computed(() => defined(store.subagents[id], id));
+        return () => h(SubagentOverlay, { subagent: state.value });
+      },
+    });
+    return mount(Host, {
+      attachTo: document.body,
+      global: { plugins: [i18n], stubs: { OverlayShell: PassThroughStub, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+    });
+  }
+
+  function lightboxImage(): HTMLImageElement | null {
+    return document.body.querySelector<HTMLImageElement>('[role="dialog"] img');
+  }
+
+  it('stays open when the finished subagent snapshot rebuilds every row', async () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('sub-1', { subagent_type: 'Explore', description: 'find' });
+    store.addUserMessageToSubagent('sub-1', 'look', [PNG]);
+    const wrapper = mountLive('sub-1');
+
+    const chip = wrapper.findComponent({ name: 'UserMessageImageChip' });
+    await chip.trigger('click');
+    await nextTick();
+    expect(lightboxImage()?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+
+    store.replaceSubagentMessages('sub-1', [
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'the task' }] },
+      { role: 'user', contentBlocks: [{ type: 'text', text: 'look' }, PNG] },
+    ]);
+    await nextTick();
+    await nextTick();
+
+    // The row remounted under its new id, so a lightbox owned by the row would be gone.
+    expect(chip.element.isConnected).toBe(false);
+    expect(wrapper.findAllComponents({ name: 'UserMessageImageChip' })).toHaveLength(1);
+    expect(lightboxImage()?.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    wrapper.unmount();
   });
 });

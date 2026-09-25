@@ -17,6 +17,20 @@ function toolIds(store: ReturnType<typeof useStreamingStore>): string[] {
   return store.messages.flatMap((m) => m.toolCalls ?? []).map((t) => t.id);
 }
 
+describe('useStreamingStore.addSteerChip', () => {
+  const PNG = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  it('carries the images as contentBlocks so the chip renders them', () => {
+    const chip = useStreamingStore().addSteerChip('look', { agentId: 'a1' }, { images: [PNG] });
+    expect(chip).toMatchObject({ content: 'look', isInjected: true, contentBlocks: [PNG], steerTarget: { agentId: 'a1' } });
+  });
+
+  it('sets no contentBlocks without images', () => {
+    expect(useStreamingStore().addSteerChip('look', { agentId: 'a1' }, { images: [] }).contentBlocks).toBeUndefined();
+    expect(useStreamingStore().addSteerChip('look', { agentId: 'a1' }).contentBlocks).toBeUndefined();
+  });
+});
+
 describe('useStreamingStore cache pruning', () => {
   it('caches nothing for a call that is already in the transcript', () => {
     const store = useStreamingStore();

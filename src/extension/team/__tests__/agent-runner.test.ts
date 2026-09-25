@@ -1,7 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AgentRunner } from '../agent-runner';
 import { MessageBus } from '../message-bus';
-import type { AgentRunConfig } from '../types';
+import type { AgentRunConfig, NoteSink, UndeliveredMessage } from '../types';
+import type { ImageBlock } from '../../../shared/types/content';
+import { wrapSteerMessage } from '../../../shared/steer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { FakeSession } from './fake-session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
@@ -27,14 +29,14 @@ function baseConfig(overrides: Partial<AgentRunConfig>): AgentRunConfig {
     onMessage: vi.fn<(m: ExtensionToWebviewMessage) => void>(),
     teamId: 'team-1',
     bindNoteDelivery: () => () => undefined,
-    bindUndelivered: () => () => undefined,
+    bindTakeUndelivered: () => () => undefined,
     ...overrides,
   } as AgentRunConfig;
 }
 
 /** Captures the note sink the runner publishes, plus whether its teardown has run. */
-function noteSink(): { deliver: (text: string) => boolean; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } {
-  const sink: { deliver: (text: string) => boolean; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } = {
+function noteSink(): { deliver: NoteSink; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } {
+  const sink: { deliver: NoteSink; unbound: boolean; bind: AgentRunConfig['bindNoteDelivery'] } = {
     deliver: () => { throw new Error('the runner never published a note sink'); },
     unbound: false,
     bind: () => () => undefined,
@@ -1004,15 +1006,15 @@ describe('AgentRunner finalResponse', () => {
   });
 });
 
-/** Captures the undelivered reader the runner publishes, plus whether its teardown has run. */
-function undeliveredReader(): { read: () => Array<{ text: string; echoed: boolean }>; unbound: boolean; bind: AgentRunConfig['bindUndelivered'] } {
-  const sink: { read: () => Array<{ text: string; echoed: boolean }>; unbound: boolean; bind: AgentRunConfig['bindUndelivered'] } = {
-    read: () => { throw new Error('the runner never published an undelivered reader'); },
+/** Captures the undelivered-message taker the runner publishes, plus whether its teardown has run. */
+function undeliveredTaker(): { take: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } {
+  const sink: { take: () => UndeliveredMessage[]; unbound: boolean; bind: AgentRunConfig['bindTakeUndelivered'] } = {
+    take: () => { throw new Error('the runner never published an undelivered-message taker'); },
     unbound: false,
     bind: () => () => undefined,
   };
-  sink.bind = (read) => {
-    sink.read = read;
+  sink.bind = (take) => {
+    sink.take = take;
     return () => { sink.unbound = true; };
   };
   return sink;
@@ -1192,14 +1194,14 @@ describe('AgentRunner redelivery and undelivered messages', () => {
       onPrompt: (text, s) => { if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' }); },
     });
     const messageBus = new MessageBus('team-1');
-    const reader = undeliveredReader();
+    const taker = undeliveredTaker();
     const abort = new AbortController();
     const config = baseConfig({
       messageBus,
       abortSignal: abort.signal,
       createSession: async () => fake as never,
       keepAlive: () => true,
-      bindUndelivered: reader.bind,
+      bindTakeUndelivered: taker.bind,
     });
 
     const run = new AgentRunner().startAgent(config);
@@ -1209,7 +1211,7 @@ describe('AgentRunner redelivery and undelivered messages', () => {
     fake.holdSteeredMessage('held by pi as a steer');
     fake.holdFollowUpMessage('held by pi as a follow-up');
 
-    expect(reader.read()).toEqual([
+    expect(taker.take()).toEqual([
       { text: 'held by pi as a steer', echoed: true },
       { text: 'held by pi as a follow-up', echoed: true },
       { text: '[Message from Lead]: held by the runner', echoed: false },
@@ -1217,7 +1219,7 @@ describe('AgentRunner redelivery and undelivered messages', () => {
 
     abort.abort();
     await run;
-    expect(reader.unbound).toBe(true);
+    expect(taker.unbound).toBe(true);
   });
 });
 
@@ -1258,5 +1260,127 @@ describe('AgentRunner cost baseline', () => {
     expect(result.costUsd).toBeCloseTo(0.5, 10);
     expect(usageUpdates.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.5]);
     expect(costDeltas.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.25]);
+  });
+});
+
+describe('AgentRunner image steers', () => {
+  const image: ImageBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+  const piImage = { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' };
+  const steer = wrapSteerMessage('use this layout');
+
+  /** A streaming member whose opening turn is held; the prompt after it ends its own turn. */
+  function streamingMember(config: Partial<AgentRunConfig> = {}): {
+    fake: FakeSession; sink: ReturnType<typeof noteSink>; taker: ReturnType<typeof undeliveredTaker>;
+    messages: ExtensionToWebviewMessage[]; abort: AbortController; endOpening: () => void; run: Promise<unknown>;
+  } {
+    const opening: { end: (() => void) | null } = { end: null };
+    const fake = new FakeSession({
+      isStreaming: true,
+      onPrompt: (text, s) => {
+        if (text === 'do the task') opening.end = () => s.emit({ type: 'turn_end' });
+        else if (s.promptOptions.at(-1)?.streamingBehavior !== 'steer') s.emit({ type: 'turn_end' });
+      },
+    });
+    const sink = noteSink();
+    const taker = undeliveredTaker();
+    const messages: ExtensionToWebviewMessage[] = [];
+    const abort = new AbortController();
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      abortSignal: abort.signal,
+      keepAlive: () => false,
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      bindNoteDelivery: sink.bind,
+      bindTakeUndelivered: taker.bind,
+      ...config,
+    }));
+    const endOpening = (): void => {
+      if (!opening.end) throw new Error('the opening prompt never reached the fake session');
+      opening.end();
+    };
+    return { fake, sink, taker, messages, abort, endOpening, run };
+  }
+
+  it('echoes an idle image steer with its images and prompts pi with them', async () => {
+    let alive = true;
+    let idleResolve: (() => void) | null = null;
+    const idle = new Promise<void>((r) => { idleResolve = r; });
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    const messages: ExtensionToWebviewMessage[] = [];
+    const sink = noteSink();
+    const run = new AgentRunner().startAgent(baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+      onMessage: (m: ExtensionToWebviewMessage) => { messages.push(m); },
+      bindNoteDelivery: sink.bind,
+    }));
+    await idle;
+
+    expect(sink.deliver(steer, [image])).toBe(true);
+    await fake.whenPrompted(2);
+    alive = false;
+    await run;
+
+    expect(fake.prompts[1]).toBe(steer);
+    expect(fake.promptOptions[1]).toEqual({ images: [piImage], expandPromptTemplates: false });
+    const echoes = messages.filter((m) => m.type === 'teamAgentUserMessage' && m.content === steer);
+    expect(echoes).toEqual([expect.objectContaining({ images: [image] })]);
+  });
+
+  it('steers a mid-stream image steer into pi with its images', async () => {
+    const m = streamingMember();
+    await m.fake.whenPrompted(1);
+    expect(m.sink.deliver(steer, [image])).toBe(true);
+    await m.fake.whenPrompted(2);
+    m.endOpening();
+    await m.run;
+
+    expect(m.fake.promptOptions[1]).toEqual({ streamingBehavior: 'steer', images: [piImage], expandPromptTemplates: false });
+    expect(m.fake.prompts).toHaveLength(2);
+  });
+
+  it('puts the images back on a steer it reclaims from pi at the turn end', async () => {
+    const m = streamingMember();
+    await m.fake.whenPrompted(1);
+    m.fake.holdSteers = true;
+    expect(m.sink.deliver(steer, [image])).toBe(true);
+    await m.fake.whenPrompted(2);
+    m.endOpening();
+    await m.run;
+
+    expect(m.fake.prompts).toEqual(['do the task', steer, steer]);
+    expect(m.fake.promptOptions[2]).toEqual({ images: [piImage], expandPromptTemplates: false });
+    // Reclaimed messages were echoed when accepted, so the reclaim echoes nothing again.
+    expect(m.messages.filter((x) => x.type === 'teamAgentUserMessage' && x.content === steer)).toHaveLength(1);
+  });
+
+  it('carries the images of a steer pi still holds in the undelivered snapshot, pairing equal texts in order', async () => {
+    const m = streamingMember();
+    await m.fake.whenPrompted(1);
+    m.fake.holdSteers = true;
+    expect(m.sink.deliver(steer)).toBe(true);
+    expect(m.sink.deliver(steer, [image])).toBe(true);
+    await m.fake.whenPrompted(3);
+
+    expect(m.taker.take()).toEqual([
+      { text: steer, echoed: true },
+      { text: steer, echoed: true, images: [image] },
+    ]);
+    m.abort.abort();
+    await m.run;
+  });
+
+  it('forgets the images of a steer pi has delivered', async () => {
+    const m = streamingMember();
+    await m.fake.whenPrompted(1);
+    expect(m.sink.deliver(steer, [image])).toBe(true);
+    await m.fake.whenPrompted(2);
+    // A later text-only copy pi holds must not inherit the delivered steer's images.
+    m.fake.holdSteeredMessage(steer);
+
+    expect(m.taker.take()).toEqual([{ text: steer, echoed: true }]);
+    m.abort.abort();
+    await m.run;
   });
 });
