@@ -6,14 +6,13 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan, IconClock, IconEye } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
-import { getAgentColor, formatElapsed, statusBadgeClass, formatTokenCount } from '@/composables/useTeamFormatting';
-import { useCostLabel } from '@/composables/useCostLabel';
+import { getAgentColor, formatElapsed, statusBadgeClass } from '@/composables/useTeamFormatting';
+import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useVSCode } from '@/composables/useVSCode';
 import { useTeamStore } from '@/stores/useTeamStore';
 
 const { t } = useI18n();
-const { costLabel, costTitle } = useCostLabel();
 
 const props = defineProps<{
   agent: TeamAgent;
@@ -86,16 +85,10 @@ function cancelAgent(e: Event): void {
       </div>
 
       <div class="flex items-center gap-1.5 text-xs text-foreground/50 pt-1 border-t border-border/30">
-        <span>{{ t('team.toolCount', { n: agent.toolCount }) }}</span>
+        <span>{{ t('team.toolCount', { n: agent.toolCount }, agent.toolCount) }}</span>
         <span v-if="agent.startTime" class="text-foreground/30">•</span>
         <span v-if="agent.startTime">{{ formatElapsed(elapsedMs) }}</span>
-        <span v-if="agent.totalInputTokens > 0 || agent.totalOutputTokens > 0" class="text-foreground/30">•</span>
-        <span
-          v-if="agent.totalInputTokens > 0 || agent.totalOutputTokens > 0"
-          :title="`In: ${agent.totalInputTokens.toLocaleString()} Out: ${agent.totalOutputTokens.toLocaleString()}` + (agent.cacheReadTokens > 0 ? ` Cache read: ${agent.cacheReadTokens.toLocaleString()}` : '') + (agent.cacheCreationTokens > 0 ? ` Cache write: ${agent.cacheCreationTokens.toLocaleString()}` : '')"
-        >{{ formatTokenCount(agent.totalInputTokens + agent.totalOutputTokens) }} tokens</span>
-        <span v-if="agent.costUsd > 0" class="text-foreground/30">•</span>
-        <span v-if="agent.costUsd > 0" class="font-medium text-foreground/60" :title="costTitle(agent.dollarBilled)">{{ costLabel(agent.costUsd, agent.dollarBilled) }}</span>
+        <AgentUsageStats :usage="agent" :dollar-billed="agent.dollarBilled" variant="card" separator-class="text-foreground/30" cost-class="text-foreground/60" />
         <span v-if="agent.lastToolName" class="text-foreground/30">•</span>
         <span v-if="agent.lastToolName" class="truncate">{{ agent.lastToolName }}</span>
         <span class="ml-auto" />

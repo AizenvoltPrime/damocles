@@ -6,12 +6,13 @@ import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import AgentUsageStats from './AgentUsageStats.vue';
 import { formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
-const { t } = useI18n();
-const { costLabel, costTitle, teamDollarBilled } = useCostLabel();
+const { t, locale } = useI18n();
+const { teamDollarBilled } = useCostLabel();
 
 // Status, time and totals come from `run`; the team supplies the title, roster and billing flags.
 const props = defineProps<{
@@ -115,17 +116,14 @@ const statusBadgeClass = computed(() => {
 
     <CardContent class="px-3 py-2 flex items-center justify-between">
       <div class="flex items-center gap-1.5 text-xs text-foreground/70 leading-none">
-        <span>{{ t('team.toolCount', { n: run.toolCount }) }}</span>
+        <span>{{ t('team.toolCount', { n: run.toolCount }, run.toolCount) }}</span>
         <span class="text-foreground/40">•</span>
         <span>{{ formatElapsed(elapsedMs) }}</span>
-        <template v-if="run.tokens > 0">
+        <template v-if="run.legacyTokens">
           <span class="text-foreground/40">•</span>
-          <span>{{ formatTokenCount(run.tokens) }} tokens</span>
+          <span data-part="tokens">{{ t('agentUsage.tokens', { n: formatTokenCount(run.legacyTokens, locale) }, run.legacyTokens) }}</span>
         </template>
-        <template v-if="run.costUsd > 0">
-          <span class="text-foreground/40">•</span>
-          <span class="font-medium" :title="costTitle(totalBilled)">{{ costLabel(run.costUsd, totalBilled) }}</span>
-        </template>
+        <AgentUsageStats :usage="run.usage" :dollar-billed="totalBilled" variant="card" />
       </div>
       <div class="flex items-center">
         <LoadingSpinner v-if="isRunning" :size="14" class="text-primary" />

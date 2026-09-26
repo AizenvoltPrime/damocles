@@ -15,6 +15,17 @@ export interface FakeSessionOptions {
 
 type Listener = (event: unknown) => void;
 
+type FakeTokens = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+/** pi's per-message `usage`, of which the fake reads the token kinds and the cost total. */
+type FakeMessageUsage = Partial<FakeTokens> & { cost?: { total: number } };
+
+/** What a session file holds before a reopened run adds to it. */
+export interface FakeOpeningTotals {
+  cost: number;
+  tokens: FakeTokens;
+}
+
 /** The prompt options this fake records, so a test can pin the ones that carry a guarantee. */
 export interface FakePromptOptions {
   streamingBehavior?: 'steer' | 'followUp';
@@ -68,6 +79,12 @@ export class FakeSession {
       resolve();
     }
     for (const l of this.listeners) l(event);
+    // Real pi persists a message after its listeners ran, and only then does the session file count its tokens and cost.
+    const message = (event as { type?: string; message?: { role?: string; usage?: FakeMessageUsage } }).message;
+    if ((event as { type?: string }).type === 'message_end' && message?.role === 'assistant' && message.usage) {
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) this.tokens[key] += message.usage[key] ?? 0;
+      this.cost += message.usage.cost?.total ?? 0;
+    }
   }
 
   async prompt(text: string, options?: FakePromptOptions): Promise<void> {
@@ -132,15 +149,23 @@ export class FakeSession {
     resolve?.();
   }
 
-  /** Cumulative session cost (real pi semantics) — driven by the test via `cost`. */
+  /**
+   * The session file's cumulative cost and tokens, summed from each assistant `message_end` as pi's
+   * persisted entries are. A test seeds them for a reopened file, or raises them for spend pi writes
+   * with no message, such as a compaction or a cache warm.
+   */
   cost = 0;
-  getSessionStats(): { cost: number } {
-    return { cost: this.cost };
+  readonly tokens: FakeTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+  /** Seed the totals a reopened session file already holds. */
+  seedOpening(opening: FakeOpeningTotals): void {
+    this.cost = opening.cost;
+    Object.assign(this.tokens, opening.tokens);
   }
 
-  /** Emit one assistant `message_end` carrying per-message usage (mirrors real pi's event shape). */
-  emitAssistantUsage(usage: { input: number; output: number; cacheRead: number; cacheWrite: number }): void {
-    this.emit({ type: 'message_end', message: { role: 'assistant', content: [], usage } });
+  /** Emit one assistant `message_end` carrying per-message usage and its cost (mirrors real pi's event shape). */
+  emitAssistantUsage(usage: { input: number; output: number; cacheRead: number; cacheWrite: number }, cost: number): void {
+    this.emit({ type: 'message_end', message: { role: 'assistant', content: [], usage: { ...usage, cost: { total: cost } } } });
   }
 
   /** Custom entries appended through `sessionManager`, in order. */
@@ -152,6 +177,8 @@ export class FakeSession {
       return `entry-${this.customEntries.length}`;
     },
     getSessionFile: (): string | undefined => this.sessionFile,
+    // One `usage` entry carrying the running totals sums to what pi's file would.
+    getEntries: (): unknown[] => [{ type: 'usage', usage: { ...this.tokens, cost: { total: this.cost } } }],
   };
 
   getLastAssistantText(): string {

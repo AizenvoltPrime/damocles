@@ -118,6 +118,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
         sessionManager: {
           appendCustomEntry: (customType: string, data: unknown) => void customEntries.push({ customType, data }),
           getSessionFile: () => `/store/${customEntries.length}.jsonl`,
+          getEntries: () => statsAsEntries(session),
         },
       };
       return session as unknown as AgentSession;
@@ -149,9 +150,31 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     // that quietly no-ops here would let the teardown call be deleted with every test still green.
     cancelAgentDialogs: (agentId: string) => cancelledDialogs.push(agentId),
     resolveModel: () => ({}),
+    modelDollarBilled: () => true,
     onSubagentCost: () => {},
   };
   return { engine, gates };
+}
+
+/** One `usage` entry holding the fake's current stats, so the entry-summing usage meter reads what `getSessionStats` reports. */
+function statsAsEntries(session: { getSessionStats: () => { tokens: object; cost: number } }): unknown[] {
+  const { tokens, cost } = session.getSessionStats();
+  return [{ type: 'usage', usage: { ...tokens, cost: { total: cost } } }];
+}
+
+/** Give every nested session one mutable stats total, which a test raises to model billed spend. */
+function withStats(engine: SubagentEngine): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } {
+  const stats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  const create = engine.createSession;
+  engine.createSession = async (opts) => {
+    const session = await create(opts);
+    (session as unknown as { getSessionStats: () => unknown }).getSessionStats = () => ({
+      tokens: { input: stats.input, output: stats.output, cacheRead: stats.cacheRead, cacheWrite: stats.cacheWrite, total: 0 },
+      cost: stats.cost,
+    });
+    return session;
+  };
+  return stats;
 }
 
 /** The i-th nested session's gate, failing loudly rather than reading `undefined` off the array. */
@@ -610,7 +633,7 @@ describe('AgentManager thinkingLevel precedence', () => {
         abort: async () => {},
         dispose: () => {},
         sessionId: 'sid',
-        sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl' },
+        sessionManager: { appendCustomEntry: () => 'e', getSessionFile: () => '/store/x.jsonl', getEntries: () => statsAsEntries(session) },
       };
       return session as unknown as AgentSession;
     };
@@ -640,6 +663,31 @@ describe('AgentManager thinkingLevel precedence', () => {
     expect(captured[0]!.thinkingLevel).toBe('low');
     gateAt(gates, 0).resolve();
     await flush();
+    mgr.dispose();
+  });
+
+  it('hands the resolved billing flag to the card and records it in the launch entry', async () => {
+    const { engine, gates } = makeEngine();
+    engine.resolveModel = () => ({ modelLabel: 'sonnet', dollarBilled: false });
+    const stats = withStats(engine);
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush();
+
+    expect(customEntries[0]).toMatchObject({ customType: 'damocles-agent-launch', data: { agentId: id, modelLabel: 'sonnet', dollarBilled: false } });
+    Object.assign(stats, { input: 10, output: 20, cacheRead: 300, cacheWrite: 40, cost: 0.5 });
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+
+    expect(posted.filter((m) => m.type === 'subagentUsageUpdate')).toEqual([{
+      type: 'subagentUsageUpdate',
+      agentToolId: 'tc0',
+      usage: { totalInputTokens: 10, totalOutputTokens: 20, cacheReadTokens: 300, cacheCreationTokens: 40, costUsd: 0.5 },
+      dollarBilled: false,
+    }]);
     mgr.dispose();
   });
 
@@ -1662,7 +1710,7 @@ describe('AgentManager resume', () => {
   /** Write the agent's pi session file the way a run does, ending in `status` when given. */
   function writeAgentFile(
     dir: string,
-    opts: { agentType?: string; background?: boolean; status?: { status: string; stopReason?: string } },
+    opts: { agentType?: string; background?: boolean; status?: { status: string; stopReason?: string }; dollarBilled?: boolean },
   ): string {
     const sm = SessionManager.create(dir, dir, { id: AGENT });
     sm.appendCustomEntry('damocles-agent-launch', {
@@ -1673,6 +1721,7 @@ describe('AgentManager resume', () => {
       prompt: 'find the bug',
       background: opts.background ?? false,
       modelLabel: 'haiku',
+      ...(opts.dollarBilled !== undefined ? { dollarBilled: opts.dollarBilled } : {}),
     });
     sm.appendMessage({ role: 'user', content: [{ type: 'text', text: 'find the bug' }], timestamp: Date.now() });
     sm.appendMessage(assistantMessage('looking'));
@@ -2027,6 +2076,38 @@ describe('AgentManager resume', () => {
     mgr.dispose();
   });
 
+  it.each([
+    { recorded: true, model: undefined, expected: { dollarBilled: true } },
+    { recorded: undefined, model: undefined, expected: {} },
+    // The reopened model decides, so a launch written before the flag existed still gets one.
+    { recorded: undefined, model: { provider: 'openai-codex', id: 'gpt-6' }, expected: { dollarBilled: false } },
+    { recorded: true, model: { provider: 'openai-codex', id: 'gpt-6' }, expected: { dollarBilled: false } },
+  ])('a reopened agent card and its segment are labelled from the model it reopened on, else its launch flag ($recorded, $model)', async ({ recorded, model, expected }) => {
+    const { engine, gates, dir } = resumeEngine();
+    writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' }, ...(recorded !== undefined ? { dollarBilled: recorded } : {}) });
+    spawnOnBranch(spawnArgs);
+    const stats = withStats(engine);
+    const create = engine.createSession;
+    engine.createSession = async (opts) => Object.assign(await create(opts), { model });
+    engine.modelDollarBilled = (m) => m.provider !== 'openai-codex';
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine);
+
+    const record = await mgr.resume(resumeReq('tc-r'));
+    await settle();
+    stats.cost += 0.4;
+    gateAt(gates, 0).resolve();
+    await record.promise;
+
+    const update = posted.find((m) => m.type === 'subagentUsageUpdate');
+    // No flag means the webview falls back to the panel's.
+    expect(update).toEqual({ type: 'subagentUsageUpdate', agentToolId: 'tc-r', usage: expect.objectContaining({ costUsd: 0.4 }), ...expected });
+    // The reload reads the segment's flag, so it labels the card as the live run did.
+    expect(customEntries.find((e) => e.customType === 'damocles-agent-segment')?.data).toEqual({ toolCallId: 'tc-r', ...expected });
+    mgr.dispose();
+  });
+
   it('the budget meter counts only spend after the session reopened', async () => {
     const { engine, gates, dir } = resumeEngine();
     writeAgentFile(dir, { status: { status: 'stopped', stopReason: 'user' } });
@@ -2035,7 +2116,7 @@ describe('AgentManager resume', () => {
     const create = engine.createSession;
     engine.createSession = async (opts) => {
       const session = await create(opts);
-      (session as unknown as { getSessionStats: () => { cost: number } }).getSessionStats = () => ({ cost });
+      (session as unknown as { getSessionStats: () => unknown }).getSessionStats = () => ({ tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost });
       return session;
     };
     const charged: number[] = [];
@@ -2049,7 +2130,40 @@ describe('AgentManager resume', () => {
     await record.promise;
 
     expect(charged.reduce((a, b) => a + b, 0)).toBeCloseTo(0.25);
-    expect(record.costUsd).toBeCloseTo(0.25);
+    expect(record.usage.costUsd).toBeCloseTo(0.25);
+    mgr.dispose();
+  });
+
+  it('charges each response once pi has saved it, from the reading the card is sent, while the run goes on', async () => {
+    const { engine, gates } = makeEngine();
+    const stats = withStats(engine);
+    const listeners: Array<(event: unknown) => void> = [];
+    const create = engine.createSession;
+    engine.createSession = async (opts) =>
+      Object.assign(await create(opts), { subscribe: (fn: (event: unknown) => void) => { listeners.push(fn); return () => {}; } });
+    const charged: number[] = [];
+    engine.onSubagentCost = (delta) => charged.push(delta);
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine);
+    const id = mgr.spawn(spec(0));
+    await flush();
+
+    // pi notifies its listeners, then appends the message, and only then do its totals count it.
+    for (const listener of listeners) listener({ type: 'message_end', message: { role: 'assistant', content: [], usage: { input: 10, output: 5, cacheWrite: 0 } } });
+    Object.assign(stats, { input: 10, output: 5, cacheRead: 300, cost: 0.3 });
+    expect(charged).toEqual([]);
+    await Promise.resolve();
+
+    expect(charged).toEqual([0.3]);
+    const update = posted.find((m) => m.type === 'subagentUsageUpdate');
+    expect(update?.type === 'subagentUsageUpdate' && update.usage).toEqual(mgr.getRecord(id)!.usage);
+    gateAt(gates, 0).resolve();
+    await mgr.getRecord(id)!.promise;
+    expect(charged).toEqual([0.3]);
+    // The background task's total counts every kind, as the card does.
+    const completed = posted.find((m) => m.type === 'backgroundTaskCompleted');
+    expect(completed?.type === 'backgroundTaskCompleted' && completed.usage?.totalTokens).toBe(315);
     mgr.dispose();
   });
 

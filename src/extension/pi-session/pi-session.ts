@@ -27,6 +27,7 @@ import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, mig
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
+import { ownSessionUsage } from "./session-usage";
 import type { FolderRuntime } from "./folder-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
@@ -121,10 +122,14 @@ import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from ".
 import { buildContextUsage } from "./context-usage";
 import { resolveCompactionBudget } from "./compaction-budget";
 import { generateSessionTitle } from "./session-title";
+import { appendSubCallUsage } from "../usage-stats/subcall-ledger";
 import {
   buildAccountInfo as buildAccountInfoFrom,
   dollarBilled as dollarBilledFrom,
+  modelDollarBilled,
+  piModelDollarBilled,
   type AccountBillingDeps,
+  type ModelBillingDeps,
 } from "./account-billing";
 import {
   fullActiveToolNames as fullActiveToolNamesFrom,
@@ -302,7 +307,7 @@ export class PiSession implements ChatSession {
         vscode.workspace.getConfiguration('damocles').get<boolean>('showCacheMissNotices', false),
       showThinkingDroppedNotices: () =>
         vscode.workspace.getConfiguration('damocles').get<boolean>('showThinkingDroppedNotices', true),
-      sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
+      sessionCost: () => this.ownSessionCost(),
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
       onMidStreamBatchCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
@@ -1614,10 +1619,10 @@ export class PiSession implements ChatSession {
     }
   }
 
-  /** Seed the adapter's cost baseline from the live session's loaded total (resume — US-010b). */
+  /** Start the adapter's cost state for the resumed conversation now installed (US-010b). */
   private seedResumedUsage(): void {
-    const cost = this.runtime?.session.getSessionStats().cost ?? 0;
-    this.adapter.seedResumedUsage(cost);
+    if (!this.runtime) return;
+    this.adapter.seedResumedUsage(this.ownSessionCost());
   }
 
   /**
@@ -1638,7 +1643,7 @@ export class PiSession implements ChatSession {
       const exchange = firstExchangeForTitle(session);
       if (!exchange) return;
 
-      const title = await generateSessionTitle(exchange, PiRuntime.get());
+      const title = await generateSessionTitle(exchange, PiRuntime.get(), { cwd: this.cwd, sessionId: session.sessionId });
       // Re-check the name: a user /rename may have landed during the async completion (it outranks).
       if (!title || session.sessionManager.getSessionName()) return;
       // The completion is an unbounded async window in which a reset/clear/delete can replace or
@@ -2109,6 +2114,7 @@ export class PiSession implements ChatSession {
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
       cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
+      modelDollarBilled: (model) => piModelDollarBilled(model, this.modelBillingDeps()),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       getHooksDispatch: () => folder.getHooksDispatchDeps(),
     };
@@ -2313,6 +2319,8 @@ export class PiSession implements ChatSession {
         : undefined;
     const label = (model: Model<Api>): string => piModelToModelInfo(model).displayName;
     const thinking = agentConfig.thinking ? { thinkingLevel: agentConfig.thinking } : {};
+    const billing = this.modelBillingDeps(openai, preferApiKey);
+    const billed = (model: Model<Api>) => ({ dollarBilled: piModelDollarBilled(model, billing) });
 
     // 1. The agent template's `model:` — the only place a per-agent model requirement is declared.
     const explicit = agentConfig.model;
@@ -2340,7 +2348,7 @@ export class PiSession implements ChatSession {
       }
       const err = scopeError(model);
       if (err) return { error: `Agent "${agentConfig.name}" declares model "${explicit}", but ${err[0]!.toLowerCase()}${err.slice(1)}` };
-      return { model, modelLabel: label(model), ...thinking };
+      return { model, modelLabel: label(model), ...billed(model), ...thinking };
     }
 
     // 2. The Explore subagent only: the Settings → Explore section selection (provider + model, shared
@@ -2350,10 +2358,10 @@ export class PiSession implements ChatSession {
       const explore = resolveExploreSectionModel(registry);
       if (explore && !scopeError(explore.model)) {
         const { model, thinkingLevel } = explore;
-        return { model, modelLabel: label(model), ...(thinkingLevel ? { thinkingLevel, enforceThinking: true } : {}) };
+        return { model, modelLabel: label(model), ...billed(model), ...(thinkingLevel ? { thinkingLevel, enforceThinking: true } : {}) };
       }
       const cheap = resolveCheapModelFor(this.modelValue, registry, openai, preferApiKey);
-      if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model) };
+      if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model), ...billed(cheap.model) };
     }
 
     // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
@@ -2363,9 +2371,16 @@ export class PiSession implements ChatSession {
       const err = scopeError(this.desiredModel);
       if (err) return { error: err };
       const thinkingLevel = agentConfig.thinking ?? effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
-      return { model: this.desiredModel, modelLabel: label(this.desiredModel), thinkingLevel };
+      return { model: this.desiredModel, modelLabel: label(this.desiredModel), ...billed(this.desiredModel), thinkingLevel };
     }
-    return {};
+    return { dollarBilled: modelDollarBilled(this.modelValue, billing) };
+  }
+
+  private modelBillingDeps(
+    openai = PiRuntime.get().getOpenAIAuthStatus(),
+    preferApiKey = this.preferOpenAIApiKey(),
+  ): ModelBillingDeps {
+    return { supportedModels: this.supportedModelsCache, claudeAuthMode: PiRuntime.get().getClaudeAuthStatus().mode, openai, preferApiKey };
   }
 
   /** Resolve a pending pi-extension `ctx.ui.*` dialog from a webview response (US-026 seam). */
@@ -2818,7 +2833,10 @@ export class PiSession implements ChatSession {
     this.btwSessions.set(btwId, { session, ac });
 
     let streamed = "";
+    const attribution = { cwd: this.cwd, ...(liveSession ? { sessionId: liveSession.sessionId } : {}) };
     const unsub = session.subscribe((event) => {
+      // The aside runs on an in-memory session, so the ledger is the only record of what it billed.
+      if (event.type === "message_end" && event.message.role === "assistant") appendSubCallUsage(event.message, "btw", attribution);
       if (event.type === "message_start" && event.message.role === "assistant") streamed = "";
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         streamed += event.assistantMessageEvent.delta;
@@ -3095,13 +3113,18 @@ export class PiSession implements ChatSession {
     return dollarBilledFrom(this.accountBillingDeps());
   }
 
+  /** The conversation's own spend, without the entries a fork copied from its parent. */
+  private ownSessionCost(): number {
+    return this.runtime ? ownSessionUsage(this.runtime.session.sessionManager).cost : 0;
+  }
+
   /**
-   * The session's cumulative spend: the parent session's own cost PLUS the subagent cost rolled into the
+   * The session's cumulative spend: the conversation's own cost PLUS the subagent cost rolled into the
    * adapter. This must stay the exact total `enforceBudgetInFlight` measures — a gate that measured less
    * than the enforcer would admit a turn the enforcer had already stopped. Resets with a new pi session.
    */
   private cumulativeCostUsd(): number {
-    return (this.runtime?.session.getSessionStats().cost ?? 0) + this.adapter.externalCost;
+    return this.ownSessionCost() + this.adapter.externalCost;
   }
 
   /**

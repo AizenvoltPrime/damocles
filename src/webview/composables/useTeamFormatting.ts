@@ -23,16 +23,41 @@ export function formatElapsed(ms: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function formatTokenCount(num: number): string {
-  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+interface LocaleNumberFormats {
+  oneDecimal: Intl.NumberFormat;
+  cents: Intl.NumberFormat;
+  subCent: Intl.NumberFormat;
+}
+
+const numberFormats = new Map<string, LocaleNumberFormats>();
+
+function numberFormatsFor(locale: string): LocaleNumberFormats {
+  let formats = numberFormats.get(locale);
+  if (!formats) {
+    const usd = (digits: number) =>
+      new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits });
+    formats = {
+      oneDecimal: new Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+      cents: usd(2),
+      subCent: usd(4),
+    };
+    numberFormats.set(locale, formats);
+  }
+  return formats;
+}
+
+/** `locale` is the UI locale (`useI18n().locale`), which sets the decimal separator. */
+export function formatTokenCount(num: number, locale: string): string {
+  const { oneDecimal } = numberFormatsFor(locale);
+  if (num >= 1_000_000) return `${oneDecimal.format(num / 1_000_000)}M`;
+  if (num >= 1_000) return `${oneDecimal.format(num / 1_000)}K`;
   return num.toString();
 }
 
-export function formatCost(cost: number): string {
-  if (cost === 0) return '$0.00';
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
+/** The one USD formatter for costs, in the UI locale. A nonzero amount under a cent keeps four decimals, so it never reads as $0.00. */
+export function formatCost(cost: number, locale: string): string {
+  const { cents, subCent } = numberFormatsFor(locale);
+  return (cost !== 0 && Math.abs(cost) < 0.01 ? subCent : cents).format(cost);
 }
 
 export function statusBadgeClass(status: TeamAgentStatus): string {

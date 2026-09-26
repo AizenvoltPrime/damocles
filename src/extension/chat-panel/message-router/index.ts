@@ -28,6 +28,7 @@ export interface MessageRouterConfig {
   browserService?: BrowserService;
   compassRegistry?: CompassRegistry;
   voiceService?: VoiceService;
+  usageStatsService: HandlerDependencies["usageStatsService"];
   folderRegistry: HandlerDependencies["folderRegistry"];
   switchPanelFolder: HandlerDependencies["switchPanelFolder"];
   postWorkspaceFolderState: HandlerDependencies["postWorkspaceFolderState"];
@@ -56,6 +57,7 @@ export class MessageRouter {
       ...(config.browserService ? { browserService: config.browserService } : {}),
       ...(config.compassRegistry ? { compassRegistry: config.compassRegistry } : {}),
       ...(config.voiceService ? { voiceService: config.voiceService } : {}),
+      usageStatsService: config.usageStatsService,
       folderRegistry: config.folderRegistry,
       switchPanelFolder: config.switchPanelFolder,
       postWorkspaceFolderState: config.postWorkspaceFolderState,

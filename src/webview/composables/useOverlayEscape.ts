@@ -1,5 +1,15 @@
 import { onKeyStroke } from '@vueuse/core';
-import { computed, onBeforeMount, onScopeDispose, shallowRef, type ComputedRef, type ShallowRef } from 'vue';
+import {
+  computed,
+  inject,
+  onBeforeMount,
+  onScopeDispose,
+  provide,
+  shallowRef,
+  type ComputedRef,
+  type InjectionKey,
+  type ShallowRef,
+} from 'vue';
 
 interface EscapeEntry {
   readonly onClose: () => void;
@@ -12,6 +22,23 @@ const BASE_Z_INDEX = 50;
 export const MODAL_Z_INDEX = 60;
 
 const stack: ShallowRef<readonly EscapeEntry[]> = shallowRef([]);
+
+/** Bind on a stack overlay's own reka dismissable layer, or the stack yields Escape to the overlay itself. */
+const OVERLAY_LAYER_ATTR = 'data-overlay-layer';
+
+// reka stamps `data-dismissable-layer` on every open popup and dialog and hears Escape on `window`, after `document`.
+const NESTED_LAYER_SELECTOR = `[data-dismissable-layer]:not([${OVERLAY_LAYER_ATTR}]):not([data-state="closed"])`;
+
+const OVERLAY_Z_INDEX: InjectionKey<ComputedRef<number>> = Symbol('overlayZIndex');
+
+/**
+ * The z-index for popper content rendered inside an overlay: one above it, because the popper is portalled
+ * to `body` and would otherwise tie with or sink below the overlay. Undefined outside any overlay.
+ */
+export function usePopperZIndex(): ComputedRef<number | undefined> {
+  const overlayZIndex = inject(OVERLAY_Z_INDEX, null);
+  return computed(() => (overlayZIndex ? overlayZIndex.value + 1 : undefined));
+}
 
 export interface OverlayLayer {
   /** Bind on the overlay's root element; an overlay left on a fixed z-index cannot be opened over. */
@@ -49,6 +76,8 @@ export function useOverlayEscape(onClose: () => void): OverlayLayer {
 
   onKeyStroke('Escape', (e) => {
     if (!isTop.value) return;
+    // The open popup closes itself; stopping the event here would close the overlay around it instead.
+    if (document.querySelector(NESTED_LAYER_SELECTOR)) return;
     e.stopPropagation();
     e.preventDefault();
     entry.onClose();
@@ -59,6 +88,7 @@ export function useOverlayEscape(onClose: () => void): OverlayLayer {
     if (depth === -1) return BASE_Z_INDEX;
     return Math.min(BASE_Z_INDEX + depth, MODAL_Z_INDEX - 1);
   });
+  provide(OVERLAY_Z_INDEX, zIndex);
 
   return { zIndex, isTop };
 }

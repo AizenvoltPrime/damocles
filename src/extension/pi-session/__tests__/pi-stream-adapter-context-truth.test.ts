@@ -17,12 +17,12 @@ function fakeSession(events: unknown[]) {
         { type: 'message', id: 'u-entry', parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
       ],
       getEntries: () => [],
+      getHeader: () => null,
     },
     modelRuntime: { getModel: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getContextUsage: () => ({ tokens: 900_000, contextWindow: 1_000_000, percent: 90 }),
-    getSessionStats: () => ({ sessionId: 'SID', cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }),
     getLastAssistantText: () => '',
     play: () => { for (const e of events) listener?.(e); },
   };

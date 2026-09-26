@@ -13,6 +13,7 @@ import type { AgentStopReason } from '../agent-records';
 import type { LifetimeUsage } from './usage';
 import type { ImageBlock } from '../../../shared/types/content';
 import type { UserSteerNote } from '../../../shared/steer';
+import type { AgentUsageTotals } from '../../../shared/usage-accounting';
 
 export type { ThinkingLevel };
 
@@ -144,10 +145,8 @@ export interface AgentRecord {
    * cacheRead answers a different question, what the API bills. Initialized to zeros at spawn.
    */
   lifetimeUsage: LifetimeUsage;
-  /** This run's dollar cost, last seen (for budget rollup): session cost minus `costBaseline`. */
-  costUsd: number;
-  /** Session cost when this run opened it. A reopened session's stats include earlier runs' spend. */
-  costBaseline?: number | undefined;
+  /** This run's usage as its stream bridge last read it, which the budget rollup charges by cost delta. */
+  usage: AgentUsageTotals;
   /** Number of times this agent's session has compacted. */
   compactionCount: number;
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */

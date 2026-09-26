@@ -4,17 +4,17 @@ import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, Compacti
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
+import { emptyAgentUsage } from '@shared/usage-accounting';
 
 // Derived from the message union so a fourth state added there fails this file rather than reaching the UI as a string.
 export type SessionState = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>['state'];
 
 const DEFAULT_SESSION_STATS: SessionStats = {
-  totalCostUsd: 0,
-  totalInputTokens: 0,
-  totalOutputTokens: 0,
-  cacheCreationTokens: 0,
-  cacheReadTokens: 0,
+  ...emptyAgentUsage(),
   numTurns: 0,
+  contextInputTokens: 0,
+  contextCacheReadTokens: 0,
+  contextCacheWriteTokens: 0,
   contextWindowSize: DEFAULT_CONTEXT_WINDOW,
 };
 

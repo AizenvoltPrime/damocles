@@ -33,6 +33,7 @@ const H = vi.hoisted(() => {
       getEntry: vi.fn(() => undefined as unknown),
       getSessionFile: vi.fn(() => undefined as string | undefined),
       getEntries: vi.fn(() => [] as unknown[]),
+      getHeader: vi.fn(() => null),
       appendCustomEntry: vi.fn(() => 'custom-1'),
     };
     const session = {

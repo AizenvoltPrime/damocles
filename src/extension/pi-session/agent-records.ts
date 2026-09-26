@@ -28,6 +28,7 @@ import {
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from './subagents/background-results';
 import { TOOL_AGENT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
+import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
 
 // ---- layout ----------------------------------------------------------------
 
@@ -141,6 +142,8 @@ export interface SubagentLaunchData {
   templatePath?: string;
   /** Short model label shown on the card, when the spawn resolved one. */
   modelLabel?: string;
+  /** Whether the model bills real dollars. Absent in records written before the flag existed. */
+  dollarBilled?: boolean;
 }
 
 export interface TeamMemberLaunchData {
@@ -158,6 +161,8 @@ export type AgentLaunchData = SubagentLaunchData | TeamMemberLaunchData;
 export interface AgentSegmentData {
   toolCallId: string;
   message?: string;
+  /** Whether the resumed run's model bills real dollars. Absent in records written before the flag existed. */
+  dollarBilled?: boolean;
 }
 
 export interface AgentStatusData {
@@ -222,7 +227,8 @@ export function isAgentLaunchData(value: unknown): value is AgentLaunchData {
       typeof value['background'] === 'boolean' &&
       isOptional(value['thinkingOverride'], (v) => typeof v === 'string' && THINKING_LEVELS.has(v)) &&
       isOptional(value['templatePath'], isString) &&
-      isOptional(value['modelLabel'], isString)
+      isOptional(value['modelLabel'], isString) &&
+      isOptional(value['dollarBilled'], (v) => typeof v === 'boolean')
     );
   }
   if (value['kind'] === 'team-member') {
@@ -238,7 +244,12 @@ export function isAgentLaunchData(value: unknown): value is AgentLaunchData {
 }
 
 export function isAgentSegmentData(value: unknown): value is AgentSegmentData {
-  return isRecord(value) && isNonEmptyString(value['toolCallId']) && isOptional(value['message'], isString);
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value['toolCallId']) &&
+    isOptional(value['message'], isString) &&
+    isOptional(value['dollarBilled'], (v) => typeof v === 'boolean')
+  );
 }
 
 export function isAgentStatusData(value: unknown): value is AgentStatusData {
@@ -338,7 +349,11 @@ export type PersistedAgentMessage = Record<string, unknown> & { role: string };
 export interface AgentFileSegment {
   toolCallId: string | null;
   message?: string;
+  /** The resume segment's billing flag; the launch segment's is the launch entry's. */
+  dollarBilled?: boolean;
   messages: PersistedAgentMessage[];
+  /** Every billed entry of the segment, compaction and cache warms included, by pi's session-total rule. */
+  usage: AgentUsageTotals;
   status?: AgentStatusData;
   startTimestamp?: number;
   endTimestamp?: number;
@@ -386,10 +401,16 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
       const data = entry['data'];
       if (entry['customType'] === DAMOCLES_AGENT_LAUNCH_ENTRY && !launch && isAgentLaunchData(data)) {
         launch = data;
-        current = { toolCallId: null, messages: [] };
+        current = { toolCallId: null, messages: [], usage: emptyAgentUsage() };
         segments.push(current);
       } else if (entry['customType'] === DAMOCLES_AGENT_SEGMENT_ENTRY && current && isAgentSegmentData(data)) {
-        current = { toolCallId: data.toolCallId, ...(data.message !== undefined ? { message: data.message } : {}), messages: [] };
+        current = {
+          toolCallId: data.toolCallId,
+          ...(data.message !== undefined ? { message: data.message } : {}),
+          ...(data.dollarBilled !== undefined ? { dollarBilled: data.dollarBilled } : {}),
+          messages: [],
+          usage: emptyAgentUsage(),
+        };
         segments.push(current);
       } else if (entry['customType'] === DAMOCLES_AGENT_STATUS_ENTRY && current && isAgentStatusData(data)) {
         current.status = data;
@@ -398,7 +419,10 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
       current.messages.push(entry['message']);
       if (typeof entry['id'] === 'string') entryIds.set(entry['message'], entry['id']);
     }
-    if (current && ts !== undefined) {
+    if (!current) continue;
+    const billed = usageOfEntry(entry);
+    if (billed) current.usage = addAgentUsage(current.usage, agentUsageOf(billed));
+    if (ts !== undefined) {
       if (current.startTimestamp === undefined || ts < current.startTimestamp) current.startTimestamp = ts;
       if (current.endTimestamp === undefined || ts > current.endTimestamp) current.endTimestamp = ts;
     }

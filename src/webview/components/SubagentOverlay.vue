@@ -28,6 +28,7 @@ import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
 import SteerImageChips from './SteerImageChips.vue';
+import AgentUsageStats from './AgentUsageStats.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { stripSteerPrefix } from '@shared/steer';
 import { useVSCode } from '@/composables/useVSCode';
@@ -150,13 +151,6 @@ const resultContent = computed(() =>
 );
 const hasResult = computed(() => Boolean(resultContent.value));
 
-const formattedTokens = computed(() => {
-  const tokens = props.subagent.result?.totalTokens;
-  if (!tokens) return null;
-  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
-  return String(tokens);
-});
-
 const formattedToolCount = computed(() => {
   if (props.subagent.result?.totalToolUseCount) {
     const count = props.subagent.result.totalToolUseCount;
@@ -191,7 +185,6 @@ function openTemplate(): void {
 const metadataTail = computed(() => [
   formattedDuration.value,
   formattedToolCount.value,
-  formattedTokens.value ? `${formattedTokens.value} tokens` : null,
   displayModel.value,
 ].filter(Boolean));
 
@@ -282,6 +275,7 @@ function userMessageText(message: ChatMessage): string {
           <span v-else>{{ displayAgentType }}</span>
         </template>
         <span v-if="metadataTail.length"><template v-if="displayAgentType !== null">&nbsp;•&nbsp;</template>{{ metadataTail.join(' • ') }}</span>
+        <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="subtitle" />
       </span>
     </template>
 

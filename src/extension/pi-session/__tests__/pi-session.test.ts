@@ -48,6 +48,8 @@ const H = vi.hoisted(() => {
         { type: 'message', id: 'r1', message: { role: 'toolResult', toolCallId: 't1', content: 'file body' } },
       ]),
       getEntry: vi.fn((_id: string) => undefined as unknown),
+      getEntries: vi.fn(() => [] as unknown[]),
+      getHeader: vi.fn(() => null),
       getSessionFile: vi.fn(() => undefined as string | undefined),
       appendCustomEntry: vi.fn((_customType: string, _data?: unknown) => 'custom-1'),
     }) as {
@@ -2333,6 +2335,19 @@ describe('PiSession — subagent model resolution', () => {
     const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' });
     expect(res.error).toBeUndefined();
     expect(res.model).toMatchObject({ id: 'claude-opus-5-5', provider: 'anthropic' });
+    await session.dispose();
+  });
+
+  it.each([
+    { mode: 'apikey', billed: true },
+    { mode: 'allowance', billed: false },
+  ])('labels the resolved model billed by the credential it runs on ($mode)', async ({ mode, billed }) => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode } as never);
+    const billing = (cfg: Cfg) => (resolve(session, cfg) as { dollarBilled?: boolean }).dollarBilled;
+    expect(billing({ name: 'Game Designer', description: 'd' })).toBe(billed);
+    expect(billing({ name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-5-5' })).toBe(billed);
     await session.dispose();
   });
 });
@@ -4850,7 +4865,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.initializeEarly();
     const live = H.getLastSession()!;
     withBudget(1.0);
-    live.getSessionStats = vi.fn(() => ({ sessionId: live.sessionId, cost: 0.4, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }));
+    live.sessionManager.getEntries = vi.fn(() => [{ type: 'message', message: { role: 'assistant', usage: { cost: { total: 0.4 } } } }]);
     // Subagent spend lives on the adapter, not in pi's session stats. A gate that measured only the
     // parent would admit this turn while the adapter's in-flight check considers the limit crossed.
     priv(session).adapter.addExternalCost(0.7);
@@ -4873,8 +4888,25 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.initializeEarly();
     const live = H.getLastSession()!;
     withBudget(1.0);
-    live.getSessionStats = vi.fn(() => ({ sessionId: live.sessionId, cost: 0.4, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }));
+    live.sessionManager.getEntries = vi.fn(() => [{ type: 'message', message: { role: 'assistant', usage: { cost: { total: 0.4 } } } }]);
     priv(session).adapter.addExternalCost(0.2);
+
+    await session.sendMessage('again', undefined, 'c1', { content: 'again' });
+
+    expect(live.prompt).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('admits a fork whose parent spent past the limit, because the gate counts only its own spend', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    withBudget(1.0);
+    live.sessionManager.getHeader = vi.fn(() => ({ timestamp: '2026-01-02T00:00:00.000Z' }));
+    live.sessionManager.getEntries = vi.fn(() => [
+      { type: 'message', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'assistant', usage: { cost: { total: 5.2 } } } },
+      { type: 'message', timestamp: '2026-01-02T00:00:01.000Z', message: { role: 'assistant', usage: { cost: { total: 0.12 } } } },
+    ]);
 
     await session.sendMessage('again', undefined, 'c1', { content: 'again' });
 

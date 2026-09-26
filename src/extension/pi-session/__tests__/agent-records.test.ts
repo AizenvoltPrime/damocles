@@ -141,6 +141,36 @@ describe('agent-records — segments', () => {
     expect(segmentForInvocation(read, { toolCallId: 'tc-resume', resume: true })).toBe(second);
     expect(segmentForInvocation(read, { toolCallId: 'tc-other', resume: true })).toBeUndefined();
   });
+
+  it('sums each segment’s billed usage, cache warms and compactions included, by pi’s session-total rule', async () => {
+    const usage = (input: number, output: number, cacheRead: number, cacheWrite: number, total: number) =>
+      ({ input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+    const billed = (u: ReturnType<typeof usage>) => ({ ...(assistant('work') as object), usage: u }) as unknown as Parameters<SessionManager['appendMessage']>[0];
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-u', 'agent-u', (sm) => {
+      sm.appendMessage(user('first'));
+      sm.appendMessage(billed(usage(10, 20, 300, 40, 0.5)));
+      sm.appendUsage('cache_warm', 'anthropic', 'claude', usage(0, 1, 900, 0, 0.05));
+      sm.appendCompaction('summary', null, 5000, undefined, false, usage(4000, 600, 0, 0, 0.2));
+      sm.appendCustomEntry(DAMOCLES_AGENT_STATUS_ENTRY, { status: 'stopped', stopReason: 'user', result: '' });
+      sm.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, { toolCallId: 'tc-resume' });
+      sm.appendMessage(user('carry on'));
+      sm.appendMessage(billed(usage(1, 2, 330, 4, 0.25)));
+    });
+
+    const [first, second] = (await readAgentFile(file))!.segments;
+    expect(first!.usage).toEqual({ totalInputTokens: 4010, totalOutputTokens: 621, cacheReadTokens: 1200, cacheCreationTokens: 40, costUsd: expect.closeTo(0.75) });
+    // A resumed invocation shows only its own run.
+    expect(second!.usage).toEqual({ totalInputTokens: 1, totalOutputTokens: 2, cacheReadTokens: 330, cacheCreationTokens: 4, costUsd: 0.25 });
+  });
+});
+
+describe('agent-records — launch billing flag', () => {
+  it('accepts a launch with or without the flag and rejects a non-boolean one', () => {
+    expect(isAgentLaunchData({ ...launch('a'), dollarBilled: false })).toBe(true);
+    expect(isAgentLaunchData(launch('a'))).toBe(true);
+    expect(isAgentLaunchData({ ...launch('a'), dollarBilled: 'yes' })).toBe(false);
+  });
 });
 
 describe('agent-records — findAgentFile / indexAgentFiles', () => {

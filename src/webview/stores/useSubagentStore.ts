@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState, SubagentResult } from '@shared/types/subagents';
+import type { AgentUsageTotals } from '@shared/usage-accounting';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
@@ -672,6 +673,8 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(result !== undefined && { result }),
         ...(tool.agentModel !== undefined && { model: tool.agentModel }),
         ...(tool.agentTemplatePath !== undefined && { templatePath: tool.agentTemplatePath }),
+        ...(tool.agentUsage !== undefined && { usage: tool.agentUsage }),
+        ...(tool.agentDollarBilled !== undefined && { dollarBilled: tool.agentDollarBilled }),
         ...(restoredAgentId !== undefined && { sdkAgentId: restoredAgentId }),
         messagesSealed: false,
         ...(isBackground ? { isBackground: true } : {}),
@@ -717,6 +720,15 @@ export const useSubagentStore = defineStore('subagent', () => {
         },
       };
     }
+  }
+
+  function updateSubagentUsage(agentToolId: string, usage: AgentUsageTotals, dollarBilled?: boolean): void {
+    const subagent = subagents.value[agentToolId];
+    if (!subagent) return;
+    subagents.value = {
+      ...subagents.value,
+      [agentToolId]: { ...subagent, usage, ...(dollarBilled !== undefined && { dollarBilled }) },
+    };
   }
 
   function replaceSubagentMessages(agentToolId: string, agentMessages: HistoryAgentMessage[]): void {
@@ -797,6 +809,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     updateProgressSummary,
     updateSubagentModel,
     updateSubagentTemplate,
+    updateSubagentUsage,
     replaceSubagentMessages,
     $reset,
   };

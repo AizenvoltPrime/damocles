@@ -28,6 +28,8 @@ import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool
 import { joinResultText } from '../tool-result-text';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
+import { runUsageMeter, sameAgentUsage } from '../session-usage';
+import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 
 export interface SubagentStreamBridgeDeps {
   /** The spawning `Agent` tool-call id — the webview key for this subagent card. */
@@ -45,6 +47,8 @@ export interface SubagentStreamBridgeDeps {
   /** The parent panel's session id — stamped on emitted `assistant`/`partial` (`setCurrentSession`). */
   getSessionId: () => string;
   postMessage: (message: ExtensionToWebviewMessage) => void;
+  /** Each changed reading of this run's usage, the same one the card is sent. */
+  onUsage: (usage: AgentUsageTotals) => void;
 }
 
 /** Build the JSON result string the webview's Agent-completion path parses (mirrors the SDK shape). */
@@ -82,6 +86,10 @@ export class SubagentStreamBridge {
   private thinkingStart: number | null = null;
   /** Messages the session held when attached; a reopened session's earlier runs belong to earlier cards. */
   private firstMessageIndex = 0;
+  /** This run's usage; the baseline is taken at attach, so a reopened session's earlier runs are excluded. */
+  private runUsage?: () => AgentUsageTotals;
+  private publishedUsage = emptyAgentUsage();
+  private dollarBilled: boolean | undefined;
 
   constructor(deps: SubagentStreamBridgeDeps) {
     this.deps = deps;
@@ -120,9 +128,14 @@ export class SubagentStreamBridge {
     this.emit({ type: 'subagentTemplateUpdate', agentToolId: this.deps.parentToolUseId, templatePath });
   }
 
-  /** Subscribe to the nested session and stream per-tool events to the card. Returns unsubscribe. */
-  attach(session: AgentSession): () => void {
+  /**
+   * Subscribe to the nested session and stream per-tool events to the card. `dollarBilled` labels the
+   * run's cost; unset means unknown, and the card falls back to the panel's flag. Returns unsubscribe.
+   */
+  attach(session: AgentSession, dollarBilled?: boolean): () => void {
+    this.dollarBilled = dollarBilled;
     this.firstMessageIndex = session.messages.length;
+    this.runUsage = runUsageMeter(session);
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));
     return () => {
       unsubscribe();
@@ -141,7 +154,14 @@ export class SubagentStreamBridge {
         this.handleAssistantEvent(event.assistantMessageEvent);
         break;
       case 'message_end':
-        if (event.message.role === 'assistant') this.emitAssistantMessage(event.message.content);
+        if (event.message.role === 'assistant') {
+          this.emitAssistantMessage(event.message.content);
+          // pi persists the message after notifying listeners, so its stats include it only from the next microtask.
+          queueMicrotask(() => this.emitUsage());
+        }
+        break;
+      case 'compaction_end':
+        this.emitUsage();
         break;
       case 'tool_execution_start': {
         this.toolStarts.set(event.toolCallId, Date.now());
@@ -267,6 +287,26 @@ export class SubagentStreamBridge {
       parentToolUseId: this.deps.parentToolUseId,
     });
     this.currentMsgId = '';
+  }
+
+  /** Read the run's usage once more at its end, for spend that raised no event, such as a cache warm. */
+  settleUsage(): void {
+    this.emitUsage();
+  }
+
+  /** Publish this run's usage when it changed. A no-op before a session is attached. */
+  private emitUsage(): void {
+    if (!this.runUsage) return;
+    const usage = this.runUsage();
+    if (sameAgentUsage(usage, this.publishedUsage)) return;
+    this.publishedUsage = usage;
+    this.deps.onUsage(usage);
+    this.emit({
+      type: 'subagentUsageUpdate',
+      agentToolId: this.deps.parentToolUseId,
+      usage,
+      ...(this.dollarBilled !== undefined ? { dollarBilled: this.dollarBilled } : {}),
+    });
   }
 
   /** Emit the final (sealing) message snapshot for the card. */

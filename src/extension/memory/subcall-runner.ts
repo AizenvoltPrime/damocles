@@ -49,6 +49,8 @@ export function createMemorySubCallRunner(): MemorySubCallRunner {
         outputToolName: 'submit_result',
         outputToolDescription: 'Return the structured result for this request.',
         schema: req.schema,
+        // No `attribution`: memory spans workspace roots, so its sub-calls belong to no project.
+        purpose: `memory-${req.purpose}`,
         ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
         timeoutMs,
       });

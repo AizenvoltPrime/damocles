@@ -1,4 +1,5 @@
 import type { ImageBlock } from './content';
+import type { AgentUsageTotals } from '../usage-accounting';
 
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
@@ -76,9 +77,13 @@ export interface TeamRunSummary {
   startTime: number;
   endTime: number | null;
   toolCount: number;
-  /** Input plus output tokens. */
-  tokens: number;
-  costUsd: number;
+  /** The run's tokens by kind and its cost, counted as an agent's usage is. */
+  usage: AgentUsageTotals;
+  /**
+   * Set only for a run read from a log that recorded its tokens as one input-plus-output figure. The token
+   * kinds in `usage` are then zero, because the log never recorded them.
+   */
+  legacyTokens?: number;
 }
 
 export interface TeamState {

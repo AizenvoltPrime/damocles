@@ -246,3 +246,24 @@ describe('tool calls inside a team agent overlay', () => {
     expect(defined(useExpandedTool().value).name).toBe('Bash');
   });
 });
+
+describe('the team agent overlay subtitle', () => {
+  const SubtitleShell = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
+
+  it('counts every prompt token and shows the cache hit rate next to the cost', () => {
+    const store = useTeamStore();
+    store.restoreTeamFromHistory({
+      ...team(),
+      agents: [agent({ totalInputTokens: 50, totalOutputTokens: 950, cacheReadTokens: 7000, cacheCreationTokens: 2000, costUsd: 1.5 })],
+    });
+    store.openOverlay(TEAM_ID);
+    store.openAgentOverlay(AGENT_ID);
+    const text = mount(TeamAgentOverlay, {
+      global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, ScrollArea: PassThroughStub, Button: true, MarkdownRenderer: true, LoadingSpinner: true, ToolCallCard: ToolCallCardStub } },
+    }).get('.subtitle').text();
+
+    expect(text).toContain('10.0K tokens');
+    expect(text).toContain('77% cache');
+    expect(text).toContain('$1.50');
+  });
+});

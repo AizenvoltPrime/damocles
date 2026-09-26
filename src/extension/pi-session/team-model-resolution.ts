@@ -3,7 +3,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel, TeamRole } from '../../shared/types/settings';
 import type { OpenAIAuthStatus } from './openai-auth';
 import { resolvePiModel, piModelToModelInfo, effortToPiThinking, type ModelLookup } from './pi-models';
-import { dollarBilled } from './account-billing';
+import { modelDollarBilled } from './account-billing';
 
 /**
  * Settings-driven team role model/effort resolution (Slice 1). The LEAD / IMPLEMENTOR / REVIEWER role
@@ -111,17 +111,6 @@ function resolveThinkingLevel(
   return effortToPiThinking(level);
 }
 
-/** Whether a role's effective model bills dollars, decided by the same credential rule as the account chip. */
-function resolveDollarBilled(value: string, deps: TeamModelDeps): boolean {
-  return dollarBilled({
-    modelValue: value,
-    modelInfo: deps.supportedModels.find((m) => m.value === value),
-    claudeAuthMode: deps.claudeAuthMode,
-    openaiAuthStatus: deps.openai,
-    preferApiKey: deps.preferApiKey,
-  });
-}
-
 /** Compose a ResolvedTeamModel, attaching `thinkingLevel` only when non-undefined. */
 function withThinking(base: ResolvedTeamModel, thinkingLevel: ThinkingLevel | undefined): ResolvedTeamModel {
   return thinkingLevel === undefined ? base : { ...base, thinkingLevel };
@@ -136,7 +125,7 @@ function withThinking(base: ResolvedTeamModel, thinkingLevel: ThinkingLevel | un
 export function resolveRoleModel(role: TeamRole, deps: TeamModelDeps): ResolvedTeamModel {
   const setting = deps.roleSettings[role];
   // Billing follows the model this role actually runs, which is its configured slot or the panel model.
-  const billed = resolveDollarBilled(setting.model !== '' ? setting.model : deps.activeModel, deps);
+  const billed = modelDollarBilled(setting.model !== '' ? setting.model : deps.activeModel, deps);
 
   if (setting.model !== '') {
     const res = resolvePiModel(setting.model, deps.registry, deps.openai, deps.preferApiKey);

@@ -5,8 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { IconStop, IconWarning, IconXMark } from '@/components/icons';
+import { formatCost } from '@/composables/useTeamFormatting';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const props = defineProps<{
   currentSpend: number;
@@ -60,7 +61,7 @@ const iconComponent = computed((): Component => props.exceeded ? IconStop : Icon
           :class="progressClass"
         />
         <span class="text-xs opacity-70">
-          ${{ currentSpend.toFixed(2) }} / ${{ limit.toFixed(2) }}
+          {{ formatCost(currentSpend, locale) }} / {{ formatCost(limit, locale) }}
           ({{ percentUsed.toFixed(0) }}%)
         </span>
       </AlertDescription>

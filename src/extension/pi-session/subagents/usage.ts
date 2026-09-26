@@ -5,13 +5,13 @@
  */
 
 /**
- * Lifetime usage components, accumulated via `message_end` events. Survives
- * compaction (which replaces session.state.messages and would reset any
- * stats-derived sum). These components are a token total, so cacheRead is
- * excluded: each turn's cacheRead is the cumulative cached prefix re-read on
- * that one call, and summing it across turns counts the same prefix N times.
- * Summing per-request cacheRead is a different quantity, the one the API
- * bills, so a caller that needs cost keeps its own running total.
+ * Lifetime usage components of one run's assistant messages, accumulated via
+ * `message_end` events, for the model-facing result. These components are a
+ * token total, so cacheRead is excluded: each turn's cacheRead is the
+ * cumulative cached prefix re-read on that one call, and summing it across
+ * turns counts the same prefix N times. Summing per-request cacheRead is a
+ * different quantity, the one the API bills, which the card reads from pi's
+ * session totals instead (`runUsageMeter`).
  */
 export type LifetimeUsage = { input: number; output: number; cacheWrite: number };
 
@@ -35,10 +35,9 @@ export type SessionStatsLike = {
 export type SessionLike = { getSessionStats(): SessionStatsLike };
 
 /**
- * Session-scoped token count: input + output + cacheWrite as reported by
- * upstream `getSessionStats().tokens` for the *current* session window.
- * RESETS at compaction. For a lifetime total that survives compaction use
- * `getLifetimeTotal(lifetimeUsage)` instead.
+ * input + output + cacheWrite from upstream `getSessionStats().tokens`, which
+ * sums every billed entry in the session file: it never resets at compaction,
+ * and a reopened session's figure includes its earlier runs.
  */
 export function getSessionTokens(session: SessionLike | undefined): number {
   if (!session) return 0;

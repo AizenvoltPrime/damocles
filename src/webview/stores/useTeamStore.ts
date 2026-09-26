@@ -5,6 +5,7 @@ import type { ToolCall } from '@shared/types/session';
 import { isImageBlock, type ImageBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 import { ownEntry } from '@/utils/ownEntry';
+import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -178,7 +179,7 @@ export const useTeamStore = defineStore('team', () => {
         startTime: now,
         endTime,
         totalToolCount: 0,
-        runs: [{ toolUseId, status, startTime: now, endTime, toolCount: 0, tokens: 0, costUsd: 0 }],
+        runs: [{ toolUseId, status, startTime: now, endTime, toolCount: 0, usage: emptyAgentUsage() }],
       },
     };
   }
@@ -229,7 +230,7 @@ export const useTeamStore = defineStore('team', () => {
     teams.value = { ...teams.value, [teamId]: { ...team, agents, totalToolCount } };
   }
 
-  function handleAgentUsageUpdate(teamId: string, agentId: string, usage: { totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }): void {
+  function handleAgentUsageUpdate(teamId: string, agentId: string, usage: AgentUsageTotals): void {
     const team = teams.value[teamId];
     if (!team) return;
     const previous = team.agents.find(a => a.agentId === agentId);
@@ -240,9 +241,8 @@ export const useTeamStore = defineStore('team', () => {
         : a
     );
     // The usage is the agent's running total, so only its growth since the last update is this run's.
-    const tokens = usage.totalInputTokens + usage.totalOutputTokens - previous.totalInputTokens - previous.totalOutputTokens;
-    const costUsd = usage.costUsd - previous.costUsd;
-    const runs = updateLiveRun(team.runs, r => ({ ...r, tokens: r.tokens + tokens, costUsd: r.costUsd + costUsd }));
+    const growth = subtractAgentUsage(usage, previous);
+    const runs = updateLiveRun(team.runs, r => ({ ...r, usage: addAgentUsage(r.usage, growth) }));
     teams.value = { ...teams.value, [teamId]: { ...team, agents, runs } };
   }
 

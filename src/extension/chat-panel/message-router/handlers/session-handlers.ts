@@ -43,7 +43,6 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       settingsManager.sendAvailableModels(ctx.session, ctx.host);
-      settingsManager.sendOpenAIModelPricing(ctx.host);
       settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);

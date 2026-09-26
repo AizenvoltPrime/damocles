@@ -32,7 +32,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 └────────────────────────────┘              └──────────────────────────┘
 ```
 
-- **Seam:** `PiSession` is the only producer of the webview message contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/extension/chat-session.ts`.
+- **Seam:** `PiSession` is the only producer of session messages in the webview contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/extension/chat-session.ts`. Cross-session views (`/usage`, `/stats`) post from their router handlers; see `docs/invariants.md`.
 - **Extension:** esbuild → `dist/extension.js` (CJS). Externals: `scripts/extension-externals.mjs` (single source; `scripts/sync-vscodeignore.mjs` derives the VSIX allowlist from it).
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
@@ -46,6 +46,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
 | `memory/` | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL) |
 | `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default) |
+| `usage-stats/` | `/stats`: sub-call ledger, `node:sqlite` spend index built by a worker thread from pi session files, `UsageStatsService` |
 | `web-access/` | Key-free web tools behind `pi.webSearch.enabled` (off by default); SSRF-guarded `safe-fetch.ts`, fail-soft `execute` |
 | `browser/` | Patchright (stealth Chromium) + MCP tools, one `BrowserPanel` per page, scoped by `agent-scope.ts` (off by default) |
 | `team/` | Multi-agent teams via MessageBus + Scratchpad (off by default); per-role model/effort from `damocles.team.*` |
@@ -73,7 +74,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - A custom tool registered under a pi built-in's name REPLACES it, which is how Damocles owns `bash`. Keep the built-in's exact lowercase name (the gate and the active-set lists key off it) and never pair an override with an `excludeTools` entry, which drops the replacement too.
 - The shell process-lifetime path has no timer, interval or process-table read on any platform (`tools/process-tree.ts`): Windows uses nested job objects, POSIX the process group plus a per-panel sentinel. `createShellJob` must stay the first statement after `spawn`, or a background job forks outside the job and becomes unkillable. The voice sidecar uses the same job machinery and the same rule, without `KILL_ON_JOB_CLOSE`, because a sidecar is shared across windows.
 - A cancel note is user turn content, delivered to the agent that ran the command. Never append it to a tool result: a tool result is untrusted, so a model correctly refuses an instruction found in one. A steer is a user message whose first line is `STEER_INSTRUCTION_PREFIX`; never merge peer or tool text into one, which hands that text operator authority.
-- An overlay's z-index comes from the shared overlay stack (`useOverlayEscape.ts`), never a fixed `z-` class, or a nested overlay paints behind the one it opened from.
+- An overlay's z-index comes from the shared overlay stack (`useOverlayEscape.ts`), never a fixed `z-` class, and popper content inside one binds `usePopperZIndex`, or a nested overlay or popup paints behind the one it opened from.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
 - A conversation is live in at most one panel (`claimStoredSession` guards every bind), and the session-keyed registries on `PiRuntime` and `FolderRuntime` unregister only the entry the caller registered. An unconditional unregister lets a closing panel strip a live panel's gate entry, which blocks its tool calls.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed, so never sequence a delete off a promise that resolves either way.
@@ -91,6 +92,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - The team profile catalog is generated: edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
 - A subagent's model is configuration, never the spawning model's choice (`Agent` has no `model` param).
 - Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom. Never hand-roll a `completeSimple` call, because that seam is what keeps untrusted content (transcripts, memories, queries) in data position instead of instruction position. Never mutate `process.env` for per-session config.
+- Spend follows one inclusion rule, `src/shared/usage-accounting.ts`. Never bill from `history-loader.ts`'s context snapshot. The status bar's totals travel only in `sessionUsage`, built by `sessionUsageMessage` for both live and reload; never put them back on `done`. The `/stats` index keys rows on `<id>|<timestamp>`. It gives a forked copy to the oldest top-level session. It never deletes a spend row.
 - Implementation gotchas live in the code and in memory observations, so search those before assuming.
 
 ## Permission Modes

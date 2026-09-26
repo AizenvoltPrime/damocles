@@ -17,7 +17,7 @@ import { TeamRunner } from '../team-runner';
 import { TeamPersistence } from '../persistence';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
-import { FakeSession } from './fake-session';
+import { FakeSession, type FakeOpeningTotals } from './fake-session';
 import { teamAgentToolset } from './team-mcp-fixture';
 import type { AgentMcpContext, TeamAgent, TeamCheckpoint, TeamConfig, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
@@ -72,7 +72,8 @@ function makeTeam(opts: {
   teamId: string;
   specialists: string[];
   behave: Record<string, Behaviour>;
-  openingCost?: Record<string, number>;
+  /** What each member's reopened session file already holds. */
+  opening?: Record<string, FakeOpeningTotals>;
   /** Holds a member's session open until the promise settles. */
   gate?: Record<string, Promise<void>>;
 }): Harness {
@@ -103,7 +104,8 @@ function makeTeam(opts: {
         const behaviour = opts.behave[name] ?? endTurn;
         const session = new FakeSession({ onPrompt: (text, s) => behaviour(text, s, h) });
         session.sessionFile = store['kind'] === 'reopen' ? String(store['path']) : path.join(String(store['dir']), `${String(store['id'])}.jsonl`);
-        session.cost = opts.openingCost?.[name] ?? 0;
+        const opening = opts.opening?.[name];
+        if (opening) session.seedOpening(opening);
         opened.push({ name, store, session });
         return session as never;
       },
@@ -868,7 +870,7 @@ describe('TeamRunner.resume cost', () => {
     const teamId = crypto.randomUUID();
     const h = makeTeam({
       cwd, teamId, specialists: [],
-      behave: { Lead: (_t, s) => { s.cost = 2; s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }); } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, 2); } },
     });
     const run = h.runner.run();
     await (await opened(h, 'Lead')).whenPrompted(1);
@@ -880,8 +882,8 @@ describe('TeamRunner.resume cost', () => {
 
     const after = makeTeam({
       cwd, teamId, specialists: [],
-      openingCost: { Lead: 2 },
-      behave: { Lead: (_t, s) => { s.cost = 2.5; s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }); s.emit({ type: 'turn_end' }); } },
+      opening: { Lead: { cost: 2, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); s.emit({ type: 'turn_end' }); } },
     });
     after.runner.restore(await persistence.readEventLog(teamId), checkpoint, new Map([[h.agent('Lead').agentId, h.session('Lead').sessionFile!]]));
     const result = await after.runner.resume('tc-resume');
@@ -890,6 +892,7 @@ describe('TeamRunner.resume cost', () => {
     expect(after.costs.reduce((a, b) => a + b, 0)).toBeCloseTo(0.5, 10);
     // The card total is the earlier spend carried over plus this run's own.
     expect(after.agent('Lead').costUsd).toBeCloseTo(2.5, 10);
+    expect([after.agent('Lead').totalInputTokens, after.agent('Lead').totalOutputTokens]).toEqual([2, 2]);
   });
 });
 
@@ -934,7 +937,7 @@ describe('TeamRunner.resume tool count', () => {
     const teamId = crypto.randomUUID();
     const h = makeTeam({
       cwd, teamId, specialists: [],
-      behave: { Lead: (_t, s) => { s.cost = 1; s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }); } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, 1); } },
     });
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
@@ -942,8 +945,7 @@ describe('TeamRunner.resume tool count', () => {
     // The in-flight request reports its usage and tool call only as the abort ends it, after the checkpoint.
     const abort = lead.abort.bind(lead);
     lead.abort = async () => {
-      lead.cost = 3;
-      lead.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'late', name: 'read', arguments: {} }], usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0 } } });
+      lead.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'late', name: 'read', arguments: {} }], usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } } });
       await abort();
     };
     h.runner.cancel();
@@ -952,8 +954,8 @@ describe('TeamRunner.resume tool count', () => {
 
     const after = makeTeam({
       cwd, teamId, specialists: [],
-      openingCost: { Lead: 3 },
-      behave: { Lead: (_t, s) => { s.cost = 3.5; s.emitAssistantUsage({ input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }); s.emit({ type: 'turn_end' }); } },
+      opening: { Lead: { cost: lead.cost, tokens: { ...lead.tokens } } },
+      behave: { Lead: (_t, s) => { s.emitAssistantUsage({ input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, 0.5); s.emit({ type: 'turn_end' }); } },
     });
     after.runner.restore(await persistence.readEventLog(teamId), (await checkpointOf(persistence, teamId))!, new Map([[h.agent('Lead').agentId, lead.sessionFile!]]));
     expect((await after.runner.resume('tc-resume')).status).toBe('completed');

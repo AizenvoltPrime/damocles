@@ -5,12 +5,12 @@ import type { CompactMarker as CompactMarkerType } from '@shared/types/session';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { IconChevronDown, IconChevronUp, IconRotateLeft } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
+import { formatCost } from '@/composables/useTeamFormatting';
 
 const { t, locale } = useI18n();
 
 // The card's figures follow the panel language, so a Greek reader gets Greek grouping, separators and units.
 const tokenFormat = computed(() => new Intl.NumberFormat(locale.value, { notation: 'compact' }));
-const costFormat = computed(() => new Intl.NumberFormat(locale.value, { style: 'currency', currency: 'USD' }));
 
 const props = defineProps<{
   marker: CompactMarkerType;
@@ -57,7 +57,7 @@ const billedText = computed(() => {
   const tokens = tokenFormat.value.format(billedTokens);
   // Below a cent the dollar figure is noise, so state tokens alone. This mirrors pi's own notice.
   if (billedCost === undefined || billedCost < 0.01) return t('compactMarker.billed', { tokens });
-  return t('compactMarker.billedWithCost', { tokens, cost: costFormat.value.format(billedCost) });
+  return t('compactMarker.billedWithCost', { tokens, cost: formatCost(billedCost, locale.value) });
 });
 
 function formatTimestamp(timestamp: number): string {

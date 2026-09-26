@@ -10,6 +10,7 @@ import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
+import type { UsageStatsService } from "../../usage-stats";
 import type { HostInstance, WebviewHost } from "../types";
 import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
 import type { AfterFolderSwitch, FolderSwitchReason } from "../panel-manager";
@@ -51,6 +52,7 @@ export interface HandlerDependencies {
   /** Compass handlers act on the service of the requesting panel's folder. */
   compassRegistry?: CompassRegistry;
   voiceService?: VoiceService;
+  usageStatsService: UsageStatsService;
   markUserTypedDuringTurn?: () => void;
   folderRegistry: WorkspaceFolderRegistry;
   /**

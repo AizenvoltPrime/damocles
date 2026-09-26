@@ -13,6 +13,9 @@ import type { CompassService } from "../compass";
 import { CompassRegistry } from "../compass/compass-registry";
 import { CompassViews } from "../compass/compass-views";
 import { VoiceService } from "../voice/service";
+import { UsageStatsService } from "../usage-stats";
+import { SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
+import { PI_AGENT_DIR } from "../pi-session/agent-dir";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import { PiRuntime } from "../pi-session/pi-runtime";
 import { WorkspaceFolderRegistry, homeDirectory } from "../workspace-folders/folder-registry";
@@ -35,6 +38,7 @@ export class ChatPanelProvider {
   private readonly compassRegistry: CompassRegistry;
   private readonly compassViews: CompassViews;
   private readonly voiceService: VoiceService;
+  private readonly usageStatsService: UsageStatsService;
   private readonly folderRegistry: WorkspaceFolderRegistry;
 
   private readonly extensionUri: vscode.Uri;
@@ -80,6 +84,11 @@ export class ChatPanelProvider {
     this.browserService = new BrowserService();
     this.voiceService = new VoiceService({ extensionRoot: extensionUri.fsPath });
     this.voiceService.registerWithExtension(context);
+
+    this.usageStatsService = new UsageStatsService({
+      workerPath: path.join(extensionUri.fsPath, "dist", "usage-stats-worker.js"),
+      paths: { sessionsDir: path.join(PI_AGENT_DIR, "sessions"), ledgerPath: SUBCALL_USAGE_LEDGER_PATH, dbPath: USAGE_INDEX_DB_PATH },
+    });
     this.compassRegistry = new CompassRegistry({
       damoclesDir: path.join(homeDir, ".damocles"),
       extensionPath: extensionUri.fsPath,
@@ -149,6 +158,7 @@ export class ChatPanelProvider {
       browserService: this.browserService,
       compassRegistry: this.compassRegistry,
       voiceService: this.voiceService,
+      usageStatsService: this.usageStatsService,
       folderRegistry: this.folderRegistry,
       switchPanelFolder: (panelId, folderKey, reason, afterSwitch) =>
         this.panelManager.switchPanelFolder(panelId, folderKey, reason, afterSwitch),
@@ -409,6 +419,7 @@ export class ChatPanelProvider {
     this.workspaceManager.dispose();
     this.settingsManager.dispose();
     this.voiceService.dispose();
+    this.usageStatsService.dispose();
     this.panelManager.dispose();
     this.folderRegistry.dispose();
     await browserClosed;

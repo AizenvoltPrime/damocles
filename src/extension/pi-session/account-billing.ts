@@ -1,5 +1,5 @@
 import type { AccountInfo, ModelInfo } from '../../shared/types/settings';
-import type { OpenAIAuthStatus } from './openai-auth';
+import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 import { isDollarBilled } from './pi-models';
 
 /**
@@ -53,4 +53,36 @@ export function buildAccountInfo(deps: AccountBillingDeps): AccountInfo {
 /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
 export function dollarBilled(deps: AccountBillingDeps): boolean {
   return isDollarBilled(deps.modelInfo, apiKeySource(deps));
+}
+
+/** The live auth state that decides whether a model other than the panel's bills dollars. */
+export interface ModelBillingDeps {
+  supportedModels: readonly ModelInfo[];
+  claudeAuthMode: string;
+  openai: OpenAIAuthStatus;
+  preferApiKey: boolean;
+}
+
+/** Whether a catalog model value bills dollars, by the same credential rule as the account chip. */
+export function modelDollarBilled(value: string, deps: ModelBillingDeps): boolean {
+  return dollarBilled({
+    modelValue: value,
+    modelInfo: deps.supportedModels.find((m) => m.value === value),
+    claudeAuthMode: deps.claudeAuthMode,
+    openaiAuthStatus: deps.openai,
+    preferApiKey: deps.preferApiKey,
+  });
+}
+
+/**
+ * Whether a resolved pi model bills dollars. Its provider names the credential it will use, which a
+ * direct `provider/modelId` pin can choose against the panel's preference, so the provider decides first.
+ * A provider outside the catalog has unknown billing, which reads as a charge.
+ */
+export function piModelDollarBilled(model: { provider: string; id: string }, deps: ModelBillingDeps): boolean {
+  if (model.provider === OPENAI_CODEX_PROVIDER) return false;
+  if (model.provider === OPENAI_API_PROVIDER) return true;
+  if (model.provider === 'anthropic') return isDollarBilled(undefined, deps.claudeAuthMode);
+  const info = deps.supportedModels.find((m) => m.piProvider === model.provider && m.value === model.id);
+  return info ? modelDollarBilled(info.value, deps) : true;
 }

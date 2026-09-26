@@ -13,7 +13,7 @@ import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ImageBlock } from '../../../shared/types/content';
-import { teamMembersDir } from '../../pi-session/agent-records';
+import { teamEventLogPath, teamMembersDir } from '../../pi-session/agent-records';
 import { piSessionDir } from '../../pi-session/session-store';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
 
@@ -562,6 +562,13 @@ describe('team wiring — the verification ledger', () => {
   });
 });
 
+/** The real `run()` builds its own persistence, so its event log must land under the test home. */
+function expectEventLogUnderTestHome(cwd: string): void {
+  const log = teamEventLogPath(piSessionDir(cwd), 'sess', 'team-1');
+  expect(log.startsWith(os.homedir() + path.sep)).toBe(true);
+  expect(fs.existsSync(log)).toBe(true);
+}
+
 describe('team wiring — the ledger is seeded on the REAL startup path', () => {
   it('run() seeds the verification section as append-only before any agent records', async () => {
     // Every other ledger test hand-calls seedAppendOnly, so deleting the seed from run() would leave
@@ -580,6 +587,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     expect(live.isAppendOnly(VERIFICATION_SECTION)).toBe(true);
     expect(() => live.appendTo(VERIFICATION_SECTION, '- A | tree abc | full-suite | PASS')).not.toThrow();
 
+    expectEventLogUnderTestHome(cwd);
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });
   });
@@ -608,6 +616,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     expect(w.toolsetSnapshots).toHaveLength(1);
     expect(w.factoryMcpSnapshots[0]).toBe(w.toolsetSnapshots[0]);
 
+    expectEventLogUnderTestHome(cwd);
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });
   });
@@ -1202,6 +1211,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
     // A specialist has no resolution until it spawns, so it starts on the safe side of the label.
     expect(agentOf(w, 'A').dollarBilled).toBe(true);
 
+    expectEventLogUnderTestHome(cwd);
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });
   });
@@ -1220,8 +1230,8 @@ describe('team wiring: the persisted usage totals are the run sum, not its last 
     const w = makeWiring(['A']);
     const session = new FakeSession({
       onPrompt: (_t, s) => {
-        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 1_000, cacheWrite: 2 });
-        s.emitAssistantUsage({ input: 20, output: 7, cacheRead: 3_000, cacheWrite: 4 });
+        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 1_000, cacheWrite: 2 }, 0);
+        s.emitAssistantUsage({ input: 20, output: 7, cacheRead: 3_000, cacheWrite: 4 }, 0);
         s.emit({ type: 'turn_end' });
       },
     });

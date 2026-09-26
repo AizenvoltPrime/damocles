@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamRunSummary } from '../../shared/types/team';
 import type { ImageBlock } from '../../shared/types/content';
 import type { UserSteerNote } from '../../shared/steer';
+import type { AgentUsageTotals } from '../../shared/usage-accounting';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
 import type { SubagentSessionStore } from '../pi-session/folder-runtime';
 
@@ -121,15 +122,6 @@ export interface TeamConfig {
   resolveRoleModel: (role: TeamRole) => ResolvedTeamModel;
   /** The pi-native session/tools/gate/cost engine PiSession supplies. */
   engine: TeamEngine;
-}
-
-/** The five usage counters an agent reports. Cumulative across every attempt it ran under its name. */
-export interface AgentUsageTotals {
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costUsd: number;
 }
 
 export interface TeamAgent {

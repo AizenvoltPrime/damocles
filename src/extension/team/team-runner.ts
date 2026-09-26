@@ -20,11 +20,11 @@ import {
   isSpecialistSettled,
 } from './review-gate';
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
+import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTotals } from '../../shared/usage-accounting';
 import type {
   TeamConfig,
   AgentResult,
   AgentMcpContext,
-  AgentUsageTotals,
   TeamAgent,
   TeamPhase,
   TeamStatus,
@@ -244,7 +244,7 @@ export class TeamRunner {
   // The runs before this one, as the event log `restore` read records them.
   private pastRuns: TeamRunSummary[] = [];
   // Opened by the entry that starts this run. The usage baseline is the team's spend before it.
-  private currentRun = { toolUseId: '', startTime: 0, toolCount: 0, baseTokens: 0, baseCostUsd: 0 };
+  private currentRun = { toolUseId: '', startTime: 0, toolCount: 0, baseUsage: emptyAgentUsage() };
   // Fixed by the `team-completed` entry, so a member settling after it cannot move what that entry recorded.
   private endedRun: TeamRunSummary | null = null;
 
@@ -590,7 +590,7 @@ export class TeamRunner {
       const completedAt = new Date().toISOString();
       const endedRun: TeamRunSummary = { ...this.runSummary(), endTime: Date.parse(completedAt) };
       this.endedRun = endedRun;
-      const runTotals: TeamRunTotals = { toolCount: endedRun.toolCount, tokens: endedRun.tokens, costUsd: endedRun.costUsd };
+      const runTotals = this.runTotals(endedRun);
       this.persistence.appendTeamEntry({
         type: 'team-completed',
         teamId: this.config.teamId,
@@ -1765,8 +1765,7 @@ export class TeamRunner {
     if (unfinished) {
       this.status = 'cancelled';
       // A reload can kill the drain before `team-completed`, and then this is the run's only record of its work.
-      const { toolCount, tokens, costUsd } = this.runSummary();
-      const run: TeamRunTotals = { toolCount, tokens, costUsd };
+      const run = this.runTotals(this.runSummary());
       this.persistence.appendTeamEntry({ type: 'team-cancelled', teamId: this.config.teamId, run, timestamp: new Date().toISOString() });
     }
     this.teamAbort.abort();
@@ -2349,32 +2348,27 @@ export class TeamRunner {
     };
   }
 
-  private teamUsage(): { tokens: number; costUsd: number } {
-    let tokens = 0;
-    let costUsd = 0;
-    for (const a of this.agents.values()) {
-      tokens += a.totalInputTokens + a.totalOutputTokens;
-      costUsd += a.costUsd;
-    }
-    return { tokens, costUsd };
+  private teamUsage(): AgentUsageTotals {
+    return [...this.agents.values()].reduce<AgentUsageTotals>(addAgentUsage, emptyAgentUsage());
   }
 
   /** `startedAt` is the timestamp of the entry that opens the run, so the log reads back the same start. */
   private beginRun(toolUseId: string, startedAt: string): void {
-    const usage = this.teamUsage();
-    this.currentRun = { toolUseId, startTime: Date.parse(startedAt), toolCount: 0, baseTokens: usage.tokens, baseCostUsd: usage.costUsd };
+    this.currentRun = { toolUseId, startTime: Date.parse(startedAt), toolCount: 0, baseUsage: this.teamUsage() };
   }
 
   private runSummary(): TeamRunSummary {
-    const usage = this.teamUsage();
     return {
       toolUseId: this.currentRun.toolUseId,
       status: this.status,
       startTime: this.currentRun.startTime,
       endTime: null,
       toolCount: this.currentRun.toolCount,
-      tokens: usage.tokens - this.currentRun.baseTokens,
-      costUsd: usage.costUsd - this.currentRun.baseCostUsd,
+      usage: subtractAgentUsage(this.teamUsage(), this.currentRun.baseUsage),
     };
+  }
+
+  private runTotals(run: TeamRunSummary): TeamRunTotals {
+    return { toolCount: run.toolCount, ...run.usage };
   }
 }

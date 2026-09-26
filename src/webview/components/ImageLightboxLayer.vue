@@ -24,8 +24,9 @@ const { zIndex } = useOverlayEscape(() => emit('close'));
         class="fixed inset-0 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
         :style="{ zIndex }"
       />
-      <!-- Escape belongs to the overlay stack, so the dialog's own Escape dismissal is suppressed. -->
+      <!-- Escape belongs to the overlay stack: the dialog's own dismissal is suppressed and `data-overlay-layer` keeps the stack from yielding to it. -->
       <DialogContent
+        data-overlay-layer
         class="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 outline-none"
         :style="{ zIndex }"
         :aria-describedby="undefined"

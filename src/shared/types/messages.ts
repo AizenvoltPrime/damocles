@@ -18,7 +18,9 @@ import type {
   CompactionTrigger,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
+import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
 import type { SteerTargetInfo } from './subagents';
+import type { AgentUsageTotals } from '../usage-accounting';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
@@ -191,6 +193,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
   | { type: "requestSubscriptionUsage" }
+  | { type: "requestUsageStats"; requestId: string; query: UsageStatsQuery }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
@@ -297,7 +300,7 @@ export type ExtensionToWebviewMessage =
   | { type: "stopInfo"; lastAssistantMessage?: string }
   | { type: "subagentModelUpdate"; agentToolId: string; model: string }
   | { type: "subagentTemplateUpdate"; agentToolId: string; templatePath: string }
-  | { type: "openaiModelPricingUpdate"; pricing: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> }
+  | { type: "subagentUsageUpdate"; agentToolId: string; usage: AgentUsageTotals; dollarBilled?: boolean }
   | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
@@ -310,8 +313,12 @@ export type ExtensionToWebviewMessage =
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "subscriptionUsage"; data: SubscriptionUsageData }
+  | { type: "usageStatsProgress"; requestId: string; filesDone: number; filesTotal: number }
+  | { type: "usageStats"; requestId: string; final: boolean; report: UsageStatsReport | null; error?: string }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
-  | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }
+  | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number }
+  /** The conversation's own spend over every entry in its file, abandoned branches included, and its own user prompts on the current branch. */
+  | { type: "sessionUsage"; usage: AgentUsageTotals; numTurns: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex: number }

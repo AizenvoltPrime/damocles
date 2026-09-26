@@ -363,11 +363,13 @@ describe('the card of a team', () => {
 });
 
 describe('the runs of a team', () => {
-  /** One lead turn that calls `tools` tools and spends `tokens` and `cost`, then ends or holds the turn. */
+  /** What one `work` turn spends: `tokens` of input, a tenfold cache read, and `cost`. */
+  const spent = (tokens: number, cost: number) => ({ totalInputTokens: tokens, totalOutputTokens: 1, cacheReadTokens: tokens * 10, cacheCreationTokens: 2, costUsd: cost });
+
+  /** One lead turn that calls `tools` tools and spends `spent(tokens, cost)`, then ends or holds the turn. */
   const work = (tools: number, tokens: number, cost: number, end: boolean): Behaviour => (_t, s) => {
-    s.cost += cost;
     const content = Array.from({ length: tools }, (_, i) => ({ type: 'toolCall', id: `tool-${i}`, name: 'read', arguments: {} }));
-    s.emit({ type: 'message_end', message: { role: 'assistant', content, usage: { input: tokens, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+    s.emit({ type: 'message_end', message: { role: 'assistant', content, usage: { input: tokens, output: 1, cacheRead: tokens * 10, cacheWrite: 2, cost: { total: cost } } } });
     if (end) s.emit({ type: 'turn_end' });
   };
 
@@ -412,11 +414,11 @@ describe('the runs of a team', () => {
     await q.service.resumeTeam(teamId, undefined, 'tc-last');
 
     const loaded = (await new TeamPersistence(p.cwd, SESSION).loadTeamState(teamId))!;
-    expect(loaded.runs.map((r) => [r.toolUseId, r.status, r.toolCount, r.tokens, r.costUsd])).toEqual([
-      ['tc-create', 'cancelled', 3, 100, 0.25],
-      ['tc-cut', 'cancelled', 2, 50, 0.5],
-      ['tc-resume', 'cancelled', 1, 10, 0.125],
-      ['tc-last', 'completed', 4, 20, 0.0625],
+    expect(loaded.runs.map((r) => [r.toolUseId, r.status, r.toolCount, r.usage])).toEqual([
+      ['tc-create', 'cancelled', 3, spent(100, 0.25)],
+      ['tc-cut', 'cancelled', 2, spent(50, 0.5)],
+      ['tc-resume', 'cancelled', 1, spent(10, 0.125)],
+      ['tc-last', 'completed', 4, spent(20, 0.0625)],
     ]);
     expect(liveAtEnd!.runs).toEqual(loaded.runs);
     expect(loaded.runs[1]).toEqual({ ...atReload, status: 'cancelled', endTime: expect.any(Number) });

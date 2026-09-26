@@ -5,6 +5,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { TeamAgent, TeamRunSummary, TeamState } from '@shared/types/team';
+import { emptyAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import ToolCallRouter from '../ToolCallRouter.vue';
 import TeamCard from '../TeamCard.vue';
@@ -38,7 +39,11 @@ function lead(over: Partial<TeamAgent> = {}): TeamAgent {
 }
 
 function run(over: Partial<TeamRunSummary> = {}): TeamRunSummary {
-  return { toolUseId: 'tc-create', status: 'running', startTime: 1_000, endTime: null, toolCount: 0, tokens: 0, costUsd: 0, ...over };
+  return { toolUseId: 'tc-create', status: 'running', startTime: 1_000, endTime: null, toolCount: 0, usage: emptyAgentUsage(), ...over };
+}
+
+function spent(totalInputTokens: number, totalOutputTokens: number, costUsd: number): AgentUsageTotals {
+  return { ...emptyAgentUsage(), totalInputTokens, totalOutputTokens, costUsd };
 }
 
 function team(over: Partial<TeamState> = {}): TeamState {
@@ -51,9 +56,9 @@ function team(over: Partial<TeamState> = {}): TeamState {
 }
 
 // The create run's own work: 3 tools, 1.5K tokens, $0.50 over one minute.
-const CREATE_RUN = run({ status: 'cancelled', endTime: 61_000, toolCount: 3, tokens: 1_500, costUsd: 0.5 });
+const CREATE_RUN = run({ status: 'cancelled', endTime: 61_000, toolCount: 3, usage: spent(1_000, 500, 0.5) });
 // The resume run's own work: 2 tools, 800 tokens, $0.25 over thirty seconds.
-const RESUME_RUN = run({ toolUseId: 'tc-resume', status: 'completed', startTime: 120_000, endTime: 150_000, toolCount: 2, tokens: 800, costUsd: 0.25 });
+const RESUME_RUN = run({ toolUseId: 'tc-resume', status: 'completed', startTime: 120_000, endTime: 150_000, toolCount: 2, usage: spent(600, 200, 0.25) });
 
 const createCall: ToolCall = { id: 'tc-create', name: 'create_team', input: { title: 'Resumable team', brief: 'b', agents: [{ name: 'Lead', role: 'lead' }] }, status: 'completed', result: 'partial' };
 const resumeCall = (over: Partial<ToolCall> = {}): ToolCall => ({ id: 'tc-resume', name: 'resume_team', input: { team_id: TEAM_ID }, status: 'running', ...over });

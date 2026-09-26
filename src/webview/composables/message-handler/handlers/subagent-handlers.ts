@@ -43,6 +43,11 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
       ctx.stores.subagentStore.updateSubagentTemplate(msg.agentToolId, msg.templatePath);
     },
 
+    subagentUsageUpdate: (msg, ctx) => {
+      ctx.stores.subagentStore.updateSubagentUsage(msg.agentToolId, msg.usage, msg.dollarBilled);
+      return { skipScroll: true };
+    },
+
     subagentMessagesUpdate: (msg, ctx) => {
       ctx.stores.subagentStore.replaceSubagentMessages(msg.agentToolId, msg.messages);
     },

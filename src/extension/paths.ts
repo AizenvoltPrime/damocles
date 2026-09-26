@@ -9,6 +9,12 @@ export const DAMOCLES_HOME_DIR: string = path.join(os.homedir(), ".damocles");
 export const DAMOCLES_PLANS_DIR: string = path.join(DAMOCLES_HOME_DIR, "plans");
 export const DAMOCLES_EXPLORES_DIR: string = path.join(DAMOCLES_HOME_DIR, "explores");
 
+export const DAMOCLES_USAGE_DIR: string = path.join(DAMOCLES_HOME_DIR, "usage");
+/** Append-only JSONL of internal sub-call usage (titles, memory, /btw), which no session file records. */
+export const SUBCALL_USAGE_LEDGER_PATH: string = path.join(DAMOCLES_USAGE_DIR, "subcalls.jsonl");
+/** SQLite cache behind `/stats`, rebuilt incrementally from session files and the ledger. */
+export const USAGE_INDEX_DB_PATH: string = path.join(DAMOCLES_USAGE_DIR, "usage.db");
+
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
 

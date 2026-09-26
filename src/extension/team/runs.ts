@@ -1,7 +1,11 @@
 import type { TeamRunSummary } from '../../shared/types/team';
+import { emptyAgentUsage, type AgentUsageTotals } from '../../shared/usage-accounting';
 
-/** The work totals a `team-completed` entry records for the run it ends. */
-export type TeamRunTotals = Pick<TeamRunSummary, 'toolCount' | 'tokens' | 'costUsd'>;
+/** The work totals a `team-completed` or `team-cancelled` entry records for its run. */
+export type TeamRunTotals = { toolCount: number } & AgentUsageTotals;
+
+/** A run's totals as read back from a log entry. */
+type ReadRunTotals = Pick<TeamRunSummary, 'toolCount' | 'usage' | 'legacyTokens'>;
 
 type EndedStatus = Exclude<TeamRunSummary['status'], 'running'>;
 
@@ -13,10 +17,23 @@ const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as nu
 const isAmount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 const isEndedStatus = (v: unknown): v is EndedStatus => v === 'completed' || v === 'failed' || v === 'cancelled';
 
-function readRunTotals(value: unknown): TeamRunTotals | null {
+const TOKEN_KINDS = ['totalInputTokens', 'totalOutputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const;
+
+/**
+ * An entry's run totals. A log written before the token kinds were recorded carries `tokens`, input plus
+ * output only, which is kept apart as `legacyTokens` rather than read as a total of every kind.
+ */
+function readRunTotals(value: unknown): ReadRunTotals | null {
   if (!isRecord(value)) return null;
-  const { toolCount, tokens, costUsd } = value;
-  return isCount(toolCount) && isCount(tokens) && isAmount(costUsd) ? { toolCount, tokens, costUsd } : null;
+  const { toolCount, costUsd } = value;
+  if (!isCount(toolCount) || !isAmount(costUsd)) return null;
+  const usage = { ...emptyAgentUsage(), costUsd };
+  if (TOKEN_KINDS.every((key) => isCount(value[key]))) {
+    for (const key of TOKEN_KINDS) usage[key] = value[key] as number;
+    return { toolCount, usage };
+  }
+  const tokens = value['tokens'];
+  return isCount(tokens) ? { toolCount, usage, legacyTokens: tokens } : null;
 }
 
 /**
@@ -28,7 +45,7 @@ function readRunTotals(value: unknown): TeamRunTotals | null {
 export class TeamRunLog {
   private readonly ended: TeamRunSummary[] = [];
   private open: TeamRunSummary | null = null;
-  private openCancelTotals: TeamRunTotals | null = null;
+  private openCancelTotals: ReadRunTotals | null = null;
   // Each member's logged tool calls in its current attempt, since `agent-completed` carries that running count.
   private readonly attemptToolCounts = new Map<string, number>();
   private lastTime: number | null = null;
@@ -46,7 +63,7 @@ export class TeamRunLog {
         const toolUseId = entry['toolUseId'];
         if (typeof toolUseId !== 'string' || !timed) break;
         this.closeOpenRun();
-        this.open = { toolUseId, status: 'running', startTime: time, endTime: null, toolCount: 0, tokens: 0, costUsd: 0 };
+        this.open = { toolUseId, status: 'running', startTime: time, endTime: null, toolCount: 0, usage: emptyAgentUsage() };
         break;
       }
       case 'team-cancelled':
@@ -63,19 +80,20 @@ export class TeamRunLog {
           this.attemptToolCounts.set(name, count);
         }
         if (this.open) {
-          for (const key of ['totalInputTokens', 'totalOutputTokens']) {
+          const usage = this.open.usage;
+          for (const key of TOKEN_KINDS) {
             const tokens = entry[key];
-            if (isCount(tokens)) this.open.tokens += tokens;
+            if (isCount(tokens)) usage[key] += tokens;
           }
           const cost = entry['costUsd'];
-          if (isAmount(cost)) this.open.costUsd += cost;
+          if (isAmount(cost)) usage.costUsd += cost;
         }
         break;
       }
       case 'team-completed': {
         const status = entry['status'];
         if (!this.open || !timed || !isEndedStatus(status)) break;
-        this.ended.push({ ...this.open, ...this.openCancelTotals, ...readRunTotals(entry['run']), status, endTime: time });
+        this.ended.push({ ...this.open, ...(readRunTotals(entry['run']) ?? this.openCancelTotals), status, endTime: time });
         this.open = null;
         this.openCancelTotals = null;
         break;

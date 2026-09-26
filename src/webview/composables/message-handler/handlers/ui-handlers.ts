@@ -1,6 +1,7 @@
 import { nextTick } from "vue";
 import { toast } from "vue-sonner";
 import { applyLocale, i18n } from "@/i18n";
+import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
 import type { PermissionMode } from "@shared/types/settings";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 
@@ -43,13 +44,14 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     tokenUsageUpdate: (msg, ctx) => {
       ctx.stores.sessionStore.updateStats({
-        ...(msg.inputTokens !== undefined && { totalInputTokens: msg.inputTokens }),
-        ...(msg.cacheCreationTokens !== undefined && { cacheCreationTokens: msg.cacheCreationTokens }),
-        ...(msg.cacheReadTokens !== undefined && { cacheReadTokens: msg.cacheReadTokens }),
-        ...(msg.outputTokens !== undefined && { totalOutputTokens: msg.outputTokens }),
-        ...(msg.cachedInputTokens !== undefined && { cachedInputTokens: msg.cachedInputTokens }),
-        ...(msg.reasoningTokens !== undefined && { reasoningTokens: msg.reasoningTokens }),
+        ...(msg.inputTokens !== undefined && { contextInputTokens: msg.inputTokens }),
+        ...(msg.cacheCreationTokens !== undefined && { contextCacheWriteTokens: msg.cacheCreationTokens }),
+        ...(msg.cacheReadTokens !== undefined && { contextCacheReadTokens: msg.cacheReadTokens }),
       });
+    },
+
+    sessionUsage: (msg, ctx) => {
+      ctx.stores.sessionStore.updateStats({ ...msg.usage, numTurns: msg.numTurns });
     },
 
     contextUsageSummary: (msg, ctx) => {
@@ -81,6 +83,14 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     subscriptionUsage: (msg, ctx) => {
       ctx.stores.subscriptionUsageStore.handleDataLoaded(msg.data);
+    },
+
+    usageStats: (msg) => {
+      useUsageStatsStore().handleResult(msg);
+    },
+
+    usageStatsProgress: (msg) => {
+      useUsageStatsStore().handleProgress(msg);
     },
 
     preCompact: () => {},

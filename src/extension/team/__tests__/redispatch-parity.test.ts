@@ -169,8 +169,7 @@ async function makeHarness(cwd: string) {
         content: attempt.tools.map((name, i) => ({ type: 'toolCall', id: `tc-${name}-${i}`, name, arguments: {} })),
       },
     });
-    session.cost = attempt.cost;
-    session.emitAssistantUsage(attempt.usage);
+    session.emitAssistantUsage(attempt.usage, attempt.cost);
   };
 
   const specialistContext = (name: string): AgentMcpContext => (runner as unknown as {

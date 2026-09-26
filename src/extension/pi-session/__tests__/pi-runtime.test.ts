@@ -10,6 +10,7 @@ import { McpClientManager } from '../mcp/mcp-client-manager';
 import { initPiLoader, nodeSupportsPi, PI_MIN_NODE_MAJOR, type PiCodingAgentModule } from '../pi-loader';
 import type { SecretResolver } from '../custom-providers';
 import { LEGACY_SUBSCRIPTION_REPOS, SUBSCRIPTION_SOURCE, classifySubscriptionSource } from '../subscription';
+import { SUBCALL_USAGE_LEDGER_PATH } from '../../paths';
 
 /**
  * Capture what `logger.ts` ACTUALLY writes, not the format-string arguments — the credential leak this
@@ -59,6 +60,68 @@ describe('PiRuntime singleton (B1)', () => {
 
     runtime.unregisterSessionMutator('sess-x', newer);
     expect(runtime.getSessionMutator('sess-x')).toBeUndefined();
+  });
+});
+
+/**
+ * Every internal sub-call reaches the usage ledger through `runStructuredCompletion`, because no session
+ * file records it. The ledger is best-effort: a write failure must leave the sub-call result unchanged.
+ */
+describe('PiRuntime.runStructuredCompletion usage ledger', () => {
+  const MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' };
+  const USAGE = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } };
+  const REQ = { systemPrompt: 's', userMessage: 'u', outputToolName: 'submit_result', outputToolDescription: 'd', schema: { type: 'object' }, purpose: 'memory-extract' as const };
+
+  function runtimeReturning(complete: () => Promise<unknown>): PiRuntime {
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; _resolveSmallFastModel: () => unknown };
+    internals._modelRuntime = { hasConfiguredAuth: () => true, completeSimple: vi.fn(complete) };
+    internals._resolveSmallFastModel = () => MODEL;
+    return runtime;
+  }
+  const message = (stopReason: string) => ({
+    role: 'assistant', api: 'anthropic-messages', provider: 'anthropic', model: 'claude-haiku-4-5', stopReason, timestamp: 0, usage: USAGE,
+    content: [{ type: 'toolCall', id: '1', name: 'submit_result', arguments: { ok: true } }],
+  });
+  const ledger = (): Array<Record<string, unknown>> =>
+    fs.existsSync(SUBCALL_USAGE_LEDGER_PATH) && fs.statSync(SUBCALL_USAGE_LEDGER_PATH).isFile()
+      ? fs.readFileSync(SUBCALL_USAGE_LEDGER_PATH, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>)
+      : [];
+
+  afterEach(async () => {
+    fs.rmSync(SUBCALL_USAGE_LEDGER_PATH, { recursive: true, force: true });
+    await PiRuntime.disposeInstance();
+  });
+
+  it('records a completed sub-call with its purpose, attribution and full usage', async () => {
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    expect(await runtime.runStructuredCompletion({ ...REQ, attribution: { cwd: '/ws', sessionId: 's1' } })).toEqual({ ok: true });
+    expect(ledger()).toEqual([expect.objectContaining({ v: 1, type: 'subcall', purpose: 'memory-extract', provider: 'anthropic', model: 'claude-haiku-4-5', stopReason: 'toolUse', cwd: '/ws', sessionId: 's1', usage: USAGE })]);
+  });
+
+  it('records an errored sub-call, which was still billed', async () => {
+    const runtime = runtimeReturning(async () => message('error'));
+    expect(await runtime.runStructuredCompletion(REQ)).toBeNull();
+    expect(ledger()).toEqual([expect.objectContaining({ stopReason: 'error', cwd: null, sessionId: null })]);
+  });
+
+  it('records nothing for a sub-call that billed no tokens and no cost', async () => {
+    const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const runtime = runtimeReturning(async () => ({ ...message('toolUse'), usage: zero }));
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ ok: true });
+    expect(ledger()).toEqual([]);
+  });
+
+  it('records nothing when the request throws before any usage exists', async () => {
+    const runtime = runtimeReturning(async () => { throw new Error('network'); });
+    expect(await runtime.runStructuredCompletion(REQ)).toBeNull();
+    expect(ledger()).toEqual([]);
+  });
+
+  it('returns the result unchanged when the ledger cannot be written', async () => {
+    fs.mkdirSync(SUBCALL_USAGE_LEDGER_PATH, { recursive: true });
+    const runtime = runtimeReturning(async () => message('toolUse'));
+    expect(await runtime.runStructuredCompletion(REQ)).toEqual({ ok: true });
   });
 });
 

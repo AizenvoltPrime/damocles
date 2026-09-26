@@ -1,4 +1,5 @@
 import type { ContentBlock, UserContentBlock } from './content';
+import type { AgentUsageTotals } from '../usage-accounting';
 
 export interface SystemInitData {
   model: string;
@@ -163,9 +164,6 @@ export interface ResultMessage {
   type: "result";
   session_id: string;
   is_done: boolean;
-  total_cost_usd?: number;
-  total_output_tokens?: number;
-  num_turns?: number;
   stop_reason?: string | null;
   stop_details?: RefusalStopDetails | null;
 }
@@ -240,17 +238,13 @@ export interface ToolCall {
   cancelRequested?: boolean;
 }
 
-export interface SessionStats {
-  totalCostUsd: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  /** OpenAI-only: tokens served from prompt cache (separate billing tier from input). */
-  cachedInputTokens?: number;
-  /** OpenAI-only: subset of output_tokens that the model spent on hidden reasoning. */
-  reasoningTokens?: number;
+/** Cumulative usage of the conversation's own entries, plus the context meter's last-request snapshot. */
+export interface SessionStats extends AgentUsageTotals {
   numTurns: number;
+  /** Snapshot of the last request, for the context meter only. Never a billing figure. */
+  contextInputTokens: number;
+  contextCacheReadTokens: number;
+  contextCacheWriteTokens: number;
   contextWindowSize: number;
   contextTotalTokens?: number;
   contextMaxTokens?: number;

@@ -62,6 +62,22 @@ const workerOptions = {
 };
 
 /** @type {esbuild.BuildOptions} */
+const usageStatsWorkerOptions = {
+  entryPoints: ['src/extension/usage-stats/usage-stats-worker.ts'],
+  bundle: true,
+  outfile: 'dist/usage-stats-worker.js',
+  // Node builtin, must not be bundled.
+  external: ['node:sqlite'],
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: isWatch,
+  minify: !isWatch,
+  logLevel: 'info',
+  plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
 const sentinelOptions = {
   entryPoints: ['src/extension/pi-session/tools/shell-sentinel.ts'],
   bundle: true,
@@ -79,20 +95,22 @@ const sentinelOptions = {
 
 async function build() {
   if (isWatch) {
-    const [extCtx, workerCtx, sentinelCtx] = await Promise.all([
+    const [extCtx, workerCtx, usageStatsWorkerCtx, sentinelCtx] = await Promise.all([
       esbuild.context(extensionOptions),
       esbuild.context(workerOptions),
+      esbuild.context(usageStatsWorkerOptions),
       esbuild.context(sentinelOptions),
     ]);
-    await Promise.all([extCtx.watch(), workerCtx.watch(), sentinelCtx.watch()]);
+    await Promise.all([extCtx.watch(), workerCtx.watch(), usageStatsWorkerCtx.watch(), sentinelCtx.watch()]);
     console.log('Watching for changes...');
   } else {
     await Promise.all([
       esbuild.build(extensionOptions),
       esbuild.build(workerOptions),
+      esbuild.build(usageStatsWorkerOptions),
       esbuild.build(sentinelOptions),
     ]);
-    console.log('Extension + worker + sentinel build complete');
+    console.log('Extension + workers + sentinel build complete');
   }
 }
 

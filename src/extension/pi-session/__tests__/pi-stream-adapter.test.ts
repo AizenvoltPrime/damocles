@@ -17,27 +17,29 @@ interface BranchEntry {
 }
 
 /** A SessionManager stub whose active branch ends with a single user entry (the rewind/id key). */
-function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []): {
+function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = [], history: { headerTimestamp?: string | undefined; branch?: BranchEntry[] | undefined } = {}): {
   getLeafId: () => string;
   getBranch: () => BranchEntry[];
   getEntries: () => unknown[];
+  getHeader: () => { timestamp: string } | null;
 } {
+  const userEntry: BranchEntry = { type: 'message', id: userEntryId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } };
   return {
     getLeafId: () => userEntryId,
-    getBranch: () => [{ type: 'message', id: userEntryId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }],
+    getBranch: () => [...(history.branch ?? []), userEntry],
     getEntries: () => entries,
+    getHeader: () => (history.headerTimestamp ? { timestamp: history.headerTimestamp } : null),
   };
 }
 
-function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRuntime?: unknown }) {
+function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRuntime?: unknown; headerTimestamp?: string; branch?: BranchEntry[] }) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
-    sessionManager: fakeSessionManager('u-entry', opts?.entries ?? []),
+    sessionManager: fakeSessionManager('u-entry', opts?.entries ?? [], { headerTimestamp: opts?.headerTimestamp, branch: opts?.branch }),
     modelRuntime: opts?.modelRuntime ?? { getModel: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
-    getSessionStats: () => ({ sessionId: 'SID', cost: 0.05, tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
     getLastAssistantText: () => 'Hello there!',
     play: () => { for (const e of events) listener?.(e); },
   };
@@ -101,18 +103,32 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
   });
 }
 
-/** A session whose cumulative cost is controllable per read (so a turn can cross the limit mid-flight). */
+/** A persisted assistant entry billing `cost`, the shape pi's session file holds. */
+function assistantEntry(cost: number, timestamp = '2026-01-01T00:00:00.000Z', usage = { input: 100, output: 42, cacheRead: 5, cacheWrite: 3 }) {
+  return { type: 'message', id: `a-${timestamp}`, parentId: null, timestamp, message: { role: 'assistant', usage: { ...usage, cost: { total: cost } } } };
+}
+
+/**
+ * A session whose file bills `cost()` on each read (so a turn can cross the limit mid-flight). `play` yields a
+ * microtask after each event, as pi's own awaits do, so work the adapter defers past a listener runs in order.
+ */
 function fakeSessionWithCost(events: unknown[], cost: () => number) {
   let listener: ((e: unknown) => void) | undefined;
+  const sessionManager = fakeSessionManager();
+  sessionManager.getEntries = () => [assistantEntry(cost())];
   return {
     sessionId: 'SID',
-    sessionManager: fakeSessionManager(),
+    sessionManager,
     modelRuntime: { getModel: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
-    getSessionStats: () => ({ sessionId: 'SID', cost: cost(), tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
     getLastAssistantText: () => 'done',
-    play: () => { for (const e of events) listener?.(e); },
+    play: async () => {
+      for (const e of events) {
+        listener?.(e);
+        await Promise.resolve();
+      }
+    },
   };
 }
 
@@ -145,14 +161,14 @@ function normalize(messages: ExtensionToWebviewMessage[]): unknown[] {
       } else {
         out.push({ type: 'partial', phase, text });
       }
-    } else if (m.type === 'done') {
-      out.push({ type: 'done', total_output_tokens: m.data.total_output_tokens, hasCost: typeof m.data.total_cost_usd === 'number' });
+    } else if (m.type === 'sessionUsage') {
+      out.push({ type: 'sessionUsage', usage: m.usage, numTurns: m.numTurns });
     } else if (m.type === 'toolCompleted') {
       out.push({ type: 'toolCompleted', toolName: m.toolName, result: m.result });
     } else if (m.type === 'toolStreaming') {
       out.push({ type: 'toolStreaming', name: m.tool.name, input: m.tool.input });
     } else if (m.type === 'tokenUsageUpdate') {
-      out.push({ type: 'tokenUsageUpdate', inputTokens: m.inputTokens, outputTokens: m.outputTokens, cacheReadTokens: m.cacheReadTokens, cacheCreationTokens: m.cacheCreationTokens });
+      out.push({ type: 'tokenUsageUpdate', inputTokens: m.inputTokens, cacheReadTokens: m.cacheReadTokens, cacheCreationTokens: m.cacheCreationTokens });
     } else {
       out.push({ type: m.type });
     }
@@ -165,7 +181,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const turns: TurnState[] = [];
     const adapter = makeAdapter(out, { onTurnStateChanged: (s) => { turns.push(s); } });
-    const session = fakeSession(PI_EVENTS);
+    const session = fakeSession(PI_EVENTS, { entries: [assistantEntry(0.05)] });
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-1');
     session.play();
@@ -183,13 +199,98 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'toolCompleted', toolName: 'Read', result: 'file contents' },
       { type: 'toolMetadata' },
       { type: 'assistant' },
-      { type: 'tokenUsageUpdate', inputTokens: 100, outputTokens: undefined, cacheReadTokens: 5, cacheCreationTokens: 3 },
-      { type: 'done', total_output_tokens: 42, hasCost: true },
+      { type: 'tokenUsageUpdate', inputTokens: 100, cacheReadTokens: 5, cacheCreationTokens: 3 },
+      {
+        type: 'sessionUsage',
+        usage: { totalInputTokens: 100, totalOutputTokens: 42, cacheReadTokens: 5, cacheCreationTokens: 3, costUsd: 0.05 },
+        numTurns: 1,
+      },
+      { type: 'done' },
       { type: 'processing' },
       { type: 'stopInfo' },
     ]);
     // The adapter reports the turn lifecycle to its host instead of emitting sessionStateChanged.
     expect(turns).toEqual(['running', 'idle']);
+  });
+
+  it('reports the whole file\'s totals and the branch prompt count in sessionUsage, and none in done', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const earlier: BranchEntry[] = [1, 2].map((i) => ({ type: 'message', id: `u${i}`, parentId: null, timestamp: '', message: { role: 'user' } }));
+    const rewound = assistantEntry(0.01, '2026-01-01T00:00:01.000Z', { input: 7, output: 1, cacheRead: 0, cacheWrite: 0 });
+    const session = fakeSession(PI_EVENTS, { branch: earlier, entries: [assistantEntry(0.05), rewound] });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-1');
+    session.play();
+
+    const usage = out.find((m) => m.type === 'sessionUsage');
+    expect(usage).toEqual({
+      type: 'sessionUsage',
+      usage: { totalInputTokens: 107, totalOutputTokens: 43, cacheReadTokens: 5, cacheCreationTokens: 3, costUsd: expect.closeTo(0.06) },
+      numTurns: 3,
+    });
+    expect(out.find((m) => m.type === 'done')).toEqual({ type: 'done', data: { type: 'result', session_id: 'SID', is_done: true, stop_reason: null } });
+  });
+
+  it('excludes the usage and prompts a fork inherited, derived from the entries on every read', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const header = '2026-01-02T00:00:00.000Z';
+    const inheritedPrompt: BranchEntry = { type: 'message', id: 'u0', parentId: null, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user' } };
+    const inherited = assistantEntry(0.03, '2026-01-01T00:00:01.000Z', { input: 60, output: 20, cacheRead: 5, cacheWrite: 0 });
+    const own = assistantEntry(0.02, '2026-01-02T00:00:01.000Z', { input: 40, output: 22, cacheRead: 0, cacheWrite: 3 });
+    const session = fakeSession(PI_EVENTS, { headerTimestamp: header, branch: [inheritedPrompt], entries: [inherited, own] });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-1');
+    session.play();
+
+    expect(out.find((m) => m.type === 'sessionUsage')).toEqual({
+      type: 'sessionUsage',
+      usage: { totalInputTokens: 40, totalOutputTokens: 22, cacheReadTokens: 0, cacheCreationTokens: 3, costUsd: 0.02 },
+      numTurns: 1,
+    });
+  });
+
+  it('publishes the totals for an aborted turn, whose partial request was billed', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([{ type: 'agent_settled' }], { entries: [assistantEntry(0.04)] });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    adapter.markAborted();
+    out.length = 0;
+    session.play();
+
+    expect(out.map((m) => m.type)).toEqual(['sessionUsage', 'processing']);
+    expect(out[0]).toMatchObject({ usage: { costUsd: 0.04 } });
+  });
+
+  it('publishes the totals when pi appends a usage entry while the session is idle', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const warm = { type: 'usage', id: 'w1', parentId: null, timestamp: '2026-01-01T01:00:00.000Z', kind: 'cache_warm', usage: { input: 0, output: 1, cacheRead: 900, cacheWrite: 0, cost: { total: 0.01 } } };
+    const session = fakeSession([{ type: 'entry_appended', entry: warm }], { entries: [assistantEntry(0.05), warm] });
+    adapter.subscribe(session as never);
+    session.play();
+
+    expect(out).toEqual([
+      {
+        type: 'sessionUsage',
+        usage: { totalInputTokens: 100, totalOutputTokens: 43, cacheReadTokens: 905, cacheCreationTokens: 3, costUsd: expect.closeTo(0.06) },
+        numTurns: 1,
+      },
+    ]);
+  });
+
+  it('publishes nothing for an appended entry that carries no usage', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const custom = { type: 'custom', id: 'c1', parentId: null, timestamp: '', customType: 'damocles-checkpoint', data: {} };
+    const session = fakeSession([{ type: 'entry_appended', entry: custom }]);
+    adapter.subscribe(session as never);
+    session.play();
+
+    expect(out).toEqual([]);
   });
 
   it('session-start modelUpdate reports the true workspace default, not the active panel model', () => {
@@ -222,7 +323,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     out.length = 0;
     turns.length = 0;
     session.play();
-    expect(out.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
+    expect(out.map((m) => m.type)).toEqual(['sessionUsage', 'done', 'processing', 'stopInfo']);
     expect(turns).toEqual(['idle']);
   });
 
@@ -288,7 +389,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     turns.length = 0;
     session.play();
 
-    expect(out.map((m) => m.type)).toEqual(['error', 'done', 'processing', 'stopInfo']);
+    expect(out.map((m) => m.type)).toEqual(['error', 'sessionUsage', 'done', 'processing', 'stopInfo']);
     expect(turns).toEqual(['idle']);
   });
 
@@ -331,7 +432,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     turns.length = 0;
     session.play();
 
-    expect(out.map((m) => m.type)).toEqual(['sessionCancelled', 'processing']);
+    expect(out.map((m) => m.type)).toEqual(['sessionCancelled', 'sessionUsage', 'processing']);
     expect(turns).toEqual(['idle']);
   });
 
@@ -351,7 +452,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     adapter.beginTurn('c2');
     out.length = 0;
     next.play();
-    expect(out.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
+    expect(out.map((m) => m.type)).toEqual(['sessionUsage', 'done', 'processing', 'stopInfo']);
   });
 
   it('observedAgentRun is false for a command-only turn and true once the run settles', () => {
@@ -732,20 +833,64 @@ describe('PiStreamAdapter compaction no-op classification', () => {
   });
 });
 
+describe('PiStreamAdapter context snapshot and compaction billing', () => {
+  const end = (stopReason: string, usage: Record<string, number>) => ({ type: 'message_end', message: { role: 'assistant', content: [], stopReason, usage: { ...usage, cost: {} } } });
+
+  it.each(['aborted', 'error'])('keeps the meter on the last good request after an %s one', (stopReason) => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      end('stop', { input: 10, output: 5, cacheRead: 3000, cacheWrite: 100, totalTokens: 3115 }),
+      end(stopReason, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }),
+    ]);
+    adapter.subscribe(session as never);
+    session.play();
+
+    expect(out.filter((m) => m.type === 'tokenUsageUpdate')).toEqual([
+      { type: 'tokenUsageUpdate', inputTokens: 10, cacheReadTokens: 3000, cacheCreationTokens: 100 },
+    ]);
+  });
+
+  it('ignores a clean message that reports no tokens', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([end('stop', { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 })]);
+    adapter.subscribe(session as never);
+    session.play();
+
+    expect(out.some((m) => m.type === 'tokenUsageUpdate')).toBe(false);
+  });
+
+  it('a compaction resets the meter and publishes the spend its summary billed', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const compaction = { type: 'compaction', id: 'comp-1', parentId: null, timestamp: '2026-01-01T01:00:00.000Z', usage: { input: 20_000, output: 800, cacheRead: 0, cacheWrite: 0, cost: { total: 0.07 } } };
+    const session = fakeSession(
+      [{ type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 's', firstKeptEntryId: 'k1', tokensBefore: 43000 } }],
+      { entries: [assistantEntry(0.05), compaction] },
+    );
+    adapter.subscribe(session as never);
+    session.play();
+
+    expect(out.find((m) => m.type === 'tokenUsageUpdate')).toEqual({ type: 'tokenUsageUpdate', inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
+    expect(out.find((m) => m.type === 'sessionUsage')).toMatchObject({ usage: { totalInputTokens: 20_100, costUsd: expect.closeTo(0.12) } });
+  });
+});
+
 describe('PiStreamAdapter budget enforcement (US-008)', () => {
   const turn = (): unknown[] => [
     { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } },
     { type: 'agent_settled' },
   ];
 
-  it('emits budgetWarning at ≥80% on natural turn end', () => {
+  it('emits budgetWarning at ≥80% on natural turn end', async () => {
     const out: ExtensionToWebviewMessage[] = [];
     const onStop = vi.fn();
     const adapter = makeBudgetAdapter(out, 1.0, onStop); // limit $1.00
     const session = fakeSessionWithCost(turn(), () => 0.85); // 85%
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
-    session.play();
+    await session.play();
 
     const warn = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetWarning' }> => m.type === 'budgetWarning');
     expect(warn).toMatchObject({ currentSpend: 0.85, limit: 1.0 });
@@ -754,21 +899,21 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     expect(onStop).not.toHaveBeenCalled();
   });
 
-  it('emits budgetExceeded and aborts the turn in-flight when cumulative cost crosses the limit', () => {
+  it('emits budgetExceeded and aborts the turn in-flight when cumulative cost crosses the limit', async () => {
     const out: ExtensionToWebviewMessage[] = [];
     const onStop = vi.fn();
     const adapter = makeBudgetAdapter(out, 1.0, onStop);
     const session = fakeSessionWithCost(turn(), () => 1.2); // over limit mid-turn
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
-    session.play();
+    await session.play();
 
     const exceeded = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
     expect(exceeded).toMatchObject({ finalSpend: 1.2, limit: 1.0 });
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it('settles a budget-stopped turn like a natural completion — done/processing/idle/stopInfo, never sessionCancelled', () => {
+  it('settles a budget-stopped turn like a natural completion — done/processing/idle/stopInfo, never sessionCancelled', async () => {
     const out: ExtensionToWebviewMessage[] = [];
     // The host's real onBudgetStop is graceful: it never calls markAborted, so the settle must finish
     // the turn exactly like a natural completion. This is the claim the US-008 tests never asserted.
@@ -777,7 +922,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     const session = fakeSessionWithCost(turn(), () => 1.2);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
-    session.play();
+    await session.play();
 
     const tail = out.slice(out.findIndex((m) => m.type === 'done'));
     expect(tail.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
@@ -786,7 +931,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(false);
   });
 
-  it('re-arms in-flight enforcement per turn, so raising the limit does not leave the next turn unbounded', () => {
+  it('re-arms in-flight enforcement per turn, so raising the limit does not leave the next turn unbounded', async () => {
     const out: ExtensionToWebviewMessage[] = [];
     const onStop = vi.fn();
     let limit = 1.0;
@@ -814,7 +959,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     adapter.subscribe(session as never);
 
     adapter.beginTurn('c1');
-    session.play();
+    await session.play();
     expect(onStop).toHaveBeenCalledTimes(1);
 
     // The user raises the limit; spend never went back below it, so the turn-end re-arm never fired.
@@ -822,21 +967,69 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     limit = 2.0;
     cost = 2.5;
     adapter.beginTurn('c2');
-    session.play();
+    await session.play();
 
     expect(onStop).toHaveBeenCalledTimes(2);
     const exceeded = out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
     expect(exceeded.at(-1)).toMatchObject({ finalSpend: 2.5, limit: 2.0 });
   });
 
-  it('does not emit budget messages when no dollar limit applies (subscription/allowance)', () => {
+  it('checks the in-flight budget after pi has persisted the response that ended', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    let cost = 0.5;
+    const session = fakeSessionWithCost([turn()[0]], () => cost);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    // pi notifies listeners of message_end and appends the message after them, in the same tick.
+    const played = session.play();
+    cost = 1.2;
+    await played;
+
+    expect(out.find((m) => m.type === 'budgetExceeded')).toMatchObject({ finalSpend: 1.2, limit: 1.0 });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts only the spend a fork made itself, never what its parent paid', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    const session = fakeSessionWithCost(turn(), () => 0);
+    const header = '2026-01-02T00:00:00.000Z';
+    session.sessionManager.getHeader = () => ({ timestamp: header });
+    session.sessionManager.getEntries = () => [assistantEntry(5.2, '2026-01-01T00:00:00.000Z'), assistantEntry(0.12, '2026-01-02T00:00:01.000Z')];
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    await session.play();
+
+    expect(out.some((m) => m.type === 'budgetExceeded' || m.type === 'budgetWarning')).toBe(false);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('a resumed conversation starts with no subagent spend and a re-armed latch from the one it replaced', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    adapter.addExternalCost(1.5);
+    expect(out.filter((m) => m.type === 'budgetExceeded')).toHaveLength(1);
+
+    adapter.seedResumedUsage(0.1);
+    expect(adapter.externalCost).toBe(0);
+    adapter.addExternalCost(1.05);
+    const exceeded = out.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
+    expect(exceeded).toHaveLength(2);
+    expect(exceeded[1]!.finalSpend).toBeCloseTo(1.05);
+  });
+
+  it('does not emit budget messages when no dollar limit applies (subscription/allowance)', async () => {
     const out: ExtensionToWebviewMessage[] = [];
     // `makeAdapter` wires `budgetLimit: () => null` — the subscription/allowance case.
     const adapter = makeAdapter(out);
     const session = fakeSessionWithCost(turn(), () => 99); // far over any limit, but no dollar enforcement
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
-    session.play();
+    await session.play();
     expect(out.some((m) => m.type === 'budgetWarning' || m.type === 'budgetExceeded')).toBe(false);
   });
 });

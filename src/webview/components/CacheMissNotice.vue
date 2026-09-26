@@ -6,7 +6,7 @@ import { formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { IconDatabase } from '@/components/icons';
 import { CACHE_TTL_MS } from '@shared/types/constants';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const props = defineProps<{
   notice: CacheMissNoticeType;
@@ -25,15 +25,15 @@ const title = computed(() => {
   return t('cacheMiss.titleGeneric');
 });
 
-const formattedTokens = computed(() => formatTokenCount(props.notice.missedTokens));
+const formattedTokens = computed(() => formatTokenCount(props.notice.missedTokens, locale.value));
 
 const hasCost = computed(() => props.notice.missedCost > 0);
 
-// formatCost returns a bare "$X.XX"; the locale `detail` template adds the "≈" prefix, so the
+// formatCost returns a bare amount; the locale `detail` template adds the "≈" prefix, so the
 // component must NOT prepend its own (that produced "≈≈$0.42").
 const detailText = computed(() =>
   hasCost.value
-    ? t('cacheMiss.detail', { tokens: formattedTokens.value, cost: formatCost(props.notice.missedCost) })
+    ? t('cacheMiss.detail', { tokens: formattedTokens.value, cost: formatCost(props.notice.missedCost, locale.value) })
     : t('cacheMiss.detailTokensOnly', { tokens: formattedTokens.value }),
 );
 

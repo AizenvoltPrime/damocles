@@ -156,10 +156,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setDeepseekConfigured(msg.configured);
     },
 
-    openaiModelPricingUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setOpenAIModelPricing(msg.pricing);
-    },
-
     configChange: (msg) => {
       const labels: Record<string, string> = {
         user_settings: 'User settings',

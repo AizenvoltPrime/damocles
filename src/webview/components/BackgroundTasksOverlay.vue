@@ -7,12 +7,16 @@ import { Card, CardContent } from '@/components/ui/card';
 import { IconLoader, IconArrowLeft, IconStop, IconTrash, IconCheck, IconXCircle, IconBan, IconGear, IconClock } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
+import AgentUsageStats from './AgentUsageStats.vue';
+import { formatTokenCount } from '@/composables/useTeamFormatting';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
+import { useSubagentStore } from '@/stores/useSubagentStore';
 import { useVSCode } from '@/composables/useVSCode';
 import type { BackgroundTask } from '@shared/types/background-tasks';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const store = useBackgroundTaskStore();
+const subagentStore = useSubagentStore();
 const { postMessage } = useVSCode();
 
 defineEmits<{
@@ -32,6 +36,15 @@ function stopTick(): void {
 }
 
 const overlayTasks = computed(() => store.tasks);
+
+/** The subagent card's usage for a task: live while it runs, with the cache rate and cost the task's own total lacks. */
+function liveAgent(task: BackgroundTask) {
+  const agent = task.toolUseId ? subagentStore.subagents[task.toolUseId] : undefined;
+  return agent?.usage ? { usage: agent.usage, dollarBilled: agent.dollarBilled } : null;
+}
+const taskRows = computed(() => overlayTasks.value.map(task => ({ task, live: liveAgent(task) })));
+const selectedLive = computed(() => (store.selectedTask ? liveAgent(store.selectedTask) : null));
+
 const overlayActiveCount = computed(() => overlayTasks.value.filter(task => task.status === 'running').length);
 const hasActiveTasks = computed(() => overlayActiveCount.value > 0);
 
@@ -105,11 +118,6 @@ function formatElapsed(startTime: number, endTime: number | null): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-function formatTokens(tokens: number): string {
-  if (tokens < 1000) return String(tokens);
-  if (tokens < 1_000_000) return `${(tokens / 1000).toFixed(1)}k`;
-  return `${(tokens / 1_000_000).toFixed(1)}M`;
-}
 </script>
 
 <template>
@@ -201,10 +209,13 @@ function formatTokens(tokens: number): string {
             </p>
 
             <!-- Stats footer -->
-            <div v-if="store.selectedTask.usage" class="flex items-center gap-3 text-xs text-primary/80 pt-1 border-t border-border/20">
-              <span class="font-medium">{{ formatTokens(store.selectedTask.usage.totalTokens) }} {{ t('common.tokens') }}</span>
-              <span class="font-medium">{{ store.selectedTask.usage.toolUses }} {{ t('backgroundTask.tools') }}</span>
+            <div v-if="store.selectedTask.usage || selectedLive" class="flex items-center gap-3 text-xs text-primary/80 pt-1 border-t border-border/20">
+              <span v-if="!selectedLive && store.selectedTask.usage" class="font-medium">{{ t('agentUsage.tokens', { n: formatTokenCount(store.selectedTask.usage.totalTokens, locale) }, store.selectedTask.usage.totalTokens) }}</span>
+              <span v-if="store.selectedTask.usage" class="font-medium">{{ store.selectedTask.usage.toolUses }} {{ t('backgroundTask.tools') }}</span>
               <span class="font-medium">{{ formatElapsed(store.selectedTask.startTime, store.selectedTask.endTime) }}</span>
+              <span v-if="selectedLive" class="flex items-center gap-1.5 font-medium">
+                <AgentUsageStats :usage="selectedLive.usage" :dollar-billed="selectedLive.dollarBilled" variant="card" />
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -227,7 +238,7 @@ function formatTokens(tokens: number): string {
       <!-- Task list -->
       <div v-else class="p-3 space-y-2">
         <Card
-          v-for="task in overlayTasks"
+          v-for="{ task, live } in taskRows"
           :key="task.taskId"
           class="overflow-hidden cursor-pointer transition-colors"
           :class="cardBorderClass(task.status)"
@@ -246,12 +257,16 @@ function formatTokens(tokens: number): string {
               <template v-if="task.status === 'running'">
                 <span v-if="task.progressSummary" class="truncate italic text-primary/70">{{ task.progressSummary }}</span>
                 <span v-else class="text-muted-foreground">{{ t('backgroundTask.initializing') }}</span>
+                <AgentUsageStats v-if="live" :usage="live.usage" :dollar-billed="live.dollarBilled" variant="card" separator="·" separator-class="text-foreground/30" />
               </template>
               <template v-else-if="task.usage">
                 <IconGear :size="12" class="shrink-0" />
                 <span>{{ task.usage.toolUses }} {{ t('backgroundTask.tools') }}</span>
-                <span class="text-foreground/30">·</span>
-                <span>{{ formatTokens(task.usage.totalTokens) }} {{ t('common.tokens') }}</span>
+                <AgentUsageStats v-if="live" :usage="live.usage" :dollar-billed="live.dollarBilled" variant="card" separator="·" separator-class="text-foreground/30" />
+                <template v-else>
+                  <span class="text-foreground/30">·</span>
+                  <span>{{ t('agentUsage.tokens', { n: formatTokenCount(task.usage.totalTokens, locale) }, task.usage.totalTokens) }}</span>
+                </template>
               </template>
               <template v-else-if="task.summary">
                 <span class="truncate">{{ task.summary }}</span>

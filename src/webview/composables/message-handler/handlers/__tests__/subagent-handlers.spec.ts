@@ -144,3 +144,28 @@ describe('subagentStart for a resume', () => {
     });
   });
 });
+
+describe('subagentUsageUpdate', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const usage = { totalInputTokens: 1, totalOutputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4, costUsd: 0.5 };
+  const update = (msg: Extract<ExtensionToWebviewMessage, { type: 'subagentUsageUpdate' }>, ctx: HandlerContext) =>
+    defined(createSubagentHandlers().subagentUsageUpdate, 'subagentUsageUpdate handler')(msg, ctx);
+
+  it('stores the usage and billing flag on the card without scrolling the chat', () => {
+    const ctx = context();
+    ctx.stores.subagentStore.registerAgentTool('toolu_1', { subagent_type: 'Explore', description: 'find' });
+
+    expect(update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage, dollarBilled: false }, ctx)).toEqual({ skipScroll: true });
+    expect(ctx.stores.subagentStore.subagents['toolu_1']).toMatchObject({ usage, dollarBilled: false });
+  });
+
+  it('keeps a known billing flag when an update carries none', () => {
+    const ctx = context();
+    ctx.stores.subagentStore.registerAgentTool('toolu_1', { subagent_type: 'Explore', description: 'find' });
+    update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage, dollarBilled: false }, ctx);
+    update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage: { ...usage, costUsd: 0.75 } }, ctx);
+
+    expect(ctx.stores.subagentStore.subagents['toolu_1']).toMatchObject({ usage: { costUsd: 0.75 }, dollarBilled: false });
+  });
+});

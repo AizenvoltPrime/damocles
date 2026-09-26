@@ -130,7 +130,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const openaiCodexAuthInFlight = ref(false);
   const openaiCodexAuthError = ref<string | null>(null);
   const pendingOpenAIModel = ref<string | null>(null);
-  const openaiModelPricing = ref<Record<string, { input: number; cachedInput: number; output: number; reasoning: number }>>({});
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
@@ -402,10 +401,6 @@ export const useSettingsStore = defineStore('settings', () => {
     pendingOpenAIModel.value = model;
   }
 
-  function setOpenAIModelPricing(pricing: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }>) {
-    openaiModelPricing.value = pricing ?? {};
-  }
-
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     baseAvailableModels.value = [];
@@ -443,7 +438,6 @@ export const useSettingsStore = defineStore('settings', () => {
     stepfunConfigured.value = false;
     deepseekConfigured.value = false;
     pendingOpenAIModel.value = null;
-    openaiModelPricing.value = {};
     workspaceFolders.value = [];
     panelWorkspaceFolderKey.value = "";
     defaultWorkspaceFolderKey.value = "";
@@ -534,8 +528,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setClaudeAuthBusy,
     setClaudeAuthError,
     setPendingOpenAIModel,
-    openaiModelPricing,
-    setOpenAIModelPricing,
     workspaceFolders,
     panelWorkspaceFolderKey,
     defaultWorkspaceFolderKey,

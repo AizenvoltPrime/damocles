@@ -137,6 +137,18 @@
 
     --switch-track: color-mix(in srgb, var(--vscode-editor-foreground) 20%, var(--vscode-editor-background));
 
+    /* Series colors in rank order; /stats assigns them by a model's cost rank so the chart and tables agree. */
+    --chart-1: var(--vscode-charts-blue, #3794ff);
+    --chart-2: var(--vscode-charts-red, #f14c4c);
+    --chart-3: var(--vscode-charts-yellow, #cca700);
+    --chart-4: var(--vscode-charts-orange, #d18616);
+    --chart-5: var(--vscode-charts-green, #89d185);
+    --chart-6: var(--vscode-charts-purple, #b180d7);
+    --chart-7: var(--vscode-charts-foreground, #cccccc);
+    /* The charts palette has no eighth hue, and `--vscode-charts-lines` is the gridline color. */
+    --chart-8: var(--vscode-terminal-ansiCyan, #11a8cd);
+    --chart-grid: var(--vscode-charts-lines, rgba(128, 128, 128, 0.5));
+
     --radius: 0.375rem;
 
     font-family: var(--vscode-font-family);

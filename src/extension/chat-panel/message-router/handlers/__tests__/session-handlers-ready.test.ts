@@ -44,7 +44,6 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       settingsManager: {
         sendCurrentSettings: async () => calls.push('sendCurrentSettings'),
         sendAvailableModels: () => undefined,
-        sendOpenAIModelPricing: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,
@@ -125,7 +124,6 @@ describe('ready handler: restores the panel into the right folder', () => {
       settingsManager: {
         sendCurrentSettings: async () => undefined,
         sendAvailableModels: () => undefined,
-        sendOpenAIModelPricing: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,

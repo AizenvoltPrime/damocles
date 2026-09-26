@@ -7,7 +7,7 @@ export function useContextPercentage(stats: MaybeRefOrGetter<SessionStats>) {
     if (s.contextTotalTokens !== undefined) {
       return s.contextTotalTokens;
     }
-    return s.totalInputTokens + s.cacheCreationTokens + s.cacheReadTokens;
+    return s.contextInputTokens + s.contextCacheWriteTokens + s.contextCacheReadTokens;
   });
 
   const contextPercentage = computed(() => {

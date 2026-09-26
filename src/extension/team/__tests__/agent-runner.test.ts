@@ -140,11 +140,9 @@ describe('AgentRunner (pi-native team agent)', () => {
       onPrompt: (_t, s) => {
         turn += 1;
         if (turn === 1) {
-          s.cost = 0.01;
-          s.emitAssistantUsage({ input: 100, output: 30, cacheRead: 500, cacheWrite: 10 });
+          s.emitAssistantUsage({ input: 100, output: 30, cacheRead: 500, cacheWrite: 10 }, 0.01);
         } else {
-          s.cost = 0.03;
-          s.emitAssistantUsage({ input: 200, output: 50, cacheRead: 800, cacheWrite: 20 });
+          s.emitAssistantUsage({ input: 200, output: 50, cacheRead: 800, cacheWrite: 20 }, 0.02);
           // Stop after this second turn so the loop ends without a third prompt.
           alive = false;
         }
@@ -182,6 +180,37 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(usageUpdates.at(-1)).toMatchObject({ inputTokens: 300, outputTokens: 80, cacheCreationTokens: 30, cacheReadTokens: 1300, costUsd: 0.03 });
     // Cost rolled into the budget as positive deltas summing to the cumulative cost.
     expect(costDeltas.reduce((a, b) => a + b, 0)).toBeCloseTo(0.03, 5);
+  });
+
+  it('counts compaction and cache-warm tokens, so the tokens agree with the cost', async () => {
+    const fake = new FakeSession({
+      onPrompt: (_t, s) => {
+        s.emitAssistantUsage({ input: 100, output: 30, cacheRead: 500, cacheWrite: 10 }, 0.02);
+        // pi writes the compaction entry, then emits `compaction_end`; its summary call is billed spend.
+        s.tokens.input += 4000;
+        s.tokens.output += 600;
+        s.cost += 0.03;
+        s.emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false });
+        s.emit({ type: 'turn_end' });
+      },
+    });
+    const usageUpdates: Array<{ inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number }> = [];
+    const costDeltas: number[] = [];
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      // A cache warm writes a `usage` entry and raises no event, so only the settle reading sees it.
+      onReconcileBeforeEnd: () => { fake.tokens.cacheRead += 900; fake.cost += 0.01; },
+      onUsageUpdate: (u) => usageUpdates.push(u),
+      onCost: (d) => costDeltas.push(d),
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(usageUpdates.find((u) => u.inputTokens === 4100)).toMatchObject({ outputTokens: 630, costUsd: 0.05 });
+    expect(result).toMatchObject({ totalInputTokens: 4100, totalOutputTokens: 630, cacheReadTokens: 1400, cacheCreationTokens: 10, costUsd: expect.closeTo(0.06, 10) });
+    expect(usageUpdates.at(-1)).toMatchObject({ inputTokens: 4100, cacheReadTokens: 1400, costUsd: expect.closeTo(0.06, 10) });
+    expect(costDeltas.reduce((a, b) => a + b, 0)).toBeCloseTo(0.06, 10);
   });
 
   it('wakes a parked standby agent when a system nudge is delivered deferred through a microtask', async () => {
@@ -1224,22 +1253,21 @@ describe('AgentRunner redelivery and undelivered messages', () => {
 });
 
 describe('AgentRunner cost baseline', () => {
-  it('reports only spend after the session opened, in costUsd, usage updates and the budget deltas', async () => {
+  it('reports only spend after the session opened, in costUsd, tokens, usage updates and the budget deltas', async () => {
     let alive = true;
     const messageBus = new MessageBus('team-1');
     let turn = 0;
     const fake = new FakeSession({
       onPrompt: (_t, s) => {
         turn += 1;
-        s.cost = turn === 1 ? 1.25 : 1.5;
-        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 });
+        s.emitAssistantUsage({ input: 10, output: 5, cacheRead: 200, cacheWrite: 3 }, 0.25);
         if (turn === 2) alive = false;
         s.emit({ type: 'turn_end' });
       },
     });
-    // A reopened session reports its whole history's cost, spend the earlier run already charged.
-    fake.cost = 1;
-    const usageUpdates: number[] = [];
+    // A reopened session reports its whole history's spend, which the earlier run already charged.
+    fake.seedOpening({ cost: 1, tokens: { input: 700, output: 90, cacheRead: 40_000, cacheWrite: 600 } });
+    const usageUpdates: Array<{ inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }> = [];
     const costDeltas: number[] = [];
     let idleResolve: (() => void) | null = null;
     const idle1 = new Promise<void>((r) => { idleResolve = r; });
@@ -1247,7 +1275,7 @@ describe('AgentRunner cost baseline', () => {
       messageBus,
       createSession: async () => fake as never,
       keepAlive: () => alive,
-      onUsageUpdate: (u) => usageUpdates.push(u.costUsd),
+      onUsageUpdate: (u) => usageUpdates.push(u),
       onCost: (d) => costDeltas.push(d),
       onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
     });
@@ -1257,8 +1285,11 @@ describe('AgentRunner cost baseline', () => {
     messageBus.send('peer', 'worker', 'second turn');
     const result = await run;
 
-    expect(result.costUsd).toBeCloseTo(0.5, 10);
-    expect(usageUpdates.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.5]);
+    expect(result).toMatchObject({ totalInputTokens: 20, totalOutputTokens: 10, cacheReadTokens: 400, cacheCreationTokens: 6, costUsd: expect.closeTo(0.5, 10) });
+    expect(usageUpdates).toEqual([
+      { inputTokens: 10, outputTokens: 5, cacheReadTokens: 200, cacheCreationTokens: 3, costUsd: expect.closeTo(0.25, 10) },
+      { inputTokens: 20, outputTokens: 10, cacheReadTokens: 400, cacheCreationTokens: 6, costUsd: expect.closeTo(0.5, 10) },
+    ]);
     expect(costDeltas.map((c) => Number(c.toFixed(10)))).toEqual([0.25, 0.25]);
   });
 });

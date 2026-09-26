@@ -9,18 +9,15 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useSettingsStore } from '@/stores';
 import { useVSCode } from '@/composables/useVSCode';
 import { useContextPercentage } from '@/composables/useContextPercentage';
+import { useCostLabel } from '@/composables/useCostLabel';
 import { contextWarningBands } from '@/utils/contextBands';
-import { DEFAULT_MODELS } from '@shared/types/constants';
+import { cacheHitPercent } from '@/utils/cacheHitPercent';
+import { agentCacheHitRate, agentUsageUnpriced, promptTokens } from '@shared/usage-accounting';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const { postMessage } = useVSCode();
-const settingsStore = useSettingsStore();
-const {
-  currentSettings,
-  activeModel,
-  availableModels,
-  openaiModelPricing,
-} = storeToRefs(settingsStore);
+const { currentSettings } = storeToRefs(useSettingsStore());
+const { costLabel, costTitle } = useCostLabel();
 
 const props = defineProps<{
   stats: SessionStats;
@@ -62,55 +59,27 @@ function handleViewDetails() {
   emit('openContextUsage');
 }
 
-const modelCatalog = computed(() =>
-  availableModels.value.length > 0 ? availableModels.value : DEFAULT_MODELS,
-);
+const cacheHitRate = computed(() => agentCacheHitRate(props.stats));
 
-const activeModelInfo = computed(() =>
-  modelCatalog.value.find(m => m.value === activeModel.value),
-);
-
-const isOpenAIBackend = computed(() => activeModelInfo.value?.backend === 'openai');
-
-const hasCacheActivity = computed(() => {
-  return props.stats.cacheCreationTokens > 0 || props.stats.cacheReadTokens > 0;
+const tokensTooltip = computed(() => {
+  const s = props.stats;
+  const n = (v: number) => v.toLocaleString(locale.value);
+  return t('stats.tokensTooltip', {
+    input: n(s.totalInputTokens),
+    cacheRead: n(s.cacheReadTokens),
+    cacheWrite: n(s.cacheCreationTokens),
+    output: n(s.totalOutputTokens),
+  });
 });
 
-const hasOpenAICacheActivity = computed(() => (props.stats.cachedInputTokens ?? 0) > 0);
-const hasReasoningActivity = computed(() => (props.stats.reasoningTokens ?? 0) > 0);
+const unpriced = computed(() => agentUsageUnpriced(props.stats));
 
-const openaiCost = computed(() => {
-  if (!isOpenAIBackend.value) return null;
-  const modelKey = activeModelInfo.value?.openaiModelId ?? activeModel.value;
-  const pricing = openaiModelPricing.value[modelKey];
-  if (!pricing) return null;
-
-  const inputTokens = props.stats.totalInputTokens;
-  const cachedInputTokens = props.stats.cachedInputTokens ?? 0;
-  const outputTokens = props.stats.totalOutputTokens;
-  const reasoningTokens = props.stats.reasoningTokens ?? 0;
-
-  const billedInput = Math.max(0, inputTokens - cachedInputTokens);
-  const billedOutput = Math.max(0, outputTokens - reasoningTokens);
-
-  const cost =
-    (billedInput * pricing.input) / 1_000_000 +
-    (cachedInputTokens * pricing.cachedInput) / 1_000_000 +
-    (billedOutput * pricing.output) / 1_000_000 +
-    (reasoningTokens * pricing.reasoning) / 1_000_000;
-
-  return cost;
-});
-
-const displayCost = computed(() => openaiCost.value ?? props.stats.totalCostUsd);
-
-function formatCost(cost: number): string {
-  if (cost === 0) return '$0.00';
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
-}
+const costTooltip = computed(() =>
+  [t('stats.cost'), unpriced.value ? t('common.unpricedTooltip') : costTitle()].filter(Boolean).join('\n'),
+);
 
 function formatNumber(num: number): string {
+  if (num >= 1_000_000_000) return `${(num / 1_000_000_000).toFixed(1)}B`;
   if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
   return num.toString();
@@ -157,49 +126,19 @@ function formatNumber(num: number): string {
         </PopoverContent>
       </Popover>
 
-      <span class="flex items-center gap-1.5" :title="t('stats.sessionTokens')">
+      <span class="flex items-center gap-1.5" :title="tokensTooltip">
         <IconChartBar :size="14" class="text-muted-foreground shrink-0" />
-        <span class="flex items-center gap-0.5 text-foreground" :title="t('openai.costDisplay.input')">
-          {{ formatNumber(stats.totalInputTokens) }}<IconArrowDown :size="10" />
+        <span class="flex items-center gap-0.5 text-foreground">
+          {{ formatNumber(promptTokens(stats)) }}<IconArrowDown :size="10" />
         </span>
-        <span class="flex items-center gap-0.5 text-foreground" :title="t('openai.costDisplay.output')">
+        <span class="flex items-center gap-0.5 text-foreground">
           {{ formatNumber(stats.totalOutputTokens) }}<IconArrowUp :size="10" />
         </span>
       </span>
 
-      <template v-if="isOpenAIBackend">
-        <span
-          v-if="hasOpenAICacheActivity"
-          class="flex items-center gap-1.5"
-          :title="t('openai.costDisplay.cachedInput')"
-        >
-          <IconDatabase :size="14" class="text-muted-foreground shrink-0" />
-          <span class="flex items-center gap-0.5 text-info">
-            {{ formatNumber(stats.cachedInputTokens ?? 0) }}<IconArrowDown :size="10" />
-          </span>
-        </span>
-        <span
-          v-if="hasReasoningActivity"
-          class="flex items-center gap-1.5 text-purple-400"
-          :title="t('openai.costDisplay.reasoning')"
-        >
-          <span class="text-[10px] uppercase tracking-wide opacity-70">R</span>
-          {{ formatNumber(stats.reasoningTokens ?? 0) }}
-        </span>
-      </template>
-
-      <span
-        v-else-if="hasCacheActivity"
-        class="flex items-center gap-1.5"
-        :title="t('stats.cache')"
-      >
+      <span v-if="cacheHitRate !== null" class="flex items-center gap-1.5" :title="t('stats.cacheHitTooltip')">
         <IconDatabase :size="14" class="text-muted-foreground shrink-0" />
-        <span class="flex items-center gap-0.5 text-purple-400" :title="t('openai.costDisplay.cacheCreation')">
-          {{ formatNumber(stats.cacheCreationTokens) }}<IconArrowUp :size="10" />
-        </span>
-        <span class="flex items-center gap-0.5 text-info" :title="t('openai.costDisplay.cacheReads')">
-          {{ formatNumber(stats.cacheReadTokens) }}<IconArrowDown :size="10" />
-        </span>
+        <span class="text-info">{{ t('stats.cacheHit', { pct: cacheHitPercent(cacheHitRate) }) }}</span>
       </span>
 
       <slot />
@@ -209,8 +148,8 @@ function formatNumber(num: number): string {
       <span v-if="stats.numTurns > 0" class="text-muted-foreground" :title="t('stats.turns', { n: stats.numTurns }, stats.numTurns)">
         {{ t('stats.turns', { n: stats.numTurns }, stats.numTurns) }}
       </span>
-      <span class="font-medium text-foreground" :title="t('stats.cost')">
-        {{ formatCost(displayCost) }}
+      <span class="font-medium text-foreground" :title="costTooltip">
+        {{ unpriced ? t('common.unpriced') : costLabel(stats.costUsd) }}
       </span>
       <Button
         variant="ghost"

@@ -3,7 +3,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { defineComponent, nextTick } from 'vue';
 import { mount, type VueWrapper, type DOMWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
-import type { TeamAgent, TeamState } from '@shared/types/team';
+import type { TeamAgent, TeamRunSummary, TeamState } from '@shared/types/team';
+import { addAgentUsage, emptyAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting';
 import TeamAgentCard from '../TeamAgentCard.vue';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import TeamOverlay from '../TeamOverlay.vue';
@@ -69,7 +70,8 @@ function team(agents: TeamAgent[]): TeamState {
     startTime: 1,
     endTime: null,
     totalToolCount: 1,
-    runs: [{ toolUseId: 'toolu_1', status: 'running', startTime: 1, endTime: null, toolCount: 1, tokens: 0, costUsd: agents.reduce((sum, a) => sum + a.costUsd, 0) }],
+    // One run, so its usage is the whole team's.
+    runs: [{ toolUseId: 'toolu_1', status: 'running', startTime: 1, endTime: null, toolCount: 1, usage: agents.reduce(addAgentUsage, emptyAgentUsage()) }],
   };
 }
 
@@ -111,10 +113,10 @@ function mountTeamOverlay(agents: TeamAgent[]) {
   });
 }
 
-function mountTeamCard(agents: TeamAgent[]) {
+function mountTeamCard(agents: TeamAgent[], run?: TeamRunSummary) {
   const state = team(agents);
   return mount(TeamCard, {
-    props: { team: state, run: state.runs[0]! },
+    props: { team: state, run: run ?? state.runs[0]! },
     global: { plugins: [i18n], stubs: { LoadingSpinner: true } },
   });
 }
@@ -212,5 +214,89 @@ describe('team total cost label', () => {
     expect(useSettingsStore().accountInfo).toBeNull();
     const wrapper = mountTeamOverlay([agent({ costUsd: 26.45, dollarBilled: false })]);
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
+  });
+});
+
+describe('agent and team usage', () => {
+  const busy = (over: Partial<TeamAgent> = {}) =>
+    agent({ totalInputTokens: 50, totalOutputTokens: 950, cacheReadTokens: 7000, cacheCreationTokens: 2000, costUsd: 1.5, ...over });
+
+  it('an agent card counts every prompt token and itemises them in a localized tooltip', () => {
+    const wrapper = mountCard(busy());
+    const tokens = wrapper.get('[data-part="tokens"]');
+    expect(tokens.text()).toBe('10.0K tokens');
+    expect(tokens.attributes('title')).toBe('Uncached input: 50\nCache read: 7,000\nCache write: 2,000\nOutput: 950');
+    expect(wrapper.get('[data-part="cache"]').text()).toBe('77% cache');
+  });
+
+  it('the team card of a single run adds the cache hit rate of all its agents', () => {
+    // (7000 + 1000) cache read over (9050 + 1950) prompt tokens is 72.7%.
+    const wrapper = mountTeamCard([busy(), busy({ agentId: 'agent-2', totalInputTokens: 950, cacheReadTokens: 1000, cacheCreationTokens: 0 })]);
+    expect(wrapper.text()).toContain('72% cache');
+  });
+
+  it('each run card of a resumed team shows its own run’s tokens and cache hit rate, not the team’s', () => {
+    const spend = (totalInputTokens: number, cacheReadTokens: number, cacheCreationTokens: number, costUsd: number): AgentUsageTotals =>
+      ({ totalInputTokens, totalOutputTokens: 1000, cacheReadTokens, cacheCreationTokens, costUsd });
+    const run = (toolUseId: string, usage: AgentUsageTotals): TeamRunSummary =>
+      ({ toolUseId, status: 'completed', startTime: 1, endTime: 2, toolCount: 1, usage });
+    const first = run('toolu_1', spend(1000, 0, 2000, 1));
+    const second = run('toolu_2', spend(1000, 8000, 1000, 0.5));
+    // The agent's usage is cumulative across both runs: 8000 cache read over 13000 prompt tokens is 61%.
+    const lead = agent({ ...addAgentUsage(first.usage, second.usage) });
+
+    const firstCard = mountTeamCard([lead], first);
+    const secondCard = mountTeamCard([lead], second);
+
+    expect(firstCard.get('[data-part="tokens"]').text()).toBe('4.0K tokens');
+    expect(firstCard.find('[data-part="cache"]').exists()).toBe(false);
+    expect(firstCard.text()).toContain('$1.00');
+    expect(secondCard.get('[data-part="tokens"]').text()).toBe('11.0K tokens');
+    expect(secondCard.get('[data-part="cache"]').text()).toBe('80% cache');
+    expect(secondCard.text()).toContain('$0.50');
+  });
+
+  it('a run card from an older log shows the tokens it recorded, and no cache hit rate', () => {
+    const legacy: TeamRunSummary = {
+      toolUseId: 'toolu_1', status: 'completed', startTime: 1, endTime: 2, toolCount: 1,
+      usage: { ...emptyAgentUsage(), costUsd: 0.75 }, legacyTokens: 1500,
+    };
+    const wrapper = mountTeamCard([busy()], legacy);
+    expect(wrapper.get('[data-part="tokens"]').text()).toBe('1.5K tokens');
+    expect(wrapper.find('[data-part="cache"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain('$0.75');
+  });
+
+  it('the live team card counts the same tokens as the team overlay', async () => {
+    const store = useTeamStore();
+    const start = team([agent({ costUsd: 0 }), agent({ agentId: 'agent-2', costUsd: 0 })]);
+    store.handleTeamStarted(start);
+    store.handleAgentUsageUpdate(TEAM_ID, AGENT_ID, { totalInputTokens: 50, totalOutputTokens: 950, cacheReadTokens: 7000, cacheCreationTokens: 2000, costUsd: 1.5 });
+    store.handleAgentUsageUpdate(TEAM_ID, 'agent-2', { totalInputTokens: 950, totalOutputTokens: 950, cacheReadTokens: 1000, cacheCreationTokens: 0, costUsd: 1.5 });
+    const live = defined(store.teams[TEAM_ID]);
+    const card = mount(TeamCard, {
+      props: { team: live, run: defined(live.runs[0]) },
+      global: { plugins: [i18n], stubs: { LoadingSpinner: true } },
+    });
+    store.openOverlay(TEAM_ID);
+    const overlay = mount(TeamOverlay, {
+      global: {
+        plugins: [i18n],
+        stubs: { OverlayShell: ShellStub, ScrollArea: true, Button: true, MarkdownRenderer: true, LoadingSpinner: true, TeamTimeline: true, TeamScratchpad: true, TeamAgentCard: true },
+      },
+    });
+    await nextTick();
+
+    expect(card.get('[data-part="tokens"]').text()).toBe('12.9K tokens');
+    expect(card.get('[data-part="tokens"]').text()).toBe(overlay.get('.subtitle [data-part="tokens"]').text());
+    expect(card.get('[data-part="cache"]').text()).toBe(overlay.get('.subtitle [data-part="cache"]').text());
+  });
+
+  it('the team overlay totals every agent’s tokens, cache hit rate and cost', () => {
+    const wrapper = mountTeamOverlay([busy(), busy({ agentId: 'agent-2', totalInputTokens: 950, cacheReadTokens: 1000, cacheCreationTokens: 0 })]);
+    const subtitle = wrapper.get('.subtitle').text();
+    expect(subtitle).toContain('12.9K tokens');
+    expect(subtitle).toContain('72% cache');
+    expect(subtitle).toContain('$3.00');
   });
 });

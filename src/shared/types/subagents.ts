@@ -1,5 +1,6 @@
 import type { ChatMessage, ToolCall } from './session';
 import type { TeamAgentStatus } from './team';
+import type { AgentUsageTotals } from '../usage-accounting';
 
 export interface SubagentResult {
   content: string;
@@ -31,6 +32,10 @@ export interface SubagentState {
   isBackground?: boolean;
   /** Set on a resume call's card. `loaded` turns true once the agent's own details replace the id. */
   resume?: { agentId: string; loaded: boolean };
+  /** This card's run only: a resumed agent's earlier runs belong to earlier cards. */
+  usage?: AgentUsageTotals;
+  /** Whether the agent's model bills real dollars; unset falls back to the panel's flag. */
+  dollarBilled?: boolean;
 }
 
 /** A live agent the `/steer` second-stage picker can target: an Agent-tool subagent or a team member. */

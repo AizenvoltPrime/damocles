@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import * as crypto from 'crypto';
 import { createTestMemoryDb } from './test-helpers';
 import { MemoryWriteQueue } from '../write-queue';
@@ -141,10 +141,21 @@ const ESBUILD_CONTENT = 'The project bundles the extension with esbuild.';
 
 describe('memory integration — full consolidate → retrieve → inject loop', () => {
   let db: DatabaseInstance;
+  const injections: InjectionManager[] = [];
 
   beforeEach(async () => {
     db = await createTestMemoryDb();
   });
+
+  afterEach(() => {
+    // An open injection database pins its file on Windows, so the test home cannot be removed.
+    for (const injection of injections.splice(0)) injection.closeInjectionDatabases();
+  });
+
+  function track(injection: InjectionManager): InjectionManager {
+    injections.push(injection);
+    return injection;
+  }
 
   it('enqueue → claim → extract → dedup → retrieve → inject (one project fact)', async () => {
     seedCandidate(db, SESSION_ID, 'Which bundler did we choose?', 'We decided to use esbuild.');
@@ -178,11 +189,11 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results.find(r => r.id === stored.id)).toBeDefined();
 
-    const injection = new InjectionManager(
+    const injection = track(new InjectionManager(
       db,
       new ProfileManager(db, new MemoryWriteQueue(), handle.runner),
       handle.runner,
-    );
+    ));
     const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling');
     expect(catalog.context).toContain(ESBUILD_CONTENT);
   });
@@ -202,7 +213,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect((await retrieval.search({ query: 'how is the extension bundled', workspace: OTHER_FOLDER })).map(r => r.id)).toContain(stored.id);
     expect((await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE })).map(r => r.id)).not.toContain(stored.id);
 
-    const injection = new InjectionManager(db, new ProfileManager(db, new MemoryWriteQueue(), handle.runner), handle.runner);
+    const injection = track(new InjectionManager(db, new ProfileManager(db, new MemoryWriteQueue(), handle.runner), handle.runner));
     expect((await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling')).context).not.toContain(ESBUILD_CONTENT);
   });
 
@@ -283,11 +294,11 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect(retrievedIds).toContain(newRow.id);
     expect(retrievedIds).not.toContain(oldFact.id);
 
-    const injection = new InjectionManager(
+    const injection = track(new InjectionManager(
       db,
       new ProfileManager(db, new MemoryWriteQueue(), contradictHandle.runner),
       contradictHandle.runner,
-    );
+    ));
     const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundles');
     expect(catalog.context).toContain('esbuild');
     expect(catalog.context).not.toContain('webpack');
@@ -333,11 +344,11 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     seedMemory(db, { content: 'the extension lazily activates on first command', workspace: WORKSPACE, createdAt: Date.now() });
 
     const handle = makeRunner([]);
-    const injection = new InjectionManager(
+    const injection = track(new InjectionManager(
       db,
       new ProfileManager(db, new MemoryWriteQueue(), handle.runner),
       handle.runner,
-    );
+    ));
     const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling');
 
     expect(catalog.context).toContain(ESBUILD_CONTENT);

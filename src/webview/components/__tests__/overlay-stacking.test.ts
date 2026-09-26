@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
-import { defineComponent, h, markRaw } from 'vue';
+import { defineComponent, h, markRaw, nextTick, ref, type Ref, type VNode } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
@@ -11,6 +11,8 @@ import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import SubagentOverlay from '../SubagentOverlay.vue';
 import MemoryPanel from '../MemoryPanel.vue';
 import OverlayShell from '../OverlayShell.vue';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
 import { i18n } from '@/i18n';
@@ -633,5 +635,96 @@ describe('Tab containment', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(at(items, 0));
+  });
+});
+
+/** A shell whose body holds one popup, with its open state in a ref; open it after mount, as a user would. */
+function openShellWithPopup(kind: 'popover' | 'select', title = 'with popup'): { shell: VueWrapper; open: Ref<boolean> } {
+  const open = ref(false);
+  const popup = (): VNode => (kind === 'popover'
+    ? h(Popover, { open: open.value, 'onUpdate:open': (v: boolean) => { open.value = v; } }, {
+      default: () => [
+        h(PopoverTrigger, { 'data-test-trigger': '' }, { default: () => 'trigger' }),
+        h(PopoverContent, { 'data-test-popup': '' }, { default: () => h('button', null, 'inside') }),
+      ],
+    })
+    : h(Select, { open: open.value, modelValue: 'a', 'onUpdate:open': (v: boolean) => { open.value = v; } }, {
+      default: () => [
+        h(SelectTrigger, null, { default: () => 'trigger' }),
+        h(SelectContent, { 'data-test-popup': '' }, { default: () => [h(SelectItem, { value: 'a' }, { default: () => 'A' })] }),
+      ],
+    }));
+  const shell = track(mount(OverlayShell, {
+    props: { title, icon: StubIcon },
+    slots: { default: popup },
+    global: { plugins: [i18n] },
+    attachTo: document.body,
+  }));
+  return { shell, open };
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 3; i++) await nextTick();
+}
+
+/** The popover opens from its trigger, as a user opens it; the select opens through its bound state. */
+async function showPopup(kind: 'popover' | 'select', shell: VueWrapper, open: Ref<boolean>): Promise<void> {
+  if (kind === 'popover') await shell.get('[data-test-trigger]').trigger('click');
+  else open.value = true;
+  await settle();
+  expect(open.value).toBe(true);
+}
+
+function popupContent(): HTMLElement {
+  const el = document.body.querySelector<HTMLElement>('[data-test-popup]');
+  if (!el) throw new Error('popup is not rendered');
+  return el;
+}
+
+describe('a popup open inside the top overlay', () => {
+  it.each(['popover', 'select'] as const)('takes the first Escape for the %s, and the next one closes the overlay', async (kind) => {
+    const { shell, open } = openShellWithPopup(kind);
+    await showPopup(kind, shell, open);
+    expect(popupContent().hasAttribute('data-dismissable-layer')).toBe(true);
+    expect(popupContent().getAttribute('data-state')).toBe('open');
+
+    pressEscape();
+    await settle();
+
+    expect(open.value).toBe(false);
+    expect(shell.emitted('close')).toBeUndefined();
+    expect(document.body.querySelector('[data-test-popup]')).toBeNull();
+
+    pressEscape();
+
+    expect(shell.emitted('close')).toHaveLength(1);
+  });
+
+  it.each(['popover', 'select'] as const)('paints the %s one above an overlay opened at depth 1', async (kind) => {
+    const beneath = openShell('beneath');
+    const { shell, open } = openShellWithPopup(kind, 'top');
+    await showPopup(kind, shell, open);
+
+    const overlayZ = zIndexOf(shell);
+    expect(overlayZ).toBe(zIndexOf(beneath) + 1);
+    const content = popupContent();
+    expect(Number(content.style.zIndex)).toBe(overlayZ + 1);
+    expect(content.className).not.toContain('z-50');
+    // reka copies the content's z-index onto the positioned wrapper, which is what actually stacks.
+    const wrapper = content.closest<HTMLElement>('[data-reka-popper-content-wrapper]');
+    expect(Number(wrapper?.style.zIndex)).toBe(overlayZ + 1);
+  });
+
+  it('keeps the fixed popper layer for a popup outside any overlay', async () => {
+    const open = ref(true);
+    track(mount(defineComponent({
+      setup: () => () => h(Popover, { open: open.value }, {
+        default: () => [h(PopoverTrigger, null, { default: () => 'trigger' }), h(PopoverContent, { 'data-test-popup': '' }, { default: () => 'body' })],
+      }),
+    }), { attachTo: document.body }));
+    await settle();
+
+    expect(popupContent().className).toContain('z-50');
+    expect(popupContent().style.zIndex).toBe('');
   });
 });

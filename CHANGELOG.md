@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.33.0] - 2026-09-26
+
+### Added
+
+- **`/stats` shows what you have spent across every project.** Type `/stats` to open an overlay with seven figures: API-equivalent cost, total tokens, output tokens, cache hit rate, net cache savings, sessions and active days. Pick Today, This week, This month, the last 7, 30 or 90 days, All time or a custom range from a calendar, step back and forward through periods, and filter by model and by project. With compare on, each figure shows its change against the previous period; All time has no previous period, so compare is off there. Each figure's tooltip gives its formula. Tokens from a request with no recorded price are listed apart instead of counting as $0, and the cost reads "est." on a subscription. The first open reads your conversation history and shows its progress; later opens show the saved figures at once and then bring them up to date, and Refresh does the same. Typing `/stats` while the agent is working, or into the queue, opens the overlay and sends nothing to the agent. A forked conversation's copied history counts once, and a deleted conversation's spend stays in the totals without its title. `/stats` is now a built-in command, so a custom command or skill named `stats` no longer appears in the menu; rename it to keep using it.
+- **`/stats` charts spend over time and breaks it down.** Under the figures, a stacked bar chart shows cost or tokens per day, week or month (following the range), split by model or by token type; the toggles switch instantly. Below it, tables break the same spend down by model, by project and by source (main chat, subagents by agent type, teams by role, compaction and summaries, cache warming, and background tasks by purpose), each with cost, tokens, share and cache hit rate, sortable by any column. Source rows expand into their details, a row whose tokens have no recorded price is marked unpriced (its cost reads unpriced rather than $0.00 when none of it has a price), and clicking a project filters the whole overlay to it, with a chip to remove the filter. Every table adds up to the totals above it. A screen reader gets the chart as a table of each period's values.
+- **`/stats` shows when you work and which conversations cost most.** A weekday by hour grid in local time shades each hour by cost or tokens (a screen reader reads it as a table), and a table lists the ten costliest conversations with their subagent, team and background spend included. Click a conversation to open it. A deleted conversation, or one from a folder not open in this window, stays in the list with a note saying why it cannot open.
+- **Subagent cards show tokens, cost and cache hit rate.** A subagent card and its overlay now show the same figures as a team specialist: tokens with a breakdown in the tooltip, cost, and the share of prompt tokens read from cache. They update after each response and show the same figures after a reload. Team cards and overlays show the cache hit rate too, and cost reads "est." for a model on a subscription.
+- **Damocles now records its internal requests.** It logs the usage of conversation titles, memory work and `/btw` answers, so their cost appears in `/stats` from now on. Damocles did not log earlier ones, so they do not appear.
+
+### Fixed
+
+- **Escape inside a menu or popup closes only that popup.** Pressing Escape in a dropdown, date picker or info popover inside an overlay, such as the Compass graph or `/stats`, used to close the whole overlay. It now closes the popup, and the next Escape closes the overlay.
+- **Costs and token counts follow the panel language.** Every cost in the panel now uses one format with thousands grouping, so $1234.56 reads $1,234.56, and in Greek it uses the Greek separators and currency position. Abbreviated token counts use the local decimal separator (1,5K in Greek), and a single token reads "1 token" instead of "1 tokens".
+- **The status bar under the chat shows the whole conversation.** Cost used to show the last turn only and read $0 after a reload, input tokens showed the last request, and the turn count stayed at 1. The bar now shows the conversation's total cost, every prompt token it sent (uncached input, cache read and cache write, broken down in the tooltip), output tokens, its cache hit rate and its number of turns, and shows the same figures after a reload. A forked conversation counts only what it spent after the fork. The cost is at API rates and reads "est." on a subscription. Cache now shows as one hit rate instead of separate read and write counts, and the GPT reasoning-token count is gone; both breakdowns are in the tooltip or in `/stats`.
+- **The status bar updates whenever the conversation spends.** It used to wait for the next completed turn, so it missed a stopped turn, a `/compact` and idle cache warming. It now updates after each of them. Tokens from a model with no recorded price read "unpriced" instead of $0.00. The context meter no longer drops to 0% after a stopped or failed request, and after a compaction it reads 0 until the next response instead of the size before the compaction. A cache hit rate just under 100% now reads 99%, not 100%, on the bar and on subagent and team cards.
+- **A forked conversation's budget counts only what the fork spent.** It used to include the spend copied from the parent, so a fork of an expensive conversation could stop at its first turn while the bar showed a few cents. Subagent and team spend still count toward the budget. The hard budget stop now fires on the response that crosses the limit, not one response later.
+- **A team specialist's token count matches its cost.** Its cost already included compaction and cache warming, but its tokens did not. Both now come from the same source.
+- **Each team card shows its own run's cache hit rate and counts cached tokens.** The card of a `create_team` or `resume_team` call showed the whole team's cache hit rate, so every card of a resumed team read the same, and its tokens left out cached tokens, so the card read far below the team overlay. Each card now shows its own run's tokens, cache hit rate and cost, counted the same way as the agent cards. A card from a team that ran before this version shows the tokens it recorded then, with no cache hit rate.
+- **Background tasks show usage while they run.** The Background Tasks panel showed a subagent's usage only after it finished. It now shows its tokens, cache hit rate and cost as it works, and a finished task's token count matches its subagent card.
+- **A subagent's spend reaches the budget as each response lands.** It used to count one response late, so a budget stop could fire one response after the limit.
+- **A resumed subagent's cost is labelled by the model it resumed on.** An agent first launched before the billing flag was recorded fell back to the panel's account, so its cost could read "est." for a real charge, or the reverse. The label is the same after a reload.
+
+### Removed
+
+- **The `damocles.openai.modelPricing` setting.** A value set in `settings.json` is now ignored. pi prices every GPT request from its own rate table when the request is made, including the higher rate above 272K tokens of context, and the status bar shows that recorded cost.
+
 ## [2.32.0] - 2026-09-25
 
 ### Added
@@ -4139,6 +4166,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.33.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.32.0...v2.33.0
 [2.32.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.31.0...v2.32.0
 [2.31.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.30.0...v2.31.0
 [2.30.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.29.0...v2.30.0

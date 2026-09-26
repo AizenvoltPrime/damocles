@@ -27,7 +27,9 @@
     "collapse": "Σύμπτυξη",
     "expand": "Ανάπτυξη",
     "error": "Σφάλμα",
-    "add": "Προσθήκη"
+    "add": "Προσθήκη",
+    "unpriced": "χωρίς τιμή",
+    "unpricedTooltip": "Δεν υπάρχει καταγεγραμμένη τιμή για αυτό το μοντέλο, οπότε το κόστος αυτών των tokens είναι άγνωστο. Δεν είναι $0."
   },
   "time": {
     "justNow": "μόλις τώρα",
@@ -595,6 +597,184 @@
     "fetchError": "Δεν ήταν δυνατή η φόρτωση της χρήσης",
     "refresh": "Ανανέωση"
   },
+  "usageStats": {
+    "title": "Στατιστικά χρήσης",
+    "refresh": "Ανανέωση",
+    "updated": "Ενημερώθηκε {time}",
+    "notIndexed": "Δεν έχει γίνει ευρετηρίαση ακόμη",
+    "indexing": "Ευρετηρίαση αρχείων συζητήσεων",
+    "indexingProgress": "{done} από {total} αρχείο | {done} από {total} αρχεία",
+    "loading": "Φόρτωση στατιστικών",
+    "empty": "Καμία χρήση σε αυτό το διάστημα",
+    "emptyHint": "Επιλέξτε μεγαλύτερο διάστημα ή καταργήστε τα φίλτρα μοντέλων και έργων.",
+    "error": "Δεν ήταν δυνατή η φόρτωση των στατιστικών",
+    "retry": "Επανάληψη",
+    "presets": {
+      "today": "Σήμερα",
+      "thisWeek": "Αυτή την εβδομάδα",
+      "thisMonth": "Αυτόν τον μήνα",
+      "last7": "Τελευταίες 7 ημέρες",
+      "last30": "Τελευταίες 30 ημέρες",
+      "last90": "Τελευταίες 90 ημέρες",
+      "allTime": "Όλο το διάστημα",
+      "custom": "Προσαρμοσμένο διάστημα"
+    },
+    "steppedPresets": {
+      "today": "Ημέρα",
+      "thisWeek": "Εβδομάδα",
+      "thisMonth": "Μήνας",
+      "last7": "7 ημέρες",
+      "last30": "30 ημέρες",
+      "last90": "90 ημέρες"
+    },
+    "filters": {
+      "range": "Χρονικό διάστημα",
+      "previousPeriod": "Προηγούμενη περίοδος",
+      "nextPeriod": "Επόμενη περίοδος",
+      "pickRange": "Επιλογή προσαρμοσμένου διαστήματος",
+      "compare": "Σύγκριση",
+      "compareHint": "Σύγκριση με την προηγούμενη περίοδο",
+      "models": "Μοντέλα",
+      "allModels": "Όλα τα μοντέλα",
+      "projects": "Έργα",
+      "allProjects": "Όλα τα έργα",
+      "selectedCount": "{count} επιλεγμένα",
+      "search": "Αναζήτηση",
+      "noMatches": "Κανένα αποτέλεσμα",
+      "clear": "Εκκαθάριση επιλογής",
+      "noProject": "Χωρίς έργο",
+      "compareAllTime": "Το «Όλο το διάστημα» δεν έχει προηγούμενη περίοδο για σύγκριση",
+      "previousMonth": "Προηγούμενος μήνας",
+      "nextMonth": "Επόμενος μήνας"
+    },
+    "kpi": {
+      "cost": "Κόστος σε τιμές API",
+      "totalTokens": "Σύνολο tokens",
+      "outputTokens": "Tokens εξόδου",
+      "cacheHitRate": "Ποσοστό επιτυχίας cache",
+      "netCacheSavings": "Καθαρή εξοικονόμηση cache",
+      "sessions": "Συνεδρίες",
+      "activeDays": "Ενεργές ημέρες",
+      "new": "νέο",
+      "points": "{value} ποσ. μον.",
+      "unpriced": "συν {tokens} token χωρίς τιμή | συν {tokens} tokens χωρίς τιμή",
+      "previousValue": "Προηγούμενη περίοδος: {value}",
+      "formulaFor": "Πώς υπολογίζεται: {label}",
+      "notAvailable": "μ/δ"
+    },
+    "formula": {
+      "cost": "Άθροισμα του καταγεγραμμένου κόστους κάθε αιτήματος με τιμή, σε τιμές API. Ένα αίτημα με tokens και μηδενικό καταγεγραμμένο κόστος δεν έχει τιμή: τα tokens του εμφανίζονται χωριστά και δεν μετρώνται ποτέ ως $0.",
+      "totalTokens": "είσοδος + έξοδος + ανάγνωση cache + εγγραφή cache",
+      "outputTokens": "Άθροισμα των tokens εξόδου.",
+      "cacheHitRate": "ανάγνωση cache / (είσοδος + ανάγνωση cache + εγγραφή cache)",
+      "netCacheSavings": "(ανάγνωση cache + εγγραφή cache) × τιμή εισόδου − (κόστος ανάγνωσης cache + κόστος εγγραφής cache). Η τιμή εισόδου είναι το κόστος εισόδου του ίδιου αιτήματος / tokens εισόδου, ή η τιμή καταλόγου του μοντέλου όταν το αίτημα δεν διάβασε είσοδο χωρίς cache. Τα αιτήματα χωρίς τιμή εξαιρούνται. Αρνητική όταν οι εγγραφές cache κόστισαν περισσότερο από όσα εξοικονόμησαν οι αναγνώσεις.",
+      "sessions": "Διακριτές συζητήσεις ανώτατου επιπέδου με χρήση στο διάστημα. Η εργασία υποπρακτόρων και ομάδων μετρά στη συζήτηση που την ξεκίνησε.",
+      "activeDays": "Διακριτές τοπικές ημερομηνίες με χρήση στο διάστημα."
+    },
+    "chart": {
+      "title": "Χρήση στον χρόνο",
+      "metricLabel": "Μέγεθος",
+      "splitLabel": "Ανάλυση",
+      "metric": {
+        "cost": "Κόστος",
+        "tokens": "Tokens"
+      },
+      "split": {
+        "model": "Ανά μοντέλο",
+        "tokenType": "Ανά τύπο token"
+      },
+      "ariaLabel": "Γράφημα στοιβαγμένων ράβδων: {metric} στον χρόνο, {split}.",
+      "tableCaption": "{metric} ανά περίοδο, {split}",
+      "period": "Περίοδος",
+      "weekOf": "Εβδομάδα από {date}",
+      "total": "Σύνολο",
+      "otherModels": "Άλλα μοντέλα"
+    },
+    "tokenTypes": {
+      "input": "Είσοδος",
+      "output": "Έξοδος",
+      "cacheRead": "Ανάγνωση cache",
+      "cacheWrite": "Εγγραφή cache"
+    },
+    "breakdown": {
+      "byModel": "Ανά μοντέλο",
+      "byProject": "Ανά έργο",
+      "bySource": "Ανά πηγή",
+      "columns": {
+        "name": "Όνομα",
+        "cost": "Κόστος",
+        "tokens": "Tokens",
+        "share": "Μερίδιο",
+        "cache": "Επιτυχία cache"
+      },
+      "shareOfCost": "Μερίδιο του συνολικού κόστους",
+      "shareOfTokens": "Μερίδιο των συνολικών tokens",
+      "unpriced": "χωρίς τιμή",
+      "unpricedTitle": "{tokens} token δεν έχει καταγεγραμμένη τιμή και δεν μετράται στο κόστος | {tokens} tokens δεν έχουν καταγεγραμμένη τιμή και δεν μετρώνται στο κόστος",
+      "unknownModel": "Άγνωστο μοντέλο",
+      "removeProject": "Κατάργηση του φίλτρου {project}",
+      "drillHint": "Εμφάνιση μόνο αυτού του έργου",
+      "expand": "Εμφάνιση λεπτομερειών για {name}",
+      "collapse": "Απόκρυψη λεπτομερειών για {name}"
+    },
+    "sources": {
+      "main": "Κύρια συζήτηση",
+      "subagent": "Υποπράκτορες",
+      "team": "Ομάδες",
+      "compaction": "Συμπύκνωση και περιλήψεις",
+      "cacheWarm": "Προθέρμανση cache",
+      "background": "Εργασίες παρασκηνίου"
+    },
+    "sourceDetails": {
+      "unknown": "Δεν καταγράφηκε",
+      "unknownAgent": "Άγνωστος τύπος πράκτορα",
+      "unknownRole": "Άγνωστος ρόλος",
+      "compaction": {
+        "compaction": "Συμπύκνωση",
+        "branch_summary": "Περιλήψεις κλάδων"
+      },
+      "cacheWarm": {
+        "main": "Στην κύρια συζήτηση",
+        "subagent": "Στους υποπράκτορες",
+        "team": "Στις ομάδες"
+      }
+    },
+    "purposes": {
+      "session-title": "Τίτλοι συζητήσεων",
+      "memory-rerank": "Επανακατάταξη μνήμης",
+      "memory-extract": "Εξαγωγή μνήμης",
+      "memory-merge": "Συγχώνευση μνήμης",
+      "memory-profile": "Προφίλ μνήμης",
+      "memory-query-expansion": "Επέκταση ερωτημάτων μνήμης",
+      "btw": "Παρενθετικές ερωτήσεις /btw"
+    },
+    "heatmap": {
+      "title": "Δραστηριότητα ανά ημέρα και ώρα (τοπική ώρα)",
+      "byCost": "Σκίαση κατά κόστος",
+      "byTokens": "Σκίαση κατά tokens",
+      "when": "{day} {hour}",
+      "cell": "{when}: {values}",
+      "values": "{cost}, {tokens}, {requests}",
+      "tokens": "{n} token | {n} tokens",
+      "requests": "{n} αίτημα | {n} αιτήματα",
+      "noUsage": "καμία χρήση"
+    },
+    "topSessions": {
+      "title": "Κορυφαίες συζητήσεις",
+      "columns": {
+        "title": "Συζήτηση",
+        "project": "Έργο",
+        "cost": "Κόστος",
+        "tokens": "Tokens",
+        "lastActive": "Τελευταία δραστηριότητα"
+      },
+      "untitled": "Συζήτηση χωρίς τίτλο",
+      "deleted": "Διαγραμμένη συζήτηση",
+      "openHint": "Άνοιγμα: {title}",
+      "deletedHint": "Αυτή η συζήτηση διαγράφηκε. Το κόστος της παραμένει στα σύνολα.",
+      "otherFolderHint": "Ο φάκελός της δεν είναι ανοιχτός σε αυτό το παράθυρο, οπότε δεν μπορεί να ανοίξει εδώ."
+    }
+  },
   "context": {
     "title": "Χρήση Context",
     "model": "Μοντέλο",
@@ -672,13 +852,20 @@
   },
   "stats": {
     "contextUsage": "Χρήση παραθύρου context",
-    "sessionTokens": "Tokens συνεδρίας (είσοδος / έξοδος)",
-    "cache": "Cache (εγγραφή / ανάγνωση)",
+    "tokensTooltip": "Tokens συνεδρίας\nΕίσοδος χωρίς cache: {input}\nΑνάγνωση cache: {cacheRead}\nΕγγραφή cache: {cacheWrite}\nΈξοδος: {output}",
+    "cacheHit": "{pct}% cache",
+    "cacheHitTooltip": "Ποσοστό επιτυχίας cache: ανάγνωση cache / (είσοδος χωρίς cache + ανάγνωση cache + εγγραφή cache)",
     "turns": "{n} γύρος | {n} γύροι",
-    "cost": "Κόστος συνεδρίας",
+    "cost": "Κόστος των αιτημάτων αυτής της συζήτησης. Οι δαπάνες των υποπρακτόρων και των ομάδων εμφανίζονται στις δικές τους κάρτες.",
     "openPlan": "Προβολή πλάνου συνεδρίας",
     "bindPlan": "Σύνδεση αρχείου πλάνου με τη συνεδρία",
     "openLog": "Άνοιγμα αρχείου καταγραφής συνεδρίας"
+  },
+  "agentUsage": {
+    "tokens": "{n} token | {n} tokens",
+    "tokensTooltip": "Είσοδος χωρίς cache: {input}\nΑνάγνωση cache: {cacheRead}\nΕγγραφή cache: {cacheWrite}\nΈξοδος: {output}",
+    "cacheHit": "{pct}% cache",
+    "cacheHitTooltip": "Ποσοστό επιτυχίας cache: ανάγνωση cache / (είσοδος χωρίς cache + ανάγνωση cache + εγγραφή cache)"
   },
   "planView": {
     "title": "Πλάνο Συνεδρίας",
@@ -1076,7 +1263,7 @@
   },
   "team": {
     "agentCount": "{n} πράκτορες",
-    "toolCount": "{n} εργαλεία",
+    "toolCount": "{n} εργαλείο | {n} εργαλεία",
     "costEstimate": "{cost} (εκτίμηση)",
     "costEstimateTooltip": "Εκτίμηση με βάση τις τιμές API. Η συνδρομή δεν χρεώνεται ανά κλήση.",
     "agentActiveProgress": "Πράκτορας {active}/{total} ενεργός",
@@ -1218,14 +1405,6 @@
       "signedIn": "Συνδεθήκατε στο ChatGPT",
       "signedInAs": "Συνδεθήκατε στο ChatGPT ως {account}",
       "signInFailed": "Αποτυχία σύνδεσης στο ChatGPT: {error}"
-    },
-    "costDisplay": {
-      "input": "Είσοδος",
-      "output": "Έξοδος",
-      "cacheReads": "Cache Reads",
-      "cacheCreation": "Cache Creation",
-      "cachedInput": "Cached Input",
-      "reasoning": "Reasoning"
     }
   },
   "stepfun": {

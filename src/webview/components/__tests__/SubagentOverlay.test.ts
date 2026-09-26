@@ -187,3 +187,33 @@ describe('the image lightbox of a steer row', () => {
     wrapper.unmount();
   });
 });
+
+describe('the subagent overlay subtitle', () => {
+  const SubtitleShell = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
+
+  function subtitle(state: SubagentState): string {
+    return mount(SubagentOverlay, {
+      props: { subagent: state },
+      global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
+    }).get('.subtitle').text();
+  }
+
+  it('shows the run usage after the model, in place of the model-facing token total', () => {
+    const text = subtitle(subagent({
+      model: 'haiku',
+      result: { content: 'done', totalTokens: 999 },
+      usage: { totalInputTokens: 12, totalOutputTokens: 340, cacheReadTokens: 4800, cacheCreationTokens: 1200, costUsd: 0.37 },
+      dollarBilled: true,
+    }));
+
+    expect(text).toContain('6.4K tokens');
+    expect(text).toContain('79% cache');
+    expect(text).toContain('$0.37');
+    expect(text).not.toContain('999');
+    expect(text.indexOf('haiku')).toBeLessThan(text.indexOf('6.4K tokens'));
+  });
+
+  it('shows no usage before the first response', () => {
+    expect(subtitle(subagent({ result: { content: 'done', totalTokens: 999 } }))).not.toContain('tokens');
+  });
+});

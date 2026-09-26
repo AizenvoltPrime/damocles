@@ -1,4 +1,5 @@
 import type { StructuredCompletionRequest } from './structured-completion';
+import type { SubCallAttribution } from '../usage-stats/subcall-ledger';
 
 /**
  * The AI session-title one-shot (US-012): the prompt/schema/timeout config plus the LLM-call core.
@@ -34,7 +35,7 @@ export interface TitleRuntime {
  * title, or null when no sub-call model is authed or the model returned an empty/whitespace title.
  * Fails soft at the call site (fire-and-forget); this core does not catch (its caller wraps it).
  */
-export async function generateSessionTitle(exchange: string, runtime: TitleRuntime): Promise<string | null> {
+export async function generateSessionTitle(exchange: string, runtime: TitleRuntime, attribution: SubCallAttribution): Promise<string | null> {
   if (!runtime.hasAuthedSubCallModel()) return null;
   const result = await runtime.runStructuredCompletion<{ title?: string }>({
     systemPrompt: TITLE_SYSTEM_PROMPT,
@@ -42,6 +43,8 @@ export async function generateSessionTitle(exchange: string, runtime: TitleRunti
     outputToolName: TITLE_OUTPUT_TOOL,
     outputToolDescription: 'Record the conversation title.',
     schema: TITLE_SCHEMA,
+    purpose: 'session-title',
+    attribution,
     timeoutMs: 15_000,
   });
   return result?.title?.trim() || null;

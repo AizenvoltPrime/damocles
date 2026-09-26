@@ -15,7 +15,11 @@ export default defineConfig({
     // reports drift between scripts/release-targets.mjs and the release workflow matrix.
     include: ['src/**/*.test.ts', 'src/**/*.spec.ts', 'scripts/**/*.test.ts'],
     exclude: ['node_modules', 'dist'],
-    setupFiles: ['src/webview/__tests__/vitest.setup.ts'],
+    globalSetup: ['src/__mocks__/test-home.global-setup.ts'],
+    // hermetic-home must run first, before any setup that could import paths.ts.
+    setupFiles: ['src/__mocks__/hermetic-home.setup.ts', 'src/webview/__tests__/vitest.setup.ts'],
+    // hermetic-home redirects the home through process.env, which a worker thread cannot do.
+    pool: 'forks',
     maxWorkers: testWorkers,
     minWorkers: 1,
   },

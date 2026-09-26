@@ -7,7 +7,8 @@ import type { ImageBlock } from '../../shared/types/content';
 import { LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { STEER_INSTRUCTION_PREFIX } from '../../shared/steer';
 import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../pi-session/finish-turn';
-import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
+import { runUsageMeter, sameAgentUsage } from '../pi-session/session-usage';
+import { emptyAgentUsage } from '../../shared/usage-accounting';
 import { joinResultText } from '../pi-session/tool-result-text';
 import { mapPiToolName } from '../pi-session/tool-normalization';
 import { extractImages } from '../pi-session/branch-text';
@@ -159,15 +160,27 @@ export class AgentRunner {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
-    // Lifetime consumption across all of this agent's turns (mirrors the subagent model): every
-    // component accumulates per `message_end`. cacheRead re-reads the whole prefix on every request and
-    // is paid on every request, so the running total is what the cost reflects, not the last snapshot.
-    const lifetime: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 };
-    let cacheReadTokens = 0;
-    let costUsd = 0;
+    // A reopened session's stats include the spend of its earlier runs, which were already counted.
+    const runUsage = runUsageMeter(session);
+    let usage = emptyAgentUsage();
     let lastRolledCost = 0;
-    // A reopened session's stats include the spend of its earlier runs, which were already charged.
-    const costBaseline = session.getSessionStats().cost;
+    const publishUsage = (): void => {
+      const next = runUsage();
+      if (sameAgentUsage(next, usage)) return;
+      usage = next;
+      config.onUsageUpdate?.({
+        inputTokens: usage.totalInputTokens,
+        outputTokens: usage.totalOutputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheCreationTokens: usage.cacheCreationTokens,
+        costUsd: usage.costUsd,
+      });
+      const delta = usage.costUsd - lastRolledCost;
+      if (delta > 0) {
+        lastRolledCost = usage.costUsd;
+        config.onCost?.(delta);
+      }
+    };
 
     /**
      * Messages waiting to be delivered, each as its own prompt. `echoed` records whether the overlay has
@@ -205,23 +218,7 @@ export class AgentRunner {
           config.onToolCall?.(name, toolCallCount);
         },
         onAssistantText: (text) => { finalResponse = text; },
-        getCost: () => session.getSessionStats().cost - costBaseline,
-        onUsage: (u) => {
-          // u is the per-message usage from this `message_end`, one request, so adding it here counts
-          // each request's cached prefix exactly once.
-          addUsage(lifetime, { input: u.input, output: u.output, cacheWrite: u.cacheWrite });
-          cacheReadTokens += u.cacheRead;
-          // u.cost is pi's cumulative session cost past the baseline. Safe to take as-is (not summed) because team agent
-          // sessions force-disable auto-compaction (pi-runtime.createSubagentSession), so the cost never
-          // resets mid-run — it stays monotonic for the agent's whole lifetime.
-          costUsd = u.cost;
-          config.onUsageUpdate?.({ inputTokens: lifetime.input, outputTokens: lifetime.output, cacheReadTokens, cacheCreationTokens: lifetime.cacheWrite, costUsd: u.cost });
-          const delta = Math.max(0, u.cost - lastRolledCost);
-          if (delta > 0) {
-            lastRolledCost = u.cost;
-            config.onCost?.(delta);
-          }
-        },
+        onUsage: publishUsage,
       });
     });
 
@@ -332,6 +329,8 @@ export class AgentRunner {
       config.abortSignal.removeEventListener('abort', onAbort);
       config.forgetSession(session);
     }
+    // Settle: picks up spend that raised no event, such as a cache warm between turns.
+    publishUsage();
 
     // The reported summary is the agent's own sign-off, so it outranks trailing assistant text, which
     // the turn-ending hook means the agent no longer produces.
@@ -348,7 +347,7 @@ export class AgentRunner {
       ? { progressSummary: `Completed (${toolCallCount} tools, ${Math.round(durationMs / 1000)}s)` }
       : undefined);
 
-    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens: lifetime.input, totalOutputTokens: lifetime.output, cacheReadTokens, cacheCreationTokens: lifetime.cacheWrite, costUsd };
+    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, ...usage };
   }
 
   /** Map one pi session event to the existing `team*` webview messages (no contract change). */
@@ -359,8 +358,8 @@ export class AgentRunner {
     cb: {
       onToolUse: (name: string) => void;
       onAssistantText: (text: string) => void;
-      getCost: () => number;
-      onUsage: (u: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }) => void;
+      /** Called on each assistant `message_end` and `compaction_end`: the points pi's session totals change. */
+      onUsage: () => void;
     },
   ): void {
     switch (event.type) {
@@ -370,17 +369,12 @@ export class AgentRunner {
       case 'message_end':
         if (event.message.role === 'assistant') {
           this.emitAssistant(event.message.content, config, cb);
-          const usage = (event.message as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }).usage;
-          if (usage) {
-            cb.onUsage({
-              input: usage.input ?? 0,
-              output: usage.output ?? 0,
-              cacheRead: usage.cacheRead ?? 0,
-              cacheWrite: usage.cacheWrite ?? 0,
-              cost: cb.getCost(),
-            });
-          }
+          // pi persists the message after notifying listeners, so its stats include it only from the next microtask.
+          queueMicrotask(cb.onUsage);
         }
+        break;
+      case 'compaction_end':
+        cb.onUsage();
         break;
       case 'tool_execution_update': {
         // The team path has no elapsed-time progress message, so a non-live tool emits nothing at all.

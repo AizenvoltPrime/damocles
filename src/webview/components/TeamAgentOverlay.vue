@@ -17,12 +17,11 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useVSCode } from '@/composables/useVSCode';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import type { ImageBlock } from '@shared/types/content';
-import { getAgentColor, formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
-import { useCostLabel } from '@/composables/useCostLabel';
+import { getAgentColor, formatElapsed } from '@/composables/useTeamFormatting';
+import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
-const { costLabel, costTitle } = useCostLabel();
 const { postMessage } = useVSCode();
 const teamStore = useTeamStore();
 const uiStore = useUIStore();
@@ -52,15 +51,12 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value?.endTime ?? null,
 );
 
-// The cost renders in its own subtitle span, because the estimate marker needs a title of its own.
 const subtitle = computed(() => {
   if (!selectedAgent.value) return '';
   const a = selectedAgent.value;
   const parts = [a.role, a.model].filter(Boolean);
-  if (a.toolCount > 0) parts.push(`${a.toolCount} tools`);
+  if (a.toolCount > 0) parts.push(t('team.toolCount', { n: a.toolCount }, a.toolCount));
   parts.push(formatElapsed(elapsedMs.value));
-  const totalTokens = a.totalInputTokens + a.totalOutputTokens;
-  if (totalTokens > 0) parts.push(`${formatTokenCount(totalTokens)} tokens`);
   return parts.join(' | ');
 });
 
@@ -169,9 +165,7 @@ const AgentIcon = {
   >
     <template #subtitle>
       <span>{{ subtitle }}</span>
-      <span v-if="selectedAgent.costUsd > 0">&nbsp;|&nbsp;<span
-        :title="costTitle(selectedAgent.dollarBilled)"
-      >{{ costLabel(selectedAgent.costUsd, selectedAgent.dollarBilled) }}</span></span>
+      <AgentUsageStats :usage="selectedAgent" :dollar-billed="selectedAgent.dollarBilled" variant="subtitle" separator="|" />
     </template>
 
     <template #header-actions>

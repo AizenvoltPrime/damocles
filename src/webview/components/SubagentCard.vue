@@ -15,6 +15,7 @@ import {
   IconGear,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import AgentUsageStats from './AgentUsageStats.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
@@ -195,6 +196,7 @@ const metadataItems = computed(() => [
           <span v-if="index > 0" class="text-foreground/40">•</span>
           <span>{{ item }}</span>
         </template>
+        <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="card" />
       </div>
 
       <div class="flex items-center">

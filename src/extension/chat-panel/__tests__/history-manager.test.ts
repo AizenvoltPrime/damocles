@@ -12,7 +12,8 @@ const H = vi.hoisted(() => ({
     { type: 'userReplay', content: 'hi', isSynthetic: false, sdkMessageId: 'u1' },
     { type: 'assistantReplay', content: 'hello', contentBlocks: [] },
     { type: 'tokenUsageUpdate', inputTokens: 10, outputTokens: 5 },
-    { type: 'done', data: { type: 'result', session_id: 's1', is_done: true, total_output_tokens: 5, num_turns: 1 } },
+    { type: 'sessionUsage', usage: { totalInputTokens: 10, totalOutputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 }, numTurns: 1 },
+    { type: 'done', data: { type: 'result', session_id: 's1', is_done: true } },
   ] as unknown as ExtensionToWebviewMessage[],
 }));
 

@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Context, Model, Tool } from '@earendil-work
 import type { TSchema } from 'typebox';
 import { log } from '../logger';
 import { describeAuthError } from './describe-error';
+import type { SubCallAttribution, SubCallPurpose } from '../usage-stats/subcall-ledger';
 
 /** Options the structured-completion core forwards to the injected complete-fn. A subset of
  *  `ModelsSimpleStreamOptions`: only run-control fields — credentials are resolved by the complete-fn. */
@@ -38,6 +39,9 @@ export interface StructuredCompletionRequest {
    * not TypeBox-validate it.
    */
   schema: Record<string, unknown>;
+  /** What the call is for; `PiRuntime` records its usage to the sub-call ledger under this purpose. */
+  purpose: SubCallPurpose;
+  attribution?: SubCallAttribution;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
 }

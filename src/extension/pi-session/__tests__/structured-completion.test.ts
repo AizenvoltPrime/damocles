@@ -13,6 +13,7 @@ const REQ = {
   userMessage: 'hi',
   outputToolName: 'submit_terms',
   outputToolDescription: 'desc',
+  purpose: 'memory-rerank' as const,
   schema: { type: 'object', properties: { terms: { type: 'array', items: { type: 'string' } } }, required: ['terms'] },
 };
 

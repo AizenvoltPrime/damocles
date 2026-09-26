@@ -89,7 +89,6 @@ function harness(...panels: Panel[]) {
     settingsManager: {
       sendCurrentSettings: async () => undefined,
       sendAvailableModels: () => undefined,
-      sendOpenAIModelPricing: () => undefined,
       sendMcpConfig: () => undefined,
       sendModelForPanel: () => undefined,
       sendThinkingForPanel: () => undefined,

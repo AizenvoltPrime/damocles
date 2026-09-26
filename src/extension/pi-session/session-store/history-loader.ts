@@ -27,6 +27,8 @@ import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { stripIdeContext } from './ide-context';
 import { toImageBlocks } from '../branch-text';
+import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
+import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '../context-snapshot';
 
 interface PiToolResult {
   text: string;
@@ -69,13 +71,6 @@ interface ReplaySteer {
 }
 type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
 
-interface UsageTotals {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-}
-
 function textOf(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -114,7 +109,7 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
  * The `damocles-steer` custom entry is NOT skipped — it is mapped in position to a replayed amber
  * injected "You steered" chip.
  */
-export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
+export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
   const toolResults = new Map<string, PiToolResult>();
@@ -130,7 +125,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
   }
 
   const messages: ReplayMessage[] = [];
-  const usage: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let usage = emptyContextSnapshot();
 
   for (const entry of branch) {
     if (entry.type === 'compaction') {
@@ -140,6 +135,8 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
       const keptMarkers = messages.filter((m) => m.kind === 'compaction');
       messages.length = 0;
       messages.push(...keptMarkers);
+      // pi reads the context size as unknown until a response lands after the compaction.
+      usage = emptyContextSnapshot();
       const c = entry as { summary?: unknown; tokensBefore?: unknown; timestamp?: unknown };
       messages.push({
         kind: 'compaction',
@@ -168,7 +165,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
       message?: {
         role?: string;
         content?: unknown;
-        usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+        usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number };
         stopReason?: string;
         errorMessage?: string;
       };
@@ -194,17 +191,10 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     // patches prompt sections rather than carrying chat, so rendering it shows text the user never saw.
     if (role !== 'assistant') continue;
 
-    if (message?.usage) {
-      // Output is the session's cumulative spend (summed). Input + cache, however, are the CURRENT
-      // context-window occupancy, which is the LAST assistant message's snapshot — not a sum. A
-      // multi-step turn makes several LLM calls and each re-reads the same context, so summing
-      // double-counts it (e.g. turn-1 cacheWrite ≈ turn-2 cacheRead). This matches the live adapter,
-      // which emits per-message and lets the webview snap to the latest (pi's context usage = last usage).
-      usage.output += message.usage.output ?? 0;
-      usage.input = message.usage.input ?? 0;
-      usage.cacheRead = message.usage.cacheRead ?? 0;
-      usage.cacheWrite = message.usage.cacheWrite ?? 0;
-    }
+    // The last assistant message pi's `getContextUsage` trusts gives the context-window occupancy. Billing
+    // totals are summed over the whole file in `loadPiSessionHistory`, never from this snapshot.
+    const snapshot = message ? contextSnapshotOf(message) : undefined;
+    if (snapshot) usage = snapshot;
 
     if (message?.stopReason === 'error' && message.errorMessage) {
       messages.push({ kind: 'error', content: message.errorMessage });
@@ -310,11 +300,15 @@ async function hydrateSubagentCards(
         tool.agentLaunch = { agentType, description, prompt, background };
         if (file.launch.modelLabel) tool.agentModel = file.launch.modelLabel;
         if (file.launch.templatePath) tool.agentTemplatePath = file.launch.templatePath;
+        // A resume segment records the billing of the model it ran on, which a launch written earlier may lack.
+        const dollarBilled = segment?.dollarBilled ?? file.launch.dollarBilled;
+        if (dollarBilled !== undefined) tool.agentDollarBilled = dollarBilled;
       }
       if (segment) {
         const agentMessages = piMessagesToHistoryAgentMessages(segment.messages);
         if (agentMessages.length > 0) tool.agentMessages = agentMessages;
         tool.agentToolCount = countToolUses(agentMessages);
+        tool.agentUsage = segment.usage;
         if (segment.startTimestamp !== undefined) tool.agentStartTimestamp = segment.startTimestamp;
         if (segment.endTimestamp !== undefined) tool.agentEndTimestamp = segment.endTimestamp;
       }
@@ -331,7 +325,7 @@ async function hydrateSubagentCards(
 
 /**
  * Replay a resumed pi session's transcript into a webview host using the existing replay contract
- * (`sessionCleared` → `userReplay`/`assistantReplay`/`errorReplay` → `tokenUsageUpdate` + `done`).
+ * (`sessionCleared` → `userReplay`/`assistantReplay`/`errorReplay` → `tokenUsageUpdate` + `sessionUsage` + `done`).
  * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). A
  * `compaction` entry on the branch replays as a historical `compactBoundary` + `compactSummary`, mirroring
  * the live post-compaction view (preceding messages hidden, summary marker shown).
@@ -349,14 +343,10 @@ export async function loadPiSessionHistory(
   // Resolve the webview's replaying state on EVERY terminal path. Without a `done`, a failed/empty
   // load leaves a blank, permanently-spinning panel — the "silent failure that masks the issue" the
   // quality bar forbids. Failures additionally surface an `errorReplay` so the user sees the cause.
-  const finish = (numTurns: number, outputTokens: number): void =>
-    post({
-      type: 'done',
-      data: { type: 'result', session_id: sessionId, is_done: true, total_output_tokens: outputTokens, num_turns: numTurns },
-    });
+  const finish = (): void => post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
   const fail = (reason: string): void => {
     post({ type: 'errorReplay', content: reason });
-    finish(0, 0);
+    finish();
   };
 
   const pi = await initPiLoader();
@@ -371,7 +361,8 @@ export async function loadPiSessionHistory(
   }
 
   let messages: ReplayMessage[];
-  let usage: UsageTotals;
+  let usage: ContextSnapshot;
+  let sessionUsage: SessionUsageMessage;
   let branch: SessionEntry[];
   const checkpointUserIds: string[] = [];
   try {
@@ -379,6 +370,7 @@ export async function loadPiSessionHistory(
     const leafId = sm.getLeafId();
     branch = sm.getBranch(leafId ?? undefined);
     ({ messages, usage } = reconstructMessages(branch));
+    sessionUsage = sessionUsageMessage(sm);
     // Re-surface checkpoints so resumed turns are immediately rewindable, on EVERY resume path (the
     // `ready` auto-resume defers the live session — and its hydrate — until the first message). The
     // userEntryId is the same pi entry id used as `userReplay.sdkMessageId`, so the webview links them.
@@ -458,10 +450,10 @@ export async function loadPiSessionHistory(
     inputTokens: usage.input,
     cacheCreationTokens: usage.cacheWrite,
     cacheReadTokens: usage.cacheRead,
-    outputTokens: usage.output,
   });
+  post(sessionUsage);
   if (checkpointUserIds.length > 0) {
     post({ type: 'checkpointInfo', userMessageIds: checkpointUserIds });
   }
-  finish(promptIndex, usage.output);
+  finish();
 }

@@ -6,7 +6,10 @@ import {
   openaiTokenSource,
   buildAccountInfo,
   dollarBilled,
+  modelDollarBilled,
+  piModelDollarBilled,
   type AccountBillingDeps,
+  type ModelBillingDeps,
 } from '../account-billing';
 
 /**
@@ -111,5 +114,37 @@ describe('dollarBilled', () => {
     // No piProvider → isDollarBilled uses the credential label: apikey/extra are metered, allowance isn't.
     expect(dollarBilled(deps({ modelInfo: undefined, claudeAuthMode: 'apikey' }))).toBe(true);
     expect(dollarBilled(deps({ modelInfo: undefined, claudeAuthMode: 'allowance' }))).toBe(false);
+  });
+});
+
+describe('piModelDollarBilled', () => {
+  const billing = (over: Partial<ModelBillingDeps> = {}): ModelBillingDeps => ({
+    supportedModels: [openaiModel, stepfunModel, deepseekModel, anthropicModel],
+    claudeAuthMode: 'allowance',
+    openai: { apiKey: true, codex: true } as OpenAIAuthStatus,
+    preferApiKey: false,
+    ...over,
+  });
+
+  it('bills an OpenAI model by the provider it resolved to, whatever the panel prefers', () => {
+    // The panel prefers Codex OAuth here, so the catalog rule alone would call the API-key model flat.
+    expect(modelDollarBilled('gpt-6-sol', billing())).toBe(false);
+    expect(piModelDollarBilled({ provider: 'openai', id: 'gpt-6-sol' }, billing())).toBe(true);
+    expect(piModelDollarBilled({ provider: 'openai-codex', id: 'gpt-6-sol' }, billing({ preferApiKey: true }))).toBe(false);
+  });
+
+  it('bills an Anthropic model by the Claude auth mode, curated or not', () => {
+    expect(piModelDollarBilled({ provider: 'anthropic', id: 'claude-opus-4-8' }, billing())).toBe(false);
+    expect(piModelDollarBilled({ provider: 'anthropic', id: 'claude-legacy' }, billing({ claudeAuthMode: 'extra' }))).toBe(true);
+  });
+
+  it('bills a catalog provider model by its flat-fee flag', () => {
+    expect(piModelDollarBilled({ provider: 'stepfun', id: 'step-2' }, billing())).toBe(false);
+    expect(piModelDollarBilled({ provider: 'deepseek', id: 'deepseek-v4-pro' }, billing())).toBe(true);
+  });
+
+  it('reads a provider outside the catalog as a charge, even for an id the catalog knows elsewhere', () => {
+    expect(piModelDollarBilled({ provider: 'openrouter', id: 'step-2' }, billing())).toBe(true);
+    expect(piModelDollarBilled({ provider: 'my-gateway', id: 'mystery' }, billing())).toBe(true);
   });
 });

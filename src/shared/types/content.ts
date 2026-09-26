@@ -1,3 +1,5 @@
+import type { AgentUsageTotals } from '../usage-accounting';
+
 export interface TextBlock {
   type: "text";
   text: string;
@@ -98,6 +100,10 @@ export interface HistoryToolCall {
   agentLaunch?: { agentType: string; description: string; prompt: string; background: boolean };
   /** Set on a resume call's card: the id of the agent it continued. */
   agentResumedFrom?: string;
+  /** The usage of this invocation's own run, summed from the agent file's segment. */
+  agentUsage?: AgentUsageTotals;
+  /** Whether the agent's model bills real dollars; unset when its launch record predates the flag. */
+  agentDollarBilled?: boolean;
   metadata?: Record<string, unknown>;
 }
 

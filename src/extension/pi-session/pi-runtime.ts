@@ -17,6 +17,7 @@ import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, 
 import { describeAuthError } from './describe-error';
 import { isAbortError } from './web-access/util';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
+import { appendSubCallUsage } from '../usage-stats/subcall-ledger';
 import {
   LEGACY_SUBSCRIPTION_REPOS,
   SUBSCRIPTION_SOURCE,
@@ -957,11 +958,15 @@ export class PiRuntime {
       // `off` maps to "no reasoning", so it is likewise not forwarded (also narrows the pi-agent-core
       // ThinkingLevel to the pi-ai one `completeSimple` accepts, which has no `off`).
       const reasoning = exploreThinkingLevel(model, 'medium');
-      const complete: PiCompleteFn = (m, c, o) =>
-        modelRuntime.completeSimple(m, c, {
+      const complete: PiCompleteFn = async (m, c, o) => {
+        const message = await modelRuntime.completeSimple(m, c, {
           ...o,
           ...(reasoning && reasoning !== 'off' ? { reasoning } : {}),
         });
+        // Billed whatever the stop reason; a throw carries no usage to record.
+        appendSubCallUsage(message, req.purpose, req.attribution);
+        return message;
+      };
       return await runStructuredCompletion<T>(complete, model, req);
     } catch (err) {
       log('[PiRuntime] runStructuredCompletion failed: %s', describeAuthError(err));

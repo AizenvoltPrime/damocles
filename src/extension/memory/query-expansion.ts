@@ -67,6 +67,7 @@ async function expandViaPiWithStatus(
     outputToolName: TERMS_TOOL,
     outputToolDescription: 'Return the generated keyword phrases.',
     schema,
+    purpose: 'memory-query-expansion',
     timeoutMs: 8_000,
   });
   return { terms: normalizeTerms(result?.terms), failed: result === null };

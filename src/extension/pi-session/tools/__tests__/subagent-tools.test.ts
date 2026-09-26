@@ -5,11 +5,12 @@ import { recordResultText } from '../../subagents/status-note';
 import type { AgentManager } from '../../subagents/agent-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { AgentRecord } from '../../subagents/types';
+import { emptyAgentUsage } from '../../../../shared/usage-accounting';
 
 function rec(over: Partial<AgentRecord>): AgentRecord {
   return {
     id: 'a1', type: 'Explore', description: 'find things', status: 'completed', toolCallId: 'tc1',
-    toolUses: 0, startedAt: 0, lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 }, costUsd: 0, compactionCount: 0,
+    toolUses: 0, startedAt: 0, lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 }, usage: emptyAgentUsage(), compactionCount: 0,
     ...over,
   };
 }

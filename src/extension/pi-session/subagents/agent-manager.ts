@@ -58,6 +58,7 @@ import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
 import type { ImageBlock } from '../../../shared/types/content';
+import { agentTotalTokens, emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -82,6 +83,8 @@ export interface ResolvedSubagentModel {
   /** Set only by the Explore-section resolution when the user's effort setting yielded a `thinkingLevel`:
    *  makes that level a hard guarantee that beats a per-spawn `spec.thinking`. */
   enforceThinking?: boolean;
+  /** Whether the model bills real dollars. Unset when unknown, so the card falls back to the panel's flag. */
+  dollarBilled?: boolean;
   /** Set when resolution failed (out-of-scope / unauthed) — the spawn fails soft with this message. */
   error?: string;
 }
@@ -136,6 +139,8 @@ export interface SubagentEngine {
   cancelAgentDialogs: (agentId: string) => void;
   /** Resolve a spawn's model per §4.9 (config.model > Explore selection > parent session model). */
   resolveModel: (input: { agentConfig: AgentConfig }) => ResolvedSubagentModel;
+  /** Whether a pi model bills real dollars, for a reopened session whose model the runtime restored. */
+  modelDollarBilled: (model: Model<Api>) => boolean;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
   onSubagentCost: (costDeltaUsd: number) => void;
   /** Configured-hooks dispatch deps (US-008) — fires PreToolUse/PostToolUse/subagent_end for this subagent. */
@@ -515,7 +520,7 @@ export class AgentManager {
       startedAt: Date.now(),
       abortController: new AbortController(),
       lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
-      costUsd: 0,
+      usage: emptyAgentUsage(),
       compactionCount: 0,
       toolCallId: spec.toolCallId,
       background: runInBackground(spec),
@@ -551,6 +556,7 @@ export class AgentManager {
       ...(spec.kind === 'resume' ? { resumedFrom: id } : {}),
       getSessionId: this.engine.getParentSessionId,
       postMessage: this.engine.postMessage,
+      onUsage: (usage) => this.rollCost(record, usage),
     });
     this.bridges.set(id, bridge);
 
@@ -583,7 +589,10 @@ export class AgentManager {
     // A reopened session runs on the model its file recorded, which the runtime resolves.
     const reopening = spec.kind === 'resume' && spec.target.path !== null;
     const resolved: ResolvedSubagentModel = reopening
-      ? { ...(spec.target.launch.modelLabel ? { modelLabel: spec.target.launch.modelLabel } : {}) }
+      ? {
+          ...(spec.target.launch.modelLabel ? { modelLabel: spec.target.launch.modelLabel } : {}),
+          ...(spec.target.launch.dollarBilled !== undefined ? { dollarBilled: spec.target.launch.dollarBilled } : {}),
+        }
       : this.engine.resolveModel({ agentConfig: config });
     bridge.start(resolved.modelLabel, config.filePath);
 
@@ -721,10 +730,12 @@ export class AgentManager {
       ...(fresh.thinking ? { thinkingOverride: fresh.thinking } : {}),
       ...(config.filePath ? { templatePath: config.filePath } : {}),
       ...(resolved.modelLabel ? { modelLabel: resolved.modelLabel } : {}),
+      ...(resolved.dollarBilled !== undefined ? { dollarBilled: resolved.dollarBilled } : {}),
     };
-    const segment: AgentSegmentData | null = spec.kind === 'spawn' ? null : {
+    const segment = (dollarBilled: boolean | undefined): AgentSegmentData | null => spec.kind === 'spawn' ? null : {
       toolCallId: spec.toolCallId,
       ...(spec.message !== undefined ? { message: spec.message } : {}),
+      ...(dollarBilled !== undefined ? { dollarBilled } : {}),
     };
     let prompt = fresh.prompt;
     if (spec.kind === 'resume') {
@@ -740,12 +751,14 @@ export class AgentManager {
       signal: record.abortController!.signal,
       onSessionCreated: (session) => {
         record.session = session;
-        record.costBaseline = session.getSessionStats().cost;
-        record.bridgeUnsub = bridge.attach(session);
+        // A reopened session runs on the model its file recorded, which may bill differently from the launch.
+        const dollarBilled = reopenPath !== null && session.model ? this.engine.modelDollarBilled(session.model) : resolved.dollarBilled;
+        record.bridgeUnsub = bridge.attach(session, dollarBilled);
         // Appended before prompt(), so each entry precedes this run's messages. A new file is only
         // written once the first assistant message arrives; a reopened file takes the entry at once.
         if (launch) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch);
-        if (segment) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, segment);
+        const segmentData = segment(dollarBilled);
+        if (segmentData) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, segmentData);
         record.outputFile = session.sessionManager.getSessionFile();
         if (record.pendingSteers?.length) {
           for (const msg of record.pendingSteers) {
@@ -757,10 +770,7 @@ export class AgentManager {
       onToolActivity: (activity) => {
         if (activity.type === 'end') record.toolUses++;
       },
-      onAssistantUsage: (usage) => {
-        addUsage(record.lifetimeUsage, usage);
-        this.rollCost(record);
-      },
+      onAssistantUsage: (usage) => addUsage(record.lifetimeUsage, usage),
     });
 
     if (record.status !== 'stopped') {
@@ -772,21 +782,21 @@ export class AgentManager {
     return result.responseText;
   }
 
-  /** Roll this run's cost delta into the parent budget meter. */
-  private rollCost(record: AgentRecord): void {
+  /** Roll this run's cost delta into the parent budget meter, from the reading its bridge published. */
+  private rollCost(record: AgentRecord, usage: AgentUsageTotals): void {
     // A record no longer tracked was cleared by reset/clear or replaced by a resume of its id: its spend
-    // is already counted, and a late `afterComplete` roll would count it again.
+    // is already counted, and a late roll would count it again.
     if (this.agents.get(record.id) !== record) return;
-    const cost = record.session ? record.session.getSessionStats().cost - (record.costBaseline ?? 0) : record.costUsd;
-    const delta = Math.max(0, cost - record.costUsd);
-    record.costUsd = cost;
+    const delta = Math.max(0, usage.costUsd - record.usage.costUsd);
+    record.usage = usage;
     if (delta > 0) this.engine.onSubagentCost(delta);
   }
 
   /** Emit the card resolution + dispose the session + drain the queue. */
   private afterComplete(id: string, record: AgentRecord, bridge: SubagentStreamBridge): void {
     const browserSuccess = record.status === 'completed' || record.status === 'steered';
-    this.rollCost(record);
+    // Settle before the card resolves: spend that raised no event, such as a cache warm, rolls here.
+    bridge.settleUsage();
     if (record.bridgeUnsub) {
       try { record.bridgeUnsub(); } catch { /* ignore */ }
       record.bridgeUnsub = undefined;
@@ -924,7 +934,7 @@ export class AgentManager {
       summary: (record.result ?? record.error ?? '').slice(0, 500),
       outputFile: record.outputFile ?? null,
       usage: {
-        totalTokens: getLifetimeTotal(record.lifetimeUsage),
+        totalTokens: agentTotalTokens(record.usage),
         toolUses: record.toolUses,
         durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
       },

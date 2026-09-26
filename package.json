@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.32.0",
+  "version": "2.33.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -385,58 +385,6 @@
               "description": "%configuration.sandbox.networkAllowLocalBinding.description%"
             }
           }
-        },
-        "damocles.openai.modelPricing": {
-          "type": "object",
-          "default": {
-            "gpt-6-astra": {
-              "input": 10,
-              "cachedInput": 1,
-              "output": 50,
-              "reasoning": 50
-            },
-            "gpt-6-sol": {
-              "input": 2,
-              "cachedInput": 0.2,
-              "output": 10,
-              "reasoning": 10
-            },
-            "gpt-6-luna": {
-              "input": 0.1,
-              "cachedInput": 0.01,
-              "output": 0.5,
-              "reasoning": 0.5
-            }
-          },
-          "scope": "window",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "input": {
-                "type": "number",
-                "description": "USD per 1M input tokens."
-              },
-              "cachedInput": {
-                "type": "number",
-                "description": "USD per 1M cached input tokens."
-              },
-              "output": {
-                "type": "number",
-                "description": "USD per 1M output tokens."
-              },
-              "reasoning": {
-                "type": "number",
-                "description": "USD per 1M reasoning tokens."
-              }
-            },
-            "required": [
-              "input",
-              "cachedInput",
-              "output",
-              "reasoning"
-            ]
-          },
-          "description": "Per-model OpenAI pricing in USD per 1M tokens. Used to compute the cost display when an OpenAI-backed model is active."
         },
         "damocles.debug": {
           "type": "boolean",
@@ -1055,6 +1003,7 @@
   },
   "devDependencies": {
     "@chenglou/pretext": "^0.0.5",
+    "@internationalized/date": "^3.12.4",
     "@mozilla/readability": "^0.6.0",
     "@tailwindcss/vite": "^4.0.0",
     "@types/d3-drag": "^3.0.7",
@@ -1069,6 +1018,8 @@
     "@types/turndown": "^5.0.6",
     "@types/vscode": "^1.123.0",
     "@types/ws": "^8.5.13",
+    "@unovis/ts": "1.7.0",
+    "@unovis/vue": "1.7.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "@vscode/l10n-dev": "^0.0.35",
     "@vue/test-utils": "^2.4.11",

@@ -8,12 +8,19 @@ import type { HistoryToolCall } from '@shared/types/content';
 
 // Hermetic fixtures for driving loadPiSessionHistory without the real pi runtime. Agent files are real
 // JSONL under a temp session dir, parsed by pi's own `parseSessionEntries`.
-const hoisted = vi.hoisted(() => ({ branch: [] as unknown[], sessionDir: '/fake/dir' }));
+const hoisted = vi.hoisted(() => ({ branch: [] as unknown[], sessionDir: '/fake/dir', entries: null as unknown[] | null, headerTimestamp: undefined as string | undefined }));
 vi.mock('../../pi-loader', async () => {
   const real = await import('@earendil-works/pi-coding-agent');
   return {
     initPiLoader: vi.fn(async () => ({
-      SessionManager: { open: () => ({ getLeafId: () => 'leaf', getBranch: () => hoisted.branch }) },
+      SessionManager: {
+        open: () => ({
+          getLeafId: () => 'leaf',
+          getBranch: () => hoisted.branch,
+          getEntries: () => hoisted.entries ?? hoisted.branch,
+          getHeader: () => (hoisted.headerTimestamp ? { timestamp: hoisted.headerTimestamp } : null),
+        }),
+      },
       parseSessionEntries: real.parseSessionEntries,
     })),
   };
@@ -372,7 +379,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
   const ts = (s: number): string => new Date(Date.UTC(2026, 0, 1, 0, 0, s)).toISOString();
 
   /** An agent pi session file as pi writes it: header, launch, then the given entries. */
-  function writeAgentFile(fileId: string, agentId: string, extra: unknown[]): void {
+  function writeAgentFile(fileId: string, agentId: string, extra: unknown[], launchExtra: Record<string, unknown> = {}): void {
     const dir = path.join(tmp, SESSION_ID, 'subagents');
     fs.mkdirSync(dir, { recursive: true });
     const entries = [
@@ -383,7 +390,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
         parentId: null,
         timestamp: ts(1),
         customType: DAMOCLES_AGENT_LAUNCH_ENTRY,
-        data: { agentId, kind: 'subagent', agentType: 'Explore', description: 'look', prompt: 'look around', background: false, modelLabel: 'haiku', templatePath: '/a/explore.md' },
+        data: { agentId, kind: 'subagent', agentType: 'Explore', description: 'look', prompt: 'look around', background: false, modelLabel: 'haiku', templatePath: '/a/explore.md', ...launchExtra },
       },
       ...extra,
     ];
@@ -526,6 +533,71 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     ]);
   });
 
+  it('gives each card the usage of its own segment, cache warms and compactions included, and the launch billing flag', async () => {
+    const u = (input: number, output: number, cacheRead: number, cacheWrite: number, total: number) =>
+      ({ input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+    writeAgentFile('agent-6', 'agent-6', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: ts(3), message: { role: 'assistant', content: [{ type: 'text', text: 'first half' }], usage: u(10, 20, 300, 40, 0.5) } },
+      { type: 'usage', id: 'w1', parentId: 'm2', timestamp: ts(4), kind: 'cache_warm', provider: 'anthropic', model: 'claude', usage: u(0, 1, 900, 0, 0.05) },
+      { type: 'custom', id: 's1', parentId: 'w1', timestamp: ts(5), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'stopped', stopReason: 'user', result: 'first half' } },
+      { type: 'custom', id: 'g1', parentId: 's1', timestamp: ts(10), customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: { toolCallId: 'tc-r6' } },
+      { type: 'compaction', id: 'c1', parentId: 'g1', timestamp: ts(11), summary: 's', firstKeptEntryId: 'm2', tokensBefore: 5000, usage: u(4000, 600, 0, 0, 0.2) },
+      { type: 'message', id: 'm3', parentId: 'c1', timestamp: ts(12), message: { role: 'assistant', content: [{ type: 'text', text: 'second half' }], usage: u(1, 2, 330, 4, 0.25) } },
+    ], { dollarBilled: false });
+    hoisted.branch = [
+      userMsg('u1', 'explore it'),
+      agentCall('a1', 'tc6'),
+      invocation('agent-6', 'tc6'),
+      {
+        id: 'a2',
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-r6', name: 'Agent', arguments: { resume: 'agent-6' } }] },
+      } as unknown as SessionEntry,
+      { id: 'i-r6', type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-6', toolCallId: 'tc-r6', resume: true } } as unknown as SessionEntry,
+    ];
+
+    const [original, resumed] = await replayedAgentTools();
+
+    expect(original!.agentUsage).toEqual({ totalInputTokens: 10, totalOutputTokens: 21, cacheReadTokens: 1200, cacheCreationTokens: 40, costUsd: expect.closeTo(0.55) });
+    expect(resumed!.agentUsage).toEqual({ totalInputTokens: 4001, totalOutputTokens: 602, cacheReadTokens: 330, cacheCreationTokens: 4, costUsd: expect.closeTo(0.45) });
+    expect(original!.agentDollarBilled).toBe(false);
+    expect(resumed!.agentDollarBilled).toBe(false);
+  });
+
+  it('a launch recorded before the billing flag leaves the card to the panel flag', async () => {
+    writeAgentFile('agent-7', 'agent-7', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ]);
+    hoisted.branch = [userMsg('u1', 'go'), agentCall('a1', 'tc7'), invocation('agent-7', 'tc7')];
+    const [tool] = await replayedAgentTools();
+    expect(tool).not.toHaveProperty('agentDollarBilled');
+  });
+
+  it('a resume card takes the billing flag its segment recorded over the launch flag, or the lack of one', async () => {
+    writeAgentFile('agent-8', 'agent-8', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text: 'first half' }] } },
+      { type: 'custom', id: 'g1', parentId: 'm1', timestamp: ts(10), customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: { toolCallId: 'tc-r8', dollarBilled: true } },
+      { type: 'message', id: 'm2', parentId: 'g1', timestamp: ts(12), message: { role: 'assistant', content: [{ type: 'text', text: 'second half' }] } },
+    ]);
+    hoisted.branch = [
+      userMsg('u1', 'go'),
+      agentCall('a1', 'tc8'),
+      invocation('agent-8', 'tc8'),
+      {
+        id: 'a2',
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-r8', name: 'Agent', arguments: { resume: 'agent-8' } }] },
+      } as unknown as SessionEntry,
+      { id: 'i-r8', type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-8', toolCallId: 'tc-r8', resume: true } } as unknown as SessionEntry,
+    ];
+
+    const [original, resumed] = await replayedAgentTools();
+
+    expect(original).not.toHaveProperty('agentDollarBilled');
+    expect(resumed!.agentDollarBilled).toBe(true);
+  });
+
   it('display:false custom messages, such as the interruption notice, render nothing', async () => {
     hoisted.branch = [
       userMsg('u1', 'go'),
@@ -544,5 +616,87 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     expect(tool!.sdkAgentId).toBeUndefined();
     expect(tool!.agentStatus).toBeUndefined();
     expect(tool!.agentMessages).toBeUndefined();
+  });
+});
+
+describe('loadPiSessionHistory — usage totals', () => {
+  const usage = (input: number, output: number, cacheRead: number, cacheWrite: number, total: number) => ({
+    input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+  });
+  const entry = (id: string, timestamp: string, message: unknown): SessionEntry =>
+    ({ id, type: 'message', timestamp, message }) as unknown as SessionEntry;
+
+  // Two turns; the rewound request is off the branch but was billed, so it is in the file total.
+  const u1 = entry('u1', '2026-01-01T10:00:00.000Z', { role: 'user', content: [{ type: 'text', text: 'one' }] });
+  const a1 = entry('a1', '2026-01-01T10:00:01.000Z', { role: 'assistant', content: [{ type: 'text', text: 'r1' }], usage: usage(10, 5, 100, 20, 1) });
+  const rewound = entry('ax', '2026-01-01T10:00:02.000Z', { role: 'assistant', content: [], stopReason: 'aborted', usage: usage(1, 1, 0, 0, 0.5) });
+  const u2 = entry('u2', '2026-01-01T12:00:00.000Z', { role: 'user', content: [{ type: 'text', text: 'two' }] });
+  const a2 = entry('a2', '2026-01-01T12:00:01.000Z', { role: 'assistant', content: [{ type: 'text', text: 'r2' }], usage: usage(2, 7, 130, 0, 0.25) });
+  const warm = { id: 'w', type: 'usage', timestamp: '2026-01-01T12:05:00.000Z', kind: 'cache_warm', usage: usage(0, 1, 130, 0, 0.125) } as unknown as SessionEntry;
+
+  afterEach(() => {
+    hoisted.entries = null;
+    hoisted.headerTimestamp = undefined;
+  });
+
+  async function replaySessionUsage(): Promise<Extract<ExtensionToWebviewMessage, { type: 'sessionUsage' }>> {
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-usage', (m) => posts.push(m));
+    const types = posts.map((m) => m.type);
+    // The totals land before `done`, which ends the replay and carries none.
+    expect(types.indexOf('sessionUsage')).toBeLessThan(types.indexOf('done'));
+    expect(posts.find((m) => m.type === 'done')).toEqual({ type: 'done', data: { type: 'result', session_id: 'sess-usage', is_done: true } });
+    return posts.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'sessionUsage' }> => m.type === 'sessionUsage')!;
+  }
+
+  it('sums every billed entry in the file, and counts the branch prompts', async () => {
+    hoisted.branch = [u1, a1, u2, a2];
+    hoisted.entries = [u1, a1, rewound, u2, a2, warm];
+    expect(await replaySessionUsage()).toEqual({
+      type: 'sessionUsage',
+      usage: { totalInputTokens: 13, totalOutputTokens: 14, cacheReadTokens: 360, cacheCreationTokens: 20, costUsd: 1.875 },
+      numTurns: 2,
+    });
+  });
+
+  it('keeps the context snapshot at the last request', async () => {
+    hoisted.branch = [u1, a1, u2, a2];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-usage', (m) => posts.push(m));
+    expect(posts.find((m) => m.type === 'tokenUsageUpdate')).toEqual({ type: 'tokenUsageUpdate', inputTokens: 2, cacheReadTokens: 130, cacheCreationTokens: 0 });
+  });
+
+  it('keeps the context snapshot on the last good request after an aborted or errored one', async () => {
+    const failed = entry('ae', '2026-01-01T12:00:02.000Z', { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'overloaded', usage: usage(0, 0, 0, 0, 0) });
+    hoisted.branch = [u1, a1, u2, a2, rewound, failed];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-usage', (m) => posts.push(m));
+    expect(posts.find((m) => m.type === 'tokenUsageUpdate')).toEqual({ type: 'tokenUsageUpdate', inputTokens: 2, cacheReadTokens: 130, cacheCreationTokens: 0 });
+  });
+
+  it('resets the context snapshot at a compaction until a response follows it', async () => {
+    const compaction = { id: 'c1', type: 'compaction', timestamp: '2026-01-01T12:10:00.000Z', summary: 's', firstKeptEntryId: 'u2', tokensBefore: 5000 } as unknown as SessionEntry;
+    hoisted.branch = [u1, a1, u2, a2, compaction];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-usage', (m) => posts.push(m));
+    expect(posts.find((m) => m.type === 'tokenUsageUpdate')).toEqual({ type: 'tokenUsageUpdate', inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 });
+
+    const a3 = entry('a3', '2026-01-01T12:11:00.000Z', { role: 'assistant', content: [{ type: 'text', text: 'r3' }], usage: usage(4, 1, 50, 6, 0.1) });
+    hoisted.branch = [u1, a1, u2, a2, compaction, a3];
+    const after: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-usage', (m) => after.push(m));
+    expect(after.find((m) => m.type === 'tokenUsageUpdate')).toEqual({ type: 'tokenUsageUpdate', inputTokens: 4, cacheReadTokens: 50, cacheCreationTokens: 6 });
+  });
+
+  it('counts only the entries a fork wrote', async () => {
+    hoisted.branch = [u1, a1, u2, a2];
+    hoisted.entries = [u1, a1, rewound, u2, a2, warm];
+    hoisted.headerTimestamp = '2026-01-01T11:00:00.000Z';
+    expect(await replaySessionUsage()).toEqual({
+      type: 'sessionUsage',
+      usage: { totalInputTokens: 2, totalOutputTokens: 8, cacheReadTokens: 260, cacheCreationTokens: 0, costUsd: 0.375 },
+      numTurns: 1,
+    });
   });
 });

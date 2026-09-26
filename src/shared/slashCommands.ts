@@ -10,6 +10,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'memories', description: 'Browse and manage memories', source: 'builtin' },
   { name: 'context', description: 'Display current context', source: 'builtin' },
   { name: 'usage', description: 'Show Claude / GPT subscription usage', source: 'builtin' },
+  { name: 'stats', description: 'Show token and cost statistics across all projects', source: 'builtin' },
   { name: 'btw', description: 'Ask a side question using conversation context', argumentHint: '<question>', source: 'builtin' },
   { name: 'steer', description: 'Send a steering message to a running subagent', argumentHint: '<agent> <message>', source: 'builtin' },
 ];

@@ -128,11 +128,6 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       const resultData = msg.data;
       streamingStore.finalizeStreamingMessage();
       streamingStore.setLastStopReason(resultData.stop_reason ?? null);
-      sessionStore.updateStats({
-        ...(resultData.total_cost_usd !== undefined && { totalCostUsd: resultData.total_cost_usd }),
-        ...(resultData.total_output_tokens !== undefined && { totalOutputTokens: resultData.total_output_tokens }),
-        ...(resultData.num_turns !== undefined && { numTurns: resultData.num_turns }),
-      });
       if (resultData.session_id) {
         sessionStore.setResumedSession(resultData.session_id);
       }

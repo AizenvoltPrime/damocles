@@ -2,7 +2,7 @@
 import type { ListboxItemEmits, ListboxItemProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit, useCurrentElement } from "@vueuse/core"
-import { ListboxItem, useForwardPropsEmits, useId } from "reka-ui"
+import { injectListboxRootContext, ListboxItem, useForwardPropsEmits, useId } from "reka-ui"
 import { computed, onMounted, onUnmounted, ref } from "vue"
 import { cn } from "@/lib/utils"
 import { useCommand, useCommandGroup } from "."
@@ -18,6 +18,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 const id = useId()
 const { filterState, allItems, allGroups } = useCommand()
 const groupContext = useCommandGroup()
+const listbox = injectListboxRootContext()
 
 const isRender = computed(() => {
   if (!filterState.search) {
@@ -66,9 +67,10 @@ onUnmounted(() => {
     v-bind="definedProps(forwarded)"
     :id="id"
     ref="itemRef"
-    :class="cn('relative flex cursor-default gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0', props.class)"
+    :class="cn('relative flex cursor-pointer gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0', props.class)"
     @select="() => {
-      filterState.search = ''
+      // A multi-select list stays open for the next pick, so it keeps the search that found this one.
+      if (!listbox.multiple.value) filterState.search = ''
     }"
   >
     <slot />

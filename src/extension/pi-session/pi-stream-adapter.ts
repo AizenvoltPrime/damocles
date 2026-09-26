@@ -1,5 +1,5 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ResultMessage } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
@@ -11,6 +11,9 @@ import { joinResultText } from './tool-result-text';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 import type { TurnState } from './session-state';
+import { usageOfEntry } from '../../shared/usage-accounting';
+import { ownSessionUsage, sessionUsageMessage } from './session-usage';
+import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from './context-snapshot';
 
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
@@ -31,7 +34,7 @@ export interface PiStreamAdapterDeps {
    *  defaults to false: a dropped thinking block is a correctness event, not a cost curiosity, so
    *  `damocles.showThinkingDroppedNotices` defaults to true and is threaded as its own per-call dep. */
   showThinkingDroppedNotices: () => boolean;
-  /** The parent session's current cumulative cost (USD) — used to combine with subagent cost (Phase 5). */
+  /** The conversation's own cumulative cost (USD), to which subagent cost is added for the budget. */
   sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
   onBudgetStop: () => void;
@@ -214,13 +217,15 @@ export class PiStreamAdapter {
   }
 
   /**
-   * Seed the cost baseline from a resumed session's loaded total (US-010b) so the budget meter and
-   * `getAccumulatedCost` continue from there, and the first post-resume turn's delta (computed in
-   * `onSettled` as `stats.cost - _lastCumulativeCost`) stays correct.
+   * Start the cost state of a newly resumed conversation (US-010b). `loadedCost` is its own spend so far,
+   * which `getAccumulatedCost` continues from and the first turn's delta in `onSettled` is taken against.
+   * The subagent cost and the budget latch belonged to the conversation this one replaced, so both reset.
    */
   seedResumedUsage(loadedCost: number): void {
     this._lastCumulativeCost = loadedCost;
     this._accumulatedCost = loadedCost;
+    this._externalCost = 0;
+    this._budgetExceededEmitted = false;
   }
 
   /**
@@ -431,11 +436,12 @@ export class PiStreamAdapter {
       case 'message_end':
         if (event.message.role === 'assistant') {
           this.emitAssistantMessage(event.message.content);
-          this.emitUsage(event.message.usage);
+          this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
           this.maybeEmitThinkingDroppedNotice(event.message);
-          this.enforceBudgetInFlight(session);
+          // pi persists the message after notifying listeners, so the spend includes it only from the next microtask.
+          queueMicrotask(() => this.enforceBudgetInFlight(session));
         } else if (event.message.role === 'user' && !this._aborted) {
           // A user message delivered mid-run is a queued injection: the initial prompt lives in the
           // run's initial context and never emits this. Collapse the queued chips now, and if a real
@@ -488,6 +494,10 @@ export class PiStreamAdapter {
       // produces several of them for one logical turn. `agent_settled` fires once, after the last one.
       case 'agent_settled':
         this.onSettled(session);
+        break;
+      // The cache warmer writes its `usage` entries while the session is idle, so no settle follows them.
+      case 'entry_appended':
+        if (usageOfEntry(event.entry)) this.emitSessionUsage(session);
         break;
       case 'compaction_start': {
         // Scoped to the compaction that is starting, so an outcome reported for an earlier one cannot
@@ -547,6 +557,9 @@ export class PiStreamAdapter {
               : {}),
           });
           if (result.summary) this.emit({ type: 'compactSummary', summary: result.summary });
+          this.emitContextSnapshot(emptyContextSnapshot());
+          // A manual compaction bills its summary with no turn to settle.
+          this.emitSessionUsage(session);
         }
         this.emit({ type: 'statusUpdate', status: 'ready' });
         if (trigger !== 'manual') this.emit({ type: 'autoCompactComplete' });
@@ -690,16 +703,22 @@ export class PiStreamAdapter {
     });
   }
 
-  private emitUsage(usage: Usage): void {
-    // pi's Usage is per-message; emitting per-message `outputTokens` here would snap the webview's
-    // running total to the last message of a multi-message turn. Output tokens are reported once,
-    // cumulatively, via onSettled's `done` result — matching the SDK path, which omits them here too.
+  /** The context meter's last-request snapshot. Billing totals travel only in `sessionUsage`. */
+  private emitContextSnapshot(snapshot: ContextSnapshot | undefined): void {
+    if (!snapshot) return;
     this.emit({
       type: 'tokenUsageUpdate',
-      inputTokens: usage.input,
-      cacheReadTokens: usage.cacheRead,
-      cacheCreationTokens: usage.cacheWrite,
+      inputTokens: snapshot.input,
+      cacheReadTokens: snapshot.cacheRead,
+      cacheCreationTokens: snapshot.cacheWrite,
     });
+  }
+
+  /** Publish the status bar's billing totals, and return the conversation's own cost for the budget. */
+  private emitSessionUsage(session: AgentSession): number {
+    const message = sessionUsageMessage(session.sessionManager);
+    this.emit(message);
+    return message.usage.costUsd;
   }
 
   /**
@@ -801,29 +820,25 @@ export class PiStreamAdapter {
    */
   private onSettled(session: AgentSession): void {
     this._agentRunObserved = true;
-    // Cost accounting is owed even for an aborted turn, so it runs before the abort early-return.
-    const stats = session.getSessionStats();
-    const turnCost = Math.max(0, stats.cost - this._lastCumulativeCost);
-    this._lastCumulativeCost = stats.cost;
-    this._accumulatedCost += turnCost;
+    // Cost accounting is owed even for an aborted turn, whose partial request was billed, so it runs
+    // before the abort early-return.
+    const ownCost = this.emitSessionUsage(session);
+    this._accumulatedCost += Math.max(0, ownCost - this._lastCumulativeCost);
+    this._lastCumulativeCost = ownCost;
     if (this._aborted) {
       this.lowerSpinner();
       return;
     }
 
-    this.checkBudgetAtTurnEnd(stats.cost + this._externalCost);
+    this.checkBudgetAtTurnEnd(ownCost + this._externalCost);
 
     const finalText = session.getLastAssistantText();
     this.deps.onAssistantTextFinal?.(finalText ?? '');
 
-    const sid = this.deps.sessionId();
     const result: ResultMessage = {
       type: 'result',
-      session_id: sid,
+      session_id: this.deps.sessionId(),
       is_done: true,
-      total_cost_usd: turnCost,
-      total_output_tokens: stats.tokens.output,
-      num_turns: 1,
       stop_reason: null,
     };
     this.emit({ type: 'done', data: result });
@@ -834,7 +849,7 @@ export class PiStreamAdapter {
 
   /**
    * In-flight budget enforcement (US-008): a single agentic turn can chain many model/tool calls, so
-   * the moment the session's cumulative cost crosses the hard limit mid-turn we emit `budgetExceeded`
+   * the moment the conversation's own cost plus its subagent cost crosses the hard limit mid-turn we emit `budgetExceeded`
    * and ask the session to stop gracefully (via `onBudgetStop`) — the turn is NOT aborted, it runs to
    * the end of the current model round-trip and settles when the run does, on `agent_settled`. Fires at
    * most once per turn (re-armed in `beginTurn`), so every turn is bounded even after the user raises
@@ -843,7 +858,7 @@ export class PiStreamAdapter {
   private enforceBudgetInFlight(session: AgentSession): void {
     const limit = this.deps.budgetLimit();
     if (limit === null || limit <= 0) return;
-    const spend = session.getSessionStats().cost + this._externalCost;
+    const spend = ownSessionUsage(session.sessionManager).cost + this._externalCost;
     if (spend >= limit && !this._budgetExceededEmitted) {
       this._budgetExceededEmitted = true;
       this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });
