@@ -4227,6 +4227,23 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(4);
   });
 
+  it('a resume that lands while start() builds the runtime switches to it once the runtime exists', async () => {
+    const gate = parkNextStart();
+    const session = new PiSession(makeOptions([]));
+    const switchTo = vi.spyOn(session as unknown as { switchToResumeTarget: (id: string) => Promise<void> }, 'switchToResumeTarget')
+      .mockResolvedValue(undefined);
+    const starting = session.initializeEarly();
+    await tick();
+
+    session.setResumeSession('sess-late');
+    gate.release();
+    await starting;
+    await session.whenReplaced();
+
+    expect(switchTo).toHaveBeenCalledWith('sess-late');
+    await session.dispose();
+  });
+
   it('whenReplaced() rejects when the replacement threw — the old session is still installed', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();

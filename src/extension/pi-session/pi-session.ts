@@ -26,6 +26,7 @@ import {
 import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
+import { perfSpan, timed } from "../perf";
 import { PiRuntime } from "./pi-runtime";
 import { ownSessionUsage } from "./session-usage";
 import type { FolderRuntime } from "./folder-runtime";
@@ -84,6 +85,8 @@ import {
   resolvePiSessionFile,
   piSessionIdFromFile,
   extractFirstUserMessage,
+  sessionFileMeta,
+  type SessionFileMeta,
   DAMOCLES_USER_RENAMED_ENTRY,
   DAMOCLES_TAG_ENTRY,
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
@@ -328,7 +331,7 @@ export class PiSession implements ChatSession {
     // A panel replaces a disposed session rather than reviving it, so a stale caller must fail here.
     if (this._disposed) return Promise.reject(new Error("PiSession: session was disposed"));
     if (!this.startPromise)
-      this.startPromise = this.start().catch((err) => {
+      this.startPromise = timed("start.total", () => this.start()).catch((err) => {
         this.startPromise = null;
         throw err;
       });
@@ -364,7 +367,9 @@ export class PiSession implements ChatSession {
     let notWiredProviders: string[] = [];
     if (this.options.secrets) {
       const secrets = this.options.secrets;
+      const syncSpan = perfSpan("start.syncProviders");
       ({ notWired: notWiredProviders, timedOut: syncTimedOut } = await piRuntime.syncCustomProviders((key) => secrets.get(key)));
+      syncSpan.end({ timedOut: syncTimedOut });
       this.throwIfDisposedDuringStart();
     }
 
@@ -435,7 +440,8 @@ export class PiSession implements ChatSession {
     this.throwIfDisposedDuringStart();
     if (resumePath && forkResumeId && fork) fork.consumed = true;
     const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir) : pi.SessionManager.create(this.cwd, sessionDir);
-    const runtime = await pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager });
+    const runtime = await timed("start.createRuntime", () =>
+      pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager }), { resumed: resumePath !== null });
     if (this._disposed) {
       // dispose() already ran with no runtime to tear down, so this one is ours to release.
       await runtime.dispose();
@@ -477,6 +483,8 @@ export class PiSession implements ChatSession {
     // resolveInitialModel may have moved the model off the requested one, and the panel has had no
     // account state before this point.
     this.publishAccountInfo();
+    // A resume that landed while the runtime was being built found no runtime to switch.
+    if (this.resumeSessionId && this.resumeSessionId !== resumeTargetId) this.setResumeSession(this.resumeSessionId);
   }
 
   /**
@@ -1524,7 +1532,7 @@ export class PiSession implements ChatSession {
   // ---- session identity / state ------------------------------------------
 
   get currentSessionId(): string | null {
-    // Before start() runs (a resumed/forked panel defers it until the first interaction), report the
+    // Before start() runs (a resumed or forked panel runs it after opening, not at once), report the
     // pending resume/fork target so session-scoped reads (rewind history, open-log, delete) resolve
     // the right session. After start() the live session id equals it.
     return this.runtime?.session.sessionId ?? this.pendingSessionId;
@@ -1669,6 +1677,17 @@ export class PiSession implements ChatSession {
     } catch (err) {
       log("[PiSession] title generation failed: %O", err);
     }
+  }
+
+  /** The file this panel's live session persists to; undefined before a session exists. */
+  liveSessionFile(): string | undefined {
+    return this.runtime?.session.sessionManager.getSessionFile();
+  }
+
+  /** The list metadata of `liveSessionFile()`, from the in-memory manager instead of a re-parse of the file. */
+  storedMetadata(mtimeMs: number): SessionFileMeta | null {
+    const sessionManager = this.runtime?.session.sessionManager;
+    return sessionManager ? sessionFileMeta(sessionManager, mtimeMs) : null;
   }
 
   /**
@@ -2504,8 +2523,8 @@ export class PiSession implements ChatSession {
    * All failures fail soft to `rewindError` (FR-6).
    */
   async rewindFiles(userMessageId: string, option: RewindOption = "code-only", promptContent?: string): Promise<void> {
-    // A resumed-on-open panel defers start() until the first message, so the live session (and its tree
-    // of checkpoint entries) may not exist yet — start it (which opens the resumed file) before rewinding.
+    // A resumed panel may not have run start() yet, so the live session (and its tree of checkpoint
+    // entries) may not exist — start it (which opens the resumed file) before rewinding.
     try {
       await this.ensureStarted();
     } catch (err) {

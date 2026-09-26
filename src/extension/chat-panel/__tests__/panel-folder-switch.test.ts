@@ -260,11 +260,13 @@ describe('switching folder', () => {
     expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
   });
 
-  it('starts the session when the caller claimed nothing, as a restore in the same folder does', async () => {
+  it('starts the session when the caller claimed nothing, except on a restore, which the ready handler starts after the lists', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();
-    await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore', async () => false);
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'user', async () => false);
     expect(sessionOf(panelId).initializeEarly).toHaveBeenCalledTimes(1);
+    await h.manager.switchPanelFolder(panelId, folderKey(A), 'restore', async () => false);
+    expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
   });
 
   it('marks a restore as state only, since the reloaded webview has no conversation to clear', async () => {
@@ -273,7 +275,6 @@ describe('switching folder', () => {
     await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore');
     expect(lastFolderUpdate(host)?.panelFolderKey).toBe(folderKey(B));
     expect(lastFolderUpdate(host)).not.toHaveProperty('switched');
-    expect(sessionOf(panelId).initializeEarly).toHaveBeenCalledTimes(1);
   });
 
   it('re-posts without switching when the panel is already on that folder', async () => {

@@ -1,5 +1,6 @@
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 import type { ChatMessage } from "@shared/types/session";
+import { endReplayIngest } from "@/utils/perf";
 
 export function createStreamingHandlers(): Partial<HandlerRegistry> {
   return {
@@ -138,6 +139,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         const details = resultData.stop_details ?? null;
         streamingStore.addRefusalMessage(details?.explanation ?? null, details?.category ?? null);
       }
+      endReplayIngest();
     },
 
     processing: (msg, ctx) => {

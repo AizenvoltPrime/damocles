@@ -10,7 +10,7 @@ import type { HostInstance } from "../../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 
 vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
-vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { exists: false, get: vi.fn() } }));
+vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
 const MESSAGE = "This conversation is already open in another panel.";
@@ -47,7 +47,7 @@ type Panel = ReturnType<typeof makePanel>;
 function harness(...panels: Panel[]) {
   const sent = new Map<unknown, ExtensionToWebviewMessage[]>(panels.map((p) => [p.host, []]));
   const order: string[] = [];
-  const loadSessionHistory = vi.fn(async (cwd: string, sessionId: string) => { order.push(`load:${cwd}:${sessionId}`); });
+  const loadSessionHistory = vi.fn(async (cwd: string, sessionId: string): Promise<string[]> => { order.push(`load:${cwd}:${sessionId}`); return []; });
   const folderOfSession = new Map<string, FolderTarget>();
   const byId = new Map(panels.map((p) => [p.panelId, p]));
   /** Mirrors PanelManager: a fresh session in the target folder on the same instance. */
@@ -77,7 +77,7 @@ function harness(...panels: Panel[]) {
       sent.get(host)!.push(message);
       order.push(message.type);
     },
-    historyManager: { loadSessionHistory, extractRewindableUserIds: async () => [] },
+    historyManager: { loadSessionHistory },
     storageManager: {
       folderOf: async (id: string) => folderOfSession.get(id),
       getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
@@ -148,6 +148,16 @@ describe("one panel per stored conversation: history open", () => {
     expect(mine.target()).toBe("sess-x");
     expect(h.order).toEqual(["resumeAccepted", "load:/a:sess-x", "sessionStarted", "gate-open"]);
   });
+
+  it("seeds the rewind markers from the ids the replay read, without a second read of the file", async () => {
+    const mine = makePanel("host-1", "sess-mine");
+    const h = harness(mine);
+    h.loadSessionHistory.mockResolvedValueOnce(["u1", "u3"]);
+
+    await h.chat.resumeSession!(resume("sess-x"), mine.ctx);
+
+    expect(mine.session.seedCheckpoints).toHaveBeenCalledWith(["u1", "u3"]);
+  });
 });
 
 describe("one panel per stored conversation: panel restore", () => {
@@ -164,7 +174,7 @@ describe("one panel per stored conversation: panel restore", () => {
     expect(empty).toHaveLength(1);
     expect(h.loadSessionHistory).toHaveBeenCalledTimes(1);
     expect(empty[0]!.session.initializeEarly).toHaveBeenCalledTimes(1);
-    expect(resumed[0]!.session.initializeEarly).not.toHaveBeenCalled();
+    expect(resumed[0]!.session.initializeEarly).toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledWith(MESSAGE);
     // A restore never pulls focus to the other panel.
     expect(first.host.reveal).not.toHaveBeenCalled();

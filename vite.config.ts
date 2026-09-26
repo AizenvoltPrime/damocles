@@ -11,17 +11,20 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1500,
+    // Preload links would be blocked by the webview CSP; each chunk's static imports fetch its dependencies.
+    modulePreload: false,
     rollupOptions: {
       input: resolve(__dirname, 'src/webview/index.html'),
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',
         assetFileNames: 'assets/[name].[ext]',
+        // BOOT_RESOURCES in src/webview/utils/perf.ts lists the entry and these chunk names.
         manualChunks(id) {
           if (id.includes('node_modules')) {
             if (id.includes('shiki')) {
-              if (id.includes('/langs/')) return 'shiki-langs';
-              if (id.includes('/themes/')) return 'shiki-themes';
+              // Left to Rollup, so each grammar and theme is its own lazy chunk.
+              if (id.includes('/langs/') || id.includes('/themes/')) return undefined;
               return 'shiki-core';
             }
             if (id.includes('d3-force') || id.includes('d3-selection') || id.includes('d3-zoom') || id.includes('d3-drag') || id.includes('d3-dispatch') || id.includes('d3-timer') || id.includes('d3-quadtree') || id.includes('d3-transition') || id.includes('d3-color') || id.includes('d3-ease') || id.includes('d3-interpolate')) {

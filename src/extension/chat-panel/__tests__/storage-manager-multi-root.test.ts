@@ -40,6 +40,10 @@ vi.mock('../../pi-session/session-store', async () => {
     listPiSessions: vi.fn(async (cwd: string) => [...(H.store.get(cwd) ?? [])].sort((a, b) => b.timestamp - a.timestamp)),
     getPiSessionMetadata: vi.fn(async (cwd: string, id: string) => H.store.get(cwd)?.find((s) => s.id === id) ?? null),
     getPiSessionMetadataByFile: vi.fn(async (file: string) => findByFile(file)),
+    currentCachedRow: vi.fn(async (): Promise<StoredSession | null | undefined> => undefined),
+    readLiveSessionMetadata: vi.fn(() => undefined),
+    forgetSessionMetadata: vi.fn(),
+    flushSessionMetaCache: vi.fn(),
     piSessionIdFromFile: idFromFile,
     extractPiPromptHistory: vi.fn(async () => ['newest prompt']),
     resolvePiSessionFile: vi.fn(async (cwd: string, id: string) =>
@@ -59,6 +63,7 @@ vi.mock('../../pi-session/checkpoints', async () => {
 
 import { StorageManager } from '../storage-manager';
 import * as store from '../../pi-session/session-store';
+import { log } from '../../logger';
 import { pruneOrphanCheckpointRepos } from '../../pi-session/checkpoints';
 
 H.tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-storage-multi-root-'));
@@ -88,6 +93,7 @@ function harness(initial: FolderTarget[], multiRoot = initial.length >= 2) {
     isMultiRoot: () => multiRoot,
     postMessage: (host, message) => posted.push({ host, message }),
     getPanels: () => panels,
+    liveSession: () => undefined,
   });
   const lastList = (hostId: string) =>
     [...posted].reverse().find((p) => (p.host as { id: string }).id === hostId && p.message.type === 'storedSessions')?.message.sessions;
@@ -292,5 +298,225 @@ describe('StorageManager: live updates per folder', () => {
     await h.manager.addOrUpdateSession('b-1', B.key);
 
     expect(h.posted.length).toBe(before);
+  });
+});
+
+describe('StorageManager: one list load at a time', () => {
+  it('concurrent callers share one load', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    H.store.set(B.fsPath, [session('b-1', 200)]);
+    const { manager } = harness([A, B]);
+
+    const [first, second] = await Promise.all([manager.getStoredSessions(), manager.getStoredSessions(), manager.getPromptHistory(0)]);
+
+    expect(first.sessions.map((s) => s.id)).toEqual(['b-1', 'a-1']);
+    expect(second.sessions).toEqual(first.sessions);
+    expect(vi.mocked(store.listPiSessions).mock.calls).toEqual([[A.fsPath], [B.fsPath]]);
+  });
+
+  it('watcher changes that land during the first load wait for it instead of starting their own', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100), session('a-2', 200)]);
+    const { manager, lastList } = harness([A]);
+    await manager.setupSessionWatcher();
+    const watcher = __watchers[0]!;
+    let release!: () => void;
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return [...(H.store.get(cwd) ?? [])];
+    });
+
+    const listing = manager.getStoredSessions();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    watcher.emitCreate(fileOf(A.fsPath, 'a-1'));
+    watcher.emitCreate(fileOf(A.fsPath, 'a-2'));
+    await vi.waitFor(() => expect(store.getPiSessionMetadataByFile).toHaveBeenCalledTimes(2));
+    release();
+    await listing;
+
+    await vi.waitFor(() => expect(lastList('h1')?.map((s) => s.id)).toEqual(['a-2', 'a-1']));
+    expect(store.listPiSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it('an invalidation during a load discards that load and the next call loads afresh', async () => {
+    H.store.set(A.fsPath, [session('a-old', 100)]);
+    const { manager } = harness([A]);
+    let release!: () => void;
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+      const snapshot = [...(H.store.get(cwd) ?? [])];
+      await new Promise<void>((resolve) => { release = resolve; });
+      return snapshot;
+    });
+
+    const stale = manager.getStoredSessions();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    H.store.set(A.fsPath, [session('a-new', 200)]);
+    manager.invalidateSessionsCache();
+    release();
+
+    expect((await stale).sessions.map((s) => s.id)).toEqual(['a-new']);
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-new']);
+    expect(store.listPiSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it('a change event for a file whose size and mtime match the cached read does nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      H.store.set(A.fsPath, [session('a-1', 100)]);
+      const { manager, posted } = harness([A]);
+      await manager.getStoredSessions();
+      await manager.setupSessionWatcher();
+      vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('a-1', 100));
+      const before = posted.length;
+
+      __watchers[0]!.emitChange(fileOf(A.fsPath, 'a-1'));
+      await vi.runAllTimersAsync();
+
+      expect(store.currentCachedRow).toHaveBeenCalledWith(fileOf(A.fsPath, 'a-1'));
+      expect(store.getPiSessionMetadataByFile).not.toHaveBeenCalled();
+      expect(posted.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a change event whose cached row differs from the list row applies it without reading the file', async () => {
+    vi.useFakeTimers();
+    try {
+      H.store.set(A.fsPath, [session('a-1', 100), session('a-2', 200)]);
+      const { manager, lastList } = harness([A]);
+      await manager.getStoredSessions();
+      await manager.setupSessionWatcher();
+      vi.mocked(store.currentCachedRow).mockResolvedValueOnce(session('a-1', 300, { messageCount: 4 }));
+
+      __watchers[0]!.emitChange(fileOf(A.fsPath, 'a-1'));
+      await vi.runAllTimersAsync();
+
+      expect(lastList('h1')!.map((s) => [s.id, s.messageCount])).toEqual([['a-1', 4], ['a-2', undefined]]);
+      expect(store.getPiSessionMetadataByFile).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a rejected load rejects its callers, and the next call loads afresh', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const { manager } = harness([A]);
+    vi.mocked(store.listPiSessions).mockRejectedValueOnce(new Error('EACCES'));
+
+    await expect(manager.getStoredSessions()).rejects.toThrow('EACCES');
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+
+  it('a caller whose load was overtaken by an invalidation gets the newer load even when the old one rejects', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const { manager } = harness([A]);
+    let fail: (() => void) | undefined;
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async () => {
+      await new Promise<void>((_resolve, reject) => { fail = () => reject(new Error('EACCES')); });
+      return [];
+    });
+
+    const listing = manager.getStoredSessions();
+    await vi.waitFor(() => expect(fail).toBeDefined());
+    manager.invalidateSessionsCache();
+    fail!();
+
+    expect((await listing).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+
+  it('a watcher change whose load rejects is logged, not left unhandled', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const { manager } = harness([A]);
+    await manager.setupSessionWatcher();
+    vi.mocked(store.listPiSessions).mockRejectedValueOnce(new Error('EACCES'));
+
+    __watchers[0]!.emitChange(fileOf(A.fsPath, 'a-1'));
+
+    await vi.waitFor(() => expect(vi.mocked(log).mock.calls.some(([msg]) => String(msg).includes('change upsert failed'))).toBe(true));
+  });
+});
+
+describe('StorageManager: changes that land during a list load', () => {
+  /** Makes the next load snapshot the store as it is now, then wait for `release`. */
+  function gateNextLoad(): { started: () => boolean; release: () => void } {
+    let release: (() => void) | undefined;
+    vi.mocked(store.listPiSessions).mockImplementationOnce(async (cwd: string) => {
+      const snapshot = [...(H.store.get(cwd) ?? [])];
+      await new Promise<void>((resolve) => { release = resolve; });
+      return snapshot;
+    });
+    return { started: () => release !== undefined, release: () => release!() };
+  }
+
+  it('an upsert read before a rename never overwrites the list loaded after it', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100, { customTitle: 'first' })]);
+    const { manager, lastList } = harness([A]);
+    const gate = gateNextLoad();
+    const listing = manager.getStoredSessions();
+    await vi.waitFor(() => expect(gate.started()).toBe(true));
+
+    const upsert = manager.addOrUpdateSession('a-1', A.key);
+    await vi.waitFor(() => expect(store.getPiSessionMetadata).toHaveBeenCalled());
+    H.store.set(A.fsPath, [session('a-1', 100, { customTitle: 'second' })]);
+    manager.invalidateSessionsCache();
+    gate.release();
+    await Promise.all([listing, upsert]);
+
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.customTitle)).toEqual(['second']);
+    expect(lastList('h1')).toBeUndefined();
+  });
+
+  it('an upsert read before a delete does not bring the row back', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100), session('a-2', 200)]);
+    const { manager } = harness([A]);
+    const gate = gateNextLoad();
+    const listing = manager.getStoredSessions();
+    await vi.waitFor(() => expect(gate.started()).toBe(true));
+
+    const upsert = manager.addOrUpdateSession('a-2', A.key);
+    await vi.waitFor(() => expect(store.getPiSessionMetadata).toHaveBeenCalled());
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    manager.invalidateSessionsCache();
+    gate.release();
+    await Promise.all([listing, upsert]);
+
+    expect((await manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+
+  it('a watcher upsert for a folder removed while it waited on the load is dropped', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    const h = harness([A, B]);
+    await h.manager.setupSessionWatcher();
+    const watcherB = __watchers[1]!;
+    const gate = gateNextLoad();
+    const listing = h.manager.getStoredSessions();
+    await vi.waitFor(() => expect(gate.started()).toBe(true));
+
+    H.store.set(B.fsPath, [session('b-new', 500)]);
+    watcherB.emitCreate(fileOf(B.fsPath, 'b-new'));
+    await vi.waitFor(() => expect(store.getPiSessionMetadataByFile).toHaveBeenCalled());
+    h.setFolders([A]);
+    await h.manager.reloadFolders();
+    gate.release();
+    await listing;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.lastList('h1')!.map((s) => s.id)).toEqual(['a-1']);
+    expect((await h.manager.getStoredSessions()).sessions.map((s) => s.id)).toEqual(['a-1']);
+  });
+
+  it('a file deleted during a load is not listed by it', async () => {
+    H.store.set(A.fsPath, [session('a-1', 100), session('a-2', 200)]);
+    const { manager } = harness([A]);
+    await manager.setupSessionWatcher();
+    const gate = gateNextLoad();
+    const listing = manager.getStoredSessions();
+    await vi.waitFor(() => expect(gate.started()).toBe(true));
+
+    H.store.set(A.fsPath, [session('a-1', 100)]);
+    __watchers[0]!.emitDelete(fileOf(A.fsPath, 'a-2'));
+    gate.release();
+
+    expect((await listing).sessions.map((s) => s.id)).toEqual(['a-1']);
   });
 });

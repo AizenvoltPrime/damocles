@@ -20,7 +20,7 @@ vi.mock('../../../../pi-session/session-store', () => ({
 }));
 
 vi.mock('../../../../pi-session/pi-runtime', () => ({
-  PiRuntime: { exists: true, get: () => ({ getSessionMutator: (id: string) => H.mutators.get(id) }) },
+  PiRuntime: { liveSessionMutator: (id: string) => H.mutators.get(id) },
 }));
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));

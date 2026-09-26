@@ -5,11 +5,12 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { log } from '../logger';
+import { timed } from '../perf';
 import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { cacheWarmingSetting, ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { CONTEXT_FILE_CANDIDATES } from './context-files';
 import { assetSources } from '../asset-sources';
-import { renamePiSession } from './session-store';
+import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
@@ -82,9 +83,10 @@ function isInsideDir(file: string, dir: string): boolean {
 /**
  * The live rename/tag surface a panel registers for its open session, so a mutation initiated from any
  * panel routes to the owning panel's live SessionManager rather than a second file-writer that would
- * fork the branch and drop messages (US-012). Satisfied structurally by `PiSession`.
+ * fork the branch and drop messages (US-012). The session list also reads a live session's metadata
+ * from it rather than re-parsing the file. Satisfied structurally by `PiSession`.
  */
-export interface LiveSessionMutator {
+export interface LiveSessionMutator extends LiveSessionMetaSource {
   renameActiveSession(newName: string): Promise<void>;
   setActiveSessionTag(tag: string | null): Promise<void>;
   /** Stop writing to the session because its file is being deleted; rejects if the panel could not
@@ -193,6 +195,11 @@ export class PiRuntime {
     return this._sessionMutators.get(sessionId);
   }
 
+  /** `getSessionMutator` without creating the runtime, which never exists before a panel has started pi. */
+  static liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
+    return PiRuntime._instance?.getSessionMutator(sessionId);
+  }
+
   /** The user-scope MCP manager, or null before `init()`. Panels read tools through their folder's view instead. */
   getUserMcp(): McpClientManager | null {
     return this._userMcp;
@@ -213,7 +220,9 @@ export class PiRuntime {
     const existing = this._folderPromises.get(key);
     if (existing) return existing;
     const created: Promise<FolderRuntime> = this.init().then(() =>
-      this._withProviderSync(() => this._createFolder(cwd, () => this._folderPromises.get(key) === created)),
+      this._withProviderSync(() =>
+        timed('folderRuntime.create', () => this._createFolder(cwd, () => this._folderPromises.get(key) === created)),
+      ),
     );
     this._folderPromises.set(key, created);
     // A failed creation must not stick, so a later request retries; its caller still sees the rejection.
@@ -351,7 +360,7 @@ export class PiRuntime {
   init(): Promise<void> {
     if (this._disposed) return Promise.reject(new Error('PiRuntime has been disposed'));
     if (this._initPromise) return this._initPromise;
-    this._initPromise = this._doInit().catch((err) => {
+    this._initPromise = timed('runtime.init', () => this._doInit()).catch((err) => {
       this._initPromise = null;
       throw err;
     });

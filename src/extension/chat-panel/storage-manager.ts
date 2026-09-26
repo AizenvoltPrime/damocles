@@ -7,17 +7,25 @@ import {
   listPiSessions,
   getPiSessionMetadata,
   getPiSessionMetadataByFile,
+  currentCachedRow,
+  readLiveSessionMetadata,
+  forgetSessionMetadata,
+  flushSessionMetaCache,
   piSessionIdFromFile,
   extractPiPromptHistory,
   resolvePiSessionFile,
+  type LiveSessionMetaSource,
 } from "../pi-session/session-store";
 import { pruneOrphanCheckpointRepos, getCheckpointsBaseDir, getWorkspaceCheckpointDir } from "../pi-session/checkpoints";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { SESSIONS_PAGE_SIZE, type HostInstance, type WebviewHost } from "./types";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import { log } from "../logger";
+import { perfSpan } from "../perf";
 
 const CHANGE_DEBOUNCE_MS = 300;
+/** Upserts run after every write during a turn, so only the slow ones log. */
+const UPSERT_LOG_MIN_MS = 20;
 
 /**
  * A pi session JSONL — excluding `agent-*.jsonl`, which (mirroring the SDK store) are sub-agent
@@ -34,12 +42,23 @@ export interface StorageManagerConfig {
   isMultiRoot: () => boolean;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   getPanels: () => Map<string, HostInstance>;
+  /** The live session holding `sessionId` in this window, or undefined; must never start pi to answer. */
+  liveSession: (sessionId: string) => LiveSessionMetaSource | undefined;
 }
 
 const newestFirst = (a: StoredSession, b: StoredSession): number => b.timestamp - a.timestamp;
 
+function sameRow(a: StoredSession, b: StoredSession): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof StoredSession)[]);
+  return [...keys].every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+}
+
 export class StorageManager {
   private allSessionsCache: StoredSession[] | null = null;
+  /** The one list load in flight; every caller that finds the cache empty shares it. */
+  private sessionsLoad: Promise<StoredSession[]> | null = null;
+  /** Bumped on invalidation, so a load that started before it never fills the cache. */
+  private sessionsGeneration = 0;
   private promptHistoryCache: string[] | null = null;
   private pendingPromptEntries: string[] = [];
   /** Folder key to that folder's session-dir watcher. */
@@ -52,12 +71,14 @@ export class StorageManager {
   private readonly isMultiRoot: StorageManagerConfig["isMultiRoot"];
   private readonly postMessage: StorageManagerConfig["postMessage"];
   private readonly getPanels: StorageManagerConfig["getPanels"];
+  private readonly liveSession: StorageManagerConfig["liveSession"];
 
   constructor(config: StorageManagerConfig) {
     this.folders = config.folders;
     this.isMultiRoot = config.isMultiRoot;
     this.postMessage = config.postMessage;
     this.getPanels = config.getPanels;
+    this.liveSession = config.liveSession;
   }
 
   private openFolder(key: string): FolderTarget | undefined {
@@ -75,9 +96,33 @@ export class StorageManager {
       void this.pruneOrphanCheckpointReposOnce(folder);
       return (await listPiSessions(folder.fsPath)).map((s) => this.stamp(s, folder));
     }));
-    const all = perFolder.flat();
-    this.sessionFolder = new Map(all.map((s) => [s.id, s.workspaceFolder!.key]));
-    return all.sort(newestFirst);
+    return perFolder.flat().sort(newestFirst);
+  }
+
+  /** The cached session list, loading it once when empty. A load overtaken by an invalidation is discarded and redone. */
+  private async ensureSessionsLoaded(): Promise<StoredSession[]> {
+    while (!this.allSessionsCache) {
+      const generation = this.sessionsGeneration;
+      if (!this.sessionsLoad) {
+        const load = this.loadAllSessions().finally(() => {
+          if (this.sessionsLoad === load) this.sessionsLoad = null;
+        });
+        this.sessionsLoad = load;
+      }
+      let sessions: StoredSession[];
+      try {
+        sessions = await this.sessionsLoad;
+      } catch (err) {
+        if (generation !== this.sessionsGeneration) continue;
+        throw err;
+      }
+      if (generation !== this.sessionsGeneration) continue;
+      if (!this.allSessionsCache) {
+        this.allSessionsCache = sessions;
+        this.sessionFolder = new Map(sessions.map((s) => [s.id, s.workspaceFolder!.key]));
+      }
+    }
+    return this.allSessionsCache;
   }
 
   /**
@@ -133,17 +178,14 @@ export class StorageManager {
     limit: number = SESSIONS_PAGE_SIZE,
     selectedSessionId?: string
   ): Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }> {
-    if (!this.allSessionsCache) {
-      this.allSessionsCache = await this.loadAllSessions();
-    }
-
-    const total = this.allSessionsCache.length;
-    const sessions = this.allSessionsCache.slice(offset, offset + limit);
+    const all = await this.ensureSessionsLoaded();
+    const total = all.length;
+    const sessions = all.slice(offset, offset + limit);
     const hasMore = offset + limit < total;
     const nextOffset = offset + sessions.length;
 
     if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
-      const selectedSession = this.allSessionsCache.find((s) => s.id === selectedSessionId);
+      const selectedSession = all.find((s) => s.id === selectedSessionId);
       if (selectedSession) {
         sessions.push(selectedSession);
       }
@@ -157,9 +199,7 @@ export class StorageManager {
     offset: number = 0,
     selectedSessionId?: string
   ): Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }> {
-    if (!this.allSessionsCache) {
-      this.allSessionsCache = await this.loadAllSessions();
-    }
+    const all = await this.ensureSessionsLoaded();
 
     if (!query.trim()) {
       return this.getStoredSessions(offset, SESSIONS_PAGE_SIZE, selectedSessionId);
@@ -168,7 +208,7 @@ export class StorageManager {
     const normalizedQuery = query.toLowerCase().trim();
     // Sessions carry a visible folder label only with two or more folders open; otherwise every one would match.
     const matchFolder = this.isMultiRoot();
-    const allMatches = this.allSessionsCache.filter((session) => {
+    const allMatches = all.filter((session) => {
       const displayName = session.customTitle || session.aiTitle || session.preview;
       return displayName.toLowerCase().includes(normalizedQuery)
         || session.tag?.toLowerCase().includes(normalizedQuery)
@@ -212,12 +252,14 @@ export class StorageManager {
     for (const key of this.prunedFolders) if (!open.has(key)) this.prunedFolders.delete(key);
     this.invalidateSessionsCache();
     await this.setupSessionWatcher();
-    this.allSessionsCache = await this.loadAllSessions();
+    await this.ensureSessionsLoaded();
     this.pushSessionsToAllPanels();
   }
 
   invalidateSessionsCache(): void {
     this.allSessionsCache = null;
+    this.sessionsLoad = null;
+    this.sessionsGeneration++;
     this.promptHistoryCache = null;
   }
 
@@ -236,21 +278,22 @@ export class StorageManager {
   async addOrUpdateSession(sessionId: string, folderKey: string): Promise<void> {
     const folder = this.openFolder(folderKey);
     if (!folder) return;
-    const metadata = await getPiSessionMetadata(folder.fsPath, sessionId);
-    if (!metadata) return;
-    this.sessionFolder.set(sessionId, folder.key);
-    await this.upsertSessionInCache(this.stamp(metadata, folder));
+    const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
+    const generation = this.sessionsGeneration;
+    const live = this.liveMetadata(sessionId);
+    const source = live !== undefined ? "live" : "file";
+    const metadata = live !== undefined ? live : await getPiSessionMetadata(folder.fsPath, sessionId);
+    const applied = metadata ? await this.upsertSessionInCache(metadata, folderKey, generation) : false;
+    span.end({ source, applied });
   }
 
   async getPromptHistory(
     offset: number = 0
   ): Promise<{ history: string[]; hasMore: boolean }> {
-    if (!this.allSessionsCache) {
-      this.allSessionsCache = await this.loadAllSessions();
-    }
+    const all = await this.ensureSessionsLoaded();
 
     if (!this.promptHistoryCache) {
-      const allHistory = await extractPiPromptHistory(this.folders().map((t) => t.fsPath), this.allSessionsCache);
+      const allHistory = await extractPiPromptHistory(this.folders().map((t) => t.fsPath), all);
       const diskSet = new Set(allHistory);
       const uniquePending = this.pendingPromptEntries.filter((e) => !diskSet.has(e));
       this.promptHistoryCache = [...uniquePending, ...allHistory];
@@ -288,7 +331,9 @@ export class StorageManager {
     const pattern = new vscode.RelativePattern(vscode.Uri.file(sessionDir), "*.jsonl");
     const key = folder.key;
     const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-    watcher.onDidCreate((uri) => this.handleSessionFileCreated(uri, key));
+    watcher.onDidCreate((uri) => {
+      this.handleSessionFileCreated(uri, key).catch((err) => log("[StorageManager] session file create upsert failed for %s: %O", uri.fsPath, err));
+    });
     watcher.onDidChange((uri) => this.handleSessionFileChanged(uri, key));
     watcher.onDidDelete((uri) => this.handleSessionFileDeleted(uri));
     this.sessionWatchers.set(key, watcher);
@@ -332,6 +377,7 @@ export class StorageManager {
       clearTimeout(timer);
     }
     this.pendingChangeTimers.clear();
+    flushSessionMetaCache();
   }
 
   private async handleSessionFileCreated(uri: vscode.Uri, folderKey: string): Promise<void> {
@@ -342,19 +388,39 @@ export class StorageManager {
     return this.handlePiSessionFileChanged(uri, folderKey);
   }
 
-  private async upsertSessionInCache(metadata: StoredSession): Promise<void> {
-    if (!this.allSessionsCache) {
-      this.allSessionsCache = await this.loadAllSessions();
+  /** A live session's metadata from its in-memory manager, or undefined when no live session here holds the file. */
+  private liveMetadata(sessionId: string, filePath?: string): StoredSession | null | undefined {
+    const source = this.liveSession(sessionId);
+    return source ? readLiveSessionMetadata(source, sessionId, filePath) : undefined;
+  }
+
+  /**
+   * Applied after the load too, because a shared load may have read the file before this change. Dropped
+   * when the list was invalidated after `generation` (the list loaded since then read the file after the
+   * metadata was) or the folder closed. Returns whether the row was applied.
+   */
+  private async upsertSessionInCache(
+    metadata: StoredSession,
+    folderKey: string,
+    generation: number,
+    options?: { ifChanged?: boolean },
+  ): Promise<boolean> {
+    if (generation !== this.sessionsGeneration || !this.openFolder(folderKey)) return false;
+    const all = await this.ensureSessionsLoaded();
+    const folder = this.openFolder(folderKey);
+    if (generation !== this.sessionsGeneration || !folder) return false;
+    this.sessionFolder.set(metadata.id, folder.key);
+    const row = this.stamp(metadata, folder);
+    const existingIndex = all.findIndex((s) => s.id === row.id);
+    if (existingIndex >= 0) {
+      if (options?.ifChanged && sameRow(all[existingIndex]!, row)) return false;
+      all[existingIndex] = row;
     } else {
-      const existingIndex = this.allSessionsCache.findIndex((s) => s.id === metadata.id);
-      if (existingIndex >= 0) {
-        this.allSessionsCache[existingIndex] = metadata;
-      } else {
-        this.allSessionsCache.push(metadata);
-      }
-      this.allSessionsCache.sort(newestFirst);
+      all.push(row);
     }
+    all.sort(newestFirst);
     this.pushSessionsToAllPanels();
+    return true;
   }
 
   private handleSessionFileDeleted(uri: vscode.Uri): void {
@@ -372,13 +438,24 @@ export class StorageManager {
     await this.upsertFromFile(uri.fsPath, folderKey);
   }
 
-  /** Dropped when the folder left the workspace while the read was pending. */
+  /**
+   * When the file's size and mtime match the cached read, the cached row is applied and the file is not
+   * read: on Windows, reading a file can update its last-access time, which `fs.watch` reports as a
+   * change, so the list's own reads would otherwise re-trigger it.
+   */
   private async upsertFromFile(filePath: string, folderKey: string): Promise<void> {
-    const metadata = await getPiSessionMetadataByFile(filePath);
-    const folder = this.openFolder(folderKey);
-    if (!metadata || !folder) return;
-    this.sessionFolder.set(metadata.id, folder.key);
-    await this.upsertSessionInCache(this.stamp(metadata, folder));
+    const generation = this.sessionsGeneration;
+    const cached = await currentCachedRow(filePath);
+    if (cached !== undefined) {
+      if (cached) await this.upsertSessionInCache(cached, folderKey, generation, { ifChanged: true });
+      return;
+    }
+    const span = perfSpan("sessions.upsert", { minMs: UPSERT_LOG_MIN_MS });
+    const live = this.liveMetadata(piSessionIdFromFile(filePath), filePath);
+    const source = live !== undefined ? "live" : "file";
+    const metadata = live !== undefined ? live : await getPiSessionMetadataByFile(filePath);
+    const applied = metadata ? await this.upsertSessionInCache(metadata, folderKey, generation) : false;
+    span.end({ source, applied });
   }
 
   private handlePiSessionFileChanged(uri: vscode.Uri, folderKey: string): void {
@@ -388,7 +465,7 @@ export class StorageManager {
     if (existingTimer) clearTimeout(existingTimer);
     const timer = setTimeout(() => {
       this.pendingChangeTimers.delete(key);
-      void this.upsertFromFile(uri.fsPath, folderKey);
+      this.upsertFromFile(uri.fsPath, folderKey).catch((err) => log("[StorageManager] session file change upsert failed for %s: %O", uri.fsPath, err));
     }, CHANGE_DEBOUNCE_MS);
     this.pendingChangeTimers.set(key, timer);
   }
@@ -401,10 +478,15 @@ export class StorageManager {
       clearTimeout(existingTimer);
       this.pendingChangeTimers.delete(key);
     }
+    // Another window's delete, too, leaves the disk cache.
+    forgetSessionMetadata(uri.fsPath);
     const sessionId = piSessionIdFromFile(uri.fsPath);
     this.sessionFolder.delete(sessionId);
     if (this.allSessionsCache) {
       this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
+    } else if (this.sessionsLoad) {
+      // The load in flight may have listed the file before it went.
+      this.invalidateSessionsCache();
     }
     this.pushSessionsToAllPanels();
   }

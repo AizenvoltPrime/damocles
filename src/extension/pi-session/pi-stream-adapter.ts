@@ -12,7 +12,7 @@ import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 import type { TurnState } from './session-state';
 import { usageOfEntry } from '../../shared/usage-accounting';
-import { ownSessionUsage, sessionUsageMessage } from './session-usage';
+import { sessionUsageMessage } from './session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from './context-snapshot';
 
 export interface PiStreamAdapterDeps {
@@ -178,6 +178,9 @@ export class PiStreamAdapter {
    *  inside `prompt()` runs synchronously and starts no run, so it emits no terminal event to settle the
    *  turn — the host uses this to release the spinner itself (see `endTurnWithoutAgentRun`). */
   private _agentRunObserved = false;
+  /** The session this adapter currently serves. A microtask queued for a replaced session checks it
+   *  so it cannot publish or trip the budget on the panel's new conversation. */
+  private _boundSession: AgentSession | null = null;
   private readonly _tools = new Map<string, ToolRecord>();
   /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
   private readonly _outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
@@ -244,7 +247,12 @@ export class PiStreamAdapter {
 
   /** Subscribe the adapter to a pi session; returns the unsubscribe function. */
   subscribe(session: AgentSession): () => void {
-    return session.subscribe((event) => this.handle(session, event));
+    this._boundSession = session;
+    const unsubscribe = session.subscribe((event) => this.handle(session, event));
+    return () => {
+      unsubscribe();
+      if (this._boundSession === session) this._boundSession = null;
+    };
   }
 
   /** Release the adapter's timers. Called only when the owning PiSession dies, never on a session
@@ -434,14 +442,20 @@ export class PiStreamAdapter {
         this.handleAssistantEvent(event.assistantMessageEvent);
         break;
       case 'message_end':
+        if (usageOfEntry({ type: 'message', message: event.message })) {
+          // pi persists the message after notifying listeners, so the spend includes it only from the
+          // next microtask. The one reading feeds both the status bar and the in-flight budget.
+          queueMicrotask(() => {
+            if (this._boundSession !== session) return;
+            this.enforceBudgetInFlight(this.emitSessionUsage(session));
+          });
+        }
         if (event.message.role === 'assistant') {
           this.emitAssistantMessage(event.message.content);
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
           this.maybeEmitThinkingDroppedNotice(event.message);
-          // pi persists the message after notifying listeners, so the spend includes it only from the next microtask.
-          queueMicrotask(() => this.enforceBudgetInFlight(session));
         } else if (event.message.role === 'user' && !this._aborted) {
           // A user message delivered mid-run is a queued injection: the initial prompt lives in the
           // run's initial context and never emits this. Collapse the queued chips now, and if a real
@@ -741,7 +755,7 @@ export class PiStreamAdapter {
    * Emit a transcript cache-miss notice when this just-completed assistant message paid for a
    * significant prompt-cache miss. Wrapped in try/catch because it is purely cosmetic and runs in the
    * message_end hot path: a malformed persisted entry (e.g. missing `usage`) must NOT throw out of the
-   * listener — that would break pi's subscription chain AND skip the caller's enforceBudgetInFlight.
+   * listener — that would break pi's subscription chain.
    * The notice is keyed to the message's own timestamp so its id is stable and it sorts correctly.
    */
   private maybeEmitCacheMissNotice(session: AgentSession, message: AssistantMessage): void {
@@ -775,8 +789,7 @@ export class PiStreamAdapter {
    * Emit a transcript notice when Anthropic dropped thinking blocks from this turn's request. Wrapped in
    * try/catch for the same reason as the cache-miss notice above: a cosmetic notice runs in the
    * message_end hot path and must NOT throw out of the listener, which would break pi's subscription
-   * chain AND skip the caller's enforceBudgetInFlight. The notice is keyed to the message's own
-   * timestamp so its id is stable and it sorts correctly.
+   * chain. The notice is keyed to the message's own timestamp so its id is stable and it sorts correctly.
    */
   private maybeEmitThinkingDroppedNotice(message: AssistantMessage): void {
     try {
@@ -856,10 +869,10 @@ export class PiStreamAdapter {
    * most once per turn (re-armed in `beginTurn`), so every turn is bounded even after the user raises
    * the limit. No-op when no dollar limit applies (subscription/allowance).
    */
-  private enforceBudgetInFlight(session: AgentSession): void {
+  private enforceBudgetInFlight(ownCost: number): void {
     const limit = this.deps.budgetLimit();
     if (limit === null || limit <= 0) return;
-    const spend = ownSessionUsage(session.sessionManager).cost + this._externalCost;
+    const spend = ownCost + this._externalCost;
     if (spend >= limit && !this._budgetExceededEmitted) {
       this._budgetExceededEmitted = true;
       this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });

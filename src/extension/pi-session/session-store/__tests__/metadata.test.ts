@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
-import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, type PiSessionFields } from '../metadata';
+import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, newestUniquePrompts, type PiSessionFields } from '../metadata';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY } from '../constants';
 
 describe('mapPiFieldsToStored', () => {
@@ -156,5 +156,11 @@ describe('computePiSessionFields', () => {
     // Without stripping, the leading `<ide_…` would trip the synthetic-`<` skip and yield '(no messages)'.
     expect(extractFirstUserMessage(entries)).toBe('what day is it');
     expect(computePiSessionFields(header, entries, undefined, 9_999).firstMessage).toBe('what day is it');
+  });
+
+  test('the prompt history keeps a prompt sent with a file open, without its IDE-context prefix', () => {
+    const stored = '<ide_selection>The user selected lines 1-2 of c:\\x.ts.</ide_selection>\nexplain this';
+    const entries = [msg('user', stored, 1_000), msg('assistant', 'ok', 2_000), msg('user', '<system-context> injected', 3_000)];
+    expect(newestUniquePrompts(entries)).toEqual(['explain this']);
   });
 });

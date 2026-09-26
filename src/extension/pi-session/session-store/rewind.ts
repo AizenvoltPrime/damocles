@@ -69,31 +69,16 @@ async function computeLiveRewindDiffs(
   }
 }
 
-/**
- * The pi user-entry ids that have a persisted checkpoint on the active branch — the rewind-eligible
- * set for a resumed session (US-013). A turn is rewindable only if a `damocles-checkpoint` entry
- * references its user entry, so live and replayed eligibility share the same key (the pi entry id,
- * FR-3). Empty for sessions recorded before checkpoints existed.
- */
-export async function getPiRewindableUserIds(cwd: string, sessionId: string): Promise<string[]> {
-  const pi = await initPiLoader();
-  if (!pi) return [];
-  const filePath = await resolvePiSessionFile(cwd, sessionId);
-  if (!filePath) return [];
-  try {
-    const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
-    const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    const ids: string[] = [];
-    const seen = new Set<string>();
-    for (const cp of getCheckpointEntries(branch)) {
-      if (seen.has(cp.userEntryId)) continue;
-      seen.add(cp.userEntryId);
-      ids.push(cp.userEntryId);
-    }
-    return ids;
-  } catch {
-    return [];
+/** The user entry ids a `damocles-checkpoint` entry on `branch` references, first occurrence order. */
+export function rewindableUserIdsOnBranch(branch: readonly unknown[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const cp of getCheckpointEntries(branch)) {
+    if (seen.has(cp.userEntryId)) continue;
+    seen.add(cp.userEntryId);
+    ids.push(cp.userEntryId);
   }
+  return ids;
 }
 
 /**

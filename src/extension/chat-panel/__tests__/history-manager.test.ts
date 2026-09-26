@@ -20,8 +20,8 @@ const H = vi.hoisted(() => ({
 vi.mock('../../pi-session/session-store', () => ({
   loadPiSessionHistory: vi.fn(async (_cwd: string, _sessionId: string, post: (m: ExtensionToWebviewMessage) => void) => {
     for (const m of H.replay) post(m);
+    return ['u1'];
   }),
-  getPiRewindableUserIds: vi.fn(async () => []),
   getPiRewindHistory: vi.fn(async () => []),
   getPiFileCheckpointContent: vi.fn(async () => null),
 }));
@@ -84,10 +84,10 @@ describe('HistoryManager reads the folder it is given', () => {
     const store = await import('../../pi-session/session-store');
     const { manager, host, session } = harness();
 
-    await manager.loadSessionHistory('/work/beta', 's-b', host, session);
-    await manager.extractRewindableUserIds('/work/beta', 's-b');
+    const rewindableIds = await manager.loadSessionHistory('/work/beta', 's-b', host, session);
 
     expect(vi.mocked(store.loadPiSessionHistory).mock.calls.at(-1)?.slice(0, 2)).toEqual(['/work/beta', 's-b']);
-    expect(vi.mocked(store.getPiRewindableUserIds)).toHaveBeenLastCalledWith('/work/beta', 's-b');
+    // The checkpoint ids come from the replay's own read of that folder's file.
+    expect(rewindableIds).toEqual(['u1']);
   });
 });

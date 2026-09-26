@@ -15,6 +15,9 @@ export const SUBCALL_USAGE_LEDGER_PATH: string = path.join(DAMOCLES_USAGE_DIR, "
 /** SQLite cache behind `/stats`, rebuilt incrementally from session files and the ledger. */
 export const USAGE_INDEX_DB_PATH: string = path.join(DAMOCLES_USAGE_DIR, "usage.db");
 
+/** Persistent session-list metadata, one JSON file per pi session dir; a pure cache of the session files. */
+export const SESSION_META_CACHE_DIR: string = path.join(DAMOCLES_HOME_DIR, "cache", "session-meta");
+
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
 

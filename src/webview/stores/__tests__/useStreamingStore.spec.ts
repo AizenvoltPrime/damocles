@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { watch } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
-import { useStreamingStore } from '../useStreamingStore';
+import { buildMessage, buildUserMessage, useStreamingStore } from '../useStreamingStore';
 import { at, defined } from '@/__tests__/helpers';
 
 /**
@@ -138,5 +139,98 @@ describe('useStreamingStore imageCount', () => {
     store.updateToolStatus('t-1', 'completed', { result: 'text' });
 
     expect(firstTool(store)).not.toHaveProperty('imageCount');
+  });
+});
+
+/** A replay posts one message per transcript item; they land in one assignment per animation frame. */
+describe('useStreamingStore replay queue', () => {
+  let frames: Map<number, FrameRequestCallback>;
+  let nextFrame: number;
+
+  beforeEach(() => {
+    frames = new Map();
+    nextFrame = 1;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      frames.set(nextFrame, cb);
+      return nextFrame++;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => void frames.delete(id));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function runFrames(): void {
+    const pending = [...frames.values()];
+    frames.clear();
+    for (const cb of pending) cb(0);
+  }
+
+  function countAssignments(store: ReturnType<typeof useStreamingStore>): { count: number } {
+    const seen = { count: 0 };
+    watch(() => store.messages, () => { seen.count++; }, { flush: 'sync' });
+    return seen;
+  }
+
+  it('lands N queued items in one assignment, in queue order, on the next frame', () => {
+    const store = useStreamingStore();
+    store.addMessage({ role: 'user', content: 'already here', timestamp: 1 });
+    const assignments = countAssignments(store);
+    const queued = Array.from({ length: 5 }, (_, i) => buildMessage({ role: 'assistant', content: `item ${i}`, timestamp: 2 + i, isReplay: true }));
+
+    for (const msg of queued) store.queueReplayMessage(msg);
+
+    expect(store.messages.map((m) => m.content)).toEqual(['already here']);
+    expect(frames.size).toBe(1);
+
+    runFrames();
+
+    expect(assignments.count).toBe(1);
+    expect(store.messages.map((m) => m.content)).toEqual(['already here', ...queued.map((m) => m.content)]);
+    expect(store.messages.slice(1).map((m) => m.id)).toEqual(queued.map((m) => m.id));
+  });
+
+  it('flushes on demand, cancelling the pending frame', () => {
+    const store = useStreamingStore();
+    store.queueReplayMessage(buildUserMessage('hi', true));
+
+    store.flushReplayQueue();
+
+    expect(store.messages.map((m) => m.content)).toEqual(['hi']);
+    expect(frames.size).toBe(0);
+  });
+
+  it('lands queued items ahead of a message added directly', () => {
+    const store = useStreamingStore();
+    store.queueReplayMessage(buildUserMessage('replayed', true));
+
+    store.addErrorMessage('Unknown steer command');
+
+    expect(store.messages.map((m) => m.content)).toEqual(['replayed', 'Unknown steer command']);
+    expect(frames.size).toBe(0);
+  });
+
+  it('patches a tool call that is still queued', () => {
+    const store = useStreamingStore();
+    store.queueReplayMessage(buildMessage({
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      isReplay: true,
+      toolCalls: [{ id: 't-1', name: 'Bash', input: {}, status: 'completed' }],
+    }));
+
+    store.updateToolSummary(['t-1'], 'listed files');
+
+    expect(store.messages[0]?.toolCalls?.[0]?.summary).toBe('listed files');
+  });
+
+  it('$reset discards the queue and its frame', () => {
+    const store = useStreamingStore();
+    store.queueReplayMessage(buildUserMessage('from the previous conversation', true));
+
+    store.$reset();
+    runFrames();
+    store.flushReplayQueue();
+
+    expect(store.messages).toEqual([]);
   });
 });

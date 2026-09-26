@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { IconCheck, IconCopy } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
-import { getHighlighter, getShikiTheme, normalizeLanguage, isLanguageLoaded } from "@/composables/useShikiHighlighter";
+import { getHighlighter, getShikiTheme, normalizeLanguage, isHighlighterReady } from "@/composables/useShikiHighlighter";
 
 const { t } = useI18n();
 
@@ -31,15 +31,15 @@ async function highlight() {
 
   const fallbackHtml = `<pre style="padding:0;margin:0;color:inherit;"><code class="hljs">${escapeHtml(props.code)}</code></pre>`;
 
-  if (!isLanguageLoaded(normalizedLang.value)) {
+  const theme = getShikiTheme();
+  if (!isHighlighterReady(normalizedLang.value, theme)) {
     highlightedHtml.value = fallbackHtml;
   }
 
   try {
-    const highlighter = await getHighlighter(normalizedLang.value);
+    const highlighter = await getHighlighter(normalizedLang.value, theme);
     if (!isMounted.value) return;
 
-    const theme = getShikiTheme();
     const html = highlighter.codeToHtml(props.code, {
       lang: normalizedLang.value,
       theme,

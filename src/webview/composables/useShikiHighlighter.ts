@@ -5,18 +5,12 @@ import {
   type BundledTheme,
   bundledLanguages,
 } from 'shiki';
+import { perfSpan, resourceFields } from '@/utils/perf';
 
 export type ExtendedLanguage = BundledLanguage | 'txt';
 
-const SUPPORTED_THEMES = [
-  'github-dark',
-  'github-light',
-  'solarized-dark',
-  'solarized-light',
-  'nord',
-  'min-dark',
-  'min-light',
-] as const satisfies readonly BundledTheme[];
+type SupportedTheme = Extract<BundledTheme,
+  'github-dark' | 'github-light' | 'solarized-dark' | 'solarized-light' | 'nord' | 'min-dark' | 'min-light'>;
 
 const languageAliases: Record<string, ExtendedLanguage> = {
   text: 'txt',
@@ -80,69 +74,88 @@ export function normalizeLanguage(language: string | undefined): ExtendedLanguag
   return 'txt';
 }
 
-const initialLanguages: BundledLanguage[] = ['shell', 'javascript', 'typescript', 'json', 'html', 'css'];
-
+/** Grammars and themes each load on first use. `loadedThemes` holds only themes the highlighter has. */
 const state: {
-  instance: Highlighter | null;
   initPromise: Promise<Highlighter> | null;
   loadedLanguages: Set<ExtendedLanguage>;
-  pendingLoads: Map<ExtendedLanguage, Promise<void>>;
+  pendingLanguages: Map<ExtendedLanguage, Promise<void>>;
+  loadedThemes: Set<SupportedTheme>;
+  pendingThemes: Map<SupportedTheme, Promise<void>>;
 } = {
-  instance: null,
   initPromise: null,
   loadedLanguages: new Set(['txt']),
-  pendingLoads: new Map(),
+  pendingLanguages: new Map(),
+  loadedThemes: new Set(),
+  pendingThemes: new Map(),
 };
 
-export function isLanguageLoaded(language: string): boolean {
-  return state.loadedLanguages.has(normalizeLanguage(language));
+/** Whether `getHighlighter(language, theme)` would resolve without loading anything. */
+export function isHighlighterReady(language: string, theme: SupportedTheme): boolean {
+  return state.loadedThemes.has(theme) && state.loadedLanguages.has(normalizeLanguage(language));
 }
 
-export async function getHighlighter(language?: string): Promise<Highlighter> {
+function loadOnce<K>(key: K, loaded: Set<K>, pending: Map<K, Promise<void>>, load: () => Promise<void>): Promise<void> {
+  if (loaded.has(key)) return Promise.resolve();
+  let promise = pending.get(key);
+  if (!promise) {
+    promise = load()
+      .then(() => { loaded.add(key); })
+      .finally(() => { pending.delete(key); });
+    pending.set(key, promise);
+  }
+  return promise;
+}
+
+/** A highlighter with `language` and `theme` loaded. */
+export async function getHighlighter(language: string | undefined, theme: SupportedTheme): Promise<Highlighter> {
   const lang = normalizeLanguage(language);
+  const firstHighlightSpan = state.initPromise ? null : perfSpan('shiki.firstHighlight');
+  let initMs: number | undefined;
 
   if (!state.initPromise) {
-    state.initPromise = (async () => {
-      const instance = await createHighlighter({
-        themes: [...SUPPORTED_THEMES],
-        langs: initialLanguages,
-      });
-
-      state.instance = instance;
-      initialLanguages.forEach((l) => state.loadedLanguages.add(l));
-
-      return instance;
-    })();
+    const initStart = performance.now();
+    state.initPromise = createHighlighter({ themes: [theme], langs: [] }).then(
+      (instance) => {
+        initMs = Math.round(performance.now() - initStart);
+        state.loadedThemes.add(theme);
+        return instance;
+      },
+      (error: unknown) => {
+        state.initPromise = null;
+        console.error('[Shiki] Failed to create highlighter:', error);
+        throw error;
+      },
+    );
   }
 
-  const instance = await state.initPromise;
-
-  if (!state.loadedLanguages.has(lang)) {
-    let loadPromise = state.pendingLoads.get(lang);
-
-    if (!loadPromise) {
-      loadPromise = (async () => {
+  try {
+    const instance = await state.initPromise;
+    await Promise.all([
+      loadOnce(lang, state.loadedLanguages, state.pendingLanguages, async () => {
         try {
           await instance.loadLanguage(lang as BundledLanguage);
-          state.loadedLanguages.add(lang);
         } catch (error) {
           console.error(`[Shiki] Failed to load language ${lang}:`, error);
           throw error;
-        } finally {
-          state.pendingLoads.delete(lang);
         }
-      })();
-
-      state.pendingLoads.set(lang, loadPromise);
-    }
-
-    await loadPromise;
+      }),
+      loadOnce(theme, state.loadedThemes, state.pendingThemes, async () => {
+        try {
+          await instance.loadTheme(theme);
+        } catch (error) {
+          console.error(`[Shiki] Failed to load theme ${theme}:`, error);
+          throw error;
+        }
+      }),
+    ]);
+    // Chunk names are the grammar and theme ids (vite.config.ts manualChunks leaves them unnamed).
+    firstHighlightSpan?.end({ lang, theme, init: initMs, ...resourceFields([`${lang}.js`, `${theme}.js`]).fields });
+    return instance;
+  } catch (error) {
+    firstHighlightSpan?.end({ lang, theme, failed: true });
+    throw error;
   }
-
-  return instance;
 }
-
-type SupportedTheme = typeof SUPPORTED_THEMES[number];
 
 export function getShikiTheme(): SupportedTheme {
   const bodyClass = document.body.className.toLowerCase();

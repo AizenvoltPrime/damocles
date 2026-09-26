@@ -4,6 +4,7 @@ import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
 import type { HandlerContext, HandlerRegistry, ScrollBehavior } from "../types";
+import { beginReplayIngest } from "@/utils/perf";
 
 /** Every path that drops the conversation runs this, so a store added here is cleared on all of them. */
 function resetConversationStores(ctx: HandlerContext): void {
@@ -102,6 +103,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
         return { forceScrollToBottom: true };
       }
 
+      beginReplayIngest();
       return {};
     },
 

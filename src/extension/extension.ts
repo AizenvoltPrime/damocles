@@ -3,6 +3,7 @@ import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { restoredWorkspaceFolderKey } from "./chat-panel/panel-manager";
 import { initLogger, log, showLog } from "./logger";
+import { markActivationStart, markSinceActivation, timed } from "./perf";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { PiRuntime } from "./pi-session/pi-runtime";
@@ -141,6 +142,7 @@ function clampEffortToModel(effort: EffortLevel | null, modelId: string): Effort
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  markActivationStart();
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Damocles extension activating...");
@@ -160,7 +162,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.
   setMcpSecretStorage(context.secrets);
 
-  chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
+  chatPanelProvider = timed("activate.provider", () => new ChatPanelProvider(context.extensionUri, context));
 
   // Refresh the pi web-tools active set live when the setting changes — no window reload (only when the
   // pi runtime already exists; otherwise its own init reads the current setting on first use).
@@ -317,6 +319,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   timer.unref?.();
   context.subscriptions.push({ dispose: () => { clearTimeout(initial); clearInterval(timer); } });
 
+  markSinceActivation("activate");
   log("Damocles extension activated");
 }
 

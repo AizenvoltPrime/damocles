@@ -1,23 +1,30 @@
 import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
+import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
 import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
 import { isImageBlock } from "@shared/types/content";
+import { countReplayItem } from "@/utils/perf";
+import { buildMessage, buildSteerChip, buildUserMessage } from "@/stores/useStreamingStore";
+
+/** These append through the streaming store's replay queue; the dispatcher flushes it before any other type. */
+export const QUEUED_REPLAY_TYPES: ReadonlySet<ExtensionToWebviewMessage["type"]> = new Set(["userReplay", "assistantReplay", "errorReplay"]);
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
     userReplay: (msg, ctx) => {
+      countReplayItem();
       if (msg.steerTarget) {
-        ctx.stores.streamingStore.addSteerChip(msg.content, msg.steerTarget, {
+        ctx.stores.streamingStore.queueReplayMessage(buildSteerChip(msg.content, msg.steerTarget, {
           promptIndex: msg.promptIndex,
           isReplay: true,
           images: msg.contentBlocks?.filter(isImageBlock),
-        });
+        }));
         return;
       }
-      ctx.stores.streamingStore.addUserMessage(
+      ctx.stores.streamingStore.queueReplayMessage(buildUserMessage(
         toUserContentBlocks(msg.contentBlocks) ?? msg.content,
         true,
         msg.sdkMessageId,
@@ -25,10 +32,11 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         undefined,
         msg.promptIndex,
         msg.isMidStream,
-      );
+      ));
     },
 
     assistantReplay: (msg, ctx) => {
+      countReplayItem();
       const { uiStore, streamingStore, subagentStore, taskStore, teamStore } = ctx.stores;
 
       if (msg.tools) {
@@ -67,7 +75,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       }
 
       const toolCalls = convertHistoryTools(msg.tools);
-      streamingStore.addMessage({
+      streamingStore.queueReplayMessage(buildMessage({
         role: "assistant",
         content: msg.content,
         ...(msg.thinking !== undefined && { thinking: msg.thinking }),
@@ -75,16 +83,16 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         ...(msg.contentBlocks !== undefined && { contentBlocks: msg.contentBlocks }),
         timestamp: Date.now(),
         isReplay: true,
-      });
+      }));
     },
 
     errorReplay: (msg, ctx) => {
-      ctx.stores.streamingStore.addMessage({
+      ctx.stores.streamingStore.queueReplayMessage(buildMessage({
         role: "error",
         content: msg.content,
         timestamp: Date.now(),
         isReplay: true,
-      });
+      }));
     },
 
     checkpointInfo: (msg, ctx) => {

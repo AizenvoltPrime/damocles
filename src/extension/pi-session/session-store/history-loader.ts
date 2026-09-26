@@ -3,8 +3,8 @@ import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { ContentBlock, HistoryAgentMessage, HistoryToolCall, ImageBlock } from '@shared/types/content';
 import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
+import { approxStringLength, perfDebugEnabled, perfSpan } from '../../perf';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
-import { getCheckpointEntries } from '../checkpoints';
 import { piMessagesToHistoryAgentMessages } from '../subagents/message-mapper';
 import {
   agentInvocationsOnBranch,
@@ -21,6 +21,7 @@ import {
 import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
+import { rewindableUserIdsOnBranch } from './rewind';
 import { extractOriginalInputs } from './original-input';
 import { extractMidStreamEntryIds } from './mid-stream';
 import { isSteerData } from './steer';
@@ -241,6 +242,26 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
   return { messages, usage };
 }
 
+const AGENT_FILE_READ_CONCURRENCY = 8;
+
+/** Each file read once, at most `AGENT_FILE_READ_CONCURRENCY` at a time; a failed read maps to null. */
+async function readAgentFiles(paths: readonly string[]): Promise<Map<string, AgentFile | null>> {
+  const results = new Map<string, AgentFile | null>();
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < paths.length) {
+      const path = paths[next++]!;
+      const file = await readAgentFile(path).catch((err: unknown) => {
+        log('[session-store] reading subagent file %s failed: %O', path, err);
+        return null;
+      });
+      results.set(path, file);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(AGENT_FILE_READ_CONCURRENCY, paths.length) }, worker));
+  return results;
+}
+
 function countToolUses(messages: readonly HistoryAgentMessage[]): number {
   let count = 0;
   for (const msg of messages) {
@@ -262,12 +283,12 @@ async function hydrateSubagentCards(
   sessionId: string,
   branch: readonly SessionEntry[],
   messages: ReplayMessage[],
-): Promise<void> {
+): Promise<number> {
   const invocations = new Map<string, AgentInvocationData>();
   for (const inv of agentInvocationsOnBranch(branch)) {
     if (inv.kind === 'subagent') invocations.set(inv.toolCallId, inv);
   }
-  if (invocations.size === 0) return;
+  if (invocations.size === 0) return 0;
   const injected = injectedAgentResultsOnBranch(branch);
 
   let files: Map<string, string>;
@@ -277,18 +298,16 @@ async function hydrateSubagentCards(
     log('[session-store] indexing subagent files failed for %s: %O', sessionId, err);
     files = new Map();
   }
-  const read = new Map<string, Promise<AgentFile | null>>();
-  const readOnce = (path: string): Promise<AgentFile | null> => {
-    let pending = read.get(path);
-    if (!pending) {
-      pending = readAgentFile(path).catch((err: unknown) => {
-        log('[session-store] reading subagent file %s failed: %O', path, err);
-        return null;
-      });
-      read.set(path, pending);
+  const paths = new Set<string>();
+  for (const msg of messages) {
+    if (msg.kind !== 'assistant') continue;
+    for (const tool of msg.tools) {
+      const inv = tool.name === TOOL_AGENT ? invocations.get(tool.id) : undefined;
+      const path = inv && files.get(inv.id);
+      if (path) paths.add(path);
     }
-    return pending;
-  };
+  }
+  const agentFiles = await readAgentFiles([...paths]);
 
   for (const msg of messages) {
     if (msg.kind !== 'assistant') continue;
@@ -299,7 +318,7 @@ async function hydrateSubagentCards(
       tool.sdkAgentId = inv.id;
       if (inv.resume) tool.agentResumedFrom = inv.id;
       const path = files.get(inv.id);
-      const file = path ? await readOnce(path) : null;
+      const file = path ? (agentFiles.get(path) ?? null) : null;
       const segment = file ? segmentForInvocation(file, inv) : undefined;
       if (file?.launch.kind === 'subagent') {
         const { agentType, description, prompt, background } = file.launch;
@@ -327,6 +346,7 @@ async function hydrateSubagentCards(
       if (resolved.result !== undefined) tool.agentResultText = resolved.result;
     }
   }
+  return invocations.size;
 }
 
 /**
@@ -335,15 +355,17 @@ async function hydrateSubagentCards(
  * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). A
  * `compaction` entry on the branch replays as a historical `compactBoundary` + `compactSummary`, mirroring
  * the live post-compaction view (preceding messages hidden, summary marker shown).
+ * Resolves to the rewindable user entry ids (`rewindableUserIdsOnBranch`), or [] when the file was not read.
  */
 export async function loadPiSessionHistory(
   cwd: string,
   sessionId: string,
   post: (m: ExtensionToWebviewMessage) => void,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<string[]> {
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
-  if (signal?.aborted) return;
+  if (signal?.aborted) return [];
+  const totalSpan = perfSpan('replay.total');
   post({ type: 'sessionCleared' });
 
   // Resolve the webview's replaying state on EVERY terminal path. Without a `done`, a failed/empty
@@ -351,6 +373,8 @@ export async function loadPiSessionHistory(
   // quality bar forbids. Failures additionally surface an `errorReplay` so the user sees the cause.
   const finish = (): void => post({ type: 'done', data: { type: 'result', session_id: sessionId, is_done: true } });
   const fail = (reason: string): void => {
+    // Checked here because every call follows an await, during which a newer replay may have taken the panel.
+    if (signal?.aborted) return;
     post({ type: 'errorReplay', content: reason });
     finish();
   };
@@ -358,46 +382,51 @@ export async function loadPiSessionHistory(
   const pi = await initPiLoader();
   if (!pi) {
     fail('The pi runtime is unavailable, so this session could not be loaded.');
-    return;
+    return [];
   }
+  const resolveSpan = perfSpan('replay.resolve');
   const filePath = await resolvePiSessionFile(cwd, sessionId);
+  resolveSpan.end();
   if (!filePath) {
     fail('This session’s file could not be found — it may have been deleted.');
-    return;
+    return [];
   }
 
   let messages: ReplayMessage[];
   let usage: ContextSnapshot;
   let sessionUsage: SessionUsageMessage;
   let branch: SessionEntry[];
-  const checkpointUserIds: string[] = [];
+  let checkpointUserIds: string[];
   try {
+    const openSpan = perfSpan('replay.open');
     const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
+    openSpan.end();
+    const reconstructSpan = perfSpan('replay.reconstruct');
     const leafId = sm.getLeafId();
     branch = sm.getBranch(leafId ?? undefined);
     ({ messages, usage } = reconstructMessages(branch));
+    reconstructSpan.end({ entries: branch.length, items: messages.length });
+    const usageSpan = perfSpan('replay.usage');
     sessionUsage = sessionUsageMessage(sm);
-    // Re-surface checkpoints so resumed turns are immediately rewindable, on EVERY resume path (the
-    // `ready` auto-resume defers the live session — and its hydrate — until the first message). The
-    // userEntryId is the same pi entry id used as `userReplay.sdkMessageId`, so the webview links them.
-    const seen = new Set<string>();
-    for (const cp of getCheckpointEntries(branch)) {
-      if (!seen.has(cp.userEntryId)) {
-        seen.add(cp.userEntryId);
-        checkpointUserIds.push(cp.userEntryId);
-      }
-    }
+    usageSpan.end();
+    // Read from the file on every resume path, so replayed turns are rewindable without waiting on the live
+    // session. The userEntryId is the same pi entry id used as `userReplay.sdkMessageId`, so the webview links them.
+    checkpointUserIds = rewindableUserIdsOnBranch(branch);
   } catch (err) {
     log('[session-store] loadPiSessionHistory failed for %s: %O', sessionId, err);
     fail(`Failed to load this session: ${err instanceof Error ? err.message : String(err)}`);
-    return;
+    return [];
   }
   // A newer replay superseded us mid-load; stop silently (it owns the panel and emits its own done).
-  if (signal?.aborted) return;
+  if (signal?.aborted) return checkpointUserIds;
 
-  await hydrateSubagentCards(cwd, sessionId, branch, messages);
-  if (signal?.aborted) return;
+  const hydrateSpan = perfSpan('replay.hydrate');
+  const agents = await hydrateSubagentCards(cwd, sessionId, branch, messages);
+  hydrateSpan.end({ agents });
+  if (signal?.aborted) return checkpointUserIds;
 
+  const approxChars = perfDebugEnabled() ? approxStringLength(messages) : undefined;
+  const postSpan = perfSpan('replay.post');
   let promptIndex = 0;
   for (const msg of messages) {
     if (msg.kind === 'user') {
@@ -449,7 +478,8 @@ export async function loadPiSessionHistory(
       });
     }
   }
-  if (signal?.aborted) return;
+  postSpan.end({ items: messages.length, approxChars });
+  if (signal?.aborted) return checkpointUserIds;
 
   post({
     type: 'tokenUsageUpdate',
@@ -462,4 +492,6 @@ export async function loadPiSessionHistory(
     post({ type: 'checkpointInfo', userMessageIds: checkpointUserIds });
   }
   finish();
+  totalSpan.end({ items: messages.length });
+  return checkpointUserIds;
 }

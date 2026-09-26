@@ -173,7 +173,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
     getInitialMessages: (folder) => { initialMessageFolders.push(folder.key); return []; },
     onActivePanelChanged: () => { activePanelChanges.count++; },
     inheritSettingsFromPanel: () => undefined,
-    loadHistory: async () => undefined,
+    loadHistory: async () => [],
     sendFolderState: async (instance) => {
       folderStatePushes.push(instance);
       if (holdFolderState.gate) await holdFolderState.gate;

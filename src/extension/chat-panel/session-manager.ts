@@ -113,7 +113,7 @@ export class SessionManager {
         this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
         void this.setupSessionWatcher(folder.key);
         if (sessionId) {
-          void this.addOrUpdateSession(sessionId, folder.key);
+          this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
           const ms = this.getMemoryService();
           if (ms?.isEnabled) {
             void (async () => {
@@ -127,7 +127,7 @@ export class SessionManager {
       // Refresh the picker/header when session metadata changes out-of-band (e.g. the auto AI title),
       // without re-posting sessionStarted or re-running consolidation.
       onSessionPersisted: (sessionId) => {
-        void this.addOrUpdateSession(sessionId, folder.key);
+        this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
       },
       model: activeModel,
       getDefaultModel: this.getDefaultModel,

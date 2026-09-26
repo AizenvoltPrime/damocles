@@ -2,6 +2,28 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.35.0] - 2026-09-27
+
+### Added
+
+- **The Damocles output channel logs load timings.** Lines starting with `[perf]` give how long each step took when a window opens, a panel restores or you switch conversations: listing conversations, reading the conversation file, starting the agent, and the chat's first paint and first code highlight. A slow start can now be reported with the step that was slow. With `damocles.debug` on, the conversation-load line also estimates the size of what was sent to the chat.
+
+### Changed
+
+- **A reopened conversation shows sooner.** When VS Code restores a panel, its conversation now appears before the conversation list and the up-arrow prompt history load, not after them. The agent, which used to start at the same moment and slow all of this down, now starts once they are shown.
+- **The conversation list loads from a cache.** Damocles keeps each conversation's list entry and prompts in `~/.damocles/cache/session-meta/`, so a new window reads only the conversation files that changed since the last one. The first window after a Damocles update reads them all once.
+- **Code highlighting loads only what it needs.** The first code block used to load every language grammar and color theme, which took seconds. Damocles now loads only the block's language and the current theme.
+- **Switching conversations is faster.** Damocles no longer reads the conversation file a second time to find its rewind points, and a long conversation appears in one pass, not message by message.
+
+### Fixed
+
+- **Opening a window no longer keeps the extension busy re-reading conversations.** On Windows, reading every conversation file for the list could make each file look changed, and each change started another full read of all of them. With hundreds of conversations the extension stayed busy for several seconds after the window opened. During a turn, Damocles also no longer re-reads the conversation's own file after each tool call.
+- **The status bar's token counts and cost update after each response.** The ↓/↑ figures and the ~$ cost changed only when a whole turn ended, so a long turn with many tool calls showed stale figures until it finished. They now update after each model response, when the context meter updates.
+- **A prompt sent with a file open stays in the up-arrow history.** A prompt sent while a file was open or text was selected disappeared from the up-arrow history after a reload.
+- **The conversation list no longer shows stale or deleted conversations.** A conversation renamed or deleted while the list was loading could keep its old title or come back. A deleted conversation could also return as a "(no messages)" row that would not open.
+- **Picking a conversation while a panel starts continues that conversation.** A conversation picked from the history as the panel's agent was starting appeared on screen, but the next prompt went to the previous conversation.
+- **Code highlighting recovers from a failed load.** If the highlighter failed to load, code blocks stayed unhighlighted until the window reloaded. The next code block now tries again.
+
 ## [2.34.0] - 2026-09-26
 
 ### Added
@@ -4181,6 +4203,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.35.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.34.0...v2.35.0
 [2.34.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.33.0...v2.34.0
 [2.33.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.32.0...v2.33.0
 [2.32.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.31.0...v2.32.0

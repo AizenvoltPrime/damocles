@@ -1,4 +1,4 @@
-import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
+import type { SessionEntry, SessionHeader, SessionManager } from '@earendil-works/pi-coding-agent';
 import type { StoredSession } from '@shared/types/session';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 import { extractOriginalInputs } from './original-input';
@@ -121,4 +121,59 @@ export function computePiSessionFields(
     userRenamed,
     tag,
   };
+}
+
+/** The up-arrow prompt history holds at most this many prompts across every session. */
+export const PI_PROMPT_HISTORY_CAP = 500;
+
+/**
+ * The user prompts of an ACTIVE branch, newest first, each kept once and at most `PI_PROMPT_HISTORY_CAP`.
+ * Dropping an older in-session duplicate and the tail past the cap cannot change the merged history,
+ * which walks newest first, skips anything already seen and stops at the cap.
+ */
+export function newestUniquePrompts(branch: readonly SessionEntry[]): string[] {
+  // A user message whose typed slash command was expanded is recorded here as what the user typed
+  // (`/example what is the day`), not the stored expansion (`Hello day is Tuesday`).
+  const originalInputs = extractOriginalInputs(branch);
+  const prompts: string[] = [];
+  for (const entry of branch) {
+    if (entry.type !== 'message') continue;
+    const message = (entry as { message?: PiMessageLike }).message;
+    if (message?.role !== 'user') continue;
+    const text = (originalInputs.get(entry.id) ?? stripIdeContext(extractMessageText(message.content))).trim();
+    if (text && !text.startsWith('<')) prompts.push(text);
+  }
+  const seen = new Set<string>();
+  const newest: string[] = [];
+  for (let i = prompts.length - 1; i >= 0 && newest.length < PI_PROMPT_HISTORY_CAP; i--) {
+    const p = prompts[i]!;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    newest.push(p);
+  }
+  return newest;
+}
+
+/** Persisted by `session-meta-cache.ts`: a change to what fills it must bump `SESSION_META_SCHEMA`. */
+export interface SessionFileMeta {
+  /** `null` when the file has no session header. */
+  stored: StoredSession | null;
+  prompts: string[];
+}
+
+type SessionManagerView = Pick<SessionManager, 'getHeader' | 'getEntries' | 'getBranch' | 'getSessionName'>;
+
+/**
+ * A session's list metadata and prompts, as `SessionManager.open` of its file yields them. The branch
+ * ends at the last entry, which is where `open` puts the leaf; a live manager may have moved its leaf
+ * (a rewind before the next append) without writing, and the file does not show that yet.
+ */
+export function sessionFileMeta(sm: SessionManagerView, mtimeMs: number): SessionFileMeta {
+  const header = sm.getHeader();
+  if (!header) return { stored: null, prompts: [] };
+  const entries = sm.getEntries();
+  const lastId = entries[entries.length - 1]?.id;
+  const branch = lastId === undefined ? [] : sm.getBranch(lastId);
+  const fields = computePiSessionFields(header, branch, sm.getSessionName(), mtimeMs);
+  return { stored: mapPiFieldsToStored(fields), prompts: newestUniquePrompts(branch) };
 }

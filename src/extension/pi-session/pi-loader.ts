@@ -1,4 +1,5 @@
 import { log } from '../logger';
+import { timed } from '../perf';
 
 /**
  * The pi coding-agent harness is pure ESM and uses `import.meta`/`import.meta.resolve`.
@@ -49,7 +50,7 @@ export function initPiLoader(): Promise<PiCodingAgentModule | null> {
     return Promise.resolve(null);
   }
 
-  loadingPromise = import('@earendil-works/pi-coding-agent')
+  loadingPromise = timed('pi.import', () => import('@earendil-works/pi-coding-agent'))
     .then((mod) => {
       cachedModule = mod;
       log('[PiLoader] pi coding-agent loaded (version %s)', mod.VERSION);

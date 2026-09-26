@@ -29,8 +29,16 @@ vi.mock('../reading', () => ({ resolvePiSessionFile: vi.fn(async () => '/fake/se
 vi.mock('../session-dir', () => ({ ensurePiSessionDir: vi.fn(() => hoisted.sessionDir) }));
 vi.mock('../../checkpoints', () => ({ getCheckpointEntries: vi.fn(() => []) }));
 vi.mock('../../../logger', () => ({ log: vi.fn() }));
+vi.mock('../../agent-records', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../agent-records')>();
+  return { ...actual, readAgentFile: vi.fn(actual.readAgentFile) };
+});
 
 import { reconstructMessages, loadPiSessionHistory } from '../history-loader';
+import { resolvePiSessionFile } from '../reading';
+import { getCheckpointEntries } from '../../checkpoints';
+import { getCheckpointEntries as realGetCheckpointEntries } from '../../checkpoints/checkpoint-entry';
+import { readAgentFile } from '../../agent-records';
 import { stripIdeContext } from '../ide-context';
 import {
   DAMOCLES_AGENT_INVOCATION_ENTRY,
@@ -245,6 +253,61 @@ describe('loadPiSessionHistory — mid-conversation system message', () => {
     const replays = posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
     expect(replays.map((r) => r.promptIndex)).toEqual([0, 1]);
     expect(replays.map((r) => r.content)).toEqual(['first prompt', 'second prompt']);
+  });
+});
+
+describe('loadPiSessionHistory — rewindable ids', () => {
+  const checkpoint = (userEntryId: string, turn: number): SessionEntry =>
+    ({
+      id: `cp-${turn}`,
+      type: 'custom',
+      customType: 'damocles-checkpoint',
+      data: { v: 2, kind: 'checkpoint', turnId: `t${turn}`, userEntryId, beforeCommit: 'a', afterCommit: 'b', prompt: 'p', fileCount: 0, fileChanges: [], createdAt: '2026-01-01T00:00:00.000Z' },
+    }) as unknown as SessionEntry;
+
+  beforeEach(() => {
+    vi.mocked(getCheckpointEntries).mockImplementation(realGetCheckpointEntries);
+  });
+  afterEach(() => {
+    vi.mocked(getCheckpointEntries).mockImplementation(() => []);
+    hoisted.branch = [];
+  });
+
+  it('resolves to the rewindable ids on the branch, and posts them', async () => {
+    hoisted.branch = [
+      userMsg('u1', 'one'),
+      assistantMsg('a1', 'r1'),
+      checkpoint('u1', 1),
+      userMsg('u2', 'two'),
+      assistantMsg('a2', 'r2'),
+      checkpoint('u2', 2),
+      checkpoint('u1', 3),
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+
+    const ids = await loadPiSessionHistory('/cwd', 'sess-cp', (m) => posts.push(m));
+
+    expect(ids).toEqual(['u1', 'u2']);
+    expect(posts.find((m) => m.type === 'checkpointInfo')).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1', 'u2'] });
+  });
+
+  it('a replay superseded while it resolved the file posts no error and no done', async () => {
+    const controller = new AbortController();
+    vi.mocked(resolvePiSessionFile).mockImplementationOnce(async () => {
+      controller.abort();
+      return null;
+    });
+    const posts: ExtensionToWebviewMessage[] = [];
+
+    expect(await loadPiSessionHistory('/cwd', 'sess-old', (m) => posts.push(m), controller.signal)).toEqual([]);
+    expect(posts.map((m) => m.type)).toEqual(['sessionCleared']);
+  });
+
+  it('resolves to none when the session file is missing', async () => {
+    hoisted.branch = [userMsg('u1', 'one'), checkpoint('u1', 1)];
+    vi.mocked(resolvePiSessionFile).mockResolvedValueOnce(null);
+
+    expect(await loadPiSessionHistory('/cwd', 'sess-gone', () => {})).toEqual([]);
   });
 });
 
@@ -653,6 +716,84 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     const posts: ExtensionToWebviewMessage[] = [];
     await loadPiSessionHistory('/cwd', SESSION_ID, (m) => posts.push(m));
     expect(JSON.stringify(posts)).not.toContain('These agents were interrupted');
+  });
+
+  it('starts every agent file read before the first one settles, and hydrates each card from its own file', async () => {
+    const statusOnly = (text: string) => [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text }] } },
+      { type: 'custom', id: 's1', parentId: 'm1', timestamp: ts(3), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'completed', result: text } },
+    ];
+    writeAgentFile('agent-a', 'agent-a', statusOnly('found a'));
+    writeAgentFile('agent-b', 'agent-b', statusOnly('found b'));
+    hoisted.branch = [
+      userMsg('u1', 'explore both'),
+      agentCall('a1', 'tc-a'),
+      invocation('agent-a', 'tc-a'),
+      agentCall('a2', 'tc-b'),
+      invocation('agent-b', 'tc-b'),
+    ];
+    const actual = await vi.importActual<typeof import('../../agent-records')>('../../agent-records');
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(readAgentFile).mockImplementation(async (p) => {
+      started.push(p);
+      await gate;
+      return actual.readAgentFile(p);
+    });
+
+    try {
+      const replay = replayedAgentTools();
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      release();
+      const tools = await replay;
+
+      expect(tools.map((t) => [t.sdkAgentId, t.agentStatus, t.agentResultText])).toEqual([
+        ['agent-a', 'completed', 'found a'],
+        ['agent-b', 'completed', 'found b'],
+      ]);
+    } finally {
+      vi.mocked(readAgentFile).mockImplementation(actual.readAgentFile);
+    }
+  });
+
+  it('reads at most eight agent files at once, and hydrates every card in order', async () => {
+    const statusOnly = (text: string) => [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text }] } },
+      { type: 'custom', id: 's1', parentId: 'm1', timestamp: ts(3), customType: DAMOCLES_AGENT_STATUS_ENTRY, data: { status: 'completed', result: text } },
+    ];
+    const ids = Array.from({ length: 10 }, (_, i) => `agent-${i}`);
+    hoisted.branch = [userMsg('u1', 'explore all')];
+    for (const id of ids) {
+      writeAgentFile(id, id, statusOnly(`found ${id}`));
+      hoisted.branch.push(agentCall(`a-${id}`, `tc-${id}`), invocation(id, `tc-${id}`));
+    }
+    const actual = await vi.importActual<typeof import('../../agent-records')>('../../agent-records');
+    let inFlight = 0;
+    let peak = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.mocked(readAgentFile).mockImplementation(async (p) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await gate;
+      inFlight--;
+      return actual.readAgentFile(p);
+    });
+
+    try {
+      const replay = replayedAgentTools();
+      await vi.waitFor(() => expect(inFlight).toBe(8));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(inFlight).toBe(8);
+      release();
+      const tools = await replay;
+
+      expect(peak).toBe(8);
+      expect(tools.map((t) => [t.sdkAgentId, t.agentResultText])).toEqual(ids.map((id) => [id, `found ${id}`]));
+    } finally {
+      vi.mocked(readAgentFile).mockImplementation(actual.readAgentFile);
+    }
   });
 
   it('a session recorded before agent files shows only the parent tool call and result', async () => {

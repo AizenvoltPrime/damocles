@@ -13,6 +13,73 @@ export interface ToolStatusEntry {
   imageCount?: number;
 }
 
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function extractDisplayContent(content: string | UserContentBlock[]): string {
+  if (typeof content === "string") return content;
+  const textBlocks = content.filter((b): b is { type: "text"; text: string } => b.type === "text");
+  const imageCount = content.filter((b) => b.type === "image").length;
+  const textContent = textBlocks.map((b) => b.text).join("\n");
+  if (imageCount > 0 && !textContent) {
+    return `[${imageCount} image${imageCount > 1 ? "s" : ""}]`;
+  }
+  return textContent;
+}
+
+function contentBlocksFromUserContent(content: string | UserContentBlock[]): ContentBlock[] | undefined {
+  if (typeof content === "string") return undefined;
+  return content;
+}
+
+export function buildUserMessage(
+  content: string | UserContentBlock[],
+  isReplay = false,
+  sdkMessageId?: string,
+  isInjected?: boolean,
+  correlationId?: string,
+  promptIndex?: number,
+  isMidStream?: boolean,
+): ChatMessage {
+  const blocks = contentBlocksFromUserContent(content);
+  return {
+    id: generateId(),
+    ...(sdkMessageId !== undefined && { sdkMessageId }),
+    ...(correlationId !== undefined && { correlationId }),
+    role: "user",
+    content: extractDisplayContent(content),
+    ...(blocks !== undefined && { contentBlocks: blocks }),
+    timestamp: Date.now(),
+    isReplay,
+    ...(isInjected !== undefined && { isInjected }),
+    ...(isMidStream === true && { isCombinedQueue: true }),
+    ...(promptIndex !== undefined && { promptIndex }),
+  };
+}
+
+export function buildSteerChip(
+  message: string,
+  steerTarget: ChatMessage['steerTarget'],
+  { promptIndex, isReplay = false, images }: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined } = {},
+): ChatMessage {
+  return {
+    id: generateId(),
+    role: "user",
+    content: message,
+    timestamp: Date.now(),
+    isReplay,
+    isInjected: true,
+    ...(images?.length ? { contentBlocks: images } : {}),
+    ...(steerTarget !== undefined && { steerTarget }),
+    ...(promptIndex !== undefined && { promptIndex }),
+  };
+}
+
+export function buildMessage(message: Omit<ChatMessage, "id">): ChatMessage {
+  return { id: generateId(), ...message };
+}
+
 export const useStreamingStore = defineStore("streaming", () => {
   const messages = ref<ChatMessage[]>([]);
   const streamingMessageId = ref<string | null>(null);
@@ -24,10 +91,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     if (!streamingMessageId.value) return null;
     return messages.value.find((m) => m.id === streamingMessageId.value) ?? null;
   });
-
-  function generateId(): string {
-    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  }
 
   function getStreamingMessageIndex(): number {
     if (!streamingMessageId.value) return -1;
@@ -80,6 +143,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function updateStreamingMessage(updates: Partial<ChatMessage>, sdkMessageId?: string): void {
+    flushReplayQueue();
     let index = -1;
     if (sdkMessageId) {
       index = messages.value.findIndex(m => m.sdkMessageId === sdkMessageId);
@@ -113,6 +177,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function clearQueuedBadges(): void {
+    flushReplayQueue();
     const hasQueued = messages.value.some((m) => m.isQueued);
     if (hasQueued) {
       messages.value = messages.value.map((m) => (m.isQueued ? { ...m, isQueued: false } : m));
@@ -120,6 +185,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function getOrCreateStreamingMessage(sdkMessageId?: string): ChatMessage {
+    flushReplayQueue();
     if (sdkMessageId) {
       const existing = messages.value.find(m => m.sdkMessageId === sdkMessageId);
       if (existing) {
@@ -170,6 +236,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     status: ToolCall["status"],
     options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number; imageCount?: number }
   ): void {
+    flushReplayQueue();
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
       const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
@@ -203,6 +270,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function updateToolMetadata(toolUseId: string, metadata: Record<string, unknown>): void {
+    flushReplayQueue();
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
       const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
@@ -364,25 +432,14 @@ export const useStreamingStore = defineStore("streaming", () => {
     promptIndex?: number,
     isMidStream?: boolean,
   ): ChatMessage {
-    const blocks = contentBlocksFromUserContent(content);
-    const msg: ChatMessage = {
-      id: generateId(),
-      ...(sdkMessageId !== undefined && { sdkMessageId }),
-      ...(correlationId !== undefined && { correlationId }),
-      role: "user",
-      content: extractDisplayContent(content),
-      ...(blocks !== undefined && { contentBlocks: blocks }),
-      timestamp: Date.now(),
-      isReplay,
-      ...(isInjected !== undefined && { isInjected }),
-      ...(isMidStream === true && { isCombinedQueue: true }),
-      ...(promptIndex !== undefined && { promptIndex }),
-    };
+    flushReplayQueue();
+    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream);
     messages.value = [...messages.value, msg];
     return msg;
   }
 
   function addErrorMessage(error: string): ChatMessage {
+    flushReplayQueue();
     const msg: ChatMessage = {
       id: generateId(),
       role: "error",
@@ -396,19 +453,10 @@ export const useStreamingStore = defineStore("streaming", () => {
   function addSteerChip(
     message: string,
     steerTarget: ChatMessage['steerTarget'],
-    { promptIndex, isReplay = false, images }: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined } = {},
+    options: { promptIndex?: number | undefined; isReplay?: boolean; images?: ImageBlock[] | undefined } = {},
   ): ChatMessage {
-    const msg: ChatMessage = {
-      id: generateId(),
-      role: "user",
-      content: message,
-      timestamp: Date.now(),
-      isReplay,
-      isInjected: true,
-      ...(images?.length ? { contentBlocks: images } : {}),
-      ...(steerTarget !== undefined && { steerTarget }),
-      ...(promptIndex !== undefined && { promptIndex }),
-    };
+    flushReplayQueue();
+    const msg = buildSteerChip(message, steerTarget, options);
     messages.value = [...messages.value, msg];
     return msg;
   }
@@ -417,6 +465,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     explanation: string | null,
     category: 'cyber' | 'bio' | null,
   ): ChatMessage {
+    flushReplayQueue();
     const msg: ChatMessage = {
       id: generateId(),
       role: "refusal",
@@ -430,10 +479,12 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function prependMessages(olderMessages: ChatMessage[]): void {
+    flushReplayQueue();
     messages.value = [...olderMessages, ...messages.value];
   }
 
   function truncateFromSdkMessageId(sdkMessageId: string): string | null {
+    flushReplayQueue();
     const index = messages.value.findIndex((m) => m.sdkMessageId === sdkMessageId);
 
     if (index === -1) {
@@ -449,6 +500,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function removeMessageByCorrelationId(correlationId: string): string | null {
+    flushReplayQueue();
     const index = messages.value.findIndex((m) => m.correlationId === correlationId);
     if (index === -1) return null;
 
@@ -459,12 +511,37 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function addMessage(message: Omit<ChatMessage, "id">): ChatMessage {
-    const msg: ChatMessage = { id: generateId(), ...message };
+    flushReplayQueue();
+    const msg = buildMessage(message);
     messages.value = [...messages.value, msg];
     return msg;
   }
 
+  // Replay items land in one batch per frame. Every writer of `messages` flushes this queue first.
+  let replayQueue: ChatMessage[] = [];
+  let replayFrame: number | null = null;
+
+  function queueReplayMessage(msg: ChatMessage): void {
+    replayQueue.push(msg);
+    replayFrame ??= requestAnimationFrame(() => {
+      replayFrame = null;
+      flushReplayQueue();
+    });
+  }
+
+  function flushReplayQueue(): void {
+    if (replayFrame !== null) {
+      cancelAnimationFrame(replayFrame);
+      replayFrame = null;
+    }
+    if (replayQueue.length === 0) return;
+    const queued = replayQueue;
+    replayQueue = [];
+    messages.value = [...messages.value, ...queued];
+  }
+
   function assignSdkIdByCorrelationId(correlationId: string, sdkMessageId: string): void {
+    flushReplayQueue();
     for (let i = messages.value.length - 1; i >= 0; i--) {
       const msg = messages.value[i];
       if (msg && msg.correlationId === correlationId) {
@@ -479,6 +556,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function assignSdkIdToFlushedMessage(queueMessageIds: string[], sdkMessageId: string): void {
+    flushReplayQueue();
     if (queueMessageIds.length === 0) return;
     const primaryId = queueMessageIds[0];
     for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -494,23 +572,8 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
   }
 
-  function extractDisplayContent(content: string | UserContentBlock[]): string {
-    if (typeof content === "string") return content;
-    const textBlocks = content.filter((b): b is { type: "text"; text: string } => b.type === "text");
-    const imageCount = content.filter((b) => b.type === "image").length;
-    const textContent = textBlocks.map((b) => b.text).join("\n");
-    if (imageCount > 0 && !textContent) {
-      return `[${imageCount} image${imageCount > 1 ? "s" : ""}]`;
-    }
-    return textContent;
-  }
-
-  function contentBlocksFromUserContent(content: string | UserContentBlock[]): ContentBlock[] | undefined {
-    if (typeof content === "string") return undefined;
-    return content;
-  }
-
   function addQueuedMessage(message: QueuedMessage): void {
+    flushReplayQueue();
     const blocks = contentBlocksFromUserContent(message.content);
     const chatMessage: ChatMessage = {
       id: message.id,
@@ -526,6 +589,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function markQueueProcessed(messageId: string): void {
+    flushReplayQueue();
     const index = messages.value.findIndex((m) => m.id === messageId);
     const msg = index === -1 ? undefined : messages.value[index];
     if (msg) {
@@ -536,10 +600,12 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function removeQueuedMessage(messageId: string): void {
+    flushReplayQueue();
     messages.value = messages.value.filter((m) => m.id !== messageId);
   }
 
   function combineQueuedMessages(messageIds: string[], combinedContent: string, contentBlocks?: UserContentBlock[]): void {
+    flushReplayQueue();
     const combinedId = messageIds[0];
     if (combinedId === undefined) return;
 
@@ -558,6 +624,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function truncateMessagesBeforeTimestamp(cutoffTimestamp: number): void {
+    flushReplayQueue();
     messages.value = messages.value.filter(msg => msg.timestamp > cutoffTimestamp);
     if (streamingMessageId.value) {
       const stillExists = messages.value.some(m => m.id === streamingMessageId.value);
@@ -584,6 +651,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function clearToolCancelRequested(toolUseId: string): void {
+    flushReplayQueue();
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
       const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
@@ -610,6 +678,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   /** Replaces the first tool call matching `toolUseId` with a patched copy, rebuilding the owning
    *  message so the ref identity changes and dependent computeds re-evaluate. */
   function patchToolCall(toolUseId: string, patch: Partial<ToolCall>): void {
+    flushReplayQueue();
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
       const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
@@ -626,6 +695,9 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function $reset() {
+    if (replayFrame !== null) cancelAnimationFrame(replayFrame);
+    replayFrame = null;
+    replayQueue = [];
     messages.value = [];
     streamingMessageId.value = null;
     toolStatusCache.value = new Map();
@@ -658,6 +730,8 @@ export const useStreamingStore = defineStore("streaming", () => {
     addRefusalMessage,
     prependMessages,
     addMessage,
+    queueReplayMessage,
+    flushReplayQueue,
     truncateFromSdkMessageId,
     removeMessageByCorrelationId,
     assignSdkIdByCorrelationId,

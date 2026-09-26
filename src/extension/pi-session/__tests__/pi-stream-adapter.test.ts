@@ -1054,6 +1054,92 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
   });
 });
 
+describe('PiStreamAdapter per-response billing totals', () => {
+  type SessionUsage = Extract<ExtensionToWebviewMessage, { type: 'sessionUsage' }>;
+  const isSessionUsage = (m: ExtensionToWebviewMessage): m is SessionUsage => m.type === 'sessionUsage';
+  const assistantEnd = { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } };
+  const toolResultEnd = (usage?: unknown) => ({ type: 'message_end', message: { role: 'toolResult', toolCallId: 't1', content: [], ...(usage ? { usage } : {}) } });
+
+  it('publishes the persisted cost after an assistant response, before the turn settles', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let cost = 0.1;
+    const session = fakeSessionWithCost([assistantEnd], () => cost);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    // pi appends the message after notifying listeners, in the same tick.
+    const played = session.play();
+    cost = 0.3;
+    await played;
+
+    const usage = out.filter(isSessionUsage);
+    expect(usage).toHaveLength(1);
+    expect(usage[0]!.usage.costUsd).toBe(0.3);
+    expect(out.some((m) => m.type === 'done')).toBe(false);
+  });
+
+  it('publishes after a tool result only when it carries usage', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const billed = makeAdapter(out);
+    const billedSession = fakeSessionWithCost([toolResultEnd({ input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } })], () => 0.2);
+    billed.subscribe(billedSession as never);
+    await billedSession.play();
+    expect(out.filter(isSessionUsage)).toHaveLength(1);
+
+    const unbilledOut: ExtensionToWebviewMessage[] = [];
+    const unbilled = makeAdapter(unbilledOut);
+    const unbilledSession = fakeSessionWithCost([toolResultEnd()], () => 0.2);
+    unbilled.subscribe(unbilledSession as never);
+    await unbilledSession.play();
+    expect(unbilledOut.filter(isSessionUsage)).toHaveLength(0);
+  });
+
+  it('feeds the status bar and the in-flight budget from one reading', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeBudgetAdapter(out, 1.0, () => undefined);
+    const session = fakeSessionWithCost([assistantEnd], () => 1.2);
+    const getEntries = vi.spyOn(session.sessionManager, 'getEntries');
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    await session.play();
+
+    const usage = out.find(isSessionUsage);
+    const exceeded = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
+    expect(exceeded?.finalSpend).toBe(usage?.usage.costUsd);
+    expect(getEntries).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes nothing for a session unsubscribed before the microtask runs', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    const session = fakeSessionWithCost([assistantEnd], () => 1.2);
+    const unsubscribe = adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    const played = session.play();
+    unsubscribe();
+    await played;
+
+    expect(out.some((m) => m.type === 'sessionUsage' || m.type === 'budgetExceeded')).toBe(false);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('publishes nothing for a session replaced before the microtask runs', async () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    const replaced = fakeSessionWithCost([assistantEnd], () => 1.2);
+    adapter.subscribe(replaced as never);
+    adapter.beginTurn('c');
+    const played = replaced.play();
+    adapter.subscribe(fakeSessionWithCost([], () => 0) as never);
+    await played;
+
+    expect(out.some((m) => m.type === 'sessionUsage' || m.type === 'budgetExceeded')).toBe(false);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+});
+
 describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
   // A prior assistant entry with a large cached prompt (reportedCache true via cacheRead>0),
   // then a message_end whose usage re-bills the whole prompt (cacheRead ~ 0, large input) → a miss.

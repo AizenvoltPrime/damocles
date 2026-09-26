@@ -2,18 +2,10 @@ import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { HostInstance } from "../../types";
 import { log } from "../../../logger";
+import { perfSpan, timed } from "../../../perf";
 import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
-import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
+import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { claimStoredSession, findStoredSessionHolder } from "../../session-ownership";
-
-/**
- * The live mutation surface (rename, tag, delete-detach) for a session open in any panel, or
- * undefined. Routing here when the session is live avoids a second writer forking its branch, and
- * lets a delete stop the writer that owns it. Never spins up pi just to check.
- */
-function liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
-  return PiRuntime.exists ? PiRuntime.get().getSessionMutator(sessionId) : undefined;
-}
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
@@ -28,41 +20,42 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       // from screen. Posted again here, before any state is pushed back, so a reload cannot deadlock a
       // nested agent on a modal that no longer exists.
       ctx.session.onWebviewReady();
-      try {
-        const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.host, {
-          type: "storedSessions",
-          sessions,
-          hasMore,
-          nextOffset,
-          isFirstPage: true,
-        });
-      } catch (err) {
-        log("[MessageRouter] Error fetching sessions:", err);
-      }
+      const total = perfSpan("ready.total");
 
+      // The webview renders the conversation with these, so they precede any replay.
+      const settingsSpan = perfSpan("ready.settings");
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      settingsManager.sendAvailableModels(ctx.session, ctx.host);
       settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
-
-      try {
-        const { history, hasMore } = await storageManager.getPromptHistory(0);
-        postMessage(ctx.host, { type: "promptHistory", history, hasMore });
-      } catch (err) {
-        log("[MessageRouter] Error pre-loading prompt history:", err);
-      }
-
+      settingsSpan.end();
       deps.postWorkspaceFolderState(ctx.panelId);
+
+      // Both parse session files synchronously on this thread, so they run after the replay, never beside it.
+      const postSessionList = async (): Promise<void> => {
+        try {
+          const { sessions, hasMore, nextOffset } = await timed("ready.sessions", () => storageManager.getStoredSessions());
+          postMessage(ctx.host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+        } catch (err) {
+          log("[MessageRouter] Error fetching sessions:", err);
+        }
+      };
+      const postPromptHistory = async (): Promise<void> => {
+        try {
+          const { history, hasMore } = await timed("ready.promptHistory", () => storageManager.getPromptHistory(0));
+          postMessage(ctx.host, { type: "promptHistory", history, hasMore });
+        } catch (err) {
+          log("[MessageRouter] Error pre-loading prompt history:", err);
+        }
+      };
 
       const savedSessionId = msg.type === "ready" ? msg.savedSessionId : undefined;
       const savedFolderKey = msg.type === "ready" ? msg.savedWorkspaceFolderKey : undefined;
       // A saved conversation or folder the host did not open in moves the panel there.
       const sessionFolder = savedSessionId && !findStoredSessionHolder(deps.getPanels(), ctx, savedSessionId)
-        ? await storageManager.folderOf(savedSessionId)
+        ? await timed("ready.folderOf", () => storageManager.folderOf(savedSessionId))
         : undefined;
       const target = sessionFolder
         ?? (savedFolderKey !== undefined ? deps.folderRegistry.resolve(savedFolderKey) : undefined)
@@ -72,7 +65,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         if (!savedSessionId) return false;
         if (claimStoredSession(deps.getPanels(), { panelId: ctx.panelId, session: instance.session }, savedSessionId)) return false;
         try {
-          await deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session);
+          await timed("ready.replay", () =>
+            deps.historyManager.loadSessionHistory(instance.folder.fsPath, savedSessionId, instance.host, instance.session));
           postMessage(instance.host, { type: "sessionStarted", sessionId: savedSessionId });
         } catch (err) {
           if (err instanceof Error && err.name === 'AbortError') return true;
@@ -82,12 +76,21 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         return true;
       };
 
+      let route: "switch" | "restore" | "fresh";
       if (target.key !== ctx.folder.key) {
         // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
         await deps.switchPanelFolder(ctx.panelId, target.key, "restore", resumeSaved);
-        return;
+        route = "switch";
+      } else {
+        route = (await resumeSaved(ctx)) ? "restore" : "fresh";
       }
-      if (!(await resumeSaved(ctx))) await ctx.session.initializeEarly();
+      await postSessionList();
+      await postPromptHistory();
+      total.end({ path: route });
+      // Starting the session builds the pi runtime, folder runtime and project MCP, which block this thread
+      // in long stretches, so it waits until the conversation and the lists are posted.
+      const current = deps.getPanels().get(ctx.panelId)?.session;
+      if (current) void current.initializeEarly().then(() => settingsManager.sendAvailableModels(current, ctx.host));
     },
 
     renameSession: async (msg, ctx) => {
@@ -95,7 +98,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       try {
         // Rename through the live manager when the session is open in any panel — a second file-writer
         // would fork the branch and drop messages. Otherwise use the file-based path.
-        const mutator = liveSessionMutator(msg.sessionId);
+        const mutator = PiRuntime.liveSessionMutator(msg.sessionId);
         if (mutator) {
           await mutator.renameActiveSession(msg.newName);
         } else {
@@ -129,7 +132,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "tagSession") return;
       try {
         // Same anti-fork routing as rename.
-        const mutator = liveSessionMutator(msg.sessionId);
+        const mutator = PiRuntime.liveSessionMutator(msg.sessionId);
         if (mutator) {
           await mutator.setActiveSessionTag(msg.tag);
         } else {
@@ -162,7 +165,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         // Resolved first: an await between the detach and the rm would let another panel claim the session.
         const cwd = await sessionCwd(msg.sessionId, ctx.folder.fsPath);
         const holders = new Set<{ detachFromDeletedSession(): Promise<void> }>();
-        const registered = liveSessionMutator(msg.sessionId);
+        const registered = PiRuntime.liveSessionMutator(msg.sessionId);
         if (registered) holders.add(registered);
         const otherPanel = findStoredSessionHolder(deps.getPanels(), ctx, msg.sessionId);
         if (otherPanel) holders.add(otherPanel.session);

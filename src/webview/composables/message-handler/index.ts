@@ -24,9 +24,55 @@ import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
 import { useExtensionUiStore } from "@/stores/useExtensionUiStore";
 import { createHandlerRegistry } from "./handler-registry";
-import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
+import { QUEUED_REPLAY_TYPES } from "./handlers/history-handlers";
+import { logSinceNavigation } from "@/utils/perf";
+import type { ExtensionToWebviewMessage } from "@shared/types/messages";
+import type { MessageHandlerOptions, HandlerContext, HandlerRegistry, StoreContext } from "./types";
 
 export type { MessageHandlerOptions } from "./types";
+
+/**
+ * Runs each host message through `registry` and scrolls the transcript at most once per animation frame,
+ * so a burst of messages costs one `scrollHeight` layout read.
+ */
+export function createMessageDispatcher(
+  registry: HandlerRegistry,
+  context: HandlerContext,
+): (message: ExtensionToWebviewMessage) => void {
+  const { streamingStore, uiStore } = context.stores;
+  let scrollFrame: number | null = null;
+  let forceScroll = false;
+  let followScroll = false;
+
+  function scrollOnce(): void {
+    scrollFrame = null;
+    const force = forceScroll;
+    const follow = followScroll;
+    forceScroll = false;
+    followScroll = false;
+    streamingStore.flushReplayQueue();
+    void nextTick(() => {
+      const container = context.refs.messageContainerRef.value;
+      // A follow re-checks isAtBottom, so a scroll-up between the message and the frame is kept.
+      if (container && (force || (follow && uiStore.isAtBottom))) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+  }
+
+  return (message) => {
+    // Handlers that read or truncate the transcript must see every replay item that arrived before them.
+    if (!QUEUED_REPLAY_TYPES.has(message.type)) streamingStore.flushReplayQueue();
+    const handler = registry[message.type];
+    const result = handler?.(message as never, context);
+
+    if (result?.skipScroll) return;
+    if (result?.forceScrollToBottom) forceScroll = true;
+    else if (uiStore.isAtBottom) followScroll = true;
+    else return;
+    scrollFrame ??= requestAnimationFrame(scrollOnce);
+  };
+}
 
 export function useMessageHandler(options: MessageHandlerOptions): void {
   const { postMessage, onMessage, setState, getState } = useVSCode();
@@ -90,23 +136,10 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
 
   const registry = createHandlerRegistry();
 
+  const dispatch = createMessageDispatcher(registry, context);
+
   onMounted(() => {
-    onMessage((message) => {
-      const handler = registry[message.type];
-      const result = handler?.(message as never, context);
-
-      const forceScrollToBottom = result?.forceScrollToBottom ?? false;
-      const skipScroll = result?.skipScroll ?? false;
-
-      if (!skipScroll) {
-        nextTick(() => {
-          const container = messageContainerRef.value;
-          if (container && (forceScrollToBottom || uiStore.isAtBottom)) {
-            container.scrollTop = container.scrollHeight;
-          }
-        });
-      }
-    });
+    onMessage(dispatch);
 
     const savedState = getState<{ sessionId?: string; sessionName?: string; workspaceFolderKey?: string }>();
     if (savedState?.sessionId) {
@@ -118,6 +151,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
       ...(savedState?.sessionId !== undefined && { savedSessionId: savedState.sessionId }),
       ...(savedState?.workspaceFolderKey !== undefined && { savedWorkspaceFolderKey: savedState.workspaceFolderKey }),
     });
+    logSinceNavigation("boot.readySent");
     postMessage({ type: "requestVoiceConfig" });
     postMessage({ type: "requestExploreKeyStatus" });
     postMessage({ type: "requestExploreConfig" });

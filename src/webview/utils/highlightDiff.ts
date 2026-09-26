@@ -21,8 +21,8 @@ export async function highlightDiffLines(
 
   try {
     const normalizedLang = normalizeLanguage(language);
-    const highlighter = await getHighlighter(normalizedLang);
     const theme = getShikiTheme();
+    const highlighter = await getHighlighter(normalizedLang, theme);
 
     const contentLines = lines
       .filter((l) => l.type !== 'gap')

@@ -1,13 +1,16 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { createApp } from 'vue';
+import { createApp, ref } from 'vue';
 import { createHandlerRegistry } from '../../handler-registry';
+import { createMessageDispatcher } from '../../index';
 import type { HandlerRegistry, HandlerContext } from '../../types';
 import { i18n } from '@/i18n';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
+import { useUIStore } from '@/stores/useUIStore';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import { beginReplayIngest, endReplayIngest } from '@/utils/perf';
 
 /**
  * The compaction and diagnostic messages crossing the wire into the session store.
@@ -52,6 +55,7 @@ describe('a replayed steer chip', () => {
   it('keeps its images', () => {
     const ctx = context();
     dispatch({ type: 'userReplay', content: 'look', contentBlocks: [PNG], isInjected: true, steerTarget: { agentId: 'a1' }, promptIndex: 0 }, ctx);
+    useStreamingStore().flushReplayQueue();
 
     expect(useStreamingStore().messages.at(-1)).toMatchObject({ content: 'look', isReplay: true, contentBlocks: [PNG], steerTarget: { agentId: 'a1' } });
   });
@@ -201,5 +205,43 @@ describe('what a compaction summary removes from the transcript', () => {
     dispatch({ type: 'compactSummary', summary: 'what the run did so far' }, ctx);
 
     expect(useSessionStore().thinkingDroppedNotices).toHaveLength(1);
+  });
+
+  it('removes the replay items that arrived before the summary', () => {
+    const ctx = {
+      stores: { sessionStore: useSessionStore(), streamingStore: useStreamingStore(), uiStore: useUIStore() },
+      refs: { messageContainerRef: ref(null) },
+    } as unknown as HandlerContext;
+    const deliver = createMessageDispatcher(buildRegistry(), ctx);
+    const now = vi.spyOn(Date, 'now');
+
+    now.mockReturnValue(100);
+    deliver({ type: 'userReplay', content: '/compact', isSynthetic: false, sdkMessageId: 'u1', promptIndex: 0 });
+    deliver({ type: 'assistantReplay', content: 'compacting' });
+    now.mockReturnValue(200);
+    deliver({ type: 'compactBoundary', preTokens: 90_000, trigger: 'manual', timestamp: 150 });
+    deliver({ type: 'compactSummary', summary: 'what the run did so far' });
+    now.mockReturnValue(300);
+    deliver({ type: 'userReplay', content: 'after', isSynthetic: false, sdkMessageId: 'u2', promptIndex: 1 });
+    deliver({ type: 'done', data: { type: 'result', session_id: 's1', is_done: true } });
+    now.mockRestore();
+
+    expect(useStreamingStore().messages.map((m) => m.content)).toEqual(['after']);
+    expect(useSessionStore().compactMarkers[0]!.messageCutoffTimestamp).toBe(100);
+  });
+});
+
+describe('replay ingest count', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('does not count the error a failed load replays', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+
+    beginReplayIngest();
+    dispatch({ type: 'errorReplay', content: 'Failed to load session' }, context());
+    endReplayIngest();
+
+    expect(debug).not.toHaveBeenCalled();
+    debug.mockRestore();
   });
 });

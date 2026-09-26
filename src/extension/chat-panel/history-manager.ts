@@ -1,9 +1,8 @@
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { RewindHistoryItem } from "../../shared/types/session";
 import type { ChatSession } from "../chat-session";
-import { log } from "../logger";
 import type { WebviewHost } from "./types";
-import { loadPiSessionHistory, getPiRewindableUserIds, getPiRewindHistory, getPiFileCheckpointContent } from "../pi-session/session-store";
+import { loadPiSessionHistory, getPiRewindHistory, getPiFileCheckpointContent } from "../pi-session/session-store";
 
 export interface HistoryManagerConfig {
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
@@ -44,21 +43,17 @@ export class HistoryManager {
     return ctrl;
   }
 
-  async loadSessionHistory(cwd: string, sessionId: string, host: WebviewHost, session: ChatSession): Promise<void> {
+  /** Resolves to the session's rewindable user entry ids, read in the same pass as the replay. */
+  async loadSessionHistory(cwd: string, sessionId: string, host: WebviewHost, session: ChatSession): Promise<string[]> {
     const ctrl = this.beginReplay(host);
-    const t0 = Date.now();
 
     // The pi tree-store loader emits sessionCleared itself. The fork-prefix path is unused
     // on pi — a forked panel resumes an already-truncated branched session file (US-013c).
-    await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
+    const rewindableIds = await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
     // The replay contract carries no account state, and a restored panel may never run a turn.
     session.publishAccountInfo();
-    log(`[history] pi full-load ${sessionId} in ${Date.now() - t0}ms`);
-  }
-
-  async extractRewindableUserIds(cwd: string, sessionId: string): Promise<string[]> {
-    return getPiRewindableUserIds(cwd, sessionId);
+    return rewindableIds;
   }
 
   async extractRewindHistory(cwd: string, sessionId: string): Promise<RewindHistoryItem[]> {

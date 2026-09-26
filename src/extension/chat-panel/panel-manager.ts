@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { log } from "../logger";
+import { perfSpan, type PerfSpan } from "../perf";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
@@ -15,7 +16,7 @@ export type FolderSwitchReason = "user" | "resume" | "restore" | "folderRemoved"
 
 /**
  * Runs on the panel's instance inside the folder task, before queued webview messages are delivered.
- * Resolves true when it bound the panel to a stored session, which then starts on the first send.
+ * Resolves true when it bound the panel to a stored session; the switch then leaves starting that session to the caller.
  */
 export type AfterFolderSwitch = (instance: HostInstance) => Promise<boolean>;
 
@@ -24,6 +25,9 @@ export function restoredWorkspaceFolderKey(state: unknown): string | undefined {
   const raw = (state as { workspaceFolderKey?: unknown } | null)?.workspaceFolderKey;
   return typeof raw === "string" ? raw : undefined;
 }
+
+/** Open from the moment a webview's HTML is built until its next `ready`. */
+const htmlToReadySpans = new WeakMap<vscode.Webview, PerfSpan>();
 
 /** Webview messages that arrive while the panel has no usable session wait here, in order. */
 interface MessageGate {
@@ -58,7 +62,7 @@ export interface PanelManagerConfig {
   onActivePanelChanged?: () => void;
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
-  loadHistory: (cwd: string, sessionId: string, host: WebviewHost, session: ChatSession) => Promise<void>;
+  loadHistory: (cwd: string, sessionId: string, host: WebviewHost, session: ChatSession) => Promise<string[]>;
 }
 
 export class PanelManager {
@@ -248,7 +252,11 @@ export class PanelManager {
 
     disposables.push(
       host.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
-        if (message.type === "ready") signalWebviewReady();
+        if (message.type === "ready") {
+          signalWebviewReady();
+          htmlToReadySpans.get(host.webview)?.end();
+          htmlToReadySpans.delete(host.webview);
+        }
         if (gate.open) {
           this.handleWebviewMessage(message, panelId);
         } else {
@@ -548,8 +556,8 @@ export class PanelManager {
       if (!open()) return undefined;
       const claimed = (await afterSwitch?.(instance)) ?? false;
       if (!open()) return undefined;
-      // A claimed stored session starts on its target once the user sends, not now.
-      if (!claimed) await session.initializeEarly();
+      // The `ready` handler starts a restored panel's session after posting its lists; a claimed resume starts at the first send.
+      if (!claimed && reason !== "restore") await session.initializeEarly();
       return open() ? instance : undefined;
     } finally {
       this.openGate(panelId);
@@ -725,7 +733,9 @@ export class PanelManager {
     ];
   }
 
+  /** Starts the `panel.html→ready` span; its result must be what is assigned to `webview.html`. */
   getHtmlContent(webview: vscode.Webview): string {
+    htmlToReadySpans.set(webview, perfSpan("panel.html→ready"));
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.js"));
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.css"));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png"));

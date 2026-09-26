@@ -7,7 +7,7 @@ vi.mock('vscode', () => ({
   l10n: { t: (s: string) => s },
 }));
 vi.mock('../../../../pi-session/session-store', () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
-vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { exists: false, get: vi.fn() } }));
+vi.mock('../../../../pi-session/pi-runtime', () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
 
 /**
@@ -81,24 +81,24 @@ describe('ready handler: restores the panel into the right folder', () => {
   const A = folder('/a');
   const B = folder('/b');
 
-  function makeSession() {
+  function makeSession(order: string[]) {
     return {
       onWebviewReady: vi.fn(),
       getToolStatus: () => ({}),
       holdsSession: () => false,
       setResumeSession: vi.fn(),
-      initializeEarly: vi.fn(async () => undefined),
+      initializeEarly: vi.fn(async () => { order.push('start'); }),
     };
   }
 
   function harness(opts: { sessionFolder?: typeof A; heldElsewhere?: string } = {}) {
-    const session = makeSession();
+    const order: string[] = [];
+    const session = makeSession(order);
     const host = { id: 'host' };
     const instance: { host: unknown; session: ReturnType<typeof makeSession>; folder: typeof A } = { host, session, folder: A };
-    const order: string[] = [];
     const claims: boolean[] = [];
     const switchPanelFolder = vi.fn(async (_panelId: string, key: string, _reason: string, afterSwitch?: (i: unknown) => Promise<boolean>) => {
-      instance.session = makeSession();
+      instance.session = makeSession(order);
       instance.folder = key === B.key ? B : A;
       if (afterSwitch) claims.push(await afterSwitch(instance));
       order.push('gate-open');
@@ -117,8 +117,8 @@ describe('ready handler: restores the panel into the right folder', () => {
       ]),
       historyManager: { loadSessionHistory },
       storageManager: {
-        getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
-        getPromptHistory: async () => ({ history: [], hasMore: false }),
+        getStoredSessions: async () => { order.push('list'); return { sessions: [], hasMore: false, nextOffset: 0 }; },
+        getPromptHistory: async () => { order.push('history'); return { history: [], hasMore: false }; },
         folderOf: vi.fn(async () => opts.sessionFolder),
       },
       settingsManager: {
@@ -145,17 +145,18 @@ describe('ready handler: restores the panel into the right folder', () => {
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-b', savedWorkspaceFolderKey: A.key } as never, h.ctx);
 
     expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B.key, 'restore', expect.any(Function));
-    // Resumed inside the switch, before queued webview messages are let through.
-    expect(h.order).toEqual(['load', 'gate-open']);
+    // Resumed inside the switch, before queued webview messages are let through; started after the lists.
+    expect(h.order).toEqual(['load', 'gate-open', 'list', 'history', 'start']);
     expect(h.instance.session).not.toBe(h.session);
     expect(h.instance.session.setResumeSession).toHaveBeenCalledWith('s-b');
     expect(h.session.setResumeSession).not.toHaveBeenCalled();
     expect(h.loadSessionHistory).toHaveBeenCalledWith('/b', 's-b', h.instance.host, h.instance.session);
-    // Reported as claimed, so the switch leaves the session to start on the first send, as in place.
+    // Reported as claimed, so the switch leaves the start to the handler.
     expect(h.claims).toEqual([true]);
+    expect(h.instance.session.initializeEarly).toHaveBeenCalledTimes(1);
   });
 
-  it('reports no claim when moving without a saved conversation, so the switch starts the session', async () => {
+  it('reports no claim when moving without a saved conversation', async () => {
     const h = harness();
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedWorkspaceFolderKey: B.key } as never, h.ctx);
     expect(h.claims).toEqual([false]);
@@ -166,7 +167,8 @@ describe('ready handler: restores the panel into the right folder', () => {
     await createSessionHandlers(h.deps).ready!({ type: 'ready', savedWorkspaceFolderKey: B.key } as never, h.ctx);
 
     expect(h.switchPanelFolder).toHaveBeenCalledWith('p1', B.key, 'restore', expect.any(Function));
-    // The switch started the new session; the one it replaced is never started.
+    // The new session starts after the lists; the one it replaced is never started.
+    expect(h.order).toEqual(['gate-open', 'list', 'history', 'start']);
     expect(h.session.initializeEarly).not.toHaveBeenCalled();
   });
 
@@ -203,5 +205,71 @@ describe('ready handler: restores the panel into the right folder', () => {
     expect((h.deps.storageManager as unknown as { folderOf: ReturnType<typeof vi.fn> }).folderOf).not.toHaveBeenCalled();
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
     expect(h.session.initializeEarly).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ready handler: paints the conversation before the session-wide lists', () => {
+  function harness() {
+    const order: string[] = [];
+    const session = {
+      onWebviewReady: () => undefined,
+      getToolStatus: () => ({}),
+      holdsSession: () => false,
+      setResumeSession: () => undefined,
+      initializeEarly: async () => { order.push('initializeEarly'); },
+    };
+    const host = { id: 'host' };
+    const folder = { key: '/a', fsPath: '/a' };
+    const panel: { host: unknown; session: unknown; folder: unknown } = { host, session, folder };
+    const deps = {
+      postMessage: (_host: unknown, m: { type: string }) => { if (m.type === 'sessionStarted') order.push('sessionStarted'); },
+      postWorkspaceFolderState: () => undefined,
+      folderRegistry: { resolve: () => undefined },
+      getPanels: () => new Map([['p1', panel]]),
+      historyManager: { loadSessionHistory: async () => { order.push('loadSessionHistory'); } },
+      storageManager: {
+        getStoredSessions: async () => { order.push('getStoredSessions'); return { sessions: [], hasMore: false, nextOffset: 0 }; },
+        getPromptHistory: async () => { order.push('getPromptHistory'); return { history: [], hasMore: false }; },
+        folderOf: async () => undefined,
+      },
+      settingsManager: {
+        sendCurrentSettings: async () => { order.push('sendCurrentSettings'); },
+        sendAvailableModels: (session: { name?: string }) => { order.push(`sendAvailableModels:${session.name ?? 'own'}`); },
+        sendMcpConfig: () => undefined,
+        sendModelForPanel: () => undefined,
+        sendThinkingForPanel: () => undefined,
+      },
+      getLanguagePreference: () => 'en',
+    } as unknown as Parameters<typeof createSessionHandlers>[0];
+    const ctx = { session, host, panelId: 'p1', permissionHandler: {}, folder } as never;
+    return { deps, ctx, order, panel };
+  }
+
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it('replays a restored conversation before listing sessions or prompt history, then starts the session and asks for models', async () => {
+    const h = harness();
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+    await settle();
+    expect(h.order).toEqual(['sendCurrentSettings', 'loadSessionHistory', 'sessionStarted', 'getStoredSessions', 'getPromptHistory', 'initializeEarly', 'sendAvailableModels:own']);
+  });
+
+  it('asks the session the panel holds by then for models', async () => {
+    const h = harness();
+    const deps = h.deps as unknown as { storageManager: { getPromptHistory: () => Promise<unknown> } };
+    deps.storageManager.getPromptHistory = async () => {
+      h.panel.session = { name: 'replacement', initializeEarly: async () => { h.order.push('initializeEarly:replacement'); } };
+      return { history: [], hasMore: false };
+    };
+    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedSessionId: 's-a' } as never, h.ctx);
+    await settle();
+    expect(h.order.slice(-2)).toEqual(['initializeEarly:replacement', 'sendAvailableModels:replacement']);
+  });
+
+  it('posts both lists before starting a fresh panel', async () => {
+    const h = harness();
+    await createSessionHandlers(h.deps).ready!({ type: 'ready' } as never, h.ctx);
+    await settle();
+    expect(h.order).toEqual(['sendCurrentSettings', 'getStoredSessions', 'getPromptHistory', 'initializeEarly', 'sendAvailableModels:own']);
   });
 });

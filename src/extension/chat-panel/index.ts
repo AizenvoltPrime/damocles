@@ -18,12 +18,14 @@ import { SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import { PiRuntime } from "../pi-session/pi-runtime";
+import { setSessionMetaCacheVersion } from "../pi-session/session-store";
 import { WorkspaceFolderRegistry, homeDirectory } from "../workspace-folders/folder-registry";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
 import type { WebviewHost } from "./types";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { log } from "../logger";
+import { perfSpan } from "../perf";
 
 export class ChatPanelProvider {
   private readonly panelManager: PanelManager;
@@ -61,11 +63,14 @@ export class ChatPanelProvider {
       folders: () => this.folderRegistry.targets(),
     });
 
+    // Before the first session list: the persisted list metadata is only valid for the version that wrote it.
+    setSessionMetaCacheVersion(String(context.extension?.packageJSON?.version ?? "unknown"));
     this.storageManager = new StorageManager({
       folders: () => this.folderRegistry.targets(),
       isMultiRoot: () => this.folderRegistry.isMultiRoot,
       postMessage,
       getPanels: () => this.panelManager.getPanels(),
+      liveSession: (sessionId) => PiRuntime.liveSessionMutator(sessionId),
     });
 
     this.historyManager = new HistoryManager({
@@ -228,7 +233,11 @@ export class ChatPanelProvider {
     void this.storageManager.setupSessionWatcher();
 
     // A single-folder window indexes its folder at startup, before any panel targets it.
-    if (!this.folderRegistry.isMultiRoot) this.startCompassFor(this.folderRegistry.defaultTarget().key);
+    if (!this.folderRegistry.isMultiRoot) {
+      const compassSpan = perfSpan("compass.startFor");
+      const compass = this.startCompassFor(this.folderRegistry.defaultTarget().key);
+      compassSpan.end({ enabled: compass?.isEnabled ?? false });
+    }
     this.refreshCompassViews();
 
     this.settingsManager.setOnMcpConfigChange(() => this.refeedMcpPanels());
