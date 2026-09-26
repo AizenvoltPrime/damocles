@@ -47,6 +47,25 @@ describe('piMessagesToHistoryAgentMessages', () => {
     ]);
   });
 
+  it('marks a successful tool result that carries images with imageCount, never a failed or text-only one', () => {
+    const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+    const messages = [
+      { role: 'assistant', content: [
+        { type: 'toolCall', id: 'img', name: 'read', arguments: { path: '/a.png' } },
+        { type: 'toolCall', id: 'text', name: 'read', arguments: { path: '/a.ts' } },
+        { type: 'toolCall', id: 'fail', name: 'read', arguments: { path: '/b.png' } },
+      ] },
+      { role: 'toolResult', toolCallId: 'img', toolName: 'read', content: [{ type: 'text', text: 'Read image file [image/png]' }, png, png] },
+      { role: 'toolResult', toolCallId: 'text', toolName: 'read', content: [{ type: 'text', text: 'code' }] },
+      { role: 'toolResult', toolCallId: 'fail', toolName: 'read', content: [png], isError: true },
+    ];
+    const [img, text, fail] = piMessagesToHistoryAgentMessages(messages)[0]!.contentBlocks;
+    expect(img).toMatchObject({ id: 'img', result: 'Read image file [image/png]', imageCount: 2 });
+    expect(text).not.toHaveProperty('imageCount');
+    expect(fail).not.toHaveProperty('imageCount');
+    expect(JSON.stringify(piMessagesToHistoryAgentMessages(messages))).not.toContain('AAAA');
+  });
+
   it('propagates a failed tool result as isError on the tool_use block', () => {
     const messages = [
       { role: 'user', content: 'run it' },

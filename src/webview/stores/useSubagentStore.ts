@@ -14,7 +14,7 @@ export interface StreamingSubagentMessage {
   isThinkingPhase: boolean;
 }
 
-type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: string };
+type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: string; imageCount?: number };
 
 // Status priority for preventing downgrades (higher = more final)
 const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
@@ -93,6 +93,7 @@ function buildChatMessagesFromHistory(
         contentBlocks.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input } as ToolUseBlock);
         const existing = existingToolStatuses?.get(block.id);
         const result = existing?.result ?? block.result;
+        const imageCount = existing?.result !== undefined ? existing.imageCount : block.imageCount;
         const errorMessage = existing?.errorMessage ?? (block.isError ? block.result : undefined);
         // Both callers hand this a transcript whose run is over, so a block with no recorded result
         // never reached an outcome and a tracked pre-terminal status would spin for the session's life.
@@ -110,6 +111,7 @@ function buildChatMessagesFromHistory(
           ),
           ...(result !== undefined && { result }),
           ...(errorMessage !== undefined && { errorMessage }),
+          ...(imageCount !== undefined && { imageCount }),
           ...(block.metadata !== undefined && { metadata: block.metadata }),
         });
       }
@@ -427,7 +429,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     status: ToolCall['status'],
     result?: string,
     errorMessage?: string,
-    durationMs?: number
+    durationMs?: number,
+    imageCount?: number
   ): boolean {
     const newPriority = STATUS_PRIORITY[status] ?? 0;
 
@@ -443,6 +446,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...(result !== undefined && { result }),
         ...(errorMessage !== undefined && { errorMessage }),
         ...(durationMs !== undefined && { durationMs }),
+        ...(imageCount !== undefined && { imageCount }),
       };
     };
 
@@ -595,6 +599,7 @@ export const useSubagentStore = defineStore('subagent', () => {
           status: resolveCancelledStatus(existing?.status ?? 'pending', existing?.metadata),
           ...(existing?.result !== undefined && { result: existing.result }),
           ...(existing?.errorMessage !== undefined && { errorMessage: existing.errorMessage }),
+          ...(existing?.imageCount !== undefined && { imageCount: existing.imageCount }),
           ...(existing?.metadata !== undefined && { metadata: existing.metadata }),
         };
       });
@@ -741,6 +746,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         status: tc.status,
         ...(tc.result !== undefined && { result: tc.result }),
         ...(tc.errorMessage !== undefined && { errorMessage: tc.errorMessage }),
+        ...(tc.imageCount !== undefined && { imageCount: tc.imageCount }),
       });
     };
     for (const tc of subagent.toolCalls) rememberStatus(tc);

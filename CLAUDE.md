@@ -65,6 +65,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Read the relevant section before changing a subsystem.
 
 - pi is the only engine; never add harness selection. Map pi events onto existing webview shapes in `pi-stream-adapter.ts`; add a message type only for a capability no existing shape can carry, never to mirror a pi event.
+- Tool-result image data never travels in a tool, history, subagent or team message and never sits in a Pinia store. Those carry only `imageCount`; `ToolResultImages.vue` fetches the blocks on demand via `requestToolResultImages`, so base64 never rides every store update or reload payload.
 - `Edit` cannot create files; `Write` is the only creation path.
 - Browser/Compass/Web/MCP tools are DEFERRED, meaning registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
 - The advertised ToolSearch menu must equal the loadable set; report what pi actually activated, and sanitize third-party MCP text.

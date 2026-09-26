@@ -25,7 +25,7 @@ import type { ContentBlock } from '../../../shared/types/content';
 import type { AgentTerminalStatus } from '../agent-records';
 import { TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
-import { joinResultText } from '../tool-result-text';
+import { joinResultText, resultImageCount } from '../tool-result-text';
 import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
 import { runUsageMeter, sameAgentUsage } from '../session-usage';
@@ -205,7 +205,8 @@ export class SubagentStreamBridge {
         if (event.isError) {
           this.emit({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText || 'Tool failed', parentToolUseId, durationMs });
         } else {
-          this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, durationMs });
+          const imageCount = resultImageCount(event.result);
+          this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
           const details = (event.result as { details?: unknown } | undefined)?.details;
           if (details && typeof details === 'object') {
             this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata: normalizeToolDetails(details as Record<string, unknown>) });

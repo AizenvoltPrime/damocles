@@ -142,14 +142,18 @@ export class WorkspaceManager {
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(folder.fsPath, filePath);
 
     const uri = vscode.Uri.file(resolvedPath);
-    const doc = await vscode.workspace.openTextDocument(uri);
-    const editor = await vscode.window.showTextDocument(doc);
-
-    if (line && line > 0) {
-      const position = new vscode.Position(line - 1, 0);
-      editor.selection = new vscode.Selection(position, position);
-      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+    // `vscode.open` shows an error placeholder editor for a missing path instead of rejecting.
+    const { type } = await vscode.workspace.fs.stat(uri);
+    if (type & vscode.FileType.Directory) {
+      // `revealInExplorer` silently does nothing for a folder outside every workspace folder.
+      if (!vscode.workspace.getWorkspaceFolder(uri)) throw new Error(`${resolvedPath} is a folder outside the workspace`);
+      await vscode.commands.executeCommand("revealInExplorer", uri);
+      return;
     }
+    const options: vscode.TextDocumentShowOptions | undefined =
+      line && line > 0 ? { selection: new vscode.Range(line - 1, 0, line - 1, 0) } : undefined;
+    // The default editor for the file type: image preview for images, the text editor for text.
+    await vscode.commands.executeCommand("vscode.open", uri, options);
   }
 
   async handleOpenFile(_host: WebviewHost, filePath: string, line: number | undefined, folder: FolderTarget): Promise<void> {

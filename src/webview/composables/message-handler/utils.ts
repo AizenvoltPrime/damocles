@@ -50,6 +50,7 @@ export function convertHistoryTools(tools: HistoryToolCall[] | undefined): ToolC
       status: resolveCancelledStatus(historyToolStatus(t, denialFeedback), t.metadata),
       ...(t.result !== undefined && { result: t.result }),
       ...(t.isError !== undefined && { isError: t.isError }),
+      ...(t.imageCount !== undefined && { imageCount: t.imageCount }),
       ...(t.metadata !== undefined && { metadata: t.metadata }),
       ...(denialFeedback !== undefined && { feedback: denialFeedback }),
     };

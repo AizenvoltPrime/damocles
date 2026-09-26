@@ -1,14 +1,16 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { defineComponent, h, markRaw, nextTick, ref, type Ref, type VNode } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
-import type { ToolCall } from '@shared/types/session';
+import type { ToolCall, ToolResultOwner } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
 import type { TeamAgent, TeamState } from '@shared/types/team';
 import ToolOverlay from '../ToolOverlay.vue';
+import McpToolOverlay from '../McpToolOverlay.vue';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import SubagentOverlay from '../SubagentOverlay.vue';
+import BackgroundTasksOverlay from '../BackgroundTasksOverlay.vue';
 import MemoryPanel from '../MemoryPanel.vue';
 import OverlayShell from '../OverlayShell.vue';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -55,9 +57,9 @@ function zIndexOf(wrapper: VueWrapper): number {
 const TOOL_CALL: ToolCall = { id: 't-1', name: 'Bash', input: { command: 'ls' }, status: 'completed', result: 'a' };
 const RUNNING_TOOL_CALL: ToolCall = { id: 't-run', name: 'Bash', input: { command: 'sleep 60' }, status: 'running' };
 
-function openToolOverlay(tool: ToolCall = TOOL_CALL): VueWrapper {
+function openToolOverlay(tool: ToolCall = TOOL_CALL, owner?: ToolResultOwner): VueWrapper {
   return track(mount(ToolOverlay, {
-    props: { tool },
+    props: owner ? { tool, owner } : { tool },
     global: { plugins: [i18n], stubs: { LiveOutputPane: true, MarkdownRenderer: true, CodeBlock: true } },
     attachTo: document.body,
   }));
@@ -220,6 +222,23 @@ describe('a tool overlay opened from a subagent overlay', () => {
 
     expect(toolOverlay.emitted('close')).toHaveLength(1);
     expect(subagentOverlay.emitted('close')).toBeUndefined();
+  });
+});
+
+describe('a subagent overlay opened from the background tasks overlay', () => {
+  it('paints above the list and takes Escape, leaving the list open', () => {
+    const tasksOverlay = track(mount(BackgroundTasksOverlay, {
+      global: { plugins: [i18n], stubs: { LoadingSpinner: true } },
+      attachTo: document.body,
+    }));
+    const subagentOverlay = openSubagentOverlay();
+
+    expect(zIndexOf(subagentOverlay)).toBeGreaterThan(zIndexOf(tasksOverlay));
+
+    pressEscape();
+
+    expect(subagentOverlay.emitted('close')).toHaveLength(1);
+    expect(tasksOverlay.emitted('close')).toBeUndefined();
   });
 });
 
@@ -726,5 +745,70 @@ describe('a popup open inside the top overlay', () => {
 
     expect(popupContent().className).toContain('z-50');
     expect(popupContent().style.zIndex).toBe('');
+  });
+});
+
+describe('a tool result that carries images', () => {
+  const api = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
+  const SESSION: ToolResultOwner = { kind: 'session' };
+  const IMAGE_ONLY: ToolCall = { id: 't-shot', name: 'BrowserScreenshot', input: {}, status: 'completed', result: '', imageCount: 1 };
+  let requests: { type: string; requestId: string }[] = [];
+
+  beforeEach(() => {
+    requests = [];
+    vi.spyOn(api, 'postMessage').mockImplementation((message: unknown) => void requests.push(message as { type: string; requestId: string }));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  async function replyWithImage(): Promise<void> {
+    const request = requests.find((r) => r.type === 'requestToolResultImages');
+    if (!request) throw new Error('no image request was sent');
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'toolResultImages', requestId: request.requestId, images: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
+    }));
+    await settle();
+  }
+
+  it('shows the response section for an image-only result instead of "No response"', async () => {
+    const overlay = openToolOverlay(IMAGE_ONLY, SESSION);
+    await settle();
+
+    expect(overlay.text()).not.toContain('No response available');
+    expect(overlay.find('[data-testid="tool-result-images"]').exists()).toBe(true);
+    expect(requests.filter((r) => r.type === 'requestToolResultImages')).toHaveLength(1);
+  });
+
+  it('opens a thumbnail in a lightbox above the overlay, which the first Escape closes and the second closes the overlay', async () => {
+    const overlay = openToolOverlay(IMAGE_ONLY, SESSION);
+    await settle();
+    await replyWithImage();
+
+    await overlay.get('[data-testid="tool-result-images"] button').trigger('click');
+    await settle();
+
+    const backdrop = document.body.querySelector<HTMLElement>('.bg-black\\/80');
+    expect(backdrop).not.toBeNull();
+    expect(Number(backdrop!.style.zIndex)).toBe(zIndexOf(overlay) + 1);
+
+    pressEscape();
+    await settle();
+    expect(document.body.querySelector('.bg-black\\/80')).toBeNull();
+    expect(overlay.emitted('close')).toBeUndefined();
+
+    pressEscape();
+    expect(overlay.emitted('close')).toHaveLength(1);
+  });
+
+  it('renders the thumbnails in the MCP tool overlay too', async () => {
+    const overlay = track(mount(McpToolOverlay, {
+      props: { tool: { ...IMAGE_ONLY, name: 'mcp__shots__capture' }, owner: SESSION },
+      global: { plugins: [i18n], stubs: { MarkdownRenderer: true, CodeBlock: true } },
+      attachTo: document.body,
+    }));
+    await settle();
+    await replyWithImage();
+
+    expect(overlay.text()).not.toContain('No response available');
+    expect(overlay.findAll('[data-testid="tool-result-images"] img')).toHaveLength(1);
   });
 });

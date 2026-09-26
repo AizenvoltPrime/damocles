@@ -198,14 +198,6 @@ export interface ChatMessage {
   steerTarget?: { agentId: string; agentType?: string; description?: string };
 }
 
-export interface McpToolData {
-  name: string;
-  input: Record<string, unknown>;
-  status: string;
-  result?: string;
-  errorMessage?: string;
-}
-
 /**
  * Marks a tool result the user stopped mid-run. Set by the shell cancel wrapper on the result's
  * `details`, which is persisted and re-read on reload, so a reloaded transcript still shows the
@@ -236,7 +228,15 @@ export interface ToolCall {
   liveOutputTruncated?: boolean;
   /** Optimistic webview-owned flag, cleared at terminal status alongside liveOutput. */
   cancelRequested?: boolean;
+  /** Success results only; the images load on demand. */
+  imageCount?: number;
 }
+
+/** Where a tool call's result is stored. */
+export type ToolResultOwner =
+  | { kind: "session" }
+  | { kind: "subagent"; agentId: string }
+  | { kind: "team"; teamId: string; agentId: string };
 
 /** Cumulative usage of the conversation's own entries, plus the context meter's last-request snapshot. */
 export interface SessionStats extends AgentUsageTotals {

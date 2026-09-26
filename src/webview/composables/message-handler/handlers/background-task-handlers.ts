@@ -10,24 +10,8 @@ export function createBackgroundTaskHandlers(): Partial<HandlerRegistry> {
       ctx.stores.backgroundTaskStore.handleTaskStarted(msg.task);
     },
 
-    backgroundTaskProgress: (msg, ctx) => {
-      ctx.stores.backgroundTaskStore.handleTaskProgress(
-        msg.taskId,
-        msg.progressSummary,
-        msg.usage,
-        msg.lastToolName,
-      );
-    },
-
     backgroundTaskCompleted: (msg, ctx) => {
-      const updated = ctx.stores.backgroundTaskStore.handleTaskCompleted(
-        msg.taskId,
-        msg.status,
-        msg.summary,
-        msg.outputFile,
-        msg.usage,
-      );
-      if (updated) {
+      if (ctx.stores.backgroundTaskStore.handleTaskCompleted(msg.taskId, msg.status)) {
         const key = msg.status === 'completed' ? 'taskCompleted' : msg.status === 'failed' ? 'taskFailed' : 'taskStopped';
         toast.info(t(`backgroundTask.${key}`));
       }

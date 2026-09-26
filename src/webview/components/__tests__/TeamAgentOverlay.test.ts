@@ -243,7 +243,7 @@ describe('tool calls inside a team agent overlay', () => {
 
     expect(useUIStore().expandedToolSource).toBe('team');
     expect(useUIStore().expandedToolId).toBe('t-1');
-    expect(defined(useExpandedTool().value).name).toBe('Bash');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Bash');
   });
 });
 

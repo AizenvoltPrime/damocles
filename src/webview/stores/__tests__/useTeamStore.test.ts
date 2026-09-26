@@ -24,7 +24,7 @@ function toolUse(id: string, name: string, input: unknown): TeamAgentContentBloc
 function toolResult(
   id: string,
   content: string,
-  extra?: { is_error?: boolean; metadata?: Record<string, unknown> },
+  extra?: { is_error?: boolean; imageCount?: number; metadata?: Record<string, unknown> },
 ): TeamAgentContentBlock {
   return { type: 'tool_result', tool_use_id: id, content, ...extra };
 }
@@ -130,6 +130,32 @@ describe('useTeamStore.handleAgentToolResult', () => {
     const store = useTeamStore();
     expect(() => store.handleAgentToolResult('nobody', 'tc-1', 'out', false)).not.toThrow();
     expect(store.agentMessages['nobody']).toBeUndefined();
+  });
+});
+
+describe('useTeamStore tool result image count', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('writes the count with a live result, and none for a text-only one', () => {
+    const store = useTeamStore();
+    store.handleAgentAssistant(AGENT, 'msg-1', [toolUse('tc-1', 'BrowserScreenshot', {}), toolUse('tc-2', 'Read', {})], 1);
+    store.handleAgentToolResult(AGENT, 'tc-1', 'shot', false, undefined, 1);
+    store.handleAgentToolResult(AGENT, 'tc-2', 'code', false);
+
+    expect(toolCallById(store, AGENT, 'tc-1').imageCount).toBe(1);
+    expect(toolCallById(store, AGENT, 'tc-2')).not.toHaveProperty('imageCount');
+  });
+
+  it('restores the persisted count on a reopened member', () => {
+    const store = useTeamStore();
+    store.handleAgentDataLoaded(AGENT, [
+      persisted('assistant', toolUse('tc-1', 'BrowserScreenshot', {}), toolUse('tc-2', 'Read', {})),
+      persisted('toolResult', toolResult('tc-1', 'shot', { imageCount: 2 })),
+      persisted('toolResult', toolResult('tc-2', 'code')),
+    ]);
+
+    expect(toolCallById(store, AGENT, 'tc-1').imageCount).toBe(2);
+    expect(toolCallById(store, AGENT, 'tc-2')).not.toHaveProperty('imageCount');
   });
 });
 

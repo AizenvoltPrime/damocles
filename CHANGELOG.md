@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.34.0] - 2026-09-26
+
+### Added
+
+- **Tool results show their images.** The overlay of a tool that returned images, such as a Read of an image file, a browser screenshot or an MCP tool, showed only the result's text, so you could not see what the agent saw. It now shows a thumbnail of each image, in subagent and team tools too and after a reload. Click a thumbnail to view it full size.
+
+### Changed
+
+- **Background Tasks shows the same cards as the chat.** The "N tasks" pill opened its own list and detail view, with status, progress and token figures separate from the subagent's card. It now lists the background subagents' own cards, each with a Stop button while it runs and a Dismiss button once it ends. Clicking a card opens the subagent's view, and Escape returns to the list.
+
+### Fixed
+
+- **Clicking an image path opens the image.** Clicking the path of an image file in a tool card used to show "Could not open file"; it now opens the image preview. Clicking a folder path reveals the folder in the Explorer when it is inside the workspace, and still shows "Could not open file" when it is not.
+- **An MCP result that is a JSON list shows every row.** A JSON array whose objects have a `type` field, such as database rows, lost those rows or read "No response available" in the MCP tool overlay. It now shows the whole array, formatted.
+
 ## [2.33.0] - 2026-09-26
 
 ### Added
@@ -4166,6 +4181,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.34.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.33.0...v2.34.0
 [2.33.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.32.0...v2.33.0
 [2.32.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.31.0...v2.32.0
 [2.31.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.30.0...v2.31.0

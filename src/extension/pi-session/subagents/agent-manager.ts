@@ -58,7 +58,7 @@ import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
 import type { ImageBlock } from '../../../shared/types/content';
-import { agentTotalTokens, emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
+import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -601,7 +601,7 @@ export class AgentManager {
       return;
     }
 
-    if (background) this.emitBackgroundTaskStarted(record, config.name);
+    if (background) this.emitBackgroundTaskStarted(record);
 
     void this.run(record, spec, config, resolved, bridge)
       .catch((err) => {
@@ -902,43 +902,24 @@ export class AgentManager {
   }
 
   /** Surface a started background subagent in the Background Tasks panel + the active-task chip. */
-  private emitBackgroundTaskStarted(record: AgentRecord, agentType: string): void {
+  private emitBackgroundTaskStarted(record: AgentRecord): void {
     this.engine.postMessage({
       type: 'backgroundTaskStarted',
       task: {
         taskId: record.id,
-        toolUseId: record.toolCallId ?? null,
+        toolUseId: record.toolCallId,
         description: record.description,
-        taskType: agentType,
         status: 'running',
-        startTime: record.startedAt,
-        endTime: null,
-        outputFile: record.outputFile ?? null,
-        summary: null,
-        progressSummary: null,
-        usage: null,
-        lastToolName: null,
       },
     });
   }
 
-  /** Resolve the background subagent's Background Tasks panel entry with its final usage. */
+  /** Resolve the background subagent's Background Tasks panel entry. */
   private emitBackgroundTaskCompleted(record: AgentRecord): void {
     const status = record.status === 'error' ? 'failed'
       : record.status === 'completed' || record.status === 'steered' ? 'completed'
       : 'stopped';
-    this.engine.postMessage({
-      type: 'backgroundTaskCompleted',
-      taskId: record.id,
-      status,
-      summary: (record.result ?? record.error ?? '').slice(0, 500),
-      outputFile: record.outputFile ?? null,
-      usage: {
-        totalTokens: agentTotalTokens(record.usage),
-        toolUses: record.toolUses,
-        durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
-      },
-    });
+    this.engine.postMessage({ type: 'backgroundTaskCompleted', taskId: record.id, status });
   }
 
   /** Abort one subagent (queued → dropped; running → session abort). */

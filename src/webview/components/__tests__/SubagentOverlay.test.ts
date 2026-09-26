@@ -85,7 +85,7 @@ describe('clicking a tool card inside a subagent overlay', () => {
     await at(cards, 0).trigger('click');
 
     expect(useUIStore().expandedToolSource).toBe('subagent');
-    expect(defined(useExpandedTool().value).name).toBe('Bash');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Bash');
   });
 
   it('opens the call that has sealed into a subagent message', async () => {
@@ -97,7 +97,7 @@ describe('clicking a tool card inside a subagent overlay', () => {
     await at(cards, 0).trigger('click');
 
     expect(useUIStore().expandedToolSource).toBe('subagent');
-    expect(defined(useExpandedTool().value).name).toBe('Grep');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Grep');
   });
 });
 

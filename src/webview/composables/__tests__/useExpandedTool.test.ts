@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { watch } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
+import type { TeamState } from '@shared/types/team';
 import { useExpandedTool } from '../useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
@@ -54,7 +56,7 @@ describe('resolving a tool call from the store its source names', () => {
     useStreamingStore().messages = [message('m1', [tool('t-1', 'Read')])];
     useUIStore().expandTool('t-1', 'session');
 
-    expect(defined(useExpandedTool().value).name).toBe('Read');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Read');
   });
 
   it('finds a subagent call that is still in the live tool list', () => {
@@ -63,7 +65,7 @@ describe('resolving a tool call from the store its source names', () => {
     };
     useUIStore().expandTool('t-live', 'subagent');
 
-    expect(defined(useExpandedTool().value).name).toBe('Bash');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Bash');
   });
 
   it('finds a subagent call that has already been folded into a subagent message', () => {
@@ -78,7 +80,7 @@ describe('resolving a tool call from the store its source names', () => {
     };
     useUIStore().expandTool('t-sealed', 'subagent');
 
-    expect(defined(useExpandedTool().value).name).toBe('Grep');
+    expect(defined(useExpandedTool().tool.value).name).toBe('Grep');
   });
 
   it('finds a team agent call in that agent transcript', () => {
@@ -88,7 +90,7 @@ describe('resolving a tool call from the store its source names', () => {
     };
     useUIStore().expandTool('t-team', 'team');
 
-    const resolved = defined(useExpandedTool().value);
+    const resolved = defined(useExpandedTool().tool.value);
     expect(resolved.id).toBe('t-team');
     expect(resolved.name).toBe('WebFetch');
   });
@@ -96,7 +98,7 @@ describe('resolving a tool call from the store its source names', () => {
   it('resolves nothing while no tool is expanded', () => {
     useStreamingStore().messages = [message('m1', [tool('t-1', 'Read')])];
 
-    expect(useExpandedTool().value).toBeUndefined();
+    expect(useExpandedTool().tool.value).toBeUndefined();
   });
 });
 
@@ -110,7 +112,7 @@ describe('refusing to resolve a matching id from a store the source does not nam
     };
     useUIStore().expandTool('t-collision', 'session');
 
-    expect(useExpandedTool().value).toBeUndefined();
+    expect(useExpandedTool().tool.value).toBeUndefined();
   });
 
   it('does not open a session call when the source is a subagent', () => {
@@ -118,14 +120,14 @@ describe('refusing to resolve a matching id from a store the source does not nam
     useSubagentStore().subagents = { 'sub-1': subagent({ toolCalls: [] }) };
     useUIStore().expandTool('t-collision', 'subagent');
 
-    expect(useExpandedTool().value).toBeUndefined();
+    expect(useExpandedTool().tool.value).toBeUndefined();
   });
 
   it('does not open a session call when the source is a team agent', () => {
     useStreamingStore().messages = [message('m1', [tool('t-collision', 'Read')])];
     useUIStore().expandTool('t-collision', 'team');
 
-    expect(useExpandedTool().value).toBeUndefined();
+    expect(useExpandedTool().tool.value).toBeUndefined();
   });
 });
 
@@ -141,7 +143,7 @@ describe('losing the tool call when the collection that held it clears', () => {
     };
     useUIStore().expandTool('t-vanishing', 'subagent');
 
-    const expandedTool = useExpandedTool();
+    const expandedTool = useExpandedTool().tool;
     expect(defined(expandedTool.value).name).toBe('Bash');
 
     subagentStore.subagents = {};
@@ -159,7 +161,7 @@ describe('losing the tool call when the collection that held it clears', () => {
     };
     useUIStore().expandTool('t-vanishing', 'session');
 
-    const expandedTool = useExpandedTool();
+    const expandedTool = useExpandedTool().tool;
     expect(defined(expandedTool.value).name).toBe('Read');
 
     streamingStore.messages = [];
@@ -174,7 +176,7 @@ describe('collapsing a tool', () => {
     useStreamingStore().messages = [message('m1', [tool('t-1', 'Read')])];
     uiStore.expandTool('t-1', 'session');
 
-    const expandedTool = useExpandedTool();
+    const expandedTool = useExpandedTool().tool;
     expect(expandedTool.value).toBeDefined();
 
     uiStore.collapseTool();
@@ -182,5 +184,97 @@ describe('collapsing a tool', () => {
     expect(uiStore.expandedToolId).toBeNull();
     expect(uiStore.expandedToolSource).toBeNull();
     expect(expandedTool.value).toBeUndefined();
+  });
+});
+
+describe('naming the owner whose file stores the result', () => {
+  it('names the main session for a session call', () => {
+    useStreamingStore().messages = [message('m1', [tool('t-1', 'Read')])];
+    useUIStore().expandTool('t-1', 'session');
+
+    expect(useExpandedTool().owner.value).toEqual({ kind: 'session' });
+  });
+
+  it('names the subagent by its launch agent id, not by a same-id session call', () => {
+    useStreamingStore().messages = [message('m1', [tool('t-1', 'Read')])];
+    useSubagentStore().subagents = {
+      'sub-1': subagent({ sdkAgentId: 'agent-9', messages: [message('sub-msg-0', [tool('t-1', 'Read')])], messagesSealed: true }),
+    };
+    useUIStore().expandTool('t-1', 'subagent');
+
+    expect(useExpandedTool().owner.value).toEqual({ kind: 'subagent', agentId: 'agent-9' });
+  });
+
+  it('names no owner for a subagent whose launch agent id is not known yet', () => {
+    useSubagentStore().subagents = { 'sub-1': subagent({ toolCalls: [tool('t-live', 'Bash')] }) };
+    useUIStore().expandTool('t-live', 'subagent');
+
+    expect(defined(useExpandedTool().tool.value).name).toBe('Bash');
+    expect(useExpandedTool().owner.value).toBeUndefined();
+  });
+
+  it('names the team member whose transcript holds the call, and the team that lists it', () => {
+    const teamStore = useTeamStore();
+    teamStore.restoreTeamFromHistory({ teamId: 'team-other', agents: [{ agentId: 'agent-2' }] } as unknown as TeamState);
+    teamStore.restoreTeamFromHistory({ teamId: 'team-1', agents: [{ agentId: 'agent-1' }] } as unknown as TeamState);
+    teamStore.agentMessages = {
+      'agent-2': [agentMessage('am0', [tool('t-other', 'Read')])],
+      'agent-1': [agentMessage('am1', [tool('t-team', 'BrowserScreenshot')])],
+    };
+    useStreamingStore().messages = [message('m1', [tool('t-team', 'Read')])];
+    useUIStore().expandTool('t-team', 'team');
+
+    expect(useExpandedTool().owner.value).toEqual({ kind: 'team', teamId: 'team-1', agentId: 'agent-1' });
+  });
+
+  it('names no owner for a team member no loaded team lists', () => {
+    useTeamStore().agentMessages = { 'agent-1': [agentMessage('am1', [tool('t-team', 'Read')])] };
+    useUIStore().expandTool('t-team', 'team');
+
+    expect(useExpandedTool().owner.value).toBeUndefined();
+  });
+
+  it('names no owner while no tool resolves', () => {
+    useUIStore().expandTool('t-missing', 'session');
+
+    expect(useExpandedTool().owner.value).toBeUndefined();
+  });
+});
+
+describe('keeping the owner stable while the stores change around it', () => {
+  it('keeps the same owner and tool objects across an unrelated streaming update, so nothing downstream re-runs', () => {
+    const streamingStore = useStreamingStore();
+    streamingStore.messages = [message('m1', [tool('t-1', 'Read')])];
+    useUIStore().expandTool('t-1', 'session');
+    const expanded = useExpandedTool();
+    const firstOwner = expanded.owner.value;
+    const firstTool = expanded.tool.value;
+    const ownerChanges = vi.fn();
+    const toolChanges = vi.fn();
+    watch(expanded.owner, ownerChanges, { flush: 'sync' });
+    watch(expanded.tool, toolChanges, { flush: 'sync' });
+
+    streamingStore.getOrCreateStreamingMessage('sdk-2');
+    streamingStore.updateStreamingMessage({ content: 'hel' });
+    streamingStore.updateStreamingMessage({ content: 'hello' });
+
+    expect(expanded.owner.value).toBe(firstOwner);
+    expect(expanded.tool.value).toBe(firstTool);
+    expect(ownerChanges).not.toHaveBeenCalled();
+    expect(toolChanges).not.toHaveBeenCalled();
+  });
+
+  it('still hands over a new owner when the owner really changes', () => {
+    const subagentStore = useSubagentStore();
+    subagentStore.subagents = { 'sub-1': subagent({ toolCalls: [tool('t-live', 'Bash')] }) };
+    useUIStore().expandTool('t-live', 'subagent');
+    const { owner } = useExpandedTool();
+    expect(owner.value).toBeUndefined();
+
+    subagentStore.subagents = { 'sub-1': subagent({ sdkAgentId: 'agent-9', toolCalls: [tool('t-live', 'Bash')] }) };
+    expect(owner.value).toEqual({ kind: 'subagent', agentId: 'agent-9' });
+
+    subagentStore.subagents = { 'sub-1': subagent({ sdkAgentId: 'agent-10', toolCalls: [tool('t-live', 'Bash')] }) };
+    expect(owner.value).toEqual({ kind: 'subagent', agentId: 'agent-10' });
   });
 });

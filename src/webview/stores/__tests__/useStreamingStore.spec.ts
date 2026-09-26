@@ -92,3 +92,51 @@ describe('useStreamingStore cache pruning', () => {
     expect(store.toolMetadataCache.size).toBe(0);
   });
 });
+
+describe('useStreamingStore imageCount', () => {
+  const firstTool = (store: ReturnType<typeof useStreamingStore>) =>
+    defined(defined(at(store.messages, 0).toolCalls, 'toolCalls')[0], 'tool');
+
+  it('writes the count with the completed status', () => {
+    const store = useStreamingStore();
+    store.addToolCall({ id: 't-1', name: 'Read', input: {} });
+    store.updateToolStatus('t-1', 'completed', { result: 'Read image file [image/png]', imageCount: 2 });
+
+    expect(firstTool(store).imageCount).toBe(2);
+  });
+
+  it('hands a cached count over when addToolCall builds the call', () => {
+    const store = useStreamingStore();
+    store.updateToolStatus('t-1', 'completed', { result: 'shot', imageCount: 1 });
+    store.addToolCall({ id: 't-1', name: 'BrowserScreenshot', input: {} });
+
+    expect(firstTool(store).imageCount).toBe(1);
+  });
+
+  it('hands a cached count over when a content block builds the call', () => {
+    const store = useStreamingStore();
+    store.updateToolStatus('t-1', 'completed', { result: 'shot', imageCount: 1 });
+    store.getOrCreateStreamingMessage('sdk-1');
+    store.updateStreamingMessage({ toolCalls: store.extractToolCalls([{ type: 'tool_use', id: 't-1', name: 'Read', input: {} }]) }, 'sdk-1');
+
+    expect(firstTool(store).imageCount).toBe(1);
+  });
+
+  it('keeps the count when the final assistant message merges a call rebuilt from its content block', () => {
+    const store = useStreamingStore();
+    store.getOrCreateStreamingMessage('sdk-1');
+    store.addToolCall({ id: 't-1', name: 'Read', input: {} }, undefined, 'sdk-1');
+    store.updateToolStatus('t-1', 'completed', { result: 'shot', imageCount: 3 });
+    store.updateStreamingMessage({ toolCalls: [{ id: 't-1', name: 'Read', input: {}, status: 'completed' }] }, 'sdk-1');
+
+    expect(firstTool(store).imageCount).toBe(3);
+  });
+
+  it('adds no imageCount key to a text-only result', () => {
+    const store = useStreamingStore();
+    store.addToolCall({ id: 't-1', name: 'Read', input: {} });
+    store.updateToolStatus('t-1', 'completed', { result: 'text' });
+
+    expect(firstTool(store)).not.toHaveProperty('imageCount');
+  });
+});

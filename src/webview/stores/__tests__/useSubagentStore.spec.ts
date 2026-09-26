@@ -316,6 +316,96 @@ describe('useSubagentStore sealed transcript rehydration', () => {
   });
 });
 
+describe('useSubagentStore nested image count', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('writes the count with a live completion', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Read', input: {}, status: 'running' });
+
+    store.updateSubagentToolStatus('nested-1', 'completed', 'Read image file [image/png]', undefined, 5, 2);
+
+    expect(nestedTool(store, 'agent-1', 'nested-1').imageCount).toBe(2);
+  });
+
+  it('adds no count key to a text-only completion', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Read', input: {}, status: 'running' });
+
+    store.updateSubagentToolStatus('nested-1', 'completed', 'code');
+
+    expect(nestedTool(store, 'agent-1', 'nested-1')).not.toHaveProperty('imageCount');
+  });
+
+  it('keeps the count through the sealing snapshot and a reload', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.replaceSubagentMessages('agent-1', [{
+      role: 'assistant',
+      contentBlocks: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: {}, result: 'shot', imageCount: 1 }],
+    }]);
+    expect(nestedTool(store, 'agent-1', 'nested-1').imageCount).toBe(1);
+
+    store.restoreSubagentFromHistory({
+      id: 'toolu_2',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
+      agentStatus: 'completed',
+      agentResultText: 'done',
+      agentMessages: [{
+        role: 'assistant',
+        contentBlocks: [{ type: 'tool_use', id: 'nested-2', name: 'Read', input: {}, result: 'shot', imageCount: 3 }],
+      }],
+    });
+    expect(nestedTool(store, 'toolu_2', 'nested-2').imageCount).toBe(3);
+  });
+
+  it('keeps the live count with the live result when the sealing snapshot lacks the result', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Read', input: {}, status: 'running' });
+    store.updateSubagentToolStatus('nested-1', 'completed', 'Read image file [image/png]', undefined, 5, 2);
+
+    store.replaceSubagentMessages('agent-1', [{
+      role: 'assistant',
+      contentBlocks: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: {} }],
+    }]);
+
+    const tool = nestedTool(store, 'agent-1', 'nested-1');
+    expect(tool.result).toBe('Read image file [image/png]');
+    expect(tool.imageCount).toBe(2);
+  });
+
+  it('takes the count from the same source as the result it keeps', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Read', input: {}, status: 'running' });
+    store.updateSubagentToolStatus('nested-1', 'completed', 'live text');
+
+    store.replaceSubagentMessages('agent-1', [{
+      role: 'assistant',
+      contentBlocks: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: {}, result: 'snapshot text', imageCount: 1 }],
+    }]);
+
+    const tool = nestedTool(store, 'agent-1', 'nested-1');
+    expect(tool.result).toBe('live text');
+    expect(tool).not.toHaveProperty('imageCount');
+  });
+
+  it('keeps the count of a call that finished before its message sealed', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Read', input: {}, status: 'running' });
+    store.updateSubagentToolStatus('nested-1', 'completed', 'Read image file [image/png]', undefined, 5, 2);
+
+    const built = store.buildToolCallsWithStatus('agent-1', [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: {} }]);
+
+    expect(defined(built[0], 'nested-1')).toMatchObject({ result: 'Read image file [image/png]', imageCount: 2 });
+  });
+});
+
 describe('useSubagentStore resume cards', () => {
   beforeEach(() => setActivePinia(createPinia()));
   const t = (key: string, params: Record<string, unknown>): string => i18n.global.t(key, params);

@@ -360,6 +360,26 @@ describe('reconstructMessages — pruned screenshot', () => {
     expect(tools[0]!.result).toBe('Screenshot of https://example.com');
     expect(JSON.stringify(messages)).not.toContain('[Image removed');
   });
+
+  it('marks a successful image result with its count and never carries the base64', () => {
+    const { messages } = reconstructMessages(screenshotTurn());
+    const tools = (messages[1] as { tools: HistoryToolCall[] }).tools;
+    expect(tools[0]).toMatchObject({ result: 'Screenshot of https://example.com', imageCount: 1 });
+    expect(JSON.stringify(messages)).not.toContain('BASE64');
+  });
+
+  it('leaves imageCount off a failed or text-only result', () => {
+    const firstTool = (branch: SessionEntry[]): HistoryToolCall =>
+      (reconstructMessages(branch).messages[1] as { tools: HistoryToolCall[] }).tools[0]!;
+    const withResult = (patch: Record<string, unknown>): SessionEntry[] => {
+      const turn = screenshotTurn();
+      const result = turn[2] as unknown as { message: Record<string, unknown> };
+      result.message = { ...result.message, ...patch };
+      return turn;
+    };
+    expect(firstTool(withResult({ isError: true }))).not.toHaveProperty('imageCount');
+    expect(firstTool(withResult({ content: [{ type: 'text', text: 'ok' }] }))).not.toHaveProperty('imageCount');
+  });
 });
 
 describe('loadPiSessionHistory — subagent cards from invocation entries and agent files', () => {
@@ -419,6 +439,32 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     await loadPiSessionHistory('/cwd', SESSION_ID, (m) => posts.push(m));
     return posts.flatMap((p) => (p.type === 'assistantReplay' ? (p.tools ?? []) : [])).filter((t) => t.name === 'Agent');
   }
+
+  it('hydrates a nested tool result with its image count and never its base64', async () => {
+    writeAgentFile('agent-1', 'agent-1', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'user', content: 'look around' } },
+      {
+        type: 'message',
+        id: 'm2',
+        parentId: 'm1',
+        timestamp: ts(3),
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'n1', name: 'read', arguments: { path: 'a.png' } }] },
+      },
+      {
+        type: 'message',
+        id: 'm3',
+        parentId: 'm2',
+        timestamp: ts(4),
+        message: { role: 'toolResult', toolCallId: 'n1', content: [{ type: 'text', text: 'Read image file [image/png]' }, { type: 'image', data: 'NESTEDPNG', mimeType: 'image/png' }] },
+      },
+    ]);
+    hoisted.branch = [userMsg('u1', 'explore it'), agentCall('a1', 'tc1'), invocation('agent-1', 'tc1')];
+
+    const [tool] = await replayedAgentTools();
+    const nested = tool!.agentMessages!.flatMap((m) => m.contentBlocks).find((b) => b.type === 'tool_use');
+    expect(nested).toMatchObject({ id: 'n1', result: 'Read image file [image/png]', imageCount: 1 });
+    expect(JSON.stringify(tool)).not.toContain('NESTEDPNG');
+  });
 
   it('rebuilds a card from its invocation entry and the agent’s pi session file', async () => {
     writeAgentFile('agent-1', 'agent-1', [

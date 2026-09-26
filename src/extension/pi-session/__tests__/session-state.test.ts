@@ -21,7 +21,6 @@ import { basename, join, resolve } from 'node:path';
 const H = vi.hoisted(() => {
   let sessionCounter = 0;
   let lastSession: ReturnType<typeof makeFakeSession> | null = null;
-  let listener: ((event: unknown) => void) | null = null;
 
   function makeFakeSession() {
     const id = `sess-${++sessionCounter}`;
@@ -36,14 +35,17 @@ const H = vi.hoisted(() => {
       getHeader: vi.fn(() => null),
       appendCustomEntry: vi.fn(() => 'custom-1'),
     };
+    // pi keeps every subscriber: the stream adapter and the unpersisted tool image cache both listen.
+    const listeners = new Set<(event: unknown) => void>();
     const session = {
+      listeners,
       sessionId: id,
       agent: {} as { finishTurn?: FinishTurn },
       isStreaming: false,
       isCompacting: false,
       get isIdle() { return !this.isStreaming; },
       modelRuntime: { getModel: () => undefined },
-      subscribe: vi.fn((l: (event: unknown) => void) => { listener = l; return () => { listener = null; }; }),
+      subscribe: vi.fn((l: (event: unknown) => void) => { listeners.add(l); return () => { listeners.delete(l); }; }),
       setAutoCompactionEnabled: vi.fn(),
       abortCompaction: vi.fn(),
       setActiveToolsByName: vi.fn(),
@@ -142,7 +144,7 @@ const H = vi.hoisted(() => {
     fakePi,
     resetServices: () => { services = makeServices(); },
     getLastSession: () => lastSession,
-    fireEvent: (event: unknown) => { listener?.(event); },
+    fireEvent: (event: unknown) => { for (const l of [...(lastSession?.listeners ?? [])]) l(event); },
   };
 });
 

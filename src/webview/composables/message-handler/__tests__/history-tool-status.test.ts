@@ -75,3 +75,13 @@ describe('convertHistoryTools', () => {
     expect(call.status).toBe('cancelled');
   });
 });
+
+describe('convertHistoryTools image count', () => {
+  it('carries the count of a replayed image result', () => {
+    expect(convert({ ...CALL, name: 'Read', result: 'Read image file [image/png]', isError: false, imageCount: 2 }).imageCount).toBe(2);
+  });
+
+  it('adds no count key to a text-only result', () => {
+    expect(convert({ ...CALL, result: 'a.ts', isError: false })).not.toHaveProperty('imageCount');
+  });
+});

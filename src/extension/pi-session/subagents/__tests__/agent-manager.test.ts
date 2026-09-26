@@ -2161,9 +2161,6 @@ describe('AgentManager resume', () => {
     gateAt(gates, 0).resolve();
     await mgr.getRecord(id)!.promise;
     expect(charged).toEqual([0.3]);
-    // The background task's total counts every kind, as the card does.
-    const completed = posted.find((m) => m.type === 'backgroundTaskCompleted');
-    expect(completed?.type === 'backgroundTaskCompleted' && completed.usage?.totalTokens).toBe(315);
     mgr.dispose();
   });
 

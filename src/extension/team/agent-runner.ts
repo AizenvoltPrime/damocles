@@ -406,6 +406,7 @@ export class AgentRunner {
           toolUseId: event.toolCallId,
           result: block.content,
           isError: block.is_error === true,
+          ...(block.imageCount !== undefined ? { imageCount: block.imageCount } : {}),
           ...(block.metadata ? { metadata: block.metadata } : {}),
         });
         break;

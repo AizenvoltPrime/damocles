@@ -1,3 +1,5 @@
+import { toImageBlocks } from './branch-text';
+
 /** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
 export function joinResultText(result: unknown): string {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
@@ -8,4 +10,9 @@ export function joinResultText(result: unknown): string {
     .filter((c) => c?.type === 'text' && typeof c.text === 'string')
     .map((c) => c.text)
     .join('');
+}
+
+/** How many images a pi tool result carries, counted by the same filter that serves them on request. */
+export function resultImageCount(result: unknown): number {
+  return toImageBlocks((result as { content?: unknown } | undefined)?.content).length;
 }

@@ -48,6 +48,7 @@ import {
 import { buildCustomTools } from "./tools";
 import { ShellCancelStore } from "./tools/shell-cancel-registry";
 import { createShellSessionJob } from "./tools/process-tree";
+import { UnpersistedToolImages } from "./unpersisted-tool-images";
 import { sessionNoteDelivery, subagentNoteDelivery, teamAgentNoteDelivery } from "./note-delivery";
 import type { ShellOptions } from "./tools/bash-tool";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, teamAgentPiToolNamesForRole } from "./tools/team-tools";
@@ -279,6 +280,7 @@ export class PiSession implements ChatSession {
   // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
   // process the user deliberately backgrounded survives a /clear and dies only when the panel is disposed.
   private readonly shellJob = createShellSessionJob();
+  private readonly unpersistedImages = new UnpersistedToolImages();
 
   /** True when the turn must not be EXTENDED — ESC (`_aborting`) or the budget limit. For the
    * turn-holding paths only; those meaning "the user aborted" (the slash-command release and the
@@ -483,7 +485,12 @@ export class PiSession implements ChatSession {
    * Called on initial start and on every session replacement (reset/clear → newSession).
    */
   private bindSession(session: AgentSession): void {
-    this.unsubscribe = this.adapter.subscribe(session);
+    const adapterUnsubscribe = this.adapter.subscribe(session);
+    this.unpersistedImages.track(session);
+    this.unsubscribe = () => {
+      adapterUnsubscribe();
+      this.unpersistedImages.untrack(session);
+    };
     // Graceful budget stop (US-008): pi consults this once per model round-trip, so `end` finishes the
     // turn at the next boundary with the in-flight message and its tool results intact, unlike an
     // abort. Installed here because start() and setRebindSession both funnel through bindSession, and a
@@ -1273,6 +1280,7 @@ export class PiSession implements ChatSession {
     this.shellCancel.clear();
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.unpersistedImages.clear();
     // The adapter outlives every session replacement, so its timers are released here and not in
     // bindSession's unsubscribe, which fires on a mere rebind.
     this.adapter.dispose();
@@ -1532,6 +1540,10 @@ export class PiSession implements ChatSession {
 
   get persistenceSessionId(): string | null {
     return this.currentSessionId;
+  }
+
+  unpersistedToolResultImages(toolCallId: string): readonly ImageBlock[] | undefined {
+    return this.unpersistedImages.get(toolCallId);
   }
 
   holdsSession(sessionId: string): boolean {
@@ -2084,13 +2096,26 @@ export class PiSession implements ChatSession {
     this.emit({ type: "customAgents", agents });
   }
 
+  private trackedNestedSessions(folder: FolderRuntime): Pick<SubagentEngine, "createSession" | "forgetSession"> {
+    return {
+      createSession: async (opts) => {
+        const session = await folder.createSubagentSession(opts);
+        this.unpersistedImages.track(session);
+        return session;
+      },
+      forgetSession: (session) => {
+        this.unpersistedImages.untrack(session);
+        folder.forgetSubagentSession(session);
+      },
+    };
+  }
+
   /** Build the deps the AgentManager needs to run one subagent (model policy + budget owned here). */
   private buildSubagentEngine(pi: PiCodingAgentModule, folder: FolderRuntime): SubagentEngine {
     return {
       cwd: this.cwd,
       registry: this.agentRegistry!,
-      createSession: (opts) => folder.createSubagentSession(opts),
-      forgetSession: (session) => folder.forgetSubagentSession(session),
+      ...this.trackedNestedSessions(folder),
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.permissionMode === "plan",
       postMessage: (m) => this.emit(m),
@@ -2933,8 +2958,7 @@ export class PiSession implements ChatSession {
     if (!pi) throw new Error("pi runtime not loaded");
     const folder = this.requireFolder();
     return {
-      createSession: (opts) => folder.createSubagentSession(opts),
-      forgetSession: (session) => folder.forgetSubagentSession(session),
+      ...this.trackedNestedSessions(folder),
       // ONE call per spawn for all three: the agent's names, its customTools (with the MCP definitions
       // appended, exactly as the `team_*` tools are) and the frozen snapshot everything else derives
       // from. `mcp.names` is NOT in `toolNames` — the caller concatenates them, so there is exactly one

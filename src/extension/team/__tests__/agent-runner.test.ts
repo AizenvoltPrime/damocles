@@ -7,6 +7,8 @@ import { wrapSteerMessage } from '../../../shared/steer';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { FakeSession } from './fake-session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
+import { memberHistoryMessages } from '../content-blocks';
+import type { PersistedAgentMessage } from '../../pi-session/agent-records';
 import type { AgentTurnContext, AgentTurnDecision } from '@earendil-works/pi-agent-core';
 
 /**
@@ -820,6 +822,31 @@ describe('AgentRunner tool result metadata', () => {
     const results = resultMessages(messages);
     expect(results).toHaveLength(1);
     expect(results[0]).not.toHaveProperty('metadata');
+  });
+});
+
+describe('AgentRunner tool result images', () => {
+  const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+
+  it('sends only the image count of a successful result, and nothing for a text-only or failed one', async () => {
+    const messages = await runEmitting((s) => {
+      s.emit({ type: 'tool_execution_end', toolCallId: 'img', toolName: 'browser_screenshot', result: { content: [{ type: 'text', text: 'shot' }, png] }, isError: false });
+      s.emit({ type: 'tool_execution_end', toolCallId: 'text', toolName: 'read', result: { content: [{ type: 'text', text: 'a' }] }, isError: false });
+      s.emit({ type: 'tool_execution_end', toolCallId: 'fail', toolName: 'read', result: { content: [png] }, isError: true });
+    });
+
+    const results = messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'teamAgentToolResult' }> => m.type === 'teamAgentToolResult');
+    expect(results.find((m) => m.toolUseId === 'img')).toMatchObject({ result: 'shot', imageCount: 1 });
+    expect(results.find((m) => m.toolUseId === 'text')).not.toHaveProperty('imageCount');
+    expect(results.find((m) => m.toolUseId === 'fail')).not.toHaveProperty('imageCount');
+    expect(JSON.stringify(messages)).not.toContain('AAAA');
+  });
+
+  it('gives a reopened member the same count the live card had', () => {
+    const message = { role: 'toolResult', toolCallId: 'img', toolName: 'browser_screenshot', content: [{ type: 'text', text: 'shot' }, png], isError: false } as unknown as PersistedAgentMessage;
+    const [history] = memberHistoryMessages([message], new Map([[message, 'e1']]));
+
+    expect(history?.content).toEqual([{ type: 'tool_result', tool_use_id: 'img', content: 'shot', is_error: false, imageCount: 1 }]);
   });
 });
 

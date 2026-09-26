@@ -366,7 +366,7 @@ export const useTeamStore = defineStore('team', () => {
     agentMessages.value = { ...agentMessages.value, [agentId]: [...current, msg] };
   }
 
-  function handleAgentToolResult(agentId: string, toolUseId: string, result: string, isError?: boolean, metadata?: Record<string, unknown>): void {
+  function handleAgentToolResult(agentId: string, toolUseId: string, result: string, isError?: boolean, metadata?: Record<string, unknown>, imageCount?: number): void {
     const msgs = agentMessages.value[agentId];
     if (!msgs) return;
     const updated = [...msgs];
@@ -385,6 +385,7 @@ export const useTeamStore = defineStore('team', () => {
           ...withoutLiveOutput,
           result,
           ...(isError !== undefined && { isError }),
+          ...(imageCount !== undefined && { imageCount }),
           ...(mergedMetadata !== undefined && { metadata: mergedMetadata }),
           status: resolveCancelledStatus(isError ? 'failed' : 'completed', mergedMetadata),
         };
@@ -479,6 +480,7 @@ export const useTeamStore = defineStore('team', () => {
               input: typeof t.input === 'object' && t.input !== null ? t.input as Record<string, unknown> : {},
               status: restoredToolStatus(result),
               ...(result ? { result: result.content, isError: result.is_error === true } : {}),
+              ...(result?.imageCount !== undefined ? { imageCount: result.imageCount } : {}),
               ...(result?.metadata ? { metadata: result.metadata } : {}),
             };
           });

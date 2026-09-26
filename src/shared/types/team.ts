@@ -57,7 +57,7 @@ export type TeamAgentContentBlock =
   | ImageBlock
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   // `metadata` holds the normalized result details, the only place the user-cancelled marker is recorded.
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; metadata?: Record<string, unknown> };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; imageCount?: number; metadata?: Record<string, unknown> };
 
 /** One persisted member message. `id` comes from its pi session entry; a live message never carries it. */
 export interface TeamAgentHistoryMessage {

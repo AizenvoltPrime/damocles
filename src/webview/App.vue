@@ -195,7 +195,7 @@ const {
 
 const streamingStore = useStreamingStore();
 const { messages, streamingMessageId } = storeToRefs(streamingStore);
-const expandedTool = useExpandedTool();
+const { tool: expandedTool, owner: expandedToolOwner } = useExpandedTool();
 
 const subagentStore = useSubagentStore();
 const { subagents, expandedSubagent } = storeToRefs(subagentStore);
@@ -1471,8 +1471,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     />
 
     <!-- Tool Overlay (full-screen) — MCP tools and built-in tools use dedicated overlays -->
-    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" @close="uiStore.collapseTool" />
-    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" @close="uiStore.collapseTool" />
+    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" :owner="expandedToolOwner" @close="uiStore.collapseTool" />
+    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" :owner="expandedToolOwner" @close="uiStore.collapseTool" />
 
     <!-- Diff Overlay (full-screen) -->
     <DiffOverlay v-if="expandedDiff" :diff="expandedDiff" @close="diffStore.collapseDiff" />

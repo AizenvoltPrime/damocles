@@ -663,6 +663,26 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'BrowserOpen', result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
     expect(out.some((m) => m.type === 'toolCompleted')).toBe(false);
   });
+
+  it('marks a successful result that carries images with imageCount, and never a text-only or failed one', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-img');
+    const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+    for (const id of ['img', 'text', 'fail']) listener!({ type: 'tool_execution_start', toolCallId: id, toolName: 'read', args: { path: '/a.png' } });
+    listener!({ type: 'tool_execution_end', toolCallId: 'img', toolName: 'read', result: { content: [{ type: 'text', text: 'Read image file [image/png]' }, png, png] }, isError: false });
+    listener!({ type: 'tool_execution_end', toolCallId: 'text', toolName: 'read', result: { content: [{ type: 'text', text: 'plain' }] }, isError: false });
+    listener!({ type: 'tool_execution_end', toolCallId: 'fail', toolName: 'read', result: { content: [{ type: 'text', text: 'boom' }, png] }, isError: true });
+
+    const completed = out.filter((m) => m.type === 'toolCompleted');
+    expect(completed.find((m) => m.toolUseId === 'img')).toMatchObject({ result: 'Read image file [image/png]', imageCount: 2 });
+    expect(completed.find((m) => m.toolUseId === 'text')).not.toHaveProperty('imageCount');
+    expect(out.find((m) => m.type === 'toolFailed')).not.toHaveProperty('imageCount');
+    expect(JSON.stringify(out)).not.toContain('AAAA');
+  });
 });
 
 describe('PiStreamAdapter refusals (US-023)', () => {

@@ -25,6 +25,9 @@ export interface ChatSession {
   readonly conversationHead: string | null;
   readonly currentModel: string | null;
 
+  /** A tool result's images while pi has not yet written its `toolResult` entry to the session file. */
+  unpersistedToolResultImages(toolCallId: string): readonly ImageBlock[] | undefined;
+
   /** The plan-file path this session WRITES to (`computePlanFilePath`), from the live session id + first
    *  user message. The readable `<slug>-<id8>.md` target for plan-mode writes and bind-plan; consumers
    *  (view, delete) locate it by the stable `-<id8>` suffix, so it survives the slug changing. */

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { createToolHandlers } from '../tool-handlers';
 import type { HandlerContext, ScrollBehavior, StoreContext } from '../../types';
@@ -242,5 +242,79 @@ describe('toolCompleted for an Agent card', () => {
 
     expect(subagentStore.getSubagent('tc-live')?.status).toBe(expected);
     expect(subagentStore.getSubagent('tc-reload')?.status).toBe(expected);
+  });
+});
+
+describe('toolCompleted image count', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function imageContext(): HandlerContext {
+    const stores = {
+      streamingStore: useStreamingStore(),
+      subagentStore: useSubagentStore(),
+      uiStore: useUIStore(),
+      taskStore: useTaskStore(),
+    } as unknown as StoreContext;
+    return { stores } as unknown as HandlerContext;
+  }
+
+  function complete(ctx: HandlerContext, msg: Partial<Extract<ExtensionToWebviewMessage, { type: 'toolCompleted' }>>): void {
+    const handler = createToolHandlers().toolCompleted;
+    if (!handler) throw new Error('no toolCompleted handler registered');
+    handler({ type: 'toolCompleted', toolUseId: 't-1', toolName: 'Read', result: 'Read image file [image/png]', ...msg }, ctx);
+  }
+
+  const mainTool = (ctx: HandlerContext) =>
+    ctx.stores.streamingStore.messages.flatMap((m) => m.toolCalls ?? []).find((t) => t.id === 't-1');
+
+  it('stores the count on a main-session call', () => {
+    const ctx = imageContext();
+    ctx.stores.streamingStore.addToolCall({ id: 't-1', name: 'Read', input: {} });
+
+    complete(ctx, { imageCount: 1 });
+
+    expect(mainTool(ctx)?.imageCount).toBe(1);
+  });
+
+  it('stores the count on a nested call the completion adds to its subagent', () => {
+    const ctx = imageContext();
+    ctx.stores.subagentStore.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+
+    complete(ctx, { parentToolUseId: 'agent-1', imageCount: 2 });
+
+    expect(ctx.stores.subagentStore.getSubagent('agent-1')?.toolCalls.find((t) => t.id === 't-1')?.imageCount).toBe(2);
+  });
+
+  it('stores the count on a nested call the subagent store already holds', () => {
+    const ctx = imageContext();
+    const { subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    subagentStore.addToolCallToSubagent('agent-1', { id: 't-1', name: 'Read', input: {}, status: 'running' });
+
+    complete(ctx, { imageCount: 1 });
+
+    expect(subagentStore.getSubagent('agent-1')?.toolCalls.find((t) => t.id === 't-1')?.imageCount).toBe(1);
+    expect(mainTool(ctx)).toBeUndefined();
+  });
+
+  it('adds no count to a text-only completion', () => {
+    const ctx = imageContext();
+    ctx.stores.streamingStore.addToolCall({ id: 't-1', name: 'Read', input: {} });
+
+    complete(ctx, { result: 'text' });
+
+    expect(mainTool(ctx)).not.toHaveProperty('imageCount');
+  });
+
+  it('passes the count with the result of a parsed Agent completion', () => {
+    const ctx = imageContext();
+    const { subagentStore } = ctx.stores;
+    subagentStore.registerAgentTool('tc-1', { subagent_type: 'Explore', description: 'find' });
+    const updateStatus = vi.spyOn(subagentStore, 'updateSubagentToolStatus');
+    const result = JSON.stringify({ content: [{ type: 'text', text: 'done' }], agentId: 'agent-1', agentStatus: 'completed' });
+
+    complete(ctx, { toolUseId: 'tc-1', toolName: 'Agent', result, durationMs: 5, imageCount: 1 });
+
+    expect(updateStatus).toHaveBeenCalledWith('tc-1', 'completed', result, undefined, 5, 1);
   });
 });

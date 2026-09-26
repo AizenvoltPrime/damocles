@@ -16,6 +16,7 @@ import type {
   ResultMessage,
   StoredSession,
   CompactionTrigger,
+  ToolResultOwner,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
 import type { UsageStatsQuery, UsageStatsReport } from './usage-stats';
@@ -208,6 +209,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestTeamDataByToolUse"; toolUseId: string }
   | { type: "cancelTeamAgent"; teamId: string; agentId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
+  | { type: "requestToolResultImages"; requestId: string; toolUseId: string; owner: ToolResultOwner }
   | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' }
   | { type: "requestCompassReindex" }
   | { type: "compassSearch"; query: string; kind?: CompassNodeKind; limit?: number }
@@ -287,7 +289,9 @@ export type ExtensionToWebviewMessage =
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
   | { type: "rewindError"; message: string }
   | { type: "toolStreaming"; messageId: string; tool: { id: string; name: string; input: Record<string, unknown> }; contentBlocks: ContentBlock[]; parentToolUseId?: string | null }
-  | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number }
+  | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number; imageCount?: number }
+  /** Replies to `requestToolResultImages`; `[]` means unavailable, for any reason; read failures are logged. */
+  | { type: "toolResultImages"; requestId: string; images: ImageBlock[] }
   | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
   /** No live shell call matched the cancel, so the optimistic "Stopping..." state has nothing to clear it.
@@ -469,8 +473,7 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
   // `requestId` echoes the `steerAgent` this answers; a steer the extension sends on its own carries none.
   | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; images?: ImageBlock[]; requestId?: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found'; team?: { teamId: string; teamTitle: string; memberName: string; role: 'lead' | 'specialist' } }
-  | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
-  | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
+  | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped' }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }
@@ -488,7 +491,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; images?: ImageBlock[]; timestamp: number }
   | { type: "teamAgentToolProgress"; teamId: string; agentId: string; toolUseId: string; output: string; outputTruncated?: boolean }
   // `metadata` is the team path's only carrier for a tool result's `details`; the other two producers emit `toolMetadata`.
-  | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; metadata?: Record<string, unknown> }
+  | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }

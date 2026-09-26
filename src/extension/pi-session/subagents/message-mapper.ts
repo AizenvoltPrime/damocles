@@ -11,6 +11,7 @@
 import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
 import { mapPiToolName, normalizeToolInput } from '../tool-normalization';
 import { toImageBlocks } from '../branch-text';
+import { resultImageCount } from '../tool-result-text';
 
 interface PiTextBlock {
   type: 'text';
@@ -48,12 +49,13 @@ function joinText(content: unknown): string {
 
 /** Map pi `session.messages` to the webview's `HistoryAgentMessage[]`. Pure — no session access. */
 export function piMessagesToHistoryAgentMessages(messages: readonly unknown[]): HistoryAgentMessage[] {
-  // First pass: collect tool results (text + error flag) keyed by the tool-call id they answer.
-  const resultsById = new Map<string, { text: string; isError: boolean }>();
+  // First pass: collect tool results keyed by the tool-call id they answer.
+  const resultsById = new Map<string, { text: string; isError: boolean; imageCount: number }>();
   for (const raw of messages) {
     const msg = raw as PiMessageLike;
     if (msg.role === 'toolResult' && typeof msg.toolCallId === 'string') {
-      resultsById.set(msg.toolCallId, { text: joinText(msg.content), isError: msg.isError === true });
+      const isError = msg.isError === true;
+      resultsById.set(msg.toolCallId, { text: joinText(msg.content), isError, imageCount: isError ? 0 : resultImageCount(msg) });
     }
   }
 
@@ -86,6 +88,7 @@ export function piMessagesToHistoryAgentMessages(messages: readonly unknown[]): 
           input: normalizeToolInput(block.name, block.arguments ?? {}),
           ...(result !== undefined ? { result: result.text } : {}),
           ...(result?.isError ? { isError: true } : {}),
+          ...(result && result.imageCount > 0 ? { imageCount: result.imageCount } : {}),
         });
       }
     }

@@ -150,6 +150,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           status: 'completed',
           result: msg.result,
           ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
+          ...(msg.imageCount !== undefined && { imageCount: msg.imageCount }),
         });
       }
 
@@ -162,7 +163,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           }
           const agentStatus: unknown = parsed.agentStatus;
           const status = endedSubagentStatus(typeof agentStatus === "string" ? agentStatus : "completed");
-          subagentStore.updateSubagentToolStatus(msg.toolUseId, status, msg.result, undefined, msg.durationMs);
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, status, msg.result, undefined, msg.durationMs, msg.imageCount);
           // Before setSubagentResult, which ends a card still running as completed.
           subagentStore.endSubagent(msg.toolUseId, status);
           const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
@@ -180,14 +181,15 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           });
         } catch {
           console.warn("[tool-handlers] Failed to parse Agent tool result");
-          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs, msg.imageCount);
         }
       } else {
-        const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
+        const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs, msg.imageCount);
         if (!found) {
           streamingStore.updateToolStatus(msg.toolUseId, "completed", {
             result: msg.result,
             ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
+            ...(msg.imageCount !== undefined && { imageCount: msg.imageCount }),
           });
         }
       }

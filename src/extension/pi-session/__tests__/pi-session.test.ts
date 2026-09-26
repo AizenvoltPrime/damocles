@@ -17,9 +17,6 @@ const H = vi.hoisted(() => {
   let bashExecute: (...a: never[]) => Promise<unknown> = async () => ({ content: [], details: undefined });
   let sessionCounter = 0;
   let lastSession: ReturnType<typeof makeSession> | null = null;
-  // The live adapter subscription, so a test can drive the real pi events a call emits before it
-  // settles — the only way to exercise a path where the adapter and the caller both see one failure.
-  let listener: ((event: unknown) => void) | null = null;
   // Opt-in: a test can swap the structural sessionManager fake for a REAL pi SessionManager on a
   // tmpdir, so the on-disk no-append-after-rm invariant is exercised rather than simulated.
   let sessionManagerFactory: (() => unknown) | null = null;
@@ -62,7 +59,11 @@ const H = vi.hoisted(() => {
     // getAllTools(). Tests mutate `registryToolNames` to simulate an orphaned vs current registry, and
     // a mocked reload() can repopulate it.
     const registryToolNames = new Set<string>(['read', 'bash', 'Edit', 'write']);
+    // The live subscriptions (the adapter's and the image cache's), so a test can drive the real pi events a
+    // call emits before it settles — the only way to exercise a path where the adapter and the caller both see one failure.
+    const listeners = new Set<(event: unknown) => void>();
     const session = {
+      listeners,
       sessionId: id,
       // pi's Agent. `readonly` upstream and NOT plumbed through the session factory, so `bindSession`
       // installs the graceful budget-stop decider onto it per bind — a replacement session brings a
@@ -76,8 +77,9 @@ const H = vi.hoisted(() => {
       registryToolNames,
       subscribe: vi.fn((listenerFn: unknown) => {
         seq.push('subscribe');
-        listener = listenerFn as (event: unknown) => void;
-        return () => { listener = null; seq.push('unsub'); };
+        const fn = listenerFn as (event: unknown) => void;
+        listeners.add(fn);
+        return () => { listeners.delete(fn); seq.push('unsub'); };
       }),
       setAutoCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
       compact: vi.fn(async () => ({ summary: 'summary', firstKeptEntryId: 'k1', tokensBefore: 100 })),
@@ -220,7 +222,7 @@ const H = vi.hoisted(() => {
     resetServices: () => { services = makeServices(); },
     getServices: () => services,
     getLastSession: () => lastSession,
-    fireEvent: (event: unknown) => { listener?.(event); },
+    fireEvent: (event: unknown) => { for (const fn of [...(lastSession?.listeners ?? [])]) fn(event); },
     setSessionManagerFactory: (f: (() => unknown) | null) => { sessionManagerFactory = f; },
     setSessionSetup: (f: ((session: { agent: { finishTurn?: unknown } }) => void) | null) => { sessionSetup = f; },
     setBashExecute: (fn: (...a: never[]) => Promise<unknown>) => { bashExecute = fn; },
@@ -376,17 +378,18 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   it('session replacement re-subscribes once and re-disables compaction, old unsub first', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
-    expect(H.seq).toEqual(['subscribe', 'compaction-off']);
+    // Each bind subscribes twice: the stream adapter and the unpersisted tool image cache.
+    expect(H.seq).toEqual(['subscribe', 'subscribe', 'compaction-off']);
 
     session.reset(); // -> runtime.newSession() exercises the replacement seam
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(2);
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(4);
     expect(H.seq.filter((s) => s === 'compaction-off')).toHaveLength(2);
-    const firstUnsub = H.seq.indexOf('unsub');
-    const secondSubscribe = H.seq.indexOf('subscribe', H.seq.indexOf('subscribe') + 1);
-    expect(firstUnsub).toBeGreaterThan(-1);
-    expect(firstUnsub).toBeLessThan(secondSubscribe);
+    const oldUnsubs = H.seq.flatMap((s, i) => (s === 'unsub' ? [i] : []));
+    const newSubscribes = H.seq.flatMap((s, i) => (s === 'subscribe' ? [i] : [])).slice(2);
+    expect(oldUnsubs).toHaveLength(2);
+    expect(Math.max(...oldUnsubs)).toBeLessThan(Math.min(...newSubscribes));
   });
 
   it('reloads the shared extension runtime on replacement, not the first session (stale-ctx fix)', async () => {
@@ -2398,6 +2401,58 @@ describe('PiSession subagent records', () => {
   });
 });
 
+describe('PiSession unpersisted tool result images', () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await PiRuntime.disposeInstance();
+  });
+
+  const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+  const pngBlock = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
+  const toolEnd = (toolCallId: string) =>
+    ({ type: 'tool_execution_end', toolCallId, toolName: 'browser_screenshot', result: { content: [png] }, isError: false });
+  const resultEnd = (toolCallId: string) =>
+    ({ type: 'message_end', message: { role: 'toolResult', toolCallId, toolName: 'browser_screenshot', content: [png], isError: false, timestamp: 0 } });
+
+  it('serves a bound session\'s result images until its toolResult message ends', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    H.fireEvent(toolEnd('t1'));
+    expect(session.unpersistedToolResultImages('t1')).toEqual([pngBlock]);
+
+    H.fireEvent(resultEnd('t1'));
+    expect(session.unpersistedToolResultImages('t1')).toBeUndefined();
+    await session.dispose();
+  });
+
+  type NestedEngine = { createSession: (opts: unknown) => Promise<unknown>; forgetSession: (s: unknown) => void };
+  it.each<[string, (session: PiSession) => NestedEngine]>([
+    ['subagent', (session) =>
+      (session as unknown as { buildSubagentEngine: (pi: unknown, folder: unknown) => NestedEngine }).buildSubagentEngine(getPiCodingAgent(), cwdFolder())],
+    ['team', (session) => session.buildTeamEngine() as unknown as NestedEngine],
+  ])('the %s engine tracks a nested session from createSession until forgetSession', async (_label, engineOf) => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const folder = cwdFolder()!;
+    const listeners = new Set<(event: unknown) => void>();
+    const nested = { subscribe: (fn: (event: unknown) => void) => { listeners.add(fn); return () => listeners.delete(fn); } };
+    vi.spyOn(folder, 'createSubagentSession').mockResolvedValue(nested as never);
+    const forget = vi.spyOn(folder, 'forgetSubagentSession').mockImplementation(() => {});
+    const engine = engineOf(session);
+
+    const created = await engine.createSession({});
+    for (const fn of listeners) fn(toolEnd('nested-1'));
+    expect(session.unpersistedToolResultImages('nested-1')).toEqual([pngBlock]);
+
+    engine.forgetSession(created);
+    expect(session.unpersistedToolResultImages('nested-1')).toBeUndefined();
+    expect(listeners.size).toBe(0);
+    expect(forget).toHaveBeenCalledWith(nested);
+    await session.dispose();
+  });
+});
+
 describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
   afterEach(async () => {
     await PiRuntime.disposeInstance();
@@ -4167,9 +4222,9 @@ describe('PiSession session-replacement contract (what a destructive delete is s
     await detaching;
     await starting;
 
-    // Two binds: the one start() made, and the replacement that detach forced. Without the wait there
-    // is only start()'s, and the panel is left live on the deleted file.
-    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(2);
+    // Two binds, each subscribing the adapter and the image cache: the one start() made, and the
+    // replacement that detach forced. Without the wait there is only start()'s, and the panel is left live on the deleted file.
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(4);
   });
 
   it('whenReplaced() rejects when the replacement threw — the old session is still installed', async () => {
@@ -5265,7 +5320,7 @@ describe('the shell session job is scoped to the panel', () => {
     session.reset();
     await new Promise((r) => setTimeout(r, 0));
     // Non-vacuous: a reset that never replaced the pi session would leave every assertion below trivially true.
-    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(1);
+    expect(H.seq.filter((e) => e === 'subscribe')).toHaveLength(2);
 
     // A job rebuilt per conversation would mint a second handle and close the first, killing anything the
     // user had deliberately backgrounded before the reset.

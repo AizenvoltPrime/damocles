@@ -27,12 +27,14 @@ import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { stripIdeContext } from './ide-context';
 import { toImageBlocks } from '../branch-text';
+import { resultImageCount } from '../tool-result-text';
 import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '../context-snapshot';
 
 interface PiToolResult {
   text: string;
   isError: boolean;
+  imageCount?: number;
   details?: Record<string, unknown>;
 }
 
@@ -117,9 +119,12 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     if (entry.type !== 'message') continue;
     const message = (entry as { message?: { role?: string; toolCallId?: string; content?: unknown; details?: unknown; isError?: boolean } }).message;
     if (message?.role !== 'toolResult' || !message.toolCallId) continue;
+    const isError = message.isError === true;
+    const imageCount = isError ? 0 : resultImageCount(message);
     toolResults.set(message.toolCallId, {
       text: textOf(message.content),
-      isError: message.isError === true,
+      isError,
+      ...(imageCount > 0 ? { imageCount } : {}),
       ...(message.details && typeof message.details === 'object' ? { details: message.details as Record<string, unknown> } : {}),
     });
   }
@@ -221,6 +226,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         if (result) {
           tool.result = result.text;
           tool.isError = result.isError;
+          if (result.imageCount !== undefined) tool.imageCount = result.imageCount;
           if (result.details) tool.metadata = normalizeToolDetails(result.details);
         }
         tools.push(tool);

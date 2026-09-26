@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ToolCall } from '@shared/types/session';
+import type { ToolCall, ToolResultOwner } from '@shared/types/session';
 import { isShellTool, LIVE_OUTPUT_TOOLS } from '@shared/tool-names';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { cronToIntervalLabel } from '@shared/utils/cron';
@@ -32,6 +32,8 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
 import ToolCancelControl from './ToolCancelControl.vue';
+import ToolResultImages from './ToolResultImages.vue';
+import ImageLightbox from './ImageLightbox.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { sanitizeUrl } from '@/lib/sanitize-url';
 import { ownEntry } from '@/utils/ownEntry';
@@ -69,6 +71,7 @@ const uiStore = useUIStore();
 
 const props = defineProps<{
   tool: ToolCall;
+  owner?: ToolResultOwner | undefined;
 }>();
 
 const cancelSource = computed((): ExpandedToolSource => uiStore.expandedToolSource ?? 'session');
@@ -139,7 +142,9 @@ const statusBadge = computed(() => {
   return { label: props.tool.status, class: 'bg-muted text-muted-foreground border-muted', icon: IconWarning };
 });
 
-const hasResult = computed(() => Boolean(props.tool.result?.trim()));
+const hasResult = computed(() => Boolean(props.tool.result?.trim()) || (props.tool.imageCount ?? 0) > 0);
+
+const lightboxImageUrl = ref<string | null>(null);
 
 const SHIKI_LINE_LIMIT = 5000;
 
@@ -677,34 +682,37 @@ function handleFilePathClick(filePath: string): void {
             <IconCheck :size="14" class="text-primary" />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div class="mt-2">
-              <div v-if="useMarkdownResponse" class="pl-2">
-                <MarkdownRenderer :content="tool.result ?? ''" :base-url="webFetchBaseUrl" />
-              </div>
-              <template v-else-if="isCodeSearch">
-                <div v-if="codeSearchBlocks.length" class="space-y-4">
-                  <div v-for="(block, i) in codeSearchBlocks" :key="i" class="space-y-1.5">
-                    <a
-                      v-if="block.url"
-                      :href="sanitizeUrl(block.url)"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="text-xs font-medium text-primary hover:underline break-all"
-                    >{{ block.title }}</a>
-                    <div v-else class="text-xs font-medium text-foreground break-all">{{ block.title }}</div>
-                    <div v-if="block.meta" class="text-[11px] text-muted-foreground">{{ block.meta }}</div>
-                    <CodeBlock :code="block.code" :language="block.language" />
+            <div class="mt-2 space-y-3">
+              <template v-if="tool.result?.trim()">
+                <div v-if="useMarkdownResponse" class="pl-2">
+                  <MarkdownRenderer :content="tool.result ?? ''" :base-url="webFetchBaseUrl" />
+                </div>
+                <template v-else-if="isCodeSearch">
+                  <div v-if="codeSearchBlocks.length" class="space-y-4">
+                    <div v-for="(block, i) in codeSearchBlocks" :key="i" class="space-y-1.5">
+                      <a
+                        v-if="block.url"
+                        :href="sanitizeUrl(block.url)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-xs font-medium text-primary hover:underline break-all"
+                      >{{ block.title }}</a>
+                      <div v-else class="text-xs font-medium text-foreground break-all">{{ block.title }}</div>
+                      <div v-if="block.meta" class="text-[11px] text-muted-foreground">{{ block.meta }}</div>
+                      <CodeBlock :code="block.code" :language="block.language" />
+                    </div>
                   </div>
-                </div>
-                <CodeBlock v-else :code="tool.result ?? ''" language="text" />
+                  <CodeBlock v-else :code="tool.result ?? ''" language="text" />
+                </template>
+                <template v-else-if="isResultTooLarge">
+                  <div class="text-xs text-muted-foreground mb-1">
+                    {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}
+                  </div>
+                  <pre class="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded-md p-3 max-h-[60vh] overflow-auto">{{ tool.result }}</pre>
+                </template>
+                <CodeBlock v-else :code="tool.result ?? ''" :language="responseLanguage" />
               </template>
-              <template v-else-if="isResultTooLarge">
-                <div class="text-xs text-muted-foreground mb-1">
-                  {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}
-                </div>
-                <pre class="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded-md p-3 max-h-[60vh] overflow-auto">{{ tool.result }}</pre>
-              </template>
-              <CodeBlock v-else :code="tool.result ?? ''" :language="responseLanguage" />
+              <ToolResultImages :tool="tool" :owner="owner" @open="lightboxImageUrl = $event" />
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -715,5 +723,7 @@ function handleFilePathClick(filePath: string): void {
         </div>
       </template>
     </div>
+
+    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
   </OverlayShell>
 </template>

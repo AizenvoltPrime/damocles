@@ -7,7 +7,7 @@ import type { ModelInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
-import { joinResultText } from './tool-result-text';
+import { joinResultText, resultImageCount } from './tool-result-text';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 import type { TurnState } from './session-state';
@@ -658,7 +658,8 @@ export class PiStreamAdapter {
       this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', durationMs });
       return;
     }
-    this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), durationMs });
+    const imageCount = resultImageCount(result);
+    this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
     const details = (result as { details?: unknown } | undefined)?.details;
     if (details && typeof details === 'object') {
       this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata: normalizeToolDetails(details as Record<string, unknown>) });

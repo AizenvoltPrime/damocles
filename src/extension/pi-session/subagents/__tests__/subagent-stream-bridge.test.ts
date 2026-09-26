@@ -126,6 +126,24 @@ describe('SubagentStreamBridge streaming', () => {
     expect(assistant!.data.message.content[0]).toMatchObject({ type: 'tool_use', id: 'tc1', name: 'Read' });
   });
 
+  it('marks a nested tool result that carries images with imageCount, never a text-only or failed one', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+    const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
+
+    session.emit({ type: 'tool_execution_end', toolCallId: 'img', toolName: 'browser_screenshot', result: { content: [{ type: 'text', text: 'shot' }, png] }, isError: false });
+    session.emit({ type: 'tool_execution_end', toolCallId: 'text', toolName: 'read', result: { content: [{ type: 'text', text: 'a' }] }, isError: false });
+    session.emit({ type: 'tool_execution_end', toolCallId: 'fail', toolName: 'read', result: { content: [png] }, isError: true });
+
+    const completed = sent.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolCompleted' }> => m.type === 'toolCompleted');
+    expect(completed.find((m) => m.toolUseId === 'img')).toMatchObject({ result: 'shot', imageCount: 1, parentToolUseId: 'toolu_parent' });
+    expect(completed.find((m) => m.toolUseId === 'text')).not.toHaveProperty('imageCount');
+    expect(sent.find((m) => m.type === 'toolFailed')).not.toHaveProperty('imageCount');
+    expect(JSON.stringify(sent)).not.toContain('AAAA');
+  });
+
   it('finish emits toolCompleted{Agent} so a FOREGROUND card resolves without the parent stream event', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent); // isBackground: false → foreground

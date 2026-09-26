@@ -70,7 +70,7 @@ export type HistoryAgentContentBlock =
   | { type: 'thinking'; thinking: string }
   | { type: 'text'; text: string }
   | ImageBlock
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; metadata?: Record<string, unknown> };
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> };
 
 export interface HistoryAgentMessage {
   role: 'user' | 'assistant';
@@ -83,6 +83,8 @@ export interface HistoryToolCall {
   input: Record<string, unknown>;
   result?: string;
   isError?: boolean;
+  /** Success results only; the images load on demand. */
+  imageCount?: number;
   feedback?: string;
   agentToolCalls?: HistoryToolCall[];
   agentModel?: string;

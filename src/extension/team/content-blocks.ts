@@ -1,5 +1,5 @@
 import type { TeamAgentContentBlock, TeamAgentHistoryMessage } from '../../shared/types/team';
-import { joinResultText } from '../pi-session/tool-result-text';
+import { joinResultText, resultImageCount } from '../pi-session/tool-result-text';
 import { toImageBlocks } from '../pi-session/branch-text';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../pi-session/tool-normalization';
 import type { PersistedAgentMessage } from '../pi-session/agent-records';
@@ -38,11 +38,13 @@ export function toolResultBlock(toolCallId: string, result: unknown, isError: bo
   const details = (result as { details?: unknown } | undefined)?.details;
   // The cancelled marker lives in the details, so the card knows a stopped call only through `metadata`.
   const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
+  const imageCount = isError ? 0 : resultImageCount(result);
   return {
     type: 'tool_result',
     tool_use_id: toolCallId,
     content: joinResultText(result),
     is_error: isError,
+    ...(imageCount > 0 ? { imageCount } : {}),
     ...(metadata ? { metadata } : {}),
   };
 }

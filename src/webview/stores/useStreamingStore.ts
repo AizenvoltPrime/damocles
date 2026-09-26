@@ -10,6 +10,7 @@ export interface ToolStatusEntry {
   errorMessage?: string;
   feedback?: string;
   durationMs?: number;
+  imageCount?: number;
 }
 
 export const useStreamingStore = defineStore("streaming", () => {
@@ -167,7 +168,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   function updateToolStatus(
     toolUseId: string,
     status: ToolCall["status"],
-    options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number }
+    options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number; imageCount?: number }
   ): void {
     for (const [i, msg] of messages.value.entries()) {
       if (!msg.toolCalls) continue;
@@ -189,6 +190,7 @@ export const useStreamingStore = defineStore("streaming", () => {
         ...(options?.errorMessage !== undefined && { errorMessage: options.errorMessage }),
         ...(options?.feedback !== undefined && { feedback: options.feedback }),
         ...(options?.durationMs !== undefined && { durationMs: options.durationMs }),
+        ...(options?.imageCount !== undefined && { imageCount: options.imageCount }),
       };
       const newMessages = [...messages.value];
       newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
@@ -254,6 +256,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       ...(cachedStatus?.feedback !== undefined && { feedback: cachedStatus.feedback }),
       ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
       ...(cachedStatus?.durationMs !== undefined && { durationMs: cachedStatus.durationMs }),
+      ...(cachedStatus?.imageCount !== undefined && { imageCount: cachedStatus.imageCount }),
     };
 
     if (cachedStatus) {
@@ -340,6 +343,7 @@ export const useStreamingStore = defineStore("streaming", () => {
           ...(cached?.errorMessage !== undefined && { errorMessage: cached.errorMessage }),
           ...(cached?.feedback !== undefined && { feedback: cached.feedback }),
           ...(cached?.durationMs !== undefined && { durationMs: cached.durationMs }),
+          ...(cached?.imageCount !== undefined && { imageCount: cached.imageCount }),
           ...(cachedMetadata !== undefined && { metadata: cachedMetadata }),
         };
       });
