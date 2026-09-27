@@ -45,7 +45,6 @@ function makePanel(opts: {
     }),
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,
-    currentPromptIndex: () => 0,
   };
   return { panel, canUseTool, evaluatePermission };
 }

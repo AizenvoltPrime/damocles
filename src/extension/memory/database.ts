@@ -9,7 +9,7 @@ type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
 type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-const CURRENT_VERSION = 4;
+const CURRENT_VERSION = 5;
 
 // Shared so the desynced-index heal can DROP + recreate the FTS table with identical DDL.
 const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -153,11 +153,49 @@ ALTER TABLE memory_candidates ADD COLUMN workspace TEXT;
 CREATE INDEX IF NOT EXISTS idx_candidates_consumed_workspace ON memory_candidates(consumed, workspace);
 `;
 
+// Quality audit: runs carry a cross-window lease (holder + heartbeat_at); proposals persist so review and
+// revert outlive a reload. before_state is JSON (see audit.ts).
+const MIGRATION_V5 = `
+CREATE TABLE memory_audit_runs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('running','completed','cancelled','failed')),
+  holder TEXT NOT NULL,
+  heartbeat_at INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  total INTEGER NOT NULL DEFAULT 0,
+  graded INTEGER NOT NULL DEFAULT 0,
+  failed_batches INTEGER NOT NULL DEFAULT 0,
+  rubric_version INTEGER NOT NULL
+);
+CREATE INDEX idx_audit_runs_status ON memory_audit_runs(status);
+
+CREATE TABLE memory_audit_proposals (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  memory_id TEXT,
+  action TEXT NOT NULL CHECK (action IN ('forget','rescope_global','rescope_workspace','to_episode','profile_rewrite')),
+  target_workspace TEXT,
+  profile_scope TEXT,
+  profile_workspace TEXT,
+  proposed_text TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  snapshot_hash TEXT,
+  snapshot_updated_at INTEGER,
+  before_state TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','applied','rejected','stale','reverted')),
+  decided_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_audit_proposals_run_status ON memory_audit_proposals(run_id, status);
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
   3: MIGRATION_V3,
   4: MIGRATION_V4,
+  5: MIGRATION_V5,
 };
 
 export interface OpenDatabaseOptions {

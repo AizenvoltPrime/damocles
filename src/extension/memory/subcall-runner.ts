@@ -1,7 +1,7 @@
 import { PiRuntime } from '../pi-session/pi-runtime';
 
 /** The kind of memory sub-call, used to size the per-call timeout. */
-export type MemorySubCallPurpose = 'rerank' | 'extract' | 'merge' | 'profile';
+export type MemorySubCallPurpose = 'rerank' | 'extract' | 'merge' | 'profile' | 'audit';
 
 /** Why a sub-call produced no value: `transient` (retryable) vs `no-model` (no credentials/config). */
 export type MemorySubCallFailure = 'transient' | 'no-model';
@@ -31,6 +31,11 @@ const EXTRACTION_TIMEOUT_MS = 45_000;
 
 function defaultTimeoutMs(purpose: MemorySubCallPurpose): number {
   return purpose === 'rerank' ? RERANK_TIMEOUT_MS : EXTRACTION_TIMEOUT_MS;
+}
+
+/** The model memory sub-calls run on, with its API rates; `null` when none is configured. */
+export function describeMemorySubCallModel(): ReturnType<PiRuntime['describeSubCallModel']> {
+  return PiRuntime.get().describeSubCallModel();
 }
 
 /**

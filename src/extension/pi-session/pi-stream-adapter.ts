@@ -15,6 +15,9 @@ import { usageOfEntry } from '../../shared/usage-accounting';
 import { sessionUsageMessage } from './session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from './context-snapshot';
 
+/** A message as pi emits and persists it; the mid-stream marker matches entries to deliveries by its identity. */
+type PiMessage = Extract<AgentSessionEvent, { type: 'message_end' }>['message'];
+
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
   cwd: string;
@@ -38,14 +41,16 @@ export interface PiStreamAdapterDeps {
   sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
   onBudgetStop: () => void;
-  /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer.
+  /** pi delivered a user message (a steer, a follow-up or a run's opening prompt) — flush the queued-input buffer.
    *  The delivered text is passed because the host injects user messages of its own and must be able to
-   *  tell one of those apart from a queued batch. Returns true when the delivery collapsed a real queued
-   *  batch (so its mid-stream marker is owed), false for a plain follow-up or an empty buffer. */
+   *  tell one of those apart from a queued batch. Returns true when the delivery was a real queued batch
+   *  or a cancel note (so its mid-stream marker is owed), false for a plain follow-up or an empty buffer. */
   onUserMessageDelivered: (deliveredText: string) => boolean;
-  /** A delivered queued batch's pi user entry id is now committed to the tree (resolved at the next
-   *  assistant message_start). Persist the mid-stream marker keyed to it. */
-  onMidStreamBatchCommitted: (userEntryId: string) => void;
+  /** A delivered batch's or cancel note's pi user entry id is now committed to the tree (resolved at the
+   *  next assistant message_start). Persist the mid-stream marker keyed to it. */
+  onMidStreamEntryCommitted: (userEntryId: string) => void;
+  /** The id of the user entry this turn's `prompt()` committed, or null until pi has stored it. */
+  promptEntryId: () => string | null;
   /** The turn's own lifecycle moved. PiSession derives and emits `sessionStateChanged` from it, so
    *  the adapter never emits that message itself and a pending prompt can outrank this. */
   onTurnStateChanged: (state: TurnState) => void;
@@ -106,19 +111,6 @@ function explainThinkingDroppedReason(reason: string): string {
   }
 }
 
-/** The id of the last user-role message entry on the active branch — the turn's stable user entry id. */
-function lastUserEntryId(session: AgentSession): string | null {
-  const sm = session.sessionManager;
-  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry && entry.type === 'message' && (entry as { message?: { role?: string } }).message?.role === 'user') {
-      return entry.id;
-    }
-  }
-  return null;
-}
-
 /**
  * The id of the latest `compaction` entry on the active branch — the tree node the boundary card
  * branches at (its parent is the last pre-compaction message) for rewind-to-before-compaction. Mirrors
@@ -167,10 +159,10 @@ export class PiStreamAdapter {
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
   private _userIdEmitted = false;
-  /** Set when a queued batch is delivered (user message_end) but pi hasn't yet committed its user entry
-   *  to the tree. Resolved one-shot at the next assistant message_start, where the entry is committed —
-   *  the same boundary `emitUserMessageIdOnce` and the checkpoint engine use to key the turn's entry. */
-  private _midStreamMarkerPending = false;
+  /** Delivered queued batches and cancel notes (user message_end) whose entries pi had not committed yet,
+   *  in delivery order. Several arrive together when they were pending at one boundary. Resolved at the
+   *  next assistant message_start, where the entries are committed. */
+  private _midStreamPending: PiMessage[] = [];
   /** Whether this adapter has already told the user how the running compaction ended. `PiSession.compact()`
    *  reads it so pi's rethrow does not stack a second card on the one emitted from `compaction_end`. */
   private _compactionReported = false;
@@ -294,38 +286,50 @@ export class PiStreamAdapter {
     this.deps.onTurnStateChanged('running');
     this.emitSessionStartOnce();
 
-    // Defer userMessageIdAssigned until the real pi user entry id is known (resolved on the first
-    // assistant message_start). The webview links by correlationId, so timing is decoupled (FR-3); the
-    // pi entry id is the single stable key shared by live and replayed turns for checkpoint/rewind.
+    // Defer userMessageIdAssigned until the real pi user entry id is known. The webview links by
+    // correlationId, so timing is decoupled (FR-3); the pi entry id is the single stable key shared by
+    // live and replayed turns for checkpoint/rewind.
     this._pendingCorrelationId = correlationId;
     this._userIdEmitted = false;
-    // A queued delivery from a prior turn that aborted before its resolving assistant message_start must
-    // not leak its pending marker into this turn (it would mis-key to this turn's entry).
-    this._midStreamMarkerPending = false;
+    // A delivery whose run aborted before its resolving assistant message_start may belong to a replaced session.
+    this._midStreamPending = [];
   }
 
-  /** Emit `userMessageIdAssigned` once per turn with the pi user entry id, for every turn (FR-3). */
-  private emitUserMessageIdOnce(session: AgentSession): void {
+  /**
+   * Emit `userMessageIdAssigned` once per turn with the pi user entry id, for every turn (FR-3). Not the
+   * branch's last user entry: pi stores the prompt only after its own message_end, so at its
+   * message_start that is the previous prompt's entry.
+   */
+  private emitUserMessageIdOnce(): void {
     if (this._userIdEmitted || !this._pendingCorrelationId) return;
-    const userEntryId = lastUserEntryId(session);
+    const userEntryId = this.deps.promptEntryId();
     if (!userEntryId) return;
     this._userIdEmitted = true;
     this.emit({ type: 'userMessageIdAssigned', sdkMessageId: userEntryId, correlationId: this._pendingCorrelationId });
   }
 
   /**
-   * Persist a delivered queued batch's mid-stream marker once its pi user entry is committed. The
-   * delivery event (user message_end) fires before pi commits that entry to the tree, so reading the
-   * leaf there mis-keys it to the previous turn's entry. The next assistant message_start is the first
-   * point the steered entry is committed (where the checkpoint engine also keys its entries), so the
-   * marker is resolved here. One-shot per delivered batch.
+   * Persist the mid-stream marker of each delivered batch and cancel note once pi has committed its user
+   * entry. The delivery event (user message_end) fires before pi commits that entry, and the next
+   * assistant message_start is the first point it is committed (where the checkpoint engine also keys
+   * its entries). Each entry is found by message identity, since pi persists the delivered message
+   * object itself, so a note and a batch delivered at one boundary each get their own marker.
    */
-  private resolveMidStreamMarker(session: AgentSession, role: string): void {
-    if (!this._midStreamMarkerPending || role !== 'assistant') return;
-    const userEntryId = lastUserEntryId(session);
-    if (!userEntryId) return;
-    this._midStreamMarkerPending = false;
-    this.deps.onMidStreamBatchCommitted(userEntryId);
+  private resolveMidStreamMarkers(session: AgentSession, role: string): void {
+    if (this._midStreamPending.length === 0 || role !== 'assistant') return;
+    const sm = session.sessionManager;
+    const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+    const pending = new Set(this._midStreamPending);
+    const committed = new Map<PiMessage, string>();
+    for (let i = branch.length - 1; i >= 0 && committed.size < pending.size; i--) {
+      const entry = branch[i];
+      if (entry?.type === 'message' && pending.has(entry.message)) committed.set(entry.message, entry.id);
+    }
+    this._midStreamPending = this._midStreamPending.filter((message) => !committed.has(message));
+    for (const message of pending) {
+      const id = committed.get(message);
+      if (id) this.deps.onMidStreamEntryCommitted(id);
+    }
   }
 
   /** Whether a real agent run (LLM turn) was observed since the last `beginTurn`. False when `prompt()`
@@ -429,13 +433,9 @@ export class PiStreamAdapter {
         // messages — notably the `before_agent_start` context-injection custom message
         // (CONTEXT_INJECTION_CUSTOM_TYPE, US-005) — are intentionally not rendered: they are model
         // context, not a visible chat bubble.
-        // Resolve the turn's user entry id as early as the user message lands in the tree (its own
-        // message_start), falling through to the first assistant message_start. Emits once per turn.
-        this.emitUserMessageIdOnce(session);
-        // A delivered queued batch's user entry isn't committed to the tree at its own message_end (pi
-        // persists it after), so the mid-stream marker is keyed here at the next assistant message_start
-        // — where the entry is committed (same boundary the checkpoint engine keys its entries).
-        this.resolveMidStreamMarker(session, event.message.role);
+        // The first message_start after pi stored the turn's prompt emits its entry id, once per turn.
+        this.emitUserMessageIdOnce();
+        this.resolveMidStreamMarkers(session, event.message.role);
         if (event.message.role === 'assistant') this.startAssistantMessage();
         break;
       case 'message_update':
@@ -457,10 +457,10 @@ export class PiStreamAdapter {
           this.maybeEmitCacheMissNotice(session, event.message);
           this.maybeEmitThinkingDroppedNotice(event.message);
         } else if (event.message.role === 'user' && !this._aborted) {
-          // A user message delivered mid-run is a queued injection: the initial prompt lives in the
-          // run's initial context and never emits this. Collapse the queued chips now, and if a real
-          // batch was delivered, arm the mid-stream marker for the next assistant message_start.
-          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content))) this._midStreamMarkerPending = true;
+          // pi emits this for a run's opening prompt too, which the session reports as its own only
+          // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
+          // cancel note was delivered, owe it a mid-stream marker at the next assistant message_start.
+          if (this.deps.onUserMessageDelivered(userMessageText(event.message.content))) this._midStreamPending.push(event.message);
         }
         break;
       case 'tool_execution_start': {

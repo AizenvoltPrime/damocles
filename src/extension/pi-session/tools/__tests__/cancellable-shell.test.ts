@@ -9,7 +9,7 @@ import type { PiCodingAgentModule } from '../../pi-loader';
 import { withPerCallCancel } from '../cancellable-shell';
 import { ShellCancelStore, sanitizeCancelNote, type ShellCancelRegistry } from '../shell-cancel-registry';
 import { createBashTool, type ShellOptions } from '../bash-tool';
-import { CANCELLED_TOOL_DETAIL_KEY } from '../../../../shared/types/session';
+import { CANCEL_NOTE_DETAIL_KEY, CANCELLED_TOOL_DETAIL_KEY } from '../../../../shared/types/session';
 import { normalizeToolDetails } from '../../tool-normalization';
 import { reconstructMessages } from '../../session-store/history-loader';
 
@@ -132,7 +132,12 @@ describe('withPerCallCancel: user cancel', () => {
     expect(run.signal.aborted).toBe(false);
     // The partial's details carry truncation state and the overflow path the abort body does not, so
     // they must survive alongside the marker rather than be replaced by it.
-    expect(result.details).toEqual({ truncation: { truncated: true }, fullOutputPath: '/tmp/full.log', [CANCELLED_TOOL_DETAIL_KEY]: true });
+    expect(result.details).toEqual({
+      truncation: { truncated: true },
+      fullOutputPath: '/tmp/full.log',
+      [CANCELLED_TOOL_DETAIL_KEY]: true,
+      [CANCEL_NOTE_DETAIL_KEY]: 'wrong dir, use seq 1 5',
+    });
     expect(onUpdate).toHaveBeenCalledWith({ content: [{ type: 'text', text: 'line 1\nline 2' }], details: { truncation: { truncated: true }, fullOutputPath: '/tmp/full.log' } });
   });
 
@@ -201,9 +206,12 @@ describe('withPerCallCancel: user cancel', () => {
     await shell.started;
     store.cancel('call-note', 'wrong loop, use seq 1 5');
 
-    const text = textOf(await pending);
+    const result = await pending;
+    const text = textOf(result);
     expect(text).not.toContain('[User note:');
     expect(text).not.toContain('wrong loop, use seq 1 5');
+    // Recorded only on `details`, which pi never sends to the model, so a run the note starts can be told apart from a prompt.
+    expect(result.details).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true, [CANCEL_NOTE_DETAIL_KEY]: 'wrong loop, use seq 1 5' });
   });
 });
 

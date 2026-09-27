@@ -161,7 +161,6 @@ function fakePanel(): PanelGateContext & { onBeforeSettle: ReturnType<typeof vi.
     }),
     getPlanFilePath: () => '/plans/plan.md',
     postMessage: vi.fn(),
-    currentPromptIndex: () => 0,
     budgetStopRequested: () => false,
     onBeforeSettle: vi.fn(async () => undefined),
   };

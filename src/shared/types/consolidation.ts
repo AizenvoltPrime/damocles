@@ -15,6 +15,8 @@ export interface ConsolidationExtractedMemory {
   kind: string;
   scope: string;
   content: string;
+  /** Set when a project item was filed under a workspace other than the conversation's. */
+  workspace?: string;
   outcome: ConsolidationPersistOutcome;
 }
 

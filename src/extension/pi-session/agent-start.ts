@@ -1,8 +1,8 @@
-import * as vscode from 'vscode';
 import type {
   BeforeAgentStartEvent,
   BeforeAgentStartEventResult,
   BuildSystemPromptOptions,
+  ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
 import { buildSystemPrompt, TONE_REMINDER_SECTION } from './system-prompt';
 import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
@@ -12,10 +12,18 @@ import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance } from './plan-mode-guidance';
 import { mechanismLabels } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
+import { CONTEXT_INJECTION_CUSTOM_TYPE, readLiveInjections } from './live-injections';
+import { isCancelNoteDispatch, nextPromptIndex } from './session-store/prompt-index';
+import { estimateTokens } from '../memory/token-estimate';
+import { escapeAttribute } from '../memory/injection/render';
+import { splitIdeContext } from '@shared/ide-context';
+import type { ContextInjectionDetailsV1, LiveInjections } from '../memory/injection/details';
+import type { InjectionBuildResult } from '../memory/managers/injection-manager';
 import type { PanelGateContext, SystemPromptEnv } from './permission-gate';
 
-/** customType marking the per-prompt context injection so the webview adapter can suppress it. */
-export const CONTEXT_INJECTION_CUSTOM_TYPE = 'damocles-context-injection';
+/** The session-manager reads injection needs: the projection pi will send to the model, and the branch
+ *  the prompt extends. */
+export type ProjectionReader = Pick<ExtensionContext['sessionManager'], 'buildSessionProjection' | 'getBranch'>;
 
 /**
  * Outside plan mode, name the session's existing plan file every turn so the model never has to hunt for
@@ -195,42 +203,47 @@ async function buildDamoclesSystemPrompt(
 }
 
 /**
- * The dynamic memory catalog for this prompt (US-005): builds the catalog (incl. first-message profile
- * + handoff), emits the `contextInjectionStarted`/`memoryInjectionUpdate`/`contextInjectionComplete`
- * webview lifecycle messages keyed by prompt index, persists the injection record, and marks the
- * session's first message sent. The `contextInjectionStarted` emit seeds the store's
- * `executionPromptIndex`, without which the store drops the subsequent `memoryInjectionUpdate`. Returns
- * the catalog text to inject as a custom message; empty string when memory is disabled or yields nothing.
+ * This prompt's memory injection, a delta against `live`. Emits `contextInjectionStarted`,
+ * which seeds the store's `executionPromptIndex`; without it the store drops the later
+ * `memoryInjectionUpdate`. Null when memory is disabled or the build failed.
  */
-async function buildMemoryContext(panel: PanelGateContext, sessionId: string, prompt: string): Promise<string> {
+async function buildMemoryContext(
+  panel: PanelGateContext,
+  sessionId: string,
+  prompt: string,
+  live: LiveInjections,
+  promptIndex: number,
+): Promise<InjectionBuildResult | null> {
   const memory = panel.memoryService;
-  if (!memory?.isEnabled) return '';
-  const promptIndex = panel.currentPromptIndex();
+  if (!memory?.isEnabled) return null;
   panel.postMessage({ type: 'contextInjectionStarted', promptIndex });
-  const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
+  // The IDE block is Damocles-authored and the only source of the file gate's editor file, never the
+  // query: a message sent without one attached no file.
+  const { context: ide, text: userText } = splitIdeContext(prompt);
+  const activeFile = ide?.filePath ?? null;
   try {
     await memory.ensureInitialized();
-    const result = await memory.buildInjectionContext(sessionId || null, panel.getSystemPromptEnv().cwd, activeFile, prompt);
-    if (result.metadata) {
-      panel.postMessage({ type: 'memoryInjectionUpdate', promptIndex, data: result.metadata });
-      if (sessionId) await memory.persistMemoryInjection(sessionId, promptIndex, result.metadata);
-    }
-    // Profile + handoff are already folded into `result.context` on the first message; mark it sent so
-    // later turns inject fresh catalog only (no duplicated profile/handoff).
-    if (sessionId) memory.markFirstMessageSent(sessionId);
-    return result.context ?? '';
+    return await memory.buildInjectionContext({
+      sessionId: sessionId || null,
+      workspace: panel.getSystemPromptEnv().cwd,
+      activeFile,
+      prompt: userText,
+      live,
+      promptIndex,
+    });
   } catch (err) {
     log('[PiAgentStart] memory injection failed: %O', err);
-    return '';
-  } finally {
-    panel.postMessage({ type: 'contextInjectionComplete', promptIndex });
+    return null;
   }
 }
 
-/** The dynamic compass status tag for this prompt (US-005), mirroring the SDK path's `getCompassContext`. */
-function buildCompassContext(panel: PanelGateContext): string {
+/**
+ * The Compass status line and its change key. The key leaves out the relative "indexed" age,
+ * which changes every minute, so the line is re-sent only when the state itself changes.
+ */
+export function buildCompassContext(panel: PanelGateContext): { text: string; key: string } | null {
   const compass = panel.compassService;
-  if (!compass?.isEnabled) return '';
+  if (!compass?.isEnabled) return null;
   try {
     const status = compass.getStatus();
     const lastMs = status.lastIndexedAt;
@@ -240,30 +253,34 @@ function buildCompassContext(panel: PanelGateContext): string {
       indexedAgo = diffMin < 1 ? 'just now' : diffMin < 60 ? `${diffMin}m ago` : `${Math.floor(diffMin / 60)}h ago`;
     }
     const isStale = lastMs ? Date.now() - lastMs > 30 * 60_000 : false;
+    const failed = status.state === 'error' || status.state === 'failed';
+    const errorText = failed && status.error ? status.error : '';
     const staleAttr = isStale ? ' stale="true"' : '';
-    const errorAttr =
-      (status.state === 'error' || status.state === 'failed') && status.error
-        ? ` error="${status.error.replace(/"/g, '&quot;')}"`
-        : '';
+    const errorAttr = errorText ? ` error="${escapeAttribute(errorText)}"` : '';
+    const key = [status.state, status.nodeCount, status.edgeCount, isStale ? 'stale' : '', errorText].join('|');
     const xmlTag = `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
-    if (status.state === 'error' || status.state === 'failed') return `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`;
-    if (isStale) return `${xmlTag}\nCompass graph is stale (indexed ${indexedAgo}). Verify Compass results with file reads.`;
-    return `${xmlTag}\nCompass is ready (${status.nodeCount} entities).`;
+    if (failed) return { text: `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`, key };
+    if (isStale) return { text: `${xmlTag}\nCompass graph is stale (indexed ${indexedAgo}). Verify Compass results with file reads.`, key };
+    return { text: `${xmlTag}\nCompass is ready (${status.nodeCount} entities).`, key };
   } catch {
-    return '';
+    return null;
   }
 }
 
 /**
- * The single `before_agent_start` handler for the pi path (US-005 + US-007). Writes the Damocles
+ * The single `before_agent_start` handler for the pi path. Writes the Damocles
  * prompt into `event.systemPromptOptions` (replacing pi's boilerplate, preserving project context) and
- * returns the dynamic memory catalog + compass status for this prompt as a NON-displayed custom
- * message. Dynamic context goes in the message, never a section, so the cached prefix stays stable.
+ * returns what is new for this prompt (memories, notices, profile, a changed Compass status) as a
+ * NON-displayed custom message whose `details` record what it carries. Dynamic context goes in the
+ * message, never a section, so the cached prefix stays stable. No message when nothing is new.
+ * `isLive` answers whether a panel still holds `sessionId`, re-checked after the memory build's await.
  */
 export async function buildAgentStartResult(
   event: BeforeAgentStartEvent,
   panel: PanelGateContext,
   sessionId: string,
+  sessionManager: ProjectionReader,
+  isLive: () => boolean,
 ): Promise<BeforeAgentStartEventResult | undefined> {
   const prompt = await buildDamoclesSystemPrompt(event, panel, sessionId);
   const options = event.systemPromptOptions;
@@ -276,13 +293,43 @@ export async function buildAgentStartResult(
   for (const name of Object.keys(options.sections)) delete options.sections[name];
   Object.assign(options.sections, prompt.sections);
 
-  const dynamicParts = [await buildMemoryContext(panel, sessionId, event.prompt), buildCompassContext(panel)].filter(
-    (part) => part.length > 0,
-  );
-
   const result: BeforeAgentStartEventResult = {};
-  if (dynamicParts.length > 0) {
-    result.message = { customType: CONTEXT_INJECTION_CUSTOM_TYPE, content: dynamicParts.join('\n\n'), display: false };
+  const memoryEnabled = !!panel.memoryService?.isEnabled;
+  const compass = buildCompassContext(panel);
+  if (!memoryEnabled && !compass) return result;
+
+  const live = readLiveInjections(sessionManager.buildSessionProjection().messages);
+  // pi commits this prompt's user entry only after the handler returns, and adds no prompt before it.
+  const branch = sessionManager.getBranch();
+  const cancelNote = isCancelNoteDispatch(branch, event.prompt);
+  const promptIndex = cancelNote ? nextPromptIndex(branch) - 1 : nextPromptIndex(branch);
+  // A note gets no memory build of its own, as when it is steered into a running run; building one here
+  // would overwrite the Injected Context record of the prompt it annotates.
+  const memory = cancelNote ? null : await buildMemoryContext(panel, sessionId, event.prompt, live, promptIndex);
+  // A delete during the build detaches every holder first; a write now would recreate the deleted
+  // session's injection database.
+  if (!isLive()) return result;
+  const compassText = compass && compass.key !== live.compassKey ? compass.text : '';
+  const content = [memory?.text ?? '', compassText].filter((part) => part.length > 0).join('\n\n');
+
+  if (content) {
+    const details: ContextInjectionDetailsV1 = {
+      ...(memory?.details ?? { v: 1, promptIndex, memories: [], notices: [], profile: false, compassKey: null }),
+      compassKey: compassText && compass ? compass.key : null,
+    };
+    result.message = { customType: CONTEXT_INJECTION_CUSTOM_TYPE, content, display: false, details };
   }
+
+  if (memory) {
+    // Set after the join so the overlay shows the model's input byte for byte.
+    const display = memory.display;
+    display.exactText = content;
+    display.compass = compass ? { state: compassText ? 'injected' : 'unchanged', text: compassText } : { state: 'disabled', text: '' };
+    display.tokens.compass = estimateTokens(compassText);
+    display.tokens.total = display.tokens.memories + display.tokens.notices + display.tokens.profile + display.tokens.compass;
+    panel.postMessage({ type: 'memoryInjectionUpdate', promptIndex, data: display });
+    if (sessionId) await panel.memoryService?.persistMemoryInjection(sessionId, promptIndex, display);
+  }
+  if (memoryEnabled && !cancelNote) panel.postMessage({ type: 'contextInjectionComplete', promptIndex });
   return result;
 }

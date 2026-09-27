@@ -9,20 +9,21 @@ import { announceHeldElsewhere, claimStoredSession, findStoredSessionHolder } fr
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
 
-/** Build a `userMessage` payload for a locally-handled slash-command turn that bypasses sendMessage. */
+/** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
+ *  entry, so it is injected: it names no prompt and carries the latest prompt's index, as a cancel note does. */
 function stampUserMessage(
   ctx: HandlerContext,
   content: string,
-  opts: { contentBlocks?: UserContentBlock[]; correlationId: string; isInjected?: boolean },
+  opts: { contentBlocks?: UserContentBlock[]; correlationId: string },
 ): import("../../../../shared/types/messages").ExtensionToWebviewMessage {
-  const promptIndex = Math.max(0, ctx.session.currentPromptIndex);
   return {
     type: "userMessage",
     content,
     correlationId: opts.correlationId,
-    promptIndex,
+    promptIndex: ctx.session.currentPromptIndex,
     ...(opts.contentBlocks !== undefined ? { contentBlocks: opts.contentBlocks } : {}),
-    ...(opts.isInjected ? { isInjected: true } : {}),
+    isInjected: true,
+    isCommandEcho: true,
   };
 }
 
@@ -133,7 +134,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           const result = resolveDirectCommand(skillName);
           if (result.kind === "notification") {
             const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
+            postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
             postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
             return { kind: "handled" };
           }

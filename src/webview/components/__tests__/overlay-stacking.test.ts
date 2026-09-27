@@ -12,6 +12,7 @@ import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import SubagentOverlay from '../SubagentOverlay.vue';
 import BackgroundTasksOverlay from '../BackgroundTasksOverlay.vue';
 import MemoryPanel from '../MemoryPanel.vue';
+import MemoryAuditOverlay from '../memory-audit/MemoryAuditOverlay.vue';
 import OverlayShell from '../OverlayShell.vue';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
@@ -119,6 +120,10 @@ function openMemoryPanel(): VueWrapper {
     global: { plugins: [i18n], stubs: { MarkdownRenderer: true } },
     attachTo: document.body,
   }));
+}
+
+function openMemoryAuditOverlay(): VueWrapper {
+  return track(mount(MemoryAuditOverlay, { global: { plugins: [i18n] }, attachTo: document.body }));
 }
 
 function pressEscape(): void {
@@ -248,6 +253,7 @@ describe('the overlay opened on its own', () => {
     ['team agent overlay', openTeamAgentOverlay],
     ['subagent overlay', openSubagentOverlay],
     ['memory panel', openMemoryPanel],
+    ['memory audit overlay', openMemoryAuditOverlay],
   ])('renders %s at the base of the stack', (_name, open) => {
     expect(zIndexOf(open())).toBe(BASE_Z);
   });
@@ -269,6 +275,18 @@ describe('the overlay opened on its own', () => {
     pressEscape();
 
     expect(toolOverlay.emitted('close')).toHaveLength(1);
+    expect(panel.emitted('close')).toBeUndefined();
+  });
+
+  it('raises the audit overlay above the memory panel it is opened from, and Escape closes only the audit', () => {
+    const panel = openMemoryPanel();
+    const audit = openMemoryAuditOverlay();
+
+    expect(zIndexOf(audit)).toBe(zIndexOf(panel) + 1);
+
+    pressEscape();
+
+    expect(audit.emitted('close')).toHaveLength(1);
     expect(panel.emitted('close')).toBeUndefined();
   });
 

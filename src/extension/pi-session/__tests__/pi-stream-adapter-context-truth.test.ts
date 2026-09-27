@@ -50,7 +50,8 @@ function makeAdapter(
     showThinkingDroppedNotices: gates?.showThinkingDroppedNotices ?? (() => true),
     onBudgetStop: () => undefined,
     onUserMessageDelivered: () => false,
-    onMidStreamBatchCommitted: () => undefined,
+    onMidStreamEntryCommitted: () => undefined,
+    promptEntryId: () => null,
     onTurnStateChanged: () => undefined,
   });
 }

@@ -14,21 +14,34 @@ import { log } from '../logger';
  */
 
 /**
- * The panel's own session: queue the note as a real user message for the next turn boundary.
+ * The panel's own session: steer the note in as a real user message, which pi delivers at the next
+ * tool boundary of the running run, so the model's next request carries the cancelled result and the
+ * note together. A follow-up would reach it only after the model had answered the cancelled result.
  *
  * `expandPromptTemplates: false` is the whole leading-slash guard. With it, `prompt()` skips the
  * extension-command dispatch and the skill/template expansion, so a note beginning with `/` is
- * delivered as literal text and can never be executed or throw. The session is read through a thunk
+ * delivered as literal text and can never be executed or throw. `source: 'extension'` matches
+ * `sendUserMessage`, so no UserPromptSubmit hook runs on a note. The session is read through a thunk
  * because the tools are built before the session that runs them exists; the thunk resolves to the one
  * session those tools were built for, never to whatever session replaced it.
  *
- * Resolves once pi has accepted the note, so the caller can hold its echo until then.
+ * `onAccepted` runs when pi takes the note, from `preflightResult`, which pi calls after queueing it
+ * (`startsRun` false) or right before starting a run for it when none was running (`startsRun` true).
  */
-export function sessionNoteDelivery(session: () => AgentSession | undefined): (text: string) => Promise<void> {
-  return async (text) => {
+export function sessionNoteDelivery(
+  session: () => AgentSession | undefined,
+): (text: string, onAccepted: (startsRun: boolean) => void) => Promise<void> {
+  return async (text, onAccepted) => {
     const target = session();
     if (!target) throw new Error('the pi session these tools were built for was never created');
-    await target.sendUserMessage(text, { deliverAs: 'followUp', expandPromptTemplates: false });
+    await target.prompt(text, {
+      expandPromptTemplates: false,
+      streamingBehavior: 'steer',
+      source: 'extension',
+      preflightResult: (accepted) => {
+        if (accepted) onAccepted(!target.isStreaming);
+      },
+    });
   };
 }
 

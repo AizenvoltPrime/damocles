@@ -1,6 +1,7 @@
 import { ref, watch, shallowRef, type Ref, type ShallowRef } from 'vue';
 import { estimateTextHeight, isReady } from './usePretextMeasurement';
 import type { VirtualItem } from './useVirtualizedMessages';
+import { USER_PROMPT_FILTER } from './useEnrichedPrompts';
 
 export interface FrameItem {
   top: number;
@@ -85,7 +86,7 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
     const textH = item.text ? estimateTextHeight(item.text, textWidth) : 22;
     const paddingH = 12;
     const imageH = item.imageBlocks?.length ? 40 : 0;
-    const badgeH = (item.message.isInjected || item.message.isCombinedQueue || item.message.isQueued) ? 24 : 0;
+    const badgeH = USER_PROMPT_FILTER(item.message) ? 0 : 24;
     const contextButtonH = 32;
     return textH + paddingH + imageH + badgeH + contextButtonH;
   }

@@ -1,15 +1,17 @@
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { MemoryScope, MemoryEntry } from "../../../../shared/types/memory";
 import type { ObservationCursor } from "../../../../shared/types/memory";
+import type { MemoryAuditErrorCode } from "../../../../shared/types/memory-audit";
 
 /**
  * Memory-domain message types → the `memoryError.source` a thrown handler must carry. The router uses
  * this to route an uncaught handler exception to a `memoryError` (clears panel loading state) rather
  * than a chat-transcript `error`. The source MUST match what each handler posts on a soft failure, or a
- * throw strands the pending-create token / consolidation stepper the source is what settles. Reads map
- * to `undefined` (no pending UI state). Keep in sync with {@link createMemoryHandlers}.
+ * throw strands the pending-create token / consolidation stepper the source is what settles. Panel reads
+ * map to `undefined` (no pending UI state); every audit message maps to `"audit"`, reads included, so
+ * the overlay never waits on a request that threw. Keep in sync with {@link createMemoryHandlers}.
  */
-export const MEMORY_MESSAGE_SOURCES: ReadonlyMap<string, "panel" | "consolidation" | undefined> = new Map([
+export const MEMORY_MESSAGE_SOURCES: ReadonlyMap<string, "panel" | "consolidation" | "audit" | undefined> = new Map([
   ["requestMemories", undefined],
   ["requestMoreObservations", undefined],
   ["createMemory", "panel"],
@@ -26,6 +28,12 @@ export const MEMORY_MESSAGE_SOURCES: ReadonlyMap<string, "panel" | "consolidatio
   ["setProfileSection", "panel"],
   ["requestConsolidationPreview", "consolidation"],
   ["triggerConsolidation", "consolidation"],
+  ["requestMemoryAudit", "audit"],
+  ["requestMemoryAuditSummary", "audit"],
+  ["startMemoryAudit", "audit"],
+  ["cancelMemoryAudit", "audit"],
+  ["applyMemoryAudit", "audit"],
+  ["revertMemoryAudit", "audit"],
 ]);
 
 export const MEMORY_MESSAGE_TYPES: ReadonlySet<string> = new Set(MEMORY_MESSAGE_SOURCES.keys());
@@ -47,6 +55,39 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       hasMoreObservations: observations.hasMore,
       observationCursor: observations.nextCursor,
     };
+  }
+
+  const UNAVAILABLE = "Memory system is not available";
+
+  function postAuditError(ctx: HandlerContext, code: MemoryAuditErrorCode, message: string): void {
+    postMessage(ctx.host, { type: "memoryError", source: "audit", code, message });
+  }
+
+  /** The audit state and summary to every panel, or an audit error to the asking one when memory is unavailable. */
+  function broadcastAuditState(ctx: HandlerContext): boolean {
+    const state = deps.memoryService.getAuditState();
+    const summary = deps.memoryService.getAuditSummary();
+    if (!state || !summary) {
+      postAuditError(ctx, "unavailable", UNAVAILABLE);
+      return false;
+    }
+    for (const [, instance] of deps.getPanels()) {
+      postMessage(instance.host, { type: "memoryAuditState", state });
+      postMessage(instance.host, { type: "memoryAuditSummary", summary });
+    }
+    return true;
+  }
+
+  /** After an apply or revert: the audit state, then each panel's memory list and profile, which the audit may have changed. */
+  function broadcastAfterAuditWrite(ctx: HandlerContext): void {
+    broadcastAuditState(ctx);
+    const global = deps.memoryService.getProfile("global", "");
+    for (const [, instance] of deps.getPanels()) {
+      const panel = loadPanel(instance.session.memorySessionId, instance.folder.fsPath);
+      postMessage(instance.host, { type: "memoriesUpdate", memories: panel.memories, hasMoreObservations: panel.hasMoreObservations, observationCursor: panel.observationCursor });
+      const project = deps.memoryService.getProfile("project", instance.folder.fsPath);
+      postMessage(instance.host, { type: "profileData", project, global });
+    }
   }
 
   return {
@@ -343,6 +384,80 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
 
       await deps.memoryService.triggerConsolidation();
       postMessage(ctx.host, { type: "consolidationPreview", candidates: deps.memoryService.getPendingCandidates() });
+    },
+
+    requestMemoryAudit: async (msg, ctx) => {
+      if (msg.type !== "requestMemoryAudit") return;
+      if (!deps.memoryService?.isEnabled) {
+        postAuditError(ctx, "unavailable", UNAVAILABLE);
+        return;
+      }
+      await deps.memoryService.ensureInitialized();
+      const state = deps.memoryService.getAuditState();
+      if (state) postMessage(ctx.host, { type: "memoryAuditState", state });
+      else postAuditError(ctx, "unavailable", UNAVAILABLE);
+    },
+
+    requestMemoryAuditSummary: async (msg, ctx) => {
+      if (msg.type !== "requestMemoryAuditSummary") return;
+      if (!deps.memoryService?.isEnabled) {
+        postMessage(ctx.host, { type: "memoryAuditSummary", summary: null });
+        return;
+      }
+      await deps.memoryService.ensureInitialized();
+      postMessage(ctx.host, { type: "memoryAuditSummary", summary: deps.memoryService.getAuditSummary() });
+    },
+
+    startMemoryAudit: async (msg, ctx) => {
+      if (msg.type !== "startMemoryAudit") return;
+      if (!deps.memoryService?.isEnabled) {
+        postAuditError(ctx, "unavailable", UNAVAILABLE);
+        return;
+      }
+      const result = await deps.memoryService.startAudit();
+      if (!result.started) {
+        const message =
+          result.reason === "busy"
+            ? "A quality audit is already running in this or another window."
+            : result.reason === "no-model"
+              ? "No model with a configured credential is available for memory sub-calls, so the audit cannot run."
+              : UNAVAILABLE;
+        postAuditError(ctx, result.reason, message);
+        return;
+      }
+      broadcastAuditState(ctx);
+    },
+
+    cancelMemoryAudit: async (msg, ctx) => {
+      if (msg.type !== "cancelMemoryAudit") return;
+      if (!deps.memoryService?.isEnabled) {
+        postAuditError(ctx, "unavailable", UNAVAILABLE);
+        return;
+      }
+      const result = await deps.memoryService.cancelAudit();
+      if (broadcastAuditState(ctx)) postMessage(ctx.host, { type: "memoryAuditCancelResult", result });
+    },
+
+    applyMemoryAudit: async (msg, ctx) => {
+      if (msg.type !== "applyMemoryAudit") return;
+      if (!deps.memoryService?.isEnabled) {
+        postAuditError(ctx, "unavailable", UNAVAILABLE);
+        return;
+      }
+      const result = await deps.memoryService.applyAudit(msg.runId, msg.accept, msg.reject);
+      broadcastAfterAuditWrite(ctx);
+      postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "apply", ...result } });
+    },
+
+    revertMemoryAudit: async (msg, ctx) => {
+      if (msg.type !== "revertMemoryAudit") return;
+      if (!deps.memoryService?.isEnabled) {
+        postAuditError(ctx, "unavailable", UNAVAILABLE);
+        return;
+      }
+      const result = await deps.memoryService.revertAudit(msg.runId);
+      broadcastAfterAuditWrite(ctx);
+      postMessage(ctx.host, { type: "memoryAuditResult", result: { action: "revert", ...result } });
     },
   };
 }

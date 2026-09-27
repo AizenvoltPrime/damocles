@@ -746,7 +746,8 @@
       "memory-merge": "Memory merging",
       "memory-profile": "Memory profile",
       "memory-query-expansion": "Memory query expansion",
-      "btw": "/btw side questions"
+      "btw": "/btw side questions",
+      "memory-audit": "Memory quality audit"
     },
     "heatmap": {
       "title": "Activity by weekday and hour (local time)",
@@ -876,44 +877,156 @@
     "title": "Injected Context",
     "viewContext": "View injected context",
     "promptN": "Prompt {n}",
-    "noContext": "No context was injected for this prompt",
-    "noContextHint": "Memory is disabled or no context was recorded for this prompt",
-    "tabDescriptionMemory": "Memories and past observations that were provided to Damocles for this prompt.",
-    "memoryCatalogTokens": "{tokens} tokens",
-    "memoryFtsQuery": "FTS Query",
-    "memoryTierEntries": "{count}/{total} entries",
-    "memoryScore": "Score: {score}",
-    "memoryStale": "stale",
-    "memoryHandoff": "Session handoff",
-    "memoryPinnedCount": "{count} pinned",
-    "memoryPinned": "Pinned",
-    "memoryPinnedBadge": "pinned",
-    "memoryPinnedBudget": "{used}/{budget} tokens",
-    "memoryTokenCount": "{count} tokens",
-    "memoryStalenessValue": "staleness: {value}",
-    "memoryProfile": "Profile",
-    "memoryReranked": "Reranked",
-    "memorySourceCount": "{count} sources",
-    "tierLabel": {
-      "session": "Session",
-      "project": "Project",
-      "global": "Global",
-      "observation": "Observations",
-      "note": "Notes"
+    "noContext": "No record for this prompt",
+    "noContextHint": "Memory is disabled, or this prompt was sent before the current injection format.",
+    "building": "Building injected context...",
+    "tokensAdded": "+{count} tokens | +{count} token | +{count} tokens",
+    "view": {
+      "label": "View",
+      "memories": "Memories",
+      "exactText": "Exact text"
     },
-    "relevance": {
-      "high": "high",
-      "medium": "medium",
-      "low": "low"
+    "nothingNew": "Nothing new was relevant, and no memories from earlier prompts are in context. | Nothing new was relevant. {count} memory from an earlier prompt is still in context. | Nothing new was relevant. {count} memories from earlier prompts are still in context.",
+    "section": {
+      "added": "New this prompt ({count})",
+      "notices": "Updates and forgets ({count})",
+      "carried": "Already in context ({count})"
     },
-    "breakdownFts": "FTS",
-    "breakdownRecency": "Recency",
-    "breakdownScope": "Scope",
-    "breakdownFile": "File",
-    "breakdownRetrieval": "Retrieval",
-    "breakdownSourceCount": "Sources",
-    "breakdownStaleness": "Staleness",
-    "memoryBuilding": "Building memory catalog..."
+    "notice": {
+      "superseded": "\"{label}\" was superseded by {replacement}",
+      "edited": "\"{label}\" was edited",
+      "forgotten": "\"{label}\" was forgotten"
+    },
+    "fromPrompt": "prompt {n}",
+    "exactTextHint": "The literal text the model received with this prompt.",
+    "nothingSent": "Nothing was sent to the model with this prompt.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "memoryTokenCount": "{count} tokens | {count} token | {count} tokens",
+    "tier": {
+      "full": "full",
+      "compact": "compact"
+    },
+    "kpi": {
+      "tokensAdded": "Tokens added",
+      "newMemories": "New memories",
+      "carried": "Still in context",
+      "notices": "Notices",
+      "storeSize": "Memory store",
+      "formulaFor": "How {label} is calculated",
+      "budgetNote": "Budget for new matches: {budget}",
+      "tierSplit": "{full} full, {compact} compact",
+      "part": {
+        "memories": "Memories",
+        "notices": "Notices",
+        "profile": "Profile",
+        "compass": "Compass",
+        "budget": "Budget for new matches",
+        "observations": "Observations"
+      },
+      "gate": {
+        "considered": "Candidates considered",
+        "passed": "Passed the relevance gate",
+        "unmatchedSkipped": "Skipped, no match",
+        "alreadyInContext": "Already in context",
+        "overBudget": "Dropped, over budget",
+        "preferencesDeferred": "Preferences deferred"
+      }
+    },
+    "formula": {
+      "tokensAdded": "memories + notices + profile + Compass status. The budget caps newly matched memories only; pinned, session and preference memories, notices and the profile have budgets of their own.",
+      "newMemories": "Memories whose text was sent for the first time with this prompt: matches that passed the relevance gate, plus pinned, session, preference and mentioned memories.",
+      "carried": "Memories sent with an earlier prompt that the model can still see. They are not sent again.",
+      "notices": "Superseded, edited or forgotten memories announced to the model with this prompt, at most 10 per prompt.",
+      "storeSize": "session + project + global + observations: the live memories this conversation can draw on. Notes are not counted.",
+      "score": "score = ({relevance}·rel + {file}·file + {recency}·recency + {retrieval}·retrieval + sourceCountBoost) × stalenessPenalty",
+      "relevance": "rel = matched idf / query idf = {matched} / {query}",
+      "notRanked": "Not ranked: always included once per context",
+      "notRankedReplacement": "Not ranked: sent because it replaces a memory already in context"
+    },
+    "score": {
+      "value": "score {score}",
+      "notRanked": "not ranked",
+      "detailsFor": "Score details for {label}",
+      "total": "Score",
+      "term": {
+        "relevance": "Relevance (rel)",
+        "file": "File proximity",
+        "recency": "Recency",
+        "retrieval": "Retrieval",
+        "sourceCountBoost": "Source count boost",
+        "stalenessPenalty": "Staleness penalty"
+      }
+    },
+    "reason": {
+      "label": "Why it was included",
+      "matched": "Matched {terms}",
+      "file": {
+        "editor": "From your open file {path}",
+        "prompt": "From a file named in your prompt: {path}"
+      },
+      "pinned": "Pinned",
+      "session": "Saved for this conversation",
+      "preference": "Your working preference",
+      "mentioned": "You mentioned it",
+      "replacement": "Replaces {id}",
+      "matchedTerm": "'{term}'"
+    },
+    "action": {
+      "pinFor": "Pin {label}",
+      "unpinFor": "Unpin {label}",
+      "pinHint": "Pin: included once per context, starting with the next prompt",
+      "unpinHint": "Unpin: stays in this context but is not added again",
+      "forget": "Forget",
+      "forgetFor": "Forget {label}",
+      "forgetConfirm": "Forget this memory? It is no longer injected or returned by search, and the model is told on the next prompt.",
+      "cancel": "Cancel",
+      "openInPanel": "Open in memory panel",
+      "openInPanelFor": "Open {label} in the memory panel",
+      "notInPanel": "This memory is not in the memory panel. It may belong to another workspace, or it was removed."
+    },
+    "query": {
+      "label": "Query",
+      "none": "No usable query terms",
+      "terms": "Terms",
+      "dropped": {
+        "id": "memory id",
+        "common": "too common"
+      },
+      "droppedReason": "(dropped: {reason})",
+      "mentioned": "Mentioned",
+      "files": "Files",
+      "fileSource": {
+        "editor": "open file",
+        "prompt": "in prompt"
+      }
+    },
+    "profile": {
+      "label": "User profile",
+      "inContext": "Already in context from an earlier prompt",
+      "disabled": "Profile disabled",
+      "empty": "No profile saved yet"
+    },
+    "badge": {
+      "pinned": "pinned",
+      "stale": "stale",
+      "upgraded": "now in full",
+      "truncated": "truncated",
+      "forgotten": "forgotten",
+      "sources": "{count} sources",
+      "rerank": {
+        "high": "high relevance",
+        "medium": "medium relevance",
+        "low": "low relevance"
+      }
+    },
+    "reranked": "Reranked",
+    "rerankedHint": "A model reranked the matched memories for this prompt, so their order and tiers can differ from the scores shown.",
+    "compass": {
+      "label": "Compass status",
+      "unchanged": "Unchanged since an earlier prompt, so not sent again",
+      "disabled": "Compass is off"
+    }
   },
   "planApproval": {
     "readyToCode": "Ready to code?",
@@ -1007,7 +1120,8 @@
     "message": "Use AI responsibly and always remember, just because something works doesn't mean it's good.",
     "undoChanges": "Undo file changes after this point",
     "sentMidStream": "↳ sent mid-stream",
-    "queued": "queued"
+    "queued": "queued",
+    "commandEcho": "↳ command"
   },
   "steerCommand": {
     "youSteered": "You steered {agent}",
@@ -1227,6 +1341,7 @@
     "workspaceFolderSwitched": "Switched to folder {folder}",
     "conversationCleared": "Conversation cleared",
     "interrupted": "Message interrupted - prompt restored to input",
+    "queueReturned": "Stopped before your queued messages were sent - they are back in the input",
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
     "noSessionToBindPlan": "Start a conversation before binding a plan file"
@@ -1479,6 +1594,153 @@
       "editTooltip": "Loads the prompt into the input for editing, does not auto-send",
       "rewind": "Rewind to here",
       "rewindDisabledTooltip": "No checkpoint for this prompt"
+    }
+  },
+  "memory": {
+    "kind": {
+      "fact": "Fact",
+      "preference": "Preference",
+      "episode": "Episode",
+      "observation": "Observation",
+      "note": "Note"
+    },
+    "scope": {
+      "session": "Session",
+      "project": "Project",
+      "global": "Global",
+      "unknown": "Unknown scope"
+    },
+    "toast": {
+      "saved": {
+        "session": "Session memory saved",
+        "project": "Project memory saved",
+        "global": "Global memory saved",
+        "note": "Note saved",
+        "observation": "Observation saved"
+      },
+      "pinned": "Memory pinned",
+      "unpinned": "Memory unpinned",
+      "forgotten": "Forgot no memories | Forgot {count} memory | Forgot {count} memories",
+      "restored": "Restored no memories | Restored {count} memory | Restored {count} memories"
+    }
+  },
+  "memoryAudit": {
+    "title": "Memory quality audit",
+    "subtitle": "Review proposed clean-up of stored memories",
+    "openButton": "Quality audit",
+    "forgetReason": "Removed by quality audit",
+    "banner": {
+      "text": "You have {count} memories. A one-time quality audit proposes which to forget, move or turn into episodes, and you review every change.",
+      "action": "Review memories",
+      "dismiss": "Dismiss",
+      "dismissLabel": "Dismiss the quality audit suggestion"
+    },
+    "heldElsewhere": "Another VS Code window is running an audit. Wait for it to finish, then refresh.",
+    "refresh": "Refresh",
+    "loading": "Loading audit…",
+    "start": "Start audit",
+    "runAgain": "Run again",
+    "starting": "Starting…",
+    "estimate": {
+      "title": "Estimate",
+      "memories": "Memories to grade",
+      "profiles": "Profiles to rewrite",
+      "inputTokens": "Input tokens",
+      "outputTokens": "Output tokens",
+      "model": "Model",
+      "cost": "Estimated cost",
+      "costApiEquivalent": "API-equivalent cost",
+      "noModelShort": "none",
+      "noModel": "No sub-call model is configured, so the audit cannot run.",
+      "nothing": "No memories are eligible for the audit.",
+      "note": "Pinned memories and notes are never graded. Nothing changes until you apply.",
+      "confirmNew": "Starting a new audit ends review and revert of the current run: its undecided proposals can no longer be applied, and its applied changes can no longer be reverted here.",
+      "confirmStart": "Start new audit",
+      "confirmCancel": "Cancel"
+    },
+    "progress": {
+      "title": "Grading memories",
+      "count": "{graded} of {total} graded",
+      "failed": "{n} batch failed | {n} batches failed",
+      "cancel": "Cancel",
+      "cancelling": "Cancelling…"
+    },
+    "runSummary": "Last run {status}: {graded} of {total} graded.",
+    "runStatus": {
+      "running": "running",
+      "completed": "completed",
+      "cancelled": "cancelled",
+      "failed": "failed"
+    },
+    "action": {
+      "forget": "Forget",
+      "rescope_global": "Move to global",
+      "rescope_workspace": "Move to another workspace",
+      "to_episode": "Convert to episode",
+      "profile_rewrite": "Rewrite profile"
+    },
+    "status": {
+      "pending": "Pending",
+      "applied": "Applied",
+      "rejected": "Rejected",
+      "stale": "Stale",
+      "reverted": "Reverted"
+    },
+    "proposedValue": {
+      "forget": "Forgotten (restorable)",
+      "episode": "Episode, decays after 30 days"
+    },
+    "profile": {
+      "project": "Project profile ({workspace})",
+      "global": "Global profile",
+      "static": "Static",
+      "dynamic": "Dynamic",
+      "before": "Before",
+      "after": "After",
+      "empty": "(empty)"
+    },
+    "review": {
+      "empty": "The audit proposed no changes.",
+      "reason": "Reason: {reason}",
+      "becomes": "becomes",
+      "staleHint": "Changed after grading, so it was not applied."
+    },
+    "apply": {
+      "summary": "{accept} to apply, {reject} to reject, {undecided} undecided",
+      "button": "Apply decisions",
+      "applying": "Applying…"
+    },
+    "revert": {
+      "button": "Revert run",
+      "confirm": "Revert the {n} applied change from this run? A row edited since then is left as it is. | Revert the {n} applied changes from this run? Rows edited since then are left as they are.",
+      "confirmButton": "Revert",
+      "cancel": "Cancel",
+      "reverting": "Reverting…"
+    },
+    "decision": {
+      "label": "Decision for {label}",
+      "groupLabel": "Decision for every proposal in {group}",
+      "accept": "Accept",
+      "reject": "Reject",
+      "undecided": "Undecided",
+      "mixed": "Mixed"
+    },
+    "cancelHeldElsewhere": "This audit is running in another VS Code window and can only be cancelled there.",
+    "result": {
+      "applied": "No changes applied. | Applied {count} change. | Applied {count} changes.",
+      "rejected": "No proposals rejected. | {count} proposal rejected. | {count} proposals rejected.",
+      "stale": "No accepted changes were skipped. | {count} accepted change was not applied because its memory changed after grading. | {count} accepted changes were not applied because their memories changed after grading.",
+      "reverted": "No changes reverted. | Reverted {count} change. | Reverted {count} changes.",
+      "skipped": "No changes were skipped. | {count} change was left as it is because its memory changed after the audit applied it. | {count} changes were left as they are because their memories changed after the audit applied them."
+    },
+    "error": {
+      "unavailable": "The memory system is not available.",
+      "busy": "A quality audit is already running in this or another window.",
+      "no-model": "No model with a configured credential is available for memory sub-calls, so the audit cannot run.",
+      "lease-lost": "Another VS Code window took over this audit run.",
+      "all-failed": "Every grading call failed, so the audit made no proposals.",
+      "run-failed": "The audit stopped on an unexpected error.",
+      "request-failed": "The audit request failed. Try again."
     }
   }
 }

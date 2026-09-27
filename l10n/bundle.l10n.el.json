@@ -31,5 +31,10 @@
   "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Να μεταφερθεί αυτό το panel στο {0}; Θα ξεκινήσει νέα συνομιλία. Η τρέχουσα παραμένει στο ιστορικό.",
   "Start new conversation": "Έναρξη νέας συνομιλίας",
   "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.": "Ο φάκελος {0} αφαιρέθηκε από τον χώρο εργασίας, οπότε ένα panel του Damocles μεταφέρθηκε στο {1} και ξεκίνησε νέα συνομιλία. Η προηγούμενη παραμένει στο ιστορικό.",
-  "Damocles could not start a session in {0}: {1}": "Το Damocles δεν μπόρεσε να ξεκινήσει συνεδρία στο {0}: {1}"
+  "Damocles could not start a session in {0}: {1}": "Το Damocles δεν μπόρεσε να ξεκινήσει συνεδρία στο {0}: {1}",
+  "Your cancel note was not sent: the budget limit stopped this turn.": "Η σημείωση ακύρωσης δεν στάλθηκε: το όριο προϋπολογισμού σταμάτησε αυτόν τον γύρο.",
+  "Your cancel note was not sent: the turn was stopped.": "Η σημείωση ακύρωσης δεν στάλθηκε: ο γύρος διακόπηκε.",
+  "Stopping the turn discarded your cancel note before the agent read it.": "Η διακοπή του γύρου απέρριψε τη σημείωση ακύρωσης πριν τη διαβάσει ο agent.",
+  "The budget stop discarded your cancel note before the agent read it. Send it again to have it applied.": "Η διακοπή λόγω προϋπολογισμού απέρριψε τη σημείωση ακύρωσης πριν τη διαβάσει ο agent. Στείλτε την ξανά για να εφαρμοστεί.",
+  "Budget limit reached. This turn was stopped after the current step.": "Συμπληρώθηκε το όριο προϋπολογισμού. Ο γύρος σταμάτησε μετά το τρέχον βήμα."
 }

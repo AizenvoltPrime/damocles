@@ -1,11 +1,7 @@
 import { useI18n } from 'vue-i18n';
 import { NO_PROJECT_KEY, type UsageStatsSource } from '@shared/types/usage-stats';
+import { folderName } from '@/lib/folder-name';
 import { OTHER_MODELS_SERIES, UNKNOWN_MODEL_SERIES, type TokenType } from './stats-chart-data';
-
-export function folderName(cwd: string): string {
-  const parts = cwd.split(/[\\/]/).filter((p) => p.length > 0);
-  return parts[parts.length - 1] ?? cwd;
-}
 
 /** Display names for `/stats` keys; raw keys stay in titles so two models with one label stay distinguishable. */
 export function useStatsLabels() {

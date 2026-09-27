@@ -48,6 +48,7 @@ import {
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
   DAMOCLES_STEER_ENTRY,
 } from '../constants';
+import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from './prompt-index-fixtures';
 
 function userMsg(id: string, text: string): SessionEntry {
   return { id, type: 'message', message: { role: 'user', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
@@ -106,7 +107,8 @@ describe('stripIdeContext', () => {
   });
 
   it('reduces a standalone wrapper block (image-message case) to empty', () => {
-    expect(stripIdeContext('<ide_opened_file>x</ide_opened_file>')).toBe('');
+    const block = '<ide_opened_file>The user opened the file c:\\x.ts in the IDE. This may or may not be related to the current task.</ide_opened_file>';
+    expect(stripIdeContext(block)).toBe('');
   });
 
   it('leaves a normal message untouched', () => {
@@ -334,10 +336,10 @@ describe('loadPiSessionHistory — steer chip replay (Slice 3)', () => {
     expect(firstReal!.isInjected).toBeFalsy();
     expect(secondReal).toMatchObject({ content: 'second prompt', promptIndex: 1 });
     expect(secondReal!.isInjected).toBeFalsy();
-    // The chip is injected, carries the steer target, and shares the un-incremented index (consumes none).
+    // The chip is injected, carries the steer target, and carries no index, as it does live.
     expect(steer!.content).toBe('steer message');
     expect(steer!.isInjected).toBe(true);
-    expect(steer!.promptIndex).toBe(1);
+    expect(steer!.promptIndex).toBeUndefined();
     expect(steer!.steerTarget).toEqual({ agentId: 'agent-7', agentType: 'coder', description: 'Build parser' });
     // An entry written before steers carried images still replays, with no image blocks.
     expect(steer!.contentBlocks).toBeUndefined();
@@ -369,6 +371,45 @@ describe('loadPiSessionHistory — steer chip replay (Slice 3)', () => {
     ['neither text nor images', { agentId: 'agent-7', message: '' }],
   ])('rejects an entry with %s', async (_label, data) => {
     expect(await replaySteer(data)).toHaveLength(1);
+  });
+});
+
+describe('loadPiSessionHistory — prompt index stamping', () => {
+  afterEach(() => {
+    hoisted.branch = [];
+  });
+
+  async function replays(branch: readonly SessionEntry[]): Promise<Array<Extract<ExtensionToWebviewMessage, { type: 'userReplay' }>>> {
+    hoisted.branch = [...branch];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', 'sess-idx', (m) => posts.push(m));
+    return posts.filter((p): p is Extract<ExtensionToWebviewMessage, { type: 'userReplay' }> => p.type === 'userReplay');
+  }
+
+  async function replayedIndices(branch: readonly SessionEntry[]): Promise<Record<string, number | undefined>> {
+    return Object.fromEntries((await replays(branch)).map((r) => [r.sdkMessageId ?? r.content, r.promptIndex]));
+  }
+
+  it('counts prompts a compaction hid and skips marked mid-run deliveries, so a reload stamps what the live prompt got', async () => {
+    const indices = await replayedIndices(withPrompt(STORED_CONVERSATION, 'u-new', 'resumed prompt'));
+    expect(indices['u2']).toBe(2);
+    expect(indices['u-new']).toBe(STORED_PROMPT_COUNT);
+  });
+
+  // Live, a note's echo is injected and names no prompt; its marker makes the reload show it the same way.
+  it('replays a marked cancel note as a mid-run delivery and a legacy one as the prompt it was counted as', async () => {
+    const rows = await replays(STORED_CONVERSATION);
+    const note = rows.find((r) => r.sdkMessageId === 'u-note')!;
+    expect(note).toMatchObject({ content: 'the tests hung, skip them', isMidStream: true });
+    expect(note.promptIndex).toBeUndefined();
+    const legacy = rows.find((r) => r.sdkMessageId === 'u-note-legacy')!;
+    expect(legacy.promptIndex).toBe(3);
+    expect(legacy.isMidStream).toBeUndefined();
+  });
+
+  it('stamps a fork\'s resent prompt after the prompts it inherited', async () => {
+    const indices = await replayedIndices(withPrompt(FORK_AT_SECOND_PROMPT, 'u-fork', 'resent'));
+    expect(indices).toEqual({ u0: 0, 'u-fork': FORK_PROMPT_COUNT });
   });
 });
 

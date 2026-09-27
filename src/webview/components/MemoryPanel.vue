@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, watch, reactive, onUnmounted } from 'vue';
+import { ref, computed, watch, reactive, onMounted, onUnmounted, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { MemoryTier, MemoryEntry, SearchResult } from '@shared/types/memory';
+import { toast } from 'vue-sonner';
+import type { MemoryTier, MemoryEntry, MemoryKind, SearchResult } from '@shared/types/memory';
+import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useMemoryStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
 import { useVSCode } from '@/composables/useVSCode';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
 import { formatMemoryForCopy } from '@/lib/format-memory-copy';
@@ -14,7 +18,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { IconArrowLeft, IconBrain, IconSearch, IconTrash, IconCopy, IconCheck } from '@/components/icons';
-import { Plus, Pin, PinOff, History, Network, EyeOff, RotateCcw, User, Save, ChevronDown, ChevronRight } from 'lucide-vue-next';
+import { Plus, Pin, PinOff, History, Network, EyeOff, RotateCcw, User, Save, ChevronDown, ChevronRight, ListChecks } from 'lucide-vue-next';
 import { useOverlayDialog } from '@/composables/useOverlayDialog';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
@@ -51,7 +55,10 @@ const { zIndex, root, titleId } = useOverlayDialog(requestClose);
 const { t } = useI18n();
 const store = useMemoryStore();
 const settingsStore = useSettingsStore();
+const auditStore = useMemoryAuditStore();
 const { postMessage } = useVSCode();
+
+onMounted(() => auditStore.requestSummary());
 
 const activeTab = ref<TabId>('all');
 const newMemoryContent = ref('');
@@ -335,8 +342,79 @@ async function handleCopy(memory: MemoryEntry) {
   }, 2000);
 }
 
+const uiStore = useUIStore();
+const MAX_FOCUS_PAGES = 5;
+const FOCUS_HIGHLIGHT_MS = 2000;
+const highlightedId = ref<string | null>(null);
+let focusPagesRequested = 0;
+let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+
+function tabForKind(kind: MemoryKind): TabId {
+  if (kind === 'note') return 'note';
+  if (kind === 'observation') return 'observations';
+  return 'all';
+}
+
+function rowsOf(tab: TabId): readonly MemoryEntry[] {
+  if (tab === 'note') return props.notes;
+  if (tab === 'observations') return props.observations;
+  return store.filteredMemories;
+}
+
+async function revealFocused(id: string): Promise<void> {
+  uiStore.clearMemoryPanelFocus();
+  highlightedId.value = id;
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    highlightedId.value = null;
+  }, FOCUS_HIGHLIGHT_MS);
+  await nextTick();
+  const row = Array.from(scrollContainerRef.value?.querySelectorAll<HTMLElement>('[data-memory-id]') ?? [])
+    .find((el) => el.dataset.memoryId === id);
+  row?.scrollIntoView({ block: 'center' });
+  row?.focus({ preventScroll: true });
+}
+
+/** `loaded` is false until a memory list arrives after the focus request; until then a miss only waits. */
+function applyFocus(loaded: boolean): void {
+  const focus = uiStore.memoryPanelFocus;
+  if (!focus) return;
+  const target = store.memories.find((m) => m.id === focus.id);
+  if (target?.forgotten && activeTab.value === 'all') store.setShowForgotten(true);
+  if (rowsOf(activeTab.value).some((m) => m.id === focus.id)) {
+    void revealFocused(focus.id);
+    return;
+  }
+  if (!loaded) return;
+  if (focus.kind === 'observation' && props.hasMoreObservations && focusPagesRequested < MAX_FOCUS_PAGES) {
+    focusPagesRequested++;
+    emit('loadMoreObservations');
+    return;
+  }
+  uiStore.clearMemoryPanelFocus();
+  toast.info(t('contextInjection.action.notInPanel'));
+}
+
+watch(() => store.memories, () => applyFocus(true));
+
+// The panel owns its list request, sent only once the watcher above can see the reply.
+watch(() => uiStore.memoryPanelFocus, (focus) => {
+  if (!focus) return;
+  store.setKindFilter('all');
+  store.setScopeFilter('all');
+  activeTab.value = tabForKind(focus.kind);
+  focusPagesRequested = 0;
+  applyFocus(false);
+  if (uiStore.memoryPanelFocus) postMessage({ type: 'requestMemories' });
+}, { immediate: true });
+
+onMounted(() => {
+  if (!uiStore.memoryPanelFocus) postMessage({ type: 'requestMemories' });
+});
+
 onUnmounted(() => {
   if (copiedTimer) clearTimeout(copiedTimer);
+  if (highlightTimer) clearTimeout(highlightTimer);
 });
 </script>
 
@@ -374,7 +452,52 @@ onUnmounted(() => {
           Browse and manage memories
         </p>
       </div>
+
+      <Button
+        variant="outline"
+        size="sm"
+        class="h-7 text-xs shrink-0"
+        data-audit-open
+        @click="auditStore.openOverlay()"
+      >
+        <ListChecks
+          :size="14"
+          class="mr-1"
+        />
+        {{ t('memoryAudit.openButton') }}
+      </Button>
     </header>
+
+    <div
+      v-if="auditStore.showBanner"
+      class="flex items-center gap-2 px-4 py-2 border-b border-border/30 bg-primary/5 text-xs shrink-0"
+      data-audit-banner
+    >
+      <ListChecks
+        :size="14"
+        class="text-primary shrink-0"
+      />
+      <span class="flex-1">{{ t('memoryAudit.banner.text', { count: auditStore.summary?.eligibleCount ?? 0 }) }}</span>
+      <Button
+        variant="default"
+        size="sm"
+        class="h-6 text-xs shrink-0"
+        data-audit-banner-open
+        @click="auditStore.openOverlay()"
+      >
+        {{ t('memoryAudit.banner.action') }}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        class="h-6 text-xs shrink-0"
+        :aria-label="t('memoryAudit.banner.dismissLabel')"
+        data-audit-banner-dismiss
+        @click="auditStore.dismissBanner()"
+      >
+        {{ t('memoryAudit.banner.dismiss') }}
+      </Button>
+    </div>
 
     <div class="px-4 py-2 flex gap-2 border-b border-border/30">
       <Input
@@ -398,6 +521,8 @@ onUnmounted(() => {
         v-for="tab in tabs"
         :key="tab.id"
         class="px-2 py-1 text-xs rounded-md transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+        :data-tab="tab.id"
+        :data-active="activeTab === tab.id || undefined"
         :class="activeTab === tab.id
           ? 'bg-primary/15 text-primary font-medium'
           : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
@@ -589,8 +714,11 @@ onUnmounted(() => {
         <div
           v-for="memory in store.filteredMemories"
           :key="memory.id"
-          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card"
-          :class="[memory.pinned && 'border-l-2 border-l-amber-500', memory.forgotten && 'opacity-60']"
+          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          :class="[memory.pinned && 'border-l-2 border-l-amber-500', memory.forgotten && 'opacity-60', highlightedId === memory.id && 'ring-2 ring-primary']"
+          :data-memory-id="memory.id"
+          :data-focused="highlightedId === memory.id || undefined"
+          tabindex="-1"
         >
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
@@ -719,6 +847,14 @@ onUnmounted(() => {
               forgotten
             </Badge>
             <Badge
+              v-if="memory.forgotten && memory.forgetReason === QUALITY_AUDIT_FORGET_REASON"
+              variant="outline"
+              class="text-xs h-4 px-1.5 text-muted-foreground"
+              :data-forget-reason="QUALITY_AUDIT_FORGET_REASON"
+            >
+              {{ t('memoryAudit.forgetReason') }}
+            </Badge>
+            <Badge
               v-for="tag in memory.tags"
               :key="tag"
               variant="outline"
@@ -741,8 +877,11 @@ onUnmounted(() => {
         <div
           v-for="memory in notes"
           :key="memory.id"
-          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card"
-          :class="memory.pinned && 'border-l-2 border-l-amber-500'"
+          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          :class="[memory.pinned && 'border-l-2 border-l-amber-500', highlightedId === memory.id && 'ring-2 ring-primary']"
+          :data-memory-id="memory.id"
+          :data-focused="highlightedId === memory.id || undefined"
+          tabindex="-1"
         >
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
@@ -816,8 +955,11 @@ onUnmounted(() => {
         <div
           v-for="memory in observations"
           :key="memory.id"
-          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card"
-          :class="memory.pinned && 'border-l-2 border-l-amber-500'"
+          class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          :class="[memory.pinned && 'border-l-2 border-l-amber-500', highlightedId === memory.id && 'ring-2 ring-primary']"
+          :data-memory-id="memory.id"
+          :data-focused="highlightedId === memory.id || undefined"
+          tabindex="-1"
         >
           <div class="flex items-center gap-1.5 mb-1">
             <Badge

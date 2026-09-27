@@ -204,7 +204,7 @@ export class RetrievalManager {
   }
 
   private fetchCandidates(query: SearchQuery, pool: number): CandidateRow[] {
-    const match = query.query ? buildFtsMatchQuery(query.query) : null;
+    const match = query.query ? buildFtsMatchQuery(query.query, undefined, { keepIds: true }) : null;
     return match ? this.ftsCandidates(query, match, pool) : this.filteredCandidates(query, pool);
   }
 
@@ -214,7 +214,7 @@ export class RetrievalManager {
    * original candidates; expansion never breaks or throws.
    */
   private fetchCandidatesExpanded(query: SearchQuery, pool: number, expandedTerms: string[]): CandidateRow[] {
-    const match = query.query ? buildFtsMatchQuery(query.query) : null;
+    const match = query.query ? buildFtsMatchQuery(query.query, undefined, { keepIds: true }) : null;
     if (!match) return this.filteredCandidates(query, pool);
 
     const best = new Map<string, CandidateRow>();

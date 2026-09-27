@@ -8,13 +8,25 @@ import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } f
 import { NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
 import { RetrievalManager } from './managers/retrieval-manager';
-import { InjectionManager } from './managers/injection-manager';
+import { InjectionManager, type BuildInjectionArgs, type InjectionBuildResult } from './managers/injection-manager';
 import { FileChangeTracker } from './managers/file-change-tracker';
 import { FactGraphManager } from './managers/fact-graph-manager';
 import { ProfileManager } from './managers/profile-manager';
 import { MemoryWriteQueue } from './write-queue';
-import { createMemorySubCallRunner, type MemorySubCallRunner } from './subcall-runner';
+import { createMemorySubCallRunner, describeMemorySubCallModel, type MemorySubCallRunner } from './subcall-runner';
+import {
+  applyAuditDecisions,
+  beginAuditRun,
+  getAuditState,
+  getAuditSummary,
+  retireSessionReverts,
+  revertAuditRun,
+  runAudit,
+  type AuditRunFailure,
+  type AuditRunOutcome,
+} from './audit';
 import { runConsolidation, mergePendingConsolidation, type ConsolidationReason } from './consolidation';
+import { attributeFilesToWorkspace, listKnownWorkspaces } from './workspaces';
 import type {
   ConsolidationResult,
   ConsolidationTrigger,
@@ -39,6 +51,14 @@ import type {
   UserProfile,
 } from '@shared/types/memory';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
+import type {
+  MemoryAuditApplyResult,
+  MemoryAuditCancelResult,
+  MemoryAuditErrorCode,
+  MemoryAuditRevertResult,
+  MemoryAuditStatePayload,
+  MemoryAuditSummary,
+} from '@shared/types/memory-audit';
 
 /** One completed conversation turn queued for extraction. */
 interface TurnCandidate {
@@ -55,6 +75,20 @@ interface TurnCandidate {
 const MAX_PENDING_TURN_CANDIDATES = 50;
 
 const MAX_CONTENT_CHARS = MAX_MEMORY_CONTENT_CHARS;
+
+const AUDIT_FAILURE_CODES: Record<AuditRunFailure, MemoryAuditErrorCode> = {
+  'no-model': 'no-model',
+  'lease-lost': 'lease-lost',
+  'all-failed': 'all-failed',
+  error: 'run-failed',
+};
+
+/** Rows of one version chain, bound as (root, root); the OR arms use idx_memories_root and the primary key, which COALESCE(root_id, id) cannot. */
+const CHAIN_WHERE = 'root_id = ? OR (root_id IS NULL AND id = ?)';
+
+function chainRoot(db: DatabaseInstance, id: string): string | null {
+  return (db.prepare('SELECT COALESCE(root_id, id) AS root FROM memories WHERE id = ?').get(id) as { root: string } | undefined)?.root ?? null;
+}
 
 export class MemoryService {
   private db: DatabaseInstance | null = null;
@@ -86,6 +120,8 @@ export class MemoryService {
   private lastConsolidationResult: ConsolidationResult | null = null;
   /** Ordered live-progress events of the in-flight pass, replayed when a panel reopens the overlay mid-pass. */
   private currentPhaseEvents: ConsolidationPhaseEvent[] = [];
+  /** This window's quality audit, from the moment it starts taking the lease until the run settles. */
+  private audit: { abort: AbortController; done: Promise<void> } | null = null;
   private disposed = false;
   /** Folders whose observations the file-change tracker indexes. */
   private workspaceRoots: readonly string[] = [];
@@ -110,6 +146,11 @@ export class MemoryService {
     if (roots.length === this.workspaceRoots.length && roots.every((r, i) => r === this.workspaceRoots[i])) return;
     this.workspaceRoots = [...roots];
     this.fileChangeTracker?.setWorkspaceRoots(this.workspaceRoots);
+  }
+
+  /** Folders a project row may be filed under; the home-directory bucket of a folderless window is never one. */
+  private listKnownWorkspaces(db: DatabaseInstance): string[] {
+    return listKnownWorkspaces(db, this.workspaceRoots, [homeDirectory()]);
   }
 
   /** Where consolidation files legacy candidates stored without a folder: the window's default folder. */
@@ -451,11 +492,19 @@ export class MemoryService {
     return this.noteManager?.list(tags) ?? [];
   }
 
-  /** Manual save: a direct insert; dedup/conflict resolution apply only on the auto-extraction path. */
-  async addObservation(sessionId: string, workspace: string, input: ObservationInput): Promise<MemoryEntry | null> {
+  /**
+   * Manual save: a direct insert; dedup/conflict resolution apply only on the auto-extraction path.
+   * An observation whose files all sit in one other known workspace is filed there instead of `panelWorkspace`.
+   */
+  async addObservation(sessionId: string, panelWorkspace: string, input: ObservationInput): Promise<MemoryEntry | null> {
     await this.ensureInitialized();
     const db = this.db, writeQueue = this.writeQueue, observationManager = this.observationManager;
     if (!db || !writeQueue || !observationManager) return null;
+    const workspace = attributeFilesToWorkspace(
+      [...(input.filesRead ?? []), ...(input.filesModified ?? [])],
+      panelWorkspace,
+      () => this.listKnownWorkspaces(db),
+    ) ?? panelWorkspace;
     const result = await writeQueue.run(() => observationManager.addRichObservation(sessionId, workspace, input));
     if (result) {
       this.fileChangeTracker?.trackObservation(result.id, input.filesRead ?? [], input.filesModified ?? [], workspace);
@@ -524,6 +573,7 @@ export class MemoryService {
         | { title: string | null; content: string }
         | undefined;
 
+      const root = scope === 'chain' ? chainRoot(db, targetId) : null;
       const result =
         scope === 'version'
           ? db
@@ -532,10 +582,8 @@ export class MemoryService {
               )
               .run(targetId)
           : db
-              .prepare(
-                "UPDATE memories SET forgotten = 1, forget_reason = 'user_forget' WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)",
-              )
-              .run(targetId);
+              .prepare(`UPDATE memories SET forgotten = 1, forget_reason = 'user_forget' WHERE ${CHAIN_WHERE}`)
+              .run(root, root);
 
       const forgotten = result.changes;
       // Thread the ids out so they can be untracked from the file-change index after commit (a
@@ -545,11 +593,7 @@ export class MemoryService {
           ? []
           : scope === 'version'
             ? [targetId]
-            : (db
-                .prepare(
-                  'SELECT id FROM memories WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)',
-                )
-                .all(targetId) as { id: string }[]).map((r) => r.id);
+            : (db.prepare(`SELECT id FROM memories WHERE ${CHAIN_WHERE}`).all(root, root) as { id: string }[]).map((r) => r.id);
 
       if (forgotten === 0 || !resolved) return { forgotten, forgottenIds };
       return {
@@ -570,16 +614,15 @@ export class MemoryService {
     if (!db || !writeQueue) return Promise.resolve({ restored: 0 });
 
     return writeQueue.run(() => {
+      const root = scope === 'chain' ? chainRoot(db, id) : null;
       const result =
         scope === 'version'
           ? db
               .prepare('UPDATE memories SET forgotten = 0, forget_reason = NULL WHERE id = ?')
               .run(id)
           : db
-              .prepare(
-                'UPDATE memories SET forgotten = 0, forget_reason = NULL WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)',
-              )
-              .run(id);
+              .prepare(`UPDATE memories SET forgotten = 0, forget_reason = NULL WHERE ${CHAIN_WHERE}`)
+              .run(root, root);
       return { restored: result.changes };
     });
   }
@@ -642,7 +685,7 @@ export class MemoryService {
       db.prepare('UPDATE memories SET session_id = ? WHERE session_id = ?').run(newId, oldId);
       db.prepare('UPDATE memory_candidates SET session_id = ? WHERE session_id = ?').run(newId, oldId);
     });
-    // Follow the rename onto the injection DB file so the prompt-0 profile/handoff record survives.
+    // Follow the rename onto the injection DB file so the per-prompt overlay records survive.
     await this.injectionManager?.renameSession(oldId, newId);
   }
 
@@ -655,23 +698,31 @@ export class MemoryService {
         db.prepare("SELECT id FROM memories WHERE scope = 'session' AND session_id = ?").all(sessionId) as { id: string }[]
       ).map((r) => r.id);
       deleteMemoriesWithHygiene(db, ids);
+      retireSessionReverts(db, sessionId);
       // Also drop the raw turn buffer, else its text is re-extracted later under a dead session_id.
       db.prepare('DELETE FROM memory_candidates WHERE session_id = ?').run(sessionId);
     });
     await this.injectionManager?.deleteSession(sessionId);
   }
 
-  isFirstMessageOfSession(sessionId: string): boolean {
-    return this.injectionManager?.isFirstMessageOfSession(sessionId) ?? true;
-  }
-
-  markFirstMessageSent(sessionId: string): void {
-    this.injectionManager?.markFirstMessageSent(sessionId);
-  }
-
-  async buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
+  /** Copy the Injected Context records of the prompts a fork inherits; 0 when memory is unavailable. */
+  async copySessionInjections(sourceId: string, targetId: string, belowPromptIndex: number): Promise<number> {
     await this.ensureInitialized();
-    return await this.injectionManager?.buildMemoryCatalog(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
+    return (await this.injectionManager?.copySessionInjections(sourceId, targetId, belowPromptIndex)) ?? 0;
+  }
+
+  /** This prompt's injection as a delta against `args.live`; null when memory is unavailable. */
+  async buildInjectionContext(args: BuildInjectionArgs): Promise<InjectionBuildResult | null> {
+    await this.ensureInitialized();
+    const injectionManager = this.injectionManager;
+    if (!injectionManager) return null;
+    const result = await injectionManager.buildInjection(args);
+    if (result.mentionedIds.length > 0) {
+      void this.recordRetrievals(result.mentionedIds, args.workspace).catch(err =>
+        log('[MemoryService] Recording mentioned-id retrievals failed: %O', err),
+      );
+    }
+    return result;
   }
 
   async pinMemory(id: string): Promise<boolean> {
@@ -922,6 +973,8 @@ export class MemoryService {
           reason: opts.reason,
           ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
           fallbackWorkspace: () => this.fallbackWorkspace(),
+          openFolders: () => this.workspaceRoots,
+          nonProjectFolders: () => [homeDirectory()],
           autoExtractEnabled: manual || this.autoExtractEnabled,
           trigger,
           // Skip the pass if the service disposed between scheduling and execution, so it never
@@ -983,8 +1036,112 @@ export class MemoryService {
     return work;
   }
 
+  /** The latest audit run, its proposals and a fresh estimate; null when memory is unavailable. */
+  getAuditState(): MemoryAuditStatePayload | null {
+    const db = this.db, profileManager = this.profileManager;
+    if (!db || !profileManager) return null;
+    return getAuditState({ db, profileManager }, this.instanceId, describeMemorySubCallModel(), this.listKnownWorkspaces(db));
+  }
+
+  /** The memory panel's audit banner and run indicator; null when memory is unavailable. */
+  getAuditSummary(): MemoryAuditSummary | null {
+    return this.db ? getAuditSummary(this.db, this.instanceId) : null;
+  }
+
+  /**
+   * Take the cross-window lease and grade in the background. Progress and the final state go to every
+   * panel through the consolidation broadcast sink. Resolves once the run has started, or with why not.
+   * `this.audit` is set before the first await, so a cancel or dispose meanwhile still reaches the run.
+   */
+  async startAudit(): Promise<{ started: true } | { started: false; reason: 'unavailable' | 'no-model' | 'busy' }> {
+    if (this.disposed) return { started: false, reason: 'unavailable' };
+    if (this.audit) return { started: false, reason: 'busy' };
+    const abort = new AbortController();
+    let settle!: () => void;
+    this.audit = { abort, done: new Promise<void>((resolve) => { settle = resolve; }) };
+    let launched = false;
+    try {
+      await this.ensureInitialized();
+      const db = this.db, writeQueue = this.writeQueue, runner = this.runner, profileManager = this.profileManager;
+      if (!db || !writeQueue || !runner || !profileManager || this.disposed) return { started: false, reason: 'unavailable' };
+      if (!describeMemorySubCallModel()) return { started: false, reason: 'no-model' };
+      const deps = { db, writeQueue, runner, profileManager, holder: this.instanceId, knownWorkspaces: this.listKnownWorkspaces(db) };
+      const plan = await beginAuditRun(deps);
+      if (!plan) return { started: false, reason: 'busy' };
+      // A cancel or dispose that landed while the lease was taken has aborted the signal: the run grades
+      // nothing and records itself cancelled, and dispose waits for `done` before closing the DB.
+      launched = true;
+      void runAudit(deps, plan, abort.signal, (progress) =>
+        this.consolidationBroadcast?.({ type: 'memoryAuditProgress', progress }),
+      )
+        .then((outcome) => this.reportAuditOutcome(outcome))
+        .catch((err: unknown) => {
+          log('[MemoryService] Quality audit run failed: %O', err);
+          this.broadcastAuditError('run-failed', `Quality audit failed: ${err instanceof Error ? err.message : String(err)}`);
+        })
+        .finally(() => {
+          this.audit = null;
+          settle();
+          if (this.disposed) return;
+          const state = this.getAuditState();
+          if (state) this.consolidationBroadcast?.({ type: 'memoryAuditState', state });
+          const summary = this.getAuditSummary();
+          if (summary) this.consolidationBroadcast?.({ type: 'memoryAuditSummary', summary });
+        });
+      return { started: true };
+    } finally {
+      if (!launched) {
+        this.audit = null;
+        settle();
+      }
+    }
+  }
+
+  private broadcastAuditError(code: MemoryAuditErrorCode, message: string): void {
+    this.consolidationBroadcast?.({ type: 'memoryError', source: 'audit', code, message });
+  }
+
+  private reportAuditOutcome(outcome: AuditRunOutcome): void {
+    if (!outcome.failure) return;
+    const message =
+      outcome.failure === 'no-model'
+        ? 'Quality audit stopped: no model is available for memory sub-calls.'
+        : outcome.failure === 'lease-lost'
+          ? 'Quality audit stopped: another window took over the run.'
+          : outcome.failure === 'all-failed'
+            ? 'Quality audit failed: every grading call failed.'
+            : `Quality audit failed: ${outcome.detail ?? 'unknown error'}`;
+    this.broadcastAuditError(AUDIT_FAILURE_CODES[outcome.failure], message);
+  }
+
+  /** Cancel this window's run, or its start, and wait until it has settled; written proposals stay. */
+  async cancelAudit(): Promise<MemoryAuditCancelResult> {
+    const audit = this.audit;
+    if (audit) {
+      audit.abort.abort();
+      await audit.done;
+      return 'cancelled';
+    }
+    return this.getAuditSummary()?.running ? 'held-elsewhere' : 'not-running';
+  }
+
+  async applyAudit(runId: string, accept: readonly string[], reject: readonly string[]): Promise<MemoryAuditApplyResult> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, profileManager = this.profileManager;
+    if (!db || !writeQueue || !profileManager) throw new Error('Memory system is not available');
+    return applyAuditDecisions({ db, writeQueue, profileManager, tracker: this.fileChangeTracker }, runId, accept, reject);
+  }
+
+  async revertAudit(runId: string): Promise<MemoryAuditRevertResult> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, profileManager = this.profileManager;
+    if (!db || !writeQueue || !profileManager) throw new Error('Memory system is not available');
+    return revertAuditRun({ db, writeQueue, profileManager, tracker: this.fileChangeTracker }, runId);
+  }
+
   dispose(): void {
     this.disposed = true;
+    this.audit?.abort.abort();
     this.backfillAbort?.abort();
     this.backfillAbort = null;
     if (this.idleTimer) {
@@ -1013,7 +1170,8 @@ export class MemoryService {
 
     const writeQueue = this.writeQueue;
     const inFlight = this.consolidationInFlight;
-    const settled = inFlight ? inFlight.catch(() => undefined) : Promise.resolve();
+    const auditDone = this.audit?.done ?? Promise.resolve();
+    const settled = Promise.all([inFlight ? inFlight.catch(() => undefined) : undefined, auditDone]);
     const drained = writeQueue ? settled.then(() => writeQueue.drain()) : settled;
     void drained.finally(closeDb);
     this._initPromise = null;

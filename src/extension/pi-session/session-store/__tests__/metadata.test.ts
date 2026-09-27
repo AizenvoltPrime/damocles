@@ -159,7 +159,7 @@ describe('computePiSessionFields', () => {
   });
 
   test('the prompt history keeps a prompt sent with a file open, without its IDE-context prefix', () => {
-    const stored = '<ide_selection>The user selected lines 1-2 of c:\\x.ts.</ide_selection>\nexplain this';
+    const stored = '<ide_selection>The user selected the lines 1 to 2 from c:\\x.ts:\nconst a = 1;\n\nThis may or may not be related to the current task.</ide_selection>\nexplain this';
     const entries = [msg('user', stored, 1_000), msg('assistant', 'ok', 2_000), msg('user', '<system-context> injected', 3_000)];
     expect(newestUniquePrompts(entries)).toEqual(['explain this']);
   });

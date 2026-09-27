@@ -281,6 +281,50 @@ describe('dedup-decay', () => {
     expect(retrievalCount.c).toBe(0);
   });
 
+  it('starts the purge clock at decay, not at the last update', async () => {
+    const old = Date.now() - FORGOTTEN_PURGE_AGE_MS * 2;
+    const recentlyDecayed = seedMemory(db, {
+      kind: 'episode',
+      content: 'episode of an old row that decayed yesterday',
+      forgetAfter: Date.now() - DAY_MS,
+      forgotten: 1,
+      forgetReason: 'episode_decay',
+      createdAt: old,
+      updatedAt: old,
+    });
+    const longDecayed = seedMemory(db, {
+      kind: 'episode',
+      content: 'episode that decayed long ago',
+      forgetAfter: old + DAY_MS,
+      forgotten: 1,
+      forgetReason: 'episode_decay',
+      createdAt: old,
+      updatedAt: old,
+    });
+
+    expect((await purgeForgottenRows(db, queue)).purged).toBe(1);
+    expect(db.prepare('SELECT id FROM memories WHERE id = ?').get(recentlyDecayed.id)).toBeDefined();
+    expect(db.prepare('SELECT id FROM memories WHERE id = ?').get(longDecayed.id)).toBeUndefined();
+  });
+
+  it('never purges a quality_audit row, however old', async () => {
+    const old = Date.now() - FORGOTTEN_PURGE_AGE_MS * 10;
+    const audited = seedMemory(db, {
+      kind: 'episode',
+      content: 'removed by the quality audit long ago',
+      forgetAfter: old + EPISODE_TTL_MS,
+      forgotten: 1,
+      forgetReason: 'quality_audit',
+      createdAt: old,
+      updatedAt: old,
+    });
+
+    const result = await purgeForgottenRows(db, queue);
+
+    expect(result.purged).toBe(0);
+    expect(db.prepare('SELECT id FROM memories WHERE id = ?').get(audited.id)).toBeDefined();
+  });
+
   it('does not dedup identical session-scoped content across different sessions', async () => {
     const a = await insertWithDedup(db, queue, { kind: 'episode', scope: 'session', content: 'working on the parser', sessionId: 'sess-A' });
     const b = await insertWithDedup(db, queue, { kind: 'episode', scope: 'session', content: 'working on the parser', sessionId: 'sess-B' });
@@ -319,6 +363,9 @@ describe('dedup-decay', () => {
     const mergedRow = getRow(db, dup.id);
     expect(mergedRow.forgotten).toBe(1);
     expect(mergedRow.forget_reason).toBe('merged');
+    expect(db.prepare('SELECT kind, source_id FROM memory_edges WHERE target_id = ?').all(dup.id)).toEqual([
+      { kind: 'SUPERSEDES', source_id: primary.id },
+    ]);
 
     const primaryRow = getRow(db, primary.id);
     expect(primaryRow.source_count).toBe(2);

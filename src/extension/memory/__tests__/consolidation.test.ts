@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { createTestMemoryDb } from './test-helpers';
 import { MemoryWriteQueue } from '../write-queue';
 import type { DatabaseInstance, MemoryRow } from '../types';
@@ -11,7 +14,7 @@ import {
   reclaimExpiredClaims,
   mergePendingConsolidation,
   isExtractionResult,
-  EXTRACTION_SCHEMA,
+  buildExtractionSchema,
   EXTRACTION_SYSTEM_PROMPT,
   CANDIDATE_TOKEN_BUDGET,
   LEASE_TTL_MS,
@@ -20,6 +23,7 @@ import {
 import { maybeVacuum, VACUUM_FREELIST_RATIO, VACUUM_MIN_PAGES } from '../dedup-decay';
 import type { ConsolidationPhaseEvent } from '@shared/types/consolidation';
 import { subCallSpy, type SubCallSpy } from './subcall-spy';
+import { USEFULNESS_RUBRIC } from '../rubric';
 
 const BUDGET_CHARS = CANDIDATE_TOKEN_BUDGET * 4;
 
@@ -87,6 +91,8 @@ function makeCtx(
     instanceId: 'test-instance',
     reason: 'switch',
     fallbackWorkspace: () => WORKSPACE,
+    openFolders: () => [],
+    nonProjectFolders: () => [],
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},
@@ -971,7 +977,7 @@ describe('runConsolidation — C6 session-scope stamping (never a NULL-session s
 
 describe('EXTRACTION_SCHEMA + prompt (C10)', () => {
   it('caps memories at maxItems 10, drops forget_after, and removes observation from the kind enum', () => {
-    const props = schemaNode(EXTRACTION_SCHEMA.properties as Record<string, unknown>, 'memories');
+    const props = schemaNode(buildExtractionSchema([WORKSPACE]).properties as Record<string, unknown>, 'memories');
     expect(props.maxItems).toBe(10);
 
     const itemProps = schemaNode(schemaNode(props, 'items'), 'properties');
@@ -985,6 +991,115 @@ describe('EXTRACTION_SCHEMA + prompt (C10)', () => {
     expect(EXTRACTION_SYSTEM_PROMPT).toContain("'fact'|'preference'|'episode'");
     expect(EXTRACTION_SYSTEM_PROMPT).toContain('at most 10');
     expect(EXTRACTION_SYSTEM_PROMPT.toLowerCase()).toContain('never speculation');
+  });
+
+  it('applies the shared usefulness rubric and names an empty array as the normal answer', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain(USEFULNESS_RUBRIC);
+    expect(EXTRACTION_SYSTEM_PROMPT).toContain('an empty memories array is the normal answer');
+  });
+
+  it('restricts the workspace field to the known workspaces', () => {
+    const props = schemaNode(buildExtractionSchema(['/a', '/b']).properties as Record<string, unknown>, 'memories');
+    const itemProps = schemaNode(schemaNode(props, 'items'), 'properties');
+    expect(itemProps.workspace).toEqual({ enum: ['/a', '/b'] });
+  });
+});
+
+describe('runConsolidation — workspace attribution', () => {
+  const OTHER = '/tmp/other-repo';
+  let db: DatabaseInstance;
+
+  beforeEach(async () => {
+    db = await createTestMemoryDb();
+  });
+
+  function seedWithFiles(files: string[]): void {
+    db.prepare(
+      `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, workspace, salient, consumed, reprocessed, created_at)
+       VALUES (?, ?, 0, 'Tune the GPU clocks', 'Capped the core clock.', ?, ?, 0, 0, 0, ?)`,
+    ).run(crypto.randomUUID(), SESSION_ID, JSON.stringify(files), WORKSPACE, Date.now());
+  }
+
+  function projectRows(): Array<{ workspace: string | null; content: string }> {
+    return db.prepare("SELECT workspace, content FROM memories WHERE scope = 'project'").all() as Array<{ workspace: string | null; content: string }>;
+  }
+
+  it("gives the extractor the conversation workspace, the known workspaces and each turn's files", async () => {
+    seedWithFiles([`${OTHER}/src/gpu.ts`]);
+    const { runner, run } = makeRunner({ memories: [] });
+    await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER] }));
+
+    const extractCall = run.mock.calls.find(([req]) => (req as MemorySubCallRequest).purpose === 'extract');
+    const req = extractCall![0] as MemorySubCallRequest;
+    expect(req.prompt).toContain(`Conversation workspace: ${WORKSPACE}`);
+    expect(req.prompt).toContain(`Known workspaces:
+- ${WORKSPACE}
+- ${OTHER}`);
+    expect(req.prompt).toContain(`Files: ${OTHER}/src/gpu.ts`);
+    const props = schemaNode(req.schema.properties as Record<string, unknown>, 'memories');
+    expect(schemaNode(schemaNode(props, 'items'), 'properties').workspace).toEqual({ enum: [WORKSPACE, OTHER] });
+  });
+
+  it('files a project item naming a known other workspace there, and shows it in the result', async () => {
+    seedWithFiles([`${OTHER}/src/gpu.ts`]);
+    const { runner } = makeRunner({
+      memories: [{ kind: 'fact', scope: 'project', workspace: OTHER, content: 'The GPU hangs above 2100 MHz core clock.' }],
+    });
+    const result = await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER] }));
+
+    expect(projectRows()).toEqual([{ workspace: OTHER, content: 'The GPU hangs above 2100 MHz core clock.' }]);
+    expect(result.extracted[0]).toMatchObject({ outcome: 'inserted', workspace: OTHER });
+  });
+
+  it('rejects a project item naming an unknown workspace', async () => {
+    seedWithFiles([]);
+    const { runner } = makeRunner({
+      memories: [{ kind: 'fact', scope: 'project', workspace: '/tmp/unknown', content: 'Something about an unknown repo.' }],
+    });
+    const result = await runConsolidation(makeCtx(db, runner));
+
+    expect(projectRows()).toEqual([]);
+    expect(result.extracted[0]!.outcome).toBe('invalid');
+  });
+
+  it('offers only the conversation workspace, the open folders and stored workspaces holding a touched file', async () => {
+    const touched = fs.mkdtempSync(path.join(os.tmpdir(), 'touched-'));
+    const untouched = fs.mkdtempSync(path.join(os.tmpdir(), 'untouched-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'home-'));
+    const now = Date.now();
+    for (const [id, ws] of [['t', touched], ['u', untouched], ['h', home]] as const) {
+      db.prepare(
+        `INSERT INTO memories (id, kind, scope, content, content_hash, workspace, is_latest, forgotten, created_at, updated_at)
+         VALUES (?, 'fact', 'project', ?, ?, ?, 1, 0, ?, ?)`,
+      ).run(id, id, id, ws, now, now);
+    }
+    seedWithFiles([path.join(touched, 'src', 'a.ts'), path.join(home, '.claude', 'CLAUDE.md')]);
+    const { runner, run } = makeRunner({ memories: [] });
+    await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER], nonProjectFolders: () => [home] }));
+
+    const req = run.mock.calls.find(([r]) => (r as MemorySubCallRequest).purpose === 'extract')![0] as MemorySubCallRequest;
+    const props = schemaNode(req.schema.properties as Record<string, unknown>, 'memories');
+    expect(schemaNode(schemaNode(props, 'items'), 'properties').workspace).toEqual({ enum: [WORKSPACE, touched, OTHER] });
+    for (const dir of [touched, untouched, home]) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('treats a null workspace as not set instead of discarding the extraction', async () => {
+    seedWithFiles([]);
+    const { runner } = makeRunner({ memories: [{ kind: 'fact', scope: 'project', workspace: null, content: 'The build uses esbuild with a CJS target.' }] });
+    const result = await runConsolidation(makeCtx(db, runner));
+
+    expect(result.status).toBe('extracted');
+    expect(projectRows()).toEqual([{ workspace: WORKSPACE, content: 'The build uses esbuild with a CJS target.' }]);
+    expect(result.extracted[0]!.workspace).toBeUndefined();
+  });
+
+  it('files a project item without a workspace under the conversation workspace', async () => {
+    seedWithFiles([]);
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const result = await runConsolidation(makeCtx(db, runner, { openFolders: () => [OTHER] }));
+
+    expect(projectRows().map((r) => r.workspace)).toEqual([WORKSPACE]);
+    expect(result.extracted[0]!.workspace).toBeUndefined();
   });
 });
 

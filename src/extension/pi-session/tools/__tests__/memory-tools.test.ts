@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Check } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -329,6 +329,13 @@ describe('untrusted-content framing of stored payloads', () => {
     expect(parseFence(out)!.payload).toContain(poison);
   });
 
+  it('names the workspace when SaveObservation files the observation outside the panel workspace', async () => {
+    const other = buildFull({ addObservation: async () => ({ id: 'o1', title: 'T', workspace: '/ws/other' }) }).get('SaveObservation')!;
+    expect(text(await other.execute('id', TOOL_INPUTS.SaveObservation!))).toBe('Observation saved to /ws/other: T (o1)');
+    const same = buildFull({ addObservation: async () => ({ id: 'o1', title: 'T', workspace: '/ws/current' }) }).get('SaveObservation')!;
+    expect(text(await same.execute('id', TOOL_INPUTS.SaveObservation!))).toBe('Observation saved: T (o1)');
+  });
+
   it('does not wrap a non-content success string (SaveObservation)', async () => {
     const tool = buildFull({ addObservation: async () => ({ id: 'o1', title: 'T' }) }).get('SaveObservation')!;
     const out = text(await tool.execute('id', TOOL_INPUTS.SaveObservation!));
@@ -351,5 +358,33 @@ describe('content maxLength on save schemas (T15)', () => {
       const props = (tools.get(name)!.parameters as { properties: { content: { maxLength: number } } }).properties;
       expect(props.content.maxLength, `${name} content not capped`).toBe(20000);
     }
+  });
+});
+
+describe('retrieval recording', () => {
+  const live = (id: string) => ({ id, isLatest: true, forgotten: false });
+  const cases: Array<{ tool: string; service: Record<string, unknown>; recorded: string[] }> = [
+    { tool: 'GetMemoryDetails', service: { getMemoryDetails: async () => [live('m1'), { id: 'm0', isLatest: true, forgotten: true }] }, recorded: ['m1'] },
+    { tool: 'ResetObservationStaleness', service: {}, recorded: ['o1'] },
+    { tool: 'GetMemoryHistory', service: { getMemoryHistory: () => [{ id: 'v1', isLatest: false, forgotten: false }, live('m1')] }, recorded: ['m1'] },
+    { tool: 'GetRelatedMemories', service: { getRelatedMemories: () => [live('r1'), { id: 'r0', isLatest: true, forgotten: true }] }, recorded: ['r1'] },
+    { tool: 'UpdateMemory', service: { updateMemory: async () => ({ id: 'm2' }) }, recorded: ['m2'] },
+  ];
+
+  for (const { tool, service, recorded } of cases) {
+    it(`${tool} records only live ids, and its result survives a failed retrieval write`, async () => {
+      const recordRetrievals = vi.fn(async () => {
+        throw new Error('SQLITE_BUSY');
+      });
+      const result = await buildFull({ ...service, recordRetrievals }).get(tool)!.execute('id', TOOL_INPUTS[tool]!);
+      expect(recordRetrievals).toHaveBeenCalledWith(recorded, '/ws/current');
+      expect(text(result)).not.toContain('SQLITE_BUSY');
+    });
+  }
+
+  it('records nothing when every returned version is superseded or forgotten', async () => {
+    const recordRetrievals = vi.fn(async () => {});
+    await buildFull({ getMemoryHistory: () => [{ id: 'v1', isLatest: false, forgotten: false }], recordRetrievals }).get('GetMemoryHistory')!.execute('id', TOOL_INPUTS.GetMemoryHistory!);
+    expect(recordRetrievals).not.toHaveBeenCalled();
   });
 });

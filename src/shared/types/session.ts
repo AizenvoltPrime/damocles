@@ -188,11 +188,13 @@ export interface ChatMessage {
   parentToolUseId?: string | null;
   isQueued?: boolean;
   isInjected?: boolean;
+  /** An injected row echoing a slash command that commits no user entry, so it is not a mid-stream delivery. */
+  isCommandEcho?: boolean;
   isCombinedQueue?: boolean;
   isBackgroundResult?: boolean;
   backgroundTaskLabel?: string;
   thinkingContent?: string;
-  /** Sequential index of this real user prompt within the session. Counted across messages where role === 'user' && !isInjected && !isCombinedQueue && !isQueued — the single source for prompt counting; never re-derive in the webview. */
+  /** The prompt index the extension stamped (`session-store/prompt-index.ts`); never re-derive it in the webview. A row `USER_PROMPT_FILTER` rejects names no prompt of its own: an injected echo carries the latest prompt's index, and a replayed mid-run delivery or steer chip carries none. */
   promptIndex?: number;
   /** Present on amber "You steered <agent>" chips produced by /steer. Chips carry isInjected:true so they stay excluded from prompt counting. */
   steerTarget?: { agentId: string; agentType?: string; description?: string };
@@ -204,6 +206,12 @@ export interface ChatMessage {
  * cancelled state instead of a success. The extension is the only writer.
  */
 export const CANCELLED_TOOL_DETAIL_KEY = "damoclesCancelled";
+
+/**
+ * The note the user sent with that cancel, on the same `details`, which pi never sends to the model.
+ * It is how a run the note itself starts is told apart from a prompt (`session-store/prompt-index.ts`).
+ */
+export const CANCEL_NOTE_DETAIL_KEY = "damoclesCancelNote";
 
 export interface ToolCall {
   id: string;

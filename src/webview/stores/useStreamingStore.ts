@@ -41,6 +41,7 @@ export function buildUserMessage(
   correlationId?: string,
   promptIndex?: number,
   isMidStream?: boolean,
+  isCommandEcho?: boolean,
 ): ChatMessage {
   const blocks = contentBlocksFromUserContent(content);
   return {
@@ -53,6 +54,7 @@ export function buildUserMessage(
     timestamp: Date.now(),
     isReplay,
     ...(isInjected !== undefined && { isInjected }),
+    ...(isCommandEcho === true && { isCommandEcho }),
     ...(isMidStream === true && { isCombinedQueue: true }),
     ...(promptIndex !== undefined && { promptIndex }),
   };
@@ -431,9 +433,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     correlationId?: string,
     promptIndex?: number,
     isMidStream?: boolean,
+    isCommandEcho?: boolean,
   ): ChatMessage {
     flushReplayQueue();
-    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream);
+    const msg = buildUserMessage(content, isReplay, sdkMessageId, isInjected, correlationId, promptIndex, isMidStream, isCommandEcho);
     messages.value = [...messages.value, msg];
     return msg;
   }
@@ -599,9 +602,11 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
   }
 
-  function removeQueuedMessage(messageId: string): void {
+  function removeQueuedMessage(messageId: string): ChatMessage | undefined {
     flushReplayQueue();
+    const removed = messages.value.find((m) => m.id === messageId);
     messages.value = messages.value.filter((m) => m.id !== messageId);
+    return removed;
   }
 
   function combineQueuedMessages(messageIds: string[], combinedContent: string, contentBlocks?: UserContentBlock[]): void {

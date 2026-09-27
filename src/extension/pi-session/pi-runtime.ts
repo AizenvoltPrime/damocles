@@ -13,7 +13,8 @@ import { assetSources } from '../asset-sources';
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
-import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
+import { resolvePiModel, piSupportedModels, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
+import { piModelDollarBilled } from './account-billing';
 import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
 import { describeAuthError } from './describe-error';
 import { isAbortError } from './web-access/util';
@@ -37,6 +38,7 @@ import {
 } from './openai-auth';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
 import { folderKey } from '../workspace-folders/folder-key';
+import { withQueuePolicy } from './queue-policy';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -375,7 +377,7 @@ export class PiRuntime {
       authPath: path.join(this._agentDir, 'auth.json'),
       modelsPath: path.join(this._agentDir, 'models.json'),
     });
-    this._userSettings = pi.SettingsManager.create(this._agentDir, this._agentDir);
+    this._userSettings = withQueuePolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
     // The manager loads the MCP SDK + eager-connects only once `setMcpServers` feeds it the enabled set.
     this._userMcp = newMcpManager();
     this._setupUserWatchers();
@@ -927,7 +929,8 @@ export class PiRuntime {
     const explore = resolveExploreSectionModel(registry);
     // The user's Explore effort setting intentionally does NOT apply to background memory sub-calls;
     // those run at a fixed medium (injected in runStructuredCompletion). Consume the model only.
-    if (explore) return explore.model;
+    // An Explore model with no credential is no model at all, never a fallback to another provider.
+    if (explore) return registry.hasConfiguredAuth(explore.model.provider) ? explore.model : null;
     const openai = this.getOpenAIAuthStatus();
     const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai);
     if (anthropic.model && anthropic.authed) return anthropic.model;
@@ -939,6 +942,23 @@ export class PiRuntime {
   /** Whether a small/fast sub-call model is currently authed (lets callers tell no-auth from a transient miss). */
   hasAuthedSubCallModel(): boolean {
     return this._resolveSmallFastModel() !== null;
+  }
+
+  /**
+   * The model {@link runStructuredCompletion} would use now, with its API rates in USD per million tokens
+   * and whether its credential bills dollars. `null` when no sub-call model is configured.
+   */
+  describeSubCallModel(): { provider: string; id: string; inputPerMTok: number; outputPerMTok: number; dollarBilled: boolean } | null {
+    const model = this._resolveSmallFastModel();
+    if (!model) return null;
+    // preferApiKey only picks between OpenAI credentials, and the resolved provider already names that credential.
+    const dollarBilled = piModelDollarBilled(model, {
+      supportedModels: piSupportedModels(),
+      claudeAuthMode: this.getClaudeAuthStatus().mode,
+      openai: this.getOpenAIAuthStatus(),
+      preferApiKey: false,
+    });
+    return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled };
   }
 
   /**

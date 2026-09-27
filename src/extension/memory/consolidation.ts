@@ -1,5 +1,7 @@
 import { log } from '../logger';
 import { buildFtsMatchQuery } from './text-tokenize';
+import { USEFULNESS_RUBRIC } from './rubric';
+import { listKnownWorkspaces, matchKnownWorkspace, sameWorkspace, workspaceContaining } from './workspaces';
 import { estimateTokens } from './token-estimate';
 import type { MemoryKind, MemoryScope } from '@shared/types/memory';
 import type {
@@ -70,6 +72,10 @@ export interface ConsolidationCtx {
   sessionId?: string;
   /** Folder for legacy candidates stored without one: the consolidating window's default folder. */
   fallbackWorkspace: () => string;
+  /** The window's open folders; with the stored workspaces they bound where an extraction may be filed. */
+  openFolders: () => readonly string[];
+  /** Folders that are never a project, such as the home-directory bucket of a window with no folder open. */
+  nonProjectFolders: () => readonly string[];
   /** When false, the pass runs maintenance but extracts nothing. */
   autoExtractEnabled: boolean;
   /** Whether this pass was user-initiated ('manual') or background ('auto'). */
@@ -85,9 +91,13 @@ export interface ConsolidationCtx {
   isDisposed?: () => boolean;
 }
 
-/** A pass's context once its batch is claimed: `workspace` is the folder every claimed turn ran in. */
+/**
+ * A pass's context once its batch is claimed: `workspace` is the folder every claimed turn ran in,
+ * `knownWorkspaces` the folders an extraction may name (starting with `workspace`).
+ */
 interface ClaimedPassCtx extends ConsolidationCtx {
   workspace: string;
+  knownWorkspaces: string[];
 }
 
 /** A candidate claimed for this consolidation pass. */
@@ -97,6 +107,8 @@ interface ClaimedCandidate {
   assistantText: string;
   /** The session that produced this turn, or null for a sessionless capture. */
   sessionId: string | null;
+  /** Files the turn's tool calls touched. */
+  files: string[];
 }
 
 interface ClaimedRow {
@@ -104,6 +116,12 @@ interface ClaimedRow {
   user_text: string;
   assistant_text: string;
   session_id: string | null;
+  files: string;
+}
+
+function parseFiles(json: string): string[] {
+  const parsed: unknown = JSON.parse(json);
+  return Array.isArray(parsed) ? parsed.filter((f): f is string => typeof f === 'string') : [];
 }
 
 /** One memory the extractor asked to durably store. */
@@ -111,6 +129,8 @@ export interface ExtractedMemory {
   kind: string;
   content: string;
   scope: string;
+  /** For a project item about another known repository: that repository's workspace. Null means not set. */
+  workspace?: string | null;
   tags?: string[];
   relation?: { type: 'updates' | 'extends' | 'derives'; targetHint?: string };
 }
@@ -136,7 +156,8 @@ export function isExtractionResult(v: unknown): v is ExtractionResult {
         typeof m === 'object' &&
         typeof (m as { kind?: unknown }).kind === 'string' &&
         typeof (m as { content?: unknown }).content === 'string' &&
-        typeof (m as { scope?: unknown }).scope === 'string',
+        typeof (m as { scope?: unknown }).scope === 'string' &&
+        ((m as { workspace?: unknown }).workspace == null || typeof (m as { workspace?: unknown }).workspace === 'string'),
     )
   );
 }
@@ -176,51 +197,58 @@ const VALID_KINDS: ReadonlySet<MemoryKind> = new Set<MemoryKind>([
 
 const VALID_SCOPES: ReadonlySet<MemoryScope> = new Set<MemoryScope>(['session', 'project', 'global']);
 
-export const EXTRACTION_SYSTEM_PROMPT: string =
-  'Extract durable, reusable memories from this conversation. Prefer few high-value items. ' +
-  "kind: 'fact'|'preference'|'episode'. " +
-  "scope: 'project' for workspace-specific, 'global' for cross-project user preferences, " +
-  "'session' for ephemeral. Use 'episode' for time-bound 'currently working on X'. " +
-  'You are given the memories ALREADY stored. Do NOT re-extract anything already captured there — ' +
-  'even if reworded. Only emit a memory if it is genuinely NEW, or if it UPDATES/CONTRADICTS an ' +
-  'existing one (in which case state the corrected fact). ' +
-  'Only extract facts the user stated or confirmed, or that were verified in tool output — never speculation. ' +
-  'Return at most 10 memories. Return [] if nothing new is durable.';
+export const EXTRACTION_SYSTEM_PROMPT: string = `Extract memories from this conversation that a future agent needs. Most conversations contain none: an empty memories array is the normal answer.
+
+${USEFULNESS_RUBRIC}
+
+Fields:
+- kind: 'fact'|'preference'|'episode'. Use 'episode' for time-bound context such as the current focus.
+- scope: 'project' for one repository, 'global' for the machine or the user across projects, 'session' for this conversation only.
+- workspace: only for a project item about a repository other than the conversation workspace. Name it exactly as listed under "Known workspaces", and use each turn's files to tell which repository a fact is about. Omit it for the conversation workspace.
+- content: one self-contained statement with its reason, readable without the conversation.
+
+You are given the memories ALREADY stored. Do NOT re-extract anything already captured there, even if reworded. Only emit a memory if it is genuinely NEW, or if it UPDATES/CONTRADICTS an existing one (in which case state the corrected fact).
+Only extract facts the user stated or confirmed, or that were verified in tool output, never speculation.
+Return at most 10 memories.`;
 
 /** Cap on existing memories primed into the extraction prompt to suppress duplicates. */
 const EXISTING_MEMORY_LIMIT = 40;
 
-export const EXTRACTION_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    memories: {
-      type: 'array',
-      maxItems: 10,
-      items: {
-        type: 'object',
-        properties: {
-          kind: { enum: ['fact', 'preference', 'episode'] },
-          content: { type: 'string' },
-          scope: { enum: ['session', 'project', 'global'] },
-          tags: { type: 'array', items: { type: 'string' } },
-          relation: {
-            type: 'object',
-            properties: {
-              type: { enum: ['updates', 'extends', 'derives'] },
-              targetHint: { type: 'string' },
+/** The `extract` schema. `workspace` is an enum of the pass's known workspaces, so the model cannot invent a path. */
+export function buildExtractionSchema(knownWorkspaces: readonly string[]): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      memories: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            kind: { enum: ['fact', 'preference', 'episode'] },
+            content: { type: 'string' },
+            scope: { enum: ['session', 'project', 'global'] },
+            workspace: { enum: [...knownWorkspaces] },
+            tags: { type: 'array', items: { type: 'string' } },
+            relation: {
+              type: 'object',
+              properties: {
+                type: { enum: ['updates', 'extends', 'derives'] },
+                targetHint: { type: 'string' },
+              },
+              required: ['type'],
+              additionalProperties: false,
             },
-            required: ['type'],
-            additionalProperties: false,
           },
+          required: ['kind', 'content', 'scope'],
+          additionalProperties: false,
         },
-        required: ['kind', 'content', 'scope'],
-        additionalProperties: false,
       },
     },
-  },
-  required: ['memories'],
-  additionalProperties: false,
-};
+    required: ['memories'],
+    additionalProperties: false,
+  };
+}
 
 /**
  * Atomically reserves the oldest unconsumed candidates that fit within {@link CANDIDATE_TOKEN_BUDGET}
@@ -244,7 +272,7 @@ function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCa
 
     const rows = ctx.db
       .prepare(
-        `SELECT id, user_text, assistant_text, session_id FROM memory_candidates
+        `SELECT id, user_text, assistant_text, session_id, files FROM memory_candidates
           WHERE ${sessionWhere} AND workspace IS ? ORDER BY created_at LIMIT ?`,
       )
       .all(...sessionParams, head.workspace, CANDIDATE_BATCH_LIMIT) as ClaimedRow[];
@@ -256,7 +284,13 @@ function claimCandidates(ctx: ConsolidationCtx): Promise<{ candidates: ClaimedCa
     for (const r of rows) {
       const cost = estimateTokens(r.user_text) + estimateTokens(r.assistant_text);
       if (claimed.length > 0 && tokens + cost > CANDIDATE_TOKEN_BUDGET) break;
-      claimed.push({ id: r.id, userText: r.user_text, assistantText: r.assistant_text, sessionId: r.session_id });
+      claimed.push({
+        id: r.id,
+        userText: r.user_text,
+        assistantText: r.assistant_text,
+        sessionId: r.session_id,
+        files: parseFiles(r.files),
+      });
       tokens += cost;
     }
 
@@ -405,19 +439,23 @@ function loadExistingMemoriesForExtraction(ctx: ClaimedPassCtx, candidates: Clai
   return rows.map(r => r.content);
 }
 
-function buildExtractionPrompt(candidates: ClaimedCandidate[], existing: string[]): string {
+function buildExtractionPrompt(pass: ClaimedPassCtx, candidates: ClaimedCandidate[], existing: string[]): string {
   const turns = candidates
     .map((c, index) => {
       const user = clipTurnText(c.userText.trim()) || '(empty)';
       const assistant = clipTurnText(c.assistantText.trim()) || '(empty)';
-      return `Turn ${index + 1}:\nUser: ${user}\nAssistant: ${assistant}`;
+      const files = c.files.length > 0 ? `\nFiles: ${c.files.join(', ')}` : '';
+      return `Turn ${index + 1}:${files}\nUser: ${user}\nAssistant: ${assistant}`;
     })
     .join('\n\n');
 
-  if (existing.length === 0) return turns;
-
-  const known = existing.map(c => `- ${c}`).join('\n');
-  return `Already-stored memories (do NOT re-extract these):\n${known}\n\nConversation:\n${turns}`;
+  const header =
+    `Conversation workspace: ${pass.workspace}\n` +
+    `Known workspaces:\n${pass.knownWorkspaces.map(w => `- ${w}`).join('\n')}`;
+  const stored = existing.length > 0
+    ? `\n\nAlready-stored memories (do NOT re-extract these):\n${existing.map(c => `- ${c}`).join('\n')}`
+    : '';
+  return `${header}${stored}\n\nConversation:\n${turns}`;
 }
 
 /**
@@ -439,7 +477,11 @@ function uniqueNonNullSession(candidates: ClaimedCandidate[]): string | null {
  *  - `scope==='session'` with no resolvable `sessionId` — a NULL-session session row is invisible and
  *    undeletable, so reject rather than insert one.
  */
-function toNewMemoryFields(memory: ExtractedMemory, workspace: string, sessionId: string | null): NewMemoryFields | null {
+function toNewMemoryFields(
+  memory: ExtractedMemory,
+  pass: Pick<ClaimedPassCtx, 'workspace' | 'knownWorkspaces'>,
+  sessionId: string | null,
+): NewMemoryFields | null {
   if (memory.kind === 'observation') return null;
   if (!VALID_KINDS.has(memory.kind as MemoryKind)) return null;
   if (!VALID_SCOPES.has(memory.scope as MemoryScope)) return null;
@@ -450,6 +492,13 @@ function toNewMemoryFields(memory: ExtractedMemory, workspace: string, sessionId
   const scope = memory.scope as MemoryScope;
 
   if (scope === 'session' && !sessionId) return null;
+
+  let workspace = pass.workspace;
+  if (scope === 'project' && memory.workspace != null) {
+    const named = matchKnownWorkspace(memory.workspace, pass.knownWorkspaces);
+    if (!named) return null;
+    workspace = named;
+  }
 
   return {
     kind,
@@ -466,15 +515,7 @@ function toNewMemoryFields(memory: ExtractedMemory, workspace: string, sessionId
  * resolution before near-duplicate soft-merge. Steps are top-level awaits, never inside a write-lock
  * callback, because {@link FactGraphManager.resolveConflict} self-acquires the lock and would deadlock.
  */
-async function persistExtracted(
-  ctx: ClaimedPassCtx,
-  memory: ExtractedMemory,
-  batchSessionId: string | null,
-): Promise<ConsolidationPersistOutcome> {
-  const sessionId = ctx.sessionId ?? batchSessionId;
-  const fields = toNewMemoryFields(memory, ctx.workspace, sessionId);
-  if (!fields) return 'invalid';
-
+async function persistExtracted(ctx: ClaimedPassCtx, fields: NewMemoryFields): Promise<ConsolidationPersistOutcome> {
   const { id, deduped } = await insertWithDedup(ctx.db, ctx.writeQueue, fields);
   if (deduped) return 'deduped';
 
@@ -495,6 +536,30 @@ async function persistExtracted(
   }
 
   return merged ? 'merged' : superseded ? 'superseded' : 'inserted';
+}
+
+/** The overlay row for an extracted item; `workspace` is set only when it was filed under a folder other than the pass's. */
+function extractedDisplay(
+  pass: ClaimedPassCtx,
+  memory: ExtractedMemory,
+  fields: NewMemoryFields | null,
+): Omit<ConsolidationExtractedMemory, 'outcome'> {
+  const base = { kind: memory.kind, scope: memory.scope, content: memory.content };
+  return fields?.workspace && !sameWorkspace(fields.workspace, pass.workspace) ? { ...base, workspace: fields.workspace } : base;
+}
+
+/**
+ * The folders an extraction may be filed under: the conversation workspace, the open folders, and the
+ * known workspaces holding a file a claimed turn touched. A wider list lets the model file a fact under
+ * a repository the turns never touched.
+ */
+function extractionWorkspaces(ctx: ConsolidationCtx, workspace: string, candidates: readonly ClaimedCandidate[]): string[] {
+  const open = ctx.openFolders();
+  const files = candidates.flatMap(c => c.files);
+  const offered = listKnownWorkspaces(ctx.db, open, ctx.nonProjectFolders()).filter(
+    w => matchKnownWorkspace(w, open) !== null || files.some(f => workspaceContaining(f, [w]) !== null),
+  );
+  return [workspace, ...offered.filter(w => !sameWorkspace(w, workspace))];
 }
 
 async function runMaintenance(ctx: ConsolidationCtx): Promise<{ promoted: number; decayed: number; pruned: number }> {
@@ -582,10 +647,11 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     }
 
     claimedIds = candidates.map(c => c.id);
-    const pass: ClaimedPassCtx = { ...ctx, workspace };
+    const knownWorkspaces = extractionWorkspaces(ctx, workspace, candidates);
+    const pass: ClaimedPassCtx = { ...ctx, workspace, knownWorkspaces };
     const batchSessionId = uniqueNonNullSession(candidates);
     const existing = loadExistingMemoriesForExtraction(pass, candidates);
-    const prompt = buildExtractionPrompt(candidates, existing);
+    const prompt = buildExtractionPrompt(pass, candidates, existing);
 
     // PHASE 2 — EXTRACT (one LLM call; the slow step, ~5–20s). Can throw, or yield null/no-model.
     phase({ phase: 'extract', status: 'active', meta: { count: candidatesReviewed } });
@@ -595,7 +661,7 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
         purpose: 'extract',
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         prompt,
-        schema: EXTRACTION_SCHEMA,
+        schema: buildExtractionSchema(knownWorkspaces),
       });
     } catch (err) {
       // Release the batch, but still run maintenance (pure SQL) so an extraction failure doesn't
@@ -642,11 +708,12 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<Consolida
     phase({ phase: 'persist', status: 'active', meta: { done: 0, total } });
     const extracted: ConsolidationExtractedMemory[] = [];
     for (const memory of extraction.value.memories) {
+      const fields = toNewMemoryFields(memory, pass, ctx.sessionId ?? batchSessionId);
       try {
-        const outcome = await persistExtracted(pass, memory, batchSessionId);
-        extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome });
+        const outcome = fields ? await persistExtracted(pass, fields) : 'invalid';
+        extracted.push({ ...extractedDisplay(pass, memory, fields), outcome });
       } catch (err) {
-        extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome: 'invalid' });
+        extracted.push({ ...extractedDisplay(pass, memory, fields), outcome: 'invalid' });
         log('[MemoryConsolidation] failed to persist one extracted memory; continuing batch: %O', err);
       }
       // Keep the lease fresh so a long per-item persist can't outlive the TTL and get double-extracted.

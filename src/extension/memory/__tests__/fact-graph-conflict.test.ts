@@ -389,7 +389,7 @@ describe('Slice 8 C14 — identical created_at contradictions tiebreak by higher
 });
 
 /** Bump with each new memory-DB migration. */
-const LATEST_SCHEMA_VERSION = 4;
+const LATEST_SCHEMA_VERSION = 5;
 
 describe('Slice 8 — migration v3 schema (needs_conflict_check column, partial index, version bump)', () => {
   it('a fresh fully-migrated DB has the NOT NULL DEFAULT 0 column and the partial index', async () => {
@@ -489,7 +489,7 @@ describe('migration v4 schema (memory_candidates.workspace + claim index)', () =
 
     const row = db.prepare("SELECT workspace FROM memory_candidates WHERE id = 'legacy-candidate'").get() as { workspace: string | null };
     expect(row.workspace).toBeNull();
-    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(4);
+    expect((db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v).toBe(LATEST_SCHEMA_VERSION);
     expect(() => runMigrations(db)).not.toThrow();
     db.close();
   });

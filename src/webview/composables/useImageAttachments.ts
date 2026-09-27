@@ -97,6 +97,14 @@ export function useImageAttachments() {
     return { success: true };
   }
 
+  /** Re-attach an image a message already carried, so already resized for the SDK. Skipped past the per-message cap. */
+  async function addFromBlock(block: ImageBlock): Promise<void> {
+    const dataUrl = `data:${block.source.media_type};base64,${block.source.data}`;
+    const { width, height } = await loadDimensions(dataUrl).catch(() => ({ width: 0, height: 0 }));
+    if (!canAddMore.value) return;
+    attachments.value.push({ id: generateId(), dataUrl, base64Data: block.source.data, mediaType: block.source.media_type, width, height });
+  }
+
   function remove(id: string): void {
     const index = attachments.value.findIndex((a) => a.id === id);
     if (index !== -1) {
@@ -125,6 +133,7 @@ export function useImageAttachments() {
     canAddMore,
     addFromFile,
     addFromClipboard,
+    addFromBlock,
     remove,
     clear,
     toContentBlocks,

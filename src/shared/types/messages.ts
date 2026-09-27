@@ -25,6 +25,14 @@ import type { AgentUsageTotals } from '../usage-accounting';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
+import type {
+  MemoryAuditCancelResult,
+  MemoryAuditErrorCode,
+  MemoryAuditProgress,
+  MemoryAuditResult,
+  MemoryAuditStatePayload,
+  MemoryAuditSummary,
+} from './memory-audit';
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
@@ -159,6 +167,12 @@ export type WebviewToExtensionMessage =
   | { type: "setProfileSection"; scope: "project" | "global"; section: "static" | "dynamic"; content: string }
   | { type: "requestConsolidationPreview" }
   | { type: "triggerConsolidation" }
+  | { type: "requestMemoryAudit" }
+  | { type: "requestMemoryAuditSummary" }
+  | { type: "startMemoryAudit" }
+  | { type: "cancelMemoryAudit" }
+  | { type: "applyMemoryAudit"; runId: string; accept: string[]; reject: string[] }
+  | { type: "revertMemoryAudit"; runId: string }
   | { type: "startVoiceRecording" }
   | { type: "stopVoiceRecording" }
   | { type: "cancelVoiceRecording" }
@@ -260,7 +274,8 @@ export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
   | { type: "done"; data: ResultMessage }
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; isInjected?: boolean }
+  // `isCommandEcho` marks the echo of a slash command that commits no user entry; it is always injected too.
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; isInjected?: boolean; isCommandEcho?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   | { type: "error"; message: string }
@@ -325,7 +340,7 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionUsage"; usage: AgentUsageTotals; numTurns: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex: number }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
@@ -354,7 +369,8 @@ export type ExtensionToWebviewMessage =
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
   | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
-  | { type: "queueCancelled"; messageId: string }
+  /** `returnToInput`: the chip's message was never sent, and goes back into the composer rather than away. */
+  | { type: "queueCancelled"; messageId: string; returnToInput?: boolean }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | ({ type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
   /**
@@ -407,7 +423,8 @@ export type ExtensionToWebviewMessage =
   | { type: "openMemoryPanel" }
   // requestId echoes a panel createMemory so a failed create settles only its own token; a pin/delete
   // /forget failure carries source:'panel' but no requestId, so it never settles an in-flight create.
-  | { type: "memoryError"; message: string; source?: "consolidation" | "panel"; requestId?: string }
+  // `code` is set exactly when source is "audit"; the webview localizes it and logs `message`.
+  | { type: "memoryError"; message: string; source?: "consolidation" | "panel" | "audit"; requestId?: string; code?: MemoryAuditErrorCode }
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
   | { type: "memoryForgotten"; id: string; count: number }
@@ -425,6 +442,12 @@ export type ExtensionToWebviewMessage =
   | { type: "consolidationRunning"; running: boolean }
   | { type: "consolidationProgress"; event: ConsolidationPhaseEvent }
   | { type: "consolidationResult"; result: ConsolidationResult }
+  | { type: "memoryAuditState"; state: MemoryAuditStatePayload }
+  | { type: "memoryAuditProgress"; progress: MemoryAuditProgress }
+  // Null when the memory store is unavailable: no banner, and nothing to report.
+  | { type: "memoryAuditSummary"; summary: MemoryAuditSummary | null }
+  | { type: "memoryAuditResult"; result: MemoryAuditResult }
+  | { type: "memoryAuditCancelResult"; result: MemoryAuditCancelResult }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   // `switched` is set only when the panel moved to a new folder with a fresh conversation; without it the
   // message is state only, and the webview reverts any optimistic selection to `panelFolderKey`.

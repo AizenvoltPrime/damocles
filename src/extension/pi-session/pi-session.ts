@@ -4,7 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentBeforeSettleEvent, CustomMessageEntryDraft, SessionEntry, InputEventResult } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
@@ -94,6 +94,7 @@ import {
   DAMOCLES_STEER_ENTRY,
   DAMOCLES_AGENT_INVOCATION_ENTRY,
   stripIdeContext,
+  nextPromptIndex,
 } from "./session-store";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
@@ -111,10 +112,10 @@ import {
   extractText,
   extractImages,
   piMessageText,
-  lastUserEntry,
-  turnExchangeAfter,
+  turnExchangeFrom,
   firstExchangeForTitle,
 } from "./branch-text";
+import { watchPromptEntry, type PromptEntry, type PromptEntryWatch } from "./prompt-entry";
 import {
   PLAN_MODE_NUDGE_CUSTOM_TYPE,
   selectPlanModeNudgeText,
@@ -161,6 +162,31 @@ function parseSteerImages(images: unknown): ImageBlock[] | null {
     parsed.push({ type: 'image', source: { type: 'base64', media_type: image.source.media_type, data: image.source.data } });
   }
   return parsed;
+}
+
+/** Whether `prompt(text)` runs a registered extension command, which commits no user entry. Mirrors the
+ *  parse in pi's `_tryExecuteExtensionCommand`, which `prompt()` reaches with template expansion on. */
+function isExtensionCommand(session: AgentSession, text: string): boolean {
+  if (!text.startsWith("/")) return false;
+  const space = text.indexOf(" ");
+  return session.extensionRunner.getCommand(text.slice(1, space === -1 ? undefined : space)) !== undefined;
+}
+
+/** A message the user queued mid-run, carrying its webview chip id. */
+interface QueuedInput {
+  id: string;
+  text: string;
+  images: ImageContent[];
+  content: ContentInput;
+}
+
+/** Refuses the run pi was about to open for a queued batch a stop withdrew. */
+class WithdrawnSteerError extends Error {}
+
+/** A cancel note handed to pi; `echoed` once pi accepted it and the transcript says the agent was told. */
+interface ListedNote {
+  text: string;
+  echoed: boolean;
 }
 
 /**
@@ -241,7 +267,8 @@ export class PiSession implements ChatSession {
   /** Set whenever an agent may have stopped unfinished since the last check, so the next prompt first
    *  tells the model which agents were interrupted (`reconcileInterruptions`). */
   private interruptionCheckPending = false;
-  private promptIndexCounter = -1;
+  /** The index `sendMessage` stamped on the prompt it is running; null between turns. */
+  private inFlightPromptIndex: number | null = null;
   /** A stored session id to resume on next start(), or to switch the live runtime to (US-010b). */
   private resumeSessionId: string | null = null;
   /** Guards the one-shot AI title generation after the first assistant turn (US-012). */
@@ -255,9 +282,19 @@ export class PiSession implements ChatSession {
   /** Messages the user queued during the current turn, held until they are injected as ONE combined
    * steer at the next agent boundary. Each carries its webview chip id so the chips collapse into the
    * single combined message on delivery. Cleared on delivery, abort, and session replacement. */
-  private queuedInputs: { id: string; text: string; images: ImageContent[]; content: ContentInput }[] = [];
-  /** Cancel notes pi has accepted but not yet delivered. Their delivery event is not a queued batch. */
-  private injectedNotes: string[] = [];
+  private queuedInputs: QueuedInput[] = [];
+  /** Messages queued after every one in `queuedInputs`, still waiting on pi's input handlers, oldest first. */
+  private screeningInputs: QueuedInput[] = [];
+  private screeningRunning = false;
+  /** How many leading `queuedInputs` the batch pi holds carries, so its delivery consumes exactly those; null counts them all. */
+  private steeredCount: number | null = null;
+  /** Set while `resteerQueuedInputs` runs; a request meanwhile sets `resteerRequested` for one more pass. */
+  private resteerRunning = false;
+  private resteerRequested = false;
+  /** Cancel notes handed to pi and not yet delivered. Their delivery event is not a queued batch. */
+  private injectedNotes: ListedNote[] = [];
+  /** The watch on the entry the running `sendMessage` prompt commits. */
+  private promptEntry: PromptEntryWatch | null = null;
   /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
   private agentRegistry: AgentRegistry | null = null;
   private subagentManager: AgentManager | null = null;
@@ -315,7 +352,8 @@ export class PiSession implements ChatSession {
       sessionCost: () => this.ownSessionCost(),
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
-      onMidStreamBatchCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
+      onMidStreamEntryCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
+      promptEntryId: () => this.promptEntry?.entry()?.id ?? null,
       onTurnStateChanged: (state) => this.setTurnState(state),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
@@ -537,7 +575,6 @@ export class PiSession implements ChatSession {
       getPlanFilePath: () => this.getPlanFilePath(),
       isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
-      currentPromptIndex: () => this.currentPromptIndex,
       budgetStopRequested: () => this._budgetStopRequested,
       onBeforeSettle: (event) => this.onBeforeSettle(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
@@ -707,7 +744,6 @@ export class PiSession implements ChatSession {
     _agentId?: string,
     correlationId?: string,
     userBroadcast?: { content: string; contentBlocks?: UserContentBlock[] },
-    options?: { isInternal?: boolean },
   ): Promise<void> {
     if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
@@ -753,15 +789,15 @@ export class PiSession implements ChatSession {
       this.returnUnsentMessage(correlationId, userBroadcast);
       return;
     }
-    // Capture the session's first real user message for the deterministic plan path (FR-3/FR-4). The
+    // Capture the session's first real user message for the deterministic plan path. The
     // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
     // the first turn, so `getPlanFilePath` falls back to this. Prefer the user's ORIGINAL typed text
     // (`userBroadcast.content`) over the expanded `prompt` so the slug matches the branch-derived value
     // `extractFirstUserMessage` later returns (which resolves the same original via the sidecar). Otherwise
     // a slash-command/skill first message would slug the expansion now and the original later, splitting
-    // the session across two plan files. Drops `<…>`-prefixed synthetic prompts and internal sends; being a
-    // pre-branch fallback, it self-heals to the branch-derived value once a qualifying message lands.
-    if (!options?.isInternal && this._firstUserMessage === null) {
+    // the session across two plan files. Drops `<…>`-prefixed synthetic prompts; being a pre-branch
+    // fallback, it self-heals to the branch-derived value once a qualifying message lands.
+    if (this._firstUserMessage === null) {
       const text = userBroadcast?.content ?? piMessageText(prompt);
       if (text && !text.trimStart().startsWith("<")) this._firstUserMessage = text;
     }
@@ -775,8 +811,15 @@ export class PiSession implements ChatSession {
       return;
     }
 
-    const isInternal = options?.isInternal === true;
-    if (!isInternal) this.promptIndexCounter += 1;
+    const text = extractText(prompt);
+    // An extension command commits no user entry, so its echo is injected like every other row that
+    // names no prompt, and the next real prompt keeps the index it would have had.
+    const isPrompt = !isExtensionCommand(session, text);
+    if (isPrompt) {
+      // Derived from the branch this prompt extends, by the rule the history loader stamps with, so the
+      // live index and every record keyed by it match what a reload shows.
+      this.inFlightPromptIndex = nextPromptIndex(session.sessionManager.getBranch());
+    }
 
     if (userBroadcast && correlationId) {
       this.emit({
@@ -784,8 +827,8 @@ export class PiSession implements ChatSession {
         content: userBroadcast.content,
         ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
         correlationId,
-        promptIndex: Math.max(0, this.promptIndexCounter),
-        ...(isInternal ? { isInjected: true } : {}),
+        promptIndex: this.currentPromptIndex,
+        ...(isPrompt ? {} : { isInjected: true, isCommandEcho: true }),
       });
     }
 
@@ -798,21 +841,19 @@ export class PiSession implements ChatSession {
     this.refreshCompactionReserve();
     this.adapter.beginTurn(correlationId);
 
-    const text = extractText(prompt);
     const images = extractImages(prompt);
-    // The user entry id BEFORE this turn, so we only record an original-input sidecar when prompt()
-    // actually committed a NEW user message (a pi extension command like `/todos` commits none).
-    const priorUserEntryId = lastUserEntry(session)?.id ?? null;
+    const committed = watchPromptEntry(session);
+    this.promptEntry = committed;
     try {
       // Defense in depth: under 0.80.5 `isStreaming` stays true for the whole agent run, including
       // retry/auto-compaction windows. A prompt landing in one of those windows now queues as a
       // follow-up instead of hitting pi's "Agent is already processing" rejection — the message runs
       // as a continuation rather than being lost. Strictly better desync defense than before.
-      const promptOpts = {
+      await session.prompt(text, {
         ...(images.length > 0 ? { images } : {}),
         ...(session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
-      };
-      await session.prompt(text, Object.keys(promptOpts).length > 0 ? promptOpts : undefined);
+        preflightResult: committed.preflightResult,
+      });
       // An extension slash command (e.g. `/todos`) is handled synchronously inside prompt() and starts
       // no agent run, so no terminal event settles the turn — the spinner would hang. Under 0.80.5
       // prompt() resolves only when the run is fully settled, so `isStreaming` is reliably false here
@@ -825,13 +866,14 @@ export class PiSession implements ChatSession {
       // prompt(), chat-handlers rewrites skills/`/init` before sendMessage — so the on-disk user message
       // no longer matches what the user typed. Record the original typed text as an inert sidecar keyed
       // to the pi user entry so reload/up-arrow/preview can restore it.
-      if (!isInternal && userBroadcast) this.recordOriginalInputIfDiverged(session, userBroadcast.content, priorUserEntryId);
+      const entry = committed.entry();
+      if (userBroadcast && entry) this.recordOriginalInputIfDiverged(session, userBroadcast.content, entry);
       // The turn completed (prompt resolves once the run has settled). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
-      if (!isInternal) void this.maybeGenerateTitle();
+      void this.maybeGenerateTitle();
       // Record the completed exchange as a memory extraction candidate so the consolidation passes have
       // something to extract from (and the idle timer arms). Symmetric with the harvesters above.
-      if (!isInternal && userBroadcast) this.enqueueMemoryCandidate(session, priorUserEntryId);
+      if (userBroadcast && entry) this.enqueueMemoryCandidate(session, entry.id);
     } catch (err) {
       // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
       // so swallow the rejection here rather than stacking a spurious error card on top of it.
@@ -843,7 +885,10 @@ export class PiSession implements ChatSession {
         this.emit({ type: "processing", isProcessing: false });
       }
     } finally {
+      committed.dispose();
+      if (this.promptEntry === committed) this.promptEntry = null;
       this.processingFlag = false;
+      this.inFlightPromptIndex = null;
       // The turn is over however it ended. A rejection that never reached an agent run emits no pi
       // event, so without this the lifecycle would stay `running` with nothing left to move it.
       this.setTurnState("idle");
@@ -888,7 +933,8 @@ export class PiSession implements ChatSession {
 
   /**
    * Queue a mid-turn message. All messages queued before the next agent boundary are combined into ONE
-   * steer (US): held in `queuedInputs`, re-steered as a single combined prompt each time one arrives
+   * steer (US): screened by pi's input handlers once (`screenQueuedInputs`), then held in
+   * `queuedInputs` and re-steered as a single combined prompt each time one is admitted
    * (clearing the prior steer so pi holds exactly one). pi injects the combined prompt at its next turn
    * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
    * message; the chips collapse into the combined message once the adapter sees pi deliver it.
@@ -903,78 +949,204 @@ export class PiSession implements ChatSession {
     // continues on a non-empty queue whatever the decider answers, so accepting one bills a round trip
     // past a hard limit (the same hazard `stopForBudget` flushes the existing queue for).
     if (!session || !session.isStreaming || this._budgetStopRequested) return false;
-    this.queuedInputs.push({
+    this.screeningInputs.push({
       id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       text: extractText(content),
       images: extractImages(content),
       content,
     });
-    this.resteerQueuedInputs(session);
+    this.screenQueuedInputs();
     return "queued";
   }
 
   /**
-   * Re-steer the whole queued buffer as one combined message. `clearQueue()` drops the previously
-   * steered (not-yet-delivered) combination so pi never holds stale copies; follow-ups are preserved.
-   * Routed through prompt() (not raw steer()) so slash-command/skill handling and images survive — the
-   * raw queue methods throw on `/`-prefixed input and would drop it silently.
+   * Run pi's input handlers, a UserPromptSubmit hook among them, on each queued message once, as it is
+   * queued and oldest first, the way a typed prompt gets them. A message a handler consumes, which is
+   * what a hook's block is, loses its chip, and the hook has already posted its reason; the rest join
+   * `queuedInputs` with any rewrite applied. The combined re-steer is sent as `source: 'extension'`, so
+   * no hook sees a message twice or judges one by the messages around it. With no input handler loaded
+   * this admits synchronously, so the first re-steer still starts before `queueInput` returns.
    */
-  private resteerQueuedInputs(session: AgentSession): void {
-    if (this.queuedInputs.length === 0) return;
-    const { followUp } = session.clearQueue();
-    const combinedText = this.queuedInputs.map((q) => q.text).join("\n\n");
-    const images = this.queuedInputs.flatMap((q) => q.images);
-    void session
-      .prompt(combinedText, { streamingBehavior: "steer", ...(images.length > 0 ? { images } : {}) })
-      .catch((err) => log("[PiSession] steered prompt failed: %O", err));
-    // Re-queued the way they were queued, not through `followUp()`: that one runs the extension-command
-    // check and the skill and template expansion, which would execute or rewrite a cancel note that was
-    // deliberately queued as literal text.
-    for (const text of followUp) {
-      void session
-        .sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false })
-        .catch((err) => log("[PiSession] re-queueing a preserved follow-up failed: %O", err));
-    }
+  private screenQueuedInputs(): void {
+    if (this.screeningRunning) return;
+    this.screeningRunning = true;
+    void (async () => {
+      try {
+        for (let input = this.screeningInputs[0]; input; input = this.screeningInputs[0]) {
+          const runner = this.runtime?.session.extensionRunner;
+          let verdict: InputEventResult = { action: "continue" };
+          if (runner?.hasHandlers("input")) {
+            try {
+              verdict = await runner.emitInput(input.text, input.images.length > 0 ? input.images : undefined, "interactive", "steer");
+            } catch (err) {
+              log("[PiSession] input handlers failed on a queued message: %O", err);
+            }
+          }
+          // A stop or a session replacement took it back while the handlers ran.
+          if (this.screeningInputs[0] !== input) continue;
+          this.screeningInputs.shift();
+          if (verdict.action === "handled") {
+            this.emit({ type: "queueCancelled", messageId: input.id });
+            continue;
+          }
+          if (verdict.action === "transform") {
+            input.text = verdict.text;
+            input.images = verdict.images ?? input.images;
+          }
+          this.queuedInputs.push(input);
+          this.resteerQueuedInputs();
+        }
+      } finally {
+        this.screeningRunning = false;
+      }
+    })();
   }
 
   /**
-   * Called by the adapter when pi delivers a user message mid-run (a steer/follow-up delivery — the
-   * initial prompt lives in the run's initial context and emits no such event). The held buffer has now
-   * been injected, so collapse its chips into the single combined message and clear the buffer; further
-   * queueing starts a fresh combination.
+   * Re-steer the whole queued buffer as one combined message. Passes run one at a time, and a request
+   * while one runs asks it for one more pass, which reads the buffer as it is then: a pass awaits pi's
+   * input handlers, and two passes in flight at once would both land a batch in pi's queue.
+   */
+  private resteerQueuedInputs(): void {
+    if (this.resteerRunning) {
+      this.resteerRequested = true;
+      return;
+    }
+    this.resteerRunning = true;
+    void (async () => {
+      do {
+        this.resteerRequested = false;
+        const session = this.runtime?.session;
+        if (session) {
+          await this.resteerOnce(session).catch((err) => {
+            if (!(err instanceof WithdrawnSteerError)) log("[PiSession] steered prompt failed: %O", err);
+          });
+        }
+      } while (this.resteerRequested);
+      this.resteerRunning = false;
+    })();
+  }
+
+  /**
+   * One re-steer pass. `clearQueue()` drops the previously steered (not-yet-delivered) combination so pi
+   * never holds stale copies, and every other queued message with it, so cancel notes and follow-ups
+   * are put back. Routed through prompt() (not raw steer()) so slash-command/skill handling and images
+   * survive — the raw queue methods throw on `/`-prefixed input and would drop it silently.
+   *
+   * Cancel notes go back first, in the order pi held them, then the batch, each awaited so pi's queue
+   * holds exactly this order whatever its input handlers await. pi delivers every pending steer at the
+   * next boundary (`withQueuePolicy`), so that request carries the annotated result, the note, then the batch.
+   */
+  private async resteerOnce(session: AgentSession): Promise<void> {
+    if (this.queuedInputs.length === 0) return;
+    const { steering, followUp } = session.clearQueue();
+    this.steeredCount = null;
+    const notes = this.heldNotes(steering);
+    const batch = [...this.queuedInputs];
+    const text = batch.map((q) => q.text).join("\n\n");
+    const images = batch.flatMap((q) => q.images);
+    // Re-queued the way they were queued, not through `followUp()` or `steer()`: those run the
+    // extension-command check and the skill and template expansion, which would execute or rewrite
+    // literal text.
+    for (const queued of followUp) {
+      void session
+        .sendUserMessage(queued, { deliverAs: "followUp", expandPromptTemplates: false })
+        .catch((err) => log("[PiSession] re-queueing a preserved follow-up failed: %O", err));
+    }
+    for (const note of notes) {
+      if (this.batchWithdrawn(session, batch)) return;
+      await session
+        .sendUserMessage(note, { deliverAs: "steer", expandPromptTemplates: false })
+        .catch((err) => log("[PiSession] re-queueing a cancel note failed: %O", err));
+    }
+    // A prompt made while pi settles the ended run is deferred into that settle, where a veto would throw.
+    if (!session.isStreaming) await session.waitForIdle();
+    if (this.batchWithdrawn(session, batch)) return;
+    await session.prompt(text, {
+      streamingBehavior: "steer",
+      // Every message in it already passed the input handlers when it was queued.
+      source: "extension",
+      ...(images.length > 0 ? { images } : {}),
+      preflightResult: (accepted) => {
+        if (accepted) this.admitSteer(session, batch);
+      },
+    });
+  }
+
+  /**
+   * pi's last word before a steered batch takes effect, after every input and `before_agent_start`
+   * handler, whatever their order and whichever extension registered them: it calls `preflightResult`
+   * synchronously right after queueing the batch into the running run, or right before opening a run
+   * with it when the run ended while those handlers ran. A batch a stop withdrew meanwhile is taken
+   * back out of the queue, or refused by throwing, which pi raises outside its preflight `try` and so
+   * before `_runAgentPrompt` starts the run.
+   */
+  private admitSteer(session: AgentSession, batch: readonly QueuedInput[]): void {
+    if (!this.batchWithdrawn(session, batch)) {
+      this.steeredCount = batch.length;
+      return;
+    }
+    const opensRun = !session.isStreaming;
+    if (opensRun || this.runStopped()) session.clearQueue();
+    if (opensRun) throw new WithdrawnSteerError();
+  }
+
+  /** Whether an ESC, a budget stop or a session replacement took `batch` back while it was being steered. */
+  private batchWithdrawn(session: AgentSession, batch: readonly QueuedInput[]): boolean {
+    return this.runtime?.session !== session || batch.some((queued, i) => this.queuedInputs[i] !== queued);
+  }
+
+  /** The cancel notes among pi's undelivered steers, matched one for one so a batch whose text equals a note stays a batch. */
+  private heldNotes(steering: readonly string[]): string[] {
+    const listed = this.injectedNotes.map((note) => note.text);
+    return steering.filter((text) => {
+      const index = listed.indexOf(text);
+      if (index === -1) return false;
+      listed.splice(index, 1);
+      return true;
+    });
+  }
+
+  /**
+   * Called by the adapter for every user message pi delivers, a run's opening prompt included. When
+   * it is the held buffer, collapse its chips into the single combined message and clear the buffer;
+   * further queueing starts a fresh combination. Returns whether the delivery was Damocles's own, a
+   * batch or a cancel note, and so is owed a mid-stream marker.
    */
   onQueuedInputsDelivered(deliveredText: string): boolean {
     // A cancel note is queued straight onto the pi session, so its delivery raises the same event a
-    // steered batch does. Matching on the text is exact because the note is sent with template
-    // expansion off, and it is order-independent: pi drains steers before follow-ups, so a counter
-    // would let a batch delivered first consume the note's signal.
-    const injected = this.injectedNotes.indexOf(deliveredText);
+    // steered batch does, and so does the opening prompt of a run a note started. Matching on the text
+    // is exact because the note is sent with template expansion off, and it is order-independent, so a
+    // batch delivered first cannot consume the note's signal.
+    const injected = this.injectedNotes.findIndex((note) => note.text === deliveredText);
     if (injected !== -1) {
       this.injectedNotes.splice(injected, 1);
-      return false;
+      return true;
     }
     if (this.queuedInputs.length === 0) return false;
-    const messageIds = this.queuedInputs.map((q) => q.id);
-    const combinedContent = this.queuedInputs.map((q) => q.text).join("\n\n");
-    const blocks = this.queuedInputs.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
-    this.queuedInputs = [];
+    // Inputs queued after the delivered batch was steered stay held for the re-steer they requested.
+    const delivered = this.queuedInputs.splice(0, this.steeredCount ?? this.queuedInputs.length);
+    this.steeredCount = null;
+    const messageIds = delivered.map((q) => q.id);
+    const combinedContent = delivered.map((q) => q.text).join("\n\n");
+    const blocks = delivered.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
     this.emit({
       type: "queueBatchProcessed",
       messageIds,
       combinedContent,
       ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
     });
-    // A real batch was delivered; its mid-stream marker is owed once pi commits the steered user entry.
     // The adapter resolves the committed entry id at the next assistant message_start (the delivery
     // event fires before pi persists the entry) and calls back into recordMidStreamMarker.
     return true;
   }
 
   /**
-   * Persist a mid-stream marker keyed to a delivered queued batch's committed pi user entry id, so a
-   * reloaded session re-applies the amber "sent mid-stream" styling. Called by the adapter at the next
-   * assistant message_start — the first point the steered entry is committed to the tree (keying it at
-   * delivery time mis-keys to the previous turn's entry). Fail-soft: a write error never breaks the turn.
+   * Persist a mid-stream marker keyed to the committed pi user entry id of a delivered queued batch or
+   * cancel note, so the entry consumes no prompt index and a reloaded session re-applies the amber
+   * "sent mid-stream" styling. Called by the adapter at the next assistant message_start — the first
+   * point the delivered entry is committed to the tree (keying it at delivery time mis-keys to the
+   * previous turn's entry). Fail-soft: a write error never breaks the turn.
    */
   recordMidStreamMarker(userEntryId: string): void {
     const session = this.runtime?.session;
@@ -986,12 +1158,27 @@ export class PiSession implements ChatSession {
     }
   }
 
-  /** Drop any queued-but-undelivered messages and remove their chips (turn aborted / session reset). */
-  private clearQueuedInputs(): void {
-    if (this.queuedInputs.length === 0) return;
-    const ids = this.queuedInputs.map((q) => q.id);
+  /**
+   * Take back everything queued for a run an ESC or the budget stopped, since that run delivers nothing
+   * more and pi's next run starts by draining whatever its queue still holds: pi's queue is cleared,
+   * every chip goes back to the composer, and each note pi held is dropped with its echo corrected.
+   */
+  private withdrawQueue(session: AgentSession | undefined, noteDropped: string): void {
+    this.steeredCount = null;
+    const withdrawn = [...this.queuedInputs, ...this.screeningInputs];
     this.queuedInputs = [];
-    for (const messageId of ids) this.emit({ type: "queueCancelled", messageId });
+    this.screeningInputs = [];
+    for (const { id } of withdrawn) this.emit({ type: "queueCancelled", messageId: id, returnToInput: true });
+    session?.clearQueue();
+    this.dropEchoedNotes(noteDropped);
+  }
+
+  /** Correct the echo of every accepted cancel note the agent never received, once the queue that held it is dropped. */
+  private dropEchoedNotes(message: string): void {
+    for (const note of this.injectedNotes) {
+      if (note.echoed) this.emit({ type: "notification", message, notificationType: "warning" });
+    }
+    this.injectedNotes = this.injectedNotes.filter((note) => !note.echoed);
   }
 
   async interrupt(): Promise<void> {
@@ -1014,30 +1201,75 @@ export class PiSession implements ChatSession {
    * session that call created, which is why a cancel arriving after `reset()` still reaches the
    * conversation that ran the command rather than the one that replaced it.
    *
-   * The echo waits for pi to accept the note into its queue, because a `sendUserMessage` that rejects
-   * outright, which is what a session being replaced or torn down under a leftover call does, would
-   * otherwise have already told the user the agent was told. Acceptance is also where the subagent and
-   * team contexts echo, so all three mean the same thing by an echo, and it is the last point that is
-   * still synchronous enough to keep the note next to the tool card it belongs to. Returning before the
-   * echo keeps the cancel path synchronous for its caller. `isInjected` is what keeps a note the user
-   * never typed into the composer out of prompt counting, which is also why `promptIndexCounter` is not
-   * advanced. Subagents and team agents echo through `subagentSteered` and `teamAgentUserMessage`, so
-   * only this context emits `userMessage`.
+   * The echo waits for pi to accept the note, because a `prompt()` that rejects outright, which is
+   * what a session being replaced or torn down under a leftover call does, would otherwise have already
+   * told the user the agent was told. Acceptance is also where the subagent and team contexts echo, so
+   * all three mean the same thing by an echo, and it is the last point that is still synchronous enough
+   * to keep the note next to the tool card it belongs to. Returning before the echo keeps the cancel
+   * path synchronous for its caller. `isInjected` is what keeps a note the user never typed into the
+   * composer out of the webview's prompt filter, and the mid-stream marker its committed entry gets
+   * keeps it out of the prompt count and styles it the same way on reload. Subagents and team agents
+   * echo through `subagentSteered` and `teamAgentUserMessage`, so only this context emits `userMessage`.
+   *
+   * A note accepted into the running run is moved ahead of a held chip batch (`resteerQueuedInputs`).
+   * One accepted with no run in progress starts a run, opened as a turn here since no `sendMessage` did.
+   * A note for a run that a budget stop or an ESC has stopped is never left queued, since that run
+   * delivers nothing more and the next one must not receive it; the user is told instead of shown an echo.
    */
   private noteDeliveryForMain(session: () => AgentSession | undefined): (text: string) => void {
     const deliver = sessionNoteDelivery(session);
     return (text) => {
-      const promptIndex = Math.max(0, this.promptIndexCounter);
-      void deliver(text).then(
-        () => {
-          // pi delivers this back as a user message_end of its own; record it so that delivery is not
-          // mistaken for the queued chip batch being injected.
-          this.injectedNotes.push(text);
-          this.emit({ type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true });
-        },
-        (err) => log("[PiSession] cancel note delivery to the panel session failed: %O", err),
-      );
+      const refused = this.noteRefusal(session());
+      if (refused) {
+        this.emit({ type: "notification", message: refused, notificationType: "warning" });
+        return;
+      }
+      const promptIndex = this.currentPromptIndex;
+      // Listed before pi can deliver it, so that delivery's user message_end is never read as the chip batch.
+      const note: ListedNote = { text, echoed: false };
+      this.injectedNotes.push(note);
+      const unlist = (): void => {
+        const listed = this.injectedNotes.indexOf(note);
+        if (listed !== -1) this.injectedNotes.splice(listed, 1);
+      };
+      let accepted = false;
+      const onAccepted = (startsRun: boolean): void => {
+        accepted = true;
+        const target = session();
+        // A stop can land while pi runs its input handlers, after the queue this note just joined was cleared.
+        const withdrawn = startsRun ? null : this.noteRefusal(target);
+        if (withdrawn) {
+          target?.clearQueue();
+          unlist();
+          this.emit({ type: "notification", message: withdrawn, notificationType: "warning" });
+          return;
+        }
+        note.echoed = true;
+        this.emit({ type: "userMessage", content: text, correlationId: randomUUID(), promptIndex, isInjected: true });
+        if (startsRun) {
+          this.adapter.beginTurn();
+          return;
+        }
+        if (target && target === this.runtime?.session) this.resteerQueuedInputs();
+      };
+      void deliver(text, onAccepted).catch((err) => {
+        if (!accepted) unlist();
+        log("[PiSession] cancel note delivery to the panel session failed: %O", err);
+      });
     };
+  }
+
+  /** Why a cancel note for `target` can no longer reach the agent, or null when it can. */
+  private noteRefusal(target: AgentSession | undefined): string | null {
+    if (target === undefined || target !== this.runtime?.session || !this.runStopped()) return null;
+    return this._budgetStopRequested
+      ? vscode.l10n.t("Your cancel note was not sent: the budget limit stopped this turn.")
+      : vscode.l10n.t("Your cancel note was not sent: the turn was stopped.");
+  }
+
+  /** Whether the live run was stopped by the budget or an ESC and so must deliver nothing more from pi's queue. */
+  private runStopped(): boolean {
+    return this._budgetStopRequested || this.abortPromise !== null;
   }
 
   /** One subagent's cancel-note delivery, bound at the subagent `buildCustomTools` call site. */
@@ -1055,6 +1287,9 @@ export class PiSession implements ChatSession {
    * `session.abort()` (which aborts the agent and waits for it to go idle). The abort promise is
    * tracked so the next `sendMessage` awaits it — a turn started before pi finished winding down would
    * otherwise hit pi's "Agent is already processing" rejection.
+   *
+   * Queued input is not sent later (`withdrawQueue`); a note pi held annotates a command in the turn
+   * the user just stopped.
    */
   private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
     this.abortEpoch++;
@@ -1070,18 +1305,18 @@ export class PiSession implements ChatSession {
     this.interruptionCheckPending = true;
     // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
     this.options.teamService?.cancelActiveTeam();
-    this.clearQueuedInputs();
-    // The adapter stops reporting user deliveries once aborted, so an accepted note will never be
-    // matched off this list; leaving it would let a later chip batch with the same text match it.
-    this.injectedNotes = [];
+    const session = this.runtime?.session;
+    this.withdrawQueue(session, vscode.l10n.t("Stopping the turn discarded your cancel note before the agent read it."));
     this.emit({ type: "sessionCancelled" });
     this.emit({ type: "processing", isProcessing: false });
     const pending = (async () => {
       try {
-        await this.runtime?.session.abort();
+        await session?.abort();
       } catch (err) {
         log("[PiSession] %s abort failed: %O", origin, err);
       }
+      // A cancel note a re-steer was putting back can land while the run winds down.
+      if (session && this.runtime?.session === session) session.clearQueue();
     })();
     this.abortPromise = pending;
     void pending.finally(() => {
@@ -1216,6 +1451,8 @@ export class PiSession implements ChatSession {
     this.setTurnState("idle");
     this._budgetStopRequested = false;
     this.queuedInputs = [];
+    this.screeningInputs = [];
+    this.steeredCount = null;
     // The replaced session takes its undelivered notes with it, so nothing here can shadow a later batch.
     this.injectedNotes = [];
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
@@ -1580,7 +1817,9 @@ export class PiSession implements ChatSession {
   }
 
   get currentPromptIndex(): number {
-    return Math.max(0, this.promptIndexCounter);
+    if (this.inFlightPromptIndex !== null) return this.inFlightPromptIndex;
+    const session = this.runtime?.session;
+    return session ? Math.max(0, nextPromptIndex(session.sessionManager.getBranch()) - 1) : 0;
   }
 
   async initializeEarly(): Promise<void> {
@@ -1761,12 +2000,12 @@ export class PiSession implements ChatSession {
    * Persist the user's ORIGINAL typed input when a slash-command expansion made the stored user message
    * diverge from it — pi expands prompt templates inside `prompt()`, chat-handlers rewrites skills/`/init`
    * before `sendMessage` — so a reloaded transcript, the up-arrow history, and the session-list preview
-   * show what the user typed rather than the expanded body. Keyed to the pi user entry just committed by
-   * `prompt()`. The IDE-context prefix pi merges into the message is stripped before comparing so a plain
-   * (un-expanded) message with attached context records nothing. Fail-soft: a divergence we can't key
-   * (no user entry) or a write error never breaks the turn.
+   * show what the user typed rather than the expanded body. Keyed to the pi user entry this `prompt()`
+   * committed. The IDE-context prefix pi merges into the message is stripped before comparing so a plain
+   * (un-expanded) message with attached context records nothing. Fail-soft: a write error never breaks
+   * the turn.
    */
-  private recordOriginalInputIfDiverged(session: AgentSession, original: string, priorUserEntryId: string | null): void {
+  private recordOriginalInputIfDiverged(session: AgentSession, original: string, entry: PromptEntry): void {
     // Same captured-across-an-await shape as `maybeGenerateTitle`: the session was captured before
     // `prompt()` and this runs after it resolved, so a delete in that window can have removed the file
     // while this manager still appends to it. Today pi's teardown awaits `abort()` before installing
@@ -1775,9 +2014,6 @@ export class PiSession implements ChatSession {
     if (this._disposed || this.runtime?.session !== session) return;
     const typed = original.trim();
     if (!typed) return;
-    const entry = lastUserEntry(session);
-    // No new user entry committed (a pi extension command, or a streamed/queued turn) → nothing to key.
-    if (!entry || entry.id === priorUserEntryId) return;
     const stored = stripIdeContext(entry.text).trim();
     if (stored === typed) return;
     try {
@@ -1788,24 +2024,24 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Record this completed turn as a memory extraction candidate (fail-soft). No-op when no memory
-   * service is wired, the turn ran no agent (extension command), or it committed no new user message.
-   * Service-side gates (memory disabled / auto-extract off / disposed) live in enqueueTurnCandidate.
+   * Record this completed turn, from the prompt entry `userEntryId` on, as a memory extraction
+   * candidate (fail-soft). No-op when no memory service is wired or the turn ran no agent. Service-side
+   * gates (memory disabled / auto-extract off / disposed) live in enqueueTurnCandidate.
    * Symmetric with recordOriginalInputIfDiverged.
    */
-  private enqueueMemoryCandidate(session: AgentSession, priorUserEntryId: string | null): void {
+  private enqueueMemoryCandidate(session: AgentSession, userEntryId: string): void {
     const memory = this.options.memoryService;
     if (!memory) return;
     if (!this.adapter.observedAgentRun()) return; // extension command / no LLM run → not a real turn
     try {
-      const exchange = turnExchangeAfter(session, priorUserEntryId);
+      const exchange = turnExchangeFrom(session, userEntryId, this.cwd);
       if (!exchange || !exchange.userText.trim()) return;
       memory.enqueueTurnCandidate({
         sessionId: this.memorySessionId,
         promptIndex: this.currentPromptIndex,
         userText: exchange.userText,
         assistantText: exchange.assistantText,
-        files: [],
+        files: exchange.files,
         workspace: this.cwd,
       });
     } catch (err) {
@@ -2660,6 +2896,20 @@ export class PiSession implements ChatSession {
             log("[PiSession] checkpoint repo clone-on-fork failed: %O", err);
           }
           await this.copyAgentDataToFork(pi, liveSm, parentId, piBranchedSessionId);
+          try {
+            await this.options.memoryService?.copySessionInjections(
+              liveSm.getSessionId(),
+              piBranchedSessionId,
+              nextPromptIndex(liveSm.getBranch(parentId)),
+            );
+          } catch (err) {
+            log("[PiSession] copying injection records to the fork failed: %O", err);
+            this.emit({
+              type: "notification",
+              message: "The injected context of the prompts the fork inherited could not be copied; View Context may be empty for them there.",
+              notificationType: "warning",
+            });
+          }
         }
       }
     }
@@ -3196,25 +3446,16 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("budget");
     // A queued steer would force one more billed round trip past the limit: the loop itself ends the run
     // without polling, but `_runBeforeSettleBoundary` continues on `hasQueuedMessages()`
-    // (`agent-session.ts:1544`) whatever the decider answered. `queueInput` refuses new ones from here on.
-    this.clearQueuedInputs();
-    // A cancel note in that queue was already echoed as a user turn, so the transcript now says the agent
-    // was told something this drop means it never hears. Restoring it would let pi's post-run
-    // continuation drain it and bill past the limit, so the echo is corrected instead of honoured.
-    const dropped = this.runtime?.session.clearQueue().followUp ?? [];
-    for (const text of dropped) {
-      const echoed = this.injectedNotes.indexOf(text);
-      if (echoed === -1) continue;
-      this.injectedNotes.splice(echoed, 1);
-      this.emit({
-        type: "notification",
-        message: "The budget stop discarded your cancel note before the agent read it. Send it again to have it applied.",
-        notificationType: "warning",
-      });
-    }
+    // (`agent-session.ts:1544`) whatever the decider answered. `queueInput` and the cancel-note delivery
+    // refuse new ones from here on. Restoring a held note would let that continuation drain it and bill
+    // past the limit, so its echo is corrected instead of honoured.
+    this.withdrawQueue(
+      this.runtime?.session,
+      vscode.l10n.t("The budget stop discarded your cancel note before the agent read it. Send it again to have it applied."),
+    );
     this.emit({
       type: "notification",
-      message: "Budget limit reached — this turn was stopped after the current step.",
+      message: vscode.l10n.t("Budget limit reached. This turn was stopped after the current step."),
       notificationType: "warning",
     });
   }

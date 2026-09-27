@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import * as path from 'path';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import {
   extractText,
   extractImages,
   piMessageText,
-  lastUserEntry,
-  turnExchangeAfter,
+  turnExchangeFrom,
   firstExchangeForTitle,
 } from '../branch-text';
 
@@ -26,6 +26,7 @@ function fakeSession(branch: unknown[]): AgentSession {
 
 const userEntry = (id: string, content: unknown) => ({ type: 'message', id, message: { role: 'user', content } });
 const assistantEntry = (id: string, content: unknown) => ({ type: 'message', id, message: { role: 'assistant', content } });
+const CWD = path.resolve('/ws/current');
 const customEntry = (id: string) => ({ type: 'custom_message', id, customType: 'x', content: 'hidden' });
 
 describe('extractText', () => {
@@ -83,59 +84,28 @@ describe('piMessageText', () => {
   });
 });
 
-describe('lastUserEntry', () => {
-  it('returns the last user-role entry (id + joined text), scanning from the end', () => {
-    const session = fakeSession([
-      userEntry('u1', 'first'),
-      assistantEntry('a1', [{ type: 'text', text: 'reply' }]),
-      userEntry('u2', [{ type: 'text', text: 'second' }]),
-      assistantEntry('a2', [{ type: 'text', text: 'reply2' }]),
-    ]);
-    expect(lastUserEntry(session)).toEqual({ id: 'u2', text: 'second' });
-  });
-
-  it('returns null when the branch has no user message', () => {
-    expect(lastUserEntry(fakeSession([assistantEntry('a1', [{ type: 'text', text: 'x' }])]))).toBeNull();
-  });
-});
-
-describe('turnExchangeAfter', () => {
-  it('joins every message after the prior user boundary (advances past priorUserEntryId)', () => {
+describe('turnExchangeFrom', () => {
+  it('starts at the prompt entry, so the answer before it is not part of this exchange', () => {
     const session = fakeSession([
       userEntry('u1', 'old prompt'),
       assistantEntry('a1', [{ type: 'text', text: 'old answer' }]),
       userEntry('u2', 'new prompt'),
       assistantEntry('a2', [{ type: 'text', text: 'new answer' }]),
     ]);
-    // Starts AFTER the u1 entry → the prior assistant answer + the new prompt/answer are included;
-    // the old user prompt (u1) is excluded.
-    expect(turnExchangeAfter(session, 'u1')).toEqual({
-      userText: 'new prompt',
-      assistantText: 'old answer\n\nnew answer',
-    });
+    expect(turnExchangeFrom(session, 'u2', CWD)).toEqual({ userText: 'new prompt', assistantText: 'new answer', files: [] });
   });
 
-  it('with the boundary at the latest user entry, returns only the trailing assistant rounds', () => {
-    const session = fakeSession([
-      userEntry('u1', 'old prompt'),
-      assistantEntry('a1', [{ type: 'text', text: 'old answer' }]),
-      userEntry('u2', 'new prompt'),
-      assistantEntry('a2', [{ type: 'text', text: 'new answer' }]),
-    ]);
-    // No NEW user committed after u2 → null (no agent turn recorded).
-    expect(turnExchangeAfter(session, 'u2')).toBeNull();
-  });
-
-  it('joins multiple mid-turn steers and synthesis rounds separately', () => {
+  it('joins the mid-turn steers and notes committed after the prompt, and every synthesis round', () => {
     const session = fakeSession([
       userEntry('u1', 'prompt'),
-      userEntry('u2', 'steer'),
       assistantEntry('a1', [{ type: 'text', text: 'round one' }]),
+      userEntry('u2', 'steer'),
       assistantEntry('a2', [{ type: 'text', text: 'round two' }]),
     ]);
-    expect(turnExchangeAfter(session, null)).toEqual({
+    expect(turnExchangeFrom(session, 'u1', CWD)).toEqual({
       userText: 'prompt\n\nsteer',
       assistantText: 'round one\n\nround two',
+      files: [],
     });
   });
 
@@ -145,24 +115,32 @@ describe('turnExchangeAfter', () => {
       customEntry('c1'),
       assistantEntry('a1', [{ type: 'text', text: 'answer' }]),
     ]);
-    expect(turnExchangeAfter(session, null)).toEqual({ userText: 'prompt', assistantText: 'answer' });
+    expect(turnExchangeFrom(session, 'u1', CWD)).toEqual({ userText: 'prompt', assistantText: 'answer', files: [] });
   });
 
-  it('returns null when no new user message was committed past the boundary', () => {
+  it('returns null when the entry is not on the branch', () => {
+    const session = fakeSession([userEntry('u1', 'prompt'), assistantEntry('a1', [{ type: 'text', text: 'answer' }])]);
+    expect(turnExchangeFrom(session, 'does-not-exist', CWD)).toBeNull();
+  });
+});
+
+describe('turnExchangeFrom files', () => {
+  const toolCall = (args: Record<string, unknown>) => ({ type: 'toolCall', id: 't', name: 'Edit', arguments: args });
+
+  it('collects path and file_path tool-call arguments, resolving relative paths against cwd', () => {
+    const other = path.resolve('/other/repo/src/gpu.ts');
     const session = fakeSession([
       userEntry('u1', 'prompt'),
-      assistantEntry('a1', [{ type: 'text', text: 'answer' }]),
+      assistantEntry('a1', [{ type: 'text', text: 'editing' }, toolCall({ file_path: other }), toolCall({ path: 'src/a.ts' })]),
+      assistantEntry('a2', [toolCall({ file_path: other }), toolCall({ command: 'ls' })]),
     ]);
-    expect(turnExchangeAfter(session, 'u1')).toBeNull();
+    expect(turnExchangeFrom(session, 'u1', CWD)!.files).toEqual([other, path.resolve(CWD, 'src/a.ts')]);
   });
 
-  it('scans the whole branch when priorUserEntryId is unknown (findIndex → -1, start stays 0)', () => {
-    const session = fakeSession([
-      userEntry('u1', 'prompt'),
-      assistantEntry('a1', [{ type: 'text', text: 'answer' }]),
-    ]);
-    // A stale/unknown id isn't found, so start stays at 0 and the full branch is walked.
-    expect(turnExchangeAfter(session, 'does-not-exist')).toEqual({ userText: 'prompt', assistantText: 'answer' });
+  it('caps the list at 20 files', () => {
+    const calls = Array.from({ length: 30 }, (_, i) => toolCall({ path: `f${i}.ts` }));
+    const session = fakeSession([userEntry('u1', 'prompt'), assistantEntry('a1', calls)]);
+    expect(turnExchangeFrom(session, 'u1', CWD)!.files).toHaveLength(20);
   });
 });
 

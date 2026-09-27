@@ -11,6 +11,7 @@ import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCop
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
 import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
+import { USER_PROMPT_FILTER } from "@/composables/useEnrichedPrompts";
 
 const { t } = useI18n();
 
@@ -47,7 +48,7 @@ const imageBlocks = computed<ImageBlock[]>(() => {
   return props.message.contentBlocks.filter(isImageBlock);
 });
 
-const isInjectedOrQueued = computed(() => props.message.isInjected || props.message.isCombinedQueue || props.message.isQueued);
+const isInjectedOrQueued = computed(() => !USER_PROMPT_FILTER(props.message));
 
 const { flashedMessageId } = storeToRefs(useMessageHighlightStore());
 const isHighlighted = computed(() => flashedMessageId.value === props.message.id);
@@ -156,8 +157,11 @@ onUnmounted(() => {
           <span v-if="message.steerTarget" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30 max-w-[16rem] truncate">
             {{ t("steerCommand.youSteered", { agent: message.steerTarget.description ?? message.steerTarget.agentId.slice(0, 8) }) }}
           </span>
+          <span v-else-if="message.isCommandEcho" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30" data-user-label="command">
+            {{ t("welcome.commandEcho") }}
+          </span>
           <template v-else>
-            <span class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
+            <span class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30" data-user-label="mid-stream">
               {{ t("welcome.sentMidStream") }}
             </span>
             <span v-if="message.isQueued" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">

@@ -7,7 +7,8 @@ import type { MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } f
 import { FactGraphManager } from '../managers/fact-graph-manager';
 import { ProfileManager } from '../managers/profile-manager';
 import { RetrievalManager } from '../managers/retrieval-manager';
-import { InjectionManager } from '../managers/injection-manager';
+import { InjectionManager, type InjectionBuildResult } from '../managers/injection-manager';
+import { emptyLiveInjections } from '../injection/details';
 import { runConsolidation, type ConsolidationCtx } from '../consolidation';
 import { subCallSpy, type SubCallSpy } from './subcall-spy';
 
@@ -129,6 +130,8 @@ function makeCtx(
     reason: 'switch',
     sessionId: SESSION_ID,
     fallbackWorkspace: () => WORKSPACE,
+    openFolders: () => [],
+    nonProjectFolders: () => [],
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: handle.onNoModel,
@@ -138,6 +141,18 @@ function makeCtx(
 }
 
 const ESBUILD_CONTENT = 'The project bundles the extension with esbuild.';
+
+/** One prompt's injection with nothing yet in context. */
+function inject(injection: InjectionManager, prompt: string): Promise<InjectionBuildResult> {
+  return injection.buildInjection({
+    sessionId: SESSION_ID,
+    workspace: WORKSPACE,
+    activeFile: null,
+    prompt,
+    live: emptyLiveInjections(),
+    promptIndex: 0,
+  });
+}
 
 describe('memory integration — full consolidate → retrieve → inject loop', () => {
   let db: DatabaseInstance;
@@ -194,8 +209,8 @@ describe('memory integration — full consolidate → retrieve → inject loop',
       new ProfileManager(db, new MemoryWriteQueue(), handle.runner),
       handle.runner,
     ));
-    const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling');
-    expect(catalog.context).toContain(ESBUILD_CONTENT);
+    const catalog = await inject(injection, 'esbuild bundling');
+    expect(catalog.text).toContain(ESBUILD_CONTENT);
   });
 
   it('a turn from a folder another window runs is filed, retrieved and injected there, not under the consolidating window folder', async () => {
@@ -214,7 +229,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect((await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE })).map(r => r.id)).not.toContain(stored.id);
 
     const injection = track(new InjectionManager(db, new ProfileManager(db, new MemoryWriteQueue(), handle.runner), handle.runner));
-    expect((await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling')).context).not.toContain(ESBUILD_CONTENT);
+    expect((await inject(injection, 'bundling')).text).not.toContain(ESBUILD_CONTENT);
   });
 
   it('ranks the relevant extracted fact first via the rerank sub-call', async () => {
@@ -299,9 +314,9 @@ describe('memory integration — full consolidate → retrieve → inject loop',
       new ProfileManager(db, new MemoryWriteQueue(), contradictHandle.runner),
       contradictHandle.runner,
     ));
-    const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundles');
-    expect(catalog.context).toContain('esbuild');
-    expect(catalog.context).not.toContain('webpack');
+    const catalog = await inject(injection, 'bundles the extension');
+    expect(catalog.text).toContain('esbuild');
+    expect(catalog.text).not.toContain('webpack');
   });
 
   it('graceful degrade — no-model extract releases candidates for retry, creates no memories, calls onNoModel once', async () => {
@@ -349,10 +364,10 @@ describe('memory integration — full consolidate → retrieve → inject loop',
       new ProfileManager(db, new MemoryWriteQueue(), handle.runner),
       handle.runner,
     ));
-    const catalog = await injection.buildMemoryCatalog(SESSION_ID, WORKSPACE, null, 'bundling');
+    const catalog = await inject(injection, 'esbuild bundling');
 
-    expect(catalog.context).toContain(ESBUILD_CONTENT);
-    expect(catalog.metadata?.rerankApplied).toBe(false);
+    expect(catalog.text).toContain(ESBUILD_CONTENT);
+    expect(catalog.display.rerankApplied).toBe(false);
     const rerankCalls = handle.run.mock.calls.filter(([req]) => (req as MemorySubCallRequest).purpose === 'rerank');
     expect(rerankCalls).toHaveLength(0);
   });

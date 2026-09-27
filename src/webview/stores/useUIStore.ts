@@ -1,10 +1,17 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo } from '@shared/types/session';
+import type { MemoryKind } from '@shared/types/memory';
 
 type RewindSource = 'picker' | 'bubble' | null;
 
 export type ExpandedToolSource = 'session' | 'subagent' | 'team';
+
+/** A memory the panel should scroll to and highlight once it has loaded. */
+export interface MemoryPanelFocus {
+  id: string;
+  kind: MemoryKind;
+}
 
 export const useUIStore = defineStore('ui', () => {
   const isProcessing = ref(false);
@@ -23,6 +30,7 @@ export const useUIStore = defineStore('ui', () => {
   const rewindMetadataLoading = ref(false);
   const tasksPanelCollapsed = ref(false);
   const showMemoryPanel = ref(false);
+  const memoryPanelFocus = ref<MemoryPanelFocus | null>(null);
   // The source tags which store owns the call; the id alone is not unique across stores.
   const expandedToolId = ref<string | null>(null);
   const expandedToolSource = ref<ExpandedToolSource | null>(null);
@@ -165,12 +173,18 @@ export const useUIStore = defineStore('ui', () => {
     tasksPanelCollapsed.value = collapsed;
   }
 
-  function openMemoryPanel() {
+  function openMemoryPanel(focus?: MemoryPanelFocus) {
+    memoryPanelFocus.value = focus ? { ...focus } : null;
     showMemoryPanel.value = true;
   }
 
   function closeMemoryPanel() {
     showMemoryPanel.value = false;
+    memoryPanelFocus.value = null;
+  }
+
+  function clearMemoryPanelFocus() {
+    memoryPanelFocus.value = null;
   }
 
   function expandTool(toolId: string, source: ExpandedToolSource) {
@@ -234,6 +248,7 @@ export const useUIStore = defineStore('ui', () => {
     showMcpPanel.value = false;
     showToolsPanel.value = false;
     showMemoryPanel.value = false;
+    memoryPanelFocus.value = null;
     expandedToolId.value = null;
     expandedToolSource.value = null;
     currentRunningTool.value = null;
@@ -289,8 +304,10 @@ export const useUIStore = defineStore('ui', () => {
     cancelTypeSelection,
     cancelRewind,
     showMemoryPanel,
+    memoryPanelFocus,
     openMemoryPanel,
     closeMemoryPanel,
+    clearMemoryPanelFocus,
     expandedToolId,
     expandedToolSource,
     expandTool,

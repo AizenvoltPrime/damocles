@@ -7,6 +7,7 @@ import { normalizedContentHash } from './types';
 import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallRunner } from './subcall-runner';
 import { buildFtsMatchQuery, tokenize } from './text-tokenize';
+import { addMemoryEdge } from './managers/fact-graph-manager';
 
 /** Time-to-live an episodic memory survives before the decay sweep forgets it. */
 export const EPISODE_TTL_MS: number = 30 * 24 * 60 * 60 * 1000;
@@ -245,7 +246,8 @@ function buildMergePrompt(primary: MemoryRow, dups: MemoryRow[]): string {
  * Merges near-duplicates into the primary row via one privacy-gated `merge` sub-call. The LLM call
  * runs outside the write lock; the dependent mutations run inside one synchronous
  * {@link MemoryWriteQueue.run} callback. The primary absorbs the merged content, tags, and
- * `source_count`; each still-live merged row is marked `forgotten=1, forget_reason='merged'`.
+ * `source_count`; each still-live merged row is marked `forgotten=1, forget_reason='merged'` and gets a
+ * `SUPERSEDES` edge from the primary, which records where its fact now lives.
  */
 export async function mergeNearDuplicates(
   db: DatabaseInstance,
@@ -291,6 +293,7 @@ export async function mergeNearDuplicates(
       db.prepare(
         "UPDATE memories SET forgotten = 1, forget_reason = 'merged' WHERE id = ?",
       ).run(dupId);
+      addMemoryEdge(db, 'SUPERSEDES', primary.id, dupId);
       merged += 1;
     }
 
@@ -392,8 +395,9 @@ export function deleteMemoriesWithHygiene(db: DatabaseInstance, ids: string[]): 
 
 /**
  * Hard-purges long-forgotten decayed/merged rows so `memories` doesn't grow monotonically. Only
- * `forget_reason IN ('episode_decay','merged')` rows older than {@link FORGOTTEN_PURGE_AGE_MS} are
- * removed — a `user_forget` row is NEVER purged, since the user can still unforget it.
+ * `forget_reason IN ('episode_decay','merged')` rows are removed, {@link FORGOTTEN_PURGE_AGE_MS} after
+ * their last update or their decay (`forget_after`), whichever is later. A `user_forget` or `quality_audit`
+ * row is never purged, since unforget and audit revert still need it.
  */
 export function purgeForgottenRows(db: DatabaseInstance, writeQueue: MemoryWriteQueue): Promise<{ purged: number }> {
   return writeQueue.run(() => {
@@ -403,7 +407,7 @@ export function purgeForgottenRows(db: DatabaseInstance, writeQueue: MemoryWrite
         `SELECT id FROM memories
           WHERE forgotten = 1
             AND forget_reason IN ('episode_decay', 'merged')
-            AND updated_at < ?`,
+            AND MAX(updated_at, COALESCE(forget_after, 0)) < ?`,
       )
       .all(cutoff) as { id: string }[];
     const ids = rows.map(r => r.id);

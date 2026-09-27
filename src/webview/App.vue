@@ -50,12 +50,13 @@ const FormPrompt = defineAsyncComponent(() => import("./components/FormPrompt.vu
 const ExtensionUiDialog = defineAsyncComponent(() => import("./components/ExtensionUiDialog.vue"));
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
-const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/ContextInjectionOverlay.vue"));
+const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/context-injection/ContextInjectionOverlay.vue"));
 const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
 const SubscriptionUsageOverlay = defineAsyncComponent(() => import("./components/SubscriptionUsageOverlay.vue"));
 const UsageStatsOverlay = defineAsyncComponent(() => import("./components/usage-stats/UsageStatsOverlay.vue"));
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
+const MemoryAuditOverlay = defineAsyncComponent(() => import("./components/memory-audit/MemoryAuditOverlay.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
 const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
@@ -90,6 +91,7 @@ import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useSubscriptionUsageStore } from "./stores/useSubscriptionUsageStore";
 import { useUsageStatsStore } from "./stores/useUsageStatsStore";
 import { useConsolidationStore } from "./stores/useConsolidationStore";
+import { useMemoryAuditStore } from "./stores/useMemoryAuditStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
@@ -220,6 +222,7 @@ const contextUsageStore = useContextUsageStore();
 const subscriptionUsageStore = useSubscriptionUsageStore();
 const usageStatsStore = useUsageStatsStore();
 const consolidationStore = useConsolidationStore();
+const memoryAuditStore = useMemoryAuditStore();
 const backgroundTaskStore = useBackgroundTaskStore();
 const teamStore = useTeamStore();
 const compassStore = useCompassStore();
@@ -890,7 +893,6 @@ function handleFormCancel() {
 
 function handleOpenMemoryPanel() {
   uiStore.openMemoryPanel();
-  postMessage({ type: "requestMemories" });
 }
 
 function handleCreateMemory(payload: { tier: Exclude<MemoryTier, 'observation'>; kind: 'fact' | 'preference' | 'episode'; content: string; requestId: string }) {
@@ -1410,6 +1412,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @unpin="handleUnpinMemory"
       @load-more-observations="handleLoadMoreObservations"
     />
+    <MemoryAuditOverlay v-if="memoryAuditStore.isOverlayOpen" @close="memoryAuditStore.closeOverlay()" />
 
     <!-- Tools Status Panel (modal) -->
     <ToolsStatusPanel

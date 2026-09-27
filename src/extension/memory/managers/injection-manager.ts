@@ -1,15 +1,18 @@
 import * as vscode from 'vscode';
-import type { MemoryEntry, MemoryScope } from '@shared/types/memory';
+import type { MemoryEntry } from '@shared/types/memory';
 import type {
+  CarriedMemory,
+  InjectedMemory,
+  InjectionReason,
+  InjectionTier,
   MemoryInjectionDisplay,
-  MemoryInjectionEntry,
-  MemoryInjectionGroup,
+  MemoryNotice,
   MemoryScoreBreakdown,
 } from '@shared/types/context-injection';
-import type { DatabaseInstance, FtsMatchRow, MemoryRow } from '../types';
+import type { DatabaseInstance, MemoryRow } from '../types';
 import { rowToEntry } from '../types';
 import { log } from '../../logger';
-import { buildFtsMatchQuery } from '../text-tokenize';
+import { extractMemoryIds, queryTerms, quoteFtsTerm, stripEnglishClitics } from '../text-tokenize';
 import {
   openInjectionDatabase,
   insertMemoryInjection,
@@ -18,31 +21,47 @@ import {
   renameInjectionDatabaseFile,
   sweepStaleInjectionDatabases,
   injectionDbName,
+  injectionDatabaseExists,
+  listMemoryInjectionsBelow,
+  insertMemoryInjectionRows,
 } from '../injection-database';
 import { estimateTokens, truncateToChars } from '../token-estimate';
 import type { ProfileManager } from './profile-manager';
 import type { MemorySubCallRunner } from '../subcall-runner';
-
-interface CatalogLimits {
-  session: number;
-  project: number;
-  global: number;
-  observation: number;
-  pinnedTokenBudget: number;
-  tokenBudget: number;
-}
-
-type GroupLabel = 'session' | 'project' | 'global' | 'observations';
+import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../injection/details';
+import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
+import {
+  BUDGETS,
+  DEFAULT_TIER_LIMITS,
+  FILE_PROXIMITY_FULL,
+  STALENESS_THRESHOLD,
+  analyzeTerms,
+  assignTiers,
+  compareRank,
+  fileProximityMatcher,
+  normalizeFileFields,
+  evaluateLexical,
+  splitTypedPaths,
+  scoreGatedEntry,
+  type LexicalMatch,
+  type TierCandidate,
+} from '../injection/gate';
+import {
+  joinInjectionParts,
+  noticeText,
+  renderCompactLine,
+  renderFull,
+  renderMemoryBlock,
+  renderNotice,
+  type NoticeRender,
+  type RenderableMemory,
+} from '../injection/render';
 
 type RerankRelevance = 'high' | 'medium' | 'low';
 
 const RELEVANCE_RANK: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 1 };
 
-/**
- * Ungraded rows sort at a neutral position (between medium and low) so a high-BM25 row the LLM
- * didn't grade keeps its standing instead of sinking below explicitly-low grades. Distinct from
- * {@link RELEVANCE_RANK}, which only dedups grades.
- */
+/** Ungraded entries sort between medium and low, so an entry the model skipped keeps its standing. */
 const RERANK_SORT_WEIGHT: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 0 };
 const UNGRADED_SORT_WEIGHT = 1;
 function rerankSortWeight(relevance: RerankRelevance | undefined): number {
@@ -95,344 +114,276 @@ function getConfig<T>(key: string, fallback: T): T {
   return vscode.workspace.getConfiguration('damocles.memory').get<T>(key, fallback) ?? fallback;
 }
 
-function getCatalogLimits(): CatalogLimits {
+interface InjectionConfig {
+  fullLimit: number;
+  compactLimit: number;
+  tokenBudget: number;
+  pinnedTokenBudget: number;
+  profileTokenBudget: number;
+  profileEnabled: boolean;
+  rerankBlocking: boolean;
+}
+
+export interface NumberSetting {
+  key: string;
+  fallback: number;
+  min: number;
+  max?: number;
+  integer?: boolean;
+}
+
+/** The ranges `package.json` declares for these `damocles.memory.*` keys; `injection.test.ts` pins them equal. */
+export const INJECTION_NUMBER_SETTINGS: Readonly<
+  Record<'fullLimit' | 'compactLimit' | 'tokenBudget' | 'pinnedTokenBudget' | 'profileTokenBudget', NumberSetting>
+> = {
+  fullLimit: { key: 'injection.fullEntryLimit', fallback: DEFAULT_TIER_LIMITS.full, min: 0, max: 10, integer: true },
+  compactLimit: { key: 'injection.compactEntryLimit', fallback: DEFAULT_TIER_LIMITS.compact, min: 0, max: 20, integer: true },
+  tokenBudget: { key: 'catalogTokenBudget', fallback: DEFAULT_TIER_LIMITS.tokenBudget, min: 500, max: 8000 },
+  pinnedTokenBudget: { key: 'pinnedTokenBudget', fallback: 500, min: 100, max: 2000 },
+  profileTokenBudget: { key: 'profile.tokenBudget', fallback: 600, min: 50, integer: true },
+};
+
+/** VS Code enforces a setting's declared range only in the settings UI, never on a settings.json value. */
+function readNumberSetting(s: NumberSetting): number {
+  const raw = getConfig<unknown>(s.key, s.fallback);
+  const value = Math.min(s.max ?? Infinity, Math.max(s.min, typeof raw === 'number' && Number.isFinite(raw) ? raw : s.fallback));
+  return s.integer ? Math.floor(value) : value;
+}
+
+function readConfig(): InjectionConfig {
+  const n = INJECTION_NUMBER_SETTINGS;
   return {
-    session: getConfig('catalogSessionLimit', 15),
-    project: getConfig('catalogProjectLimit', 15),
-    global: getConfig('catalogGlobalLimit', 10),
-    observation: getConfig('catalogObservationLimit', 20),
-    pinnedTokenBudget: getConfig('pinnedTokenBudget', 500),
-    tokenBudget: getConfig('catalogTokenBudget', 2000),
+    fullLimit: readNumberSetting(n.fullLimit),
+    compactLimit: readNumberSetting(n.compactLimit),
+    tokenBudget: readNumberSetting(n.tokenBudget),
+    pinnedTokenBudget: readNumberSetting(n.pinnedTokenBudget),
+    profileTokenBudget: readNumberSetting(n.profileTokenBudget),
+    profileEnabled: getConfig('profile.enabled', true),
+    rerankBlocking: getConfig<'off' | 'blocking'>('rerank.injectMode', 'off') === 'blocking',
   };
 }
 
-/** Graded file proximity. A field earns FULL credit (1) only with directory context (a
- * ≥2-trailing-segment suffix like `foo/bar.ts` or the full path); a bare-filename match earns
- * PARTIAL credit (0.4) since common leaf names like `index.ts` shouldn't score as a confident hit. */
-const FILE_PROXIMITY_FULL = 1;
-const FILE_PROXIMITY_PARTIAL = 0.4;
+const MERGED_FORGET_REASON = 'merged';
+/** A direct forget or an applied audit proposal: the only reasons a notice may say the user forgot a memory. */
+const USER_FORGET_REASONS: ReadonlySet<string | null> = new Set(['user_forget', QUALITY_AUDIT_FORGET_REASON]);
 
-function computeFileProximity(memory: MemoryEntry, activeFile: string): number {
-  const normalizedActive = activeFile.replace(/\\/g, '/').toLowerCase();
-  const segments = normalizedActive.split('/').filter(Boolean);
-  const fileName = segments[segments.length - 1] ?? '';
-  if (!fileName) return 0;
-
-  // ≥2-trailing-segment suffixes of the active path (includes the full path). Empty for a bare
-  // filename with no directory context — such a file can only earn partial credit.
-  const fullSuffixes: string[] = [];
-  for (let start = 0; start <= segments.length - 2; start++) {
-    fullSuffixes.push(segments.slice(start).join('/'));
-  }
-
-  const checkFields = [
-    memory.content,
-    ...(memory.filesRead ?? []),
-    ...(memory.filesModified ?? []),
-  ].map(field => field.replace(/\\/g, '/').toLowerCase());
-
-  if (checkFields.some(field => fullSuffixes.some(suffix => field.includes(suffix)))) {
-    return FILE_PROXIMITY_FULL;
-  }
-  if (checkFields.some(field => field.includes(fileName))) {
-    return FILE_PROXIMITY_PARTIAL;
-  }
-  return 0;
-}
-
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const RETRIEVAL_BOOST_DENOMINATOR = Math.log2(11);
-const STALENESS_THRESHOLD = 3;
-const CONTENT_TRUNCATION_LIMIT = 300;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const RERANK_CANDIDATE_CAP = 30;
+const RERANK_TIMEOUT_MS = 2000;
+const RERANK_SNIPPET_CHARS = 160;
+const RERANK_QUERY_CHARS = 2000;
+const SNIPPET_CHARS = 160;
+const MAX_MENTIONED = 10;
+const SESSION_CANDIDATE_LIMIT = 50;
+const PREFERENCE_CANDIDATE_LIMIT = 100;
+const SQL_CHUNK = 500;
 
 /**
  * Sentinel `workspace` bucket for global-scoped retrievals: global memories surface in every
- * workspace, so their counts are recorded here (not siloed by the active workspace) and unioned in
- * when scoring anywhere. Cannot collide with a real filesystem path.
+ * workspace, so their counts are recorded here and unioned in when scoring anywhere.
  */
 const GLOBAL_RETRIEVAL_WORKSPACE = '__damocles_global_scope__';
-const RERANK_TIMEOUT_MS = 2000;
-const RERANK_SNIPPET_CHARS = 160;
-
-const SCOPE_WEIGHT: Record<MemoryScope, number> = {
-  session: 1.0,
-  project: 0.8,
-  global: 0.6,
-};
-
-function computeRecency(updatedAt: number): number {
-  return 1 / (1 + (Date.now() - updatedAt) / SEVEN_DAYS_MS);
-}
 
 /**
- * This boost creates a retrieved→boosted→retrieved feedback loop, intentionally log-damped:
- * `log2(1 + count)` grows sub-linearly, normalized by `log2(11)`, so the marginal boost saturates
- * near 1 (~10 retrievals). With the 0.1 weight in {@link scoreMemory} and the 30-day window,
- * runaway self-reinforcement is bounded.
+ * Column filters for the gate's FTS queries. Lexical matching and its df statistics read only the
+ * memory's own text: `search_terms`, `tags` and `summary` are model-generated and would match synonyms
+ * the memory never states. The file gate reads the columns `normalizeFileFields` confirms against.
  */
-function computeRetrievalBoost(memoryId: string, retrievalCounts: Map<string, number>): number {
-  const count = retrievalCounts.get(memoryId) ?? 0;
-  if (count === 0) return 0;
-  return Math.log2(1 + count) / RETRIEVAL_BOOST_DENOMINATOR;
-}
+const GATE_COLUMNS = '{content title facts}';
+const FILE_COLUMNS = '{content files_read files_modified}';
 
-function computeSourceCountBoost(memory: MemoryEntry): number {
-  return 0.05 * Math.log2(1 + (memory.sourceCount ?? 1));
-}
-
-function computeStalenessPenalty(memory: MemoryEntry): number {
-  if (memory.kind !== 'observation') return 1.0;
-  const count = memory.fileChangeCount ?? 0;
-  if (count < STALENESS_THRESHOLD) return 1.0;
-  return 0.3 + 0.7 * Math.exp(-0.25 * count);
-}
-
-interface ScoredMemory {
-  memory: MemoryEntry;
-  score: number;
-  scoreBreakdown: MemoryScoreBreakdown;
-  estimatedTokens: number;
-  rerankRelevance?: RerankRelevance;
-  reason?: string;
-}
-
-function scoreMemory(
-  memory: MemoryEntry,
-  ftsScores: Map<string, number> | null,
-  activeFile: string | null,
-  retrievalCounts: Map<string, number>,
-): { score: number; breakdown: MemoryScoreBreakdown } {
-  const ftsRelevance = ftsScores?.get(memory.id) ?? 0;
-  const recency = computeRecency(memory.updatedAt);
-  const fileProximity = activeFile ? computeFileProximity(memory, activeFile) : 0;
-  const scopeWeight = SCOPE_WEIGHT[memory.scope ?? 'project'];
-  const retrievalBoost = computeRetrievalBoost(memory.id, retrievalCounts);
-  const sourceCountBoost = computeSourceCountBoost(memory);
-  const stalenessPenalty = computeStalenessPenalty(memory);
-
-  const raw = ftsScores
-    ? ftsRelevance * 0.5 + recency * 0.15 + scopeWeight * 0.15 + fileProximity * 0.1 + retrievalBoost * 0.1 + sourceCountBoost
-    : fileProximity * 0.4 + recency * 0.25 + scopeWeight * 0.25 + retrievalBoost * 0.1 + sourceCountBoost;
-
-  return {
-    score: raw * stalenessPenalty,
-    breakdown: { ftsRelevance, recency, scopeWeight, fileProximity, retrievalBoost, sourceCountBoost, stalenessPenalty },
-  };
-}
-
-function normalizeForGroup(
-  memories: MemoryEntry[],
-  rawRanks: Map<string, number>,
-): Map<string, number> | null {
-  const ids = new Set(memories.map(m => m.id));
-  let min = Infinity, max = -Infinity;
-  let matchCount = 0;
-  for (const [id, rank] of rawRanks) {
-    if (!ids.has(id)) continue;
-    matchCount++;
-    if (rank < min) min = rank;
-    if (rank > max) max = rank;
-  }
-  if (min === Infinity) return null;
-  const range = max - min;
-  // Min-max normalization gives the best match a full 1.0. Scale by matchCount/3 so a sparse-match
-  // group can't reach full confidence on a lone lexical hit — one hit maxes at 1/3, two at 2/3.
-  const damping = matchCount < 3 ? matchCount / 3 : 1;
-  const normalized = new Map<string, number>();
-  for (const [id, rank] of rawRanks) {
-    if (!ids.has(id)) continue;
-    normalized.set(id, (range > 0 ? (rank - min) / range : 1) * damping);
-  }
-  return normalized;
-}
-
-function selectTopN(
-  memories: MemoryEntry[],
-  limit: number,
-  activeFile: string | null,
-  rawFtsRanks: Map<string, number> | null,
-  retrievalCounts: Map<string, number>,
-  excludeIds: Set<string>,
-): ScoredMemory[] {
-  const filtered = memories.filter(m => !excludeIds.has(m.id));
-  const ftsScores = rawFtsRanks ? normalizeForGroup(filtered, rawFtsRanks) : null;
-  const scored = filtered.map(m => {
-    const { score, breakdown } = scoreMemory(m, ftsScores, activeFile, retrievalCounts);
-    return { memory: m, score, scoreBreakdown: breakdown, estimatedTokens: estimateTokens(formatMemoryEntry(m)) };
-  });
-  // Composite score desc, tiebroken by BM25 relevance desc so ordering stays deterministic on collisions.
-  scored.sort((a, b) => b.score - a.score || b.scoreBreakdown.ftsRelevance - a.scoreBreakdown.ftsRelevance);
-  return scored.slice(0, limit);
-}
-
-function formatMemoryEntry(m: MemoryEntry): string {
-  if (m.kind === 'observation' && m.title) {
-    const files = [...(m.filesRead ?? []), ...(m.filesModified ?? [])];
-    const fileHint = files.length > 0 ? ` (${files.slice(0, 2).join(', ')})` : '';
-    const staleHint = (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD ? ' [stale]' : '';
-    return `- [${m.id}] ${m.title}${fileHint}${staleHint}`;
-  }
-  if (m.content.length > CONTENT_TRUNCATION_LIMIT) {
-    return `- [${m.id}] ${truncateToChars(m.content, CONTENT_TRUNCATION_LIMIT)}...[Use get_memory_details for full content]`;
-  }
-  return `- [${m.id}] ${m.content}`;
-}
-
-function formatPinnedEntry(m: MemoryEntry): string {
-  if (m.kind === 'observation' && m.title) {
-    const staleHint = (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD ? ' [stale]' : '';
-    return `- [${m.id}] ${m.title}${staleHint}\n  ${m.content}`;
-  }
-  return `- [${m.id}] ${m.content}`;
-}
-
-function formatScoredList(scored: ScoredMemory[]): string {
-  return scored.map(s => formatMemoryEntry(s.memory)).join('\n');
-}
-
-function toInjectionEntry(scored: ScoredMemory, isPinned: boolean): MemoryInjectionEntry {
-  const m = scored.memory;
-  return {
-    id: m.id,
-    scope: m.scope ?? 'project',
-    kind: m.kind ?? 'fact',
-    title: m.title ?? null,
-    content: m.content,
-    score: scored.score,
-    scoreBreakdown: scored.scoreBreakdown,
-    estimatedTokens: scored.estimatedTokens,
-    isStale: (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD,
-    isPinned,
-    ...(m.sourceCount !== undefined ? { sourceCount: m.sourceCount } : {}),
-    ...(scored.rerankRelevance ? { rerankRelevance: scored.rerankRelevance } : {}),
-    ...(scored.reason ? { reason: scored.reason } : {}),
-  };
-}
-
-function buildGroup(
-  label: GroupLabel,
-  entryLimit: number,
-  scored: ScoredMemory[],
-  totalAvailable: number,
-): MemoryInjectionGroup {
-  const entries = scored.map(s => toInjectionEntry(s, false));
-  const tokensUsed = scored.reduce((sum, s) => sum + s.estimatedTokens, 0);
-  return { label, entryLimit, tokensUsed, entries, totalAvailable };
-}
-
-interface CandidateRows {
-  session: MemoryEntry[];
-  project: MemoryEntry[];
-  global: MemoryEntry[];
-  observations: MemoryEntry[];
-}
-
-type ScoredGroups = Record<GroupLabel, ScoredMemory[]>;
+const LIVE_TAIL = `AND m.kind != 'note' AND (m.forget_after IS NULL OR m.forget_after >= ?)`;
 
 /**
- * Bounds the total SIZE of the catalog (per-group limits already bound COUNT; pinned has its own
- * budget). Drops lowest-scored entries across all four groups until the summed tokens fit `budget`,
- * rebuilding each group in its original order — only membership shrinks.
+ * Live, non-note rows this session can see, one arm per scope so each uses its own index (`+` keeps
+ * the planner off `idx_memories_live` for the global and session arms). Params: workspace, now,
+ * now, sessionId, now.
  */
-function enforceTokenBudget(groups: ScoredGroups, budget: number): ScoredGroups {
-  const labels: GroupLabel[] = ['session', 'project', 'global', 'observations'];
+const VISIBLE_SQL = `SELECT m.rowid AS rowid, m.id AS id, m.kind AS kind, m.scope AS scope FROM memories m
+  WHERE m.is_latest = 1 AND m.forgotten = 0 AND m.workspace = ? AND m.scope = 'project' ${LIVE_TAIL}
+UNION ALL SELECT m.rowid, m.id, m.kind, m.scope FROM memories m
+  WHERE m.scope = 'global' AND +m.is_latest = 1 AND +m.forgotten = 0 ${LIVE_TAIL}
+UNION ALL SELECT m.rowid, m.id, m.kind, m.scope FROM memories m
+  WHERE m.session_id = ? AND m.scope = 'session' AND +m.is_latest = 1 AND +m.forgotten = 0 ${LIVE_TAIL}`;
 
-  let total = 0;
-  for (const label of labels) {
-    for (const s of groups[label]) total += s.estimatedTokens;
-  }
-  if (total <= budget) return groups;
-
-  // Drop lowest-value first. When a rerank ran, its relevance dominates raw BM25 score, so a
-  // rerank-promoted (but low-BM25) entry is not evicted ahead of an ungraded higher-BM25 one.
-  const flat = labels.flatMap(label => groups[label].map(entry => ({ label, entry })));
-  const ascending = [...flat].sort(
-    (a, b) =>
-      rerankSortWeight(a.entry.rerankRelevance) - rerankSortWeight(b.entry.rerankRelevance) ||
-      a.entry.score - b.entry.score,
-  );
-
-  const dropped = new Set<ScoredMemory>();
-  let remaining = total;
-  for (const { entry } of ascending) {
-    if (remaining <= budget) break;
-    dropped.add(entry);
-    remaining -= entry.estimatedTokens;
-  }
-
-  const result = {} as ScoredGroups;
-  for (const label of labels) {
-    result[label] = groups[label].filter(s => !dropped.has(s));
-  }
-  return result;
+export interface BuildInjectionArgs {
+  sessionId: string | null;
+  workspace: string;
+  activeFile: string | null;
+  prompt: string;
+  live: LiveInjections;
+  promptIndex: number;
 }
 
-export const __test: { enforceTokenBudget: typeof enforceTokenBudget } = { enforceTokenBudget };
+export interface InjectionBuildResult {
+  /** Profile plus `<damocles_memory>` block; '' when nothing new is sent. */
+  text: string;
+  /** Null exactly when `text` is ''. `compassKey` is left null for the caller to fill. */
+  details: ContextInjectionDetailsV1 | null;
+  display: MemoryInjectionDisplay;
+  /** Mentioned ids that resolved to a memory; they count as retrievals. */
+  mentionedIds: string[];
+}
 
-/**
- * Build the rerank candidate pool by sampling each non-empty group proportionally to its size (not a
- * positional slice, which could starve small groups). Each gets a quota of
- * `max(2, round(cap * size / total))`, contributing its top-N by BM25 order. If summed quotas exceed
- * `cap`, the largest are trimmed first, never below 2; if min-2 across all groups already exceeds
- * `cap`, groups are taken 2-at-a-time in order until the cap is exhausted.
- */
-function buildRerankPool(groups: ScoredGroups, cap: number): ScoredMemory[] {
-  const labels: GroupLabel[] = ['session', 'project', 'global', 'observations'];
-  const nonEmpty = labels.filter(label => groups[label].length > 0);
-  const totalSize = nonEmpty.reduce((sum, label) => sum + groups[label].length, 0);
+type StoreCounts = MemoryInjectionDisplay['storeCounts'];
 
-  // Degenerate cap: can't give every group its min-2 → take 2 each in order until exhausted.
-  if (nonEmpty.length * 2 > cap) {
-    const pool: ScoredMemory[] = [];
-    for (const label of nonEmpty) {
-      if (pool.length >= cap) break;
-      const take = Math.min(2, cap - pool.length);
-      pool.push(...groups[label].slice(0, take));
+interface VisibleRow {
+  id: string;
+  kind: string;
+  scope: string;
+}
+
+function storeCountsOf(visible: ReadonlyMap<number, VisibleRow>): StoreCounts {
+  const counts: StoreCounts = { session: 0, project: 0, global: 0, observations: 0, total: 0 };
+  for (const v of visible.values()) {
+    const bucket = v.kind === 'observation' ? 'observations' : v.scope;
+    if (bucket === 'session' || bucket === 'project' || bucket === 'global' || bucket === 'observations') {
+      counts[bucket]++;
+      counts.total++;
     }
-    return pool.slice(0, cap);
   }
+  return counts;
+}
 
-  // Proportional quotas, floored at 2 per group and capped at the group's size.
-  const quota = new Map<GroupLabel, number>();
-  for (const label of nonEmpty) {
-    const proportional = Math.round((cap * groups[label].length) / totalSize);
-    quota.set(label, Math.min(groups[label].length, Math.max(2, proportional)));
-  }
+interface Loaded {
+  row: MemoryRow;
+  entry: MemoryEntry;
+}
 
-  // If quotas overshoot the cap, trim the largest first, never below 2.
-  const quotaSum = () => nonEmpty.reduce((sum, label) => sum + quota.get(label)!, 0);
-  while (quotaSum() > cap) {
-    const trimmable = nonEmpty.filter(label => quota.get(label)! > 2);
-    if (trimmable.length === 0) break; // everything at floor 2 — cap still honored via slice below
-    const largest = trimmable.reduce((a, b) => (quota.get(b)! > quota.get(a)! ? b : a));
-    quota.set(largest, quota.get(largest)! - 1);
-  }
+interface Selected {
+  loaded: Loaded;
+  tier: InjectionTier;
+  reasons: InjectionReason[];
+  score: number | null;
+  breakdown: MemoryScoreBreakdown | null;
+  upgradedFromCompact: boolean;
+  text: string;
+  truncated: boolean;
+  tokens: number;
+  /** A forgotten memory rendered because the prompt names it; not tracked as in context. */
+  forgottenMention: boolean;
+  rerankRelevance?: RerankRelevance;
+  rerankReason?: string;
+}
 
-  const pool: ScoredMemory[] = [];
-  for (const label of nonEmpty) {
-    pool.push(...groups[label].slice(0, quota.get(label)!));
-  }
-  return pool.slice(0, cap);
+interface GatedCandidate {
+  loaded: Loaded;
+  lexical: LexicalMatch;
+  fileReasons: Array<{ path: string; source: 'editor' | 'prompt' }>;
+  liveCompact: boolean;
+  score: number;
+  breakdown: MemoryScoreBreakdown;
+  fullAllowed: boolean;
+  rerankRelevance?: RerankRelevance;
+  rerankReason?: string;
+}
+
+function toLoaded(row: MemoryRow): Loaded {
+  return { row, entry: rowToEntry(row) };
+}
+
+function isStale(entry: MemoryEntry): boolean {
+  return (entry.fileChangeCount ?? 0) >= STALENESS_THRESHOLD;
+}
+
+function lastSegments(filePath: string, count: number): string {
+  const segments = normalizePath(filePath).split('/').filter(Boolean);
+  return segments.length >= count ? segments.slice(-count).join('/') : '';
+}
+
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function relativizeFile(file: string, workspace: string): string {
+  const f = normalizePath(file);
+  const root = normalizePath(workspace);
+  if (root && f.toLowerCase().startsWith(root.toLowerCase() + '/')) return f.slice(root.length + 1);
+  return f;
+}
+
+function entryFiles(entry: MemoryEntry): string[] {
+  return [...new Set([...(entry.filesModified ?? []), ...(entry.filesRead ?? [])])];
+}
+
+function renderable(entry: MemoryEntry, workspace: string, forgotten = false): RenderableMemory {
+  return {
+    id: entry.id,
+    kind: entry.kind ?? 'fact',
+    scope: entry.scope ?? 'project',
+    title: entry.title ?? null,
+    content: entry.content,
+    facts: entry.facts ?? [],
+    files: entryFiles(entry).map(f => relativizeFile(f, workspace)),
+    observationType: entry.observationType ?? null,
+    isStale: isStale(entry),
+    isPinned: !!entry.pinned,
+    ...(forgotten ? { isForgotten: true } : {}),
+  };
+}
+
+function snippet(entry: MemoryEntry): string {
+  const source = (entry.kind === 'observation' && entry.title ? entry.title : entry.content).replace(/\s+/g, ' ').trim();
+  return truncateToChars(source, SNIPPET_CHARS);
+}
+
+function selectFull(
+  loaded: Loaded,
+  workspace: string,
+  reasons: InjectionReason[],
+  extra: Partial<Pick<Selected, 'upgradedFromCompact' | 'forgottenMention'>> & { maxChars?: number } = {},
+): Selected {
+  const rendered = renderFull(renderable(loaded.entry, workspace, extra.forgottenMention === true), extra.maxChars);
+  return {
+    loaded,
+    tier: 'full',
+    reasons,
+    score: null,
+    breakdown: null,
+    upgradedFromCompact: extra.upgradedFromCompact ?? false,
+    text: rendered.text,
+    truncated: rendered.truncated,
+    tokens: estimateTokens(rendered.text),
+    forgottenMention: extra.forgottenMention ?? false,
+  };
+}
+
+function toInjectedMemory(s: Selected): InjectedMemory {
+  const e = s.loaded.entry;
+  return {
+    id: e.id,
+    scope: e.scope ?? 'project',
+    kind: e.kind ?? 'fact',
+    title: e.title ?? null,
+    content: e.content,
+    facts: e.facts ?? [],
+    files: entryFiles(e),
+    tier: s.tier,
+    truncated: s.truncated,
+    upgradedFromCompact: s.upgradedFromCompact,
+    tokens: s.tokens,
+    reasons: s.reasons,
+    score: s.score,
+    scoreBreakdown: s.breakdown,
+    isStale: isStale(e),
+    isPinned: !!e.pinned,
+    sourceCount: e.sourceCount ?? 1,
+    ...(s.forgottenMention ? { isForgotten: true } : {}),
+    ...(s.rerankRelevance ? { rerankRelevance: s.rerankRelevance } : {}),
+    ...(s.rerankReason ? { rerankReason: s.rerankReason } : {}),
+  };
 }
 
 /**
- * Owns the per-turn `<damocles_memory>` catalog: queries live memory rows directly (never the
- * per-scope managers, which leak superseded/forgotten rows), ranks by BM25-first scoring, optionally
- * reorders with a hard-capped blocking LLM rerank, and prepends profile + handoff context on the
- * first message of a session. Also persists per-prompt display snapshots.
+ * Owns per-prompt memory injection: a delta against what the session projection already carries,
+ * gated for relevance and tiered by rank (docs/invariants.md "Memory injection"). Queries live rows
+ * directly, never the per-scope managers, which leak superseded and forgotten rows. Also persists
+ * the per-prompt display records.
  */
 export class InjectionManager {
   private db: DatabaseInstance;
   private profileManager: ProfileManager;
   private runner: MemorySubCallRunner;
-  private firstMessageSessions: Set<string>;
-  /**
-   * Cache of the DB-backed first-message decision per session: distinguishes a genuinely-new session
-   * from one whose prompt-0 row survives across a restart, so profile/handoff isn't re-injected.
-   */
-  private firstMessageResolved = new Map<string, boolean>();
   private injectionDbs = new Map<string, DatabaseInstance>();
   private pendingDbOpens = new Map<string, Promise<DatabaseInstance | undefined>>();
   private disposed = false;
@@ -441,7 +392,6 @@ export class InjectionManager {
     this.db = db;
     this.profileManager = profileManager;
     this.runner = runner;
-    this.firstMessageSessions = new Set();
   }
 
   async persistInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): Promise<void> {
@@ -510,25 +460,32 @@ export class InjectionManager {
     this.pendingDbOpens.delete(sessionId);
   }
 
-  private evictFirstMessageCache(sessionId: string): void {
-    this.firstMessageSessions.delete(sessionId);
-    this.firstMessageResolved.delete(sessionId);
-  }
-
   async deleteSession(sessionId: string): Promise<void> {
     await this.closeAndEvict(sessionId);
-    this.evictFirstMessageCache(sessionId);
     await deleteInjectionDatabaseFile(sessionId);
   }
 
   async renameSession(oldId: string, newId: string): Promise<void> {
     await this.closeAndEvict(oldId);
     await this.closeAndEvict(newId);
-    if (this.firstMessageSessions.has(oldId)) this.firstMessageSessions.add(newId);
-    const resolved = this.firstMessageResolved.get(oldId);
-    if (resolved !== undefined) this.firstMessageResolved.set(newId, resolved);
-    this.evictFirstMessageCache(oldId);
     await renameInjectionDatabaseFile(oldId, newId);
+  }
+
+  /**
+   * Copy the source session's records for prompts below `belowPromptIndex` into the target session,
+   * verbatim. A source with no database or no such rows creates nothing. Returns the rows added.
+   */
+  async copySessionInjections(sourceId: string, targetId: string, belowPromptIndex: number): Promise<number> {
+    if (sourceId === targetId || belowPromptIndex <= 0) return 0;
+    const known = this.injectionDbs.has(sourceId) || this.pendingDbOpens.has(sourceId);
+    if (!known && !(await injectionDatabaseExists(sourceId))) return 0;
+    const source = await this.getOrOpenInjectionDb(sourceId);
+    if (!source) return 0;
+    const rows = listMemoryInjectionsBelow(source, belowPromptIndex);
+    if (rows.length === 0) return 0;
+    const target = await this.getOrOpenInjectionDb(targetId);
+    if (!target) return 0;
+    return insertMemoryInjectionRows(target, rows);
   }
 
   async sweepStaleDatabases(): Promise<void> {
@@ -538,50 +495,7 @@ export class InjectionManager {
     for (const sessionId of [...this.injectionDbs.keys()]) {
       if (sweptNames.has(injectionDbName(sessionId))) void this.closeAndEvict(sessionId);
     }
-    for (const sessionId of [...this.firstMessageResolved.keys(), ...this.firstMessageSessions]) {
-      if (sweptNames.has(injectionDbName(sessionId))) this.evictFirstMessageCache(sessionId);
-    }
     log('[InjectionManager] Swept %d stale injection database(s)', swept.length);
-  }
-
-  /**
-   * Synchronous first-message check. Prefers the cached DB-backed decision so a mid-session restart
-   * doesn't re-trigger profile/handoff; falls back to the in-memory set when not yet resolved.
-   */
-  isFirstMessageOfSession(sessionId: string): boolean {
-    const resolved = this.firstMessageResolved.get(sessionId);
-    if (resolved !== undefined) return resolved;
-    return !this.firstMessageSessions.has(sessionId);
-  }
-
-  /**
-   * Resolve whether this is the first message of `sessionId`, consulting the persisted injection DB
-   * so a restart mid-session is not treated as a fresh session. Result cached; read-only against the DB.
-   */
-  private async resolveFirstMessage(sessionId: string): Promise<boolean> {
-    const cached = this.firstMessageResolved.get(sessionId);
-    if (cached !== undefined) return cached;
-
-    // Known this process → a prior turn already sent the first message.
-    if (this.firstMessageSessions.has(sessionId)) {
-      this.firstMessageResolved.set(sessionId, false);
-      return false;
-    }
-
-    // Otherwise any persisted injection row means the first message was handled before this restart.
-    let isFirst = true;
-    const db = await this.getOrOpenInjectionDb(sessionId);
-    if (db) {
-      const row = db.prepare('SELECT 1 FROM memory_injections LIMIT 1').get();
-      if (row) isFirst = false;
-    }
-    this.firstMessageResolved.set(sessionId, isFirst);
-    return isFirst;
-  }
-
-  markFirstMessageSent(sessionId: string): void {
-    this.firstMessageSessions.add(sessionId);
-    this.firstMessageResolved.set(sessionId, false);
   }
 
   pinMemory(id: string): boolean {
@@ -627,295 +541,539 @@ export class InjectionManager {
     return counts;
   }
 
-  private queryFtsRanks(
-    userPrompt: string | undefined,
-    workspace: string,
-    sessionId: string | null,
-  ): { ranks: Map<string, number>; ftsQuery: string } | null {
-    if (!userPrompt) return null;
+  /**
+   * One scan of the rows this session can see, keyed by rowid. Everything else filters it in memory,
+   * because per-term joins against `memories` read each large row again.
+   */
+  private loadVisible(now: number, sessionId: string, workspace: string): Map<number, VisibleRow> {
+    const rows = this.db.prepare(VISIBLE_SQL).all(workspace, now, now, sessionId, now) as Array<VisibleRow & { rowid: number }>;
+    return new Map(rows.map(r => [r.rowid, { id: r.id, kind: r.kind, scope: r.scope }]));
+  }
 
-    const ftsQuery = buildFtsMatchQuery(userPrompt);
-    if (!ftsQuery) return null;
+  private loadRows(ids: readonly string[]): Map<string, Loaded> {
+    const out = new Map<string, Loaded>();
+    for (let i = 0; i < ids.length; i += SQL_CHUNK) {
+      const chunk = ids.slice(i, i + SQL_CHUNK);
+      const rows = this.db
+        .prepare(`SELECT * FROM memories WHERE id IN (${chunk.map(() => '?').join(',')})`)
+        .all(...chunk) as MemoryRow[];
+      for (const row of rows) out.set(row.id, toLoaded(row));
+    }
+    return out;
+  }
 
+  /**
+   * The OR arms use `idx_memories_root` and the primary key; `COALESCE(root_id, id)` cannot, and without
+   * `+` the planner walks every live row through `idx_memories_live` instead.
+   */
+  private chainHead(row: MemoryRow): Loaded | null {
+    const root = row.root_id ?? row.id;
+    const head = this.db.prepare(
+      `SELECT * FROM memories WHERE (root_id = ? OR (root_id IS NULL AND id = ?)) AND +is_latest = 1 AND +forgotten = 0
+        ORDER BY updated_at DESC LIMIT 1`,
+    ).get(root, root) as MemoryRow | undefined;
+    return head ? toLoaded(head) : null;
+  }
+
+  /**
+   * The row a dedup merge folded `row` into, following merge `SUPERSEDES` edges through later merges.
+   * `undefined` when that row no longer exists; null for a merge recorded without an edge.
+   */
+  private mergeTarget(row: MemoryRow): MemoryRow | undefined | null {
+    const seen = new Set<string>();
+    let current = row;
+    while (current.forgotten === 1 && current.forget_reason === MERGED_FORGET_REASON) {
+      if (seen.has(current.id)) return null;
+      seen.add(current.id);
+      const edge = this.db.prepare(
+        `SELECT source_id FROM memory_edges WHERE kind = 'SUPERSEDES' AND target_id = ? ORDER BY created_at DESC LIMIT 1`,
+      ).get(current.id) as { source_id: string } | undefined;
+      if (!edge) return null;
+      const next = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(edge.source_id) as MemoryRow | undefined;
+      if (!next) return undefined;
+      current = next;
+    }
+    return current;
+  }
+
+  /** The current row a mentioned id stands for: its merge primary, then that row's chain head. */
+  private resolveMention(loaded: Loaded): Loaded {
+    const merged = loaded.row.forgotten === 1 && loaded.row.forget_reason === MERGED_FORGET_REASON ? this.mergeTarget(loaded.row) : null;
+    const row = merged ?? loaded.row;
+    const base = row === loaded.row ? loaded : toLoaded(row);
+    return row.is_latest === 1 ? base : this.chainHead(row) ?? base;
+  }
+
+  /** Visible ids whose FTS index matches `ftsQuery` (a column filter plus a quoted term or phrase). */
+  private matchVisible(ftsQuery: string, visible: ReadonlyMap<number, VisibleRow>): Set<string> {
     try {
-      const params: unknown[] = [ftsQuery, workspace];
-      let sessionClause = '';
-      if (sessionId) {
-        sessionClause = " OR (m.session_id = ? AND m.scope = 'session')";
-        params.push(sessionId);
+      const rows = this.db.prepare('SELECT rowid AS r FROM memories_fts WHERE memories_fts MATCH ?').all(ftsQuery) as Array<{ r: number }>;
+      const ids = new Set<string>();
+      for (const { r } of rows) {
+        const v = visible.get(r);
+        if (v) ids.add(v.id);
       }
-
-      const rows = this.db.prepare(`
-        SELECT m.id, fts.rank
-        FROM memories_fts fts
-        JOIN memories m ON m.rowid = fts.rowid
-        WHERE memories_fts MATCH ?
-          AND m.is_latest = 1 AND m.forgotten = 0
-          AND (m.workspace = ? ${sessionClause} OR m.scope = 'global')
-      `).all(...params) as FtsMatchRow[];
-
-      if (rows.length === 0) return null;
-
-      const ranks = new Map<string, number>();
-      for (const row of rows) {
-        ranks.set(row.id, Math.abs(row.rank));
-      }
-      return { ranks, ftsQuery };
+      return ids;
     } catch (err) {
-      log(`[InjectionManager] FTS5 query failed, falling back to heuristic scoring: ${err}`);
-      return null;
+      log('[InjectionManager] FTS query failed for %s: %O', ftsQuery, err);
+      return new Set();
     }
   }
 
   /**
-   * Load candidate rows as four bounded per-scope pools, each `ORDER BY updated_at DESC LIMIT 3 *
-   * <entry limit>`, so rows scanned per turn are bounded by config regardless of store size. The 3x
-   * headroom lets scoring/rerank promote an older-but-relevant row over a merely-recent one.
+   * Candidate ids for a path: an FTS phrase over its last two segments, which any full-suffix match
+   * must contain. Confirmed afterwards by the proximity matcher.
    */
-  private loadCandidates(workspace: string, sessionId: string | null, limits: CatalogLimits): CandidateRows {
-    // Shared live/decay filter; `kind` is constrained per-pool below.
-    const baseWhere = "is_latest = 1 AND forgotten = 0 AND kind != 'note' AND (forget_after IS NULL OR forget_after >= ?)";
-
-    // Session-scoped rows for THIS session only; empty when there is no active session.
-    let session: MemoryEntry[] = [];
-    if (sessionId) {
-      const rows = this.db.prepare(
-        `SELECT * FROM memories
-         WHERE ${baseWhere} AND kind != 'observation'
-           AND scope = 'session' AND session_id = ?
-         ORDER BY updated_at DESC LIMIT ?`
-      ).all(Date.now(), sessionId, 3 * limits.session) as MemoryRow[];
-      session = rows.map(rowToEntry);
-    }
-
-    const projectRows = this.db.prepare(
-      `SELECT * FROM memories
-       WHERE ${baseWhere} AND kind != 'observation'
-         AND scope = 'project' AND workspace = ?
-       ORDER BY updated_at DESC LIMIT ?`
-    ).all(Date.now(), workspace, 3 * limits.project) as MemoryRow[];
-
-    // Global-scoped rows surface in every workspace (no workspace predicate).
-    const globalRows = this.db.prepare(
-      `SELECT * FROM memories
-       WHERE ${baseWhere} AND kind != 'observation'
-         AND scope = 'global'
-       ORDER BY updated_at DESC LIMIT ?`
-    ).all(Date.now(), 3 * limits.global) as MemoryRow[];
-
-    // Observations visible in this workspace (or global); the SQL LIMIT bounds the scan.
-    const obsParams: unknown[] = [Date.now(), workspace];
-    let obsSessionClause = '';
-    if (sessionId) {
-      obsSessionClause = " OR (session_id = ? AND scope = 'session')";
-      obsParams.push(sessionId);
-    }
-    obsParams.push(3 * limits.observation);
-    const observationRows = this.db.prepare(
-      `SELECT * FROM memories
-       WHERE ${baseWhere} AND kind = 'observation'
-         AND (workspace = ? ${obsSessionClause} OR scope = 'global')
-       ORDER BY updated_at DESC LIMIT ?`
-    ).all(...obsParams) as MemoryRow[];
-
-    return {
-      session,
-      project: projectRows.map(rowToEntry),
-      global: globalRows.map(rowToEntry),
-      observations: observationRows.map(rowToEntry),
-    };
+  private fileCandidateIds(filePath: string, visible: ReadonlyMap<number, VisibleRow>): Set<string> {
+    const suffix = lastSegments(filePath, 2);
+    return suffix ? this.matchVisible(`${FILE_COLUMNS} : ${quoteFtsTerm(suffix)}`, visible) : new Set();
   }
 
-  /** Pinned memories skip the `forget_after` predicate: a user pin overrides decay, so a pinned episode past its TTL still injects. */
-  private loadPinnedMemories(workspace: string, sessionId: string | null): MemoryEntry[] {
-    const params: unknown[] = [workspace];
-    let sessionClause = '';
-    if (sessionId) {
-      sessionClause = " OR (session_id = ? AND scope = 'session')";
-      params.push(sessionId);
-    }
-
+  private loadPinned(sessionId: string, workspace: string): Loaded[] {
+    // A user pin overrides decay, so pinned rows skip the `forget_after` predicate.
     const rows = this.db.prepare(
-      `SELECT * FROM memories WHERE pinned = 1 AND is_latest = 1 AND forgotten = 0 AND (workspace = ? ${sessionClause} OR scope = 'global') ORDER BY updated_at DESC`
-    ).all(...params) as MemoryRow[];
-
-    return rows.map(rowToEntry);
+      `SELECT * FROM memories WHERE pinned = 1 AND is_latest = 1 AND forgotten = 0
+         AND (workspace = ? OR (session_id = ? AND scope = 'session') OR scope = 'global')
+       ORDER BY updated_at DESC`,
+    ).all(workspace, sessionId) as MemoryRow[];
+    return rows.map(toLoaded);
   }
 
-  async buildMemoryCatalog(
-    sessionId: string | null,
-    workspace: string,
-    activeFile: string | null,
-    userPrompt?: string,
-  ): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
-    const limits = getCatalogLimits();
+  private loadVisibleWhere(visible: ReadonlyMap<number, VisibleRow>, keep: (v: VisibleRow) => boolean): Loaded[] {
+    const ids: string[] = [];
+    for (const v of visible.values()) if (keep(v)) ids.push(v.id);
+    return [...this.loadRows(ids).values()];
+  }
+
+  private loadSessionMemories(visible: ReadonlyMap<number, VisibleRow>): Loaded[] {
+    return this.loadVisibleWhere(visible, v => v.scope === 'session')
+      .sort((a, b) => b.row.updated_at - a.row.updated_at)
+      .slice(0, SESSION_CANDIDATE_LIMIT);
+  }
+
+  /**
+   * Pinned first, then project before global, then by evidence: how often the preference was
+   * re-extracted (`source_count`), how often it was retrieved, and last how recently it changed.
+   */
+  private loadPreferences(visible: ReadonlyMap<number, VisibleRow>, retrievalCounts: ReadonlyMap<string, number>): Loaded[] {
+    const scopeRank = (l: Loaded): number => (l.row.scope === 'project' ? 0 : 1);
+    const retrievals = (l: Loaded): number => retrievalCounts.get(l.row.id) ?? 0;
+    return this.loadVisibleWhere(visible, v => v.kind === 'preference' && v.scope !== 'session')
+      .sort(
+        (a, b) =>
+          b.row.pinned - a.row.pinned ||
+          scopeRank(a) - scopeRank(b) ||
+          b.row.source_count - a.row.source_count ||
+          retrievals(b) - retrievals(a) ||
+          b.row.updated_at - a.row.updated_at,
+      )
+      .slice(0, PREFERENCE_CANDIDATE_LIMIT);
+  }
+
+  /**
+   * Build this prompt's injection as a delta against `live`: notices for changed live memories, then
+   * mentioned, pinned, session and preference memories once per context, then gated matches in
+   * full or compact tier.
+   */
+  async buildInjection(args: BuildInjectionArgs): Promise<InjectionBuildResult> {
+    const cfg = readConfig();
+    const now = Date.now();
+    const sessionKey = args.sessionId ?? '';
+    const { workspace, live } = args;
+
+    const typed = splitTypedPaths(args.prompt);
+    const { terms, dropped: droppedIds } = queryTerms(stripEnglishClitics(typed.text));
+    const mentionedIds = extractMemoryIds(args.prompt);
+    const files: MemoryInjectionDisplay['query']['files'] = [
+      ...(args.activeFile ? [{ path: args.activeFile, source: 'editor' as const }] : []),
+      ...typed.paths.map(path => ({ path, source: 'prompt' as const })),
+    ];
+
+    const visible = this.loadVisible(now, sessionKey, workspace);
+    const storeCounts = storeCountsOf(visible);
+    const idsByTerm = new Map<string, Set<string>>();
+    for (const term of terms) idsByTerm.set(term, this.matchVisible(`${GATE_COLUMNS} : ${quoteFtsTerm(term)}`, visible));
+    const analysis = analyzeTerms(terms, new Map([...idsByTerm].map(([t, ids]) => [t, ids.size])), storeCounts.total);
     const retrievalCounts = this.getRetrievalCounts(workspace);
 
-    // Resolve the first-message decision once per turn and reuse for both profile and handoff gating.
-    const isFirstMessage = sessionId ? await this.resolveFirstMessage(sessionId) : false;
+    const taken = new Set<string>();
+    const gate: MemoryInjectionDisplay['gate'] = {
+      considered: 0, passed: 0, unmatchedSkipped: 0, alreadyInContext: 0, overBudget: 0, preferencesDeferred: 0,
+    };
 
-    const candidates = this.loadCandidates(workspace, sessionId, limits);
-
-    const pinnedMemories = this.loadPinnedMemories(workspace, sessionId);
-    const pinnedIds = new Set(pinnedMemories.map(m => m.id));
-
-    const ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId);
-    const ftsRanks = ftsResult?.ranks ?? null;
-
-    // Pinned has its own token budget. `continue` not `break`: a single oversized pinned entry must
-    // not starve smaller ones after it — skip it and keep filling.
-    let pinnedTokensUsed = 0;
-    const pinnedForInjection: MemoryEntry[] = [];
-    for (const m of pinnedMemories) {
-      const cost = estimateTokens(formatPinnedEntry(m));
-      if (pinnedTokensUsed + cost > limits.pinnedTokenBudget) continue;
-      pinnedForInjection.push(m);
-      pinnedTokensUsed += cost;
+    // Notices run first; the ids they handle are excluded from every other rule this prompt.
+    const liveRows = this.loadRows([...live.memories.keys()]);
+    const noticeRenders: Array<{ notice: MemoryNotice; line: string; tracked?: Selected }> = [];
+    const replacements: Selected[] = [];
+    let noticeTokens = 0;
+    type PlannedNotice = { render: NoticeRender; tracked?: Selected };
+    const retired = (id: string, byUser: boolean): PlannedNotice => ({ render: { kind: 'forgotten', id, byUser } });
+    const supersede = (id: string, liveEntry: LiveMemory, head: Loaded): PlannedNotice => {
+      const headId = head.row.id;
+      const headLive = live.memories.get(headId);
+      // A notice carries content only, so an observation's title, facts and files count as sent only when its head is live in full.
+      const tier: InjectionTier =
+        headLive?.tier === 'full' || (liveEntry.tier === 'full' && head.row.kind !== 'observation') ? 'full' : 'compact';
+      const current = headLive?.hash === head.row.content_hash && (headLive.tier === 'full' || tier === 'compact');
+      if (current || taken.has(headId)) return { render: { kind: 'superseded', id, replacementId: headId, text: null } };
+      const { text, truncated } = noticeText(renderable(head.entry, workspace), tier);
+      const replacement = selectFull(head, workspace, [{ kind: 'replacement', replacesId: id }], {
+        upgradedFromCompact: headLive?.tier === 'compact' && tier === 'full',
+      });
+      return {
+        render: { kind: 'superseded', id, replacementId: headId, text },
+        tracked: { ...replacement, tier, text, truncated, tokens: 0 },
+      };
+    };
+    for (const [id, liveEntry] of live.memories) {
+      if (noticeRenders.length >= BUDGETS.maxNotices) break;
+      if (taken.has(id)) continue;
+      const loaded = liveRows.get(id);
+      const row = loaded?.row;
+      const target = row?.forgotten === 1 && row.forget_reason === MERGED_FORGET_REASON ? this.mergeTarget(row) : row;
+      let planned: PlannedNotice | null = null;
+      // A merge recorded without an edge left its fact in a live row this prompt cannot name, so it stays unannounced.
+      if (target === null) continue;
+      if (!target) planned = retired(id, false);
+      else if (target.forgotten === 1) planned = retired(id, USER_FORGET_REASONS.has(target.forget_reason));
+      else if (target.is_latest === 0) {
+        const head = this.chainHead(target);
+        planned = head ? supersede(id, liveEntry, head) : retired(id, false);
+      } else if (target.id !== id) planned = supersede(id, liveEntry, toLoaded(target));
+      else if (loaded && target.content_hash !== liveEntry.hash) {
+        const { text, truncated } = noticeText(renderable(loaded.entry, workspace), liveEntry.tier);
+        planned = {
+          render: { kind: 'edited', id, text },
+          tracked: { ...selectFull(loaded, workspace, []), tier: liveEntry.tier, text, truncated, tokens: 0 },
+        };
+      }
+      if (!planned) continue;
+      const { render, tracked } = planned;
+      const line = renderNotice(render);
+      const cost = estimateTokens(line);
+      if (noticeRenders.length > 0 && noticeTokens + cost > BUDGETS.noticeTokens) continue;
+      noticeTokens += cost;
+      taken.add(id);
+      if (tracked) taken.add(tracked.loaded.row.id);
+      if (tracked && render.kind === 'superseded') replacements.push(tracked);
+      noticeRenders.push({
+        notice: {
+          kind: render.kind,
+          id,
+          title: loaded?.entry.title ?? null,
+          snippet: loaded ? snippet(loaded.entry) : '',
+          replacementId: render.kind === 'superseded' ? render.replacementId : null,
+          tokens: cost,
+        },
+        line,
+        ...(tracked ? { tracked } : {}),
+      });
     }
 
-    let scoredSession = selectTopN(candidates.session, limits.session, activeFile, ftsRanks, retrievalCounts, pinnedIds);
-    let scoredProject = selectTopN(candidates.project, limits.project, activeFile, ftsRanks, retrievalCounts, pinnedIds);
-    let scoredGlobal = selectTopN(candidates.global, limits.global, activeFile, ftsRanks, retrievalCounts, pinnedIds);
-    let scoredObservations = selectTopN(candidates.observations, limits.observation, activeFile, ftsRanks, retrievalCounts, pinnedIds);
+    const selected: Selected[] = [];
+
+    // Rule 1: mentioned ids, any kind, across workspaces.
+    const mentionedResolved: string[] = [];
+    const mentionedRows = this.loadRows(mentionedIds.slice(0, MAX_MENTIONED));
+    for (const id of mentionedIds.slice(0, MAX_MENTIONED)) {
+      const loaded = mentionedRows.get(id);
+      if (!loaded) continue;
+      const target = this.resolveMention(loaded);
+      const targetId = target.row.id;
+      if (target.row.forgotten === 0) mentionedResolved.push(targetId);
+      if (taken.has(targetId)) continue;
+      const liveEntry = live.memories.get(targetId);
+      if (target.row.forgotten === 1) {
+        selected.push(selectFull(target, workspace, [{ kind: 'mentioned' }], { forgottenMention: true }));
+      } else if (liveEntry?.tier === 'full' && liveEntry.hash === target.row.content_hash) {
+        gate.alreadyInContext++;
+      } else {
+        selected.push(selectFull(target, workspace, [{ kind: 'mentioned' }], { upgradedFromCompact: liveEntry?.tier === 'compact' }));
+      }
+      taken.add(targetId);
+    }
+
+    // Rules 2-4: pinned, session and preference memories once per context, each within a budget
+    // shared with what the live context already holds.
+    const liveTokens = (predicate: (l: Loaded) => boolean, maxChars?: number): number => {
+      let sum = 0;
+      for (const [id, entry] of live.memories) {
+        const l = liveRows.get(id);
+        if (!l || taken.has(id) || !predicate(l)) continue;
+        const r = renderable(l.entry, workspace);
+        sum += estimateTokens(entry.tier === 'full' ? renderFull(r, maxChars).text : renderCompactLine(r));
+      }
+      return sum;
+    };
+    const fillOncePerContext = (
+      candidates: Loaded[],
+      budget: number,
+      reason: InjectionReason,
+      isMember: (l: Loaded) => boolean,
+      maxChars?: number,
+    ): number => {
+      let used = liveTokens(isMember, maxChars);
+      let deferred = 0;
+      for (const loaded of candidates) {
+        const id = loaded.row.id;
+        if (taken.has(id) || live.memories.has(id)) continue;
+        const entry = selectFull(loaded, workspace, [reason], maxChars !== undefined ? { maxChars } : {});
+        if (used + entry.tokens > budget) {
+          deferred++;
+          continue;
+        }
+        used += entry.tokens;
+        taken.add(id);
+        selected.push(entry);
+      }
+      return deferred;
+    };
+    gate.overBudget += fillOncePerContext(
+      this.loadPinned(sessionKey, workspace), cfg.pinnedTokenBudget, { kind: 'pinned' }, l => l.row.pinned === 1,
+    );
+    gate.overBudget += fillOncePerContext(
+      this.loadSessionMemories(visible), BUDGETS.sessionTokens, { kind: 'session' },
+      l => l.row.scope === 'session' && l.row.pinned !== 1,
+    );
+    gate.preferencesDeferred = fillOncePerContext(
+      this.loadPreferences(visible, retrievalCounts), BUDGETS.preferenceTokens, { kind: 'preference' },
+      l => l.row.kind === 'preference' && l.row.scope !== 'session' && l.row.pinned !== 1, BUDGETS.preferenceChars,
+    );
+
+    // Rules 5-6: the lexical gate and the file gate.
+    const matchedByCandidate = new Map<string, Set<string>>();
+    for (const t of analysis.usable) {
+      for (const id of idsByTerm.get(t.term) ?? []) {
+        let set = matchedByCandidate.get(id);
+        if (!set) matchedByCandidate.set(id, (set = new Set()));
+        set.add(t.term);
+      }
+    }
+    const fileCandidateIds = new Set<string>();
+    for (const file of files) {
+      for (const id of this.fileCandidateIds(file.path, visible)) if (!taken.has(id)) fileCandidateIds.add(id);
+    }
+    const fileRows = this.loadRows([...fileCandidateIds]);
+    const matchers = files.map(f => ({ file: f, match: fileProximityMatcher(f.path) }));
+    const fileProximityOf = (loaded: Loaded): number => {
+      if (matchers.length === 0) return 0;
+      const fields = normalizeFileFields(loaded.entry);
+      return Math.max(...matchers.map(m => m.match(fields)));
+    };
+    const fileReasonsById = new Map<string, GatedCandidate['fileReasons']>();
+    for (const [id, loaded] of fileRows) {
+      const fields = normalizeFileFields(loaded.entry);
+      const reasons = matchers
+        .filter(m => m.match(fields) === FILE_PROXIMITY_FULL)
+        .map(m => ({ path: m.file.path, source: m.file.source }));
+      if (reasons.length > 0) fileReasonsById.set(id, reasons);
+    }
+
+    const candidateIds = new Set([...matchedByCandidate.keys(), ...fileReasonsById.keys()]);
+    const passingIds: string[] = [];
+    const lexicalById = new Map<string, LexicalMatch>();
+    for (const id of candidateIds) {
+      if (taken.has(id)) continue;
+      const liveEntry = live.memories.get(id);
+      if (liveEntry?.tier === 'full') {
+        gate.alreadyInContext++;
+        continue;
+      }
+      gate.considered++;
+      const lexical = evaluateLexical(matchedByCandidate.get(id) ?? new Set(), analysis);
+      lexicalById.set(id, lexical);
+      if (lexical.passed || fileReasonsById.has(id)) passingIds.push(id);
+      else if (!liveEntry) gate.unmatchedSkipped++;
+    }
+
+    const passingRows = this.loadRows(passingIds.filter(id => !fileRows.has(id)));
+    const gated: GatedCandidate[] = [];
+    for (const id of passingIds) {
+      const loaded = fileRows.get(id) ?? passingRows.get(id);
+      if (!loaded) continue;
+      const lexical = lexicalById.get(id)!;
+      const { score, breakdown } = scoreGatedEntry({
+        lexical,
+        fileProximity: fileProximityOf(loaded),
+        updatedAt: loaded.row.updated_at,
+        now,
+        retrievalCount: retrievalCounts.get(id) ?? 0,
+        sourceCount: loaded.row.source_count,
+        kind: loaded.row.kind,
+        fileChangeCount: loaded.row.file_change_count,
+      });
+      gated.push({
+        loaded,
+        lexical,
+        fileReasons: fileReasonsById.get(id) ?? [],
+        liveCompact: live.memories.get(id)?.tier === 'compact',
+        score,
+        breakdown,
+        fullAllowed: lexical.fullAllowed,
+      });
+    }
+    gate.passed = gated.filter(g => !g.liveCompact).length;
+    gated.sort((a, b) =>
+      compareRank(
+        { score: a.score, scope: a.loaded.entry.scope ?? 'project', updatedAt: a.loaded.row.updated_at },
+        { score: b.score, scope: b.loaded.entry.scope ?? 'project', updatedAt: b.loaded.row.updated_at },
+      ),
+    );
 
     let rerankApplied = false;
-    if (userPrompt && this.injectRerankEnabled()) {
-      const reranked = await this.rerankGroups(userPrompt, {
-        session: scoredSession,
-        project: scoredProject,
-        global: scoredGlobal,
-        observations: scoredObservations,
-      });
+    let ranked = gated;
+    if (cfg.rerankBlocking && args.prompt && gated.length >= 2) {
+      const reranked = await this.rerank(args.prompt, gated);
       if (reranked) {
-        scoredSession = reranked.session;
-        scoredProject = reranked.project;
-        scoredGlobal = reranked.global;
-        scoredObservations = reranked.observations;
+        ranked = reranked;
         rerankApplied = true;
       }
     }
 
-    // Aggregate token-budget enforcement: drops lowest-scored entries across all groups until the
-    // summed size fits; pinned excluded (separate budget above).
-    ({ session: scoredSession, project: scoredProject, global: scoredGlobal, observations: scoredObservations } =
-      enforceTokenBudget(
-        { session: scoredSession, project: scoredProject, global: scoredGlobal, observations: scoredObservations },
-        limits.tokenBudget,
-      ));
-
-    const hasContent = scoredSession.length > 0 || scoredProject.length > 0 ||
-      scoredGlobal.length > 0 || scoredObservations.length > 0 || pinnedForInjection.length > 0;
-
-    const profileContext = this.buildProfileContext(sessionId, workspace, isFirstMessage);
-    const handoffContext = this.buildHandoffContext(sessionId, isFirstMessage, candidates.observations, activeFile, ftsRanks, retrievalCounts);
-
-    const buildMetadata = (): MemoryInjectionDisplay => {
-      const groups: MemoryInjectionGroup[] = [
-        buildGroup('session', limits.session, scoredSession, candidates.session.length),
-        buildGroup('project', limits.project, scoredProject, candidates.project.length),
-        buildGroup('global', limits.global, scoredGlobal, candidates.global.length),
-        buildGroup('observations', limits.observation, scoredObservations, candidates.observations.length),
-      ];
-      const totalTokensUsed = groups.reduce((sum, g) => sum + g.tokensUsed, 0) + pinnedTokensUsed;
-
-      const pinnedEntries: MemoryInjectionEntry[] = pinnedForInjection.map(m => {
-        const { score, breakdown } = scoreMemory(m, null, activeFile, retrievalCounts);
-        return toInjectionEntry(
-          { memory: m, score, scoreBreakdown: breakdown, estimatedTokens: estimateTokens(formatPinnedEntry(m)) },
-          true,
-        );
-      });
-
+    const liveCompactCount = ranked.filter(g => g.liveCompact).length;
+    const window = ranked.slice(0, cfg.fullLimit + cfg.compactLimit + liveCompactCount);
+    gate.overBudget += ranked.length - window.length - ranked.slice(window.length).filter(g => g.liveCompact).length;
+    gate.alreadyInContext += ranked.slice(window.length).filter(g => g.liveCompact).length;
+    const renders = new Map<string, { full: ReturnType<typeof renderFull>; compact: string }>();
+    const tierCandidates: TierCandidate[] = window.map(g => {
+      const r = renderable(g.loaded.entry, workspace);
+      const full = renderFull(r);
+      const compact = renderCompactLine(r);
+      renders.set(g.loaded.row.id, { full, compact });
       return {
-        groups,
-        totalTokensUsed,
-        ftsQuery: ftsResult?.ftsQuery ?? null,
-        hasHandoffContext: !!handoffContext,
-        hasProfile: !!profileContext,
-        rerankApplied,
-        pinnedEntries,
-        pinnedBudget: limits.pinnedTokenBudget,
-        pinnedTokensUsed,
+        id: g.loaded.row.id,
+        fullAllowed: g.fullAllowed,
+        liveCompact: g.liveCompact,
+        tokens: { full: estimateTokens(full.text), compact: estimateTokens(compact) },
       };
+    });
+    const plan = assignTiers(tierCandidates, { full: cfg.fullLimit, compact: cfg.compactLimit, tokenBudget: cfg.tokenBudget });
+    gate.overBudget += plan.overBudget;
+    gate.alreadyInContext += plan.alreadyInContext;
+
+    const gatedFull: Selected[] = [];
+    const gatedCompact: Selected[] = [];
+    for (const g of window) {
+      const id = g.loaded.row.id;
+      const tier = plan.tiers.get(id);
+      if (!tier) continue;
+      const r = renders.get(id)!;
+      const reasons: InjectionReason[] = [];
+      if (g.lexical.matchedTerms.length > 0) reasons.push({ kind: 'matched', terms: g.lexical.matchedTerms });
+      for (const f of g.fileReasons) reasons.push({ kind: 'file', path: f.path, source: f.source });
+      const entry: Selected = {
+        loaded: g.loaded,
+        tier,
+        reasons,
+        score: g.score,
+        breakdown: g.breakdown,
+        upgradedFromCompact: g.liveCompact,
+        text: tier === 'full' ? r.full.text : r.compact,
+        truncated: tier === 'full' ? r.full.truncated : false,
+        tokens: estimateTokens(tier === 'full' ? r.full.text : r.compact),
+        forgottenMention: false,
+        ...(g.rerankRelevance ? { rerankRelevance: g.rerankRelevance } : {}),
+        ...(g.rerankReason ? { rerankReason: g.rerankReason } : {}),
+      };
+      taken.add(id);
+      (tier === 'full' ? gatedFull : gatedCompact).push(entry);
+    }
+
+    let profileText = '';
+    let profileState: MemoryInjectionDisplay['profile']['state'];
+    if (!cfg.profileEnabled) profileState = 'disabled';
+    else if (live.profileInContext) profileState = 'inContext';
+    else {
+      profileText = this.profileManager.buildProfileInjection(workspace, cfg.profileTokenBudget);
+      profileState = profileText ? 'injected' : 'empty';
+    }
+
+    const fullEntries = [...selected, ...gatedFull];
+    const memoryBlock = renderMemoryBlock({
+      full: fullEntries.map(s => s.text),
+      compact: gatedCompact.map(s => s.text),
+      notices: noticeRenders.map(n => n.line),
+    });
+    const text = joinInjectionParts([profileText, memoryBlock]);
+
+    const added = [...fullEntries, ...gatedCompact, ...replacements];
+    const trackedEntries = [
+      ...added.filter(s => !s.forgottenMention),
+      ...noticeRenders.flatMap(n => (n.tracked && n.notice.kind === 'edited' ? [n.tracked] : [])),
+    ];
+    const details: ContextInjectionDetailsV1 | null = text
+      ? {
+          v: 1,
+          promptIndex: args.promptIndex,
+          memories: trackedEntries.map(s => ({ id: s.loaded.row.id, hash: s.loaded.row.content_hash, tier: s.tier })),
+          notices: noticeRenders.map(n => ({ id: n.notice.id, kind: n.notice.kind })),
+          profile: profileState === 'injected',
+          compassKey: null,
+        }
+      : null;
+
+    const carried: CarriedMemory[] = [];
+    for (const [id, liveEntry] of live.memories) {
+      if (taken.has(id)) continue;
+      const l = liveRows.get(id);
+      if (!l || l.row.forgotten === 1 || l.row.is_latest === 0 || l.row.content_hash !== liveEntry.hash) continue;
+      carried.push({
+        id,
+        scope: l.entry.scope ?? 'project',
+        kind: l.entry.kind ?? 'fact',
+        title: l.entry.title ?? null,
+        snippet: snippet(l.entry),
+        tier: liveEntry.tier,
+        injectedAtPrompt: liveEntry.promptIndex,
+        isPinned: !!l.entry.pinned,
+      });
+    }
+
+    const memoryTokens = added.reduce((sum, s) => sum + s.tokens, 0);
+    const profileTokens = estimateTokens(profileText);
+    const display: MemoryInjectionDisplay = {
+      version: 3,
+      promptIndex: args.promptIndex,
+      added: added.map(toInjectedMemory),
+      notices: noticeRenders.map(n => n.notice),
+      carried,
+      profile: { state: profileState, tokens: profileTokens, text: profileText },
+      compass: { state: 'disabled', text: '' },
+      query: {
+        terms,
+        dropped: [...droppedIds, ...analysis.common.map(term => ({ term, reason: 'common' as const }))],
+        mentionedIds,
+        files,
+      },
+      gate,
+      tokens: {
+        memories: memoryTokens,
+        notices: noticeTokens,
+        profile: profileTokens,
+        compass: 0,
+        total: memoryTokens + noticeTokens + profileTokens,
+        budget: cfg.tokenBudget,
+      },
+      storeCounts,
+      rerankApplied,
+      exactText: '',
     };
 
-    const prefixParts: string[] = [];
-    if (profileContext) prefixParts.push(profileContext);
-    if (handoffContext) prefixParts.push(handoffContext);
-
-    if (!hasContent) {
-      return { context: prefixParts.join('\n\n'), metadata: buildMetadata() };
-    }
-
-    const memoryParts: string[] = [];
-
-    if (scoredSession.length > 0) {
-      memoryParts.push(`<session_memories>\n${formatScoredList(scoredSession)}\n</session_memories>`);
-    }
-    if (scoredProject.length > 0) {
-      memoryParts.push(`<project_memories>\n${formatScoredList(scoredProject)}\n</project_memories>`);
-    }
-    if (scoredGlobal.length > 0) {
-      memoryParts.push(`<global_memories>\n${formatScoredList(scoredGlobal)}\n</global_memories>`);
-    }
-    if (scoredObservations.length > 0) {
-      memoryParts.push(`<recent_observations>\n${formatScoredList(scoredObservations)}\n</recent_observations>`);
-    }
-    if (pinnedForInjection.length > 0) {
-      const pinnedContent = pinnedForInjection.map(m => formatPinnedEntry(m)).join('\n');
-      memoryParts.push(`<pinned_memories>\n${pinnedContent}\n</pinned_memories>`);
-    }
-
-    const parts: string[] = [...prefixParts];
-    parts.push(`<damocles_memory>\n${memoryParts.join('\n')}\n</damocles_memory>`);
-
-    return { context: parts.join('\n\n'), metadata: buildMetadata() };
-  }
-
-  private injectRerankEnabled(): boolean {
-    return getConfig<'off' | 'blocking'>('rerank.injectMode', 'off') === 'blocking';
-  }
-
-  private buildProfileContext(sessionId: string | null, workspace: string, isFirstMessage: boolean): string {
-    if (!sessionId || !isFirstMessage) return '';
-    return this.profileManager.buildProfileInjection(workspace, getConfig('profile.tokenBudget', 400));
-  }
-
-  private buildHandoffContext(
-    sessionId: string | null,
-    isFirstMessage: boolean,
-    observations: MemoryEntry[],
-    activeFile: string | null,
-    ftsRanks: Map<string, number> | null,
-    retrievalCounts: Map<string, number>,
-  ): string {
-    if (!sessionId || !isFirstMessage) return '';
-
-    const ranked = selectTopN(observations, 5, activeFile, ftsRanks, retrievalCounts, new Set());
-    if (ranked.length === 0) return '';
-
-    return `<damocles_session_handoff>\n<relevant_observations>\n${formatScoredList(ranked)}\n</relevant_observations>\n</damocles_session_handoff>`;
+    return { text, details, display, mentionedIds: [...new Set(mentionedResolved)] };
   }
 
   /**
-   * Reorder the four scored groups via a single hard-capped (~2s) blocking LLM rerank; on timeout,
-   * null, or failure the BM25 order is preserved. Only invoked when `rerank.injectMode` is `blocking`.
+   * Reorder the gated set with one hard-capped (~2s) blocking LLM rerank over its top entries; a
+   * `low` grade demotes to compact. On timeout, null or failure the lexical order stands.
    */
-  private async rerankGroups(
-    userPrompt: string,
-    groups: Record<GroupLabel, ScoredMemory[]>,
-  ): Promise<Record<GroupLabel, ScoredMemory[]> | null> {
-    const all = [...groups.session, ...groups.project, ...groups.global, ...groups.observations];
-    if (all.length < 2) return null;
-
-    // Proportional per-group sampling so a large group can't crowd small groups out of the graded pool.
-    const pool = buildRerankPool(groups, RERANK_CANDIDATE_CAP);
-    const items = pool.map(s => ({
-      id: s.memory.id,
-      title: s.memory.title ?? null,
-      snippet: truncateToChars(s.memory.content, RERANK_SNIPPET_CHARS),
+  private async rerank(userPrompt: string, gated: GatedCandidate[]): Promise<GatedCandidate[] | null> {
+    const pool = gated.slice(0, RERANK_CANDIDATE_CAP);
+    const items = pool.map(g => ({
+      id: g.loaded.row.id,
+      title: g.loaded.entry.title ?? null,
+      snippet: truncateToChars(g.loaded.entry.content, RERANK_SNIPPET_CHARS),
     }));
-    const prompt = `Query: ${userPrompt}\n\nCandidates:\n${JSON.stringify(items)}`;
+    const prompt = `Query: ${truncateToChars(userPrompt, RERANK_QUERY_CHARS)}\n\nCandidates:\n${JSON.stringify(items)}`;
 
     let value: InjectRerankResult | null;
     try {
@@ -928,44 +1086,37 @@ export class InjectionManager {
       });
       value = result.value;
     } catch (err) {
-      log('[InjectionManager] Inject-rerank failed, keeping BM25 order: %O', err);
+      log('[InjectionManager] Inject-rerank failed, keeping lexical order: %O', err);
       value = null;
     }
-
     if (!isInjectRerankResult(value)) return null;
 
     const graded = new Map<string, { relevance: RerankRelevance; reason?: string }>();
     for (const item of value.results) {
-      if (!(item.relevance in RELEVANCE_RANK)) continue;
+      if (!Object.hasOwn(RELEVANCE_RANK, item.relevance)) continue;
+      const reason = typeof item.reason === 'string' && item.reason ? item.reason : undefined;
       const existing = graded.get(item.id);
       if (!existing || RELEVANCE_RANK[item.relevance] > RELEVANCE_RANK[existing.relevance]) {
-        graded.set(item.id, { relevance: item.relevance, ...(item.reason ? { reason: item.reason } : {}) });
+        graded.set(item.id, { relevance: item.relevance, ...(reason ? { reason } : {}) });
       }
     }
     if (graded.size === 0) return null;
 
-    const reorder = (scored: ScoredMemory[]): ScoredMemory[] =>
-      scored
-        .map((s, bm25Index) => {
-          const grade = graded.get(s.memory.id);
-          return {
-            entry: {
-              ...s,
-              ...(grade ? { rerankRelevance: grade.relevance } : {}),
-              ...(grade?.reason ? { reason: grade.reason } : {}),
-            },
-            bm25Index,
-            relevance: grade?.relevance,
-          };
-        })
-        .sort((a, b) => rerankSortWeight(b.relevance) - rerankSortWeight(a.relevance) || a.bm25Index - b.bm25Index)
-        .map(x => x.entry);
-
-    return {
-      session: reorder(groups.session),
-      project: reorder(groups.project),
-      global: reorder(groups.global),
-      observations: reorder(groups.observations),
-    };
+    const reordered = pool
+      .map((g, index) => {
+        const grade = graded.get(g.loaded.row.id);
+        const entry: GatedCandidate = grade
+          ? {
+              ...g,
+              rerankRelevance: grade.relevance,
+              ...(grade.reason ? { rerankReason: grade.reason } : {}),
+              fullAllowed: g.fullAllowed && grade.relevance !== 'low',
+            }
+          : g;
+        return { entry, index };
+      })
+      .sort((a, b) => rerankSortWeight(b.entry.rerankRelevance) - rerankSortWeight(a.entry.rerankRelevance) || a.index - b.index)
+      .map(x => x.entry);
+    return [...reordered, ...gated.slice(RERANK_CANDIDATE_CAP)];
   }
 }

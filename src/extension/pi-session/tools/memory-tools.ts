@@ -5,7 +5,8 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { MemoryService } from '../../memory';
 import { MAX_MEMORY_CONTENT_CHARS } from '@shared/types/memory';
-import type { ObservationType, ObservationTag, MemoryTier, SearchQuery } from '@shared/types/memory';
+import type { MemoryEntry, ObservationType, ObservationTag, MemoryTier, SearchQuery } from '@shared/types/memory';
+import { log } from '../../logger';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 
 /**
@@ -214,6 +215,13 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
   const { pi, memoryService, getSessionId, workspace } = deps;
   const MAX_DETAIL_IDS = 5;
 
+  /** Off the result path: the tool's own work has already committed, so a failed retrieval write must not fail the tool. */
+  const recordRetrievals = (ids: string[]): void => {
+    if (ids.length === 0) return;
+    void memoryService.recordRetrievals(ids, workspace).catch((err: unknown) => log('[MemoryTools] Recording retrievals failed: %O', err));
+  };
+  const liveIds = (entries: readonly MemoryEntry[]): string[] => entries.filter((e) => e.isLatest && !e.forgotten).map((e) => e.id);
+
   return [
     pi.defineTool<typeof saveObservationSchema, undefined>({
       name: n('save_observation'),
@@ -234,6 +242,9 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
           filesModified: input.files_modified ?? [],
         });
         if (!result) return textResult('Failed to save observation');
+        if (result.workspace && result.workspace !== workspace) {
+          return textResult(`Observation saved to ${result.workspace}: ${result.title} (${result.id})`);
+        }
         return textResult(`Observation saved: ${result.title} (${result.id})`);
       },
     }),
@@ -284,9 +295,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
           return textResult(`Too many IDs requested (${input.ids.length}). Maximum ${MAX_DETAIL_IDS} per call to prevent context overflow. Request the most relevant IDs only.`);
         }
         const entries = await memoryService.getMemoryDetails(input.ids);
-        if (entries.length > 0) {
-          await memoryService.recordRetrievals(entries.map((e) => e.id), workspace);
-        }
+        recordRetrievals(liveIds(entries));
         if (entries.length === 0) return textResult('No memories found for given IDs.');
         return untrustedResult(JSON.stringify(entries));
       },
@@ -352,6 +361,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
         if (!memoryService.isAvailable) return textResult(UNAVAILABLE);
         const success = await memoryService.resetObservationStaleness(input.id);
         if (!success) return textResult(`No observation found with id ${input.id} (it may not exist or is not stale).`);
+        recordRetrievals([input.id]);
         return textResult(`Staleness reset for observation ${input.id}`);
       },
     }),
@@ -359,7 +369,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof forgetMemorySchema, undefined>({
       name: n('forget_memory'),
       label: n('forget_memory'),
-      description: 'Forget a memory so it stops surfacing in the catalog and search. By default forgets the entire version chain of a fact; use scope "version" to forget only one version. Use UnforgetMemory to restore a memory forgotten by mistake.',
+      description: 'Forget a memory so it is no longer injected or returned by search. By default forgets the entire version chain of a fact; use scope "version" to forget only one version. Use UnforgetMemory to restore a memory forgotten by mistake.',
       parameters: forgetMemorySchema,
       execute: async (_id, input) => {
         await memoryService.ensureInitialized();
@@ -386,6 +396,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
         if (!memoryService.isAvailable) return textResult(UNAVAILABLE);
         const history = memoryService.getMemoryHistory(input.id);
         if (history.length === 0) return textResult('No version history found for given ID.');
+        recordRetrievals(liveIds(history));
         return untrustedResult(JSON.stringify(history));
       },
     }),
@@ -400,6 +411,7 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
         if (!memoryService.isAvailable) return textResult(UNAVAILABLE);
         const related = memoryService.getRelatedMemories(input.id, input.max_depth);
         if (related.length === 0) return textResult('No related memories found.');
+        recordRetrievals(liveIds(related));
         return untrustedResult(JSON.stringify(related));
       },
     }),
@@ -428,7 +440,9 @@ export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
         await memoryService.ensureInitialized();
         if (!memoryService.isAvailable) return textResult(UNAVAILABLE);
         const updated = await memoryService.updateMemory(input.id, input.content, input.tags);
-        return textResult(updated ? `Updated memory ${updated.id}.` : 'No memory found with that id.');
+        if (!updated) return textResult('No memory found with that id.');
+        recordRetrievals([updated.id]);
+        return textResult(`Updated memory ${updated.id}.`);
       },
     }),
   ];

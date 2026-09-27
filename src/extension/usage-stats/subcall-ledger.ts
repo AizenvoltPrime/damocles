@@ -12,6 +12,7 @@ export type SubCallPurpose =
   | "memory-extract"
   | "memory-merge"
   | "memory-profile"
+  | "memory-audit"
   | "memory-query-expansion"
   | "btw";
 

@@ -1,5 +1,7 @@
 import { toast } from "vue-sonner";
+import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
+import { auditResultText } from "@/components/memory-audit/audit-result-text";
 
 export function createMemoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -16,7 +18,7 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       // Only a panel-originated create (carries requestId) settles the panel's pending-create token;
       // a chat /remember has no requestId and must not clear the panel's in-progress add input.
       if (msg.requestId) ctx.stores.memoryStore.settleCreate(msg.requestId, true);
-      toast.success(`${msg.memory.tier} memory saved`);
+      toast.success(i18n.global.t(`memory.toast.saved.${msg.memory.tier}`));
     },
 
     memoryUpdated: (msg, ctx) => {
@@ -40,27 +42,30 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
 
     openMemoryPanel: (_msg, ctx) => {
       ctx.stores.uiStore.openMemoryPanel();
-      ctx.vscode.postMessage({ type: "requestMemories" });
     },
 
     memoryPinned: (msg, ctx) => {
       ctx.stores.memoryStore.setPinned(msg.id, true);
-      toast.success("Memory pinned");
+      ctx.stores.contextInjectionStore.setPinned(msg.id, true);
+      toast.success(i18n.global.t("memory.toast.pinned"));
     },
 
     memoryUnpinned: (msg, ctx) => {
       ctx.stores.memoryStore.setPinned(msg.id, false);
-      toast.success("Memory unpinned");
+      ctx.stores.contextInjectionStore.setPinned(msg.id, false);
+      toast.success(i18n.global.t("memory.toast.unpinned"));
     },
 
     memoryForgotten: (msg, ctx) => {
       ctx.stores.memoryStore.setForgotten(msg.id, true);
-      toast.success(`Forgot ${msg.count} ${msg.count === 1 ? "memory" : "memories"}`);
+      ctx.stores.contextInjectionStore.setForgotten(msg.id, true);
+      toast.success(i18n.global.t("memory.toast.forgotten", { count: msg.count }, msg.count));
     },
 
     memoryUnforgotten: (msg, ctx) => {
       ctx.stores.memoryStore.setForgotten(msg.id, false);
-      toast.success(`Restored ${msg.count} ${msg.count === 1 ? "memory" : "memories"}`);
+      ctx.stores.contextInjectionStore.setForgotten(msg.id, false);
+      toast.success(i18n.global.t("memory.toast.restored", { count: msg.count }, msg.count));
     },
 
     memoryHistory: (msg, ctx) => {
@@ -81,7 +86,39 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       toast.error(msg.message);
     },
 
+    memoryAuditState: (msg, ctx) => {
+      ctx.stores.memoryAuditStore.handleState(msg.state);
+    },
+
+    memoryAuditSummary: (msg, ctx) => {
+      ctx.stores.memoryAuditStore.handleSummary(msg.summary);
+    },
+
+    memoryAuditProgress: (msg, ctx) => {
+      ctx.stores.memoryAuditStore.handleProgress(msg.progress);
+    },
+
+    memoryAuditResult: (msg, ctx) => {
+      const audit = ctx.stores.memoryAuditStore;
+      audit.handleResult(msg.result);
+      if (!audit.isOverlayOpen) toast.info(auditResultText(msg.result));
+    },
+
+    memoryAuditCancelResult: (msg, ctx) => {
+      const audit = ctx.stores.memoryAuditStore;
+      audit.handleCancelResult(msg.result);
+      if (!audit.isOverlayOpen && msg.result === "held-elsewhere") toast.info(i18n.global.t("memoryAudit.cancelHeldElsewhere"));
+    },
+
     memoryError: (msg, ctx) => {
+      // The audit overlay shows its own errors; panel and search state are not involved.
+      if (msg.source === "audit") {
+        const code = msg.code ?? "request-failed";
+        console.warn(`[MemoryAudit] ${code}: ${msg.message}`);
+        const audit = ctx.stores.memoryAuditStore;
+        if (audit.handleError(code) && !audit.isOverlayOpen) toast.error(i18n.global.t(`memoryAudit.error.${code}`));
+        return;
+      }
       const store = ctx.stores.memoryStore;
       store.loadingObservations = false;
       // A failed search never posts searchResults, so clear any pending-search state here or the

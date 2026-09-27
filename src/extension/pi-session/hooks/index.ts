@@ -222,7 +222,7 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
   // --- before_agent_start: configured-hook context + UserPromptSubmit drain --
   // Runs hooks under the `before_agent_start` key (their stdout is injected as run context — US-004) and
   // drains the UserPromptSubmit context stash. Both are merged into one hidden message that coexists with
-  // the Damocles memory-catalog message (pi collects every handler's message).
+  // the Damocles memory injection message, when one is sent (pi collects every handler's message).
   pi.on('before_agent_start', async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     if (!deps.registry.get(sessionId)) return undefined;
@@ -289,7 +289,7 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     if (!deps.registry.get(sessionId) || !config.hasEntries('agent_end')) return;
     try {
       // The projection is the retained window of the whole session, hidden `display: false` customs
-      // (plan-mode nudges, hook context, memory catalog, subagent results) included.
+      // (plan-mode nudges, hook context, memory injections, subagent results) included.
       const { messages } = ctx.sessionManager.buildSessionProjection();
       await dispatchObserveOnly(deps.dispatch, 'agent_end', ctx.cwd, buildAgentEndPayload(buildHookCommon(ctx), messages));
     } catch (err) {

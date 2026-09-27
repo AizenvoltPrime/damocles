@@ -57,7 +57,7 @@ function fakePiMulti(): { pi: unknown; emit: (event: string, e: unknown, ctx: un
 }
 
 function ctxFor(sessionId: string): unknown {
-  return { sessionManager: { getSessionId: () => sessionId }, signal: undefined };
+  return { sessionManager: { getSessionId: () => sessionId, buildSessionProjection: () => ({ messages: [] }) }, signal: undefined };
 }
 
 function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
@@ -81,7 +81,6 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
     }),
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,
-    currentPromptIndex: () => 0,
   };
 }
 

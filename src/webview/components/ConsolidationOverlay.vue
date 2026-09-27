@@ -21,6 +21,7 @@ import ConsolidationStepper from './ConsolidationStepper.vue';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useRelativeTime } from '@/composables/useRelativeTime';
 import { useVSCode } from '@/composables/useVSCode';
+import { folderName } from '@/lib/folder-name';
 import type { ConsolidationPersistOutcome } from '@shared/types/consolidation';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -418,6 +419,12 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
                 {{ m.outcome }}
               </span>
               <span class="text-[10px] text-muted-foreground">{{ m.kind }} / {{ m.scope }}</span>
+              <span
+                v-if="m.workspace"
+                class="text-[10px] text-muted-foreground truncate"
+                :title="m.workspace"
+                data-extracted-workspace
+              ><span aria-hidden="true">→ </span>{{ folderName(m.workspace) }}</span>
             </div>
             <MarkdownRenderer
               :content="m.content"

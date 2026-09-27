@@ -5,9 +5,11 @@ import type { DatabaseInstance } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
 import type { MemorySubCallRunner } from '../subcall-runner';
 import { estimateTokens } from '../token-estimate';
+import { USEFULNESS_RUBRIC } from '../rubric';
+import { neutralizeTags } from '../injection/render';
 
-type ProfileScope = 'project' | 'global';
-type ProfileSection = 'static' | 'dynamic';
+export type ProfileScope = 'project' | 'global';
+export type ProfileSection = 'static' | 'dynamic';
 
 interface ProfileSectionRow {
   section: ProfileSection;
@@ -19,18 +21,23 @@ interface MemoryContentRow {
 }
 
 const RECENT_MEMORY_LIMIT = 40;
-const STATIC_CHAR_CAP = 1200;
-const DYNAMIC_CHAR_CAP = 600;
+const PREFERENCE_LIMIT = 40;
+export const STATIC_CHAR_CAP = 1200;
+export const DYNAMIC_CHAR_CAP = 600;
 
-const PROFILE_SYSTEM_PROMPT =
-  "Maintain a concise user/project profile. 'static' = durable, stable facts and preferences. " +
-  "'dynamic' = a short summary of recent activity and current focus. " +
-  'Update from the prior profile + recent memories; keep each section tight. ' +
-  "Keep 'static' under ~1200 characters and 'dynamic' under ~600 characters. " +
-  "Every statement in 'static' must derive from the prior profile or the listed memories — " +
-  'never invent facts about the user.';
+export const PROFILE_SYSTEM_PROMPT: string = `Maintain a concise profile for one scope: either one project (a repository) or global (the user and their machine across projects).
 
-const PROFILE_SCHEMA = {
+'static' holds only identity and environment facts that change how an agent works in this scope: who the user is, the machine, toolchains, services, and conventions of the codebase. A project profile holds only facts about that project. A global profile holds only facts that apply across projects.
+'dynamic' is the current focus in this scope: what the user is working on now and what comes next, so a new conversation can pick up the thread.
+
+Never restate a preference listed under "Preferences already injected verbatim". Those reach the agent word for word, so repeating them wastes tokens and drifts from the source.
+Drop any prior-profile line that fails the usefulness test below or belongs to another scope; do not carry it forward.
+
+${USEFULNESS_RUBRIC}
+
+Keep 'static' under ~1200 characters and 'dynamic' under ~600 characters. Every statement must derive from the prior profile or the listed memories; never invent facts about the user.`;
+
+export const PROFILE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
     static: { type: 'string' },
@@ -38,7 +45,7 @@ const PROFILE_SCHEMA = {
   },
   required: ['static', 'dynamic'],
   additionalProperties: false,
-} satisfies Record<string, unknown>;
+};
 
 /**
  * Shape guard for the `profile` sub-call output: the runner's `T` is an unvalidated cast, so a
@@ -83,7 +90,7 @@ export function truncateAtBoundary(text: string, cap: number): string {
 }
 
 function renderSection(tag: ProfileSection, content: string): string {
-  return `<${tag}>${content}</${tag}>`;
+  return `<${tag}>${neutralizeTags(content)}</${tag}>`;
 }
 
 function renderScope(tag: ProfileScope, profile: UserProfile): string | null {
@@ -133,11 +140,10 @@ export class ProfileManager {
 
   /**
    * Regenerate both profile sections for one scope from the prior profile plus the most recent
-   * live fact/preference memories. Skips the write when the sub-call returns no value (graceful
+   * live fact/episode memories. Skips the write when the sub-call returns no value (graceful
    * degrade); otherwise upserts both sections atomically under the write queue, hard-capping length.
    */
   async updateProfile(scope: ProfileScope, workspace: string): Promise<void> {
-    const recent = this.recentMemories(scope, workspace);
     const prior = this.getProfile(scope, workspace);
 
     // CAS: snapshot each section's updated_at before the ~45s LLM call. A concurrent user edit bumps
@@ -148,7 +154,7 @@ export class ProfileManager {
     const { value } = await this.runner.run<UserProfile>({
       purpose: 'profile',
       systemPrompt: PROFILE_SYSTEM_PROMPT,
-      prompt: this.buildUpdatePrompt(prior, recent),
+      prompt: this.buildUpdatePrompt(scope, workspace, prior),
       schema: PROFILE_SCHEMA,
     });
 
@@ -175,8 +181,9 @@ export class ProfileManager {
 
   /**
    * Build the `<user_profile>` injection block from the project and global profiles, omitting empty
-   * sections. Returns '' when disabled or empty. Enforces `tokenBudget` by dropping lowest-priority
-   * content (global dynamic, then project dynamic) while keeping static content.
+   * sections. Returns '' when disabled or empty. Never exceeds `tokenBudget`: it drops the global then
+   * the project dynamic section, then cuts the global then the project static section at sentence
+   * boundaries, keeping the project's facts longest because they are the more specific.
    */
   buildProfileInjection(workspace: string, tokenBudget: number): string {
     const cfg = vscode.workspace.getConfiguration('damocles.memory');
@@ -196,31 +203,56 @@ export class ProfileManager {
       return `<user_profile>\n${scopes.join('\n')}\n</user_profile>`;
     };
 
-    const trims: Array<() => void> = [
-      () => {
-        global.dynamic = '';
-      },
-      () => {
-        project.dynamic = '';
-      },
-    ];
-
     let output = render(project, global);
-    for (const trim of trims) {
-      if (output === '' || estimateTokens(output) <= tokenBudget) break;
-      trim();
+    const overBy = (): number => (output === '' ? 0 : estimateTokens(output) - tokenBudget);
+
+    for (const drop of [() => (global.dynamic = ''), () => (project.dynamic = '')]) {
+      if (overBy() <= 0) break;
+      drop();
       output = render(project, global);
     }
-
-    if (output !== '' && estimateTokens(output) > tokenBudget) {
-      log(
-        '[ProfileManager] Profile injection (~%d tokens) exceeds budget (%d) after trimming dynamics; static sections kept',
-        estimateTokens(output),
-        tokenBudget,
-      );
+    // estimateTokens counts at least a quarter token per character, so cutting 4 characters per excess
+    // token always removes the excess; each cut strictly shortens the section, so the loop ends.
+    for (const profile of [global, project]) {
+      while (overBy() > 0 && profile.static !== '') {
+        profile.static = truncateAtBoundary(profile.static, Math.max(0, profile.static.length - 4 * overBy()));
+        output = render(project, global);
+      }
     }
-
     return output;
+  }
+
+  /** One stored section, or `null` when the row is missing. */
+  readSection(scope: ProfileScope, workspace: string, section: ProfileSection): { content: string; updatedAt: number } | null {
+    const row = this.db
+      .prepare('SELECT content, updated_at FROM memory_profile WHERE scope = ? AND workspace = ? AND section = ?')
+      .get(scope, workspace, section) as { content: string; updated_at: number } | undefined;
+    return row ? { content: row.content, updatedAt: row.updated_at } : null;
+  }
+
+  /**
+   * Upsert one section only while its `updated_at` still equals `expectedUpdatedAt` (`null` = row missing).
+   * Synchronous: the caller must already hold the write queue. Returns the new `updated_at`, or `null` when the CAS failed.
+   */
+  writeSectionIfUnchanged(
+    scope: ProfileScope,
+    workspace: string,
+    section: ProfileSection,
+    content: string,
+    expectedUpdatedAt: number | null,
+  ): number | null {
+    if (this.sectionUpdatedAt(scope, workspace, section) !== expectedUpdatedAt) return null;
+    this.upsertSection(scope, workspace, section, content);
+    return this.sectionUpdatedAt(scope, workspace, section);
+  }
+
+  /** Delete one section only while its `updated_at` still equals `expectedUpdatedAt`. Synchronous, like {@link writeSectionIfUnchanged}. */
+  deleteSectionIfUnchanged(scope: ProfileScope, workspace: string, section: ProfileSection, expectedUpdatedAt: number): boolean {
+    return (
+      this.db
+        .prepare('DELETE FROM memory_profile WHERE scope = ? AND workspace = ? AND section = ? AND updated_at = ?')
+        .run(scope, workspace, section, expectedUpdatedAt).changes > 0
+    );
   }
 
   /** The `updated_at` stamp of one section, or `null` when missing. Backs the CAS in {@link updateProfile}. */
@@ -243,10 +275,10 @@ export class ProfileManager {
   }
 
   private recentMemories(scope: ProfileScope, workspace: string): string[] {
-    const baseFilter = "kind IN ('fact', 'preference') AND is_latest = 1 AND forgotten = 0";
+    const baseFilter = "kind IN ('fact', 'episode') AND is_latest = 1 AND forgotten = 0";
     const sql =
       scope === 'project'
-        ? `SELECT content FROM memories WHERE ${baseFilter} AND workspace = ? ORDER BY updated_at DESC LIMIT ?`
+        ? `SELECT content FROM memories WHERE ${baseFilter} AND scope = 'project' AND workspace = ? ORDER BY updated_at DESC LIMIT ?`
         : `SELECT content FROM memories WHERE ${baseFilter} AND scope = 'global' ORDER BY updated_at DESC LIMIT ?`;
 
     const params: unknown[] = scope === 'project' ? [workspace, RECENT_MEMORY_LIMIT] : [RECENT_MEMORY_LIMIT];
@@ -254,9 +286,25 @@ export class ProfileManager {
     return rows.map(row => row.content);
   }
 
-  private buildUpdatePrompt(prior: UserProfile, recent: string[]): string {
+  private scopePreferences(scope: ProfileScope, workspace: string): string[] {
+    const baseFilter = "kind = 'preference' AND is_latest = 1 AND forgotten = 0";
+    const sql =
+      scope === 'project'
+        ? `SELECT content FROM memories WHERE ${baseFilter} AND scope = 'project' AND workspace = ? ORDER BY updated_at DESC LIMIT ?`
+        : `SELECT content FROM memories WHERE ${baseFilter} AND scope = 'global' ORDER BY updated_at DESC LIMIT ?`;
+    const params: unknown[] = scope === 'project' ? [workspace, PREFERENCE_LIMIT] : [PREFERENCE_LIMIT];
+    return (this.db.prepare(sql).all(...params) as MemoryContentRow[]).map(row => row.content);
+  }
+
+  /** The `profile` sub-call prompt for one scope: its name, the prior profile, recent memories and the preferences not to restate. */
+  buildUpdatePrompt(scope: ProfileScope, workspace: string, prior: UserProfile): string {
+    const list = (items: string[]): string => (items.length > 0 ? items.map(c => `- ${c}`).join('\n') : '(none)');
+    const scopeLine = scope === 'project' ? `Scope: project ${workspace}` : 'Scope: global';
     const priorBlock = `Prior profile:\nstatic: ${prior.static || '(empty)'}\ndynamic: ${prior.dynamic || '(empty)'}`;
-    const memoriesBlock = recent.length > 0 ? recent.map(content => `- ${content}`).join('\n') : '(none)';
-    return `${priorBlock}\n\nRecent memories:\n${memoriesBlock}`;
+    return (
+      `${scopeLine}\n\n${priorBlock}\n\n` +
+      `Recent memories:\n${list(this.recentMemories(scope, workspace))}\n\n` +
+      `Preferences already injected verbatim (do not restate):\n${list(this.scopePreferences(scope, workspace))}`
+    );
   }
 }

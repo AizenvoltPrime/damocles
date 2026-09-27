@@ -29,6 +29,7 @@ import { WorkspaceAgentRegistry } from './subagents';
 import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
 import { folderKey } from '../workspace-folders/folder-key';
+import { withQueuePolicy } from './queue-policy';
 
 /** An existing asset resource directory plus its source attribution (for pi's resource source info). */
 interface AssetResourceEntry {
@@ -275,7 +276,7 @@ export class FolderRuntime {
       modelRuntime: this._modelRuntime,
       // pi trusts project settings by default, and they can install and run code (`.pi/settings.json`
       // packages, `.pi/extensions`). The subscription plugin is user-scope, so this does not affect it.
-      settingsManager: pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: vscode.workspace.isTrusted }),
+      settingsManager: withQueuePolicy(pi.SettingsManager.create(this.cwd, this._agentDir, { projectTrusted: vscode.workspace.isTrusted })),
       // The Damocles extension (permission gate + plan-mode injection + MCP tool registration). pi
       // re-applies extensionFactories on `resourceLoader.reload()`, so it survives reloads.
       resourceLoaderOptions: {
@@ -625,14 +626,14 @@ export class FolderRuntime {
     // preserved).
     const shared = this.services.settingsManager;
     // Untrusted, the subagent's own `opts.cwd` must not auto-discover `.pi/extensions`.
-    const isolatedSettings = pi.SettingsManager.inMemory(
+    const isolatedSettings = withQueuePolicy(pi.SettingsManager.inMemory(
       {
         ...shared.getGlobalSettings(),
         ...shared.getProjectSettings(),
         compaction: { enabled: false },
       },
       { projectTrusted: vscode.workspace.isTrusted },
-    );
+    ));
 
     const services = await pi.createAgentSessionServices({
       cwd: opts.cwd,

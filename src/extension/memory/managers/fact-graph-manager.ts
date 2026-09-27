@@ -21,6 +21,27 @@ const MAX_MATCH_TOKENS = 12;
 const MAX_CONFLICT_CANDIDATES = 5;
 const CONFLICT_SWEEP_LIMIT = 5;
 
+function hasMemoryEdge(db: DatabaseInstance, kind: EdgeKind, sourceId: string, targetId: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 FROM memory_edges WHERE kind = ? AND source_id = ? AND target_id = ? LIMIT 1',
+  ).get(kind, sourceId, targetId);
+  return row !== undefined && row !== null;
+}
+
+/** Insert a directed edge unless it already exists. Runs inside the caller's write lock. */
+export function addMemoryEdge(
+  db: DatabaseInstance,
+  kind: EdgeKind,
+  sourceId: string,
+  targetId: string,
+  extra?: Record<string, unknown>,
+): void {
+  if (hasMemoryEdge(db, kind, sourceId, targetId)) return;
+  db.prepare(
+    'INSERT INTO memory_edges (id, kind, source_id, target_id, extra, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(crypto.randomUUID(), kind, sourceId, targetId, JSON.stringify(extra ?? {}), Date.now());
+}
+
 /** A conflict candidate row plus its SQLite `rowid`, for the same-created_at tiebreak. */
 type ConflictCandidate = MemoryRow & { _rowid: number };
 
@@ -65,10 +86,7 @@ export class FactGraphManager {
 
   /** Insert a directed edge. Idempotent on `(kind, source_id, target_id)` — repeated calls add no duplicate. */
   addEdge(kind: EdgeKind, sourceId: string, targetId: string, extra?: Record<string, unknown>): void {
-    if (this.hasEdge(kind, sourceId, targetId)) return;
-    this.db.prepare(
-      'INSERT INTO memory_edges (id, kind, source_id, target_id, extra, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(crypto.randomUUID(), kind, sourceId, targetId, JSON.stringify(extra ?? {}), Date.now());
+    addMemoryEdge(this.db, kind, sourceId, targetId, extra);
   }
 
   getEdgesBySource(id: string): EdgeRow[] {
@@ -89,10 +107,7 @@ export class FactGraphManager {
 
   /** True when the edge already exists. The dedup gate. */
   hasEdge(kind: EdgeKind, sourceId: string, targetId: string): boolean {
-    const row = this.db.prepare(
-      'SELECT 1 FROM memory_edges WHERE kind = ? AND source_id = ? AND target_id = ? LIMIT 1',
-    ).get(kind, sourceId, targetId);
-    return row !== undefined && row !== null;
+    return hasMemoryEdge(this.db, kind, sourceId, targetId);
   }
 
   private getRow(id: string): MemoryRow | null {

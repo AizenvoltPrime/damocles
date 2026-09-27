@@ -22,6 +22,7 @@ import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { rewindableUserIdsOnBranch } from './rewind';
+import { promptTest } from './prompt-index';
 import { extractOriginalInputs } from './original-input';
 import { extractMidStreamEntryIds } from './mid-stream';
 import { isSteerData } from './steer';
@@ -45,6 +46,8 @@ interface ReplayUser {
   content: string;
   contentBlocks?: ContentBlock[];
   isMidStream?: boolean;
+  /** Present on a prompt only; a user entry delivered mid-run consumes no index. */
+  promptIndex?: number;
 }
 interface ReplayAssistant {
   kind: 'assistant';
@@ -109,12 +112,15 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
  * `damocles-mid-stream`) and non-message entry types. A user message whose typed slash command was
  * expanded is shown as the original text from its `damocles-original-input` sidecar, not the stored
  * expansion; a user message flagged by `damocles-mid-stream` carries `isMidStream` for replay styling.
- * The `damocles-steer` custom entry is NOT skipped — it is mapped in position to a replayed amber
- * injected "You steered" chip.
+ * Every prompt carries its index (`promptTest`, counted over the whole branch, so the prompts a
+ * compaction hid still count). The `damocles-steer` custom entry is NOT skipped — it is mapped in
+ * position to a replayed amber injected "You steered" chip.
  */
 export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
+  const isPrompt = promptTest(branch);
+  let promptCount = 0;
   const toolResults = new Map<string, PiToolResult>();
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
@@ -179,6 +185,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     const role = message?.role;
 
     if (role === 'user') {
+      const promptIndex = isPrompt(entry) ? promptCount++ : undefined;
       const original = originalInputs.get(entry.id);
       const content = original ?? userVisibleText(message?.content);
       if (!content && !Array.isArray(message?.content)) continue;
@@ -189,6 +196,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         content,
         ...(blocks ? { contentBlocks: blocks } : {}),
         ...(midStreamIds.has(entry.id) ? { isMidStream: true } : {}),
+        ...(promptIndex !== undefined ? { promptIndex } : {}),
       });
       continue;
     }
@@ -427,7 +435,6 @@ export async function loadPiSessionHistory(
 
   const approxChars = perfDebugEnabled() ? approxStringLength(messages) : undefined;
   const postSpan = perfSpan('replay.post');
-  let promptIndex = 0;
   for (const msg of messages) {
     if (msg.kind === 'user') {
       post({
@@ -437,11 +444,9 @@ export async function loadPiSessionHistory(
         isSynthetic: false,
         sdkMessageId: msg.entryId,
         ...(msg.isMidStream ? { isMidStream: true } : {}),
-        promptIndex: promptIndex++,
+        ...(msg.promptIndex !== undefined ? { promptIndex: msg.promptIndex } : {}),
       });
     } else if (msg.kind === 'steer') {
-      // An injected chip consumes NO prompt index — the counting predicate excludes injected messages
-      // (session.ts:178), so surrounding real prompts must keep their indices. Post the CURRENT value.
       post({
         type: 'userReplay',
         content: msg.message,
@@ -453,7 +458,6 @@ export async function loadPiSessionHistory(
           ...(msg.agentType ? { agentType: msg.agentType } : {}),
           ...(msg.description ? { description: msg.description } : {}),
         },
-        promptIndex: promptIndex,
       });
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content });

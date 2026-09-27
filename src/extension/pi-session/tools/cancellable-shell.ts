@@ -1,6 +1,6 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
-import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
+import { CANCEL_NOTE_DETAIL_KEY, CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 import type { ShellCancellation, ShellCancelRegistry } from './shell-cancel-registry';
 
 /** Both shell tools surface a partial by throwing it, so the body is only ever read off an error. */
@@ -24,10 +24,14 @@ function composeCancelledText(body: string, cancellation: ShellCancellation, ela
 }
 
 /** `details` is `unknown` upstream, so the partial's own fields are carried only from a plain object; an array would spread as index keys, and the marker is set either way. */
-function cancelledDetails(lastPartial: AgentToolResult<unknown> | undefined): Record<string, unknown> {
+function cancelledDetails(lastPartial: AgentToolResult<unknown> | undefined, cancellation: ShellCancellation): Record<string, unknown> {
   const details = lastPartial?.details;
   const carried = details !== null && typeof details === 'object' && !Array.isArray(details) ? details : {};
-  return { ...carried, [CANCELLED_TOOL_DETAIL_KEY]: true };
+  return {
+    ...carried,
+    [CANCELLED_TOOL_DETAIL_KEY]: true,
+    ...(cancellation.note ? { [CANCEL_NOTE_DETAIL_KEY]: cancellation.note } : {}),
+  };
 }
 
 /**
@@ -67,7 +71,7 @@ export function withPerCallCancel(definition: ToolDefinition, registry: ShellCan
         if (!cancellation) throw error;
         return {
           content: [{ type: 'text', text: composeCancelledText(errorText(error), cancellation, Date.now() - startedAt) }],
-          details: cancelledDetails(lastPartial),
+          details: cancelledDetails(lastPartial, cancellation),
         };
       } finally {
         registry.release(toolCallId);

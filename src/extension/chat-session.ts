@@ -21,6 +21,7 @@ export interface ChatSession {
   readonly memorySessionId: string;
   readonly teamService: TeamService | undefined;
   readonly processing: boolean;
+  /** The running prompt's index, else the latest prompt's, per `session-store/prompt-index.ts`. */
   readonly currentPromptIndex: number;
   readonly conversationHead: string | null;
   readonly currentModel: string | null;
@@ -60,7 +61,6 @@ export interface ChatSession {
     _agentId?: string,
     correlationId?: string,
     userBroadcast?: { content: string; contentBlocks?: UserContentBlock[] },
-    options?: { isInternal?: boolean },
   ): Promise<void>;
   queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false;
   interrupt(): Promise<void>;

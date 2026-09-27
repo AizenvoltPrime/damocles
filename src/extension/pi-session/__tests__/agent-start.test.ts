@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
-import type { BeforeAgentStartEvent, NormalizedBuildSystemPromptOptions } from '@earendil-works/pi-coding-agent';
+import * as vscode from 'vscode';
+import type { BeforeAgentStartEvent, NormalizedBuildSystemPromptOptions, SessionEntry } from '@earendil-works/pi-coding-agent';
 
 const { tmpHome } = vi.hoisted(() => {
   /* eslint-disable @typescript-eslint/no-require-imports */
@@ -36,14 +37,22 @@ vi.mock('../pi-loader', async (importOriginal) => {
 import {
   assembleDamoclesSystemPrompt,
   buildAgentStartResult,
+  buildCompassContext,
+  type ProjectionReader,
   renderSections,
   resolveSkillFileReadTool,
-  CONTEXT_INJECTION_CUSTOM_TYPE,
   type DamoclesSystemPromptInputs,
 } from '../agent-start';
+import { CONTEXT_INJECTION_CUSTOM_TYPE } from '../live-injections';
+import { DAMOCLES_MID_STREAM_ENTRY } from '../session-store/constants';
 import { computePlanFilePath, DAMOCLES_PLANS_DIR } from '../../paths';
 import type { PanelGateContext } from '../permission-gate';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { CANCEL_NOTE_DETAIL_KEY, CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
+import type { MemoryInjectionDisplay } from '../../../shared/types/context-injection';
+import type { ContextInjectionDetailsV1 } from '../../memory/injection/details';
+import type { InjectionBuildResult } from '../../memory/managers/injection-manager';
+import { formatIdeContextBlock } from '../../../shared/ide-context';
 
 /** The opening of the execution-time plan directive, used for both its presence and its absence. */
 const PLAN_EXECUTION_MARKER = 'treat the delivery mechanism it assigns each slice as the default';
@@ -77,6 +86,54 @@ function event(over: Partial<BeforeAgentStartEvent> = {}): BeforeAgentStartEvent
 
 const skillsFixture = [{ name: 'demo' }] as unknown as NormalizedBuildSystemPromptOptions['skills'];
 
+const userEntry = (id: string): SessionEntry =>
+  ({ id, type: 'message', message: { role: 'user', content: [{ type: 'text', text: id }] } }) as unknown as SessionEntry;
+
+/** A branch holding prompts 0 to 2, so the prompt being dispatched on it is prompt 3. */
+const BRANCH_BEFORE_PROMPT_3: readonly SessionEntry[] = [userEntry('u0'), userEntry('u1'), userEntry('u2')];
+
+/** A session manager whose projection holds exactly `messages`. */
+function projectionOf(messages: unknown[] = [], branch: readonly SessionEntry[] = BRANCH_BEFORE_PROMPT_3): ProjectionReader {
+  return { buildSessionProjection: () => ({ messages }), getBranch: () => [...branch] } as unknown as ProjectionReader;
+}
+
+function runAgentStart(
+  ev: BeforeAgentStartEvent,
+  panel: PanelGateContext,
+  sessionId: string,
+  sessionManager: ProjectionReader = projectionOf(),
+  isLive: () => boolean = () => true,
+): ReturnType<typeof buildAgentStartResult> {
+  return buildAgentStartResult(ev, panel, sessionId, sessionManager, isLive);
+}
+
+function emptyDisplay(): MemoryInjectionDisplay {
+  return {
+    version: 3,
+    promptIndex: 3,
+    added: [],
+    notices: [],
+    carried: [],
+    profile: { state: 'empty', tokens: 0, text: '' },
+    compass: { state: 'disabled', text: '' },
+    query: { terms: [], dropped: [], mentionedIds: [], files: [] },
+    gate: { considered: 0, passed: 0, unmatchedSkipped: 0, alreadyInContext: 0, overBudget: 0, preferencesDeferred: 0 },
+    tokens: { memories: 12, notices: 0, profile: 0, compass: 0, total: 12, budget: 2000 },
+    storeCounts: { session: 0, project: 1, global: 0, observations: 0, total: 1 },
+    rerankApplied: false,
+    exactText: '',
+  };
+}
+
+const MEMORY_DETAILS: ContextInjectionDetailsV1 = {
+  v: 1,
+  promptIndex: 3,
+  memories: [{ id: 'm1', hash: 'h1', tier: 'full' }],
+  notices: [],
+  profile: false,
+  compassKey: null,
+};
+
 /** The prompt text pi will render from the options the handler mutated. */
 function renderedPrompt(ev: BeforeAgentStartEvent): string {
   return renderSections({ preamble: ev.systemPromptOptions.customPrompt ?? '', sections: ev.systemPromptOptions.sections });
@@ -85,7 +142,7 @@ function renderedPrompt(ev: BeforeAgentStartEvent): string {
 /** Run the handler and return the text pi will render, so prompt assertions read the mutated options
  *  rather than a return value the handler must no longer produce. */
 async function promptTextFor(ev: BeforeAgentStartEvent, panel: PanelGateContext, sessionId = 'sess-1'): Promise<string> {
-  await buildAgentStartResult(ev, panel, sessionId);
+  await runAgentStart(ev, panel, sessionId);
   return renderedPrompt(ev);
 }
 
@@ -93,7 +150,7 @@ interface PanelStub {
   panel: PanelGateContext;
   messages: ExtensionToWebviewMessage[];
   persist: ReturnType<typeof vi.fn>;
-  markFirst: ReturnType<typeof vi.fn>;
+  build: ReturnType<typeof vi.fn>;
 }
 
 function makePanel(opts: {
@@ -101,25 +158,23 @@ function makePanel(opts: {
   compassEnabled?: boolean;
   thinkingDisabled?: boolean;
   plan?: boolean;
+  /** The memory block this prompt adds; '' when nothing is new. */
   catalog?: string;
-  metadata?: unknown;
   planFilePath?: string;
   teamEnabled?: boolean;
 } = {}): PanelStub {
   const messages: ExtensionToWebviewMessage[] = [];
   const persist = vi.fn(async () => undefined);
-  const markFirst = vi.fn(() => undefined);
+  const build = vi.fn(async (): Promise<InjectionBuildResult> => {
+    const text = opts.catalog ?? '<damocles_memory>catalog</damocles_memory>';
+    return { text, details: text ? { ...MEMORY_DETAILS } : null, display: emptyDisplay(), mentionedIds: [] };
+  });
   const memoryService = opts.memoryEnabled
     ? ({
         isEnabled: true,
         ensureInitialized: async () => undefined,
-        buildInjectionContext: async () => ({
-          context: opts.catalog ?? '<damocles_memory>catalog</damocles_memory>',
-          metadata: opts.metadata ?? { items: [] },
-        }),
+        buildInjectionContext: build,
         persistMemoryInjection: persist,
-        markFirstMessageSent: markFirst,
-        isFirstMessageOfSession: () => true,
       } as unknown as PanelGateContext['memoryService'])
     : undefined;
   const compassService = opts.compassEnabled
@@ -149,9 +204,8 @@ function makePanel(opts: {
     getPlanFilePath: () => opts.planFilePath ?? '/home/.damocles/plans/do-the-thing-sess1234.md',
     isTeamEnabled: () => Boolean(opts.teamEnabled),
     postMessage: (m) => messages.push(m),
-    currentPromptIndex: () => 3,
   };
-  return { panel, messages, persist, markFirst };
+  return { panel, messages, persist, build };
 }
 
 function inputs(over: Partial<DamoclesSystemPromptInputs> = {}): DamoclesSystemPromptInputs {
@@ -286,7 +340,7 @@ describe('renderSections', () => {
 describe('buildAgentStartResult — system prompt (US-007)', () => {
   it('writes the prompt into systemPromptOptions and returns no systemPrompt', async () => {
     const ev = event();
-    const result = await buildAgentStartResult(ev, makePanel({ memoryEnabled: true }).panel, 'sess-1');
+    const result = await runAgentStart(ev, makePanel({ memoryEnabled: true }).panel, 'sess-1');
     expect(result).not.toHaveProperty('systemPrompt');
     expect(ev.systemPromptOptions.customPrompt).toContain('AI coding agent');
     expect(Object.keys(ev.systemPromptOptions.sections)).toEqual(['damocles_memory', 'damocles_tone']);
@@ -294,16 +348,16 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
 
   it('drops a section that this build did not produce rather than emptying it', async () => {
     const ev = event();
-    await buildAgentStartResult(ev, makePanel({ memoryEnabled: true }).panel, 'sess-1');
+    await runAgentStart(ev, makePanel({ memoryEnabled: true }).panel, 'sess-1');
     expect(ev.systemPromptOptions.sections.damocles_memory).toBeTruthy();
     // pi removes a section by absence; an empty value would be dropped and the stale key would survive.
-    await buildAgentStartResult(ev, makePanel({}).panel, 'sess-1');
+    await runAgentStart(ev, makePanel({}).panel, 'sess-1');
     expect('damocles_memory' in ev.systemPromptOptions.sections).toBe(false);
   });
 
   it('removes a stale key left by anything else in the options', async () => {
     const ev = event({ systemPromptOptions: promptOptions({ sections: { damocles_plan_mode: 'stale' } }) });
-    await buildAgentStartResult(ev, makePanel({}).panel, 'sess-1');
+    await runAgentStart(ev, makePanel({}).panel, 'sess-1');
     expect('damocles_plan_mode' in ev.systemPromptOptions.sections).toBe(false);
   });
 
@@ -461,66 +515,244 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
 
   it('emits the skills section for a bash-only session, matching pi own read-or-bash gate', async () => {
     const withBash = event({ systemPromptOptions: promptOptions({ selectedTools: ['bash'], skills: skillsFixture }) });
-    await buildAgentStartResult(withBash, makePanel({}).panel, 'sess-1');
+    await runAgentStart(withBash, makePanel({}).panel, 'sess-1');
     expect(withBash.systemPromptOptions.sections.skills).toContain('<available_skills>');
     // The section overwrites the one pi built, so its prose must name bash, not the absent read tool.
     expect(withBash.systemPromptOptions.sections.skills).toContain('fileReadTool=bash');
 
     const withNeither = event({ systemPromptOptions: promptOptions({ selectedTools: ['edit', 'write'], skills: skillsFixture }) });
-    await buildAgentStartResult(withNeither, makePanel({}).panel, 'sess-1');
+    await runAgentStart(withNeither, makePanel({}).panel, 'sess-1');
     expect('skills' in withNeither.systemPromptOptions.sections).toBe(false);
   });
 
   it('names read whenever read is selected, whatever else the session carries', async () => {
     const both = event({ systemPromptOptions: promptOptions({ selectedTools: ['bash', 'read'], skills: skillsFixture }) });
-    await buildAgentStartResult(both, makePanel({}).panel, 'sess-1');
+    await runAgentStart(both, makePanel({}).panel, 'sess-1');
     expect(both.systemPromptOptions.sections.skills).toContain('fileReadTool=read');
   });
 });
 
 describe('buildAgentStartResult — injection (US-005)', () => {
-  it('injects memory catalog + compass status as one non-displayed custom message', async () => {
-    const { panel, persist, markFirst } = makePanel({ memoryEnabled: true, compassEnabled: true });
-    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+  function liveMessage(details: Partial<ContextInjectionDetailsV1>): unknown {
+    return {
+      role: 'custom',
+      customType: CONTEXT_INJECTION_CUSTOM_TYPE,
+      content: 'earlier',
+      display: false,
+      details: { ...MEMORY_DETAILS, memories: [], ...details },
+      timestamp: 0,
+    };
+  }
+
+  it('injects memory + compass as one non-displayed custom message whose details record both', async () => {
+    const { panel, persist } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const result = await runAgentStart(event(), panel, 'sess-1');
     expect(result?.message?.customType).toBe(CONTEXT_INJECTION_CUSTOM_TYPE);
     expect(result?.message?.display).toBe(false);
     const content = result?.message?.content as string;
     expect(content).toContain('<damocles_memory>');
     expect(content).toContain('<damocles_compass');
-    expect(persist).toHaveBeenCalledWith('sess-1', 3, { items: [] });
-    expect(markFirst).toHaveBeenCalledWith('sess-1');
+    const compassKey = buildCompassContext(panel)!.key;
+    expect(result?.message?.details).toEqual({ ...MEMORY_DETAILS, compassKey });
+    expect(persist).toHaveBeenCalledWith('sess-1', 3, expect.objectContaining({ exactText: content }));
+  });
+
+  it('sets exactText, the compass state and its tokens after the join', async () => {
+    const { panel, messages } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const result = await runAgentStart(event(), panel, 'sess-1');
+    const update = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'memoryInjectionUpdate' }> => m.type === 'memoryInjectionUpdate');
+    expect(update?.data.exactText).toBe(result?.message?.content);
+    expect(update?.data.compass.state).toBe('injected');
+    expect(update?.data.tokens.compass).toBeGreaterThan(0);
+    expect(update?.data.tokens.total).toBe(12 + update!.data.tokens.compass);
+  });
+
+  it('passes the projection live state to the memory build and reads the projection once', async () => {
+    const { panel, build } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const buildSessionProjection = vi.fn(() => ({
+      messages: [liveMessage({ memories: [{ id: 'old', hash: 'h', tier: 'compact' }], profile: true })],
+    }));
+    await runAgentStart(event(), panel, 'sess-1', { buildSessionProjection, getBranch: () => [...BRANCH_BEFORE_PROMPT_3] } as unknown as ProjectionReader);
+    expect(buildSessionProjection).toHaveBeenCalledTimes(1);
+    const args = build.mock.calls[0]![0] as { live: { memories: Map<string, unknown>; profileInContext: boolean }; promptIndex: number };
+    expect([...args.live.memories.keys()]).toEqual(['old']);
+    expect(args.live.profileInContext).toBe(true);
+    expect(args.promptIndex).toBe(3);
+  });
+
+  it('re-sends the compass status only when its change key differs from the live one', async () => {
+    const { panel } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const key = buildCompassContext(panel)!.key;
+    const unchanged = await runAgentStart(event(), panel, 'sess-1', projectionOf([liveMessage({ compassKey: key })]));
+    expect(unchanged?.message?.content).not.toContain('<damocles_compass');
+    expect(unchanged?.message?.details).toEqual({ ...MEMORY_DETAILS, compassKey: null });
+
+    const changed = await runAgentStart(event(), panel, 'sess-1', projectionOf([liveMessage({ compassKey: 'ready|1|1||' })]));
+    expect(changed?.message?.content).toContain('<damocles_compass');
+  });
+
+  it('sends no message when nothing is new, but still posts and persists the display', async () => {
+    const { panel, persist, messages } = makePanel({ memoryEnabled: true, compassEnabled: true, catalog: '' });
+    const key = buildCompassContext(panel)!.key;
+    const result = await runAgentStart(event(), panel, 'sess-1', projectionOf([liveMessage({ compassKey: key })]));
+    expect(result?.message).toBeUndefined();
+    expect(persist).toHaveBeenCalledWith('sess-1', 3, expect.objectContaining({ exactText: '', compass: { state: 'unchanged', text: '' } }));
+    expect(messages.some(m => m.type === 'memoryInjectionUpdate')).toBe(true);
+  });
+
+  it('keeps the compass key out of the relative indexed age', () => {
+    const { panel } = makePanel({ compassEnabled: true });
+    const key = buildCompassContext(panel)!.key;
+    expect(key).toBe('ready|12|30||');
+  });
+
+  it('escapes the compass error attribute like every other injected attribute', () => {
+    const compassService = {
+      isEnabled: true,
+      getStatus: () => ({ state: 'error', nodeCount: 0, edgeCount: 0, lastIndexedAt: 0, error: 'C:\\a&b "x" <memory>\r\nnext' }),
+    } as unknown as PanelGateContext['compassService'];
+    const { text } = buildCompassContext({ compassService } as unknown as PanelGateContext)!;
+    expect(text.split('\n')[0]).toBe(
+      '<damocles_compass state="error" nodes="0" edges="0" indexed="never" error="C:\\a&amp;b &quot;x&quot; &lt;memory> next"/>',
+    );
   });
 
   it('emits contextInjectionStarted before memoryInjectionUpdate + contextInjectionComplete keyed by prompt index', async () => {
     const { panel, messages } = makePanel({ memoryEnabled: true });
-    await buildAgentStartResult(event(), panel, 'sess-1');
+    await runAgentStart(event(), panel, 'sess-1');
+    const types = messages.map((m) => m.type);
+    expect(types).toEqual(['contextInjectionStarted', 'memoryInjectionUpdate', 'contextInjectionComplete']);
     expect(messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 3 });
-    expect(messages).toContainEqual({ type: 'memoryInjectionUpdate', promptIndex: 3, data: { items: [] } });
     expect(messages).toContainEqual({ type: 'contextInjectionComplete', promptIndex: 3 });
-    const started = messages.findIndex((m) => m.type === 'contextInjectionStarted');
-    const update = messages.findIndex((m) => m.type === 'memoryInjectionUpdate');
-    expect(started).toBeGreaterThanOrEqual(0);
-    expect(started).toBeLessThan(update);
+  });
+
+  it('queries memory with the user text only and feeds the IDE block file to the file gate as the editor', async () => {
+    const { panel, build } = makePanel({ memoryEnabled: true });
+    const filePath = 'c:\\GameDev\\iemis\\app\\Scopes\\OrganizationScope.php';
+    const typed = 'What should I watch out for in the file I have open?';
+    const prompt = `${formatIdeContextBlock({ type: 'opened_file', filePath })}\n${typed}`;
+    await runAgentStart(event({ prompt }), panel, 'sess-1');
+    const args = build.mock.calls[0]![0] as { prompt: string; activeFile: string | null };
+    expect(args.prompt).toBe(typed);
+    expect(args.activeFile).toBe(filePath);
+  });
+
+  // The user chose not to attach the editor, and it may have changed since they pressed Send.
+  it('gives the file gate no editor file when the message carries no IDE block, whatever editor is open', async () => {
+    const window = vscode.window as unknown as { activeTextEditor: unknown };
+    window.activeTextEditor = { document: { uri: { fsPath: '/repo/open-in-editor.ts' } } };
+    try {
+      const { panel, build } = makePanel({ memoryEnabled: true });
+      await runAgentStart(event({ prompt: 'what does this do?' }), panel, 'sess-1');
+      const args = build.mock.calls[0]![0] as { prompt: string; activeFile: string | null };
+      expect(args.prompt).toBe('what does this do?');
+      expect(args.activeFile).toBeNull();
+    } finally {
+      window.activeTextEditor = undefined;
+    }
+  });
+
+  it('keys the injection to the prompt the dispatch precedes, counted from the branch', async () => {
+    const { panel, messages, persist } = makePanel({ memoryEnabled: true });
+    const midStream = { id: 'ms', type: 'custom', customType: DAMOCLES_MID_STREAM_ENTRY, data: { userEntryId: 'u-note' } } as unknown as SessionEntry;
+    // A cancel note marked mid-stream is not a prompt, so the dispatch is still prompt 3.
+    await runAgentStart(event(), panel, 'sess-1', projectionOf([], [...BRANCH_BEFORE_PROMPT_3, userEntry('u-note'), midStream]));
+    expect(messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 3 });
+    expect(persist).toHaveBeenCalledWith('sess-1', 3, expect.anything());
+
+    const first = makePanel({ memoryEnabled: true });
+    await runAgentStart(event(), first.panel, 'sess-1', projectionOf([], []));
+    expect(first.messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 0 });
+  });
+
+  describe('a run a cancel note started', () => {
+    const NOTE = 'skip it';
+    // Prompt 2 ran the command, the user stopped it with a note, and the run ended before pi took the note.
+    const BRANCH_AFTER_CANCEL: readonly SessionEntry[] = [
+      ...BRANCH_BEFORE_PROMPT_3,
+      { id: 'a-call', type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'c1', name: 'powershell', arguments: {} }] } },
+      {
+        id: 'tr',
+        type: 'message',
+        message: { role: 'toolResult', toolCallId: 'c1', content: [{ type: 'text', text: 'Command aborted' }], details: { [CANCELLED_TOOL_DETAIL_KEY]: true, [CANCEL_NOTE_DETAIL_KEY]: NOTE } },
+      },
+      { id: 'a-reply', type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'I will wait for your reason.' }] } },
+    ] as unknown as SessionEntry[];
+
+    it('belongs to the prompt the note annotates, builds no memory and leaves that prompt\'s record alone', async () => {
+      const { panel, messages, persist, build } = makePanel({ memoryEnabled: true, compassEnabled: true });
+      const result = await runAgentStart(event({ prompt: NOTE }), panel, 'sess-1', projectionOf([], BRANCH_AFTER_CANCEL));
+
+      expect(build).not.toHaveBeenCalled();
+      expect(persist).not.toHaveBeenCalled();
+      expect(messages.filter((m) => m.type.startsWith('contextInjection') || m.type === 'memoryInjectionUpdate')).toEqual([]);
+      // Run context that changed is still sent, keyed to prompt 2 rather than the next prompt's slot.
+      expect(result?.message?.details).toMatchObject({ promptIndex: 2, memories: [], compassKey: buildCompassContext(panel)!.key });
+    });
+
+    it('keeps the next slot for a prompt whose text is not the pending note', async () => {
+      const { panel, messages, build } = makePanel({ memoryEnabled: true });
+      await runAgentStart(event({ prompt: 'ok, continue' }), panel, 'sess-1', projectionOf([], BRANCH_AFTER_CANCEL));
+
+      expect(build).toHaveBeenCalledTimes(1);
+      expect(messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 3 });
+      expect(messages).toContainEqual({ type: 'contextInjectionComplete', promptIndex: 3 });
+    });
+  });
+
+  it('sends a changed Compass line with memory disabled, recording it in fallback details and posting no injection chips', async () => {
+    const { panel, messages } = makePanel({ compassEnabled: true });
+    const result = await runAgentStart(event(), panel, 'sess-1');
+    expect(result?.message?.content).toContain('<damocles_compass');
+    expect(result?.message?.details).toEqual({
+      v: 1,
+      promptIndex: 3,
+      memories: [],
+      notices: [],
+      profile: false,
+      compassKey: buildCompassContext(panel)!.key,
+    });
+    expect(messages.filter((m) => m.type.startsWith('contextInjection') || m.type === 'memoryInjectionUpdate')).toEqual([]);
+  });
+
+  it('completes the chip and still sends a changed Compass line when the memory build fails', async () => {
+    const { panel, messages, persist, build } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    build.mockRejectedValueOnce(new Error('store unavailable'));
+    const result = await runAgentStart(event(), panel, 'sess-1');
+    expect(result?.message?.content).toContain('<damocles_compass');
+    expect(result?.message?.content).not.toContain('<damocles_memory>');
+    expect(result?.message?.details).toMatchObject({ promptIndex: 3, memories: [], profile: false, compassKey: buildCompassContext(panel)!.key });
+    expect(messages.map((m) => m.type)).toEqual(['contextInjectionStarted', 'contextInjectionComplete']);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing for a session deleted while the memory build ran', async () => {
+    const { panel, messages, persist, build } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    let live = true;
+    build.mockImplementationOnce(async () => {
+      live = false;
+      return { text: '<damocles_memory>catalog</damocles_memory>', details: { ...MEMORY_DETAILS }, display: emptyDisplay(), mentionedIds: [] };
+    });
+    const result = await runAgentStart(event(), panel, 'sess-1', projectionOf(), () => live);
+    expect(persist).not.toHaveBeenCalled();
+    expect(result?.message).toBeUndefined();
+    expect(messages.map((m) => m.type)).toEqual(['contextInjectionStarted']);
   });
 
   it('does not fold the static memory instructions into the injected message (cache-stable split)', async () => {
     const { panel } = makePanel({ memoryEnabled: true });
-    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+    const result = await runAgentStart(event(), panel, 'sess-1');
     expect((result?.message?.content as string) ?? '').not.toContain('persistent memory system');
   });
 
-  it('injects nothing into the message when both services are disabled', async () => {
+  it('injects nothing and reads no projection when both services are disabled', async () => {
     const ev = event();
-    const result = await buildAgentStartResult(ev, makePanel({}).panel, 'sess-1');
+    const buildSessionProjection = vi.fn(() => ({ messages: [] }));
+    const getBranch = vi.fn(() => []);
+    const result = await runAgentStart(ev, makePanel({}).panel, 'sess-1', { buildSessionProjection, getBranch } as unknown as ProjectionReader);
     expect(result?.message).toBeUndefined();
+    expect(buildSessionProjection).not.toHaveBeenCalled();
+    expect(getBranch).not.toHaveBeenCalled();
     expect(ev.systemPromptOptions.customPrompt).toBeTruthy();
-  });
-
-  it('re-injects fresh context on a second turn (message present each turn)', async () => {
-    const { panel } = makePanel({ memoryEnabled: true });
-    const first = await buildAgentStartResult(event(), panel, 'sess-1');
-    const second = await buildAgentStartResult(event(), panel, 'sess-1');
-    expect(first?.message).toBeDefined();
-    expect(second?.message).toBeDefined();
   });
 });

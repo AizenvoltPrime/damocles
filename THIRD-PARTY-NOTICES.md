@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This file contains notices for third-party software whose code or design patterns were incorporated into this project.
+This file contains notices for third-party software whose code or design patterns were incorporated into this project, and for third-party data bundled with it.
 
 ---
 
@@ -813,4 +813,49 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+---
+
+## English word frequencies (Google Books Ngram) — CC-BY-3.0
+
+The memory injection gate bundles the Porter stems of the 49,104 most frequent single-token English words (`src/extension/memory/injection/reference-stems.generated.ts`, generated from `english-reference.generated.ts`), used to tell ordinary English words from names and identifiers.
+
+- **Source data**: Google Books Ngram Viewer, English 1-grams, version 20120701 (years 1950 to 2012), by Google, https://storage.googleapis.com/books/ngrams/books/datasetsv3.html
+- **Intermediate list**: top-english-wordlists by david47k, https://github.com/david47k/top-english-wordlists (commit b7585f32cee8e140001054ad5b0bbf373245c360, `top_english_words_lower_50000.txt`)
+- **License**: both the dataset and the compilation are licensed under Creative Commons Attribution 3.0 Unported (CC-BY-3.0), https://creativecommons.org/licenses/by/3.0/
+- **Modifications**: filtered to lowercase `[a-z]{2,}` tokens, deduplicated and reduced to Porter stems by `scripts/generate-reference-words.mjs`. The source is a ranked word list with no frequency counts, and only the rank order is kept.
+- **Attribution**: "English word frequencies from top-english-wordlists by david47k, derived from the Google Books Ngram dataset by Google, both licensed under CC-BY-3.0." The same attribution ships in the extension bundle as a legal comment.
+
+---
+
+## Software vocabulary (cspell-dicts) — MIT
+
+The memory injection gate bundles the Porter stems of 3,682 software words absent from the English list above (`reference-stems.generated.ts`, generated from `software-reference.generated.ts`), such as `repo`, `json` and `regex`, so that everyday software vocabulary is not mistaken for a name.
+
+- **Source**: cspell-dicts by Street Side Software, https://github.com/streetsidesoftware/cspell-dicts (commit 1d7d9f649f61c9402050a3a56450337bf165c1ba): `@cspell/dict-software-terms` 5.4.5 (`software-terms.txt`, `coding-terms.txt`, `computing-acronyms.txt`, `software-tools.txt`, `software-services.txt`, `network-protocols.txt`, `network-os.txt`, `cybersecurity-terms.txt`) and `@cspell/dict-filetypes` 3.0.18 (`filetypes.txt`)
+- **Modifications**: comments and forbidden-word entries removed, lowercased, filtered to `[a-z]{2,}` tokens, deduplicated, words already in the English list removed, and reduced to Porter stems, by `scripts/generate-reference-words.mjs`. The same license notice ships in the extension bundle as a legal comment.
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2017-2025 Street Side Software <support@streetsidesoftware.nl>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ```

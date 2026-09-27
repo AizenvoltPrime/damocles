@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { DatabaseSync } from 'node:sqlite';
 import {
   injectionDbName,
   openInjectionDatabase,
@@ -28,18 +29,22 @@ beforeAll(() => {
   setInjectionDbDirForTests(INJECTION_DB_DIR);
 });
 
-// Distinguishing marker rides on ftsQuery so latest-wins / round-trip reads can be told apart.
+// Distinguishing marker rides on exactText so latest-wins / round-trip reads can be told apart.
 function makeDisplay(marker: string): MemoryInjectionDisplay {
   return {
-    groups: [],
-    totalTokensUsed: 0,
-    ftsQuery: marker,
-    hasHandoffContext: false,
-    hasProfile: false,
+    version: 3,
+    promptIndex: 0,
+    added: [],
+    notices: [],
+    carried: [],
+    profile: { state: 'empty', tokens: 0, text: '' },
+    compass: { state: 'disabled', text: '' },
+    query: { terms: [], dropped: [], mentionedIds: [], files: [] },
+    gate: { considered: 0, passed: 0, unmatchedSkipped: 0, alreadyInContext: 0, overBudget: 0, preferencesDeferred: 0 },
+    tokens: { memories: 0, notices: 0, profile: 0, compass: 0, total: 0, budget: 2000 },
+    storeCounts: { session: 0, project: 0, global: 0, observations: 0, total: 0 },
     rerankApplied: false,
-    pinnedEntries: [],
-    pinnedBudget: 500,
-    pinnedTokensUsed: 0,
+    exactText: marker,
   };
 }
 
@@ -144,7 +149,7 @@ describe('memory injection round-trip', () => {
     openHandles.push(db!);
 
     insertMemoryInjection(db!, 3, makeDisplay('hello'));
-    expect(getMemoryInjection(db!, 3)?.ftsQuery).toBe('hello');
+    expect(getMemoryInjection(db!, 3)?.exactText).toBe('hello');
     expect(getMemoryInjection(db!, 99)).toBeUndefined();
   });
 
@@ -155,7 +160,35 @@ describe('memory injection round-trip', () => {
 
     insertMemoryInjection(db!, 1, makeDisplay('first'));
     insertMemoryInjection(db!, 1, makeDisplay('second'));
-    expect(getMemoryInjection(db!, 1)?.ftsQuery).toBe('second');
+    expect(getMemoryInjection(db!, 1)?.exactText).toBe('second');
+  });
+});
+
+describe('display record v3', () => {
+  it('wipes records written by schema v2 on open', async () => {
+    const id = uniqueId();
+    fs.mkdirSync(INJECTION_DB_DIR, { recursive: true });
+    const raw = new DatabaseSync(`${newBasePath(id)}.db`);
+    raw.exec(`CREATE TABLE schema_version (version INTEGER NOT NULL);
+      CREATE TABLE memory_injections (prompt_index INTEGER PRIMARY KEY, data TEXT NOT NULL, created_at INTEGER NOT NULL);
+      INSERT INTO schema_version (version) VALUES (1), (2);`);
+    raw.prepare('INSERT INTO memory_injections (prompt_index, data, created_at) VALUES (?, ?, ?)').run(0, JSON.stringify({ groups: [] }), 1);
+    raw.close();
+
+    const db = await openInjectionDatabase(id);
+    openHandles.push(db!);
+    const count = db!.prepare('SELECT COUNT(*) AS n FROM memory_injections').get() as { n: number };
+    expect(count.n).toBe(0);
+    const version = db!.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(version.v).toBe(3);
+  });
+
+  it('reads a blob whose version is not 3 as undefined', async () => {
+    const id = uniqueId();
+    const db = await openInjectionDatabase(id);
+    openHandles.push(db!);
+    db!.prepare('INSERT INTO memory_injections (prompt_index, data, created_at) VALUES (?, ?, ?)').run(4, JSON.stringify({ version: 2 }), 1);
+    expect(getMemoryInjection(db!, 4)).toBeUndefined();
   });
 });
 
@@ -177,7 +210,7 @@ describe('legacy-name pickup on open', () => {
 
     const db = await openInjectionDatabase(id);
     openHandles.push(db!);
-    expect(getMemoryInjection(db!, 7)?.ftsQuery).toBe('legacy-data');
+    expect(getMemoryInjection(db!, 7)?.exactText).toBe('legacy-data');
     expect(dbExists(newBasePath(id))).toBe(true);
     expect(dbExists(legacyBasePath(id))).toBe(false);
   });
@@ -225,6 +258,20 @@ describe('renameInjectionDatabaseFile', () => {
     expect(dbExists(newBasePath(oldId))).toBe(false);
     expect(dbExists(newBasePath(newId))).toBe(true);
   });
+
+  it('leaves the destination and its records alone when the source has no file', async () => {
+    const oldId = uniqueId();
+    const newId = uniqueId();
+    const seed = await openInjectionDatabase(newId);
+    insertMemoryInjection(seed!, 0, makeDisplay('kept'));
+    seed!.close();
+
+    await renameInjectionDatabaseFile(oldId, newId);
+
+    const db = await openInjectionDatabase(newId);
+    openHandles.push(db!);
+    expect(getMemoryInjection(db!, 0)?.exactText).toBe('kept');
+  });
 });
 
 describe('sweepStaleInjectionDatabases', () => {
@@ -266,34 +313,114 @@ describe('InjectionManager session lifecycle', () => {
     expect(dbExists(newBasePath(id))).toBe(false);
   });
 
-  it('renameSession moves the file and migrates the first-message cache', async () => {
+  it('renameSession moves the file', async () => {
     const mgr = makeManager();
     managers.push(mgr);
     const oldId = uniqueId();
     const newId = uniqueId();
 
     await mgr.persistInjection(oldId, 0, makeDisplay('x'));
-    mgr.markFirstMessageSent(oldId);
-
     await mgr.renameSession(oldId, newId);
 
-    // First-message state must follow the new id: a fresh session reports true, a sent one false.
-    expect(mgr.isFirstMessageOfSession(newId)).toBe(false);
-    expect(mgr.isFirstMessageOfSession(oldId)).toBe(true);
     expect(dbExists(newBasePath(oldId))).toBe(false);
     expect(dbExists(newBasePath(newId))).toBe(true);
   });
 
-  it('preserves the prompt-0 record across a session rename', async () => {
+  it('preserves the per-prompt records across a session rename', async () => {
     const mgr = makeManager();
     managers.push(mgr);
     const oldId = uniqueId();
     const newId = uniqueId();
 
-    await mgr.persistInjection(oldId, 0, makeDisplay('profile-and-handoff'));
+    await mgr.persistInjection(oldId, 0, makeDisplay('prompt-0 record'));
     await mgr.renameSession(oldId, newId);
 
-    expect((await mgr.getPersistedInjection(newId, 0))?.ftsQuery).toBe('profile-and-handoff');
+    expect((await mgr.getPersistedInjection(newId, 0))?.exactText).toBe('prompt-0 record');
     expect(dbExists(newBasePath(oldId))).toBe(false);
+  });
+});
+
+describe('InjectionManager.copySessionInjections', () => {
+  type RawRow = { prompt_index: number; data: string; created_at: number };
+
+  function rawRows(id: string): RawRow[] {
+    const raw = new DatabaseSync(`${newBasePath(id)}.db`);
+    try {
+      return raw.prepare('SELECT prompt_index, data, created_at FROM memory_injections ORDER BY prompt_index').all() as RawRow[];
+    } finally {
+      raw.close();
+    }
+  }
+
+  /** A source database on disk, closed, holding one record per index with a distinct marker. */
+  async function seedSource(id: string, indices: number[]): Promise<void> {
+    const db = await openInjectionDatabase(id);
+    for (const i of indices) insertMemoryInjection(db!, i, { ...makeDisplay(`prompt ${i} ü "quoted"`), promptIndex: i });
+    db!.close();
+  }
+
+  it('copies only the records below the cut, byte for byte', async () => {
+    const sourceId = uniqueId();
+    const forkId = uniqueId();
+    await seedSource(sourceId, [0, 1, 2, 3]);
+    const mgr = makeManager();
+    managers.push(mgr);
+
+    await expect(mgr.copySessionInjections(sourceId, forkId, 2)).resolves.toBe(2);
+
+    expect((await mgr.getPersistedInjection(forkId, 0))?.exactText).toBe('prompt 0 ü "quoted"');
+    expect((await mgr.getPersistedInjection(forkId, 1))?.promptIndex).toBe(1);
+    expect(await mgr.getPersistedInjection(forkId, 2)).toBeUndefined();
+    expect(await mgr.getPersistedInjection(forkId, 3)).toBeUndefined();
+    mgr.closeInjectionDatabases();
+    expect(rawRows(forkId)).toEqual(rawRows(sourceId).filter((r) => r.prompt_index < 2));
+    expect(rawRows(sourceId).map((r) => r.prompt_index)).toEqual([0, 1, 2, 3]);
+  });
+
+  it('copies from a source database the manager already holds open', async () => {
+    const sourceId = uniqueId();
+    const forkId = uniqueId();
+    const mgr = makeManager();
+    managers.push(mgr);
+    await mgr.persistInjection(sourceId, 0, makeDisplay('live'));
+
+    await expect(mgr.copySessionInjections(sourceId, forkId, 1)).resolves.toBe(1);
+    expect((await mgr.getPersistedInjection(forkId, 0))?.exactText).toBe('live');
+  });
+
+  it('is a no-op that creates no file when the source has no database', async () => {
+    const sourceId = uniqueId();
+    const forkId = uniqueId();
+    const mgr = makeManager();
+    managers.push(mgr);
+
+    await expect(mgr.copySessionInjections(sourceId, forkId, 5)).resolves.toBe(0);
+    expect(dbExists(newBasePath(sourceId))).toBe(false);
+    expect(dbExists(newBasePath(forkId))).toBe(false);
+  });
+
+  it('creates no fork database when no record lies below the cut', async () => {
+    const sourceId = uniqueId();
+    const forkId = uniqueId();
+    await seedSource(sourceId, [3]);
+    const mgr = makeManager();
+    managers.push(mgr);
+
+    await expect(mgr.copySessionInjections(sourceId, forkId, 3)).resolves.toBe(0);
+    expect(dbExists(newBasePath(forkId))).toBe(false);
+  });
+
+  it('keeps the copied records when the fork later migrates from an id with no database', async () => {
+    const sourceId = uniqueId();
+    const forkId = uniqueId();
+    const panelId = uniqueId();
+    await seedSource(sourceId, [0]);
+    const mgr = makeManager();
+    managers.push(mgr);
+
+    await mgr.copySessionInjections(sourceId, forkId, 1);
+    await mgr.renameSession(panelId, forkId);
+
+    expect((await mgr.getPersistedInjection(forkId, 0))?.exactText).toBe('prompt 0 ü "quoted"');
   });
 });

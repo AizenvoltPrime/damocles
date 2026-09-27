@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Button } from '@/components/ui/button';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { IconInfo } from '@/components/icons';
+import KpiCard from '../KpiCard.vue';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useStatsFormat } from '@/composables/useStatsFormat';
 import { cacheHitRate } from '@shared/usage-accounting';
@@ -93,41 +91,25 @@ const kpis = computed<Kpi[]>(() => {
 
 <template>
   <div class="grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @xl:grid-cols-3 @4xl:grid-cols-4">
-    <div
+    <KpiCard
       v-for="k in kpis"
+      :id="k.id"
       :key="k.id"
-      :data-kpi="k.id"
-      class="flex min-w-0 flex-col gap-1 rounded-md border border-border/50 bg-card p-3 text-card-foreground"
+      :label="k.label"
+      :info-label="t('usageStats.kpi.formulaFor', { label: k.label })"
+      :value="k.value"
+      :value-title="k.valueTitle"
+      :note="k.note"
     >
-      <div class="flex items-center gap-1">
-        <span class="flex-1 truncate text-xs text-muted-foreground">{{ k.label }}</span>
-        <Popover>
-          <PopoverTrigger as-child>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="size-5 shrink-0 text-muted-foreground"
-              :aria-label="t('usageStats.kpi.formulaFor', { label: k.label })"
-            >
-              <IconInfo :size="12" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent class="w-72 p-3 text-xs leading-relaxed" align="end">
-            {{ t(`usageStats.formula.${k.id}`) }}
-          </PopoverContent>
-        </Popover>
-      </div>
-      <div class="flex flex-wrap items-baseline gap-x-2">
-        <span data-kpi-value class="text-lg font-semibold tabular-nums text-foreground" :title="k.valueTitle">{{ k.value }}</span>
+      <template #formula>{{ t(`usageStats.formula.${k.id}`) }}</template>
+      <template v-if="k.delta" #delta>
         <span
-          v-if="k.delta"
           data-kpi-delta
           class="text-xs tabular-nums"
           :class="k.delta.tone === 'success' ? 'text-success' : 'text-muted-foreground'"
           :title="k.delta.title"
         >{{ k.delta.text }}</span>
-      </div>
-      <p v-if="k.note" data-kpi-note class="text-xs text-muted-foreground">{{ k.note }}</p>
-    </div>
+      </template>
+    </KpiCard>
   </div>
 </template>

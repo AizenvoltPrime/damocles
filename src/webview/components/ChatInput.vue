@@ -81,6 +81,7 @@ const {
   attachments: imageAttachments,
   hasAttachments: hasImageAttachments,
   addFromClipboard: addImageFromClipboard,
+  addFromBlock: addImageFromBlock,
   remove: removeImage,
   clear: clearImages,
   toContentBlocks: imagesToContentBlocks,
@@ -277,7 +278,18 @@ function settleSteer(requestId: string, delivered: boolean): void {
   imageAttachments.value = draft.images;
 }
 
-defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer });
+/** Put an unsent queued message back after whatever the box already holds, so nothing typed since is lost. */
+function restoreQueued(blocks: readonly UserContentBlock[]): void {
+  const text = blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n\n");
+  if (text) inputText.value = inputText.value ? `${inputText.value}\n\n${text}` : text;
+  for (const block of blocks) if (block.type === "image") void addImageFromBlock(block);
+  nextTick(() => {
+    adjustTextareaHeight();
+    textareaRef.value?.focus();
+  });
+}
+
+defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued });
 
 const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value || hasElementAttachments.value);
 

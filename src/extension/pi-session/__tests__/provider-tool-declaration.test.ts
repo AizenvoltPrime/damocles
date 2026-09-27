@@ -77,7 +77,6 @@ function panelStub(): PanelGateContext {
     getPlanFilePath: () => '/plans/plan-cafe.md',
     isTeamEnabled: () => false,
     postMessage: () => undefined,
-    currentPromptIndex: () => 0,
   } as PanelGateContext;
 }
 
@@ -120,7 +119,7 @@ describe('tool schemas reach the provider', () => {
 
     const extensionFactory = (pi: ExtensionAPI): void => {
       pi.on('before_agent_start', async (event, ctx) =>
-        buildAgentStartResult(event, panelStub(), ctx.sessionManager.getSessionId()),
+        buildAgentStartResult(event, panelStub(), ctx.sessionManager.getSessionId(), ctx.sessionManager, () => true),
       );
       // The same registration shape the subscription plugin uses, so this test exercises the seam
       // that actually builds Damocles' outbound requests rather than pi-ai's built-in provider.

@@ -1,5 +1,6 @@
 import type { Ref } from "vue";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "@shared/types/messages";
+import type { UserContentBlock } from "@shared/types/content";
 import type { useUIStore } from "@/stores/useUIStore";
 import type { useSettingsStore } from "@/stores/useSettingsStore";
 import type { useSessionStore } from "@/stores/useSessionStore";
@@ -22,6 +23,7 @@ import type { useTeamStore } from "@/stores/useTeamStore";
 import type { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import type { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import type { useConsolidationStore } from "@/stores/useConsolidationStore";
+import type { useMemoryAuditStore } from "@/stores/useMemoryAuditStore";
 import type { useExtensionUiStore } from "@/stores/useExtensionUiStore";
 
 export interface StoreContext {
@@ -47,6 +49,7 @@ export interface StoreContext {
   voiceJarvisStore: ReturnType<typeof useVoiceJarvisStore>;
   promptNavigatorStore: ReturnType<typeof usePromptNavigatorStore>;
   consolidationStore: ReturnType<typeof useConsolidationStore>;
+  memoryAuditStore: ReturnType<typeof useMemoryAuditStore>;
   extensionUiStore: ReturnType<typeof useExtensionUiStore>;
 }
 
@@ -59,6 +62,7 @@ export interface ChatInputExposed {
   voiceSetDone: () => void;
   voiceSetError: (msg: string) => void;
   settleSteer: (requestId: string, delivered: boolean) => void;
+  restoreQueued: (blocks: readonly UserContentBlock[]) => void;
 }
 
 export interface RefContext {

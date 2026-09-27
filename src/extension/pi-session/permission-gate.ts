@@ -45,9 +45,8 @@ export interface SystemPromptEnv {
 /**
  * The per-panel state the shared Damocles extension routes to, looked up by sessionId. Beyond the
  * permission gate (`permissionHandler`/`isPlanMode`), it carries everything the `before_agent_start`
- * hook needs to assemble the Damocles system prompt (US-007) and inject memory/compass context
- * (US-005): the panel's services, its resolved session model + environment, a webview-message emitter,
- * the per-prompt index, and first-message tracking.
+ * hook needs to assemble the Damocles system prompt and inject memory/compass context: the panel's
+ * services, its resolved session model + environment, and a webview-message emitter.
  */
 export interface PanelGateContext {
   permissionHandler: PermissionHandler;
@@ -68,8 +67,6 @@ export interface PanelGateContext {
   isTeamEnabled?: () => boolean;
   /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
   postMessage: (message: ExtensionToWebviewMessage) => void;
-  /** The current 0-based user-prompt index, to key per-prompt injection messages. */
-  currentPromptIndex: () => number;
   /** True once the hard budget limit stopped the turn; a cache-warming refresh bills against that cap. */
   budgetStopRequested: () => boolean;
   /** Called from the `agent_before_settle` boundary: coordinates the background keep-alive (wait for

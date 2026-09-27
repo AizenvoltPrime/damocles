@@ -97,6 +97,8 @@ function makeCtx(
     reason: 'switch',
     sessionId: SESSION_ID,
     fallbackWorkspace: () => WORKSPACE,
+    openFolders: () => [],
+    nonProjectFolders: () => [],
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: () => {},

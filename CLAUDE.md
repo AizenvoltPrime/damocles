@@ -15,6 +15,7 @@ npm test              # Vitest (whole repo)
 npm run package       # Package for distribution
 npm run package:linux-wsl -- --target linux-x64 --distro Ubuntu  # Linux VSIX from Windows, built in WSL
 npm run generate:profiles  # Regenerate the team agent-profile catalog (commit the output)
+npm run generate:reference-words  # Regenerate the memory gate's English and software word lists and their stems (commit the output)
 npm run sync:profiles      # Report upstream agency-agents diffs (--apply to copy)
 ```
 
@@ -44,7 +45,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `pi-session/` | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys, subscription plugin) + one `FolderRuntime` per workspace folder (pi services, loader, hooks, registries, project MCP). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. `agent-records.ts` builds and id-checks every subagent/team data path under the parent session's folder. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
 | `chat-panel/` | Panel, session manager, settings, message routing, history |
 | `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
-| `memory/` | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL) |
+| `memory/` | Kind/scope memory + fact graph, auto-extraction, relevance-gated delta injection (`injection/`), manual quality audit (`audit.ts`), `node:sqlite`/FTS5 (WAL) |
 | `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default) |
 | `usage-stats/` | `/stats`: sub-call ledger, `node:sqlite` spend index built by a worker thread from pi session files, `UsageStatsService` |
 | `web-access/` | Key-free web tools behind `pi.webSearch.enabled` (off by default); SSRF-guarded `safe-fetch.ts`, fail-soft `execute` |
@@ -82,6 +83,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - Damocles READS other tools' config (`.claude`, `.codex`, the project's `.mcp.json`) and WRITES only under `.damocles`. MCP writes go to `~/.damocles/mcp.json` alone; permission rules to `.damocles/settings*.json` alone. Never write to a file another tool owns. Every input a repository authors (instructions, skills, hooks, `.pi/`, MCP, permission rules) applies only in a trusted window and takes effect on trust grant with no reload.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`, which writes pi's `customPrompt` plus one named section per toggleable piece, so pi patches only what changed. Returning `systemPrompt` instead sets `forceSystemPrompt` and drops every section.
 - The pi extension is process-global and outlives any one session, so nothing in it may hold instance-wide session state: a `session_shutdown` carries no session id, and the instance can be rebound to a new session when a reload fails. Handlers route per dispatch on `ctx.sessionManager.getSessionId()`; only resources that outlive the extension object are retired on shutdown.
+- Memory injection is a delta against `ctx.sessionManager.buildSessionProjection()`: which memories, profile and Compass status the model already has comes only from each injection message's `details`, never from its text and never from state on the extension. Stored text is rendered with every emitted tag name neutralized. Never register a `context` handler or rewrite a past injection message, which breaks the prompt-cache prefix. See "Memory injection" in `docs/invariants.md`.
 - An `agent_before_settle` handler returns `{ entries: [...event.entries, draft] }`, because pi replaces the draft accumulator wholesale and a bare `[draft]` discards every other handler's entries. Hold a turn open with `continue: true` on that draft, never by re-entering `session.prompt()` from a settle handler, which opens a second rewind entry for one turn that nothing downstream can detect.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.

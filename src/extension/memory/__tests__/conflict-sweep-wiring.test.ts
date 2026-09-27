@@ -66,6 +66,8 @@ describe('Slice 8 C4 — runMaintenance wires sweepConflictChecks BEFORE maybeVa
       reason: 'switch',
       sessionId: 'sess-x',
       fallbackWorkspace: () => '/tmp/ws',
+      openFolders: () => [],
+      nonProjectFolders: () => [],
       autoExtractEnabled: true,
       trigger: 'auto',
       onNoModel: () => {},

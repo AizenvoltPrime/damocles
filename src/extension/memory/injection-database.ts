@@ -15,13 +15,14 @@ export function setInjectionDbDirForTests(dir: string): void {
   injectionDbDir = dir;
 }
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 const STALE_DB_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const DB_SIBLINGS = ['.db', '.db-wal', '.db-shm'] as const;
 
-// prompt_index PK + INSERT OR REPLACE = latest-wins: re-injecting a prompt index (rewind) overwrites
-// the prior record for that index.
+// prompt_index (`pi-session/session-store/prompt-index.ts`) is unique along a branch, and a rewind forks to
+// a new session and so a new database. INSERT OR REPLACE only lets a prompt that committed no user entry
+// hand its index to the next prompt.
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -38,9 +39,15 @@ const SCHEMA_V2 = `
 DELETE FROM memory_injections;
 `;
 
+// Display record v3 (delta view): older blobs no longer match the shape, so wipe them.
+const SCHEMA_V3 = `
+DELETE FROM memory_injections;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
+  3: SCHEMA_V3,
 };
 
 // Pre-hash scheme: distinct ids whose forbidden chars collapse to the same chars (e.g. `a/b`, `a_b`)
@@ -123,6 +130,8 @@ export async function renameInjectionDatabaseFile(oldId: string, newId: string):
   const oldBase = baseName(oldId);
   const newBase = baseName(newId);
   if (oldBase === newBase) return;
+  // A missing source leaves the destination alone: its records are then the only copy.
+  if (!(await fileExists(`${oldBase}.db`))) return;
   // Migration is authoritative: drop any stale destination so the source records win.
   await deleteInjectionDatabaseFile(newId);
   for (const ext of DB_SIBLINGS) {
@@ -184,6 +193,14 @@ function runMigrations(db: DatabaseInstance): void {
   }
 }
 
+/** Whether a session has an injection database on disk, under its current or its pre-hash name. */
+export async function injectionDatabaseExists(sessionId: string): Promise<boolean> {
+  return (
+    (await fileExists(`${baseName(sessionId)}.db`)) ||
+    (await fileExists(`${path.join(injectionDbDir, legacySanitizeSessionId(sessionId))}.db`))
+  );
+}
+
 export async function openInjectionDatabase(sessionId: string): Promise<DatabaseInstance | undefined> {
   try {
     const dbPath = await getDbPathAsync(sessionId);
@@ -216,6 +233,30 @@ export function insertMemoryInjection(
   ).run(promptIndex, JSON.stringify(display), Date.now());
 }
 
+export interface MemoryInjectionRow {
+  prompt_index: number;
+  data: string;
+  created_at: number;
+}
+
+export function listMemoryInjectionsBelow(db: DatabaseInstance, belowPromptIndex: number): MemoryInjectionRow[] {
+  return db.prepare(
+    'SELECT prompt_index, data, created_at FROM memory_injections WHERE prompt_index < ? ORDER BY prompt_index'
+  ).all(belowPromptIndex) as MemoryInjectionRow[];
+}
+
+/** Inserts rows verbatim, keeping any record the target already holds; returns how many were added. */
+export function insertMemoryInjectionRows(db: DatabaseInstance, rows: readonly MemoryInjectionRow[]): number {
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO memory_injections (prompt_index, data, created_at) VALUES (?, ?, ?)'
+  );
+  return db.transaction(() => {
+    let added = 0;
+    for (const row of rows) added += insert.run(row.prompt_index, row.data, row.created_at).changes;
+    return added;
+  });
+}
+
 export function getMemoryInjection(
   db: DatabaseInstance,
   promptIndex: number,
@@ -227,7 +268,8 @@ export function getMemoryInjection(
   if (!row) return undefined;
 
   try {
-    return JSON.parse(row.data) as MemoryInjectionDisplay;
+    const parsed = JSON.parse(row.data) as Partial<MemoryInjectionDisplay> | null;
+    return parsed?.version === 3 ? (parsed as MemoryInjectionDisplay) : undefined;
   } catch (err) {
     log('[InjectionDB] Failed to parse injection data for prompt %d: %O', promptIndex, err);
     return undefined;

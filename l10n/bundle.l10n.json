@@ -31,5 +31,10 @@
   "Switch this panel to {0}? This starts a new conversation. The current one stays in history.": "Switch this panel to {0}? This starts a new conversation. The current one stays in history.",
   "Start new conversation": "Start new conversation",
   "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.": "The workspace folder {0} was removed, so a Damocles panel moved to {1} and started a new conversation. The previous one stays in history.",
-  "Damocles could not start a session in {0}: {1}": "Damocles could not start a session in {0}: {1}"
+  "Damocles could not start a session in {0}: {1}": "Damocles could not start a session in {0}: {1}",
+  "Your cancel note was not sent: the budget limit stopped this turn.": "Your cancel note was not sent: the budget limit stopped this turn.",
+  "Your cancel note was not sent: the turn was stopped.": "Your cancel note was not sent: the turn was stopped.",
+  "Stopping the turn discarded your cancel note before the agent read it.": "Stopping the turn discarded your cancel note before the agent read it.",
+  "The budget stop discarded your cancel note before the agent read it. Send it again to have it applied.": "The budget stop discarded your cancel note before the agent read it. Send it again to have it applied.",
+  "Budget limit reached. This turn was stopped after the current step.": "Budget limit reached. This turn was stopped after the current step."
 }

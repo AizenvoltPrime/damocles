@@ -96,6 +96,8 @@ const H = vi.hoisted(() => {
       sendUserMessage: vi.fn(async () => undefined),
       sendCustomMessage: vi.fn(async () => undefined),
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
+      // pi's registered extension commands, which `prompt()` runs without committing a user entry.
+      extensionRunner: { getCommand: vi.fn((_name: string): unknown => undefined), hasHandlers: vi.fn(() => false) },
       abort: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
       getSessionStats: vi.fn(() => ({ sessionId: id, cost: 0, tokens: { input: 120, output: 40, cacheRead: 30, cacheWrite: 10, total: 200 } })),
@@ -330,7 +332,11 @@ import { managerWithFake } from '../mcp/__tests__/fake-server-manager';
 import { createToolSearchTool, type DeferrableSnapshot, type ToolSearchDetails } from '../tools/tool-search-tool';
 import { reconcileInterruptions, type NoticeMessage } from '../interruption-notice';
 import { copyForkAgentData } from '../fork-agent-data';
+import { buildAgentStartResult, type ProjectionReader } from '../agent-start';
+import type { PanelGateContext } from '../permission-gate';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_INTERRUPTION_NOTICE } from '../session-store/constants';
+import { FORK_AT_SECOND_PROMPT, FORK_PROMPT_COUNT, STORED_CONVERSATION, STORED_PROMPT_COUNT, withPrompt } from '../session-store/__tests__/prompt-index-fixtures';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsSync from 'fs';
 // The on-disk-invariant suite drives the REAL SessionManager. `pi-loader` is mocked, so nothing else
 // pulls this package in, and loading it takes most of a second. Imported statically so that cost is
@@ -346,6 +352,22 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
     ...extra,
   };
+}
+
+/**
+ * What pi's `prompt()` does for a prompt it runs rather than queues, as far as the entries it commits:
+ * reports acceptance, then emits each user message's message_end and appends that same object.
+ */
+function piRuns(opts: unknown, getBranchMock: unknown, committed: readonly unknown[]): void {
+  const getBranch = getBranchMock as ReturnType<typeof vi.fn<() => unknown[]>>;
+  (opts as { preflightResult?: (accepted: boolean) => void } | undefined)?.preflightResult?.(true);
+  const branch = [...getBranch()];
+  for (const entry of committed) {
+    const message = (entry as { message?: { role?: string } }).message;
+    if (message?.role === 'user') H.fireEvent({ type: 'message_end', message });
+    branch.push(entry);
+  }
+  getBranch.mockReturnValue(branch);
 }
 
 /** A SecretStorage stand-in. Without it `start()` skips the provider sync entirely, which is why the
@@ -774,8 +796,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
     expect(path.basename(session.getPlanFilePath())).toMatch(/^plan-/);
 
-    // Internal + synthetic <…> messages are ignored; the first real prompt sets the slug from the cache.
-    await session.sendMessage('<ctx> internal', undefined, undefined, undefined, { isInternal: true });
+    // Synthetic <…> messages are ignored; the first real prompt sets the slug from the cache.
     await session.sendMessage('<reminder> synthetic');
     expect(path.basename(session.getPlanFilePath())).toMatch(/^plan-/);
     await session.sendMessage('Create a hello world file at root');
@@ -888,7 +909,10 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(session.queueInput('first', 'q1')).toBe('queued');
     expect(session.queueInput('second', 'q2')).toBe('queued');
 
-    // Each queue re-steers the FULL combined buffer (clearing the prior steer).
+    // Each queue re-steers the FULL combined buffer (clearing the prior steer), one pass at a time: the
+    // second waits until the first has handed its batch to pi.
+    expect(prompt).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
     expect((live.clearQueue as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(2);
     const last = prompt.mock.calls.at(-1);
     expect(last?.[0]).toBe('first\n\nsecond');
@@ -959,7 +983,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
-  it('cancel() drops queued-but-undelivered messages and removes their chips', async () => {
+  it('cancel() returns queued-but-undelivered messages to the input and empties pi\'s queue', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
@@ -967,9 +991,12 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (live as { isStreaming: boolean }).isStreaming = true;
     session.queueInput('pending', 'q1');
     messages.length = 0;
+    (live.clearQueue as ReturnType<typeof vi.fn>).mockClear();
 
     session.cancel();
-    expect(messages.some((m) => m.type === 'queueCancelled' && m.messageId === 'q1')).toBe(true);
+    expect(messages).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    // pi's next run would otherwise start by draining the stopped run's steer.
+    expect(live.clearQueue).toHaveBeenCalled();
     // The dropped message is not re-delivered.
     session.onQueuedInputsDelivered('pending');
     expect(messages.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
@@ -1157,9 +1184,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // Before the turn the branch holds a prior user entry; prompt() commits a NEW user entry holding
     // the EXPANDED body of the slash command.
     getBranch.mockReturnValue([{ type: 'message', id: 'u-prior', message: { role: 'user', content: [{ type: 'text', text: 'prior' }] } }]);
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      getBranch.mockReturnValue([
-        { type: 'message', id: 'u-prior', message: { role: 'user', content: [{ type: 'text', text: 'prior' }] } },
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
         { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'Hello day is Tuesday' }] } },
       ]);
     });
@@ -1172,6 +1198,51 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('keys the sidecar to the entry the prompt committed when a note or queued batch committed after it', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    // The run commits the expanded prompt, then a cancel note and a queued batch steered in at later boundaries.
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
+        { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'Hello day is Tuesday' }] } },
+        { type: 'message', id: 'a-1', message: { role: 'assistant', content: [{ type: 'text', text: 'running it' }] } },
+        { type: 'message', id: 'u-note', message: { role: 'user', content: [{ type: 'text', text: 'skip it' }] } },
+        { type: 'message', id: 'u-batch', message: { role: 'user', content: [{ type: 'text', text: 'and check the logs' }] } },
+      ]);
+    });
+
+    await session.sendMessage('Hello day is Tuesday', undefined, 'c1', { content: '/example what is the day' });
+
+    const sidecars = append.mock.calls.filter((c) => c[0] === 'damocles-original-input').map((c) => c[1]);
+    expect(sidecars).toEqual([{ userEntryId: 'u-new', original: '/example what is the day' }]);
+    await session.dispose();
+  });
+
+  it('records no sidecar for a plain prompt whose run a note joined after it', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    const typed = 'Run Start-Sleep -Seconds 60; echo done in PowerShell.';
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
+        { type: 'message', id: 'u-prompt', message: { role: 'user', content: [{ type: 'text', text: typed }] } },
+        { type: 'message', id: 'u-note', message: { role: 'user', content: [{ type: 'text', text: 'skip it' }] } },
+      ]);
+    });
+
+    await session.sendMessage(typed, undefined, 'c1', { content: typed });
+
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-original-input')).toBe(false);
+    await session.dispose();
+  });
+
   it('does NOT record a sidecar for a plain message (typed == stored)', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
@@ -1179,8 +1250,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
     const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
     getBranch.mockReturnValue([]);
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      getBranch.mockReturnValue([
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
         { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'just a normal message' }] } },
       ]);
     });
@@ -1217,8 +1288,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     getBranch.mockReturnValue([]);
     // pi merges the IDE-context block into the stored user message; the typed text carries no prefix.
     // Stripping the stored side before comparing must collapse them to equal → no sidecar.
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      getBranch.mockReturnValue([
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [
         {
           type: 'message',
           id: 'u-new',
@@ -1278,11 +1349,14 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     forceAgentRun(session);
     const live = H.getLastSession()!;
     const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
-    // Pre-prompt boundary ends at u1; prompt() commits a new user (u2) + assistant (a2).
-    getBranch.mockReturnValue([{ type: 'message', id: 'u1', message: { role: 'user', content: 'old' } }]);
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      getBranch.mockReturnValue([
-        { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+    // The previous turn ends on its answer a1; prompt() commits a new user (u2) + assistant (a2), and
+    // the candidate starts at u2, so a1 belongs to the previous turn's candidate only.
+    getBranch.mockReturnValue([
+      { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+      { type: 'message', id: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'old answer' }] } },
+    ]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, promptOpts: unknown) => {
+      piRuns(promptOpts, getBranch, [
         { type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } },
         { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
       ]);
@@ -1293,27 +1367,14 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
     expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith({
       sessionId: session.memorySessionId,
-      promptIndex: 0,
+      // u1 is prompt 0, so the prompt this turn committed is prompt 1.
+      promptIndex: 1,
       userText: 'hi',
       assistantText: 'done',
       files: [],
       // The session's own folder, so another window's consolidation files it there.
       workspace: '/cwd',
     });
-    await session.dispose();
-  });
-
-  it('does NOT enqueue a memory candidate for an internal send', async () => {
-    const opts = makeOptions([]);
-    const memory = memorySpy();
-    opts.memoryService = memory as never;
-    const session = new PiSession(opts);
-    await session.initializeEarly();
-    forceAgentRun(session);
-
-    await session.sendMessage('<ctx> internal', undefined, 'corr', { content: '<ctx> internal' }, { isInternal: true });
-
-    expect(memory.enqueueTurnCandidate).not.toHaveBeenCalled();
     await session.dispose();
   });
 
@@ -1343,7 +1404,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.initializeEarly();
     forceAgentRun(session);
     const live = H.getLastSession()!;
-    // The branch's last user id equals priorUserEntryId across the turn → turnExchangeAfter returns null.
+    // prompt() commits nothing, so there is no entry to start the exchange from.
     (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
       { type: 'message', id: 'u-stable', message: { role: 'user', content: 'prior turn' } },
     ]);
@@ -1364,9 +1425,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const live = H.getLastSession()!;
     const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
     getBranch.mockReturnValue([{ type: 'message', id: 'u1', message: { role: 'user', content: 'old' } }]);
-    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
-      getBranch.mockReturnValue([
-        { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, promptOpts: unknown) => {
+      piRuns(promptOpts, getBranch, [
         { type: 'message', id: 'u2', message: { role: 'user', content: 'first' } },
         { type: 'message', id: 'u3', message: { role: 'user', content: 'second' } },
         { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
@@ -1380,6 +1440,101 @@ describe('PiSession lifecycle (US-P1-4)', () => {
       expect.objectContaining({ userText: 'first\n\nsecond', assistantText: 'reply' }),
     );
     await session.dispose();
+  });
+
+  describe('prompt index', () => {
+    /** Send one prompt on a session whose branch is `branch`, committing it as `id` the way pi does. */
+    async function sendOn(branch: readonly SessionEntry[], id: string) {
+      const messages: ExtensionToWebviewMessage[] = [];
+      const opts = makeOptions(messages);
+      const memory = memorySpy();
+      opts.memoryService = memory as never;
+      const session = new PiSession(opts);
+      await session.initializeEarly();
+      forceAgentRun(session);
+      const live = H.getLastSession()!;
+      const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn<() => SessionEntry[]>>;
+      getBranch.mockReturnValue([...branch]);
+      let duringTurn: number | undefined;
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string, promptOpts: unknown) => {
+        // What the gate hands `before_agent_start`, the permission turn key and the overlay record.
+        duringTurn = session.currentPromptIndex;
+        piRuns(promptOpts, getBranch, withPrompt([], id, text));
+      });
+      await session.sendMessage('next prompt', undefined, `corr-${id}`, { content: 'next prompt' });
+      const stamped = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'userMessage' }> => m.type === 'userMessage');
+      return { session, live, messages, memory, duringTurn, stamped: stamped?.promptIndex };
+    }
+
+    it('stamps a resumed conversation\'s next prompt with the index a reload gives it', async () => {
+      const { session, memory, duringTurn, stamped } = await sendOn(STORED_CONVERSATION, 'u-new');
+      expect(stamped).toBe(STORED_PROMPT_COUNT);
+      expect(duringTurn).toBe(STORED_PROMPT_COUNT);
+      expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(expect.objectContaining({ promptIndex: STORED_PROMPT_COUNT }));
+      await session.dispose();
+    });
+
+    it('stamps a fork\'s resent prompt after the prompts the fork inherited', async () => {
+      const { session, duringTurn, stamped } = await sendOn(FORK_AT_SECOND_PROMPT, 'u-fork');
+      expect(stamped).toBe(FORK_PROMPT_COUNT);
+      expect(duringTurn).toBe(FORK_PROMPT_COUNT);
+      await session.dispose();
+    });
+
+    it('advances from the branch on the next send, and echoes a command that commits no prompt as injected', async () => {
+      const { session, live, messages } = await sendOn(STORED_CONVERSATION, 'u-new');
+      // A pi extension command (`/todos`) runs inside prompt() and commits no user entry.
+      live.extensionRunner.getCommand.mockImplementation((name: string) => (name === 'todos' ? { invocationName: 'todos' } : undefined));
+      const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn<() => SessionEntry[]>>;
+      (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (text: string) => {
+        if (text !== '/todos') getBranch.mockReturnValue(withPrompt(getBranch(), 'u-after', text));
+      });
+      await session.sendMessage('/todos', undefined, 'corr-cmd', { content: '/todos' });
+      await session.sendMessage('after the command', undefined, 'corr-after', { content: 'after the command' });
+      const echoes = messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'userMessage' }> => m.type === 'userMessage');
+      // The prompt rows carry distinct indices, and the command row is not a prompt, so none is shared.
+      expect(echoes.map((m) => [m.promptIndex, m.isInjected === true, m.isCommandEcho === true])).toEqual([
+        [STORED_PROMPT_COUNT, false, false],
+        [STORED_PROMPT_COUNT, true, true],
+        [STORED_PROMPT_COUNT + 1, false, false],
+      ]);
+      await session.dispose();
+    });
+
+    it('keys an injection that starts after the in-flight index was cleared to the prompt it precedes', async () => {
+      // A steer resent by `resteerQueuedInputs` can find the run settled and start one of its own, so
+      // `before_agent_start` fires with no `sendMessage` in flight.
+      const { session, live } = await sendOn(STORED_CONVERSATION, 'u-new');
+      const memory = {
+        isEnabled: true,
+        ensureInitialized: vi.fn(async () => {}),
+        buildInjectionContext: vi.fn(async () => null),
+        persistMemoryInjection: vi.fn(async () => {}),
+      };
+      const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId as string)!;
+      const emitted: ExtensionToWebviewMessage[] = [];
+      const panel: PanelGateContext = { ...gate, memoryService: memory as never, postMessage: (m) => emitted.push(m) };
+      const branch = (live.sessionManager.getBranch as () => SessionEntry[])();
+      await buildAgentStartResult(
+        { type: 'before_agent_start', prompt: 'steered', systemPrompt: '', systemPromptOptions: { selectedTools: [], toolSnippets: {}, toolGuidelines: {}, promptGuidelines: [], appendSystemPrompt: '', sections: {}, cwd: '/cwd', contextFiles: [], skills: [] } },
+        panel,
+        live.sessionId as string,
+        { getBranch: () => branch, buildSessionProjection: () => ({ messages: [] }) } as unknown as ProjectionReader,
+        () => true,
+      );
+      expect(session.currentPromptIndex).toBe(STORED_PROMPT_COUNT);
+      expect(emitted).toContainEqual({ type: 'contextInjectionStarted', promptIndex: STORED_PROMPT_COUNT + 1 });
+      expect(memory.buildInjectionContext).toHaveBeenCalledWith(expect.objectContaining({ promptIndex: STORED_PROMPT_COUNT + 1 }));
+      await session.dispose();
+    });
+
+    it('reports the latest prompt on the branch between turns', async () => {
+      const session = new PiSession(makeOptions([]));
+      await session.initializeEarly();
+      (H.getLastSession()!.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([...STORED_CONVERSATION]);
+      expect(session.currentPromptIndex).toBe(STORED_PROMPT_COUNT - 1);
+      await session.dispose();
+    });
   });
 
   it('requestContextUsage reports busy while a turn is processing (US-CMD)', async () => {
@@ -4430,9 +4585,9 @@ describe('PiSession interruption notice and the pre-turn window', () => {
   });
 
   /** A live session whose branch can fork at `a1`, the parent of user entry `u2`. */
-  async function forkableSession(messages: ExtensionToWebviewMessage[], parentTimestamp: string | undefined) {
+  async function forkableSession(messages: ExtensionToWebviewMessage[], parentTimestamp: string | undefined, extra?: Partial<SessionOptions>) {
     const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
-    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    const session = new PiSession({ ...makeOptions(messages, extra), onSpawnFork });
     await session.initializeEarly();
     const sm = H.getLastSession()!.sessionManager;
     (sm['getEntry'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
@@ -4464,6 +4619,55 @@ describe('PiSession interruption notice and the pre-turn window', () => {
     });
     expect(messages.some((m) => m.type === 'notification')).toBe(false);
     expect(onSpawnFork.mock.calls[0]![0].piBranchedSessionId).toBe('fork');
+    await session.dispose();
+  });
+
+  it('a fork copies the Injected Context records of the prompts before the fork point', async () => {
+    const copySessionInjections = vi.fn(async () => 1);
+    const { session, onSpawnFork } = await forkableSession([], '2026-03-04T08:30:00.123Z', {
+      memoryService: { isEnabled: true, copySessionInjections } as unknown as MemoryService,
+    });
+    const getBranch = H.getLastSession()!.sessionManager['getBranch'] as ReturnType<typeof vi.fn>;
+    getBranch.mockImplementation((id?: string) => (id === 'a1' ? STORED_CONVERSATION.slice(0, 4) : STORED_CONVERSATION));
+    vi.mocked(copyForkAgentData).mockResolvedValueOnce([]);
+
+    await session.rewindFiles('u2', 'fork-conversation');
+
+    expect(copySessionInjections).toHaveBeenCalledTimes(1);
+    expect(copySessionInjections).toHaveBeenCalledWith('src', 'fork', 2);
+    expect(copySessionInjections.mock.invocationCallOrder[0]!).toBeLessThan(onSpawnFork.mock.invocationCallOrder[0]!);
+    await session.dispose();
+  });
+
+  it('a failed injection-record copy still opens the fork', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const copySessionInjections = vi.fn(async () => { throw new Error('SQLITE_BUSY'); });
+    const { session, onSpawnFork } = await forkableSession(messages, '2026-03-04T08:30:00.123Z', {
+      memoryService: { isEnabled: true, copySessionInjections } as unknown as MemoryService,
+    });
+    vi.mocked(copyForkAgentData).mockResolvedValueOnce([]);
+
+    await session.rewindFiles('u2', 'fork-conversation');
+
+    expect(copySessionInjections).toHaveBeenCalledTimes(1);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
+    expect(onSpawnFork.mock.calls[0]![0].piBranchedSessionId).toBe('fork');
+    await session.dispose();
+  });
+
+  it('a fresh-panel fork copies no Injected Context records', async () => {
+    const copySessionInjections = vi.fn(async () => 0);
+    const { session, onSpawnFork } = await forkableSession([], '2026-03-04T08:30:00.123Z', {
+      memoryService: { isEnabled: true, copySessionInjections } as unknown as MemoryService,
+    });
+    // A branch with no assistant message has no file to resume, so the fork opens as a fresh panel.
+    const getBranch = H.getLastSession()!.sessionManager['getBranch'] as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue(STORED_CONVERSATION.slice(0, 1));
+
+    await session.rewindFiles('u2', 'fork-conversation');
+
+    expect(copySessionInjections).not.toHaveBeenCalled();
+    expect(onSpawnFork.mock.calls[0]![0].piBranchedSessionId).toBeUndefined();
     await session.dispose();
   });
 
@@ -4863,7 +5067,7 @@ describe('PiSession graceful budget stop (US-008)', () => {
     await session.dispose();
   });
 
-  it('drops the queued steer a budget stop would otherwise strand (chip + pi steering queue)', async () => {
+  it('returns the queued steer a budget stop would otherwise strand to the input (chip + pi steering queue)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
@@ -4876,8 +5080,8 @@ describe('PiSession graceful budget stop (US-008)', () => {
     budgetStop(session);
 
     // The chip must not stay pending: the pre-prompt block refuses the next send, so nothing else
-    // would ever drain it.
-    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'q1' }]);
+    // would ever drain it. Its text was never sent, so it goes back to the input as on ESC.
+    expect(messages.filter((m) => m.type === 'queueCancelled')).toEqual([{ type: 'queueCancelled', messageId: 'q1', returnToInput: true }]);
     // …and pi's own steering queue must be dropped too, or the stale steer replays into a later turn.
     expect(live.clearQueue).toHaveBeenCalled();
     await session.dispose();
@@ -5194,6 +5398,16 @@ describe('cancel note delivery: the main build site', () => {
     }) as unknown as (...a: never[]) => Promise<unknown>);
   }
 
+  /** The live pi session mid-run, as a Stop click finds it: a prompt is queued and reported accepted. */
+  function streamingPanelSession(): { prompt: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn>; sendUserMessage: ReturnType<typeof vi.fn> } {
+    const live = H.getLastSession() as unknown as { isStreaming: boolean; prompt: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn>; sendUserMessage: ReturnType<typeof vi.fn> };
+    live.isStreaming = true;
+    live.prompt.mockImplementation(async (_text: string, opts?: { preflightResult?: (accepted: boolean) => void }) => {
+      opts?.preflightResult?.(true);
+    });
+    return live;
+  }
+
   it('queues the note on the PANEL session as a real user turn and echoes it into the transcript', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));
@@ -5203,17 +5417,24 @@ describe('cancel note delivery: the main build site', () => {
     const bash = H.captured.customTools.find((t) => t.name === 'bash');
     // Non-vacuous: without a real bash tool from the real factory the assertions below say nothing.
     expect(bash).toBeDefined();
+    const piSession = streamingPanelSession();
     const pending = (bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>)('call-1', { command: 'sleep 300' }, undefined, undefined, {});
 
     expect(session.cancelToolCall('call-1', 'wrong loop, use seq 1 5')).toBe(true);
     await pending;
 
-    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn> };
-    expect(piSession.sendUserMessage).toHaveBeenCalledWith('wrong loop, use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
+    // Steered, so pi hands it to the model at the next tool boundary of this run rather than after it.
+    expect(piSession.prompt).toHaveBeenCalledWith('wrong loop, use seq 1 5', {
+      expandPromptTemplates: false,
+      streamingBehavior: 'steer',
+      source: 'extension',
+      preflightResult: expect.any(Function),
+    });
 
     const echo = messages.filter((m) => m.type === 'userMessage');
     expect(echo).toHaveLength(1);
     expect(echo[0]).toMatchObject({ type: 'userMessage', content: 'wrong loop, use seq 1 5', isInjected: true });
+    expect(echo[0]).not.toHaveProperty('isCommandEcho');
     await session.dispose();
   });
 
@@ -5225,16 +5446,16 @@ describe('cancel note delivery: the main build site', () => {
 
     const bash = H.captured.customTools.find((t) => t.name === 'bash');
     expect(bash).toBeDefined();
+    const piSession = streamingPanelSession();
     const pending = (bash!.execute as unknown as (id: string, p: unknown, s?: AbortSignal, u?: unknown, c?: unknown) => Promise<unknown>)('call-2', { command: 'sleep 300' }, undefined, undefined, {});
 
     expect(session.cancelToolCall('call-2', '/compact and use seq 1 5')).toBe(true);
     await pending;
 
-    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; steer: ReturnType<typeof vi.fn> };
     // `expandPromptTemplates: false` is the guard: pi's prompt() dispatches an extension command and
     // expands skills and templates only when it is true, so the note can never be executed or throw.
-    expect(piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
-    expect(piSession.prompt).not.toHaveBeenCalled();
+    expect(piSession.prompt).toHaveBeenCalledWith('/compact and use seq 1 5', expect.objectContaining({ expandPromptTemplates: false, streamingBehavior: 'steer' }));
+    expect(piSession.sendUserMessage).not.toHaveBeenCalled();
     expect(piSession.steer).not.toHaveBeenCalled();
     // The text reaches the transcript exactly as typed, with no expansion and no leading-slash stripping.
     expect(messages.filter((m) => m.type === 'userMessage')[0]).toMatchObject({ content: '/compact and use seq 1 5' });
@@ -5280,8 +5501,8 @@ describe('cancel note delivery: the main build site', () => {
     expect(session.cancelToolCall('call-3')).toBe(true);
     await pending;
 
-    const piSession = H.getLastSession() as unknown as { sendUserMessage: ReturnType<typeof vi.fn> };
-    expect(piSession.sendUserMessage).not.toHaveBeenCalled();
+    const piSession = H.getLastSession() as unknown as { prompt: ReturnType<typeof vi.fn> };
+    expect(piSession.prompt).not.toHaveBeenCalled();
     expect(messages.filter((m) => m.type === 'userMessage')).toEqual([]);
     await session.dispose();
   });

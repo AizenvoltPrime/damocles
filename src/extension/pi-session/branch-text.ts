@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { ContentInput } from '../session-types';
@@ -47,56 +48,58 @@ export function piMessageText(content: unknown): string {
     .join(' ');
 }
 
-/** The last user-role message entry on the active branch — its id plus stored text. */
-export function lastUserEntry(session: AgentSession): { id: string; text: string } | null {
-  const sm = session.sessionManager;
-  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry && entry.type === 'message' && (entry as { message?: { role?: string } }).message?.role === 'user') {
-      return { id: entry.id, text: piMessageText((entry as { message?: { content?: unknown } }).message?.content) };
-    }
-  }
-  return null;
-}
-
 /**
- * The user + assistant text this turn committed AFTER `priorUserEntryId`. Walks the active branch
- * forward from the entry following the prior boundary, joining user-role messages (the prompt plus
- * any mid-turn steers) and assistant-role messages (including held-continuation synthesis rounds)
- * separately. Skips custom_message entries (subagent results / plan-mode nudge are display:false
- * custom messages, not user turns). Returns null when no NEW user message was committed (the index
- * never advances past priorUserEntryId — e.g. a pi extension command that ran no agent turn).
+ * The user + assistant text of the turn opened by the prompt entry `userEntryId`, walking the active
+ * branch forward from that entry: user-role messages (the prompt plus any mid-turn steers and notes)
+ * and assistant-role messages (including held-continuation synthesis rounds) are joined separately.
+ * Skips custom_message entries (subagent results / plan-mode nudge are display:false custom messages,
+ * not user turns). Null when the entry is not on the branch. `files` are the turn's tool-call paths
+ * (up to 20), so extraction can tell which repo the turn touched.
  */
-export function turnExchangeAfter(
+export function turnExchangeFrom(
   session: AgentSession,
-  priorUserEntryId: string | null,
-): { userText: string; assistantText: string } | null {
+  userEntryId: string,
+  cwd: string,
+): { userText: string; assistantText: string; files: string[] } | null {
   const sm = session.sessionManager;
   const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-  let start = 0;
-  if (priorUserEntryId !== null) {
-    const idx = branch.findIndex((e) => e.id === priorUserEntryId);
-    if (idx !== -1) start = idx + 1;
-  }
+  const start = branch.findIndex((e) => e.id === userEntryId);
+  if (start === -1) return null;
   const userParts: string[] = [];
   const assistantParts: string[] = [];
-  let sawUser = false;
+  const files = new Set<string>();
   for (let i = start; i < branch.length; i++) {
     const entry = branch[i];
     if (!entry || entry.type !== 'message') continue;
     const message = (entry as { message?: { role?: string; content?: unknown } }).message;
     if (message?.role === 'user') {
-      sawUser = true;
       const t = piMessageText(message.content);
       if (t) userParts.push(t);
     } else if (message?.role === 'assistant') {
       const t = piMessageText(message.content);
       if (t) assistantParts.push(t);
+      collectToolCallPaths(message.content, cwd, files);
     }
   }
-  if (!sawUser) return null;
-  return { userText: userParts.join('\n\n'), assistantText: assistantParts.join('\n\n') };
+  return { userText: userParts.join('\n\n'), assistantText: assistantParts.join('\n\n'), files: [...files] };
+}
+
+const MAX_TURN_FILES = 20;
+
+/** Adds the `path`/`file_path` arguments of an assistant message's tool calls, resolved against `cwd`. */
+function collectToolCallPaths(content: unknown, cwd: string, into: Set<string>): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (into.size >= MAX_TURN_FILES) return;
+    const b = block as { type?: unknown; arguments?: Record<string, unknown> } | null;
+    if (b?.type !== 'toolCall' || !b.arguments) continue;
+    for (const key of ['path', 'file_path'] as const) {
+      const value = b.arguments[key];
+      if (typeof value !== 'string' || !value.trim()) continue;
+      into.add(path.isAbsolute(value) ? path.normalize(value) : path.resolve(cwd, value));
+      if (into.size >= MAX_TURN_FILES) return;
+    }
+  }
 }
 
 /** The first user+assistant exchange (truncated) used as the title-generation input, or null. */

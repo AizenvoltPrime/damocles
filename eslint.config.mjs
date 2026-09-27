@@ -23,7 +23,6 @@ export default [
       '**/*.d.ts',
       'scripts/generate-agent-profiles.mjs',
       'scripts/query-db.js',
-      'scripts/test-injection.js',
     ],
   },
   js.configs.recommended,

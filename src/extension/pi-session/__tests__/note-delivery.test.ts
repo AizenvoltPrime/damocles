@@ -18,20 +18,50 @@ vi.mock('../tools', async (importOriginal) => ({
 
 const NOTE = 'wrong loop, use seq 1 5';
 
+type PromptOptions = { streamingBehavior?: 'steer' | 'followUp'; preflightResult?: (accepted: boolean) => void };
+
+/**
+ * pi's own queue as the note path reaches it: while streaming, `prompt()` queues by `streamingBehavior`
+ * and reports acceptance through `preflightResult`; `clearQueue()` hands back and empties both queues.
+ */
+function piQueue() {
+  const steering: string[] = [];
+  const followUp: string[] = [];
+  const session = {
+    isStreaming: true,
+    steers: steering,
+    followUps: followUp,
+    // The panel echo stamps the prompt index, which is read from the branch.
+    sessionManager: { getBranch: () => [] },
+    prompt: vi.fn(async (text: string, opts?: PromptOptions) => {
+      if (session.isStreaming) (opts?.streamingBehavior === 'followUp' ? followUp : steering).push(text);
+      opts?.preflightResult?.(true);
+    }),
+    sendUserMessage: vi.fn(async (text: string, opts?: { deliverAs?: 'steer' | 'followUp' }) => {
+      if (session.isStreaming) (opts?.deliverAs === 'followUp' ? followUp : steering).push(text);
+    }),
+    steer: vi.fn(async () => undefined),
+    followUp: vi.fn(async () => undefined),
+    clearQueue: vi.fn(() => ({ steering: steering.splice(0), followUp: followUp.splice(0) })),
+    waitForIdle: vi.fn(async () => undefined),
+    extensionRunner: { hasHandlers: () => false },
+  };
+  return session;
+}
+type PiQueue = ReturnType<typeof piQueue>;
+
 interface Harness {
   session: PiSession;
   emitted: ExtensionToWebviewMessage[];
-  sendUserMessage: ReturnType<typeof vi.fn>;
   steer: ReturnType<typeof vi.fn>;
   deliverUserNote: ReturnType<typeof vi.fn>;
   busSend: ReturnType<typeof vi.fn>;
-  piSession: { sendUserMessage: ReturnType<typeof vi.fn> };
+  piSession: PiQueue;
 }
 
 /** Only the collaborators a note can reach; anything a note must not touch is here so it can be asserted silent. */
 function harness(): Harness {
   const emitted: ExtensionToWebviewMessage[] = [];
-  const sendUserMessage = vi.fn(async () => undefined);
   const steer = vi.fn(async () => 'steered');
   const deliverUserNote = vi.fn(() => true);
   const busSend = vi.fn();
@@ -50,14 +80,14 @@ function harness(): Harness {
     buildNestedMcp: unknown;
     agentRegistry: unknown;
   };
-  const piSession = { sendUserMessage, prompt: vi.fn(async () => undefined), steer: vi.fn(async () => undefined) };
+  const piSession = piQueue();
   internals.runtime = { session: piSession };
   internals.subagentManager = { steer, abortAll: vi.fn(), getRecord: () => ({ type: 'Explore', description: 'look' }) };
   // The note path must not depend on the MCP snapshot, so the spawn's other half is stubbed out.
   internals.buildNestedMcp = () => ({ tools: [], names: [] });
   internals.agentRegistry = {};
 
-  return { session, emitted, sendUserMessage, steer, deliverUserNote, busSend, piSession };
+  return { session, emitted, steer, deliverUserNote, busSend, piSession };
 }
 
 type Deliveries = {
@@ -111,46 +141,46 @@ beforeEach(() => {
 });
 
 describe('cancel note delivery targets the agent that ran the command', () => {
-  it('sends the panel session its own note as a queued user message', async () => {
+  it('steers the panel session its own note, so it lands at the next tool boundary of the running run', async () => {
     const h = harness();
     deliveries(h.session, () => h.piSession).main()(NOTE);
-    await vi.waitFor(() => expect(h.sendUserMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(h.piSession.prompt).toHaveBeenCalledTimes(1));
 
-    expect(h.sendUserMessage).toHaveBeenCalledWith(NOTE, { deliverAs: 'followUp', expandPromptTemplates: false });
+    expect(h.piSession.prompt).toHaveBeenCalledWith(NOTE, {
+      expandPromptTemplates: false,
+      streamingBehavior: 'steer',
+      source: 'extension',
+      preflightResult: expect.any(Function),
+    });
+    expect(h.piSession.steers).toEqual([NOTE]);
+    expect(h.piSession.followUps).toEqual([]);
     expect(h.steer).not.toHaveBeenCalled();
     expect(h.busSend).not.toHaveBeenCalled();
-  });
-
-  it('leaves a note starting with a slash as literal text', async () => {
-    const h = harness();
-    deliveries(h.session, () => h.piSession).main()('/compact now');
-    await vi.waitFor(() => expect(h.sendUserMessage).toHaveBeenCalledTimes(1));
-
-    const [text, opts] = h.sendUserMessage.mock.calls[0]!;
-    expect(text).toBe('/compact now');
-    expect(opts).toMatchObject({ expandPromptTemplates: false });
   });
 
   it('queues the note with template expansion off, because a leading slash in it must not dispatch as a slash command', async () => {
     const h = harness();
     deliveries(h.session, () => h.piSession).main()('/help with the failing spec');
-    await vi.waitFor(() => expect(h.sendUserMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(h.piSession.prompt).toHaveBeenCalledTimes(1));
 
-    const [, opts] = h.sendUserMessage.mock.calls[0]!;
-    expect(opts).toEqual({ deliverAs: 'followUp', expandPromptTemplates: false });
+    const [text, opts] = h.piSession.prompt.mock.calls[0]!;
+    expect(text).toBe('/help with the failing spec');
+    expect(opts).toMatchObject({ expandPromptTemplates: false });
+    // `steer()` runs the extension-command check and template expansion whatever the caller asks.
+    expect(h.piSession.steer).not.toHaveBeenCalled();
   });
 
   it('reaches the session the tools were built against, not the one that replaced it', async () => {
     const h = harness();
-    const oldSession = { sendUserMessage: vi.fn(async () => undefined) };
+    const oldSession = piQueue();
     const deliver = deliveries(h.session, () => oldSession).main();
 
     // A reset swaps the panel's live session; the leftover call's delivery must not follow it.
     (h.session as unknown as { runtime: unknown }).runtime = { session: h.piSession };
     deliver(NOTE);
-    await vi.waitFor(() => expect(oldSession.sendUserMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(oldSession.prompt).toHaveBeenCalledTimes(1));
 
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
   });
 
   it('sends a subagent its own note through the steer channel, and the panel session nothing', async () => {
@@ -159,7 +189,7 @@ describe('cancel note delivery targets the agent that ran the command', () => {
     await vi.waitFor(() => expect(h.steer).toHaveBeenCalledTimes(1));
 
     expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE, undefined);
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
     expect(h.busSend).not.toHaveBeenCalled();
   });
 
@@ -172,7 +202,7 @@ describe('cancel note delivery targets the agent that ran the command', () => {
     // The bus dropped the note two ways, the unsubscribe race and the sender self-filter, so the seam
     // must not fall back to it.
     expect(h.busSend).not.toHaveBeenCalled();
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
     expect(h.steer).not.toHaveBeenCalled();
   });
 
@@ -201,12 +231,14 @@ describe('the note is echoed once per context', () => {
 
   it('does not echo a panel note pi refused, so the user is never told the agent was told', async () => {
     const h = harness();
-    const rejecting = { sendUserMessage: vi.fn(async () => { throw new Error('session is being replaced'); }) };
+    const rejecting = { ...piQueue(), prompt: vi.fn(async () => { throw new Error('session is being replaced'); }) };
     deliveries(h.session, () => rejecting).main()(NOTE);
-    await vi.waitFor(() => expect(rejecting.sendUserMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(rejecting.prompt).toHaveBeenCalledTimes(1));
     await Promise.resolve();
 
     expect(echoes(h.emitted)).toEqual([]);
+    // Nothing of it is left listed, so a later chip batch with the same text still collapses.
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(false);
   });
 
   it('does not echo a panel note whose session no longer exists', async () => {
@@ -216,7 +248,7 @@ describe('the note is echoed once per context', () => {
     await Promise.resolve();
 
     expect(echoes(h.emitted)).toEqual([]);
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
   });
 
   it('echoes a subagent note through the steer chip and adds no panel turn', async () => {
@@ -252,14 +284,13 @@ describe('the note is echoed once per context', () => {
 describe('a delivered note is not mistaken for a queued chip batch', () => {
   it('leaves the chips pending when the delivery pi reports is the note', async () => {
     const h = harness();
-    (h.piSession as unknown as { isStreaming: boolean }).isStreaming = true;
-    (h.piSession as unknown as { clearQueue: () => unknown }).clearQueue = () => ({ followUp: [] });
     h.session.queueInput('rerun the failing spec', 'q1');
     deliveries(h.session, () => h.piSession).main()(NOTE);
     await vi.waitFor(() => expect(echoes(h.emitted)).toContain('userMessage'));
 
-    // pi raises the same user message_end for the note that it raises for a delivered batch.
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(false);
+    // pi raises the same user message_end for the note that it raises for a delivered batch. The note
+    // owes a mid-stream marker of its own, so it consumes no prompt index, but leaves the chips pending.
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
     expect(h.emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
 
     // The batch's own delivery still collapses the chips and still owes a mid-stream marker.
@@ -269,45 +300,23 @@ describe('a delivered note is not mistaken for a queued chip batch', () => {
 
   it('consumes the note only once, so a later batch with the same text still collapses', async () => {
     const h = harness();
-    (h.piSession as unknown as { isStreaming: boolean }).isStreaming = true;
-    (h.piSession as unknown as { clearQueue: () => unknown }).clearQueue = () => ({ followUp: [] });
     deliveries(h.session, () => h.piSession).main()(NOTE);
     await vi.waitFor(() => expect(echoes(h.emitted)).toContain('userMessage'));
-    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(false);
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.emitted.some((m) => m.type === 'queueBatchProcessed')).toBe(false);
 
     h.session.queueInput(NOTE, 'q1');
     expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
   });
 });
-
-/** A stand-in for pi's own follow-up queue, so a test can see what survives a clear and what is re-queued. */
-function queueingSession(): {
-  sendUserMessage: ReturnType<typeof vi.fn>;
-  followUp: ReturnType<typeof vi.fn>;
-  prompt: ReturnType<typeof vi.fn>;
-  clearQueue: ReturnType<typeof vi.fn>;
-  isStreaming: boolean;
-  pending: string[];
-} {
-  const pending: string[] = [];
-  return {
-    pending,
-    isStreaming: true,
-    sendUserMessage: vi.fn(async (text: string) => { pending.push(text); }),
-    followUp: vi.fn(async () => undefined),
-    prompt: vi.fn(async () => undefined),
-    clearQueue: vi.fn(() => ({ steering: [], followUp: pending.splice(0) })),
-  };
-}
 
 describe('a note that pi accepted is not silently discarded later', () => {
   it('corrects the echo when the budget stop drops a note the agent never read', async () => {
     const h = harness();
-    const target = queueingSession();
-    (h.session as unknown as { runtime: unknown }).runtime = { session: target };
-    deliveries(h.session, () => target).main()(NOTE);
+    deliveries(h.session, () => h.piSession).main()(NOTE);
     await vi.waitFor(() => expect(echoes(h.emitted)).toEqual(['userMessage']));
-    expect(target.pending).toEqual([NOTE]);
+    expect(h.piSession.steers).toEqual([NOTE]);
 
     const internals = h.session as unknown as { processingFlag: boolean; stopForBudget: () => void };
     internals.processingFlag = true;
@@ -318,11 +327,10 @@ describe('a note that pi accepted is not silently discarded later', () => {
     expect(notices.some((t) => t.includes('discarded your cancel note'))).toBe(true);
   });
 
-  it('corrects nothing for a follow-up the panel never echoed', () => {
+  it('corrects nothing for a queued message the panel never echoed', () => {
     const h = harness();
-    const target = queueingSession();
-    target.pending.push('a follow-up from somewhere else');
-    (h.session as unknown as { runtime: unknown }).runtime = { session: target };
+    h.piSession.followUps.push('a follow-up from somewhere else');
+    h.piSession.steers.push('a steer from somewhere else');
 
     const internals = h.session as unknown as { processingFlag: boolean; stopForBudget: () => void };
     internals.processingFlag = true;
@@ -333,21 +341,133 @@ describe('a note that pi accepted is not silently discarded later', () => {
     expect(notices.some((t) => t.includes('Budget limit reached'))).toBe(true);
   });
 
-  it('re-queues a preserved follow-up as literal text when a chip re-steers the buffer', async () => {
+  it('puts the note back ahead of the batch when a message queued after it re-steers pi\'s queue', async () => {
     const h = harness();
-    const target = queueingSession();
-    (h.session as unknown as { runtime: unknown }).runtime = { session: target };
-    deliveries(h.session, () => target).main()('/compact and use seq 1 5');
-    await vi.waitFor(() => expect(target.pending).toHaveLength(1));
-    target.sendUserMessage.mockClear();
+    deliveries(h.session, () => h.piSession).main()('/compact and use seq 1 5');
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual(['/compact and use seq 1 5']));
 
-    // The re-steer takes pi's whole queue and must put the follow-ups back exactly as they went in.
+    // The re-steer clears pi's whole queue, which held the note.
+    h.session.queueInput('rerun the failing spec', 'q1');
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual(['/compact and use seq 1 5', 'rerun the failing spec']));
+
+    // Put back as literal text: `steer()` would run the command check and template expansion on it.
+    expect(h.piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'steer', expandPromptTemplates: false });
+    expect(h.piSession.steer).not.toHaveBeenCalled();
+  });
+
+  it('moves a note ahead of a batch queued before it, so the batch waits one boundary', async () => {
+    const h = harness();
+    h.session.queueInput('rerun the failing spec', 'q1');
+    expect(h.piSession.steers).toEqual(['rerun the failing spec']);
+
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual([NOTE, 'rerun the failing spec']));
+  });
+
+  it('keeps a batch whose text equals a note a batch, putting back only the note', async () => {
+    const h = harness();
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual([NOTE]));
+
+    h.session.queueInput(NOTE, 'q1');
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual([NOTE, NOTE]));
+    h.session.queueInput('and the lint', 'q2');
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual([NOTE, `${NOTE}\n\nand the lint`]));
+  });
+
+  it('re-queues a preserved follow-up as literal text when a chip re-steers the buffer', () => {
+    const h = harness();
+    h.piSession.followUps.push('/compact and use seq 1 5');
+
     h.session.queueInput('rerun the failing spec', 'q1');
 
-    expect(target.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
-    // `followUp()` runs the extension-command check and the template expansion, which is the guard the
-    // note was queued with `expandPromptTemplates: false` to avoid.
-    expect(target.followUp).not.toHaveBeenCalled();
+    expect(h.piSession.sendUserMessage).toHaveBeenCalledWith('/compact and use seq 1 5', { deliverAs: 'followUp', expandPromptTemplates: false });
+    expect(h.piSession.followUps).toEqual(['/compact and use seq 1 5']);
+    // `followUp()` runs the extension-command check and the template expansion.
+    expect(h.piSession.followUp).not.toHaveBeenCalled();
+  });
+});
+
+describe('a note for a run that was stopped', () => {
+  const stopped = (h: Harness): void => {
+    (h.session as unknown as { abortPromise: Promise<void> | null }).abortPromise = new Promise(() => undefined);
+  };
+  const noticeTexts = (h: Harness): string[] => h.emitted.flatMap((m) => (m.type === 'notification' ? [m.message] : []));
+
+  it('is never handed to pi while an ESC winds the run down, and the user is told it was not sent', () => {
+    const h = harness();
+    stopped(h);
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
+    expect(echoes(h.emitted)).toEqual([]);
+    expect(noticeTexts(h)).toEqual(['Your cancel note was not sent: the turn was stopped.']);
+  });
+
+  it('is taken back out when the ESC lands while pi runs its input handlers', async () => {
+    const h = harness();
+    let proceed!: () => void;
+    const inputHandlers = new Promise<void>((resolve) => { proceed = resolve; });
+    const queue = h.piSession.prompt.getMockImplementation()!;
+    h.piSession.prompt.mockImplementation(async (text: string, opts?: PromptOptions) => {
+      await inputHandlers;
+      await queue(text, opts);
+    });
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+    stopped(h);
+    proceed();
+    await vi.waitFor(() => expect(noticeTexts(h)).toHaveLength(1));
+
+    expect(h.piSession.steers).toEqual([]);
+    expect(echoes(h.emitted)).toEqual([]);
+    // Nothing of it is left listed, so a later chip batch with the same text still collapses.
+    h.session.queueInput(NOTE, 'q1');
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
+    expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'] });
+  });
+
+  it('is corrected on ESC once echoed, and ESC hands the chips back to the input', async () => {
+    const h = harness();
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+    await vi.waitFor(() => expect(echoes(h.emitted)).toEqual(['userMessage']));
+    h.session.queueInput('rerun the failing spec', 'q1');
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual([NOTE, 'rerun the failing spec']));
+    (h.piSession as unknown as { abort: () => Promise<void> }).abort = vi.fn(async () => undefined);
+
+    await h.session.interrupt();
+
+    expect(h.piSession.steers).toEqual([]);
+    expect(h.emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
+    expect(noticeTexts(h)).toEqual(['Stopping the turn discarded your cancel note before the agent read it.']);
+  });
+});
+
+describe('a batch that grew while its re-steer was in flight', () => {
+  it('collapses only the chips pi delivered and re-steers the rest', async () => {
+    const h = harness();
+    h.session.queueInput('first', 'q1');
+    h.session.queueInput('second', 'q2');
+    expect(h.piSession.steers).toEqual(['first']);
+
+    // pi delivers the batch it holds before the pending pass re-steers the grown buffer.
+    expect(h.session.onQueuedInputsDelivered('first')).toBe(true);
+    expect(h.emitted.find((m) => m.type === 'queueBatchProcessed')).toMatchObject({ messageIds: ['q1'], combinedContent: 'first' });
+    h.piSession.steers.splice(0);
+    await vi.waitFor(() => expect(h.piSession.steers).toEqual(['second']));
+  });
+});
+
+describe('a note accepted with no run in progress', () => {
+  it('opens a turn for the run it starts and echoes it, listed so its delivery is owed a mid-stream marker', async () => {
+    const h = harness();
+    h.piSession.isStreaming = false;
+    deliveries(h.session, () => h.piSession).main()(NOTE);
+    await vi.waitFor(() => expect(echoes(h.emitted)).toEqual(['userMessage']));
+
+    expect(h.emitted).toContainEqual(expect.objectContaining({ type: 'processing', isProcessing: true }));
+    // Its re-steer is skipped: nothing is queued in a run that has not started.
+    expect(h.piSession.clearQueue).not.toHaveBeenCalled();
+    expect(h.session.onQueuedInputsDelivered(NOTE)).toBe(true);
   });
 });
 
@@ -363,7 +483,7 @@ describe('each build context supplies its own delivery', () => {
     await vi.waitFor(() => expect(h.steer).toHaveBeenCalledTimes(1));
 
     expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE, undefined);
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
   });
 
   it('gives a team agent a delivery bound to its own runner', () => {
@@ -376,7 +496,7 @@ describe('each build context supplies its own delivery', () => {
 
     expect(h.deliverUserNote).toHaveBeenCalledWith(NOTE);
     expect(h.busSend).not.toHaveBeenCalled();
-    expect(h.sendUserMessage).not.toHaveBeenCalled();
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
     expect(h.steer).not.toHaveBeenCalled();
   });
 });

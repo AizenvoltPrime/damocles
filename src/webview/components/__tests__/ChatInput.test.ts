@@ -363,3 +363,35 @@ describe('the composer when the extension refuses a steer it already cleared', (
     expect(textarea.value).toBe('');
   });
 });
+
+describe('the composer taking back queued messages a stop never sent', () => {
+  const IMAGE_BLOCK = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } };
+
+  const imageStrip = (wrapper: VueWrapper) => wrapper.findComponent({ name: 'ImageThumbnailStrip' }).props('attachments') as ImageAttachment[];
+
+  beforeEach(() => {
+    seeded.images = [];
+    // happy-dom decodes no image, so a loaded one is stood in for.
+    vi.stubGlobal('Image', class {
+      naturalWidth = 3;
+      naturalHeight = 2;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    });
+    return () => vi.unstubAllGlobals();
+  });
+
+  it('appends the text after what the box already holds and re-attaches the images', async () => {
+    const wrapper = composer();
+    const textarea = await type(wrapper, 'a draft typed since');
+
+    (wrapper.vm as unknown as { restoreQueued: (blocks: unknown[]) => void }).restoreQueued([IMAGE_BLOCK, { type: 'text', text: 'rerun the spec' }]);
+    await vi.waitFor(() => expect(imageStrip(wrapper)).toHaveLength(1));
+
+    expect(textarea.value).toBe('a draft typed since\n\nrerun the spec');
+    expect(imageStrip(wrapper)[0]).toMatchObject({ base64Data: 'AAAA', mediaType: 'image/png', dataUrl: 'data:image/png;base64,AAAA', width: 3, height: 2 });
+  });
+});

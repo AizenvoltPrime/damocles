@@ -42,6 +42,8 @@ vi.mock('../subcall-runner', () => ({
 import { RetrievalManager } from '../managers/retrieval-manager';
 import { expandQuery } from '../query-expansion';
 import { MemoryService } from '../index';
+import { buildMemoryPiTools } from '../../pi-session/tools/memory-tools';
+import type { PiCodingAgentModule } from '../../pi-session/pi-loader';
 
 const mockedExpandQuery = vi.mocked(expandQuery);
 
@@ -178,6 +180,16 @@ describe('RetrievalManager.search', () => {
     expect(ids).toContain('F');
     expect(ids).not.toContain('OLD');
     expect(ids).not.toContain('GONE');
+  });
+
+  it('finds a memory by the commit SHA or UUID it records', async () => {
+    seed(db, { id: 'SHA', content: 'The regression landed in commit 5d1c426a9f.' });
+    seed(db, { id: 'UUID', content: 'Session 985d5b12-ff9a-499f-922c-5dcdf2e9a8fe hit the bug.' });
+    seed(db, { id: 'OTHER', content: 'Unrelated newest note.' });
+
+    const manager = new RetrievalManager(db);
+    expect((await manager.search({ query: '5d1c426a9f', ...ALL })).map(r => r.id)).toEqual(['SHA']);
+    expect((await manager.search({ query: '985d5b12-ff9a-499f-922c-5dcdf2e9a8fe', ...ALL })).map(r => r.id)).toEqual(['UUID']);
   });
 });
 
@@ -330,5 +342,69 @@ describe('MemoryService.getMemoryDetails — forgotten rows resolve on explicit 
 
     const row = db.prepare('SELECT access_count FROM memories WHERE id = ?').get('gone') as { access_count: number };
     expect(row.access_count).toBe(0);
+  });
+});
+
+// Explicit-id memory tools are real use of a memory, so each records a retrieval like GetMemoryDetails.
+describe('memory tools record retrievals on success', () => {
+  let service: MemoryService;
+
+  beforeEach(() => {
+    dbHolder.path = path.join(os.tmpdir(), `damocles-tool-retrieval-${crypto.randomUUID()}.db`);
+    service = new MemoryService('/ext');
+  });
+
+  afterEach(() => {
+    service.dispose();
+    for (const suffix of ['', '-wal', '-shm']) {
+      try {
+        fs.unlinkSync(dbHolder.path + suffix);
+      } catch {
+        /* already gone */
+      }
+    }
+  });
+
+  async function runTool(name: string, input: Record<string, unknown>): Promise<void> {
+    const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+    const tools = buildMemoryPiTools({ pi, memoryService: service, getSessionId: () => 's1', workspace: '/ws' }) as unknown as Array<{
+      name: string;
+      execute: (id: string, input: Record<string, unknown>) => Promise<unknown>;
+    }>;
+    await tools.find((t) => t.name === name)!.execute('call', input);
+  }
+
+  function retrievalIds(db: DatabaseInstance): string[] {
+    return (db.prepare('SELECT memory_id FROM memory_retrievals ORDER BY memory_id').all() as { memory_id: string }[]).map((r) => r.memory_id);
+  }
+
+  it('GetRelatedMemories adds a memory_retrievals row for each related memory', async () => {
+    await service.ensureInitialized();
+    const db = service.database!;
+    seed(db, { id: 'a', content: 'alpha fact', workspace: '/ws' });
+    seed(db, { id: 'b', content: 'beta fact', workspace: '/ws' });
+    db.prepare("INSERT INTO memory_edges (id, kind, source_id, target_id, created_at) VALUES ('e1', 'EXTENDS', 'a', 'b', ?)").run(Date.now());
+
+    await runTool('GetRelatedMemories', { id: 'a' });
+
+    expect(retrievalIds(db)).toContain('b');
+  });
+
+  it('GetMemoryHistory and UpdateMemory record the ids they return', async () => {
+    await service.ensureInitialized();
+    const db = service.database!;
+    seed(db, { id: 'n1', kind: 'note', content: 'a note', workspace: '/ws' });
+
+    await runTool('GetMemoryHistory', { id: 'n1' });
+    expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(1);
+    await runTool('UpdateMemory', { id: 'n1', content: 'an edited note' });
+    expect(retrievalIds(db).filter((id) => id === 'n1')).toHaveLength(2);
+  });
+
+  it('records nothing when the tool finds nothing', async () => {
+    await service.ensureInitialized();
+    await runTool('GetRelatedMemories', { id: 'missing' });
+    await runTool('UpdateMemory', { id: 'missing', content: 'x' });
+    expect(retrievalIds(service.database!)).toEqual([]);
   });
 });

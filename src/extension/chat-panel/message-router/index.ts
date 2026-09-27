@@ -98,7 +98,12 @@ export class MessageRouter {
         const failure = `Failed to handle ${message.type}: ${detail}`;
         if (MEMORY_MESSAGE_TYPES.has(message.type)) {
           const source = MEMORY_MESSAGE_SOURCES.get(message.type);
-          this.postMessage(instance.host, { type: "memoryError", message: failure, ...(source ? { source } : {}) });
+          this.postMessage(instance.host, {
+            type: "memoryError",
+            message: failure,
+            ...(source ? { source } : {}),
+            ...(source === "audit" ? { code: "request-failed" as const } : {}),
+          });
         } else {
           this.postMessage(instance.host, { type: "error", message: failure });
         }

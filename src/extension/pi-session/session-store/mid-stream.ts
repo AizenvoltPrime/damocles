@@ -1,7 +1,7 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { DAMOCLES_MID_STREAM_ENTRY } from './constants';
 
-/** The payload Damocles persists for a user entry that was a delivered mid-stream queued batch. */
+/** The payload Damocles persists for a user entry delivered mid-run: a queued batch or a cancel note. */
 export interface MidStreamData {
   userEntryId: string;
 }
@@ -16,9 +16,9 @@ function isMidStreamData(value: unknown): value is MidStreamData {
 }
 
 /**
- * Collect the set of user entry ids flagged as delivered mid-stream queued batches. Empty when the
- * session predates this feature or queued no messages mid-stream. Reads the same branch the message
- * path reads, so the replay styling stays in sync.
+ * Collect the set of user entry ids flagged as delivered mid-run. Empty when the session predates
+ * this feature or delivered nothing mid-run; a cancel note written before notes were marked has no
+ * flag. Reads the same branch the message path reads, so the replay styling stays in sync.
  */
 export function extractMidStreamEntryIds(branch: readonly SessionEntry[]): Set<string> {
   const ids = new Set<string>();

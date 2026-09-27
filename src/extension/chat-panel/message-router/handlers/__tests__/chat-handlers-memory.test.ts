@@ -75,3 +75,13 @@ describe("chat /remember project: files under the panel folder", () => {
     expect(h.memoryService.saveMemory).toHaveBeenCalledWith(expect.objectContaining({ scope: "project", workspace: "/home/user" }));
   });
 });
+
+describe("chat /compact echo", () => {
+  // A compaction commits no user entry, so a prompt index on its echo would name another prompt's record.
+  it("echoes /compact as an injected row, never as a prompt", async () => {
+    const h = makeHarness({});
+    Object.assign(h.ctx.session, { compact: vi.fn(async () => {}) });
+    await send(h, "/compact keep the API notes");
+    expect(h.sent.find((m) => m.type === "userMessage")).toMatchObject({ content: "/compact keep the API notes", isInjected: true, isCommandEcho: true, promptIndex: 0 });
+  });
+});

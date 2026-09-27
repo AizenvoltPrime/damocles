@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/u
 import { Switch } from '@/components/ui/switch';
 import { IconChevronLeft, IconChevronRight } from '@/components/icons';
 import StatsMultiSelect, { type StatsSelectOption } from './StatsMultiSelect.vue';
-import { folderName } from './stats-labels';
+import { folderName } from '@/lib/folder-name';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import { useStatsFormat } from '@/composables/useStatsFormat';
 import { STATS_PRESETS, customSpec, firstDayMs, localDateOf, presetSpec } from '@/composables/useStatsRange';

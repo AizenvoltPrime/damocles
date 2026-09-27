@@ -55,7 +55,8 @@ function liveSessionUsage(file: string, sessionDir: string): ExtensionToWebviewM
     showThinkingDroppedNotices: () => false,
     onBudgetStop: () => undefined,
     onUserMessageDelivered: () => false,
-    onMidStreamBatchCommitted: () => undefined,
+    onMidStreamEntryCommitted: () => undefined,
+    promptEntryId: () => null,
     onTurnStateChanged: () => undefined,
   });
   let listener: ((event: unknown) => void) | undefined;

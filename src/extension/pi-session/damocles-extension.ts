@@ -222,7 +222,8 @@ export function createDamoclesExtensionFactory(
       const panel = registry.get(sessionId);
       if (!panel) return undefined;
       try {
-        return await buildAgentStartResult(event, panel, sessionId);
+        // Every holder of a deleted session unregisters before the delete.
+        return await buildAgentStartResult(event, panel, sessionId, ctx.sessionManager, () => registry.get(sessionId) !== undefined);
       } catch (err) {
         log('[DamoclesExtension] before_agent_start failed: %O', err);
         return undefined;

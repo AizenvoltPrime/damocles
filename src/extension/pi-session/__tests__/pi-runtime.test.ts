@@ -963,3 +963,27 @@ describe('PiRuntime.syncCustomProviders', () => {
   });
 });
 
+describe('PiRuntime sub-call model credential', () => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await PiRuntime.disposeInstance();
+  });
+
+  it('treats an Explore model whose provider has no configured credential as no model, not a fallback', () => {
+    vi.spyOn(vscode.workspace, 'getConfiguration').mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => (section === 'damocles.explore' ? ({ enabled: true, provider: 'stepfun' } as Record<string, unknown>)[key] ?? def : def),
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+    const model = { id: 'step-3.7-flash', provider: 'stepfun', cost: { input: 0.2, output: 0.8 } };
+    let authed = false;
+    const runtime = PiRuntime.get();
+    const internals = runtime as unknown as { _modelRuntime: unknown; _folders: Map<string, unknown> };
+    internals._modelRuntime = { getModel: () => model, hasConfiguredAuth: () => authed };
+    internals._folders.set('/ws', {});
+
+    expect(runtime.hasAuthedSubCallModel()).toBe(false);
+    expect(runtime.describeSubCallModel()).toBeNull();
+    authed = true;
+    expect(runtime.describeSubCallModel()).toMatchObject({ provider: 'stepfun', id: 'step-3.7-flash', inputPerMTok: 0.2, outputPerMTok: 0.8 });
+  });
+});

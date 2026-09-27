@@ -2,6 +2,7 @@ import { ref, type Ref } from 'vue';
 import type { ChatMessage } from '@shared/types/session';
 import type { VirtualItem } from './useVirtualizedMessages';
 import type { Frame } from './useScrollEngine';
+import { USER_PROMPT_FILTER } from './useEnrichedPrompts';
 
 function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
@@ -44,7 +45,7 @@ export function useStickyHeader(
       const frameItem = f.items[i];
       if (!frameItem) continue;
       if (visitingIndex >= 0 && i <= visitingIndex) continue;
-      if (it.message.isInjected || it.message.isCombinedQueue || it.message.isQueued) continue;
+      if (!USER_PROMPT_FILTER(it.message)) continue;
       const topY = canvasOffset + frameItem.top;
       if (topY < scrollTop) {
         activeIndex = i;

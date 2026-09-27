@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import type { IdeContextDisplayInfo } from "../../shared/types/session";
 import type { UserContentBlock } from "../../shared/types/content";
+import { formatIdeContextBlock } from "@shared/ide-context";
 
 interface SelectionContext {
   type: "selection";
@@ -184,16 +185,7 @@ export class IdeContextManager {
   }
 
   private formatContextBlock(): string | null {
-    if (!this.currentContext) return null;
-
-    const { type, filePath, content } = this.currentContext;
-
-    if (type === "selection") {
-      const { startLine, endLine } = this.currentContext;
-      return `<ide_selection>The user selected the lines ${startLine} to ${endLine} from ${filePath}:\n${content}\n\nThis may or may not be related to the current task.</ide_selection>`;
-    }
-
-    return `<ide_opened_file>The user opened the file ${filePath} in the IDE. This may or may not be related to the current task.</ide_opened_file>`;
+    return this.currentContext ? formatIdeContextBlock(this.currentContext) : null;
   }
 
   dispose(): void {
