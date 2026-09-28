@@ -56,7 +56,6 @@ export interface ExtensionSettings {
   /** When false, the IDE opened-file/selection context chip starts disabled in new panels. */
   ideContextEnabled: boolean;
   pinnedHeaderHidden: boolean;
-  worktreeBaseRef: 'fresh' | 'head';
   team: TeamRoleSettings;
 }
 

@@ -298,22 +298,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    setWorktreeBaseRef: async (msg, ctx) => {
-      if (msg.type !== "setWorktreeBaseRef") return;
-      try {
-        await settingsManager.handleSetWorktreeBaseRef(msg.baseRef);
-      } catch (err) {
-        log("[MessageRouter] Error setting worktree base ref:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: vscode.l10n.t("Failed to save worktree base ref: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
-    },
-
-
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);

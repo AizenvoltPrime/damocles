@@ -53,7 +53,6 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   defaultDangerouslySkipPermissions: false,
   ideContextEnabled: true,
   pinnedHeaderHidden: false,
-  worktreeBaseRef: 'head',
   team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
 };
 
@@ -174,10 +173,6 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setDefaultPermissionMode(mode: PermissionMode) {
     currentSettings.value.defaultPermissionMode = mode;
-  }
-
-  function setWorktreeBaseRef(baseRef: 'fresh' | 'head') {
-    currentSettings.value.worktreeBaseRef = baseRef;
   }
 
   function setDangerouslySkipPermissions(enabled: boolean) {
@@ -473,7 +468,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setBudgetLimit,
     setTaskBudget,
     setDefaultPermissionMode,
-    setWorktreeBaseRef,
     setDangerouslySkipPermissions,
     setDefaultDangerouslySkipPermissions,
     setIdeContextEnabledDefault,

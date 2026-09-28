@@ -77,7 +77,6 @@ export type WebviewToExtensionMessage =
   | { type: "setCacheWarming"; mode: CacheWarmingMode }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
-  | { type: "setWorktreeBaseRef"; baseRef: 'fresh' | 'head' }
   | { type: "setDangerouslySkipPermissions"; enabled: boolean }
   | { type: "setDefaultDangerouslySkipPermissions"; enabled: boolean }
   | { type: "setIdeContextEnabled"; enabled: boolean }

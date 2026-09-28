@@ -1,10 +1,9 @@
 /**
  * types.ts — Type definitions for the native subagent engine.
  *
- * Adapted from @tintinweb/pi-subagents (MIT, © 2026 tintinweb; see THIRD-PARTY-NOTICES.md).
- * Schedule/worktree/group shapes dropped (those features are excluded — see the Phase 5 plan).
- * The deferred fields `isolation`, `inheritContext`, and `memory` are parsed from frontmatter but
- * carry NO behavior in v1 (worktree isolation, context inheritance, and agent-memory are deferred).
+ * Adapted from @tintinweb/pi-subagents (MIT, © 2026 tintinweb). Schedule/worktree/group shapes are
+ * dropped; THIRD-PARTY-NOTICES.md "pi-subagents" lists every upstream feature not ported.
+ * Fields marked "Deferred" or "v1 ignores" are parsed from frontmatter but carry no behavior.
  */
 
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
@@ -37,9 +36,6 @@ export const DEFAULT_AGENT_NAMES = ['general-purpose', 'Explore', 'Plan'] as con
 
 /** Memory scope for persistent agent memory (deferred — parsed, no behavior). */
 export type MemoryScope = 'user' | 'project' | 'local';
-
-/** Isolation mode for agent execution (deferred — parsed, no behavior). */
-export type IsolationMode = 'worktree';
 
 /** Where an agent definition was loaded from. */
 export type AgentSource = 'default' | 'project-pi' | 'project-claude' | 'project-damocles' | 'global';
@@ -88,8 +84,6 @@ export interface AgentConfig {
   isolated?: boolean | undefined;
   /** Deferred: persistent memory scope. Parsed, no behavior in v1. */
   memory?: MemoryScope | undefined;
-  /** Deferred: "worktree" isolation. Parsed, no behavior in v1. */
-  isolation?: IsolationMode | undefined;
   /** true = embedded default agent (informational). */
   isDefault?: boolean | undefined;
   /** false = agent is hidden from the registry (excluded from spawning). */

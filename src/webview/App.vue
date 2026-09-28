@@ -589,11 +589,6 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
   settingsStore.setDefaultPermissionMode(mode);
 }
 
-function handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head') {
-  postMessage({ type: "setWorktreeBaseRef", baseRef });
-  settingsStore.setWorktreeBaseRef(baseRef);
-}
-
 function handleSetDefaultDangerouslySkipPermissions(enabled: boolean) {
   postMessage({ type: "setDefaultDangerouslySkipPermissions", enabled });
   settingsStore.setDefaultDangerouslySkipPermissions(enabled);
@@ -1356,7 +1351,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
       @set-ide-context-enabled="handleSetIdeContextEnabled"
-      @set-worktree-base-ref="handleSetWorktreeBaseRef"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @set-voice-provider="handleSetVoiceProvider"
       @set-voice-api-key="handleSetVoiceApiKey"

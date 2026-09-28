@@ -308,19 +308,6 @@
           "default": true,
           "description": "%configuration.showThinkingDroppedNotices.description%"
         },
-        "damocles.worktreeBaseRef": {
-          "type": "string",
-          "default": "head",
-          "enum": [
-            "head",
-            "fresh"
-          ],
-          "enumDescriptions": [
-            "Branch isolated subagent worktrees from local HEAD (preserves unpushed commits)",
-            "Branch isolated subagent worktrees from origin/<default> (drops unpushed commits)"
-          ],
-          "description": "Base ref for worktrees created by subagents dispatched with isolation: \"worktree\""
-        },
         "damocles.dangerouslySkipPermissions": {
           "type": "boolean",
           "default": false,

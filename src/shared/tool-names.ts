@@ -32,8 +32,6 @@ export const TOOL_TOOL_SEARCH = "ToolSearch";
 export const TOOL_CRON_CREATE = "CronCreate";
 export const TOOL_CRON_DELETE = "CronDelete";
 export const TOOL_CRON_LIST = "CronList";
-export const TOOL_ENTER_WORKTREE = "EnterWorktree";
-export const TOOL_EXIT_WORKTREE = "ExitWorktree";
 export const TOOL_POWERSHELL = "PowerShell";
 export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 
@@ -44,7 +42,7 @@ export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EX
 export const TASK_MANAGEMENT_TOOLS: Set<string> = new Set([TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET]);
 export const BACKGROUND_TASK_TOOLS: Set<string> = new Set([TOOL_TASK_STOP, TOOL_TASK_OUTPUT]);
 export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST]);
-export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_ENTER_WORKTREE, TOOL_EXIT_WORKTREE, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_STOP]);
+export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_STOP]);
 /** The three native subagent tools (Phase 5). Excluded from nested subagent allowlists (no recursion). */
 export const SUBAGENT_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT]);
 /** Plan-mode entry/exit tools. Plan mode is a top-level panel concern owned by the primary session, so

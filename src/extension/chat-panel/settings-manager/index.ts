@@ -345,10 +345,6 @@ export class SettingsManager {
     return this.configManager.handleSetDefaultPermissionMode(mode);
   }
 
-  async handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head'): Promise<void> {
-    return this.configManager.handleSetWorktreeBaseRef(baseRef);
-  }
-
   async handleSetDefaultDangerouslySkipPermissions(enabled: boolean): Promise<void> {
     return this.configManager.handleSetDefaultDangerouslySkipPermissions(enabled);
   }

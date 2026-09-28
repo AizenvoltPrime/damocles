@@ -59,7 +59,6 @@ const emit = defineEmits<{
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
   (e: "setDefaultDangerouslySkipPermissions", enabled: boolean): void;
   (e: "setIdeContextEnabled", enabled: boolean): void;
-  (e: "setWorktreeBaseRef", baseRef: 'fresh' | 'head'): void;
   (e: "openVSCodeSettings"): void;
   (e: "setVoiceProvider", provider: VoiceProvider): void;
   (e: "setVoiceApiKey", provider: VoiceProvider, apiKey: string): void;
@@ -101,10 +100,6 @@ function handleLanguageChange(value: string) {
 
 function handleDefaultModeChange(mode: string) {
   emit("setDefaultPermissionMode", mode as PermissionMode);
-}
-
-function handleWorktreeBaseRefChange(baseRef: 'fresh' | 'head') {
-  emit("setWorktreeBaseRef", baseRef);
 }
 
 function handleDefaultDangerouslySkipPermissionsChange(enabled: boolean) {
@@ -745,24 +740,6 @@ function handleDeleteExploreApiKey() {
           </Select>
           <p class="text-xs text-muted-foreground mt-1">
             {{ t("settings.defaultPermissionModeDescription") }}
-          </p>
-        </div>
-
-        <!-- Worktree Base Ref -->
-        <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.worktreeBaseRef") }}</Label>
-          <div class="flex items-center justify-between">
-            <Label for="worktree-base-ref" class="text-sm font-normal text-foreground">
-              {{ t("settings.worktreeBaseRefLabel") }}
-            </Label>
-            <Switch
-              id="worktree-base-ref"
-              :checked="props.settings.worktreeBaseRef === 'fresh'"
-              @update:checked="(val: boolean) => handleWorktreeBaseRefChange(val ? 'fresh' : 'head')"
-            />
-          </div>
-          <p class="text-xs text-muted-foreground mt-1">
-            {{ t("settings.worktreeBaseRefDescription") }}
           </p>
         </div>
 
