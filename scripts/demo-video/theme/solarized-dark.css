@@ -1,0 +1,73 @@
+/* VS Code "Solarized Dark" workbench colors; keys the theme leaves unset use VS Code's dark defaults. */
+html {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-editor-font-family: Consolas, "Courier New", monospace;
+  --vscode-editor-font-size: 14px;
+
+  --vscode-foreground: #cccccc;
+  --vscode-descriptionForeground: #ccccccb3;
+  --vscode-errorForeground: #ffeaea;
+  --vscode-focusBorder: #2aa19899;
+  --vscode-widget-border: #0d4f5f;
+
+  --vscode-editor-background: #002b36;
+  --vscode-editor-foreground: #839496;
+  --vscode-sideBar-background: #00212b;
+  --vscode-editorWidget-background: #00212b;
+  --vscode-editorGroup-border: #00212b;
+  --vscode-panel-border: #2b2b4a;
+  --vscode-editorLineNumber-foreground: #858585;
+  --vscode-editorWarning-foreground: #cca700;
+  --vscode-editorInfo-foreground: #3794ff;
+  --vscode-diffEditor-insertedTextBackground: #9ccc2c33;
+  --vscode-diffEditor-removedTextBackground: #ff000033;
+
+  --vscode-input-background: #003847;
+  --vscode-button-background: #2aa19899;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-hoverBackground: #2aa198cc;
+  --vscode-button-secondaryBackground: #3a3d41;
+  --vscode-button-secondaryForeground: #ffffff;
+
+  --vscode-list-hoverBackground: #004454aa;
+  --vscode-list-inactiveSelectionBackground: #00445488;
+  --vscode-menu-background: #00212b;
+  --vscode-menu-foreground: #cccccc;
+
+  --vscode-textLink-foreground: #3794ff;
+  --vscode-textLink-activeForeground: #3794ff;
+  --vscode-textCodeBlock-background: #0a0a0a66;
+  --vscode-textPreformat-foreground: #d7ba7d;
+  --vscode-textBlockQuote-background: #7f7f7f1a;
+  --vscode-textBlockQuote-border: #007acc80;
+  --vscode-textBlockQuote-foreground: #cccccc;
+
+  --vscode-charts-foreground: #cccccc;
+  --vscode-charts-lines: #cccccc80;
+  --vscode-charts-red: #f14c4c;
+  --vscode-charts-blue: #3794ff;
+  --vscode-charts-yellow: #cca700;
+  --vscode-charts-orange: #d18616;
+  --vscode-charts-green: #89d185;
+  --vscode-charts-purple: #b180d7;
+
+  --vscode-terminal-ansiCyan: #2aa198;
+  --vscode-terminal-ansiGreen: #859900;
+
+  background: var(--vscode-editor-background);
+}
+
+/* The defaults VS Code injects into every webview. */
+body {
+  margin: 0;
+  padding: 0 20px;
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  background: transparent;
+}
+
+::selection {
+  background: #2aa19899;
+}

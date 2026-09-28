@@ -4,21 +4,13 @@
   <p>A powerful AI coding assistant, just keep in mind that just because something works doesn't mean it's good.</p>
 </div>
 
-## Screenshots
+## Demo
 
 <div align="center">
-  <img src="docs/images/chat-interface.png" alt="Chat interface with inline diff previews" width="800">
-  <p><em>Chat interface with Edit tool cards showing syntax-highlighted inline diffs</em></p>
-</div>
-
-<div align="center">
-  <img src="docs/images/plan-view.png" alt="Plan mode with implementation plan" width="800">
-  <p><em>Plan View displaying implementation plans for review</em></p>
-</div>
-
-<div align="center">
-  <img src="docs/images/subagent-view.png" alt="Subagent visualization with tool actions" width="800">
-  <p><em>Subagent View showing nested agent actions with real-time tool visualization</em></p>
+  <a href="docs/media/damocles-demo.mp4">
+    <img src="docs/media/damocles-demo.gif" alt="Damocles demo: diff approval, live shell output, plan mode, subagents, teams and usage stats" width="800">
+  </a>
+  <p><em>Diff approval, live shell output, subagents with /steer, teams and /stats. <a href="docs/media/damocles-demo.mp4">Watch the full 2-minute video</a>, which also covers plan mode, stop and resume, and rewind.</em></p>
 </div>
 
 ## Features
