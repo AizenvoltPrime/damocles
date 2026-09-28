@@ -1,4 +1,4 @@
-import { conversation, SID } from '../lib/script.ts';
+import { bootMessages, conversation, SID } from '../lib/script.ts';
 import { steer, team as startTeam, type MemberSpec } from '../lib/agents.ts';
 import { agentCard, overlayClose, stopButton, type Scene } from '../lib/scene.ts';
 
@@ -20,6 +20,9 @@ const RESULT = 'Sessions now live in Redis behind the same API. The reviewer sig
 
 export const team: Scene = {
   id: 'team',
+  chapter: 'Teams',
+  accent: 'yellow',
+  boot: bootMessages({ mode: 'acceptEdits', yolo: true }),
   async run(stage) {
     const c = conversation(stage);
     await stage.caption('Teams: a lead coordinates specialists over a shared message bus.');
@@ -38,6 +41,7 @@ export const team: Scene = {
     await t.phase('spawning');
     await t.status('Lead', 'running');
     await t.phase('working');
+    await stage.focus(agentCard(stage, TITLE), { maxZoom: 1.4 });
     await t.work('Lead', 'Implementor builds the Redis store; Reviewer checks it against the brief.', { name: 'team_spawn_specialist', input: { name: 'Implementor', task: 'Implement RedisSessionStore behind the existing sessions API.' }, result: 'Spawned Implementor.' });
     await t.scratchpad('Lead', 'plan', '1. RedisSessionStore with the same interface\n2. Wire it in src/sessions/index.ts\n3. Review, then run the tests');
     await t.status('Implementor', 'running');
@@ -45,6 +49,7 @@ export const team: Scene = {
     await t.status('Reviewer', 'running');
     await t.work('Reviewer', 'Reading the new store.', { name: 'Read', input: { file_path: 'c:/dev/acme-api/src/sessions/redis-store.ts' }, result: 'export class RedisSessionStore ...', ms: 500 });
     await t.message('Implementor', 'Lead', 'Store written and wired in. Running the session tests next.');
+    stage.unfocus();
 
     await stage.caption('Open a team to follow every agent, message and scratchpad note.');
     stage.mark('gif-start');

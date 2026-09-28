@@ -1,11 +1,15 @@
 import type { ExtensionToWebviewMessage } from '../../../src/shared/types/messages.ts';
 import type { Locator } from 'patchright';
 import type { Stage } from './stage.ts';
+import type { Accent } from './art.ts';
 
 export interface Scene {
   id: string;
-  /** What the extension posts after `ready`; defaults to `bootMessages()`. */
-  boot?: ExtensionToWebviewMessage[];
+  /** The label on the scene's caption pills. */
+  chapter: string;
+  accent: Accent;
+  /** What the extension posts after `ready`. */
+  boot: ExtensionToWebviewMessage[];
   run(stage: Stage): Promise<void>;
 }
 

@@ -1,6 +1,7 @@
 import type { ExtensionToWebviewMessage } from '../../../src/shared/types/messages.ts';
 import type { ContentBlock } from '../../../src/shared/types/content.ts';
 import type { ExtensionSettings, ModelInfo, PermissionMode } from '../../../src/shared/types/settings.ts';
+import type { WorkspaceFolderInfo } from '../../../src/shared/types/workspace-folders.ts';
 import type { AgentUsageTotals } from '../../../src/shared/usage-accounting.ts';
 import type { Stage } from './stage.ts';
 
@@ -8,33 +9,47 @@ export const SID = '0197a3c2-5e1f-7b2a-9c44-2f1d8e6b0a11';
 export const MODEL = 'claude-opus-5-5';
 export const WORKSPACE = 'c:/dev/acme-api';
 
+/** A multi-root window, so the panel shows its folder chip. */
+export const FOLDERS = ['acme-api', 'acme-web', 'acme-infra'].map((name): WorkspaceFolderInfo => ({
+  key: `file:///c%3A/dev/${name}`, name, label: name, path: `c:\\dev\\${name}`,
+}));
+export const folderKey = (name: string): string => FOLDERS.find((f) => f.name === name)!.key;
+
+/** VS Code's window title: the active editor (the panel, titled with its folder), then the workspace. */
+export const windowTitle = (folder: string): string => `Damocles · ${folder} - acme (Workspace) - Visual Studio Code`;
+
+export interface BootOptions {
+  mode?: PermissionMode;
+  yolo?: boolean;
+}
+
 const MODELS: ModelInfo[] = [
   { value: 'claude-opus-5-5', displayName: 'Opus 5.5', description: 'Most capable model for agentic work', contextWindow: 1_000_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'], defaultEffort: 'high', thinkingAlwaysOn: true },
   { value: 'claude-sonnet-5', displayName: 'Sonnet 5', description: 'Best balance of speed and capability', contextWindow: 1_000_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'] },
   { value: 'gpt-6-sol', displayName: 'GPT-6 Sol', description: 'OpenAI Codex', contextWindow: 272_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
 ];
 
-export function settings(permissionMode: PermissionMode = 'default'): ExtensionSettings {
+export function settings(permissionMode: PermissionMode = 'default', yolo = false): ExtensionSettings {
   return {
     maxTurns: 100, maxBudgetUsd: null, taskBudget: null, permissionMode, defaultPermissionMode: 'default',
     enableFileCheckpointing: true, sandbox: { enabled: false }, autoCompact: { enabled: false, triggerPercent: 80 },
-    cacheWarming: 'off', dangerouslySkipPermissions: false, defaultDangerouslySkipPermissions: false,
+    cacheWarming: 'off', dangerouslySkipPermissions: yolo, defaultDangerouslySkipPermissions: false,
     ideContextEnabled: true, pinnedHeaderHidden: false,
     team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
   };
 }
 
 /** What the extension posts after `ready`, in its order. */
-export function bootMessages(permissionMode: PermissionMode = 'default'): ExtensionToWebviewMessage[] {
-  const folderKey = 'file:///c%3A/dev/acme-api';
+export function bootMessages({ mode = 'default', yolo = false }: BootOptions = {}): ExtensionToWebviewMessage[] {
+  const panelFolderKey = folderKey('acme-api');
   return [
     { type: 'sessionStateChanged', state: 'idle', sessionId: '' },
-    { type: 'settingsUpdate', settings: settings(permissionMode) },
+    { type: 'settingsUpdate', settings: settings(mode, yolo) },
     { type: 'mcpConfigUpdate', servers: [], configErrors: [], localMcpUnignored: false },
     { type: 'modelUpdate', activeModel: MODEL, defaultModel: MODEL, contextWindowSize: 1_000_000 },
     { type: 'panelThinkingUpdate', panel: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, panelModel: MODEL, defaults: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, defaultsModel: MODEL },
     { type: 'languageChange', locale: 'en' },
-    { type: 'workspaceFolderUpdate', folders: [{ key: folderKey, name: 'acme-api', label: 'acme-api', path: 'c:\\dev\\acme-api' }], panelFolderKey: folderKey, defaultFolderKey: folderKey },
+    { type: 'workspaceFolderUpdate', folders: FOLDERS, panelFolderKey, defaultFolderKey: panelFolderKey },
     { type: 'storedSessions', sessions: [], hasMore: false, nextOffset: 0, isFirstPage: true },
     { type: 'promptHistory', history: [], hasMore: false },
     { type: 'sessionStarted', sessionId: SID },
@@ -49,7 +64,8 @@ const words = (text: string) => text.match(/\S+\s*|\s+/g) ?? [];
  * Drives one conversation the way `pi-stream-adapter.ts` reports it: per assistant message, cumulative
  * `partial` frames, a `toolStreaming` per tool call with the ordered blocks so far, then the sealed `assistant`.
  */
-export function conversation(stage: Stage, opts: { parentToolUseId?: string; messagePrefix?: string } = {}) {
+export function conversation(stage: Stage, opts: { parentToolUseId?: string; messagePrefix?: string; sessionId?: string } = {}) {
+  const sid = opts.sessionId ?? SID;
   let turn = 0;
   let seq = 0;
   let messageId = '';
@@ -61,7 +77,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
   const checkpoints: string[] = [];
   const parent = opts.parentToolUseId ? { parentToolUseId: opts.parentToolUseId } : {};
   const partial = (extra: { streamingText?: string; streamingThinking?: string; isThinking?: boolean; thinkingDuration?: number }): ExtensionToWebviewMessage =>
-    ({ type: 'partial', data: { type: 'partial', content: [], session_id: SID, messageId, ...extra }, ...parent });
+    ({ type: 'partial', data: { type: 'partial', content: [], session_id: sid, messageId, ...extra }, ...parent });
 
   const api = {
     /** Types the prompt into the real composer, sends it, and echoes it back as the extension does. */
@@ -79,7 +95,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
       await stage.send(
         { type: 'userMessage', content: text, correlationId, promptIndex: turn - 1 },
         { type: 'processing', isProcessing: true },
-        { type: 'sessionStateChanged', state: 'running', sessionId: SID },
+        { type: 'sessionStateChanged', state: 'running', sessionId: sid },
         { type: 'userMessageIdAssigned', sdkMessageId: entryId, correlationId },
       );
       checkpoints.push(entryId);
@@ -88,7 +104,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
 
     startMessage(): string {
       seq += 1;
-      messageId = opts.messagePrefix ? `${opts.messagePrefix}:a:${seq}` : `${SID}:a:${turn}:${seq}`;
+      messageId = opts.messagePrefix ? `${opts.messagePrefix}:a:${seq}` : `${sid}:a:${turn}:${seq}`;
       streamed = '';
       committed = 0;
       thinking = '';
@@ -130,7 +146,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
         ...blocks,
         ...(tail.trim() ? [{ type: 'text' as const, text: tail }] : []),
       ];
-      await stage.send({ type: 'assistant', data: { type: 'assistant', message: { id: messageId, role: 'assistant', content, model, stop_reason: null }, session_id: SID }, ...parent });
+      await stage.send({ type: 'assistant', data: { type: 'assistant', message: { id: messageId, role: 'assistant', content, model, stop_reason: null }, session_id: sid }, ...parent });
     },
 
     async runTool(id: string, name: string, input: Record<string, unknown>, result: string, { durationMs = 300, progress = [] as string[], stepMs = 350 } = {}): Promise<void> {
@@ -163,9 +179,9 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
     async endTurn(lastAssistantMessage: string): Promise<void> {
       await stage.send(
         { type: 'sessionUsage', usage, numTurns: turn },
-        { type: 'done', data: { type: 'result', session_id: SID, is_done: true, stop_reason: null } },
+        { type: 'done', data: { type: 'result', session_id: sid, is_done: true, stop_reason: null } },
         { type: 'processing', isProcessing: false },
-        { type: 'sessionStateChanged', state: 'idle', sessionId: SID },
+        { type: 'sessionStateChanged', state: 'idle', sessionId: sid },
         { type: 'stopInfo', lastAssistantMessage },
         { type: 'checkpointInfo', userMessageIds: [...checkpoints] },
       );

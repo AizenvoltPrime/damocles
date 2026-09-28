@@ -1,4 +1,5 @@
 import type { Scene } from '../lib/scene.ts';
+import { bootMessages } from '../lib/script.ts';
 import type { Stage } from '../lib/stage.ts';
 import { usageReport } from './stats-data.ts';
 
@@ -13,6 +14,9 @@ async function smoothScroll(stage: Stage, pixels: number, ms: number): Promise<v
 
 export const stats: Scene = {
   id: 'stats',
+  chapter: 'Usage stats',
+  accent: 'magenta',
+  boot: bootMessages({ mode: 'acceptEdits', yolo: true }),
   async run(stage) {
     await stage.caption('/stats shows spend across every project, model and agent.');
     stage.respond('requestUsageStats', (q) => [
@@ -32,9 +36,12 @@ export const stats: Scene = {
     await stage.moveTo(stage.page.getByText('Usage over time').first());
     await stage.pause(400);
     await stage.caption('Daily cost by model, compared with the previous period.');
-    await stage.pause(1400);
-    await smoothScroll(stage, 460, 1300);
+    await stage.focus([stage.page.getByText('Usage over time').first(), stage.page.getByText('By model', { exact: true }).first()], { maxZoom: 1.35 });
+    await stage.pause(2000);
+    stage.unfocus();
+    await stage.pause(700);
     stage.mark('gif-end');
+    await smoothScroll(stage, 460, 1300);
     await stage.caption('Broken down by model, project and source: main chat, subagents, teams.');
     await stage.pause(500);
     await stage.click(stage.page.locator('button[data-expand]').first());

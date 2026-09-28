@@ -1,4 +1,4 @@
-import { conversation, SID } from '../lib/script.ts';
+import { bootMessages, conversation, SID } from '../lib/script.ts';
 import { permissionOption, type Scene } from '../lib/scene.ts';
 import { AUTH_PATH, AUTH_TS, EDIT_OLD, EDIT_NEW, EDIT2_OLD, EDIT2_NEW, TEST_FRAMES } from './fixtures.ts';
 
@@ -12,6 +12,9 @@ const PROMPT = 'The /login route has no rate limiting. Add it and make sure the 
 
 export const core: Scene = {
   id: 'core',
+  chapter: 'Core loop',
+  accent: 'blue',
+  boot: bootMessages(),
   async run(stage) {
     const c = conversation(stage);
     await stage.caption('Ask in plain language. Claude or GPT works inside VS Code.');
@@ -43,6 +46,7 @@ export const core: Scene = {
     );
     await stage.caption('Edits wait for your approval, shown as a highlighted diff.');
     stage.mark('gif-start');
+    await stage.focus(stage.page.locator('[role="region"][aria-label="Permission request"]'), { maxZoom: 1.3 });
     await stage.pause(2600);
     const approved = stage.waitForPost('approveEdit');
     await stage.click(permissionOption(stage, 'Yes, accept all edits'));
@@ -67,10 +71,12 @@ export const core: Scene = {
       { type: 'sessionStateChanged', state: 'requires_action', sessionId: SID },
     );
     await stage.caption('Shell commands ask first, then stream their output as they run.');
-    await stage.pause(1300);
+    await stage.focus(stage.page.locator('[role="region"][aria-label="Permission request"]'), { maxZoom: 1.3 });
+    await stage.pause(1500);
     const ran = stage.waitForPost('approveEdit');
     await stage.click(permissionOption(stage, 'Yes'));
     await ran;
+    stage.unfocus();
     await stage.send({ type: 'sessionStateChanged', state: 'running', sessionId: SID });
     await c.runTool('toolu_bash1', 'Bash', bash, TEST_FRAMES.at(-1)!, { durationMs: 2140, progress: TEST_FRAMES, stepMs: 420 });
     stage.mark('gif-end');
@@ -90,12 +96,14 @@ export const core: Scene = {
       }],
     }]);
     await stage.click(stage.page.getByRole('button', { name: 'Rewind conversation to this message' }).first());
+    await stage.focus(stage.page.getByRole('alertdialog').last(), { maxZoom: 1.35 });
     await stage.pause(1600);
     await stage.click(stage.page.getByText('Rewind code to here', { exact: true }));
     await stage.pause(900);
     const rewound = stage.waitForPost('rewindToMessage');
     await stage.click(stage.page.getByRole('button', { name: 'Roll back files' }));
     const req = await rewound;
+    stage.unfocus();
     await stage.send({ type: 'rewindComplete', rewindToMessageId: req.userMessageId, option: req.option, promptContent: PROMPT });
     await stage.pause(2600);
   },

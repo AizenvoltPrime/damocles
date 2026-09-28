@@ -8,9 +8,9 @@
 
 <div align="center">
   <a href="docs/media/damocles-demo.mp4">
-    <img src="docs/media/damocles-demo.gif" alt="Damocles demo: diff approval, live shell output, plan mode, subagents, teams and usage stats" width="800">
+    <img src="docs/media/damocles-demo.gif" alt="Damocles demo: diff approval, live shell output, workspace folder switching, subagents, teams and usage stats" width="800">
   </a>
-  <p><em>Diff approval, live shell output, subagents with /steer, teams and /stats. <a href="docs/media/damocles-demo.mp4">Watch the full 2-minute video</a>, which also covers plan mode, stop and resume, and rewind.</em></p>
+  <p><em>Diff approval, live shell output, switching a panel's workspace folder, subagents with /steer, teams and /stats. <a href="docs/media/damocles-demo.mp4">Watch the full video</a>, which also covers plan mode, stop and resume, and rewind.</em></p>
 </div>
 
 ## Features

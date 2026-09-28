@@ -27,12 +27,22 @@ export interface Caption {
   text: string;
 }
 
+/** A camera move starting at `t`: onto `rect` (page CSS pixels), or back to the whole window when null. */
+export interface CameraKey {
+  t: number;
+  rect: { x: number; y: number; width: number; height: number } | null;
+  maxZoom: number;
+}
+
 export interface Recording {
   framesDir: string;
   /** Seconds since recording start at which each frame was painted. */
   frames: { file: string; t: number }[];
   duration: number;
   captions: Caption[];
+  camera: CameraKey[];
+  /** The window title from each `t` on. */
+  titles: Caption[];
   /** Named moments in seconds since recording start, e.g. the bounds of a GIF highlight. */
   marks: Record<string, number>;
 }
@@ -50,6 +60,10 @@ export interface Stage {
   /** Shows `text` below the window, first holding the previous caption for at least MIN_CAPTION_SECONDS. */
   caption(text: string): Promise<void>;
   mark(name: string): void;
+  /** Eases the camera in on the union of `targets`, zooming at most `maxZoom`. */
+  focus(targets: Locator | Locator[], opts?: { maxZoom?: number }): Promise<void>;
+  unfocus(): void;
+  windowTitle(text: string): void;
   startRecording(framesDir: string): Promise<void>;
   stopRecording(): Promise<Recording>;
 }
@@ -136,7 +150,13 @@ export async function openStage(browser: Browser, url: string, boot: ExtensionTo
 
   let recording: { cdp: CDPSession; dir: string; t0: number | null; frames: Recording['frames']; writes: Promise<void>[]; startedAt: number } | null = null;
   const captions: Caption[] = [];
+  const camera: CameraKey[] = [];
+  const titles: Caption[] = [];
   const marks: Record<string, number> = {};
+  const elapsed = (): number => {
+    if (!recording) throw new Error('called outside a recording');
+    return (Date.now() - recording.startedAt) / 1000;
+  };
 
   const moveTo: Stage['moveTo'] = async (target, opts = {}) => {
     await target.scrollIntoViewIfNeeded();
@@ -198,13 +218,30 @@ export async function openStage(browser: Browser, url: string, boot: ExtensionTo
       captions.push({ t: now(), text });
     },
     mark: (name) => {
-      if (!recording) throw new Error('mark() outside a recording');
-      marks[name] = (Date.now() - recording.startedAt) / 1000;
+      marks[name] = elapsed();
+    },
+    focus: async (targets, opts = {}) => {
+      const boxes = await Promise.all((Array.isArray(targets) ? targets : [targets]).map((l) => l.boundingBox()));
+      const found = boxes.filter((b) => b !== null);
+      if (!found.length) throw new Error('focus: no target has a box');
+      const x = Math.min(...found.map((b) => b.x));
+      const y = Math.min(...found.map((b) => b.y));
+      const width = Math.max(...found.map((b) => b.x + b.width)) - x;
+      const height = Math.max(...found.map((b) => b.y + b.height)) - y;
+      camera.push({ t: elapsed(), rect: { x, y, width, height }, maxZoom: opts.maxZoom ?? 1.45 });
+    },
+    unfocus: () => {
+      camera.push({ t: elapsed(), rect: null, maxZoom: 1 });
+    },
+    windowTitle: (text) => {
+      titles.push({ t: elapsed(), text });
     },
     startRecording: async (dir) => {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.mkdirSync(dir, { recursive: true });
       captions.length = 0;
+      camera.length = 0;
+      titles.length = 0;
       for (const k of Object.keys(marks)) delete marks[k];
       const cdp = await page.context().newCDPSession(page);
       const rec = { cdp, dir, t0: null as number | null, frames: [] as Recording['frames'], writes: [] as Promise<void>[], startedAt: Date.now() };
@@ -230,7 +267,7 @@ export async function openStage(browser: Browser, url: string, boot: ExtensionTo
       await rec.cdp.detach();
       await Promise.all(rec.writes);
       recording = null;
-      return { framesDir: rec.dir, frames: rec.frames, duration, captions: [...captions], marks: { ...marks } };
+      return { framesDir: rec.dir, frames: rec.frames, duration, captions: [...captions], camera: [...camera], titles: [...titles], marks: { ...marks } };
     },
   };
 

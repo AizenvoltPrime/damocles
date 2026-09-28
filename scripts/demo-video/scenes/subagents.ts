@@ -1,4 +1,4 @@
-import { conversation, SID } from '../lib/script.ts';
+import { bootMessages, conversation, SID } from '../lib/script.ts';
 import { steer, subagent, type SubagentSpec } from '../lib/agents.ts';
 import { agentCard, overlayClose, stopButton, type Scene } from '../lib/scene.ts';
 
@@ -19,6 +19,9 @@ const ANSWER = `Both agents are done. The cookie is read in **3 places**:
 
 export const subagents: Scene = {
   id: 'subagents',
+  chapter: 'Subagents',
+  accent: 'green',
+  boot: bootMessages({ mode: 'acceptEdits', yolo: true }),
   async run(stage) {
     const c = conversation(stage);
     await stage.caption('Subagents fan work out in parallel, each with its own live view.');
@@ -42,6 +45,7 @@ export const subagents: Scene = {
     await map.start();
     await mw.start();
     stage.mark('gif-start');
+    await stage.focus([agentCard(stage, MAP.description), agentCard(stage, MW.description)], { maxZoom: 1.4 });
     await Promise.all([
       (async () => {
         await map.step('Searching for reads of the sid cookie.', { id: 'toolu_m1', name: 'Grep', input: { pattern: "cookies\\.sid|cookie\\('sid'", path: 'src' }, result: 'src/middleware/session.ts\nsrc/routes/auth.ts\nsrc/ws/upgrade.ts', ms: 500 });

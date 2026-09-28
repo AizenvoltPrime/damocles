@@ -21,7 +21,9 @@ Record who changed what in the admin API, queryable by admins.
 
 export const plan: Scene = {
   id: 'plan',
-  boot: bootMessages('plan'),
+  chapter: 'Plan mode',
+  accent: 'violet',
+  boot: bootMessages({ mode: 'plan' }),
   async run(stage) {
     const c = conversation(stage);
     await stage.caption('Plan mode: the agent researches read-only and writes a plan first.');
@@ -55,7 +57,14 @@ export const plan: Scene = {
       { type: 'sessionStateChanged', state: 'requires_action', sessionId: SID },
     );
     await stage.caption('Nothing is written until you approve the plan.');
-    await stage.pause(3400);
+    await stage.pause(600);
+    await stage.focus([
+      stage.page.getByRole('heading', { name: 'Audit log for admin actions' }).last(),
+      stage.page.getByRole('listitem').filter({ hasText: 'each route writes its event' }).last(),
+    ], { maxZoom: 1.4 });
+    await stage.pause(2400);
+    stage.unfocus();
+    await stage.pause(1000);
     const approved = stage.waitForPost('approvePlan');
     await stage.click(stage.page.getByRole('button', { name: 'Yes, auto-accept edits' }));
     await approved;
@@ -67,6 +76,7 @@ export const plan: Scene = {
     c.startMessage();
     await c.say('Plan approved. Starting slice 1: the `audit_events` migration.');
     await c.seal();
-    await stage.pause(1800);
+    await stage.focus(stage.page.locator('textarea').first(), { maxZoom: 1.5 });
+    await stage.pause(2200);
   },
 };
