@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { EDGE_STYLE, nodePathGenerator } from '@/composables/compass/useGraphSymbols';
 import type { CompassEdgeKind, CompassNodeKind } from '@shared/types/compass';
 
+const { t } = useI18n();
 const store = useCompassStore();
 
 const open = computed({
@@ -16,54 +18,41 @@ const open = computed({
 
 interface Shortcut {
 	keys: string[];
-	description: string;
+	descriptionKey: string;
 }
 
 const shortcuts: Shortcut[] = [
-	{ keys: ['Tab'], description: 'Enter graph focus' },
-	{ keys: ['Shift', 'Tab'], description: 'Exit graph focus' },
-	{ keys: ['↑', '↓', '←', '→'], description: 'Move focus to nearest node' },
-	{ keys: ['Enter'], description: 'Open file at line' },
-	{ keys: ['Space'], description: 'Open file at line' },
-	{ keys: ['Esc'], description: 'Clear selection / close dialog' },
-	{ keys: ['?'], description: 'Open this dialog' },
-	{ keys: ['F'], description: 'Fit graph to view' },
-	{ keys: ['R'], description: 'Refresh graph' },
+	{ keys: ['Tab'], descriptionKey: 'compass.help.enterFocus' },
+	{ keys: ['Shift', 'Tab'], descriptionKey: 'compass.help.exitFocus' },
+	{ keys: ['↑', '↓', '←', '→'], descriptionKey: 'compass.help.moveFocus' },
+	{ keys: ['Enter'], descriptionKey: 'compass.help.openFile' },
+	{ keys: ['Space'], descriptionKey: 'compass.help.openFile' },
+	{ keys: ['Esc'], descriptionKey: 'compass.help.clearSelection' },
+	{ keys: ['?'], descriptionKey: 'compass.help.openHelp' },
+	{ keys: ['F'], descriptionKey: 'compass.help.fit' },
+	{ keys: ['R'], descriptionKey: 'compass.help.refresh' },
 ];
 
-const nodeKinds: Array<{ kind: CompassNodeKind; label: string }> = [
-	{ kind: 'File', label: 'File' },
-	{ kind: 'Class', label: 'Class' },
-	{ kind: 'Function', label: 'Function' },
-	{ kind: 'Type', label: 'Type' },
-	{ kind: 'Test', label: 'Test' },
-];
+const NODE_KINDS: CompassNodeKind[] = ['File', 'Class', 'Function', 'Type', 'Test'];
+const nodeKinds = computed(() => NODE_KINDS.map((kind) => ({ kind, label: t(`compass.nodeKind.${kind}`) })));
 
-const edgeKinds: Array<{ kind: CompassEdgeKind; label: string }> = [
-	{ kind: 'CALLS', label: 'Calls' },
-	{ kind: 'IMPORTS_FROM', label: 'Imports from' },
-	{ kind: 'INHERITS', label: 'Inherits' },
-	{ kind: 'IMPLEMENTS', label: 'Implements' },
-	{ kind: 'CONTAINS', label: 'Contains' },
-	{ kind: 'TESTED_BY', label: 'Tested by' },
-	{ kind: 'DEPENDS_ON', label: 'Depends on' },
-	{ kind: 'REFERENCES', label: 'References' },
-];
+const EDGE_KINDS: CompassEdgeKind[] = ['CALLS', 'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'CONTAINS', 'TESTED_BY', 'DEPENDS_ON', 'REFERENCES'];
+const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`compass.edgeKind.${kind}`) })));
 </script>
 
 <template>
   <Dialog v-model:open="open">
     <DialogContent class="max-w-xl max-h-[80vh] overflow-y-auto">
       <DialogHeader>
-        <DialogTitle>Compass keyboard shortcuts</DialogTitle>
+        <DialogTitle>{{ t('compass.help.title') }}</DialogTitle>
         <DialogDescription>
-          Keyboard shortcuts and graph legend reference.
+          {{ t('compass.help.description') }}
         </DialogDescription>
       </DialogHeader>
 
       <section class="flex flex-col gap-2">
         <h3 class="text-sm font-semibold text-foreground">
-          Shortcuts
+          {{ t('compass.help.shortcuts') }}
         </h3>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
           <template
@@ -83,7 +72,7 @@ const edgeKinds: Array<{ kind: CompassEdgeKind; label: string }> = [
               </template>
             </dt>
             <dd class="text-muted-foreground self-center">
-              {{ s.description }}
+              {{ t(s.descriptionKey) }}
             </dd>
           </template>
         </dl>
@@ -91,7 +80,7 @@ const edgeKinds: Array<{ kind: CompassEdgeKind; label: string }> = [
 
       <section class="flex flex-col gap-2">
         <h3 class="text-sm font-semibold text-foreground">
-          Node legend
+          {{ t('compass.help.nodeLegend') }}
         </h3>
         <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
           <li
@@ -119,7 +108,7 @@ const edgeKinds: Array<{ kind: CompassEdgeKind; label: string }> = [
 
       <section class="flex flex-col gap-2">
         <h3 class="text-sm font-semibold text-foreground">
-          Edge legend
+          {{ t('compass.help.edgeLegend') }}
         </h3>
         <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
           <li

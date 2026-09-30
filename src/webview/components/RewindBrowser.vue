@@ -2,11 +2,13 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { IconSearch, IconFile, IconWarning, IconLayers } from '@/components/icons';
+import { IconSearch, IconFile, IconWarning, IconLayers, IconRotateLeft } from '@/components/icons';
 import { useSessionStore } from '@/stores';
-import type { RewindHistoryItem } from '@shared/types/session';
+import RewindCheckpointNotes from '@/components/RewindCheckpointNotes.vue';
+import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import type { RestorePoint, RewindHistoryItem } from '@shared/types/session';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const { checkpointMessages } = storeToRefs(useSessionStore());
 
@@ -25,13 +27,32 @@ function showFileBadge(item: RewindHistoryItem): boolean {
 const props = defineProps<{
   isOpen: boolean;
   prompts: RewindHistoryItem[];
+  /** Pre-rewind snapshots, newest first; each can put back the files its rewind replaced. */
+  restorePoints?: RestorePoint[];
   isLoading?: boolean;
 }>();
 
 const emit = defineEmits<{
   select: [item: RewindHistoryItem];
+  undo: [point: RestorePoint];
   close: [];
 }>();
+
+function restorePointLabel(point: RestorePoint): string {
+  const at = new Date(point.createdAt);
+  const sameDay = at.toDateString() === new Date().toDateString();
+  const time = at.toLocaleString(locale.value, sameDay ? { hour: 'numeric', minute: '2-digit' } : { dateStyle: 'short', timeStyle: 'short' });
+  return point.target.kind === 'undo' ? t('rewindBrowser.beforeUndoAt', { time }) : t('rewindBrowser.beforeRewindAt', { time });
+}
+
+/** The prompt a restore point's rewind went back to, when it is still in the list. */
+function rewoundTo(point: RestorePoint): string {
+  if (point.target.kind !== 'turn') return '';
+  const userEntryId = point.target.userEntryId;
+  return props.prompts.find((p) => p.messageId === userEntryId)?.content ?? '';
+}
+
+const { zIndex, isTop } = useOverlayEscape(() => emit('close'));
 
 const searchQuery = ref('');
 const selectedIndex = ref(0);
@@ -78,6 +99,8 @@ watch(selectedIndex, (index) => {
 });
 
 function handleKeyDown(event: KeyboardEvent) {
+  if (!isTop.value) return;
+  if ((event.target as Element | null)?.closest?.('[data-no-keyboard-shortcuts]')) return;
   switch (event.key) {
     case 'ArrowUp':
       event.preventDefault();
@@ -101,10 +124,6 @@ function handleKeyDown(event: KeyboardEvent) {
       if (selected) emit('select', selected);
       break;
     }
-    case 'Escape':
-      event.preventDefault();
-      emit('close');
-      break;
   }
 }
 
@@ -149,7 +168,9 @@ onUnmounted(() => {
     >
       <div
         v-if="isOpen"
-        class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+        data-testid="rewind-browser"
+        class="fixed inset-0 flex items-center justify-center p-4 bg-black/50"
+        :style="{ zIndex }"
         @click.self="emit('close')"
       >
         <div class="w-full max-w-lg bg-muted border border-border rounded-lg shadow-xl overflow-hidden">
@@ -168,6 +189,39 @@ onUnmounted(() => {
                 :placeholder="t('rewindBrowser.searchPlaceholder')"
                 class="w-full pl-9 pr-3 py-2 bg-card border border-border/30 rounded text-sm focus:outline-none focus:border-primary"
               />
+            </div>
+          </div>
+
+          <div
+            v-if="!isLoading && restorePoints && restorePoints.length > 0"
+            data-testid="rewind-restore-points"
+            data-no-keyboard-shortcuts
+            class="border-b border-border/30 max-h-40 overflow-y-auto"
+          >
+            <div class="px-4 pt-2 text-xs font-medium text-muted-foreground">{{ t('rewindBrowser.restorePoints') }}</div>
+            <div
+              v-for="point in restorePoints"
+              :key="point.id"
+              data-testid="rewind-restore-point"
+              class="px-3 py-2"
+            >
+              <div class="flex items-start gap-2">
+                <IconRotateLeft :size="14" class="text-primary mt-0.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm">{{ restorePointLabel(point) }}</div>
+                  <div v-if="rewoundTo(point)" class="text-xs text-muted-foreground truncate">{{ t('rewindBrowser.rewoundTo', { prompt: truncateContent(rewoundTo(point)) }) }}</div>
+                  <div class="text-xs text-muted-foreground mt-0.5">
+                    {{ point.filesAffected > 0 ? t('rewindBrowser.filesRestored', { n: point.filesAffected }, point.filesAffected) : t('rewindBrowser.noFilesRestored') }}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  data-testid="rewind-undo"
+                  class="shrink-0 px-2 py-1 rounded text-xs bg-primary/20 hover:bg-primary/40 text-foreground transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+                  @click="emit('undo', point)"
+                >{{ t('rewindBrowser.undoRewind') }}</button>
+              </div>
+              <RewindCheckpointNotes class="mt-1" :skipped="point.skipped" :target="{ kind: 'restore-point', id: point.id }" />
             </div>
           </div>
 
@@ -208,6 +262,11 @@ onUnmounted(() => {
                       v-if="showFileBadge(prompt)"
                       class="px-1.5 py-0.5 bg-primary/20 rounded font-mono text-[10px] leading-none"
                     >{{ t('rewind.filesAffected', { n: prompt.filesAffected }, prompt.filesAffected) }}</span>
+                    <span
+                      v-if="prompt.notRewindable"
+                      data-testid="rewind-row-not-rewindable"
+                      class="px-1.5 py-0.5 bg-warning/20 text-warning rounded text-[10px] leading-none"
+                    >{{ t('rewind.notRewindable.badge') }}</span>
                   </div>
                 </div>
               </div>
@@ -273,6 +332,12 @@ onUnmounted(() => {
                 <IconWarning :size="14" />
                 <span>{{ t('rewindBrowser.warning') }}</span>
               </div>
+              <RewindCheckpointNotes
+                class="mt-2"
+                :skipped="selectedPrompt.skipped"
+                :not-rewindable="selectedPrompt.notRewindable"
+                :target="{ kind: 'turn', userEntryId: selectedPrompt.messageId }"
+              />
             </template>
           </div>
 

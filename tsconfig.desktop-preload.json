@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "types": [],
+    "paths": {
+      "vscode": ["./types/no-vscode.d.ts"]
+    }
+  },
+  "include": ["src/desktop/preload"],
+  "exclude": ["node_modules", "dist"]
+}

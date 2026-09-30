@@ -3,7 +3,7 @@ import { computed, h, type VNode } from 'vue';
 import { marked, type Token, type Tokens } from 'marked';
 import CodeBlock from './CodeBlock.vue';
 import RemoteImagePlaceholder from './RemoteImagePlaceholder.vue';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { sanitizeUrl } from '@/lib/sanitize-url';
 
 const props = withDefaults(
@@ -18,7 +18,7 @@ const props = withDefaults(
   { baseUrl: undefined, allowRemoteImages: true }
 );
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 /** Resolve a possibly-relative href against `baseUrl`, then sanitize dangerous schemes. */
 function resolveUrl(href: string): string {

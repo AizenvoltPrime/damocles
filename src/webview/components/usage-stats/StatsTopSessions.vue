@@ -7,7 +7,7 @@ import { IconArrowDown, IconArrowUp } from '@/components/icons';
 import type { UsageStatsTopSession } from '@shared/types/usage-stats';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useStatsFormat } from '@/composables/useStatsFormat';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import { useStatsLabels } from './stats-labels';
 
@@ -21,7 +21,7 @@ const { t, locale } = useI18n();
 const format = useStatsFormat();
 const labels = useStatsLabels();
 const { spendLabel, spendTitle } = useCostLabel();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const store = useUsageStatsStore();
 
 const tokensOf = (s: UsageStatsTopSession): number => s.input + s.output + s.cacheRead + s.cacheWrite;

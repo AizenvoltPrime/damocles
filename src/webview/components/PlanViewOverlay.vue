@@ -4,11 +4,11 @@ import { Button } from '@/components/ui/button';
 import { IconFileText, IconExternalLink } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { usePlanViewStore } from '@/stores/usePlanViewStore';
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const planViewStore = usePlanViewStore();
 
 defineProps<{

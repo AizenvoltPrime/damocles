@@ -16,8 +16,8 @@ import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m), getState: () => undefined, setState: () => {} }),
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m), getState: () => undefined, setState: () => {} }),
 }));
 const toasts = vi.hoisted((): string[] => []);
 vi.mock('vue-sonner', () => {

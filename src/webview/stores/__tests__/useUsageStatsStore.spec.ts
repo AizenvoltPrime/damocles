@@ -6,8 +6,8 @@ import type { UsageStatsReport, UsageStatsTotals } from '@shared/types/usage-sta
 import { useUsageStatsStore } from '../useUsageStatsStore';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
 }));
 
 type StatsRequest = Extract<WebviewToExtensionMessage, { type: 'requestUsageStats' }>;

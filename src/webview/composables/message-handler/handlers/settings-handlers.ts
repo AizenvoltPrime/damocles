@@ -15,8 +15,12 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     },
 
     settingsUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.updateSettings(msg.settings);
+      ctx.stores.settingsStore.updateSettings(msg.settings, msg.settingSources);
       ctx.stores.uiStore.setIdeContextDefault(msg.settings.ideContextEnabled);
+    },
+
+    hostCapabilities: (msg, ctx) => {
+      ctx.stores.settingsStore.setHostCapabilities(msg.capabilities);
     },
 
     mcpServerStatus: (msg, ctx) => {
@@ -91,7 +95,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
         ...(msg.error !== undefined ? { error: msg.error } : {}),
       });
       if (msg.error) {
-        toast.error(`Authentication error: ${msg.error}`);
+        toast.error(t("toast.authError", { error: msg.error }));
       }
     },
 
@@ -157,14 +161,14 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     },
 
     configChange: (msg) => {
-      const labels: Record<string, string> = {
-        user_settings: 'User settings',
-        project_settings: 'Project settings',
-        local_settings: 'Local settings',
-        policy_settings: 'Policy settings',
-        skills: 'Skills',
+      const keys: Record<string, string> = {
+        user_settings: "toast.configChange.user",
+        project_settings: "toast.configChange.project",
+        local_settings: "toast.configChange.local",
+        policy_settings: "toast.configChange.policy",
+        skills: "toast.configChange.skills",
       };
-      toast.info(`${labels[msg.source] ?? 'Settings'} updated`);
+      toast.info(t(keys[msg.source] ?? "toast.configChange.other"));
     },
   };
 }

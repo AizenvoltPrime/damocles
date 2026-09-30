@@ -70,7 +70,7 @@ export interface RefContext {
   chatInputRef: Ref<ChatInputExposed | null>;
 }
 
-export interface VSCodeContext {
+export interface BridgeContext {
   postMessage: (message: WebviewToExtensionMessage) => void;
   getState: <T>() => T | undefined;
   setState: <T>(state: T) => void;
@@ -79,7 +79,7 @@ export interface VSCodeContext {
 export interface HandlerContext {
   stores: StoreContext;
   refs: RefContext;
-  vscode: VSCodeContext;
+  bridge: BridgeContext;
 }
 
 export interface ScrollBehavior {

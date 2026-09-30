@@ -6,4 +6,9 @@ interface VsCodeApi {
   setState(state: unknown): void;
 }
 
-declare function acquireVsCodeApi(): VsCodeApi;
+// Defined only inside a VS Code webview; the desktop host exposes window.damoclesBridge instead.
+declare const acquireVsCodeApi: (() => VsCodeApi) | undefined;
+
+interface Window {
+  damoclesBridge?: import('@shared/damocles-bridge').DamoclesBridge;
+}

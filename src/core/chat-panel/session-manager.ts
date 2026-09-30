@@ -1,0 +1,153 @@
+import type { Platform } from "../../platform/platform";
+import type { ChatSession } from "../chat-session";
+import { PiSession } from "../pi-session/pi-session";
+import { PermissionHandler } from "../permission-handler";
+import { log } from "../logger";
+import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
+import type { McpScope } from "../session-types";
+import type { MemoryService } from "../memory";
+import type { BrowserService } from "../browser";
+import { TeamService } from "../team";
+import type { CompassService } from "../compass";
+import type { PanelHost } from "../../platform/window-service";
+import type { FolderTarget } from "../workspace-folders/folder-registry";
+import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
+import type { EffortLevel } from "../../shared/types/settings";
+
+export interface SessionManagerConfig {
+  getEnabledMcpServers: (folderKey: string) => McpScope;
+  getMcpConfigLoaded: () => boolean;
+  loadMcpConfig: () => Promise<void>;
+  getActiveModelForPanel: (panelId: string) => string;
+  getDefaultModel: () => string;
+  getPreferOpenAIApiKey: () => boolean;
+  resolveThinkingForPanel: (panelId: string, model: string) => {
+    thinkingDisabled: boolean;
+    effort: EffortLevel | null;
+    maxThinkingTokens: number | null;
+  };
+  postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
+  setupSessionWatcher: (folderKey: string) => Promise<void>;
+  addOrUpdateSession: (sessionId: string, folderKey: string) => Promise<void>;
+  getMemoryService: () => MemoryService | null;
+  /** The raw browser service, ungated by the enable flag, so its inert tools can be built once at session start. */
+  getRawBrowserService: () => BrowserService;
+  /** The folder's Compass service, or null for a folder with no project index. */
+  getCompassService: (folderKey: string) => CompassService | null;
+  onAssistantTextFinal?: (text: string) => void;
+  platform: Platform;
+}
+
+export class SessionManager {
+  private readonly getEnabledMcpServers: SessionManagerConfig["getEnabledMcpServers"];
+  private readonly getMcpConfigLoaded: SessionManagerConfig["getMcpConfigLoaded"];
+  private readonly loadMcpConfig: SessionManagerConfig["loadMcpConfig"];
+  private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
+  private readonly getDefaultModel: SessionManagerConfig["getDefaultModel"];
+  private readonly getPreferOpenAIApiKey: SessionManagerConfig["getPreferOpenAIApiKey"];
+  private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
+  private readonly postMessage: SessionManagerConfig["postMessage"];
+  private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
+  private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
+  private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
+  private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
+  private readonly getCompassService: SessionManagerConfig["getCompassService"];
+  private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
+  private readonly platform: Platform;
+
+  constructor(config: SessionManagerConfig) {
+    this.getEnabledMcpServers = config.getEnabledMcpServers;
+    this.getMcpConfigLoaded = config.getMcpConfigLoaded;
+    this.loadMcpConfig = config.loadMcpConfig;
+    this.getActiveModelForPanel = config.getActiveModelForPanel;
+    this.getDefaultModel = config.getDefaultModel;
+    this.getPreferOpenAIApiKey = config.getPreferOpenAIApiKey;
+    this.resolveThinkingForPanel = config.resolveThinkingForPanel;
+    this.postMessage = config.postMessage;
+    this.setupSessionWatcher = config.setupSessionWatcher;
+    this.addOrUpdateSession = config.addOrUpdateSession;
+    this.getMemoryService = config.getMemoryService;
+    this.getRawBrowserService = config.getRawBrowserService;
+    this.getCompassService = config.getCompassService;
+    this.onAssistantTextFinal = config.onAssistantTextFinal;
+    this.platform = config.platform;
+  }
+
+  async createSessionForPanel(
+    host: PanelHost,
+    permissionHandler: PermissionHandler,
+    panelId: string,
+    folder: FolderTarget,
+    onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>,
+    forkContext?: ForkContext,
+  ): Promise<ChatSession> {
+    if (!this.getMcpConfigLoaded()) await this.loadMcpConfig();
+
+    const activeModel = this.getActiveModelForPanel(panelId);
+
+    const piMemoryService = this.getMemoryService();
+    const piCompassService = this.getCompassService(folder.key);
+    const piBrowserService = this.getRawBrowserService();
+
+    // Team service: its deps reference the about-to-be-created PiSession lazily (resolved at call time).
+    // eslint-disable-next-line prefer-const -- forward reference: the teamService deps closures capture piSession before it's assigned.
+    let piSession: PiSession | undefined;
+    const teamService = new TeamService({
+      cwd: folder.fsPath,
+      onMessage: (message) => this.postMessage(host, message),
+      getSessionId: () => piSession?.memorySessionId ?? null,
+      getPermissionMode: () => permissionHandler.getPermissionMode(),
+      resolveRoleModel: (role) => piSession!.resolveTeamRole(role),
+      buildEngine: () => piSession!.buildTeamEngine(),
+      recordInvocation: (data) => piSession!.recordAgentInvocation(data),
+      parentBranch: () => piSession!.parentBranch(),
+      assertResumableModel: (path, agentId) => piSession!.assertResumableModel(path, agentId),
+      requestInterruptionCheck: () => piSession!.requestInterruptionCheck(),
+    });
+
+    piSession = new PiSession({
+      cwd: folder.fsPath,
+      permissionHandler,
+      onMessage: (message) => this.postMessage(host, message),
+      onSessionIdChange: (sessionId, stored) => {
+        this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "", stored });
+        void this.setupSessionWatcher(folder.key);
+        if (sessionId) {
+          this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
+          const ms = this.getMemoryService();
+          if (ms?.isEnabled) {
+            void (async () => {
+              await ms.ensureInitialized();
+              await ms.migrateSessionId(panelId, sessionId);
+              await ms.consolidateSession(sessionId);
+            })().catch(err => log("[SessionManager] pi consolidateSession failed: %O", err));
+          }
+        }
+      },
+      // Refresh the picker/header when session metadata changes out-of-band (e.g. the auto AI title),
+      // without re-posting sessionStarted or re-running consolidation.
+      onSessionPersisted: (sessionId) => {
+        this.addOrUpdateSession(sessionId, folder.key).catch((err) => log("[SessionManager] session list update failed for %s: %O", sessionId, err));
+      },
+      model: activeModel,
+      getDefaultModel: this.getDefaultModel,
+      panelId,
+      // This folder's scope, so its servers connect at session start. The shared user client reconciles
+      // idempotently; an empty union would close servers another panel connected.
+      mcpScope: this.getEnabledMcpServers(folder.key),
+      resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
+      getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
+      secrets: this.platform.secrets,
+      platform: this.platform,
+      ...(piMemoryService ? { memoryService: piMemoryService } : {}),
+      ...(piCompassService ? { compassService: piCompassService } : {}),
+      browserService: piBrowserService,
+      browserChat: host,
+      teamService,
+      ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
+      ...(forkContext !== undefined ? { forkContext } : {}),
+      ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
+    });
+    return piSession;
+  }
+}

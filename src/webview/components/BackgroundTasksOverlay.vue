@@ -9,12 +9,12 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import SubagentCard from './SubagentCard.vue';
 import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const { t } = useI18n();
 const store = useBackgroundTaskStore();
 const subagentStore = useSubagentStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 defineEmits<{
   (e: 'close'): void;

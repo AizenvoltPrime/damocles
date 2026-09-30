@@ -56,11 +56,11 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
             // registerTeamFromTool only has the create_team input (title + roster). Pull the full
             // persisted team (per-agent models, tokens, tool counts, aggregate stats) so the historical
             // card matches a freshly-run one instead of showing zeros until the overlay is opened.
-            ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
+            ctx.bridge.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
           }
           // The host resolves a resume call to its team through the call's invocation entry.
           if (tool.name === TEAM_RESUME_TOOL && !tool.isError) {
-            ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
+            ctx.bridge.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
           }
           if (tool.name === TOOL_TASK_LIST && tool.result) {
             try {
@@ -100,7 +100,15 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     rewindHistory: (msg, ctx) => {
-      ctx.stores.uiStore.setRewindHistory(msg.prompts, msg.canFork);
+      ctx.stores.uiStore.setRewindHistory(msg.prompts, msg.restorePoints, msg.canFork);
+    },
+
+    skippedFiles: (msg, ctx) => {
+      ctx.stores.uiStore.setSkippedFiles(msg.target, msg.files);
+    },
+
+    rewindUndone: () => {
+      toast.success(i18n.global.t("toast.rewindUndone"));
     },
 
     rewindComplete: (msg) => {

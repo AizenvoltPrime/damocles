@@ -12,7 +12,7 @@ import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutoco
 import { useImageAttachments, type ImageAttachment } from "@/composables/useImageAttachments";
 import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
 import { useVoiceInput } from "@/composables/useVoiceInput";
-import { useVSCode } from "@/composables/useVSCode";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
@@ -106,7 +106,7 @@ const {
   setError: voiceSetError,
 } = useVoiceInput();
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const voiceJarvisStore = useVoiceJarvisStore();
 const {
@@ -389,7 +389,8 @@ function handleKeydown(event: KeyboardEvent) {
   // An IME commits its candidate with Enter, and Windows reports that commit as keyCode 229 only.
   if (event.isComposing || event.keyCode === 229) return;
 
-  if (event.key === "Tab" && event.shiftKey) {
+  // Only a bare Shift+Tab cycles the mode; Ctrl/Cmd/Alt+Shift+Tab belong to the host (previous tab or editor).
+  if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
     if (!props.isProcessing) {
       cycleMode();
@@ -617,7 +618,7 @@ onUnmounted(() => {
 
             <!-- Voice input button -->
             <Button
-              v-if="!isProcessing || isWakeMode"
+              v-if="settingsStore.voiceControlsAvailable && (!isProcessing || isWakeMode)"
               variant="ghost"
               size="icon"
               class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[1.125rem]"

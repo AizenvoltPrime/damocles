@@ -5,6 +5,8 @@ import nlsEn from '../../../../package.nls.json';
 import nlsEl from '../../../../package.nls.el.json';
 import l10nEn from '../../../../l10n/bundle.l10n.json';
 import l10nEl from '../../../../l10n/bundle.l10n.el.json';
+import shellEn from '../../../desktop/shell/locales/en.json';
+import shellEl from '../../../desktop/shell/locales/el.json';
 
 /**
  * Both locale bundles checked as data rather than through a rendered component.
@@ -64,6 +66,34 @@ describe('locale parity', () => {
 
   it.each([['en', EN], ['el', EL]] as const)('has no em dash anywhere in %s', (_locale, strings) => {
     const offenders = [...strings].filter(([, value]) => value.includes('\u2014')).map(([key]) => key);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+/** The desktop shell (tab strip, project list, toasts) has its own pair, with the webview's named placeholders. */
+const SHELL_EN = flatten(shellEn);
+const SHELL_EL = flatten(shellEl);
+
+describe('shell locale parity', () => {
+  it('carries the same key set in both locales', () => {
+    const missingFromEl = [...SHELL_EN.keys()].filter((key) => !SHELL_EL.has(key));
+    const missingFromEn = [...SHELL_EL.keys()].filter((key) => !SHELL_EN.has(key));
+
+    expect({ missingFromEl, missingFromEn }).toEqual({ missingFromEl: [], missingFromEn: [] });
+  });
+
+  it('keeps every placeholder and translates every string that has words', () => {
+    const placeholders = (value: string): string[] => (value.match(/{[a-zA-Z]+}/g) ?? []).sort();
+    const mismatched = [...SHELL_EN].filter(([key, value]) => String(placeholders(value)) !== String(placeholders(SHELL_EL.get(key) ?? '')));
+    // Only a pure placeholder pattern such as "{title}, {project}" may read the same in both.
+    const untranslated = [...SHELL_EN].filter(([key, value]) => SHELL_EL.get(key) === value && /[a-zA-Z]{2,}/.test(value.replace(/{[a-zA-Z]+}/g, '')));
+
+    expect({ mismatched, untranslated }).toEqual({ mismatched: [], untranslated: [] });
+  });
+
+  it('has no em dash in either locale', () => {
+    const offenders = [...SHELL_EN, ...SHELL_EL].filter(([, value]) => value.includes('—')).map(([key]) => key);
 
     expect(offenders).toEqual([]);
   });

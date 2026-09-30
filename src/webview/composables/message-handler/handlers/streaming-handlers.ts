@@ -1,8 +1,10 @@
+import { i18n } from "@/i18n";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 import type { ChatMessage } from "@shared/types/session";
 import { endReplayIngest } from "@/utils/perf";
 
 export function createStreamingHandlers(): Partial<HandlerRegistry> {
+  const { t } = i18n.global;
   return {
     userMessage: (msg, ctx): ScrollBehavior => {
       ctx.stores.streamingStore.addUserMessage(
@@ -135,7 +137,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         sessionStore.setResumedSession(resultData.session_id);
       }
       if (resultData.stop_reason === "max_tokens") {
-        import("vue-sonner").then(({ toast }) => toast.warning("Response truncated — max output tokens reached"));
+        import("vue-sonner").then(({ toast }) => toast.warning(t("toast.responseTruncated")));
       }
       if (resultData.stop_reason === "refusal") {
         const details = resultData.stop_details ?? null;
@@ -161,7 +163,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
 
     authFailure: (msg, ctx) => {
       console.warn('[Damocles] SDK auth failure:', msg.message);
-      ctx.stores.uiStore.setAuthFailure('Your Claude session needs to be renewed. Sign in to continue.');
+      ctx.stores.uiStore.setAuthFailure(t("authBanner.sessionExpired"));
     },
 
     authFailureCleared: (_msg, ctx) => {

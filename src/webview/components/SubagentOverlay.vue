@@ -31,7 +31,7 @@ import SteerImageChips from './SteerImageChips.vue';
 import AgentUsageStats from './AgentUsageStats.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { stripSteerPrefix } from '@shared/steer';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useUIStore } from '@/stores/useUIStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
@@ -39,7 +39,7 @@ import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const uiStore = useUIStore();
 
 interface StreamingState {

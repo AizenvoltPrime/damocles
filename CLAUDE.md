@@ -8,6 +8,12 @@ Damocles is a VS Code extension that embeds an AI coding agent (Claude and GPT) 
 
 ```bash
 npm run build         # Build extension + webview
+npm run build:desktop # Build the Electron main + panel, shell and pane preloads (dist/desktop/), the shell renderer (dist/desktop-shell/) and the workers
+npm run dev:desktop   # Fetch assets and the Electron binary, build webview + desktop, then launch the app (accepts --user-data-dir <path>)
+npm run test:desktop  # Same setup and build, then run the Playwright Electron suite (playwright.desktop.config.ts)
+npm run dist          # Build and package the desktop app for this OS into dist-desktop/ (never publishes)
+npm run dist:linux-wsl -- --distro Ubuntu-24.04  # Linux deb + rpm from Windows, built in WSL
+DAMOCLES_E2E_PACKAGED_APP=<path to built app> npm run test:desktop:packaged  # e2e subset against a packaged app
 npm run dev           # Watch mode
 npm run typecheck     # Type checking
 npm run lint          # Lint
@@ -33,12 +39,14 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 └────────────────────────────┘              └──────────────────────────┘
 ```
 
-- **Seam:** `PiSession` is the only producer of session messages in the webview contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/extension/chat-session.ts`. Cross-session views (`/usage`, `/stats`) post from their router handlers; see `docs/invariants.md`.
+- **Seam:** `PiSession` is the only producer of session messages in the webview contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/core/chat-session.ts`. Cross-session views (`/usage`, `/stats`) post from their router handlers; see `docs/invariants.md`.
+- **Source layout:** `src/core` is host-neutral and never imports `vscode` or `electron` (eslint and `tsconfig.core.json` enforce both); `src/platform` holds the host service interfaces core uses; `src/vscode` implements them for VS Code and holds the entry point `extension.ts`; `src/desktop` is the Electron app (`main/`: entry `index.ts`, window and tab views, `app://` protocol, platform implementations; `preload/`: the panel bridge `window.damoclesBridge`, the shell bridge `window.damoclesShell` and the browser pane bridge `window.damoclesPane`; `shell/`: the window's Vue shell renderer and the browser pane renderer, which never import `electron`), the only place `electron` may be imported.
+- **Desktop:** esbuild → `dist/desktop/main.js` + `preload-panel.js` + `preload-shell.js` + `preload-pane.js` (CJS); Vite (`vite.shell.config.ts`) → `dist/desktop-shell/`. Externals: `scripts/desktop-externals.mjs`. Tab views load the same `dist/webview` app over `app://damocles`; browser pages live in a side pane beside their chat tab; see `docs/invariants.md` for the renderer security posture.
 - **Extension:** esbuild → `dist/extension.js` (CJS). Externals: `scripts/extension-externals.mjs` (single source; `scripts/sync-vscodeignore.mjs` derives the VSIX allowlist from it).
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
 
-### Key Modules (`src/extension/`)
+### Key Modules (`src/core/`; VS Code-only code lives in `src/vscode/`: platform services, panels, Compass views and decorations, voice status bar)
 
 | Module | Purpose |
 | --- | --- |
@@ -78,17 +86,17 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - A cancel note is user turn content, delivered to the agent that ran the command. Never append it to a tool result: a tool result is untrusted, so a model correctly refuses an instruction found in one. A steer is a user message whose first line is `STEER_INSTRUCTION_PREFIX`; never merge peer or tool text into one, which hands that text operator authority.
 - An overlay's z-index comes from the shared overlay stack (`useOverlayEscape.ts`), never a fixed `z-` class, and popper content inside one binds `usePopperZIndex`, or a nested overlay or popup paints behind the one it opened from.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`. Only two blocks set `terminate`: a user deny with no feedback, and a hook that opted in. Every other block must hand the model a reason it can re-plan against.
-- A conversation is live in at most one panel (`claimStoredSession` guards every bind), and the session-keyed registries on `PiRuntime` and `FolderRuntime` unregister only the entry the caller registered. An unconditional unregister lets a closing panel strip a live panel's gate entry, which blocks its tool calls.
+- A conversation is live in at most one panel of one process: `claimStoredSession` guards every bind and takes the cross-process session lease (`session-store/session-lease.ts`); a delete, rename or tag of a file no panel here holds runs under that lease (`whileSessionLeased`). The session-keyed registries on `PiRuntime` and `FolderRuntime` unregister only the entry the caller registered. An unconditional unregister lets a closing panel strip a live panel's gate entry, which blocks its tool calls.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed, so never sequence a delete off a promise that resolves either way.
 - Damocles READS other tools' config (`.claude`, `.codex`, the project's `.mcp.json`) and WRITES only under `.damocles`. MCP writes go to `~/.damocles/mcp.json` alone; permission rules to `.damocles/settings*.json` alone. Never write to a file another tool owns. Every input a repository authors (instructions, skills, hooks, `.pi/`, MCP, permission rules) applies only in a trusted window and takes effect on trust grant with no reload.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`, which writes pi's `customPrompt` plus one named section per toggleable piece, so pi patches only what changed. Returning `systemPrompt` instead sets `forceSystemPrompt` and drops every section.
-- The pi extension is process-global and outlives any one session, so nothing in it may hold instance-wide session state: a `session_shutdown` carries no session id, and the instance can be rebound to a new session when a reload fails. Handlers route per dispatch on `ctx.sessionManager.getSessionId()`; only resources that outlive the extension object are retired on shutdown.
+- The pi extension is process-global and outlives any one session, so nothing in it may hold instance-wide session state: a `session_shutdown` carries no session id, and the instance can be rebound to a new session when a reload fails. Handlers route per dispatch on `ctx.sessionManager.getSessionId()`; only resources that outlive the extension object are retired on shutdown. pi awaits each handler before it streams or runs tools, so a handler never awaits checkpoint git work; it queues it and returns.
 - Memory injection is a delta against `ctx.sessionManager.buildSessionProjection()`: which memories, profile and Compass status the model already has comes only from each injection message's `details`, never from its text and never from state on the extension. Stored text is rendered with every emitted tag name neutralized. Never register a `context` handler or rewrite a past injection message, which breaks the prompt-cache prefix. See "Memory injection" in `docs/invariants.md`.
 - An `agent_before_settle` handler returns `{ entries: [...event.entries, draft] }`, because pi replaces the draft accumulator wholesale and a bare `[draft]` discards every other handler's entries. Hold a turn open with `continue: true` on that draft, never by re-entering `session.prompt()` from a settle handler, which opens a second rewind entry for one turn that nothing downstream can detect.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
 - Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
-- `team_standby` and `team_report_complete` end the turn from the engine, keyed on a non-error result. Never trust the model to stop, never block inside the tool, and register any turn decider through `installTurnDecider`, because assigning `agent.finishTurn` directly typechecks and silently drops pi's own `turn_end` dispatch that mints checkpoints.
+- `team_standby` and `team_report_complete` end the turn from the engine, keyed on a non-error result. Never trust the model to stop, never block inside the tool, and register any turn decider through `installTurnDecider`, because assigning `agent.finishTurn` directly typechecks and silently drops pi's own `turn_end` dispatch, and with it every extension `turn_end` handler.
 - A team agent's work fields are per attempt (a resume continues the attempt, a redispatch starts a new one) and its usage fields are cumulative, while each team card shows one run (`TeamState.runs`, built by `TeamRunLog` both live and on reload). The runner, the persistence loader and the webview store must all agree, or a reopened team contradicts the live one.
 - Account state has one publisher, `PiSession.publishAccountInfo()`, called wherever its inputs change. Never publish it from a once-guarded session-start path.
 - Session state has one publisher, `PiSession.publishSessionState()`, derived from the turn lifecycle plus every pending-prompt map. A new prompt kind must register through `PermissionState`, or the session reads as working while it waits. Never infer the state in the webview to cover a missing publication.

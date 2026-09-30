@@ -1,0 +1,95 @@
+import { describe, it, expect, vi } from 'vitest';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { ChatSession } from '../../chat-session';
+import type { PanelHost } from '../../../platform/window-service';
+
+vi.mock('../../logger', () => ({ log: vi.fn() }));
+
+/** The replay contract as the pi loader posts it: transcript and usage, and no panel state. */
+const H = vi.hoisted(() => ({
+  replay: [
+    { type: 'sessionCleared' },
+    { type: 'userReplay', content: 'hi', isSynthetic: false, sdkMessageId: 'u1' },
+    { type: 'assistantReplay', content: 'hello', contentBlocks: [] },
+    { type: 'tokenUsageUpdate', inputTokens: 10, outputTokens: 5 },
+    { type: 'sessionUsage', usage: { totalInputTokens: 10, totalOutputTokens: 5, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 }, numTurns: 1 },
+    { type: 'done', data: { type: 'result', session_id: 's1', is_done: true } },
+  ] as unknown as ExtensionToWebviewMessage[],
+}));
+
+vi.mock('../../pi-session/session-store', () => ({
+  loadPiSessionHistory: vi.fn(async (_cwd: string, _sessionId: string, post: (m: ExtensionToWebviewMessage) => void) => {
+    for (const m of H.replay) post(m);
+    return ['u1'];
+  }),
+  getPiRewindHistory: vi.fn(async () => ({ items: [], restorePoints: [] })),
+  getPiFileCheckpointContent: vi.fn(async () => null),
+  getPiSkippedFiles: vi.fn(async () => ({ ok: true, value: [] })),
+}));
+
+import { HistoryManager } from '../history-manager';
+
+function harness(): {
+  manager: HistoryManager;
+  host: PanelHost;
+  session: ChatSession;
+  posted: ExtensionToWebviewMessage[];
+} {
+  const posted: ExtensionToWebviewMessage[] = [];
+  const host = { onDispose: () => ({ dispose: () => undefined }) } as unknown as PanelHost;
+  // Stands in for PiSession.publishAccountInfo, which emits this message through the panel's onMessage.
+  const session = {
+    publishAccountInfo: () => posted.push({
+      type: 'accountInfo',
+      data: { model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+    }),
+  } as unknown as ChatSession;
+  const manager = new HistoryManager({
+    postMessage: (_h, m) => posted.push(m),
+    maxCheckpointFileSizeBytes: () => 25 * 1024 * 1024,
+  });
+  return { manager, host, session, posted };
+}
+
+/**
+ * A session reopened from the picker may never run a turn, and the replay carries no panel state, so
+ * the restore itself has to deliver the account chip.
+ */
+describe('HistoryManager.loadSessionHistory', () => {
+  it('delivers account state to the restored panel with no turn', async () => {
+    const { manager, host, session, posted } = harness();
+
+    await manager.loadSessionHistory('/ws', 's1', host, session);
+
+    const account = posted.filter((m) => m.type === 'accountInfo');
+    expect(account).toHaveLength(1);
+    expect(account[0]).toEqual({
+      type: 'accountInfo',
+      data: { model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+    });
+  });
+
+  it('delivers it after the replay, so the transcript never lands on top of it', async () => {
+    const { manager, host, session, posted } = harness();
+
+    await manager.loadSessionHistory('/ws', 's1', host, session);
+
+    const types = posted.map((m) => m.type);
+    expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('sessionCleared'));
+    expect(types.indexOf('accountInfo')).toBeGreaterThan(types.indexOf('done'));
+  });
+});
+
+/** A conversation resumed from another folder is read from that folder's session dir, not the asking panel's. */
+describe('HistoryManager reads the folder it is given', () => {
+  it('replays and seeds checkpoints from the session\'s own folder', async () => {
+    const store = await import('../../pi-session/session-store');
+    const { manager, host, session } = harness();
+
+    const rewindableIds = await manager.loadSessionHistory('/work/beta', 's-b', host, session);
+
+    expect(vi.mocked(store.loadPiSessionHistory).mock.calls.at(-1)?.slice(0, 2)).toEqual(['/work/beta', 's-b']);
+    // The checkpoint ids come from the replay's own read of that folder's file.
+    expect(rewindableIds).toEqual(['u1']);
+  });
+});

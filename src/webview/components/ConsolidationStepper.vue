@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import {
   IconDatabase,
@@ -18,12 +19,14 @@ import type { ConsolidationPhaseId } from '@shared/types/consolidation';
 const store = useConsolidationStore();
 const { phaseStatus, phaseMeta, persistProgress } = storeToRefs(store);
 
-const PHASES: { id: ConsolidationPhaseId; label: string; icon: typeof IconDatabase }[] = [
-  { id: 'claim', label: 'Claim', icon: IconDatabase },
-  { id: 'extract', label: 'Extract', icon: IconSparkles },
-  { id: 'persist', label: 'Persist', icon: IconLayers },
-  { id: 'maintain', label: 'Maintain', icon: IconRepeat },
-  { id: 'profiles', label: 'Profiles', icon: IconFileText },
+const { t } = useI18n();
+
+const PHASES: { id: ConsolidationPhaseId; labelKey: string; icon: typeof IconDatabase }[] = [
+  { id: 'claim', labelKey: 'consolidation.phase.claim', icon: IconDatabase },
+  { id: 'extract', labelKey: 'consolidation.phase.extract', icon: IconSparkles },
+  { id: 'persist', labelKey: 'consolidation.phase.persist', icon: IconLayers },
+  { id: 'maintain', labelKey: 'consolidation.phase.maintain', icon: IconRepeat },
+  { id: 'profiles', labelKey: 'consolidation.phase.profiles', icon: IconFileText },
 ];
 
 /** Trailing text per phase: real counts on done rows, reason/summary on skipped/failed rows. */
@@ -32,32 +35,33 @@ function trailing(id: ConsolidationPhaseId): string {
   const meta = phaseMeta.value[id];
   if (id === 'claim' && status === 'done') {
     const n = meta.count ?? 0;
-    return `${n} turn${n === 1 ? '' : 's'}`;
+    return t('consolidation.stepper.turns', n);
   }
   if (id === 'extract') {
-    if (status === 'active') return 'reading turns…';
+    if (status === 'active') return t('consolidation.stepper.readingTurns');
     if (status === 'done') {
       const n = meta.count ?? 0;
-      return `${n} found`;
+      return t('consolidation.stepper.found', { n });
     }
   }
   if (id === 'persist') {
     if (status === 'active') return `${persistProgress.value.done}/${persistProgress.value.total}`;
     if (status === 'done') {
       const n = meta.done ?? 0;
-      return `${n} item${n === 1 ? '' : 's'}`;
+      return t('consolidation.stepper.items', n);
     }
   }
   if (id === 'maintain' && status === 'done') return meta.summary ?? '';
-  if (id === 'profiles' && status === 'done') return 'project · global';
-  if (status === 'skipped') return meta.reason ? `skipped — ${meta.reason}` : 'skipped';
-  if (status === 'failed') return meta.reason ?? 'failed';
+  if (id === 'profiles' && status === 'done') return t('consolidation.stepper.profilesDone');
+  if (status === 'skipped') return meta.reason ? t('consolidation.stepper.skippedBecause', { reason: meta.reason }) : t('consolidation.stepper.skipped');
+  if (status === 'failed') return meta.reason ?? t('consolidation.stepper.failed');
   return '';
 }
 
 const rows = computed(() =>
   PHASES.map((p, i) => ({
     ...p,
+    label: t(p.labelKey),
     status: phaseStatus.value[p.id],
     trailing: trailing(p.id),
     last: i === PHASES.length - 1,

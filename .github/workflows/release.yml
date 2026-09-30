@@ -5,19 +5,20 @@ on:
     tags:
       - 'v*'
 
+# The workflow token is read-only; only `attest` and `release` widen it, each in its own job.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      # Node 24 (current Active LTS). The smoke imports pi for real, which requires Node >=22.19.0
-      # (undici 8.3.0); 24 satisfies that floor. The extension host itself runs Node 22 (Electron),
-      # so @types/node stays pinned to 22 — this is the build/verify toolchain, not the runtime target.
-      - uses: actions/setup-node@v4
+      # Node 24 matches package.json engines. The smoke imports pi for real, which requires Node >=22.19.0 (undici 8.3.0).
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -36,6 +37,10 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Enforces the source layout boundaries: core never imports vscode or electron.
+      - name: Lint
+        run: npm run lint
 
       - name: Test
         run: npm test
@@ -107,9 +112,11 @@ jobs:
     env:
       VSIX_NAME: damocles-${{ matrix.target }}-${{ github.ref_name }}.vsix
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: ${{ !matrix.alpineContainer }}
         with:
           node-version: 24
@@ -120,7 +127,7 @@ jobs:
         shell: bash
         run: |
           npm ci
-          npx @vscode/vsce package \
+          npm run package -- \
             --target ${{ matrix.target }} \
             --out "$VSIX_NAME"
 
@@ -137,7 +144,7 @@ jobs:
               cp -a /work /build
               cd /build
               npm ci
-              npx @vscode/vsce package \
+              npm run package -- \
                 --target ${{ matrix.target }} \
                 --out "$VSIX_NAME"
               cp "$VSIX_NAME" "/work/$VSIX_NAME"
@@ -177,23 +184,583 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      # Alpine legs run this on the host's preinstalled Node; the listing mode reads no node_modules.
+      - name: Verify VSIX carries no desktop-only file
+        shell: bash
+        run: |
+          listing=$(mktemp)
+          unzip -Z1 "$VSIX_NAME" > "$listing"
+          node scripts/sync-vscodeignore.mjs --check-vsix-listing "$listing"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vsix-${{ matrix.target }}
           path: ${{ env.VSIX_NAME }}
           retention-days: 7
           if-no-files-found: error
 
-  release:
-    needs: package
-    runs-on: ubuntu-latest
+  # Keep this matrix in step with DESKTOP_TARGETS in scripts/release-targets.mjs (release-targets.test.ts fails on drift).
+  # Every electron-builder call names its targets: without them, the `arch` lists in electron-builder.yml add architectures the runner cannot build.
+  package-desktop:
+    needs: verify
+    strategy:
+      # Each leg is a separate platform; `release` still needs every leg, so a failure reports all of them without publishing.
+      fail-fast: false
+      matrix:
+        include:
+          - target: win-x64
+            runner: windows-latest
+            os: win32
+            builder: win
+            targets: nsis
+            arch: x64
+            channel: latest-x64
+            appDir: dist-desktop/win-unpacked
+            executable: dist-desktop/win-unpacked/Damocles.exe
+          - target: win-arm64
+            runner: windows-11-arm
+            os: win32
+            builder: win
+            targets: nsis
+            arch: arm64
+            channel: latest-arm64
+            appDir: dist-desktop/win-arm64-unpacked
+            executable: dist-desktop/win-arm64-unpacked/Damocles.exe
+            updateFeed: nsis
+          - target: mac-arm64
+            runner: macos-latest
+            os: darwin
+            builder: mac
+            targets: dmg zip
+            arch: arm64
+            appDir: dist-desktop/mac-arm64/Damocles.app
+            executable: dist-desktop/mac-arm64/Damocles.app/Contents/MacOS/Damocles
+            updateFeed: zip
+          - target: linux-x64
+            runner: ubuntu-latest
+            os: linux
+            builder: linux
+            targets: deb rpm
+            arch: x64
+            appDir: dist-desktop/linux-unpacked
+            executable: dist-desktop/linux-unpacked/damocles
+            updateFeed: deb
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            os: linux
+            builder: linux
+            targets: deb rpm
+            arch: arm64
+            appDir: dist-desktop/linux-arm64-unpacked
+            executable: dist-desktop/linux-arm64-unpacked/damocles
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install rpm, Xvfb and a window manager
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm xvfb openbox
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The electron package has no install script and downloads its binary on first require, which the setuid step below and two parallel Playwright workers cannot wait for.
+      - name: Download the Electron binary
+        run: npx --no install-electron
+
+      - name: Build
+        run: npm run build
+
+      - name: Build desktop
+        run: npm run build:desktop
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces for binaries without an AppArmor profile, so Chromium needs its setuid helper; the sandbox stays on.
+      - name: Enable the setuid sandbox helper of the dev Electron binary
+        if: matrix.os == 'linux'
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      # Linux: minimizing needs a window manager and the pane tests size the window to 1400x900. playwright.desktop.config.ts
+      # sets the worker count per platform.
+      - name: Desktop end-to-end suite
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1920x1080x24' sh -c 'openbox & exec npm run test:desktop'
+          else
+            npm run test:desktop
+          fi
+
+      # Windows builds the unpacked app and the installer in two steps so signing can sit between them (docs/desktop-signing.md).
+      # The nsis target is required here: only it makes electron-builder write resources/app-update.yml, and --dir or --prepackaged never do.
+      - name: Build unpacked Windows app
+        if: matrix.os == 'win32'
+        run: npx electron-builder --win ${{ matrix.targets }} --${{ matrix.arch }} --publish never -c.publish.channel=${{ matrix.channel }}
+
+      - name: Build macOS and Linux installers
+        if: matrix.os != 'win32'
+        run: npx electron-builder --${{ matrix.builder }} ${{ matrix.targets }} --${{ matrix.arch }} --publish never
+
+      - name: Verify desktop package integrity and fuses
+        run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
+
+      - name: Enable the setuid sandbox helper of the packaged app
+        if: matrix.os == 'linux'
+        run: |
+          sudo chown root:root "${{ matrix.appDir }}/chrome-sandbox"
+          sudo chmod 4755 "${{ matrix.appDir }}/chrome-sandbox"
+
+      - name: End-to-end suite against the packaged app
+        env:
+          DAMOCLES_E2E_PACKAGED_APP: ${{ github.workspace }}/${{ matrix.executable }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a npm run test:desktop:packaged
+          else
+            npm run test:desktop:packaged
+          fi
+
+      # The installer packs this directory as the suite left it, so it must still hold no runtime leftovers such as __pycache__.
+      - name: Verify the tested Windows app is still clean
+        if: matrix.os == 'win32'
+        run: node scripts/verify-desktop-package.mjs --platform ${{ matrix.os }} --arch ${{ matrix.arch }} --app "${{ matrix.appDir }}"
+
+      - name: Build Windows installer from the unpacked app
+        if: matrix.os == 'win32'
+        run: npx electron-builder --win ${{ matrix.targets }} --${{ matrix.arch }} --prepackaged "${{ matrix.appDir }}" --publish never -c.publish.channel=${{ matrix.channel }}
+
+      - name: Verify this leg's release artifacts
+        run: node scripts/release-targets.mjs --check-desktop-artifacts ${{ matrix.target }} dist-desktop
+
+      # Version N+1 of the same tree for desktop-update-test; never attached to the release.
+      - name: Build update-test version N+1
+        if: matrix.updateFeed
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          next=$(node -p "const [a, b, c] = require('./package.json').version.split('-')[0].split('.').map(Number); [a, b, c + 1].join('.')")
+          channel_flag=()
+          if [ -n "$CHANNEL" ]; then channel_flag=("-c.publish.channel=$CHANNEL"); fi
+          npx electron-builder --${{ matrix.builder }} ${{ matrix.updateFeed }} --${{ matrix.arch }} --publish never "${channel_flag[@]}" \
+            -c.extraMetadata.version="$next" -c.directories.output=dist-desktop/next
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            dist-desktop/*.exe
+            dist-desktop/*.dmg
+            dist-desktop/*.zip
+            dist-desktop/*.deb
+            dist-desktop/*.rpm
+            dist-desktop/*.blockmap
+            dist-desktop/latest*.yml
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: matrix.updateFeed
+        with:
+          name: update-feed-${{ matrix.target }}
+          path: |
+            dist-desktop/next/*.exe
+            dist-desktop/next/*.zip
+            dist-desktop/next/*.deb
+            dist-desktop/next/*.blockmap
+            dist-desktop/next/latest*.yml
+          retention-days: 1
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: e2e-report-${{ matrix.target }}
+          path: |
+            dist/e2e-report
+            dist/e2e-results
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Fresh runners install what package-desktop built, as a user would.
+  verify-desktop-install:
+    needs: package-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: deb
+            runner: ubuntu-24.04
+            artifact: desktop-linux-x64
+          - check: rpm
+            runner: ubuntu-24.04
+            artifact: desktop-linux-x64
+          - check: dmg
+            runner: macos-latest
+            artifact: desktop-mac-arm64
+          - check: nsis
+            runner: windows-latest
+            artifact: desktop-win-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.artifact }}
+          path: installers
+
+      - name: Install the deb and launch it with the Chromium sandbox on
+        if: matrix.check == 'deb'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb x11-utils
+          deb=$(ls installers/damocles_*_amd64.deb)
+          sudo apt-get install -y "./$deb"
+          test -x /opt/Damocles/damocles
+          grep -q '^provider: github' /opt/Damocles/resources/app-update.yml
+          # electron-updater picks its Linux installer (dpkg or rpm) from this file.
+          grep -qx deb /opt/Damocles/resources/package-type
+          apparmor=N
+          if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || echo N)" = Y ]; then
+            apparmor=Y
+            if ! sudo grep -E '^damocles ' /sys/kernel/security/apparmor/profiles; then
+              echo "ERROR: AppArmor is active but the damocles profile is not loaded" >&2
+              exit 1
+            fi
+          else
+            echo "AppArmor is not active on this runner; the profile load check does not apply."
+          fi
+          work=$(mktemp -d)
+          cat > "$work/launch.sh" <<'EOF'
+          set -euo pipefail
+          work="$1"
+          HOME="$work" /opt/Damocles/damocles --user-data-dir="$work/user-data" > "$work/app.log" 2>&1 &
+          app=$!
+          shown=0
+          for _ in $(seq 1 90); do
+            if ! kill -0 "$app" 2>/dev/null; then break; fi
+            if xwininfo -root -tree | grep -i damocles | grep -qE '[0-9]{3,}x[0-9]{3,}\+'; then shown=1; break; fi
+            sleep 1
+          done
+          if [ "$shown" != 1 ]; then
+            echo "ERROR: no Damocles window within 90 s" >&2
+            cat "$work/app.log" >&2
+            exit 1
+          fi
+          sleep 5
+          renderer=""
+          for pid in $(pgrep -f '^/opt/Damocles/damocles'); do
+            # A helper process can exit between pgrep and this read.
+            args=$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline") || continue
+            echo "$pid: $args"
+            case "$args" in
+              *--no-sandbox*) echo "ERROR: process $pid runs with --no-sandbox" >&2; exit 1 ;;
+              *--type=renderer*) renderer="$pid" ;;
+            esac
+          done
+          if [ -z "$renderer" ]; then
+            echo "ERROR: no renderer process found" >&2
+            exit 1
+          fi
+          # A sandboxed Chromium renderer runs under a seccomp-bpf filter (mode 2).
+          if ! grep -E '^Seccomp:[[:space:]]+2$' "/proc/$renderer/status"; then
+            echo "ERROR: renderer $renderer is not under the seccomp sandbox" >&2
+            exit 1
+          fi
+          # Both Chromium sandboxes give the renderer its own pid namespace; only the user namespace sandbox, which the AppArmor profile enables, gives it its own user namespace.
+          if [ "$(sudo readlink "/proc/$renderer/ns/pid")" = "$(sudo readlink "/proc/$app/ns/pid")" ]; then
+            echo "ERROR: renderer $renderer shares the browser's pid namespace" >&2
+            exit 1
+          fi
+          if [ "$2" = Y ] && [ "$(sudo readlink "/proc/$renderer/ns/user")" = "$(sudo readlink "/proc/$app/ns/user")" ]; then
+            echo "ERROR: AppArmor is active but renderer $renderer is not in its own user namespace, so the profile did not enable the user namespace sandbox" >&2
+            exit 1
+          fi
+          if grep -iE 'no usable sandbox|sandbox helper binary' "$work/app.log"; then
+            echo "ERROR: Chromium reported a sandbox failure" >&2
+            exit 1
+          fi
+          kill "$app"
+          EOF
+          xvfb-run -a bash "$work/launch.sh" "$work" "$apparmor"
+
+      - name: Install the rpm in Fedora and check its files
+        if: matrix.check == 'rpm'
+        shell: bash
+        # The current Fedora release, so this check never runs on an end-of-life one.
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/installers:/installers:ro" fedora:latest bash -euo pipefail -c '
+            rpm=$(ls /installers/damocles-*.x86_64.rpm)
+            rpm -qp --scripts "$rpm" | grep -q apparmor
+            # Fedora has no AppArmor, so this also proves the scripts never fail the install without it.
+            dnf install -y "$rpm"
+            test -x /opt/Damocles/damocles
+            test -f /opt/Damocles/resources/app.asar
+            test -d /opt/Damocles/resources/app.asar.unpacked
+            grep -q "^provider: github" /opt/Damocles/resources/app-update.yml
+            grep -qx rpm /opt/Damocles/resources/package-type
+            rpm -ql damocles | grep -q apparmor
+            dnf remove -y damocles
+            test ! -e /opt/Damocles
+          '
+
+      # CGWindowList reports window owners without accessibility or screen recording permission, and needs no npm install on the fresh runner.
+      - name: Install the dmg into /Applications and launch it to its first window
+        if: matrix.check == 'dmg'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg=$(ls installers/Damocles-*-arm64.dmg)
+          mount=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg"
+          cp -R "$mount/Damocles.app" /Applications/
+          hdiutil detach "$mount"
+          codesign --verify --deep --strict /Applications/Damocles.app
+          codesign -dv /Applications/Damocles.app 2>&1 | grep -q 'Signature=adhoc'
+          grep -q '^provider: github' /Applications/Damocles.app/Contents/Resources/app-update.yml
+          cat > "$RUNNER_TEMP/windows.swift" <<'EOF'
+          import CoreGraphics
+          let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+          let shown = windows.filter { window in
+            guard window[kCGWindowOwnerName as String] as? String == "Damocles",
+                  window[kCGWindowLayer as String] as? Int == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let height = bounds["Height"] as? Double else { return false }
+            return height >= 200
+          }
+          print(shown.count)
+          EOF
+          swiftc -o "$RUNNER_TEMP/windows" "$RUNNER_TEMP/windows.swift"
+          # The runner's Keychain would prompt modally and block the main thread before the first window, as in the e2e launchers.
+          open -n /Applications/Damocles.app --args --user-data-dir="$RUNNER_TEMP/user-data" --use-mock-keychain
+          shown=0
+          for _ in $(seq 1 90); do
+            if [ "$("$RUNNER_TEMP/windows")" -gt 0 ]; then shown=1; break; fi
+            sleep 1
+          done
+          if [ "$shown" != 1 ]; then
+            echo "ERROR: no Damocles window within 90 s" >&2
+            pgrep -lf Damocles >&2 || echo "No Damocles process is running." >&2
+            exit 1
+          fi
+          pkill -x Damocles
+
+      - name: Install the NSIS installer per user and launch it to its first window
+        if: matrix.check == 'nsis'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem installers -Filter 'Damocles-Setup-*-x64.exe' | Select-Object -First 1
+          $marker = Join-Path $env:USERPROFILE '.damocles\install-check-marker'
+          New-Item -ItemType Directory -Force -Path (Split-Path $marker) | Out-Null
+          Set-Content -Path $marker -Value 'kept'
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The installer exited with $($install.ExitCode)" }
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object { $_.DisplayName -like 'Damocles*' }
+          if (-not $entry) { throw 'No per-user uninstall entry for Damocles under HKCU' }
+          # electron-builder writes InstallLocation only to its own key; the uninstall entry locates the folder through its uninstaller.
+          if ($entry.UninstallString -notmatch '^"([^"]+)"') { throw "Unexpected UninstallString: $($entry.UninstallString)" }
+          $uninstaller = $Matches[1]
+          $installDir = Split-Path -Parent $uninstaller
+          if (-not $installDir.StartsWith("$env:LOCALAPPDATA\", [System.StringComparison]::OrdinalIgnoreCase)) { throw "Installed outside the user profile: $installDir" }
+          $exe = Join-Path $installDir 'Damocles.exe'
+          if (-not (Test-Path $exe)) { throw "$exe is missing after install" }
+          $feed = Get-Content -Raw (Join-Path $installDir 'resources\app-update.yml')
+          if ($feed -notmatch '(?m)^provider: github' -or $feed -notmatch '(?m)^channel: latest-x64') { throw "resources\app-update.yml does not name the GitHub feed on channel latest-x64: $feed" }
+          $userData = Join-Path $env:RUNNER_TEMP 'user-data'
+          $app = Start-Process -FilePath $exe -ArgumentList "--user-data-dir=`"$userData`"" -PassThru
+          $shown = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            $app.Refresh()
+            if ($app.HasExited) { throw "Damocles exited with $($app.ExitCode) before showing a window" }
+            if ($app.MainWindowHandle -ne 0) { $shown = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $shown) { throw 'No Damocles window within 90 s' }
+          Get-Process -Name Damocles | Stop-Process -Force
+          Start-Sleep -Seconds 3
+          Start-Process -FilePath $uninstaller -ArgumentList '/S', '/currentuser' -Wait
+          for ($i = 0; $i -lt 60 -and (Test-Path $exe); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $exe) { throw "$exe is still present after uninstall" }
+          if (-not (Test-Path $marker)) { throw 'The uninstaller removed ~/.damocles' }
+
+  # Installs version N, serves N+1 from a loopback feed, and checks the update applies (Windows, Linux) or the notice opens the release page (macOS).
+  desktop-update-test:
+    needs: package-desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win-arm64
+            runner: windows-11-arm
+            platform: win32
+            installer: Damocles-Setup-VERSION-arm64.exe
+          - target: linux-x64
+            runner: ubuntu-24.04
+            platform: linux
+            installer: damocles_VERSION_amd64.deb
+          - target: mac-arm64
+            runner: macos-latest
+            platform: darwin
+            installer: Damocles-VERSION-arm64.dmg
+    runs-on: ${{ matrix.runner }}
+    # On windows-11-arm the install, the update and the uninstall each take 5 to 9 minutes while Defender scans the new binaries.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/desktop/update/package-lock.json
+
+      # The driver drives the installed app over CDP with playwright-core alone, pinned in its own lockfile; the repository's
+      # full install takes 11 to 17 minutes on windows-11-arm.
+      - name: Install the update driver's dependencies
+        run: npm ci --prefix e2e/desktop/update --ignore-scripts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-${{ matrix.target }}
+          path: installers
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: update-feed-${{ matrix.target }}
+          path: feed
+
+      # electron-updater elevates through pkexec when it exists and falls back to sudo otherwise; installing polkit tests the path a desktop user gets.
+      - name: Install Xvfb and polkit
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb pkexec polkitd
+
+      - name: Update the installed version N to N+1 from a local feed
+        env:
+          INSTALLER_TEMPLATE: ${{ matrix.installer }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          from=$(node -p "require('./package.json').version")
+          to=$(sed -n 's/^version: //p' feed/latest*.yml | tr -d '\r')
+          installer="installers/${INSTALLER_TEMPLATE//VERSION/$from}"
+          args=(e2e/desktop/update/drive-update.mjs --platform "$PLATFORM" --installer "$installer" --feed-dir feed
+            --from-version "$from" --to-version "$to" --work-dir "$RUNNER_TEMP/update-test")
+          if [ "$PLATFORM" = linux ]; then
+            xvfb-run -a node "${args[@]}" --grant-pkexec
+          else
+            node "${args[@]}"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: update-test-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/update-test/**/*.log
+            ${{ runner.temp }}/update-test/drive-update.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Build provenance for every file the release attaches. The OIDC token this job can mint signs attestations, so the job
+  # holds no secret and installs and runs no package. Its subject-path list must equal the asset list in "Create GitHub Release".
+  attest:
+    needs: [package, package-desktop, verify-desktop-install, desktop-update-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist-artifacts
+          pattern: vsix-*
           merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist-artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist-artifacts/*.vsix
+            dist-artifacts/*.exe
+            dist-artifacts/*.dmg
+            dist-artifacts/*.zip
+            dist-artifacts/*.deb
+            dist-artifacts/*.rpm
+            dist-artifacts/*.blockmap
+            dist-artifacts/latest*.yml
+
+  release:
+    needs: [package, package-desktop, verify-desktop-install, desktop-update-test, attest]
+    runs-on: ubuntu-latest
+    # Only this job writes: `gh release create` authenticates with the job's own GITHUB_TOKEN.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # No npm cache: jobs that run install scripts write the shared cache, and this job holds the publish tokens.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      # vsce and ovsx run from the lockfile. No install script runs in a job that holds the publish tokens.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist-artifacts
+          pattern: vsix-*
+          merge-multiple: true
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist-artifacts
+          pattern: desktop-*
+          merge-multiple: true
+
+      - name: Verify one tag produced every VSIX and desktop artifact
+        run: |
+          node --input-type=module -e "
+            import { existsSync } from 'node:fs';
+            import { RELEASE_TARGETS } from './scripts/release-targets.mjs';
+            const missing = Object.keys(RELEASE_TARGETS)
+              .map((target) => 'dist-artifacts/damocles-' + target + '-' + process.env.GITHUB_REF_NAME + '.vsix')
+              .filter((file) => !existsSync(file));
+            if (missing.length) { console.error('Missing VSIXes: ' + missing.join(', ')); process.exit(1); }
+          "
+          node scripts/release-targets.mjs --check-desktop-artifacts all dist-artifacts
 
       - name: Extract changelog section
         run: |
@@ -210,15 +777,41 @@ jobs:
             echo "ERROR: No changelog section found for version $version" >&2
             exit 1
           fi
+          cat >> /tmp/release-body.md <<'EOF'
 
+          ## Desktop app
+
+          Installers for Windows 10 or later (x64, arm64), macOS 13 or later (Apple silicon) and Linux (x64, arm64; deb and rpm) are attached below. 64-bit only.
+
+          - **Windows**: the installer is not code signed yet, so SmartScreen warns before the first run. Choose More info > Run anyway. It installs per user and updates itself: it downloads a new version in the background and asks before restarting.
+          - **macOS**: the app is ad hoc signed, not notarized. On macOS 15 and later, open it once, then approve it under System Settings > Privacy & Security > Open Anyway; each new version needs this approval again. The app does not update itself on macOS: it shows a notice that opens the new release page. Voice is unavailable on macOS. macOS builds are verified by CI only, not by hand.
+          - **Linux**: the deb and rpm install an AppArmor profile so the Chromium sandbox works on Ubuntu 24.04 and later. Updates download in the background and ask for an administrator password to install.
+
+          Code signing policy and privacy statement: https://github.com/AizenvoltPrime/damocles#code-signing-policy
+
+          Verifying a download: `SHA256SUMS` lists the SHA-256 of every file attached here (`sha256sum -c SHA256SUMS --ignore-missing` in the download folder), and every file except `SHA256SUMS` has a GitHub build provenance attestation (`gh attestation verify <file> --repo AizenvoltPrime/damocles`).
+          EOF
+
+      # SHA256SUMS holds bare file names, so `sha256sum -c` runs in the folder the files were downloaded to.
       - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          assets=(
+            dist-artifacts/*.vsix
+            dist-artifacts/*.exe
+            dist-artifacts/*.dmg
+            dist-artifacts/*.zip
+            dist-artifacts/*.deb
+            dist-artifacts/*.rpm
+            dist-artifacts/*.blockmap
+            dist-artifacts/latest*.yml
+          )
+          (cd dist-artifacts && sha256sum -- "${assets[@]#dist-artifacts/}") > dist-artifacts/SHA256SUMS
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/release-body.md \
-            dist-artifacts/*.vsix
-        env:
-          GH_TOKEN: ${{ secrets.PAT }}
+            "${assets[@]}" dist-artifacts/SHA256SUMS
 
       - name: Publish to Visual Studio Marketplace
         env:
@@ -232,7 +825,7 @@ jobs:
             local log
             log=$(mktemp)
             while [ "$attempt" -le "$max_attempts" ]; do
-              if npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT" >"$log" 2>&1; then
+              if node_modules/.bin/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT" >"$log" 2>&1; then
                 cat "$log"
                 return 0
               fi
@@ -266,7 +859,7 @@ jobs:
             local log
             log=$(mktemp)
             while [ "$attempt" -le "$max_attempts" ]; do
-              if npx ovsx publish "$vsix" -p "$OVSX_PAT" >"$log" 2>&1; then
+              if node_modules/.bin/ovsx publish "$vsix" -p "$OVSX_PAT" >"$log" 2>&1; then
                 cat "$log"
                 return 0
               fi

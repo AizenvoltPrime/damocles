@@ -51,7 +51,7 @@ describe('memory toasts', () => {
 
   it('opens the memory panel without asking for the list, which the panel requests itself', () => {
     const postMessage = vi.fn();
-    const ctx = { stores: { uiStore: useUIStore() }, vscode: { postMessage } } as unknown as HandlerContext;
+    const ctx = { stores: { uiStore: useUIStore() }, bridge: { postMessage } } as unknown as HandlerContext;
     createMemoryHandlers().openMemoryPanel!({ type: 'openMemoryPanel' }, ctx);
     expect(useUIStore().showMemoryPanel).toBe(true);
     expect(postMessage).not.toHaveBeenCalled();

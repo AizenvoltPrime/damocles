@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
+import { ref, computed, onUnmounted, watch, nextTick } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { useVSCode } from "@/composables/useVSCode";
+import { useEditorStore } from "@/stores/useEditorStore";
+import type { SettingsFileScope } from "@shared/types/messages";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL, exploreSupportedEffortLevels, parseCacheWarmingMode, thinkingDisableApplies } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
@@ -15,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import JarvisSettings from "./JarvisSettings.vue";
+import SettingSourceBadge from "./SettingSourceBadge.vue";
 import OpenAIAuthPanel from "./OpenAIAuthPanel.vue";
 import ClaudeAuthPanel from "./ClaudeAuthPanel.vue";
 import CustomProviderAuthPanel from "./CustomProviderAuthPanel.vue";
@@ -110,18 +113,7 @@ function handleIdeContextEnabledChange(enabled: boolean) {
   emit("setIdeContextEnabled", enabled);
 }
 
-function handleKeyDown(event: KeyboardEvent) {
-  if (event.key === "Escape" && props.visible) {
-    emit("close");
-  }
-}
-
-onMounted(() => {
-  window.addEventListener("keydown", handleKeyDown);
-});
-
 onUnmounted(() => {
-  window.removeEventListener("keydown", handleKeyDown);
   if (highlightTimeout) {
     clearTimeout(highlightTimeout);
     highlightTimeout = null;
@@ -167,8 +159,45 @@ const {
   panelWorkspaceFolderKey,
   defaultWorkspaceFolderKey,
   isMultiRoot,
+  hostCapabilities,
+  settingSources,
+  voiceControlsAvailable,
 } = storeToRefs(settingsStore);
-const { postMessage } = useVSCode();
+const projectSourcedSettings = computed(() =>
+  Object.entries(settingSources.value)
+    .map(([key, source]) => ({ key, ...source }))
+    .sort((a, b) => a.key.localeCompare(b.key)),
+);
+const { postMessage } = usePlatformBridge();
+
+const editorStore = useEditorStore();
+const settingsFileEditing = computed(() => hostCapabilities.value.monaco && hostCapabilities.value.settingsSources);
+const SETTINGS_FILE_SCOPES: readonly SettingsFileScope[] = ["user", "project", "local"];
+// The host keeps the answer current for this panel after the first request, on trust grants and project changes.
+watch(
+  () => props.visible && settingsFileEditing.value,
+  (ask) => {
+    if (ask) postMessage({ type: "getSettingsFileAvailability" });
+  },
+  { immediate: true },
+);
+function settingsFileUnavailableReason(scope: SettingsFileScope): string | null {
+  const availability = editorStore.settingsFileAvailability?.[scope];
+  if (availability === undefined || availability.available) return null;
+  return availability.reason === "noProject" ? t("settings.jsonFiles.noProject") : t("settings.jsonFiles.untrusted");
+}
+// The editor overlay takes focus as it opens, so the closing sheet must not hand focus back to its trigger beneath it.
+let keepFocusOnClose = false;
+function openSettingsFileEditor(scope: SettingsFileScope) {
+  keepFocusOnClose = true;
+  editorStore.openSettingsEditor(scope);
+  emit("close");
+}
+function handleCloseAutoFocus(event: Event) {
+  if (!keepFocusOnClose) return;
+  keepFocusOnClose = false;
+  event.preventDefault();
+}
 
 function handleDefaultWorkspaceFolderChange(folderKey: string) {
   if (folderKey === defaultWorkspaceFolderKey.value) return;
@@ -457,7 +486,7 @@ function handleDeleteExploreApiKey() {
 
 <template>
   <Sheet :open="visible" @update:open="(open: boolean) => !open && emit('close')">
-    <SheetContent side="right" class="w-80 bg-card border-l border-border overflow-y-auto">
+    <SheetContent side="right" class="w-80 bg-card border-l border-border overflow-y-auto" @close-auto-focus="handleCloseAutoFocus">
       <SheetHeader class="mb-6">
         <SheetTitle class="text-foreground">{{ t("settings.title") }}</SheetTitle>
       </SheetHeader>
@@ -574,7 +603,7 @@ function handleDeleteExploreApiKey() {
 
         <!-- Default Model -->
         <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}<SettingSourceBadge setting-key="damocles.model" /></Label>
           <Select :model-value="defaultModel" @update:model-value="handleDefaultModelChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -597,13 +626,13 @@ function handleDeleteExploreApiKey() {
               :checked="defaultThinking.thinkingDisabled"
               @update:checked="(val: boolean) => emit('setDefaultThinkingDisabled', val)"
             />
-            <Label for="default-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
+            <Label for="default-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}<SettingSourceBadge setting-key="damocles.thinkingDisabled" /></Label>
           </div>
 
           <p v-if="defaultsThinkingAlwaysOn" class="mb-3 text-sm text-muted-foreground">{{ t("settings.thinkingAlwaysOn") }}</p>
 
           <div v-if="(!defaultThinking.thinkingDisabled || defaultsIsOpenAIBackend) && defaultsIsAdaptiveCapable" class="mb-2">
-            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}<SettingSourceBadge setting-key="damocles.effortByModel" /></Label>
             <Select :model-value="defaultThinking.effort ?? defaultsEffortLevels[0] ?? ''" @update:model-value="handleDefaultEffortChange">
               <SelectTrigger class="w-full bg-input border-border">
                 <SelectValue />
@@ -617,7 +646,7 @@ function handleDeleteExploreApiKey() {
           </div>
 
           <div v-else-if="!defaultThinking.thinkingDisabled" class="mb-2">
-            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.extendedThinking") }}</Label>
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.extendedThinking") }}<SettingSourceBadge setting-key="damocles.maxThinkingTokens" /></Label>
             <div class="flex items-center gap-2">
               <Input
                 type="number"
@@ -652,8 +681,8 @@ function handleDeleteExploreApiKey() {
         </div>
 
         <!-- IDE Opened-File Context -->
-        <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.ideContext") }}</Label>
+        <div v-if="hostCapabilities.ideContext" class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.ideContext") }}<SettingSourceBadge setting-key="damocles.ideContext.enabled" /></Label>
           <div class="flex items-center justify-between">
             <Label for="ide-context-enabled" class="text-sm font-normal text-foreground">
               {{ t("settings.ideContextLabel") }}
@@ -683,7 +712,7 @@ function handleDeleteExploreApiKey() {
           {{ t("settings.teamSectionDescription") }}
         </p>
         <div v-for="role in teamRoles" :key="role.key" class="mb-4">
-          <Label class="block mb-2 text-primary font-medium">{{ t(role.labelKey) }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t(role.labelKey) }}<SettingSourceBadge :setting-key="[`damocles.team.${role.modelKey}`, `damocles.team.${role.effortKey}`]" /></Label>
           <Select
             :model-value="teamModelSelectValue(role)"
             @update:model-value="(v) => handleTeamRoleModelChange(role.key, v as string)"
@@ -745,7 +774,7 @@ function handleDeleteExploreApiKey() {
 
         <!-- Budget Limit -->
         <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.budgetLimit") }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.budgetLimit") }}<SettingSourceBadge setting-key="damocles.maxBudgetUsd" /></Label>
           <Input
             type="number"
             :model-value="localBudgetLimit ?? ''"
@@ -762,7 +791,7 @@ function handleDeleteExploreApiKey() {
 
         <!-- Auto-compact -->
         <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.autoCompact") }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.autoCompact") }}<SettingSourceBadge setting-key="damocles.autoCompact" /></Label>
           <div class="flex items-center justify-between">
             <Label for="auto-compact-enabled" class="text-sm font-normal text-foreground">
               {{ t("settings.autoCompactEnabled") }}
@@ -792,7 +821,7 @@ function handleDeleteExploreApiKey() {
 
         <!-- Task Token Budget -->
         <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.taskBudget") }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.taskBudget") }}<SettingSourceBadge setting-key="damocles.taskBudget" /></Label>
           <Input
             type="number"
             :model-value="localTaskBudget ?? ''"
@@ -823,12 +852,57 @@ function handleDeleteExploreApiKey() {
         </div>
 
         <!-- VS Code Settings Link -->
-        <Button class="w-full" @click="emit('openVSCodeSettings')">
-          {{ t("settings.openVsCodeSettings") }}
-        </Button>
-        <p class="text-xs text-muted-foreground mt-2 text-center">
-          {{ t("settings.settingsInfo") }}
+        <template v-if="hostCapabilities.hostSettingsEditor">
+          <Button class="w-full" @click="emit('openVSCodeSettings')">
+            {{ t("settings.openVsCodeSettings") }}
+          </Button>
+          <p class="text-xs text-muted-foreground mt-2 text-center">
+            {{ t("settings.settingsInfo") }}
+          </p>
+        </template>
+        <p v-if="hostCapabilities.settingsSources" class="text-xs text-muted-foreground mt-2">
+          {{ t("settings.source.userFileInfo") }}
         </p>
+        <div
+          v-if="settingsFileEditing"
+          class="mt-4 space-y-2"
+        >
+          <h4 class="text-xs font-semibold text-foreground">
+            {{ t("settings.jsonFiles.title") }}
+          </h4>
+          <div
+            v-for="scope in SETTINGS_FILE_SCOPES"
+            :key="scope"
+          >
+            <Button
+              variant="secondary"
+              class="w-full"
+              :disabled="settingsFileUnavailableReason(scope) !== null"
+              :data-testid="`settings-edit-json-${scope}`"
+              :data-open="editorStore.settingsEditorScope === scope ? 'true' : undefined"
+              @click="openSettingsFileEditor(scope)"
+            >
+              {{ editorStore.settingsEditorScope === scope ? t(`settings.jsonFiles.return.${scope}`) : t(`settings.jsonFiles.edit.${scope}`) }}
+            </Button>
+            <p
+              v-if="settingsFileUnavailableReason(scope) !== null"
+              class="text-xs text-muted-foreground mt-1"
+              :data-testid="`settings-edit-json-reason-${scope}`"
+            >
+              {{ settingsFileUnavailableReason(scope) }}
+            </p>
+          </div>
+        </div>
+        <div v-if="hostCapabilities.settingsSources && projectSourcedSettings.length > 0" class="mt-4" data-testid="setting-sources">
+          <h4 class="text-xs font-semibold text-foreground mb-1">{{ t("settings.source.summaryTitle") }}</h4>
+          <p class="text-xs text-muted-foreground mb-2">{{ t("settings.source.summaryDescription") }}</p>
+          <ul class="text-xs space-y-1">
+            <li v-for="entry in projectSourcedSettings" :key="entry.key" class="break-all">
+              <code>{{ entry.key }}</code>
+              <span class="text-muted-foreground"> · {{ entry.scope === "local" ? t("settings.source.local") : t("settings.source.project") }} · {{ entry.path }}</span>
+            </li>
+          </ul>
+        </div>
       </section>
 
       <Separator class="my-4 bg-border" />
@@ -880,7 +954,7 @@ function handleDeleteExploreApiKey() {
         </h3>
 
         <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.provider") }}</Label>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.provider") }}<SettingSourceBadge setting-key="damocles.explore.provider" /></Label>
           <Select :model-value="exploreProvider" @update:model-value="handleExploreProviderChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -894,7 +968,7 @@ function handleDeleteExploreApiKey() {
         </div>
 
         <div v-if="isExploreThirdParty" class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.model") }}</Label>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.model") }}<SettingSourceBadge setting-key="damocles.explore.modelByProvider" /></Label>
           <div class="flex gap-2">
             <Input
               v-model="exploreModelInput"
@@ -909,7 +983,7 @@ function handleDeleteExploreApiKey() {
         </div>
 
         <div v-if="showExploreEffort" class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.effort") }}</Label>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.effort") }}<SettingSourceBadge setting-key="damocles.explore.effort" /></Label>
           <Select :model-value="exploreEffortValue" @update:model-value="handleExploreEffortChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -994,18 +1068,18 @@ function handleDeleteExploreApiKey() {
       <!-- ========================================================== -->
       <CustomProviderAuthPanel provider="deepseek" />
 
-      <Separator class="my-4 bg-border" />
+      <Separator v-if="voiceControlsAvailable" class="my-4 bg-border" />
 
       <!-- ========================================================== -->
       <!-- SECTION 4: Voice                                            -->
       <!-- ========================================================== -->
-      <section class="mb-6">
+      <section v-if="voiceControlsAvailable" class="mb-6">
         <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
           {{ t("settings.voice.title") }}
         </h3>
 
         <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("jarvisSettings.modeLabel") }}</Label>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("jarvisSettings.modeLabel") }}<SettingSourceBadge setting-key="damocles.voice.mode" /></Label>
           <Select :model-value="voiceConfig.mode" @update:model-value="handleVoiceModeChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -1020,7 +1094,7 @@ function handleDeleteExploreApiKey() {
 
         <template v-if="voiceConfig.mode === 'push-to-talk'">
           <div class="mb-3">
-            <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.provider") }}</Label>
+            <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.provider") }}<SettingSourceBadge setting-key="damocles.voice.provider" /></Label>
             <Select :model-value="voiceConfig.provider" @update:model-value="handleVoiceProviderChange">
               <SelectTrigger class="w-full bg-input border-border">
                 <SelectValue />
@@ -1067,7 +1141,7 @@ function handleDeleteExploreApiKey() {
           </div>
 
           <div>
-            <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.language") }}</Label>
+            <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.language") }}<SettingSourceBadge setting-key="damocles.voice.language" /></Label>
             <Select :model-value="voiceConfig.language" @update:model-value="handleVoiceLanguageChange">
               <SelectTrigger class="w-full bg-input border-border">
                 <SelectValue />

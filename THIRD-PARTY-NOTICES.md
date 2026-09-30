@@ -4,43 +4,9 @@ This file contains notices for third-party software whose code or design pattern
 
 ---
 
-## Recursive Language Models (RLM)
-
-The recall module (`src/extension/recall/`) is based on the RLM framework.
-
-- **Source**: https://github.com/alexzhang13/rlm
-- **Paper**: arXiv 2512.24601v2 — "Recursive Language Models"
-- **Ported patterns**: REPL iteration loop, FINAL/FINAL_VAR protocol, code block extraction, system prompt structure, sub-call architecture
-
-```
-MIT License
-
-Copyright (c) 2025 Alex Zhang
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
----
-
 ## Usage4Claude
 
-The subscription usage feature (`src/extension/pi-session/subscription-usage.ts`, `src/webview/components/SubscriptionUsageOverlay.vue`) is based on the endpoint and response-shape research from the Usage4Claude menu-bar app.
+The subscription usage feature (`src/core/pi-session/subscription-usage.ts`, `src/webview/components/SubscriptionUsageOverlay.vue`) is based on the endpoint and response-shape research from the Usage4Claude menu-bar app.
 
 - **Source**: https://github.com/f-is-h/Usage4Claude
 - **Ported patterns**: Claude `/api/oauth/usage` and Codex `/backend-api/wham/usage` endpoint URLs and required request headers (including the browser-like Cloudflare header set), usage/rate-limit and extra-usage/credits response shapes, and the string/int/double credits-balance normalization approach
@@ -73,7 +39,7 @@ SOFTWARE.
 
 ## Agency Agents (AgentLand)
 
-The team module's specialist agent profiles (`agent-profiles/`) are based on agent personality definitions from the Agency Agents project. The native subagent prompts (`src/extension/pi-session/subagents/default-agents.ts`) also distill three of its engineering templates — Explore from codebase-onboarding-engineer, Plan from software-architect, and general-purpose from minimal-change-engineer.
+The team module's specialist agent profiles (`agent-profiles/`) are based on agent personality definitions from the Agency Agents project. The native subagent prompts (`src/core/pi-session/subagents/default-agents.ts`) also distill three of its engineering templates — Explore from codebase-onboarding-engineer, Plan from software-architect, and general-purpose from minimal-change-engineer.
 
 - **Source**: https://github.com/msitarzewski/agency-agents
 - **Ported patterns**: Agent identity profiles, domain expertise definitions, core mission descriptions, critical rules and guardrails; distilled exploration/planning/minimal-change guidance for the native subagents
@@ -106,7 +72,7 @@ SOFTWARE.
 
 ## Caveman
 
-The custom system prompt (`src/extension/claude-session/system-prompt.ts`) integrates caveman-lite output rules — terse communication style adapted from the Caveman Claude Code skill.
+The custom system prompt (`src/core/pi-session/system-prompt.ts`) integrates caveman-lite output rules — terse communication style adapted from the Caveman Claude Code skill.
 
 - **Source**: https://github.com/JuliusBrussee/caveman
 - **Ported patterns**: Lite-level filler/hedging/pleasantry elimination rules, action-first response pattern, auto-clarity exception for safety-critical text, code/commit boundary rules
@@ -139,7 +105,7 @@ SOFTWARE.
 
 ## Code Review Graph
 
-The compass module (`src/extension/compass/`) v2 rewrite (v1.7.0) is a TypeScript port of the code-review-graph Python project's architecture — SQLite schema, AST extraction pipeline, impact analysis via BFS, execution flow tracing, community detection, FTS5 search, and incremental update strategy.
+The compass module (`src/core/compass/`) v2 rewrite (v1.7.0) is a TypeScript port of the code-review-graph Python project's architecture — SQLite schema, AST extraction pipeline, impact analysis via BFS, execution flow tracing, community detection, FTS5 search, and incremental update strategy.
 
 - **Source**: https://github.com/tirth8205/code-review-graph
 - **Ported patterns**: SQLite graph schema (nodes/edges/flows/communities tables), FTS5 content-sync triggers, recursive impact traversal, git-based incremental updates, risk scoring factors, flow criticality formula, Louvain community detection pipeline, Vue SFC script block extraction, tsconfig path alias resolution
@@ -322,7 +288,7 @@ the python-build-standalone interpreter bundle.
 
 - **Source**: https://github.com/isaacs/node-tar
 - **License**: ISC
-- **Use**: `src/extension/voice/runtime/python-installer.ts`.
+- **Use**: `src/core/voice/runtime/python-installer.ts`.
 
 ### ws (websockets/ws) — MIT
 
@@ -331,7 +297,7 @@ sidecar's local server.
 
 - **Source**: https://github.com/websockets/ws
 - **License**: MIT
-- **Use**: `src/extension/voice/sidecar/manager.ts`.
+- **Use**: `src/core/voice/sidecar/manager.ts`.
 
 ### python-build-standalone (indygreg) — Python Software Foundation License
 
@@ -340,7 +306,7 @@ The hermetic Python interpreter the runtime installer downloads to
 
 - **Source**: https://github.com/indygreg/python-build-standalone
 - **License**: Python Software Foundation License
-- **SHA-256 verified**: `src/extension/voice/runtime/tarball-checksums.json`
+- **SHA-256 verified**: `src/core/voice/runtime/tarball-checksums.json`
   records the expected digest of every supported tarball; the installer
   refuses to extract a non-matching archive.
 
@@ -389,7 +355,7 @@ Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-w
 
 - **Source**: https://github.com/earendil-works/pi
 - **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`
-- **Use**: the sole agent backend (`PiSession` / `PiRuntime` in `src/extension/pi-session/`), redistributed in the VSIX node_modules
+- **Use**: the sole agent backend (`PiSession` / `PiRuntime` in `src/core/pi-session/`), redistributed in the VSIX node_modules
 
 ```
 MIT License
@@ -419,7 +385,7 @@ SOFTWARE.
 
 ## pi-subagents
 
-The native subagent engine (`src/extension/pi-session/subagents/`) is a port of the pi-subagents extension's core engine — the agent registry, markdown-agent frontmatter parser, embedded default agents, concurrency-limited agent manager, session runner, prompt builder, skill preloader, enabled-models scope resolver, JSONL transcript writer, and filesystem-safety helpers. The source repo's TUI, CLI, scheduler, worktree isolation, context-inheritance, agent-memory, and cross-extension RPC were dropped; the pi-runtime boundary was rewired onto Damocles' own runtime, permission gate, and webview.
+The native subagent engine (`src/core/pi-session/subagents/`) is a port of the pi-subagents extension's core engine — the agent registry, markdown-agent frontmatter parser, embedded default agents, concurrency-limited agent manager, session runner, prompt builder, skill preloader, enabled-models scope resolver, JSONL transcript writer, and filesystem-safety helpers. The source repo's TUI, CLI, scheduler, worktree isolation, context-inheritance, agent-memory, and cross-extension RPC were dropped; the pi-runtime boundary was rewired onto Damocles' own runtime, permission gate, and webview.
 
 - **Source**: https://github.com/tintinweb/pi-subagents (`@tintinweb/pi-subagents` v0.10.3)
 - **Ported patterns**: unified default+markdown agent registry, `tools:`/`extensions:`/`skills:` frontmatter parsing, embedded `general-purpose`/`Explore`/`Plan` agents, background concurrency queue with FIFO drain, per-agent session lifecycle + steering + graceful turn-limit enforcement, `replace`/`append` system-prompt builder, skill preloading, `enabledModels` scope resolution, JSONL output transcripts, symlink/path-traversal filesystem guards
@@ -452,7 +418,7 @@ SOFTWARE.
 
 ## pi-mcp-adapter
 
-The native MCP client (`src/extension/pi-session/mcp/`) is lifted from the pi-mcp-adapter — its transports, lifecycle/health/reconnect, tool registrar (content transform), metadata cache, npx/npm-exec binary resolver, OAuth client provider + auth flow + localhost callback server, resource-as-tool naming, and elicitation handler. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
+The native MCP client (`src/core/pi-session/mcp/`) is lifted from the pi-mcp-adapter — its transports, lifecycle/health/reconnect, tool registrar (content transform), metadata cache, npx/npm-exec binary resolver, OAuth client provider + auth flow + localhost callback server, resource-as-tool naming, and elicitation handler. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
 
 - **Source**: pi-mcp-adapter (`pi-mcp-adapter`)
 - **Ported patterns**: stdio / streamable-HTTP / SSE transport selection with probe-then-fallback, connect dedup + 60s failure backoff + 30s health checks + idle shutdown + keep-alive reconnect, paginated `tools/list`/`resources/list` collection, on-disk metadata cache keyed by config hash with atomic temp+rename writes, `${VAR}`/`$env:VAR` interpolation, npx/npm-exec real-binary resolution, OAuth 2.1 (authorization_code PKCE + client_credentials) client provider + localhost callback, MCP content → text/image block transformation, resource-name → `get_*` tool slugging, form elicitation request handling
@@ -485,7 +451,7 @@ SOFTWARE.
 
 ## pi-web-access
 
-The native web tools (`src/extension/pi-session/web-access/`) port the key-free core of the pi-web-access extension — the free Exa MCP client (`web_search_exa` / `get_code_context_exa` over `https://mcp.exa.ai/mcp`, with SSE-or-JSON response parsing and the code-context → web-search fallback), the HTTP fetch + extraction pipeline (Readability over linkedom + Turndown, the dependency-free Next.js RSC flight-payload parser, the inline PDF text extractor via unpdf, and the `r.jina.ai` reader fallback). The source repo's keyed Exa Answer/Search API path, `~/.pi` usage tracking and config, activity monitor, Gemini/Perplexity providers, browser-cookie scraping, YouTube/video analysis, GitHub repo cloning, the curator browser UI, result storage + retrieval tool, and the slash commands/CLI were all dropped; the PDF extractor's `~/Downloads` write was removed (text is returned inline), and the tools were rewrapped as native per-session `pi.defineTool`s behind Damocles' central permission gate.
+The native web tools (`src/core/pi-session/web-access/`) port the key-free core of the pi-web-access extension — the free Exa MCP client (`web_search_exa` / `get_code_context_exa` over `https://mcp.exa.ai/mcp`, with SSE-or-JSON response parsing and the code-context → web-search fallback), the HTTP fetch + extraction pipeline (Readability over linkedom + Turndown, the dependency-free Next.js RSC flight-payload parser, the inline PDF text extractor via unpdf, and the `r.jina.ai` reader fallback). The source repo's keyed Exa Answer/Search API path, `~/.pi` usage tracking and config, activity monitor, Gemini/Perplexity providers, browser-cookie scraping, YouTube/video analysis, GitHub repo cloning, the curator browser UI, result storage + retrieval tool, and the slash commands/CLI were all dropped; the PDF extractor's `~/Downloads` write was removed (text is returned inline), and the tools were rewrapped as native per-session `pi.defineTool`s behind Damocles' central permission gate.
 
 - **Source**: https://github.com/nicobailon/pi-web-access (`pi-web-access` v0.10.7)
 - **Ported patterns**: free Exa MCP JSON-RPC `tools/call` client with SSE/JSON dual parsing, `Title:/URL:/Text:` result parsing + answer/source assembly, code-context tool with sticky web-search fallback, browser-like HTTP fetch with size caps + recoverable/non-recoverable error tiers, Readability(linkedom)+Turndown HTML→markdown, Next.js RSC `self.__next_f` flight-payload extractor, unpdf page-text extraction, Jina Reader (`r.jina.ai`) markdown fallback
@@ -518,7 +484,7 @@ SOFTWARE.
 
 ## Bundled web-extraction libraries (WebFetch)
 
-`WebFetch`'s extraction pipeline (`src/extension/pi-session/web-access/extract.ts`) depends on four npm
+`WebFetch`'s extraction pipeline (`src/core/pi-session/web-access/extract.ts`) depends on four npm
 packages that esbuild bundles directly into `dist/extension.js` (they are not externals), so their code
 physically ships in the VSIX. Listed here for attribution and marketplace compliance.
 
@@ -719,7 +685,7 @@ following license:
 
 ## Supermemory
 
-The memory module (`src/extension/memory/`) revamp is a conceptual, local-first reimplementation inspired by supermemory's published memory model. No supermemory code was incorporated — its core engine is closed-source and was not used; the graph storage mechanics are ported separately from code-review-graph (see Compass), and this implementation uses no embeddings or vector store.
+The memory module (`src/core/memory/`) revamp is a conceptual, local-first reimplementation inspired by supermemory's published memory model. No supermemory code was incorporated — its core engine is closed-source and was not used; the graph storage mechanics are ported separately from code-review-graph (see Compass), and this implementation uses no embeddings or vector store.
 
 - **Source**: https://github.com/supermemoryai/supermemory
 - **Inspired concepts** (ideas / data-model only, not code): fact-over-fact graph with `updates`/`extends`/`derives` relation semantics and version chains, temporal forgetting (`forget_after`/`forgotten`/`forget_reason`), content-hash deduplication with repetition strengthening, and the static/dynamic user-profile split.
@@ -752,7 +718,7 @@ SOFTWARE.
 
 ## Agent Reach
 
-The web tools' capability set for `FeedRead` and `YouTubeTranscript` (`src/extension/pi-session/web-access/feed.ts`, `src/extension/pi-session/web-access/youtube.ts`) was informed by Agent Reach's channel design — which capabilities are worth giving an agent (RSS/Atom feed reading, YouTube transcript retrieval) and which to leave out (social/auth platforms, the Whisper audio pipeline). No Agent Reach code was incorporated: it is a Python CLI/installer that routes an agent to external CLIs/MCP servers/public APIs, so it is not importable into this TypeScript extension. Only the *capability patterns* — what to build and, deliberately, what not to — were ported; the implementations here are original, dependency-free, and SSRF-guarded.
+The web tools' capability set for `FeedRead` and `YouTubeTranscript` (`src/core/pi-session/web-access/feed.ts`, `src/core/pi-session/web-access/youtube.ts`) was informed by Agent Reach's channel design — which capabilities are worth giving an agent (RSS/Atom feed reading, YouTube transcript retrieval) and which to leave out (social/auth platforms, the Whisper audio pipeline). No Agent Reach code was incorporated: it is a Python CLI/installer that routes an agent to external CLIs/MCP servers/public APIs, so it is not importable into this TypeScript extension. Only the *capability patterns* — what to build and, deliberately, what not to — were ported; the implementations here are original, dependency-free, and SSRF-guarded.
 
 - **Source**: https://github.com/Panniantong/Agent-Reach
 - **Referenced patterns** (design/scope only, not code): treating RSS/Atom feed reading and YouTube transcript retrieval as first-class agent web capabilities; the dependency-light, key-free posture; and the explicit scope exclusion of social/auth platforms and the audio-transcription (Whisper/`yt-dlp`/`ffmpeg`) pipeline
@@ -817,9 +783,82 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
+## Bundled runtime libraries (file locking, desktop networking, watching and editing)
+
+These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first six into the bundle each entry names (they are not externals), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
+
+- **proper-lockfile** (v4.1.2) — MIT, Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> — https://github.com/moxystudio/node-proper-lockfile
+  — cross-process locks for config, auth and session-lease writes; bundled into `dist/extension.js` and `dist/desktop/main.js`.
+- **graceful-fs** (v4.2.11) — ISC, Copyright (c) 2011-2022 Isaac Z. Schlueter, Ben Noordhuis, and Contributors — https://github.com/isaacs/node-graceful-fs
+  — proper-lockfile's file system layer; bundled with it.
+- **signal-exit** (v3.0.7) — ISC, Copyright (c) 2015, Contributors — https://github.com/tapjs/signal-exit
+  — releases proper-lockfile's locks on exit; bundled with it.
+- **retry** (v0.12.0) — MIT, Copyright (c) 2011: Tim Koschützki (tim@debuggable.com), Felix Geisendörfer (felix@debuggable.com) — https://github.com/tim-kos/node-retry
+  — proper-lockfile's retry backoff; bundled with it.
+- **undici** (v8.10.2) — MIT, Copyright (c) Matteo Collina and Undici contributors — https://github.com/nodejs/undici
+  — the desktop app's process-wide HTTP dispatcher and proxy support; bundled into `dist/desktop/main.js`.
+- **picomatch** (v4.0.7) — MIT, Copyright (c) 2017-present, Jon Schlinkert. — https://github.com/micromatch/picomatch
+  — glob matching for the desktop file watchers; bundled into `dist/desktop/main.js`.
+- **monaco-editor** (v0.57.0) — MIT, Copyright (c) 2016 - present Microsoft Corporation — https://github.com/microsoft/monaco-editor
+  — the desktop app's file and diff editor. Monaco vendors further components (among them marked and DOMPurify); their notices are in Monaco's `ThirdPartyNotices.txt`, which the desktop app ships as `resources/monaco-editor-ThirdPartyNotices.txt`, and DOMPurify's license comment stays in the bundle.
+- **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder
+  — the desktop app's update client; shipped as `node_modules/electron-updater` with its dependencies and their license files.
+- **@parcel/watcher** (v2.6.0) — MIT, Copyright (c) 2017-present Devon Govett — https://github.com/parcel-bundler/watcher
+  — the desktop app's native file watcher; shipped as `node_modules/@parcel/watcher` with its platform prebuild.
+
+The desktop app also ships Electron (MIT, Copyright (c) Electron contributors, Copyright (c) 2013-2020 GitHub Inc.), whose license and Chromium's third-party licenses (`LICENSE.electron.txt`, `LICENSES.chromium.html`) electron-builder packages with the app.
+
+The MIT components are distributed under the following license, with the copyright line given for each above:
+
+```
+MIT License
+
+Copyright (c) <year> <copyright holders>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The ISC components (graceful-fs, signal-exit) are distributed under the following license, with the copyright line given for each above:
+
+```
+ISC License
+
+Copyright (c) <year> <copyright holders>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+---
+
 ## English word frequencies (Google Books Ngram) — CC-BY-3.0
 
-The memory injection gate bundles the Porter stems of the 49,104 most frequent single-token English words (`src/extension/memory/injection/reference-stems.generated.ts`, generated from `english-reference.generated.ts`), used to tell ordinary English words from names and identifiers.
+The memory injection gate bundles the Porter stems of the 49,104 most frequent single-token English words (`src/core/memory/injection/reference-stems.generated.ts`, generated from `english-reference.generated.ts`), used to tell ordinary English words from names and identifiers.
 
 - **Source data**: Google Books Ngram Viewer, English 1-grams, version 20120701 (years 1950 to 2012), by Google, https://storage.googleapis.com/books/ngrams/books/datasetsv3.html
 - **Intermediate list**: top-english-wordlists by david47k, https://github.com/david47k/top-english-wordlists (commit b7585f32cee8e140001054ad5b0bbf373245c360, `top_english_words_lower_50000.txt`)

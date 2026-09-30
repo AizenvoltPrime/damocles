@@ -1,4 +1,5 @@
 import { onMounted, onUnmounted, ref, type Ref } from 'vue';
+import { i18n } from '@/i18n';
 
 /**
  * Auto-ticking relative-time label ("just now", "3m ago") for a timestamp. One shared interval per
@@ -15,13 +16,14 @@ export function useRelativeTime(getTimestamp: () => number | null, intervalMs = 
 
   function format(ts: number): string {
     const diff = Date.now() - ts;
-    if (diff < 45_000) return 'just now';
+    const { t } = i18n.global;
+    if (diff < 45_000) return t('time.justNow');
     const mins = Math.round(diff / 60_000);
-    if (mins < 60) return `${mins}m ago`;
+    if (mins < 60) return t('time.minutesAgo', { n: mins });
     const hours = Math.round(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
+    if (hours < 24) return t('time.hoursAgo', { n: hours });
     const days = Math.round(hours / 24);
-    return `${days}d ago`;
+    return t('time.daysAgo', { n: days });
   }
 
   function update(): void {

@@ -76,6 +76,15 @@ declare module 'vscode' {
     clear(): void;
   };
 
+  /** Layered values behind `workspace.getConfiguration`, keyed by full dotted id. */
+  const __config: {
+    defaults: Map<string, unknown>;
+    global: Map<string, unknown>;
+    workspace: Map<string, unknown>;
+    workspaceFolder: Map<string, unknown>;
+    reset(): void;
+  };
+
   /** Sets what `workspace.isTrusted` reports; the real property is a readonly getter. */
   function __setTrusted(value: boolean): void;
 

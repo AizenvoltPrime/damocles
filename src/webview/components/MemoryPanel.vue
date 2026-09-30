@@ -8,7 +8,7 @@ import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useM
 import { useUIStore } from '@/stores/useUIStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useMemoryAuditStore } from '@/stores/useMemoryAuditStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
 import { formatMemoryForCopy } from '@/lib/format-memory-copy';
 import { Button } from '@/components/ui/button';
@@ -52,11 +52,22 @@ function requestClose(): void {
 
 const { zIndex, root, titleId } = useOverlayDialog(requestClose);
 
-const { t } = useI18n();
+const { t, te } = useI18n();
+
+// Stored kind, scope and tier values render through the memory.kind / memory.scope labels; an unknown value shows as stored.
+function kindLabel(kind: string): string {
+  return te(`memory.kind.${kind}`) ? t(`memory.kind.${kind}`) : kind;
+}
+function scopeLabel(scope: string): string {
+  return te(`memory.scope.${scope}`) ? t(`memory.scope.${scope}`) : scope;
+}
+function tierLabel(tier: string): string {
+  return te(`memory.scope.${tier}`) ? scopeLabel(tier) : kindLabel(tier);
+}
 const store = useMemoryStore();
 const settingsStore = useSettingsStore();
 const auditStore = useMemoryAuditStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 onMounted(() => auditStore.requestSummary());
 
@@ -78,32 +89,32 @@ const historyDialogId = ref<string | null>(null);
 const relatedDialogId = ref<string | null>(null);
 const profileExpanded = ref(false);
 
-const kindOptions: { id: KindFilter; label: string }[] = [
-  { id: 'all', label: 'All' },
-  { id: 'fact', label: 'Fact' },
-  { id: 'preference', label: 'Preference' },
-  { id: 'episode', label: 'Episode' },
-];
+const kindOptions = computed<{ id: KindFilter; label: string }[]>(() => [
+  { id: 'all', label: t('memoryPanel.allKinds') },
+  { id: 'fact', label: kindLabel('fact') },
+  { id: 'preference', label: kindLabel('preference') },
+  { id: 'episode', label: kindLabel('episode') },
+]);
 
-const scopeOptions: { id: ScopeFilter; label: string }[] = [
-  { id: 'all', label: 'All scopes' },
-  { id: 'session', label: 'Session' },
-  { id: 'project', label: 'Project' },
-  { id: 'global', label: 'Global' },
-];
+const scopeOptions = computed<{ id: ScopeFilter; label: string }[]>(() => [
+  { id: 'all', label: t('memoryPanel.allScopes') },
+  { id: 'session', label: scopeLabel('session') },
+  { id: 'project', label: scopeLabel('project') },
+  { id: 'global', label: scopeLabel('global') },
+]);
 
-const tierOptions: { id: MemoryCreateTier; label: string }[] = [
-  { id: 'session', label: 'Session' },
-  { id: 'project', label: 'Project' },
-  { id: 'global', label: 'Global' },
-  { id: 'note', label: 'Note' },
-];
+const tierOptions = computed<{ id: MemoryCreateTier; label: string }[]>(() => [
+  { id: 'session', label: scopeLabel('session') },
+  { id: 'project', label: scopeLabel('project') },
+  { id: 'global', label: scopeLabel('global') },
+  { id: 'note', label: kindLabel('note') },
+]);
 
-const createKindOptions: { id: MemoryCreateKind; label: string }[] = [
-  { id: 'fact', label: 'Fact' },
-  { id: 'preference', label: 'Preference' },
-  { id: 'episode', label: 'Episode' },
-];
+const createKindOptions = computed<{ id: MemoryCreateKind; label: string }[]>(() => [
+  { id: 'fact', label: kindLabel('fact') },
+  { id: 'preference', label: kindLabel('preference') },
+  { id: 'episode', label: kindLabel('episode') },
+]);
 
 const historyEntries = computed<MemoryEntry[]>(() =>
   historyDialogId.value ? store.versionHistory[historyDialogId.value] ?? [] : []
@@ -175,12 +186,12 @@ function handleScroll() {
 
 const tabs = computed(() => {
   const base: { id: TabId; label: string; count: number; hasMore?: boolean }[] = [
-    { id: 'all', label: 'Memories', count: store.filteredMemories.length },
-    { id: 'note', label: 'Notes', count: props.notes.length },
-    { id: 'observations', label: 'Observations', count: props.observations.length, hasMore: props.hasMoreObservations },
+    { id: 'all', label: t('memoryPanel.tabs.memories'), count: store.filteredMemories.length },
+    { id: 'note', label: t('memoryPanel.tabs.notes'), count: props.notes.length },
+    { id: 'observations', label: t('memoryPanel.tabs.observations'), count: props.observations.length, hasMore: props.hasMoreObservations },
   ];
   if (hasSearched.value) {
-    base.push({ id: 'search', label: 'Results', count: searchPending.value ? 0 : props.searchResults.length });
+    base.push({ id: 'search', label: t('memoryPanel.tabs.results'), count: searchPending.value ? 0 : props.searchResults.length });
   }
   return base;
 });
@@ -314,12 +325,12 @@ function formatTimestamp(epoch: number): string {
   const now = Date.now();
   const diff = now - epoch;
   const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return t('time.justNow');
+  if (minutes < 60) return t('time.minutesAgo', { n: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t('time.hoursAgo', { n: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return t('time.daysAgo', { n: days });
   return new Date(epoch).toLocaleDateString();
 }
 
@@ -446,10 +457,10 @@ onUnmounted(() => {
 
       <div class="flex-1 min-w-0">
         <h2 :id="titleId" class="text-sm font-medium text-foreground">
-          Memory
+          {{ t('memoryPanel.title') }}
         </h2>
         <p class="text-xs text-muted-foreground">
-          Browse and manage memories
+          {{ t('memoryPanel.subtitle') }}
         </p>
       </div>
 
@@ -502,7 +513,7 @@ onUnmounted(() => {
     <div class="px-4 py-2 flex gap-2 border-b border-border/30">
       <Input
         v-model="searchInput"
-        placeholder="Search all memories..."
+        :placeholder="t('memoryPanel.searchPlaceholder')"
         class="h-8 text-xs"
         @keydown="handleSearchKeyDown"
       />
@@ -570,10 +581,10 @@ onUnmounted(() => {
         <span class="flex items-center gap-1.5 text-xs text-muted-foreground shrink-0">
           <Switch
             :checked="store.showForgotten"
-            aria-label="Forgotten"
+            :aria-label="t('memoryPanel.showForgotten')"
             @update:checked="handleShowForgotten"
           />
-          Forgotten
+          {{ t('memoryPanel.showForgotten') }}
         </span>
       </div>
     </div>
@@ -594,7 +605,7 @@ onUnmounted(() => {
               :size="14"
             />
             <User :size="14" />
-            User Profile
+            {{ t('memoryPanel.userProfile') }}
           </button>
           <div
             v-if="profileExpanded"
@@ -602,17 +613,17 @@ onUnmounted(() => {
           >
             <div class="space-y-2 p-2 rounded-md border border-border/50 bg-card">
               <p class="text-xs font-medium text-muted-foreground">
-                Project
+                {{ scopeLabel('project') }}
               </p>
               <div>
                 <p class="text-xs text-muted-foreground/70 mb-1">
-                  Static
+                  {{ t('memoryPanel.profileStatic') }}
                 </p>
                 <Textarea
                   v-model="profileStaticProject"
                   rows="3"
                   class="text-xs"
-                  placeholder="Stable facts about the user/project..."
+                  :placeholder="t('memoryPanel.projectStaticPlaceholder')"
                   @update:model-value="profileDirty.projectStatic = true"
                 />
                 <Button
@@ -624,18 +635,18 @@ onUnmounted(() => {
                   <Save
                     :size="12"
                     class="mr-1"
-                  /> Save
+                  /> {{ t('common.save') }}
                 </Button>
               </div>
               <div>
                 <p class="text-xs text-muted-foreground/70 mb-1">
-                  Dynamic
+                  {{ t('memoryPanel.profileDynamic') }}
                 </p>
                 <Textarea
                   v-model="profileDynamicProject"
                   rows="3"
                   class="text-xs"
-                  placeholder="Recent activity..."
+                  :placeholder="t('memoryPanel.dynamicPlaceholder')"
                   @update:model-value="profileDirty.projectDynamic = true"
                 />
                 <Button
@@ -647,23 +658,23 @@ onUnmounted(() => {
                   <Save
                     :size="12"
                     class="mr-1"
-                  /> Save
+                  /> {{ t('common.save') }}
                 </Button>
               </div>
             </div>
             <div class="space-y-2 p-2 rounded-md border border-border/50 bg-card">
               <p class="text-xs font-medium text-muted-foreground">
-                Global
+                {{ scopeLabel('global') }}
               </p>
               <div>
                 <p class="text-xs text-muted-foreground/70 mb-1">
-                  Static
+                  {{ t('memoryPanel.profileStatic') }}
                 </p>
                 <Textarea
                   v-model="profileStaticGlobal"
                   rows="3"
                   class="text-xs"
-                  placeholder="Stable facts that apply everywhere..."
+                  :placeholder="t('memoryPanel.globalStaticPlaceholder')"
                   @update:model-value="profileDirty.globalStatic = true"
                 />
                 <Button
@@ -675,18 +686,18 @@ onUnmounted(() => {
                   <Save
                     :size="12"
                     class="mr-1"
-                  /> Save
+                  /> {{ t('common.save') }}
                 </Button>
               </div>
               <div>
                 <p class="text-xs text-muted-foreground/70 mb-1">
-                  Dynamic
+                  {{ t('memoryPanel.profileDynamic') }}
                 </p>
                 <Textarea
                   v-model="profileDynamicGlobal"
                   rows="3"
                   class="text-xs"
-                  placeholder="Recent activity..."
+                  :placeholder="t('memoryPanel.dynamicPlaceholder')"
                   @update:model-value="profileDirty.globalDynamic = true"
                 />
                 <Button
@@ -698,7 +709,7 @@ onUnmounted(() => {
                   <Save
                     :size="12"
                     class="mr-1"
-                  /> Save
+                  /> {{ t('common.save') }}
                 </Button>
               </div>
             </div>
@@ -709,7 +720,7 @@ onUnmounted(() => {
           v-if="store.filteredMemories.length === 0"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          No memories match the current filters.
+          {{ t('memoryPanel.noMatches') }}
         </div>
         <div
           v-for="memory in store.filteredMemories"
@@ -733,8 +744,8 @@ onUnmounted(() => {
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 :class="copiedId === memory.id && 'opacity-100 text-success'"
-                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
-                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                :title="copiedId === memory.id ? t('memoryPanel.copied') : t('memoryPanel.copy')"
+                :aria-label="copiedId === memory.id ? t('memoryPanel.copiedAria') : t('memoryPanel.copyAria')"
                 @click="handleCopy(memory)"
               >
                 <IconCheck v-if="copiedId === memory.id" :size="12" />
@@ -744,7 +755,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
-                title="Version history"
+                :title="t('memoryPanel.versionHistory')"
                 @click="openHistory(memory.id)"
               >
                 <History :size="12" />
@@ -753,7 +764,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
-                title="Related memories"
+                :title="t('memoryPanel.relatedMemories')"
                 @click="openRelated(memory.id)"
               >
                 <Network :size="12" />
@@ -763,7 +774,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100 text-emerald-500"
-                title="Restore"
+                :title="t('memoryPanel.restore')"
                 @click="handleUnforget(memory.id)"
               >
                 <RotateCcw :size="12" />
@@ -773,7 +784,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
-                title="Forget"
+                :title="t('memoryPanel.forget')"
                 @click="handleForget(memory.id)"
               >
                 <EyeOff :size="12" />
@@ -783,7 +794,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100 text-amber-500"
-                title="Unpin"
+                :title="t('memoryPanel.unpin')"
                 @click="emit('unpin', memory.id)"
               >
                 <PinOff :size="12" />
@@ -793,7 +804,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
-                title="Pin"
+                :title="t('memoryPanel.pin')"
                 @click="emit('pin', memory.id)"
               >
                 <Pin :size="12" />
@@ -802,7 +813,7 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
-                title="Delete"
+                :title="t('common.delete')"
                 @click="emit('delete', memory.id)"
               >
                 <IconTrash :size="12" />
@@ -815,28 +826,28 @@ onUnmounted(() => {
               variant="secondary"
               class="text-xs h-4 px-1.5 capitalize"
             >
-              {{ memory.kind }}
+              {{ kindLabel(memory.kind) }}
             </Badge>
             <Badge
               v-if="memory.scope"
               variant="outline"
               class="text-xs h-4 px-1.5 capitalize"
             >
-              {{ memory.scope }}
+              {{ scopeLabel(memory.scope) }}
             </Badge>
             <Badge
               v-if="memory.isInference"
               variant="outline"
               class="text-xs h-4 px-1.5 text-violet-400 border-violet-400/40"
             >
-              inferred
+              {{ t('memoryPanel.inferred') }}
             </Badge>
             <Badge
               v-if="(memory.sourceCount ?? 0) > 1"
               variant="outline"
               class="text-xs h-4 px-1.5"
             >
-              {{ memory.sourceCount }} sources
+              {{ t('memoryPanel.sources', { n: memory.sourceCount }) }}
             </Badge>
             <Badge
               v-if="memory.forgotten"
@@ -844,7 +855,7 @@ onUnmounted(() => {
               class="text-xs h-4 px-1.5 text-muted-foreground"
               :title="memory.forgetReason ?? undefined"
             >
-              forgotten
+              {{ t('memoryPanel.forgotten') }}
             </Badge>
             <Badge
               v-if="memory.forgotten && memory.forgetReason === QUALITY_AUDIT_FORGET_REASON"
@@ -872,7 +883,7 @@ onUnmounted(() => {
           v-if="notes.length === 0"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          No notes yet. Use <code class="bg-muted px-1 rounded">/note text</code> to save one.
+          {{ t('memoryPanel.noNotesBefore') }} <code class="bg-muted px-1 rounded">/note text</code> {{ t('memoryPanel.noNotesAfter') }}
         </div>
         <div
           v-for="memory in notes"
@@ -896,8 +907,8 @@ onUnmounted(() => {
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 :class="copiedId === memory.id && 'opacity-100 text-success'"
-                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
-                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                :title="copiedId === memory.id ? t('memoryPanel.copied') : t('memoryPanel.copy')"
+                :aria-label="copiedId === memory.id ? t('memoryPanel.copiedAria') : t('memoryPanel.copyAria')"
                 @click="handleCopy(memory)"
               >
                 <IconCheck v-if="copiedId === memory.id" :size="12" />
@@ -950,7 +961,7 @@ onUnmounted(() => {
           v-if="observations.length === 0"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          No observations yet. Claude will record observations as it works.
+          {{ t('memoryPanel.noObservations') }}
         </div>
         <div
           v-for="memory in observations"
@@ -979,8 +990,8 @@ onUnmounted(() => {
                 size="icon-sm"
                 class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                 :class="copiedId === memory.id && 'opacity-100 text-success'"
-                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
-                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                :title="copiedId === memory.id ? t('memoryPanel.copied') : t('memoryPanel.copy')"
+                :aria-label="copiedId === memory.id ? t('memoryPanel.copiedAria') : t('memoryPanel.copyAria')"
                 @click="handleCopy(memory)"
               >
                 <IconCheck v-if="copiedId === memory.id" :size="12" />
@@ -1048,7 +1059,7 @@ onUnmounted(() => {
           v-if="loadingObservations"
           class="text-center text-xs text-muted-foreground py-3 animate-pulse"
         >
-          Loading more...
+          {{ t('memoryPanel.loadingMore') }}
         </div>
         <div
           v-else-if="hasMoreObservations"
@@ -1060,7 +1071,7 @@ onUnmounted(() => {
             class="text-xs text-primary hover:text-foreground"
             @click="emit('loadMoreObservations')"
           >
-            Load more observations
+            {{ t('memoryPanel.loadMore') }}
           </Button>
         </div>
       </template>
@@ -1070,13 +1081,13 @@ onUnmounted(() => {
           v-if="searchPending"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          Searching for "{{ searchedQuery }}"…
+          {{ t('memoryPanel.searching', { query: searchedQuery }) }}
         </div>
         <div
           v-else-if="searchResults.length === 0"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          No results for "{{ searchedQuery }}".
+          {{ t('memoryPanel.noResults', { query: searchedQuery }) }}
         </div>
         <template v-else>
         <div
@@ -1090,7 +1101,7 @@ onUnmounted(() => {
               variant="secondary"
               class="text-xs h-4 px-1.5"
             >
-              {{ result.tier }}
+              {{ tierLabel(result.tier) }}
             </Badge>
             <Badge
               v-if="result.rerankRelevance"
@@ -1165,7 +1176,7 @@ onUnmounted(() => {
         <div class="flex gap-2">
           <Input
             v-model="newMemoryContent"
-            :placeholder="`Add ${newMemoryTier} memory...`"
+            :placeholder="t(`memoryPanel.addPlaceholder.${newMemoryTier}`)"
             class="h-8 text-xs flex-1"
             @keydown="handleAddKeyDown"
           />
@@ -1187,14 +1198,14 @@ onUnmounted(() => {
     >
       <DialogContent class="max-w-lg max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Version history</DialogTitle>
-          <DialogDescription>Earlier versions of this memory, from root to latest.</DialogDescription>
+          <DialogTitle>{{ t('memoryPanel.versionHistory') }}</DialogTitle>
+          <DialogDescription>{{ t('memoryPanel.versionHistoryDescription') }}</DialogDescription>
         </DialogHeader>
         <div
           v-if="historyEntries.length === 0"
           class="text-xs text-muted-foreground py-4 text-center"
         >
-          No version history.
+          {{ t('memoryPanel.noVersionHistory') }}
         </div>
         <div class="space-y-2">
           <div
@@ -1215,14 +1226,14 @@ onUnmounted(() => {
                 variant="secondary"
                 class="text-xs h-4 px-1.5"
               >
-                latest
+                {{ t('memoryPanel.latest') }}
               </Badge>
               <Badge
                 v-if="entry.kind"
                 variant="outline"
                 class="text-xs h-4 px-1.5 capitalize"
               >
-                {{ entry.kind }}
+                {{ kindLabel(entry.kind) }}
               </Badge>
               <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(entry.updatedAt) }}</span>
             </div>
@@ -1243,14 +1254,14 @@ onUnmounted(() => {
     >
       <DialogContent class="max-w-lg max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Related memories</DialogTitle>
-          <DialogDescription>Memories linked to this one in the fact graph.</DialogDescription>
+          <DialogTitle>{{ t('memoryPanel.relatedMemories') }}</DialogTitle>
+          <DialogDescription>{{ t('memoryPanel.relatedDescription') }}</DialogDescription>
         </DialogHeader>
         <div
           v-if="relatedEntries.length === 0"
           class="text-xs text-muted-foreground py-4 text-center"
         >
-          No related memories.
+          {{ t('memoryPanel.noRelated') }}
         </div>
         <div class="space-y-2">
           <div
@@ -1264,7 +1275,7 @@ onUnmounted(() => {
                 variant="secondary"
                 class="text-xs h-4 px-1.5 capitalize"
               >
-                {{ entry.kind }}
+                {{ kindLabel(entry.kind) }}
               </Badge>
               <Badge
                 v-if="entry.scope"

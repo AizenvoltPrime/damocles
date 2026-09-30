@@ -43,8 +43,8 @@ This is more useful than a plausible guess. A confident-sounding wrong answer co
 
 Every factual claim needs a source. The source should be something the user can verify:
 
-- **Code**: `[Source: src/extension/browser/cdp-bridge.ts:142]`
-- **Documentation**: `[Source: CLAUDE.md, "Recall Module" section]`
+- **Code**: `[Source: src/core/browser/page-controller.ts:142]`
+- **Documentation**: `[Source: CLAUDE.md, "Invariants" section]`
 - **Tool results**: `[Source: grep results]` or `[Source: git log]`
 - **Git history**: `[Source: commit abc1234]`
 - **General knowledge**: `[Inference]` — flag it explicitly so the user knows this isn't grounded in the codebase

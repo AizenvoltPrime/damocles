@@ -9,7 +9,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import { getAgentColor, formatElapsed, statusBadgeClass } from '@/composables/useTeamFormatting';
 import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useTeamStore } from '@/stores/useTeamStore';
 
 const { t } = useI18n();
@@ -34,7 +34,7 @@ const { elapsedMs } = useElapsedTimer(
   () => props.agent.endTime,
 );
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const color = computed(() => getAgentColor(props.index));
 const badgeClass = computed(() => statusBadgeClass(props.agent.status));
 

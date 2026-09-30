@@ -1,7 +1,9 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTENSION_EXTERNALS } from './extension-externals.mjs';
+import { DESKTOP_EXTERNALS } from './desktop-externals.mjs';
+import { isEntryPoint } from './entry-point.mjs';
 
 /**
  * Keep the `.vscodeignore` node_modules allowlist in lockstep with the esbuild externals.
@@ -119,6 +121,7 @@ function computeClosure() {
     walk(dir);
   }
   assertNoDevOnlyPackages(topLevel, requirers);
+  assertNoDesktopOnlyPackages(topLevel, requirers);
   assertEsbuildDependentsReviewed(esbuildDependents);
   return [...topLevel].sort();
 }
@@ -140,10 +143,11 @@ function assertEsbuildDependentsReviewed(dependents) {
  * Packages this project declares only in `devDependencies` that a shipped runtime package also requires,
  * with a top-level copy satisfying both ranges. Each was checked against the requiring package's declared
  * range: `@earendil-works/pi-agent-core` requires `diff@8.0.4`, `@google/genai` and `openai` require
- * `ws@^8.18.0`, `@modelcontextprotocol/sdk` requires `cross-spawn@^7.0.5`, `protobufjs` requires
- * `@types/node@>=13.7.0`. They ship because the runtime loads them, not because the build tooling does.
+ * `ws@^8.18.0`, `@modelcontextprotocol/sdk` requires `cross-spawn@^7.0.5` and `ajv@^8.17.1`, `protobufjs` requires
+ * `@types/node@>=13.7.0`, `@earendil-works/pi-agent-core` requires `yaml@2.9.0`. They ship because the runtime
+ * loads them, not because the build tooling does.
  */
-const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'cross-spawn', 'diff', 'ws']);
+const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'ajv', 'cross-spawn', 'diff', 'ws', 'yaml']);
 
 /**
  * Fail loudly when a package this project declares only as a devDependency reaches the ship closure.
@@ -170,6 +174,46 @@ function assertNoDevOnlyPackages(topLevel, requirers) {
       `Check whether the requiring package declares a version the top-level copy does not satisfy; if so ` +
       `the resolution is wrong, not the allowlist.`,
     );
+  }
+}
+
+/**
+ * Packages only the desktop app uses: its externals that the extension lacks (Electron, the native
+ * watcher, the updater), undici, which the desktop bundle inlines while pi ships its own nested copy,
+ * and the desktop editor, test and packaging tooling.
+ */
+export const DESKTOP_ONLY_PACKAGES = [
+  ...DESKTOP_EXTERNALS.filter((name) => !EXTENSION_EXTERNALS.includes(name)),
+  'undici',
+  'monaco-editor',
+  '@playwright/test',
+  'playwright',
+  'playwright-core',
+  'electron-builder',
+  'app-builder-lib',
+  'app-builder-bin',
+  'dmg-builder',
+  '@electron/fuses',
+];
+
+/** Package name prefixes that are desktop-only as a family: every `@electron/*` tool and the watcher's native prebuilds. */
+export const DESKTOP_ONLY_PACKAGE_PREFIXES = ['@electron/', '@parcel/watcher-'];
+
+function isDesktopOnly(name) {
+  return DESKTOP_ONLY_PACKAGES.includes(name) || DESKTOP_ONLY_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+/** The names in `packages` that belong to the desktop app alone. */
+export function desktopOnlyIn(packages) {
+  return [...packages].filter(isDesktopOnly).sort();
+}
+
+/** Fail when a desktop-only package reaches the VSIX closure; the extension never loads one. */
+function assertNoDesktopOnlyPackages(topLevel, requirers) {
+  const found = desktopOnlyIn(topLevel);
+  if (found.length) {
+    const detail = found.map((name) => `${name} (required by ${[...(requirers.get(name) || ['an extension external'])].sort().join(', ')})`);
+    throw new Error(`desktop-only package(s) in the VSIX closure: ${detail.join('; ')}.`);
   }
 }
 
@@ -557,9 +601,108 @@ function applyBlock(original, block) {
   return out.join(eol);
 }
 
+/**
+ * `.vscodeignore` rules that keep desktop-only files out of the VSIX: the Monaco editor
+ * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
+ * packaging config, the end-to-end suite and its output, typecheck-only stubs, and logs.
+ * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
+ */
+export const DESKTOP_EXCLUDE_RULES = [
+  'dist/webview/assets/monaco-*',
+  '**/*.log',
+  'dist/desktop/**',
+  'dist/desktop-shell/**',
+  'dist/e2e*/**',
+  'dist-desktop/**',
+  'e2e/**',
+  'build/**',
+  'types/**',
+  'electron-builder.yml',
+  'playwright.desktop.config.ts',
+  'vite.shell.config.ts',
+];
+
+/** Why .vscodeignore could let a desktop-only file into the VSIX; empty when every exclusion holds. */
+export function vsixExclusionProblems(ignoreText) {
+  const lines = ignoreText.split(/\r?\n/).map((line) => line.trim());
+  const problems = [];
+  for (const rule of DESKTOP_EXCLUDE_RULES) {
+    if (!lines.includes(rule)) problems.push(`missing the rule ${rule}`);
+  }
+  // vsce keeps a file that any negation matches, so only the generated node_modules block and root file names may negate.
+  for (const line of lines) {
+    if (!line.startsWith('!') || line.startsWith('!node_modules/')) continue;
+    if (/[*?[{/]/.test(line.slice(1))) problems.push(`the negation ${line} could re-include a desktop-only file`);
+  }
+  return problems;
+}
+
+/** A DESKTOP_EXCLUDE_RULES glob as an anchored regex over a package-relative path. */
+function ruleRegex(rule) {
+  const escaped = rule.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const source = escaped
+    .replace(/^\*\*\//, '\u0000')
+    .replace(/\/\*\*$/, '\u0001')
+    .replace(/\*/g, '[^/]*')
+    .replace('\u0000', '(?:.*/)?')
+    .replace('\u0001', '/.*');
+  return new RegExp(`^${source}$`);
+}
+
+/**
+ * The entries of a VSIX listing (`unzip -Z1` lines, `extension/`-prefixed) that are desktop-only: a
+ * DESKTOP_EXCLUDE_RULES match outside node_modules, or a top-level desktop-only package.
+ */
+export function forbiddenVsixEntries(listing) {
+  const rules = DESKTOP_EXCLUDE_RULES.map(ruleRegex);
+  const found = [];
+  for (const entry of listing) {
+    if (!entry.startsWith('extension/')) continue;
+    const path = entry.slice('extension/'.length);
+    if (path.startsWith('node_modules/')) {
+      const segments = path.split('/');
+      const name = segments[1].startsWith('@') ? `${segments[1]}/${segments[2]}` : segments[1];
+      if (isDesktopOnly(name)) found.push(entry);
+    } else if (rules.some((re) => re.test(path))) {
+      found.push(entry);
+    }
+  }
+  return found;
+}
+
+/** `--check-vsix-listing <file>`: exit 1 when a built VSIX (listed by `unzip -Z1`) carries a desktop-only file. */
+function checkVsixListing(listingFile) {
+  const listing = readFileSync(listingFile, 'utf8').split(/\r?\n/).filter(Boolean);
+  if (!listing.some((entry) => entry === 'extension/package.json')) {
+    console.error(`${listingFile} is not a VSIX listing: it has no extension/package.json entry.`);
+    process.exit(1);
+  }
+  const found = forbiddenVsixEntries(listing);
+  if (found.length > 0) {
+    console.error(`The VSIX carries ${found.length} desktop-only file(s):\n${found.join('\n')}`);
+    process.exit(1);
+  }
+  console.log(`The VSIX carries no desktop-only file (${listing.length} entries checked).`);
+}
+
 function main() {
+  const listingFlag = process.argv.indexOf('--check-vsix-listing');
+  if (listingFlag !== -1) {
+    const listingFile = process.argv[listingFlag + 1];
+    if (!listingFile) {
+      console.error('--check-vsix-listing needs the path of an `unzip -Z1` listing.');
+      process.exit(1);
+    }
+    checkVsixListing(listingFile);
+    return;
+  }
   const check = process.argv.includes('--check');
   const original = readFileSync(IGNORE_FILE, 'utf8');
+  const exclusionProblems = vsixExclusionProblems(original);
+  if (exclusionProblems.length > 0) {
+    console.error(`.vscodeignore does not keep desktop-only files out of the VSIX: ${exclusionProblems.join('; ')}.`);
+    process.exit(1);
+  }
   const next = applyBlock(original, buildBlock());
 
   if (next === original) {
@@ -577,4 +720,4 @@ function main() {
 }
 
 // Gated so a test can import platformFamilyGlob without rewriting .vscodeignore as a side effect.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (isEntryPoint(import.meta.url)) main();

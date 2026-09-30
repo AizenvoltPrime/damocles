@@ -22,6 +22,7 @@ import { createInputHandlers } from "./handlers/input-handlers";
 import { createExploreHandlers } from "./handlers/explore-handlers";
 import { createConsolidationHandlers } from "./handlers/consolidation-handlers";
 import { createExtensionUiHandlers } from "./handlers/extension-ui-handlers";
+import { createEditorHandlers } from "./handlers/editor-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -48,5 +49,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createExploreHandlers(),
     ...createConsolidationHandlers(),
     ...createExtensionUiHandlers(),
+    ...createEditorHandlers(),
   };
 }

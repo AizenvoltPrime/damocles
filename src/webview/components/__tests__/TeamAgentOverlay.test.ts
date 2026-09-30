@@ -16,8 +16,8 @@ import { i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
 
 const posted: WebviewToExtensionMessage[] = [];
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({
     postMessage: (m: WebviewToExtensionMessage) => posted.push(m),
     onMessage: () => () => {},
     getState: () => undefined,

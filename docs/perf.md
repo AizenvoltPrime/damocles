@@ -146,7 +146,7 @@ Restore of B (28 MB, 238 items), then a switch to A. `sessions.list` 91 ms (hits
 Run from PowerShell; neither needs VS Code:
 
 ```
-npx vitest bench --run src/extension/pi-session/session-store/__tests__/session-store.bench.ts
+npx vitest bench --run src/core/pi-session/session-store/__tests__/session-store.bench.ts
 npx vitest bench --run src/webview/stores/__tests__/replay-ingest.bench.ts
 ```
 

@@ -84,7 +84,8 @@ function controlOverDetachedCall(): VueWrapper {
 
 /** Opens the note and sends it, returning the request id the control minted. */
 async function cancelOnce(wrapper: VueWrapper): Promise<string> {
-  const posted = vi.spyOn(globalThis.acquireVsCodeApi(), 'postMessage');
+  if (typeof acquireVsCodeApi !== 'function') throw new Error('vitest.setup.ts must install acquireVsCodeApi');
+  const posted = vi.spyOn(acquireVsCodeApi(), 'postMessage');
   await wrapper.find('button').trigger('click');
   await wrapper.vm.$nextTick();
 

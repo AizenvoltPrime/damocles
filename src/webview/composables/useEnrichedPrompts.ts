@@ -24,7 +24,7 @@ export interface EnrichedPrompt {
  * The webview's one test for a typed prompt: a user row that is not injected (a cancel note, a command
  * echo, a steer chip), not a delivered mid-stream batch and not still queued. It selects the rows shown
  * as prompts and counts nothing: a prompt's number is the promptIndex the extension stamped
- * (`src/extension/pi-session/session-store/prompt-index.ts`), never one derived here. A cancel note
+ * (`src/core/pi-session/session-store/prompt-index.ts`), never one derived here. A cancel note
  * whose entry has no mid-stream marker (written before notes were marked, or delivered just before an
  * abort) is injected live but reloads as the prompt the extension counted it as.
  */

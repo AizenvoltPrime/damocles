@@ -69,7 +69,7 @@ function context(): HandlerContext {
   return {
     stores,
     refs: { messageContainerRef: { value: null }, chatInputRef: { value: null } },
-    vscode: {
+    bridge: {
       postMessage: vi.fn(),
       getState: <T,>() => state as T,
       setState: <T,>(next: T) => {
@@ -137,7 +137,49 @@ describe('resumeAccepted', () => {
     expect(sessionStore.selectedSessionId).toBe('s-x');
     expect(sessionStore.selectedSessionName).toBe('Refactor');
     expect(sessionStore.currentResumedSessionId).toBe('s-x');
-    expect(ctx.vscode.getState()).toMatchObject({ sessionId: 's-x', sessionName: 'Refactor' });
+    expect(ctx.bridge.getState()).toMatchObject({ sessionId: 's-x', sessionName: 'Refactor' });
+  });
+});
+
+/** The persisted id is what a reload or restart asks the host to replay, and pi writes no file before the first reply. */
+describe('sessionStarted persists only a stored conversation', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('shows a new, unwritten conversation without persisting its id', () => {
+    const ctx = context();
+
+    dispatch({ type: 'sessionStarted', sessionId: 'fresh-1', stored: false }, ctx);
+
+    expect(ctx.stores.sessionStore.currentSessionId).toBe('fresh-1');
+    expect(ctx.stores.sessionStore.selectedSessionId).toBe('fresh-1');
+    expect(ctx.bridge.getState<{ sessionId?: string }>()?.sessionId).toBeUndefined();
+  });
+
+  it('persists the same conversation once the host reports its file written', () => {
+    const ctx = context();
+    dispatch({ type: 'sessionStarted', sessionId: 'fresh-1', stored: false }, ctx);
+
+    dispatch({ type: 'sessionStarted', sessionId: 'fresh-1', stored: true }, ctx);
+
+    expect(ctx.bridge.getState<{ sessionId?: string }>()?.sessionId).toBe('fresh-1');
+  });
+
+  it('drops a persisted id and its name when an unwritten conversation replaces it', () => {
+    const ctx = context();
+    ctx.bridge.setState({ sessionId: 's-old', sessionName: 'Refactor', workspaceFolderKey: '/ws' });
+
+    dispatch({ type: 'sessionStarted', sessionId: 'fresh-2', stored: false }, ctx);
+
+    expect(ctx.bridge.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: '/ws' });
+  });
+
+  it('keeps the name of the stored conversation it already persisted', () => {
+    const ctx = context();
+    ctx.bridge.setState({ sessionId: 's-1', sessionName: 'Refactor' });
+
+    dispatch({ type: 'sessionStarted', sessionId: 's-1', stored: true }, ctx);
+
+    expect(ctx.bridge.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor' });
   });
 });
 
@@ -277,7 +319,7 @@ function contextWithConversation(): HandlerContext {
   streamingStore.addUserMessage('the conversation on screen');
   sessionStore.setCurrentSession('s-1');
   sessionStore.setSelectedSession('s-1', 'Refactor');
-  ctx.vscode.setState({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
+  ctx.bridge.setState({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
   return ctx;
 }
 
@@ -297,7 +339,7 @@ describe('workspaceFolderUpdate', () => {
     expect(sessionStore.currentSessionId).toBeNull();
     expect(sessionStore.selectedSessionId).toBeNull();
     expect(settingsStore.panelWorkspaceFolderKey).toBe(SERVER.key);
-    expect(ctx.vscode.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: SERVER.key });
+    expect(ctx.bridge.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: SERVER.key });
     expect(toastMock.success).toHaveBeenCalledTimes(1);
     expect(toastMock.success).toHaveBeenCalledWith(i18n.global.t('toast.workspaceFolderSwitched', { folder: 'app (server)' }));
     // vue-i18n returns the bare key for a missing entry, which the equality above would also accept.
@@ -314,7 +356,7 @@ describe('workspaceFolderUpdate', () => {
     expect(streamingStore.messages).toHaveLength(1);
     expect(sessionStore.selectedSessionId).toBe('s-1');
     expect(settingsStore.panelWorkspaceFolderKey).toBe(CLIENT.key);
-    expect(ctx.vscode.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
+    expect(ctx.bridge.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: CLIENT.key });
     expect(toastMock.success).not.toHaveBeenCalled();
   });
 
@@ -358,7 +400,7 @@ describe('workspaceFolderUpdate', () => {
 
     dispatch(folderUpdate(SERVER.key), ctx);
 
-    expect(ctx.vscode.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: SERVER.key });
+    expect(ctx.bridge.getState()).toEqual({ sessionId: 's-1', sessionName: 'Refactor', workspaceFolderKey: SERVER.key });
   });
 
   // The extension answers every setPanelWorkspaceFolder with one of these, including a cancel and a failure.
@@ -452,8 +494,8 @@ describe('workspaceFolderUpdate reloads the Memory panel for the new folder', ()
     expect(memoryStore.observationCursor).toBeNull();
     expect(memoryStore.profile.project.static).toBe('');
     expect(memoryStore.kindFilter).toBe('fact');
-    expect(ctx.vscode.postMessage).toHaveBeenCalledWith({ type: 'requestMemories' });
-    expect(ctx.vscode.postMessage).toHaveBeenCalledWith({ type: 'getProfile' });
+    expect(ctx.bridge.postMessage).toHaveBeenCalledWith({ type: 'requestMemories' });
+    expect(ctx.bridge.postMessage).toHaveBeenCalledWith({ type: 'getProfile' });
   });
 
   it('switched with the Memory panel closed: clears without requesting, since opening the panel requests', () => {
@@ -463,7 +505,7 @@ describe('workspaceFolderUpdate reloads the Memory panel for the new folder', ()
     dispatch(folderUpdate(SERVER.key, true), ctx);
 
     expect(ctx.stores.memoryStore.memories).toEqual([]);
-    expect(ctx.vscode.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
+    expect(ctx.bridge.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
   });
 
   it('without switched: keeps the loaded memories and requests nothing', () => {
@@ -474,7 +516,7 @@ describe('workspaceFolderUpdate reloads the Memory panel for the new folder', ()
     dispatch(folderUpdate(CLIENT.key), ctx);
 
     expect(ctx.stores.memoryStore.memories).toHaveLength(1);
-    expect(ctx.vscode.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
+    expect(ctx.bridge.postMessage).not.toHaveBeenCalledWith({ type: 'requestMemories' });
   });
 });
 
@@ -492,7 +534,7 @@ describe('conversationCleared', () => {
 
     expect(streamingStore.messages).toEqual([]);
     expect(sessionStore.selectedSessionId).toBeNull();
-    expect(ctx.vscode.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: CLIENT.key });
+    expect(ctx.bridge.getState()).toEqual({ sessionId: undefined, sessionName: undefined, workspaceFolderKey: CLIENT.key });
     expect(toastMock.success).toHaveBeenCalledWith(i18n.global.t('toast.conversationCleared'));
   });
 });

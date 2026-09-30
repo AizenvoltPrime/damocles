@@ -45,7 +45,8 @@ function press(el: HTMLElement, key: string, shiftKey = false): KeyboardEvent {
 }
 
 function spyOnPost(): ReturnType<typeof vi.spyOn> {
-  return vi.spyOn(globalThis.acquireVsCodeApi(), 'postMessage');
+  if (typeof acquireVsCodeApi !== 'function') throw new Error('vitest.setup.ts must install acquireVsCodeApi');
+  return vi.spyOn(acquireVsCodeApi(), 'postMessage');
 }
 
 /** The Send button, which is the second of the three controls the note box renders. */

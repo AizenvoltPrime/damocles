@@ -11,8 +11,8 @@ const hoisted = vi.hoisted(() => ({
   handlers: [] as Array<(message: ExtensionToWebviewMessage) => void>,
 }));
 
-vi.mock('../useVSCode', () => ({
-  useVSCode: () => ({
+vi.mock('../usePlatformBridge', () => ({
+  usePlatformBridge: () => ({
     postMessage: hoisted.postMessage,
     onMessage: (handler: (message: ExtensionToWebviewMessage) => void) => {
       hoisted.handlers.push(handler);

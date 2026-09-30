@@ -34,7 +34,7 @@ import OverlayShell from './OverlayShell.vue';
 import ToolCancelControl from './ToolCancelControl.vue';
 import ToolResultImages from './ToolResultImages.vue';
 import ImageLightbox from './ImageLightbox.vue';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { sanitizeUrl } from '@/lib/sanitize-url';
 import { ownEntry } from '@/utils/ownEntry';
 import { useUIStore, type ExpandedToolSource } from '@/stores/useUIStore';
@@ -66,7 +66,7 @@ const EXT_LANG_MAP: Record<string, string> = {
 };
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const uiStore = useUIStore();
 
 const props = defineProps<{

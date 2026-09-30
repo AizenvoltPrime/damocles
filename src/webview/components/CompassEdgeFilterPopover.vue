@@ -1,25 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { EDGE_STYLE } from '@/composables/compass/useGraphSymbols';
 import type { CompassEdgeKind } from '@shared/types/compass';
 
+const { t } = useI18n();
 const store = useCompassStore();
 
-const edgeKinds: Array<{ kind: CompassEdgeKind; label: string }> = [
-	{ kind: 'CALLS', label: 'Calls' },
-	{ kind: 'IMPORTS_FROM', label: 'Imports from' },
-	{ kind: 'INHERITS', label: 'Inherits' },
-	{ kind: 'IMPLEMENTS', label: 'Implements' },
-	{ kind: 'CONTAINS', label: 'Contains' },
-	{ kind: 'TESTED_BY', label: 'Tested by' },
-	{ kind: 'DEPENDS_ON', label: 'Depends on' },
-	{ kind: 'REFERENCES', label: 'References' },
-];
+const EDGE_KINDS: CompassEdgeKind[] = ['CALLS', 'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'CONTAINS', 'TESTED_BY', 'DEPENDS_ON', 'REFERENCES'];
+const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`compass.edgeKind.${kind}`) })));
 
-const totalCount = edgeKinds.length;
+const totalCount = EDGE_KINDS.length;
 
 const visibleCount = computed(() => store.visibleEdgeKinds.size);
 
@@ -45,12 +39,12 @@ function selectNone(): void {
     <PopoverTrigger
       class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
     >
-      Filter edges ({{ visibleCount }}/{{ totalCount }})
+      {{ t('compass.edgeFilter.trigger', { visible: visibleCount, total: totalCount }) }}
     </PopoverTrigger>
     <PopoverContent class="w-72">
       <div class="flex flex-col gap-2">
         <h3 class="text-xs font-semibold text-foreground">
-          Edge filters
+          {{ t('compass.edgeFilter.title') }}
         </h3>
         <ul class="flex flex-col gap-2">
           <li
@@ -94,14 +88,14 @@ function selectNone(): void {
             class="px-2 py-1 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
             @click="selectAll"
           >
-            All
+            {{ t('compass.edgeFilter.all') }}
           </button>
           <button
             type="button"
             class="px-2 py-1 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
             @click="selectNone"
           >
-            None
+            {{ t('compass.edgeFilter.none') }}
           </button>
         </div>
       </div>

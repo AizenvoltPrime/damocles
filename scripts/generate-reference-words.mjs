@@ -10,7 +10,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { porterStem } from '../src/extension/memory/porter-stem.ts';
+import { porterStem } from '../src/core/memory/porter-stem.ts';
 
 const ENGLISH_COMMIT = 'b7585f32cee8e140001054ad5b0bbf373245c360';
 const ENGLISH_URL = `https://raw.githubusercontent.com/david47k/top-english-wordlists/${ENGLISH_COMMIT}/top_english_words_lower_50000.txt`;
@@ -35,7 +35,7 @@ const CSPELL_SOURCES = [
 const CSPELL_PACKAGES = '@cspell/dict-software-terms 5.4.5 and @cspell/dict-filetypes 3.0.18';
 
 const WORDS_PER_LINE = 16;
-const OUTPUT_DIR = path.resolve('src/extension/memory/injection');
+const OUTPUT_DIR = path.resolve('src/core/memory/injection');
 
 // Only entries the memory tokenizer yields as one token of 2+ chars can ever be looked up.
 const SINGLE_TOKEN = /^[a-z]{2,}$/;

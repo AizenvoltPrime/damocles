@@ -11,7 +11,7 @@ import { useSubagentStore } from '@/stores/useSubagentStore';
 import { i18n } from '@/i18n';
 
 const { postMessage } = vi.hoisted(() => ({ postMessage: vi.fn() }));
-vi.mock('@/composables/useVSCode', () => ({ useVSCode: () => ({ postMessage }) }));
+vi.mock('@/composables/usePlatformBridge', () => ({ usePlatformBridge: () => ({ postMessage }) }));
 
 const ShellStub = defineComponent({ template: '<div><slot name="header-actions" /><slot /></div>' });
 

@@ -65,8 +65,19 @@ const CompassGraphOverlay = defineAsyncComponent(() => import("./components/Comp
 const CompassSearchOverlay = defineAsyncComponent(() => import("./components/CompassSearchPanel.vue"));
 const CompassValidationOverlay = defineAsyncComponent(() => import("./components/CompassValidationPanel.vue"));
 const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
+// The only path to Monaco: rendered solely while hostCapabilities.monaco is on, so the VS Code webview never fetches the chunk.
+const EditorOverlayHost = defineAsyncComponent({
+  loader: () => import("./components/editor/EditorOverlayHost.vue"),
+  // Closing what asked for the editor unmounts the failed host, so the next request loads the chunk again.
+  onError: (error, _retry, fail) => {
+    toast.error(t("editor.loadFailed", { error: error.message }));
+    fail();
+    editorStore.dismissView();
+    editorStore.closeSettingsEditor();
+  },
+});
 import PromptNavigator from "./components/PromptNavigator.vue";
-import { useVSCode } from "./composables/useVSCode";
+import { usePlatformBridge } from "./composables/usePlatformBridge";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
 import { useAutoScroll } from "./composables/useAutoScroll";
@@ -93,6 +104,8 @@ import { useUsageStatsStore } from "./stores/useUsageStatsStore";
 import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useMemoryAuditStore } from "./stores/useMemoryAuditStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
+import { useEditorStore } from "./stores/useEditorStore";
+import { useExtensionUiStore } from "./stores/useExtensionUiStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
@@ -104,7 +117,7 @@ import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessa
 import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
-import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types/session";
+import type { ChatMessage, RewindOption, RewindHistoryItem, RestorePoint } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
@@ -112,7 +125,7 @@ import type { ToolGroup } from "@shared/types/tools";
 import type { McpServerConfig } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage } from "@shared/types/messages";
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const { t } = useI18n();
 
 initLocaleMessaging(postMessage);
@@ -129,6 +142,7 @@ const {
   showRewindTypeModal,
   showRewindBrowser,
   rewindHistoryItems,
+  rewindRestorePoints,
   rewindHistoryLoading,
   rewindCanFork,
   selectedRewindItem,
@@ -138,6 +152,8 @@ const {
 } = storeToRefs(uiStore);
 
 const settingsStore = useSettingsStore();
+const editorStore = useEditorStore();
+const extensionUiStore = useExtensionUiStore();
 const {
   currentSettings,
   availableModels,
@@ -340,6 +356,11 @@ function handleRewindBrowserSelect(item: RewindHistoryItem) {
     return;
   }
   uiStore.selectRewindItem(item);
+}
+
+function handleUndoRewind(point: RestorePoint) {
+  uiStore.closeRewindBrowser();
+  postMessage({ type: "undoRewind", preRewindId: point.id });
 }
 
 function confirmCompactionRewind() {
@@ -1061,7 +1082,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         variant="ghost"
         size="icon-sm"
         class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
-        title="View aside"
+        :title="t('header.viewAside')"
         @click="btwStore.openOverlay()"
       >
         <IconMessageSquare :size="16" />
@@ -1076,7 +1097,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         variant="ghost"
         size="icon-sm"
         class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        title="Open Browser"
+        :title="t('header.openBrowser')"
         @click="handleOpenBrowser"
       >
         <IconGlobe :size="16" />
@@ -1109,7 +1130,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         variant="ghost"
         size="icon-sm"
         class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        title="Memory"
+        :title="t('header.memory')"
         @click="handleOpenMemoryPanel"
       >
         <IconBrain :size="16" />
@@ -1128,7 +1149,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
             variant="ghost"
             size="icon-sm"
             class="text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Session History"
+            :title="t('header.sessionHistory')"
           >
             <IconClock :size="16" />
           </Button>
@@ -1163,7 +1184,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         variant="ghost"
         size="icon-sm"
         class="text-primary hover:bg-muted hover:text-primary"
-        title="Settings"
+        :title="t('common.settings')"
         @click="uiStore.openSettingsPanel()"
       >
         <IconGear :size="18" />
@@ -1234,7 +1255,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           variant="default"
           size="icon"
           class="absolute bottom-4 right-8 rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/50 z-20"
-          title="Scroll to bottom"
+          :title="t('session.scrollToBottom')"
           @click="scrollToBottom"
         >
           <IconChevronDown :size="16" />
@@ -1275,7 +1296,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <FormPrompt v-if="pendingFormSchema" :visible="true" @submit="handleFormSubmit" @cancel="handleFormCancel" />
 
     <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
-    <ExtensionUiDialog />
+    <ExtensionUiDialog v-if="extensionUiStore.current" />
 
     <!-- Skill Approval Prompt for Skill tool -->
     <SkillApprovalPrompt
@@ -1427,6 +1448,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :files-affected="selectedRewindItem?.filesAffected"
       :files="selectedRewindItem?.files"
       :lines-changed="selectedRewindItem?.linesChanged"
+      :skipped="selectedRewindItem?.skipped"
+      :not-rewindable="selectedRewindItem?.notRewindable"
+      :checkpoint-id="selectedRewindItem?.messageId"
       :loading-metadata="rewindMetadataLoading"
       @confirm="handleTypeSelected"
       @cancel="uiStore.cancelTypeSelection"
@@ -1445,8 +1469,10 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       v-if="showRewindBrowser"
       :is-open="showRewindBrowser"
       :prompts="rewindHistoryItems"
+      :restore-points="rewindRestorePoints"
       :is-loading="rewindHistoryLoading"
       @select="handleRewindBrowserSelect"
+      @undo="handleUndoRewind"
       @close="uiStore.closeRewindBrowser"
     />
 
@@ -1473,6 +1499,12 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Diff Overlay (full-screen) -->
     <DiffOverlay v-if="expandedDiff" :diff="expandedDiff" @close="diffStore.collapseDiff" />
+
+    <!-- Monaco editor overlays (desktop) -->
+    <EditorOverlayHost
+      v-if="settingsStore.hostCapabilities.monaco && editorStore.hasOpenOverlay"
+      @decide="(toolUseId: string, approved: boolean) => handlePermissionApproval(toolUseId, approved)"
+    />
 
     <!-- Plan Approval Overlay (full-screen) -->
     <PlanApprovalOverlay

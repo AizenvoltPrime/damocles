@@ -1,6 +1,8 @@
 import { ref, watch, onUnmounted, type Ref, computed } from 'vue';
+import { i18n } from '@/i18n';
 import {
   WITTY_PHRASES,
+  WITTY_PHRASES_EL,
   PHRASE_CHANGE_INTERVAL_MS,
 } from '../data/wittyPhrases';
 
@@ -8,7 +10,7 @@ import {
  * Vue composable for cycling through witty loading phrases.
  *
  * @param isActive - Reactive getter or ref indicating if cycling should be active
- * @param phrases - Optional custom phrase array (defaults to WITTY_PHRASES)
+ * @param phrases - Optional custom phrase array (defaults to the witty set of the current locale)
  * @returns Object containing the current phrase as a reactive ref
  *
  * @example
@@ -24,13 +26,15 @@ import {
  */
 export function usePhraseCycler(
   isActive: (() => boolean) | Ref<boolean>,
-  phrases: string[] = WITTY_PHRASES
+  phrases?: string[]
 ): { currentPhrase: Ref<string> } {
-  const currentPhrase = ref(phrases[0] ?? '');
+  const pool = (): string[] => phrases ?? (i18n.global.locale.value === 'el' ? WITTY_PHRASES_EL : WITTY_PHRASES);
+  const currentPhrase = ref(pool()[0] ?? '');
   let intervalId: ReturnType<typeof setInterval> | null = null;
 
   const selectRandomPhrase = () => {
-    const next = phrases[Math.floor(Math.random() * phrases.length)];
+    const set = pool();
+    const next = set[Math.floor(Math.random() * set.length)];
     if (next !== undefined) currentPhrase.value = next;
   };
 

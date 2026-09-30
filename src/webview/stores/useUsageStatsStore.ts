@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import {
   presetSpec,
   resolveStatsRange,
@@ -21,7 +21,7 @@ let requestSeq = 0;
 
 /** Global rather than per session: a session switch leaves the overlay, its filters and its report alone. */
 export const useUsageStatsStore = defineStore('usageStats', () => {
-  const { postMessage } = useVSCode();
+  const { postMessage } = usePlatformBridge();
 
   const isOverlayOpen = ref(false);
   const rangeSpec = ref<StatsRangeSpec>(presetSpec('last30'));

@@ -225,8 +225,23 @@ components.json
 
 # Build artifacts & lock files
 **/*.map
+# The desktop app's Monaco editor (vite.config.ts names every file of it); the VS Code webview never loads it
+dist/webview/assets/monaco-*
 bun.lockb
 package-lock.json
+**/*.log
+
+# Desktop app: build output, packaging config and end-to-end suite (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+dist/desktop/**
+dist/desktop-shell/**
+dist/e2e*/**
+dist-desktop/**
+e2e/**
+build/**
+types/**
+electron-builder.yml
+playwright.desktop.config.ts
+vite.shell.config.ts
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**
@@ -244,3 +259,4 @@ python/**/.mypy_cache/**
 *.md
 !README.md
 !CHANGELOG.md
+!THIRD-PARTY-NOTICES.md

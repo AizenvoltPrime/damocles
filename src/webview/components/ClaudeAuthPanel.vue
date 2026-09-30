@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { useVSCode } from "@/composables/useVSCode";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,7 @@ type Mode = "none" | "apikey" | "allowance" | "extra";
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
 const { claudeAuthMode, claudeAuthBusy, claudeAuthError } = storeToRefs(settingsStore);
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 // The radio reflects the active mode but lets the user pre-select 'apikey' to reveal the key field.
 const selected = ref<Exclude<Mode, "none">>("allowance");

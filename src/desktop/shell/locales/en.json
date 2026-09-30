@@ -1,0 +1,69 @@
+{
+  "tabs": {
+    "listLabel": "Open tabs",
+    "newConversation": "New conversation",
+    "labelWithProject": "{title}, {project}",
+    "busy": "{label}, working",
+    "newTab": "New tab",
+    "closeTab": "Close {title}",
+    "noTabToClose": "Close tab",
+    "keyboardHelp": "Arrow keys move between tabs, Enter opens, Delete closes, {modifier}+Shift+Arrow reorders."
+  },
+  "content": {
+    "empty": "No open tabs",
+    "emptyHint": "New conversations open in the default project.",
+    "newConversation": "New conversation"
+  },
+  "projects": {
+    "heading": "Projects",
+    "show": "Show projects",
+    "hide": "Hide projects",
+    "add": "Add project",
+    "empty": "No projects yet. New tabs open in your home folder.",
+    "default": "Default",
+    "trusted": "Trusted",
+    "untrusted": "Not trusted",
+    "trust": "Trust",
+    "trustLabel": "Trust project {name}",
+    "setDefault": "Use project {name} for new tabs",
+    "newTabIn": "New tab in project {name}",
+    "remove": "Remove project {name}",
+    "removeRefused": "Could not remove project {name}: {reason}"
+  },
+  "toasts": {
+    "region": "Notifications",
+    "dismiss": "Dismiss notification",
+    "info": "Information",
+    "warning": "Warning",
+    "error": "Error"
+  },
+  "pane": {
+    "label": "Browser pane",
+    "divider": "Resize browser pane",
+    "dividerValue": "{width} pixels wide",
+    "dividerHelp": "Drag to resize. With the keyboard: Left and Right arrows, Home and End.",
+    "pagesLabel": "Pages",
+    "pagesKeyboardHelp": "Arrow keys move between pages, Enter shows the page, Delete closes it.",
+    "newPage": "New page",
+    "pageLoading": "{title}, loading",
+    "closePage": "Close {title}",
+    "back": "Back",
+    "forward": "Forward",
+    "reload": "Reload",
+    "address": "Address",
+    "addressPlaceholder": "Enter an address",
+    "addressRefused": "This address cannot be opened here. Only http and https pages are allowed.",
+    "openExternal": "Open in system browser",
+    "openExternalUnavailable": "Only http and https pages open in the system browser",
+    "pickElement": "Pick an element for the chat",
+    "devTools": "Developer tools",
+    "maximize": "Maximize pane",
+    "restore": "Restore side-by-side view",
+    "collapseName": "Hide browser pane",
+    "collapse": "Hide browser pane ({shortcut})",
+    "empty": "Pages the agent opens in this conversation appear here.",
+    "toggleName": "Browser pane",
+    "show": "Show browser pane ({shortcut})",
+    "hide": "Hide browser pane ({shortcut})"
+  }
+}

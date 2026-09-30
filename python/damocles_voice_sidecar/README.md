@@ -47,7 +47,7 @@ Mock engines drive the full pipeline without GPU or model files. The wake-exclus
 
 Subprotocol: `damocles-voice.v1`. Bearer token: `Authorization: Bearer <hex>` (256-bit, env-delivered).
 
-**Inbound** (client → sidecar): `init`, `tts_request`, `cancel_tts`, `set_muted`, `shutdown`, `ping`. The sidecar captures audio natively via sounddevice — no audio bytes cross the WebSocket. This mirrors `src/extension/voice/recorder.ts` which spawns platform-native recording binaries for the push-to-talk path; both bypass the VS Code webview permission boundary that denies `getUserMedia` by default.
+**Inbound** (client → sidecar): `init`, `tts_request`, `cancel_tts`, `set_muted`, `shutdown`, `ping`. The sidecar captures audio natively via sounddevice — no audio bytes cross the WebSocket. This mirrors `src/core/voice/recorder.ts` which spawns platform-native recording binaries for the push-to-talk path; both bypass the VS Code webview permission boundary that denies `getUserMedia` by default.
 
 **Outbound** (sidecar → client): `ready`, `wake_detected`, `wake_aborted`, `vad_speech_started`, `vad_speech_ended`, `transcript_final`, `tts_audio_chunk` (JSON envelope + binary float32 24 kHz follow-up), `tts_done`, `error`, `pong`.
 
@@ -68,7 +68,7 @@ Two-layer defense — both required:
 1. **Audio offset:** ASR sees audio starting at `T_wake + 250 ms` (`POST_WAKE_OFFSET_MS`). Calibrated against the pre-trained `hey_jarvis_v0.1` detection latency (same model whether shipped as `.tflite` or `.onnx`; we ship `.onnx` for cross-platform parity).
 2. **Regex strip:** `pipeline.strip_wake_prefix` removes any leading `^(hey\s+)?jarvis[,.\s]*` from the final transcript.
 
-The host-side TS handler also runs the same regex pass — defense in depth so older sidecars stay correct. The two regex literals (`pipeline.py:WAKE_PREFIX_RE` and `voice-stream-handlers.ts:WAKE_PREFIX_RE`) are checked for parity by `src/extension/voice/__tests__/wake-prefix-parity.test.ts` so silent drift breaks CI.
+The host-side TS handler also runs the same regex pass — defense in depth so older sidecars stay correct. The two regex literals (`pipeline.py:WAKE_PREFIX_RE` and `voice-stream-handlers.ts:WAKE_PREFIX_RE`) are checked for parity by `src/core/voice/__tests__/wake-prefix-parity.test.ts` so silent drift breaks CI.
 
 ## First-run network access
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 // @ts-expect-error -- plain .mjs helper, no types
-import { platformFamilyGlob } from '../sync-vscodeignore.mjs';
+import { platformFamilyGlob, desktopOnlyIn, DESKTOP_ONLY_PACKAGES, DESKTOP_EXCLUDE_RULES, vsixExclusionProblems, forbiddenVsixEntries } from '../sync-vscodeignore.mjs';
 
 /**
  * `.github/workflows/release.yml` runs `sync-vscodeignore.mjs --check` on `ubuntu-latest` while every
@@ -57,5 +57,91 @@ describe('the generated .vscodeignore allowlist', () => {
       line.split('/').some((segment) => segment.split('-').some((token) => PLATFORM_TOKENS.includes(token.toLowerCase()))),
     );
     expect(named).toEqual([]);
+  });
+
+  // The desktop app's runtime and its editor, test and packaging tooling never ship in the VSIX.
+  it('carries no desktop-only package', () => {
+    expect(DESKTOP_ONLY_PACKAGES).toEqual(expect.arrayContaining([
+      'electron', '@parcel/watcher', 'electron-updater', 'undici', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
+    ]));
+    const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
+    expect(desktopOnlyIn(shipped)).toEqual([]);
+    expect(desktopOnlyIn(['zod', 'electron', 'undici'])).toEqual(['electron', 'undici']);
+  });
+});
+
+// Desktop output, Monaco, e2e specs and output, packaging config and logs must never enter the VSIX.
+describe('vsixExclusionProblems', () => {
+  const allRules = DESKTOP_EXCLUDE_RULES.join('\n');
+
+  it('passes the committed .vscodeignore', () => {
+    expect(vsixExclusionProblems(readFileSync(join(__dirname, '..', '..', '.vscodeignore'), 'utf8'))).toEqual([]);
+  });
+
+  it('names every desktop-only category', () => {
+    expect(DESKTOP_EXCLUDE_RULES).toEqual(expect.arrayContaining([
+      'dist/webview/assets/monaco-*', 'dist/desktop/**', 'dist/desktop-shell/**', 'dist-desktop/**', 'dist/e2e*/**',
+      'e2e/**', 'playwright.desktop.config.ts', 'electron-builder.yml', 'build/**', '**/*.log',
+    ]));
+  });
+
+  it('fails for each missing rule', () => {
+    for (const rule of DESKTOP_EXCLUDE_RULES) {
+      const without = DESKTOP_EXCLUDE_RULES.filter((r: string) => r !== rule).join('\n');
+      expect(vsixExclusionProblems(`node_modules/**\n${without}\n!README.md\n`)).toEqual([`missing the rule ${rule}`]);
+    }
+  });
+
+  it('fails on a negation that could re-include a desktop-only file', () => {
+    for (const negation of ['!dist/webview/**', '!**/*.js', '!dist/webview/assets/monaco-editor.js', '!*.css', '!e2e/desktop/app.ts', '!dist/desktop/main.js']) {
+      expect(vsixExclusionProblems(`${allRules}\n${negation}\n`)).toEqual([`the negation ${negation} could re-include a desktop-only file`]);
+    }
+    expect(vsixExclusionProblems(`${allRules.replace(/\n/g, '\r\n')}\r\n!README.md\r\n!node_modules/zod/**\r\n`)).toEqual([]);
+  });
+});
+
+// The release workflow runs this against every built VSIX, so it sees what vsce actually packed.
+describe('forbiddenVsixEntries', () => {
+  it('flags one path per exclusion rule and every desktop-only package', () => {
+    const forbidden = [
+      'extension/dist/webview/assets/monaco-editor-abc.js',
+      'extension/dist/gate-test.log',
+      'extension/python/damocles_voice_sidecar/run.log',
+      'extension/dist/desktop/main.js',
+      'extension/dist/desktop-shell/index.html',
+      'extension/dist/e2e/second-process.cjs',
+      'extension/dist/e2e-results/.last-run.json',
+      'extension/dist-desktop/win-unpacked/Damocles.exe',
+      'extension/e2e/desktop/app.spec.ts',
+      'extension/build/linux/apparmor.profile',
+      'extension/types/no-vscode.d.ts',
+      'extension/electron-builder.yml',
+      'extension/playwright.desktop.config.ts',
+      'extension/vite.shell.config.ts',
+      ...DESKTOP_ONLY_PACKAGES.map((name: string) => `extension/node_modules/${name}/package.json`),
+      'extension/node_modules/@parcel/watcher-win32-x64/watcher.node',
+      'extension/node_modules/@electron/asar/package.json',
+    ];
+    expect(forbiddenVsixEntries(forbidden)).toEqual(forbidden);
+  });
+
+  it('keeps the extension runtime, including nested copies of a desktop-only package name', () => {
+    const allowed = [
+      'extension/package.json',
+      'extension/dist/extension.js',
+      'extension/dist/compass-worker.js',
+      'extension/dist/usage-stats-worker.js',
+      'extension/dist/sentinel.js',
+      'extension/dist/webview/index.js',
+      'extension/dist/webview/assets/index-abc.js',
+      'extension/resources/grammars/tree-sitter-typescript.wasm',
+      'extension/python/damocles_voice_sidecar/pyproject.toml',
+      'extension/node_modules/@vscode/ripgrep-win32-x64/bin/rg.exe',
+      'extension/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/index.js',
+      'extension/node_modules/debug/src/index.js',
+      'extension/node_modules/electron-to-chromium/package.json',
+      'extension/l10n/bundle.l10n.json',
+    ];
+    expect(forbiddenVsixEntries(allowed)).toEqual([]);
   });
 });

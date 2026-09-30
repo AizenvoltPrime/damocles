@@ -5,6 +5,7 @@ import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@sh
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
+import { VSCODE_HOST_CAPABILITIES, type HostCapabilities, type SettingSource } from '@shared/types/messages';
 import {
   DEFAULT_TTS_VOICE,
   DEFAULT_WAKE_SENSITIVITY,
@@ -12,7 +13,7 @@ import {
   DEFAULT_MAX_UTTERANCE_MS,
 } from '@shared/types/voice';
 import { DEFAULT_MODELS, DEFAULT_CACHE_WARMING } from '@shared/types/constants';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 /**
  * Placeholder held until the host's first `voiceConfigUpdate`. Mirrors the `damocles.voice.*`
@@ -79,7 +80,7 @@ const LIVE_MCP_STATUSES = new Set<McpServerStatusInfo["status"]>([
 ]);
 
 export const useSettingsStore = defineStore('settings', () => {
-  const { postMessage } = useVSCode();
+  const { postMessage } = usePlatformBridge();
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
   const baseAvailableModels = ref<ModelInfo[]>([]);
 
@@ -106,6 +107,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
   /** Whether the workspace is trusted — when false, project-scope subagents/skills are disabled (US-022). */
   const projectTrusted = ref<boolean>(true);
+  const hostCapabilities = ref<HostCapabilities>({ ...VSCODE_HOST_CAPABILITIES });
+  // damocles.* key -> the .damocles file supplying its effective value; empty unless hostCapabilities.settingsSources.
+  const settingSources = ref<Record<string, SettingSource>>({});
+  const voiceControlsAvailable = computed(() => hostCapabilities.value.voice || hostCapabilities.value.hostSpeechExtensions);
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
   const activeModel = ref<string>("");
@@ -141,8 +146,13 @@ export const useSettingsStore = defineStore('settings', () => {
   // The extension answers every setPanelWorkspaceFolder with a workspaceFolderUpdate, which clears this.
   const workspaceFolderSwitchPending = ref(false);
 
-  function updateSettings(settings: ExtensionSettings) {
+  function updateSettings(settings: ExtensionSettings, sources?: Record<string, SettingSource>) {
     currentSettings.value = settings;
+    settingSources.value = sources ?? {};
+  }
+
+  function setHostCapabilities(capabilities: HostCapabilities) {
+    hostCapabilities.value = capabilities;
   }
 
   function setPermissionMode(mode: PermissionMode) {
@@ -398,6 +408,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
+    settingSources.value = {};
     baseAvailableModels.value = [];
     accountInfo.value = null;
     mcpServers.value = [];
@@ -452,6 +463,10 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpEnabled,
     toolsSnapshot,
     projectTrusted,
+    hostCapabilities,
+    settingSources,
+    voiceControlsAvailable,
+    setHostCapabilities,
     budgetWarning,
     contextWarning,
     activeModel,

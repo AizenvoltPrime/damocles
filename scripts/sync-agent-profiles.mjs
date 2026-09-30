@@ -34,7 +34,7 @@ const DEFAULT_SOURCE = path.join(REPO_ROOT, '..', 'agency-agents');
 // Divisions we mirror from agency. This set is the policy mirror of DEFAULT_DIVISIONS in
 // ~/.claude/scripts/sync-claude-agents.mjs — the script that governs ~/.claude/agents. The two live
 // in separate repos and cannot share state; edit them together. The committed catalog regression
-// test (src/extension/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that
+// test (src/core/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that
 // catches drift.
 const TRACKED_DIVISIONS = new Set([
   'engineering',
@@ -78,7 +78,7 @@ const DIVISION_ALLOWLIST = new Map([
 //
 // Mirrored from ~/.claude/scripts/sync-claude-agents.mjs. The two lists live in separate repos and
 // cannot share state — they must be edited together. The committed catalog regression test
-// (src/extension/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that catches
+// (src/core/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that catches
 // drift.
 const EXCLUDE = new Set([
   // Non-software business verticals

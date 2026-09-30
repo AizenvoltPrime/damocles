@@ -10,6 +10,8 @@ export function createExtensionUiHandlers(): Partial<HandlerRegistry> {
         title: msg.title,
         ...(msg.message !== undefined ? { message: msg.message } : {}),
         ...(msg.options !== undefined ? { options: msg.options } : {}),
+        ...(msg.items !== undefined ? { items: msg.items } : {}),
+        ...(msg.password !== undefined ? { password: msg.password } : {}),
         ...(msg.placeholder !== undefined ? { placeholder: msg.placeholder } : {}),
         ...(msg.prefill !== undefined ? { prefill: msg.prefill } : {}),
         ...(msg.agentId !== undefined ? { agentId: msg.agentId } : {}),

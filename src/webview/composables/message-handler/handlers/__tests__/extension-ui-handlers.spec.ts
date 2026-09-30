@@ -74,6 +74,17 @@ describe('extensionUiRequest handler', () => {
     });
   });
 
+  it('carries quick-pick items and the password flag through to the store', () => {
+    const ctx = context();
+    const items = [{ id: 'k', label: 'Paste a key', description: 'manual', detail: 'For CI machines' }];
+    dispatch(request({ requestId: 'pick', items }), ctx);
+    dispatch(request({ requestId: 'pw', kind: 'input', password: true }), ctx);
+
+    expect(ctx.stores.extensionUiStore.queue[0]).toMatchObject({ requestId: 'pick', items });
+    expect(ctx.stores.extensionUiStore.queue[1]).toMatchObject({ requestId: 'pw', password: true });
+    expect('password' in ctx.stores.extensionUiStore.queue[0]!).toBe(false);
+  });
+
   it('OMITS attribution keys for a panel-owned dialog rather than storing undefined', () => {
     // The dialog branches on `current.agentName` being present. An explicit `agentName: undefined`
     // renders the same today but makes "is this an agent's dialog?" a truthiness question again —

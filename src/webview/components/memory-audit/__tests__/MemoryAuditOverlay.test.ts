@@ -26,8 +26,8 @@ import {
 import type { MemoryEntry } from '@shared/types/memory';
 
 const host = vi.hoisted(() => ({ posted: [] as WebviewToExtensionMessage[], persisted: undefined as unknown }));
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({
     postMessage: (m: WebviewToExtensionMessage) => host.posted.push(m),
     getState: () => host.persisted,
     setState: (s: unknown) => { host.persisted = s; },

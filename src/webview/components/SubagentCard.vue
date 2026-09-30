@@ -16,13 +16,13 @@ import {
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import AgentUsageStats from './AgentUsageStats.vue';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
 import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const props = defineProps<{
   subagent: SubagentState;

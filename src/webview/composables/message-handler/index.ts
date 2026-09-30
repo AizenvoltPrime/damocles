@@ -1,5 +1,5 @@
 import { onMounted, nextTick } from "vue";
-import { useVSCode } from "../useVSCode";
+import { usePlatformBridge } from "../usePlatformBridge";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -76,7 +76,7 @@ export function createMessageDispatcher(
 }
 
 export function useMessageHandler(options: MessageHandlerOptions): void {
-  const { postMessage, onMessage, setState, getState } = useVSCode();
+  const { postMessage, onMessage, setState, getState } = usePlatformBridge();
   const { messageContainerRef, chatInputRef } = options;
 
   const uiStore = useUIStore();
@@ -134,7 +134,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const context: HandlerContext = {
     stores,
     refs: { messageContainerRef, chatInputRef },
-    vscode: { postMessage, getState, setState },
+    bridge: { postMessage, getState, setState },
   };
 
   const registry = createHandlerRegistry();

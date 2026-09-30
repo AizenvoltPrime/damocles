@@ -183,7 +183,7 @@ watch(() => store.currentTabIndex, () => {
     v-if="visible && store.pendingQuestion"
     class="border-t border-border bg-background"
     role="region"
-    aria-label="Question prompt"
+    :aria-label="t('question.ariaLabel')"
   >
     <!-- Header with agent badge -->
     <div v-if="hasAgentDescription" class="px-4 pt-2 flex items-center gap-2">

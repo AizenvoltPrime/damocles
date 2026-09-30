@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "vscode": ["./types/no-vscode.d.ts"]
+    }
+  },
+  // The preload runs in the renderer and needs the DOM lib, so tsconfig.desktop-preload.json checks it.
+  // Ambient module declarations under src/core take effect only as root files.
+  "include": ["src/desktop/main", "src/core/**/*.d.ts"],
+  // Tests are checked by tsconfig.tests*.json.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/__tests__",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts"
+  ]
+}

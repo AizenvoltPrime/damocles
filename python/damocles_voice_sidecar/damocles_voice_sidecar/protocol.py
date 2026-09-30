@@ -2,7 +2,7 @@
 
 Single source of truth for the JSON envelope used over the WebSocket. The
 TypeScript side mirrors these shapes via Zod in
-``src/extension/voice/sidecar/protocol.ts``. Any change here requires a
+``src/core/voice/sidecar/protocol.ts``. Any change here requires a
 matching update on the TypeScript side; the protocol version below must be
 bumped on breaking changes.
 """

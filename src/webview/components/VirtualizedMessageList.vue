@@ -17,14 +17,14 @@ import PinnedRestoreChip from './PinnedRestoreChip.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { useSettingsStore } from '@/stores/useSettingsStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { storeToRefs } from 'pinia';
 
 const { t } = useI18n();
 const sessionStore = useSessionStore();
 const settingsStore = useSettingsStore();
 const { currentSettings } = storeToRefs(settingsStore);
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const pinnedHeaderHidden = computed(() => currentSettings.value.pinnedHeaderHidden);
 

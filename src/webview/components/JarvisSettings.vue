@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { storeToRefs } from "pinia";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
-import { useVSCode } from "@/composables/useVSCode";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -54,7 +54,7 @@ const { voiceConfig } = storeToRefs(settingsStore);
 const jarvisStore = useVoiceJarvisStore();
 const { voiceFilesBytes } = storeToRefs(jarvisStore);
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const gpuOptions = computed<{ value: "auto" | "cuda" | "cpu"; label: string }[]>(() => [
   { value: "auto", label: t("jarvisSettings.gpuAuto") },

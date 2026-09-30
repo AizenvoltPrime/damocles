@@ -9,7 +9,7 @@ import type {
 	CompassEdgeKind,
 	CompassValidationResult,
 } from '@shared/types/compass';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 export type CompassPanel = 'search' | 'graph' | 'validate' | null;
 
@@ -21,7 +21,7 @@ export interface CompassBuildProgress {
 }
 
 export const useCompassStore = defineStore('compass', () => {
-	const { postMessage } = useVSCode();
+	const { postMessage } = usePlatformBridge();
 	const status = ref<CompassIndexStatus | null>(null);
 	const activePanel = ref<CompassPanel>(null);
 

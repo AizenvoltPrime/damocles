@@ -210,7 +210,7 @@ watch(() => props.visible, (visible) => {
     v-if="visible"
     class="border-t border-border bg-background"
     role="region"
-    aria-label="Permission request"
+    :aria-label="t('permission.ariaLabel')"
   >
     <!-- Header with queue indicator -->
     <div v-if="queueTotal && queueTotal > 1" class="px-4 pt-2 flex items-center justify-end">

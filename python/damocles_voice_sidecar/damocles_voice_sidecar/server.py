@@ -9,7 +9,7 @@ Audio path: the sidecar opens its own OS microphone via sounddevice
 (``mic_input.MicInputStream``) and feeds frames into a single shared
 ``Pipeline`` instance. Webview clients connect for control + events only;
 no audio bytes cross the WebSocket. This mirrors the
-``src/extension/voice/recorder.ts`` push-to-talk path that already
+``src/core/voice/recorder.ts`` push-to-talk path that already
 bypasses the VS Code webview permission boundary the same way.
 
 Health check: client must send ``{"type": "ping", "nonce": N}`` at least

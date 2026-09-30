@@ -7,7 +7,7 @@ import { IconArrowDown, IconArrowUp, IconChartBar, IconDatabase, IconFile } from
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useSettingsStore } from '@/stores';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useContextPercentage } from '@/composables/useContextPercentage';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { contextWarningBands } from '@/utils/contextBands';
@@ -15,7 +15,7 @@ import { cacheHitPercent } from '@/utils/cacheHitPercent';
 import { agentCacheHitRate, agentUsageUnpriced, promptTokens } from '@shared/usage-accounting';
 
 const { t, locale } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const { currentSettings } = storeToRefs(useSettingsStore());
 const { costLabel, costTitle } = useCostLabel();
 

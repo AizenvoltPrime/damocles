@@ -12,8 +12,8 @@ import type { InjectedMemory } from '@shared/types/context-injection';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
 }));
 
 const mounted: VueWrapper[] = [];

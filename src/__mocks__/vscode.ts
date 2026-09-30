@@ -37,6 +37,15 @@ export const window = {
   createTextEditorDecorationType: () => ({ dispose: () => {} }),
   onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
   onDidChangeVisibleTextEditors: () => ({ dispose: () => {} }),
+  onDidChangeTextEditorSelection: () => ({ dispose: () => {} }),
+  showInputBox: () => Promise.resolve(undefined),
+  showQuickPick: () => Promise.resolve(undefined),
+  showOpenDialog: () => Promise.resolve(undefined),
+  tabGroups: {
+    all: [] as unknown[],
+    onDidChangeTabs: () => ({ dispose: () => {} }),
+    close: () => Promise.resolve(true),
+  },
   visibleTextEditors: [],
   activeTextEditor: undefined,
   createWebviewPanel: (
@@ -130,6 +139,12 @@ export const ViewColumn = {
   One: 1,
   Two: 2,
   Three: 3,
+  Four: 4,
+  Five: 5,
+  Six: 6,
+  Seven: 7,
+  Eight: 8,
+  Nine: 9,
 } as const;
 
 type WatcherCb = (uri: { fsPath: string }) => void;
@@ -222,11 +237,87 @@ export function __setTrusted(value: boolean): void {
   trusted = value;
 }
 
+/**
+ * Layered configuration behind `workspace.getConfiguration`, keyed by full dotted id. Empty by
+ * default, so `get` answers the caller's default as it always has. `update` writes the layer its
+ * ConfigurationTarget names (undefined removes) and fires `__configEmitter` when the value changed.
+ * The folder layer applies only to a configuration scoped to a resource, as in VS Code.
+ */
+export const __config = {
+  defaults: new Map<string, unknown>(),
+  global: new Map<string, unknown>(),
+  workspace: new Map<string, unknown>(),
+  workspaceFolder: new Map<string, unknown>(),
+  reset() {
+    for (const layer of [this.defaults, this.global, this.workspace, this.workspaceFolder]) layer.clear();
+  },
+};
+
+// VS Code maps `true` to Global and `false` or no target to Workspace (no setting here is resource scoped).
+function configLayer(target: unknown): Map<string, unknown> {
+  if (target === ConfigurationTarget.Global || target === true) return __config.global;
+  if (target === ConfigurationTarget.WorkspaceFolder) return __config.workspaceFolder;
+  return __config.workspace;
+}
+
+// VS Code's types.isObject.
+function isConfigObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof RegExp) && !(value instanceof Date);
+}
+
+// VS Code's ConfigurationModel.mergeContents: objects merge key by key, anything else replaces.
+function mergeContents(source: Record<string, unknown>, target: Record<string, unknown>): void {
+  for (const key of Object.keys(target)) {
+    if (key in source && isConfigObject(source[key]) && isConfigObject(target[key])) {
+      mergeContents(source[key], target[key]);
+      continue;
+    }
+    source[key] = structuredClone(target[key]);
+  }
+}
+
+function getConfiguration(section?: string, scope?: unknown) {
+  const id = (key: string) => (section ? `${section}.${key}` : key);
+  const layers = () => [__config.defaults, __config.global, __config.workspace, ...(scope ? [__config.workspaceFolder] : [])];
+  const effective = (full: string) => {
+    const merged: Record<string, unknown> = {};
+    for (const layer of layers()) if (layer.has(full)) mergeContents(merged, { value: layer.get(full) });
+    return merged['value'];
+  };
+  return {
+    get: (key: string, defaultValue?: unknown) => {
+      const value = effective(id(key));
+      return value === undefined ? defaultValue : value;
+    },
+    has: (key: string) => effective(id(key)) !== undefined,
+    // VS Code reports every scope property, with undefined for a scope that holds no value.
+    inspect: (key: string) => {
+      const full = id(key);
+      return {
+        key: full,
+        defaultValue: __config.defaults.get(full),
+        globalValue: __config.global.get(full),
+        workspaceValue: __config.workspace.get(full),
+        workspaceFolderValue: scope ? __config.workspaceFolder.get(full) : undefined,
+      };
+    },
+    update: (key: string, value: unknown, target?: unknown) => {
+      if (target === ConfigurationTarget.WorkspaceFolder && !scope) {
+        return Promise.reject(new Error('Unable to write to Folder Settings because no resource is provided.'));
+      }
+      const full = id(key);
+      const layer = configLayer(target);
+      const before = JSON.stringify(layer.get(full));
+      if (value === undefined) layer.delete(full);
+      else layer.set(full, value);
+      if (JSON.stringify(layer.get(full)) !== before) __configEmitter.fire(full);
+      return Promise.resolve();
+    },
+  };
+}
+
 const workspaceMock = {
-  getConfiguration: () => ({
-    get: (_key: string, defaultValue?: unknown) => defaultValue,
-    update: () => Promise.resolve(),
-  }),
+  getConfiguration,
   workspaceFolders: [],
   onDidChangeConfiguration: (cb: ConfigCb) => __configEmitter.register(cb),
   onDidGrantWorkspaceTrust: (cb: TrustCb) => __trustEmitter.register(cb),
@@ -240,6 +331,8 @@ const workspaceMock = {
   fs: {
     readFile: () => Promise.reject(new Error('mock: file not found')),
   },
+  registerTextDocumentContentProvider: (_scheme: string, _provider: unknown) => ({ dispose: () => {} }),
+  openTextDocument: (_uri?: unknown) => Promise.resolve({ getText: () => '' }),
 };
 
 Object.defineProperty(workspaceMock, 'isTrusted', {
@@ -276,6 +369,45 @@ export const EventEmitter = class {
 
 export const Disposable = {
   from: () => ({ dispose: () => {} }),
+};
+
+export class TabInputTextDiff {
+  readonly original: unknown;
+  readonly modified: unknown;
+  constructor(original: unknown, modified: unknown) {
+    this.original = original;
+    this.modified = modified;
+  }
+}
+
+export class TabInputWebview {
+  readonly viewType: string;
+  constructor(viewType: string) {
+    this.viewType = viewType;
+  }
+}
+
+export class CancellationTokenSource {
+  private readonly cancelCbs: Array<() => void> = [];
+  readonly token = {
+    isCancellationRequested: false,
+    onCancellationRequested: (cb: () => void) => {
+      this.cancelCbs.push(cb);
+      return { dispose: () => { const i = this.cancelCbs.indexOf(cb); if (i !== -1) this.cancelCbs.splice(i, 1); } };
+    },
+  };
+  cancel(): void {
+    if (this.token.isCancellationRequested) return;
+    this.token.isCancellationRequested = true;
+    for (const cb of [...this.cancelCbs]) cb();
+  }
+  dispose(): void {
+    this.cancelCbs.length = 0;
+  }
+}
+
+export const extensions = {
+  getExtension: (_id: string) => undefined,
 };
 
 export const ConfigurationTarget = {
@@ -345,9 +477,10 @@ export const commands = {
   executeCommand: () => Promise.resolve(undefined),
 };
 
+// VS Code's format2 leaves a placeholder with no arg as written.
 export const l10n = {
   t: (message: string, ...args: unknown[]) =>
-    args.length ? message.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : message,
+    args.length ? message.replace(/\{(\d+)\}/g, (match, i) => (args[Number(i)] === undefined ? match : String(args[Number(i)]))) : message,
 };
 
 /**

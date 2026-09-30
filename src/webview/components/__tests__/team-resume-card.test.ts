@@ -183,7 +183,7 @@ describe('a resumed team replayed from history', () => {
         sessionStore: useSessionStore(), streamingStore: useStreamingStore(), uiStore: useUIStore(),
         subagentStore: useSubagentStore(), taskStore: useTaskStore(), teamStore: useTeamStore(),
       },
-      vscode: { postMessage: (m: WebviewToExtensionMessage) => { posted.push(m); } },
+      bridge: { postMessage: (m: WebviewToExtensionMessage) => { posted.push(m); } },
     } as unknown as HandlerContext;
     const handler = registry()['assistantReplay'] as (m: ExtensionToWebviewMessage, c: HandlerContext) => void;
     handler({ type: 'assistantReplay', content: '', tools } as unknown as ExtensionToWebviewMessage, ctx);

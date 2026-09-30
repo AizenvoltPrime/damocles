@@ -11,6 +11,9 @@ import type {
   ContextUsageData,
   RewindHistoryItem,
   RewindOption,
+  RestorePoint,
+  SkippedFile,
+  SkippedFilesTarget,
   AssistantMessage,
   PartialMessage,
   ResultMessage,
@@ -83,6 +86,10 @@ export type WebviewToExtensionMessage =
   | { type: "setPinnedHeaderHidden"; hidden: boolean }
   | { type: "rewindToMessage"; userMessageId: string; option: RewindOption; promptContent?: string }
   | { type: "requestRewindHistory" }
+  /** Put back the files a rewind replaced, from the restore point `preRewindId`; files only. */
+  | { type: "undoRewind"; preRewindId: string }
+  /** The full list of files a checkpoint or restore point left out; answered by `skippedFiles`. */
+  | { type: "requestSkippedFiles"; target: SkippedFilesTarget }
   | { type: "clearSession" }
   | { type: "interrupt" }
   /** `requestId` identifies the exact card the webview optimistically marked, since one tool call id can
@@ -255,7 +262,13 @@ export type WebviewToExtensionMessage =
   | { type: "claudeSetBilling"; useAllowance: boolean }
   | { type: "claudeSetApiKey"; key: string }
   | { type: "claudeSignOut" }
-  | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null };
+  | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null }
+  | { type: "settingsFileLoad"; scope: SettingsFileScope }
+  /** `baseVersion` is the `version` the editor loaded; the host refuses the save as a conflict when the file changed since. */
+  | { type: "settingsFileSave"; scope: SettingsFileScope; content: string; baseVersion: string }
+  /** Answered with `settingsFileAvailability`, which the host posts again to the panel on a trust grant or a project change. */
+  | { type: "getSettingsFileAvailability" }
+  | { type: "revealSettingsFile"; scope: SettingsFileScope };
 
 /**
  * Carried by every message that reports MCP config state, so the two producers cannot disagree.
@@ -269,6 +282,95 @@ export interface McpLocalUnignoredFlag {
   localMcpUnignored: boolean;
 }
 
+/**
+ * What the host can do for the webview. The webview's defaults equal the VS Code values, so a VS Code
+ * webview renders identically before and after `hostCapabilities` arrives.
+ */
+export interface HostCapabilities {
+  /** Local sidecar voice controls (false on macOS desktop: an ad hoc signed app gets no microphone input). */
+  voice: boolean;
+  /** The VS Code Speech extension path. */
+  hostSpeechExtensions: boolean;
+  /** A host-native settings editor exists; false routes "open settings" to the in-app settings panel. */
+  hostSettingsEditor: boolean;
+  /** The host renders markdown previews (system prompt, MCP tool info). */
+  markdownPreview: boolean;
+  /** The host shows a diff editor (checkpoint diffs). */
+  diffReview: boolean;
+  /** `settingsUpdate` carries `settingSources` and the settings panel shows each value's source file. */
+  settingsSources: boolean;
+  /** The host renders editors in the chat panel with Monaco (`editorShowDiff`, `editorOpenFile`); the lazy Monaco chunk may load. */
+  monaco: boolean;
+  /** The host has an active text editor whose file and selection can be attached to a prompt (`damocles.ideContext.enabled`). */
+  ideContext: boolean;
+}
+
+/** What the VS Code host supplies, and the webview's value until the host says otherwise. */
+export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
+  voice: true,
+  hostSpeechExtensions: true,
+  hostSettingsEditor: true,
+  markdownPreview: true,
+  diffReview: true,
+  settingsSources: false,
+  monaco: false,
+  ideContext: true,
+};
+
+/** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
+export type EditorDocumentBody =
+  /** `languageId` is a Monaco language id or 'plaintext'. */
+  | { kind: "text"; content: string; languageId: string }
+  | { kind: "tooLarge"; bytes: number; limitBytes: number }
+  | { kind: "binary" }
+  | { kind: "unreadable"; error: string };
+
+export interface EditorDocument {
+  name: string;
+  /** Absent for in-memory text (a proposal side, an untitled buffer). */
+  path?: string;
+  body: EditorDocumentBody;
+}
+
+/** Files up to 10 MiB render; a larger file arrives as `tooLarge` and is never sent. */
+export const EDITOR_MAX_DOCUMENT_BYTES: number = 10 * 1024 * 1024;
+
+export type SettingsFileScope = "user" | "project" | "local";
+
+/** Why a project or local settings file does not apply: no project is open, or the default project is untrusted. */
+export type SettingsFileUnavailableReason = "noProject" | "untrusted";
+
+/** `version` is the sha256 hex of the file's text read as UTF-8, '' when the file does not exist. `parseError` is set when the file on disk does not parse; saving is then refused. */
+export type SettingsFileState =
+  | { scope: SettingsFileScope; status: "ready"; path: string; exists: boolean; content: string; version: string; parseError?: string }
+  | { scope: SettingsFileScope; status: "unavailable"; reason: SettingsFileUnavailableReason }
+  /** The path exists but cannot be read (a directory, no permission); `error` is the reader's message. */
+  | { scope: SettingsFileScope; status: "unavailable"; reason: "unreadable"; path: string; error: string };
+
+export type SettingsFileAvailability = { available: true } | { available: false; reason: SettingsFileUnavailableReason };
+
+/** The file a save conflicted with, read inside the save's lock; `version` is '' when the file was deleted. */
+export interface SettingsFileOnDisk {
+  exists: boolean;
+  content: string;
+  version: string;
+}
+
+/** Where a setting's effective value comes from when a `.damocles` project or local file supplies it. */
+export interface SettingSource {
+  scope: "project" | "local";
+  /** Absolute path of the file. */
+  path: string;
+}
+
+/** A quick-pick entry; when a select request carries `items`, the answer is the chosen item's `id`. */
+export interface ExtensionUiItem {
+  id: string;
+  label: string;
+  description?: string;
+  detail?: string;
+}
+
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
@@ -280,7 +382,8 @@ export type ExtensionToWebviewMessage =
   | { type: "error"; message: string }
   | { type: "authFailure"; message: string }
   | { type: "authFailureCleared" }
-  | { type: "sessionStarted"; sessionId: string }
+  /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first reply. */
+  | { type: "sessionStarted"; sessionId: string; stored?: boolean }
   /** The host bound this panel to a stored session from `resumeSession`; its history replay follows. */
   | { type: "resumeAccepted"; sessionId: string }
   | { type: "processing"; isProcessing: boolean }
@@ -293,7 +396,22 @@ export type ExtensionToWebviewMessage =
   | { type: "accountInfo"; data: AccountInfo }
   | { type: "availableModels"; models: ModelInfo[] }
   | { type: "systemInit"; data: SystemInitData }
-  | { type: "settingsUpdate"; settings: ExtensionSettings }
+  /** `settingSources` is present only when `HostCapabilities.settingsSources`; a key absent from it resolves from the user file or the default. */
+  | { type: "settingsUpdate"; settings: ExtensionSettings; settingSources?: Record<string, SettingSource> }
+  | { type: "hostCapabilities"; capabilities: HostCapabilities }
+  /** `approvalId` (purpose "proposal" only) is the `toolUseId` of the pending `requestPermission` the diff belongs to. */
+  | { type: "editorShowDiff"; viewId: string; title: string; purpose: "proposal" | "checkpoint"; approvalId?: string; original: EditorDocument; modified: EditorDocument }
+  /** Read-only view; `untitled` marks an in-memory buffer with no path. */
+  | { type: "editorOpenFile"; viewId: string; title: string; document: EditorDocument; line?: number; untitled?: boolean }
+  /** An unknown `viewId` is ignored. */
+  | { type: "editorCloseView"; viewId: string }
+  | { type: "settingsFileContent"; file: SettingsFileState }
+  | { type: "settingsFileSaveResult"; scope: SettingsFileScope; ok: true; version: string }
+  /** `onDisk` accompanies a conflict with a newer file on disk; a conflict without it (the default project moved) needs a reload. */
+  | { type: "settingsFileSaveResult"; scope: SettingsFileScope; ok: false; error: string; conflict?: boolean; onDisk?: SettingsFileOnDisk }
+  /** Sent only to panels that loaded `scope`, when the file changed on disk to a new `version`. */
+  | { type: "settingsFileChanged"; scope: SettingsFileScope; version: string }
+  | { type: "settingsFileAvailability"; files: Record<SettingsFileScope, SettingsFileAvailability> }
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
@@ -302,6 +420,9 @@ export type ExtensionToWebviewMessage =
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
   | { type: "rewindError"; message: string }
+  | { type: "rewindUndone" }
+  /** Replies to `requestSkippedFiles` with the same `target`; a failed read carries no reason, which the host logs. */
+  | { type: "skippedFiles"; target: SkippedFilesTarget; files: SkippedFile[] | null }
   | { type: "toolStreaming"; messageId: string; tool: { id: string; name: string; input: Record<string, unknown> }; contentBlocks: ContentBlock[]; parentToolUseId?: string | null }
   | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number; imageCount?: number }
   /** Replies to `requestToolResultImages`; `[]` means unavailable, for any reason; read failures are logged. */
@@ -337,7 +458,7 @@ export type ExtensionToWebviewMessage =
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number }
   /** The conversation's own spend over every entry in its file, abandoned branches included, and its own user prompts on the current branch. */
   | { type: "sessionUsage"; usage: AgentUsageTotals; numTurns: number }
-  | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
+  | { type: "rewindHistory"; prompts: RewindHistoryItem[]; restorePoints: RestorePoint[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
@@ -560,8 +681,12 @@ export type ExtensionToWebviewMessage =
       title: string;
       message?: string;
       options?: string[];
+      /** kind "select": when present the list renders these and the answer is the item id, not the label. */
+      items?: ExtensionUiItem[];
       placeholder?: string;
       prefill?: string;
+      /** kind "input": masked; the value never reaches a log on either side. */
+      password?: boolean;
       /**
        * Nested-agent attribution (subagent / team agent). The keys are OMITTED for the panel's own
        * dialogs, never set to `undefined` — the webview branches on presence. `agentName` is already

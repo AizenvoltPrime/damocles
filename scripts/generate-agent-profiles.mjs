@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
+import { isEntryPoint } from './entry-point.mjs';
 
-const PROFILES_DIR = path.resolve('agent-profiles');
-const OUTPUT_FILE = path.resolve('src/extension/team/agent-profiles.generated.ts');
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const OUTPUT_FILE = path.join(ROOT, 'src', 'core', 'team', 'agent-profiles.generated.ts');
 
 const IDENTITY_PATTERN = /^(identity|role|role\s*definition|identity\s*(and|&)\s*(role|memory)|your\s*identity)/i;
 const MISSION_PATTERN = /^(core\s*mission|your\s*core\s*mission|mission|brand\s*mission|your\s*core\s*beliefs|your\s*core\s*responsibilities|core\s*competencies|competencies)/i;
@@ -91,16 +93,18 @@ function catalogDescription(description) {
   return `${cut.replace(/[\s,;:—-]+$/, '')}…`;
 }
 
-function main() {
-  const files = collectMdFiles(PROFILES_DIR);
-  console.log(`Found ${files.length} .md files in ${PROFILES_DIR}`);
+/** Render the generated module from `<root>/agent-profiles`. Throws on a catalog that must not ship. */
+export function renderAgentProfiles(root = ROOT) {
+  const profilesDir = path.join(root, 'agent-profiles');
+  const files = collectMdFiles(profilesDir);
 
   const profiles = [];
   const seenIds = new Map();
-  let warnings = 0;
+  const warnings = [];
 
   for (const filePath of files) {
-    const raw = fs.readFileSync(filePath, 'utf-8');
+    // A Windows checkout with core.autocrlf holds the sources with CRLF; the output must not depend on it.
+    const raw = fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
 
     if (!raw.startsWith('---')) {
       continue;
@@ -110,8 +114,7 @@ function main() {
     try {
       parsed = matter(raw);
     } catch {
-      console.warn(`  WARN: Failed to parse frontmatter: ${filePath}`);
-      warnings++;
+      warnings.push(`Failed to parse frontmatter: ${filePath}`);
       continue;
     }
 
@@ -120,17 +123,16 @@ function main() {
       continue;
     }
 
-    const relPath = path.relative(PROFILES_DIR, filePath);
+    const relPath = path.relative(profilesDir, filePath);
     const id = deriveId(path.basename(filePath));
 
     // Two profiles resolving to one ID means one of them silently vanishes from the catalog. Since IDs
     // are the handle `team_spawn_specialist` resolves, that is a wrong-agent-spawned bug, not a warning.
     if (seenIds.has(id)) {
-      console.error(`ERROR: Duplicate profile ID "${id}"`);
-      console.error(`  ${seenIds.get(id)}`);
-      console.error(`  ${relPath}`);
-      console.error('Profile IDs derive from the filename and must be unique across all divisions.');
-      process.exit(1);
+      throw new Error(
+        `Duplicate profile ID "${id}"\n  ${seenIds.get(id)}\n  ${relPath}\n` +
+          'Profile IDs derive from the filename and must be unique across all divisions.',
+      );
     }
     seenIds.set(id, relPath);
 
@@ -142,8 +144,7 @@ function main() {
     if (!sections.mission) missingSections.push('Mission');
     if (!sections.rules) missingSections.push('Rules');
     if (missingSections.length > 0) {
-      console.warn(`  WARN: ${relPath} missing sections: ${missingSections.join(', ')}`);
-      warnings++;
+      warnings.push(`${relPath} missing sections: ${missingSections.join(', ')}`);
     }
 
     profiles.push({
@@ -160,8 +161,7 @@ function main() {
   }
 
   if (profiles.length === 0) {
-    console.error('ERROR: No valid profiles found. Ensure agent-profiles/ contains .md files with YAML frontmatter.');
-    process.exit(1);
+    throw new Error('No valid profiles found. Ensure agent-profiles/ contains .md files with YAML frontmatter.');
   }
 
   profiles.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
@@ -223,18 +223,28 @@ export const AGENT_PROFILE_MAP: ReadonlyMap<string, AgentProfile> = new Map(
 export const AGENT_PROFILE_CATALOG: string = \`${escapeForTs(catalog)}\`;
 `;
 
-  fs.mkdirSync(path.dirname(OUTPUT_FILE), { recursive: true });
-  fs.writeFileSync(OUTPUT_FILE, output, 'utf-8');
-
-  console.log(`\nGenerated ${OUTPUT_FILE}`);
-  console.log(`  Profiles: ${profiles.length}`);
-  console.log(`  Categories: ${byCategory.size}`);
-  console.log(`  Warnings: ${warnings}`);
+  return { text: output, fileCount: files.length, profileCount: profiles.length, categoryCount: byCategory.size, warnings };
 }
 
-try {
-  main();
-} catch (err) {
-  console.error('ERROR: Profile generation failed:', err);
-  process.exit(1);
+function main() {
+  const { text, fileCount, profileCount, categoryCount, warnings } = renderAgentProfiles();
+  console.log(`Found ${fileCount} .md files in ${path.join(ROOT, 'agent-profiles')}`);
+  for (const warning of warnings) console.warn(`  WARN: ${warning}`);
+
+  fs.mkdirSync(path.dirname(OUTPUT_FILE), { recursive: true });
+  fs.writeFileSync(OUTPUT_FILE, text, 'utf-8');
+
+  console.log(`\nGenerated ${OUTPUT_FILE}`);
+  console.log(`  Profiles: ${profileCount}`);
+  console.log(`  Categories: ${categoryCount}`);
+  console.log(`  Warnings: ${warnings.length}`);
+}
+
+if (isEntryPoint(import.meta.url)) {
+  try {
+    main();
+  } catch (err) {
+    console.error('ERROR: Profile generation failed:', err);
+    process.exit(1);
+  }
 }

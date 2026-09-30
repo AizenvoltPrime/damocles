@@ -10,8 +10,8 @@ import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import type { UsageStatsTopSession } from '@shared/types/usage-stats';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
 }));
 
 function session(sessionId: string, over: Partial<UsageStatsTopSession> = {}): UsageStatsTopSession {

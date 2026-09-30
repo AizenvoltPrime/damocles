@@ -87,7 +87,7 @@ const metadataItems = computed(() => [
       <span class="text-foreground font-medium truncate flex-1">{{ explore.description }}</span>
       <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0">
         <IconCompass :size="12" />
-        <span>Explorer ({{ displayModel }})</span>
+        <span>{{ $t('explore.badge', { model: displayModel }) }}</span>
       </Badge>
     </CardHeader>
 

@@ -12,8 +12,8 @@ import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import type { UsageStatsModelRow, UsageStatsSeries, UsageStatsSeriesPoint } from '@shared/types/usage-stats';
 
 const posted = vi.hoisted((): WebviewToExtensionMessage[] => []);
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m) }),
 }));
 
 vi.mock('@unovis/vue', () => import('./unovis-stub'));

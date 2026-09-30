@@ -201,7 +201,7 @@ function rowText(prompt: EnrichedPrompt): string {
       <div
         id="prompt-nav-listbox"
         role="listbox"
-        aria-label="prompt navigator"
+        :aria-label="t('promptNavigator.listLabel')"
         class="flex-1 overflow-y-auto pb-1.5"
       >
         <template v-if="totalCount === 0">

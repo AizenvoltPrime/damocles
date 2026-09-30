@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
-import { h, markRaw } from 'vue';
+import { DOMWrapper, mount, type VueWrapper } from '@vue/test-utils';
+import { defineComponent, h, markRaw, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import ExtensionUiDialog from '../ExtensionUiDialog.vue';
 import OverlayShell from '../OverlayShell.vue';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
 import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
 import { i18n } from '@/i18n';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
@@ -19,8 +20,8 @@ import type { WebviewToExtensionMessage } from '@shared/types/messages';
  */
 
 const posted: WebviewToExtensionMessage[] = [];
-vi.mock('@/composables/useVSCode', () => ({
-  useVSCode: () => ({
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({
     postMessage: (m: WebviewToExtensionMessage) => posted.push(m),
     onMessage: () => () => {},
     getState: () => undefined,
@@ -38,13 +39,35 @@ const req = (requestId: string, extra: Partial<ExtensionUiRequest> = {}): Extens
 
 const StubIcon = markRaw({ render: () => h('span') });
 
-const mountDialog = () => mount(ExtensionUiDialog, { attachTo: document.body });
+const mounted: VueWrapper[] = [];
+
+// The dialog renders through a portal, so its markup is read from the document rather than the component.
+function mountDialog() {
+  const wrapper = mount(ExtensionUiDialog, { global: { plugins: [i18n] }, attachTo: document.body });
+  mounted.push(wrapper as VueWrapper);
+  const body = new DOMWrapper(document.body);
+  return {
+    vm: wrapper.vm,
+    unmount: () => wrapper.unmount(),
+    get: body.get.bind(body),
+    find: body.find.bind(body),
+    findAll: body.findAll.bind(body),
+    text: () => body.text(),
+    get element(): HTMLElement { return document.body.querySelector<HTMLElement>('[data-testid="extension-ui-dialog"]')!; },
+  };
+}
+
+const option = (wrapper: ReturnType<typeof mountDialog>, text: string) =>
+  wrapper.findAll('[role="option"]').find((o) => o.text() === text)!;
 
 beforeEach(() => {
   posted.length = 0;
   setActivePinia(createPinia());
 });
-afterEach(() => { document.body.innerHTML = ''; });
+afterEach(() => {
+  while (mounted.length) mounted.pop()!.unmount();
+  document.body.innerHTML = '';
+});
 
 describe('ExtensionUiDialog — queue rendering', () => {
   it('renders nothing when the queue is empty', () => {
@@ -104,7 +127,7 @@ describe('ExtensionUiDialog — queue rendering', () => {
     const wrapper = mountDialog();
     await wrapper.vm.$nextTick();
 
-    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click');
+    await option(wrapper, 'Continue').trigger('click');
     await wrapper.vm.$nextTick();
 
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'Continue' }]);
@@ -151,7 +174,7 @@ describe('ExtensionUiDialog — the answer/withdrawal race', () => {
     await wrapper.vm.$nextTick();   // …and the re-render flushes before any later input task
 
     expect(wrapper.get('h3').text()).toBe('Question b');
-    await wrapper.findAll('button').find((b) => b.text() === 'Continue')!.trigger('click');
+    await option(wrapper, 'Continue').trigger('click');
 
     // Exactly one response, and it belongs to the request the user could actually see.
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'b', value: 'Continue' }]);
@@ -180,7 +203,7 @@ describe('ExtensionUiDialog — respond() answers the request it was rendered ag
     store.setRequest(req('b', { agentName: 'Builder', title: 'Question b' }));
     const wrapper = mountDialog();
     await wrapper.vm.$nextTick();
-    const button = wrapper.findAll('button').find((btn) => btn.text() === 'Continue')!;
+    const button = option(wrapper, 'Continue');
 
     store.cancel('a');            // the extension withdrew the head…
     void button.trigger('click'); // …and the click was already on its way, same tick
@@ -201,7 +224,7 @@ describe('ExtensionUiDialog — Esc takes the same pinned path as a click', () =
     const wrapper = mountDialog();
     await wrapper.vm.$nextTick();
 
-    await wrapper.get('div').trigger('keydown.esc');
+    await wrapper.get('[data-testid="extension-ui-dialog"]').trigger('keydown', { key: 'Escape' });
 
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
     expect(store.queue).toEqual([]);
@@ -217,10 +240,10 @@ describe('ExtensionUiDialog — Esc takes the same pinned path as a click', () =
     store.setRequest(req('b', { kind: 'confirm', title: 'Delete everything?', message: 'sure?' })); // confirm → Esc means `false`
     const wrapper = mountDialog();
     await wrapper.vm.$nextTick();
-    const root = wrapper.get('div');
+    const root = wrapper.get('[data-testid="extension-ui-dialog"]');
 
     store.cancel('a');                    // the extension withdrew the head…
-    void root.trigger('keydown.esc');     // …and the Esc keypress was already on its way, same tick
+    void root.trigger('keydown', { key: 'Escape' });     // …and the Esc keypress was already on its way, same tick
     await wrapper.vm.$nextTick();
 
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
@@ -320,5 +343,168 @@ describe('ExtensionUiDialog and the overlay layer beneath it', () => {
 
     for (const shell of shells) shell.unmount();
     dialog.unmount();
+  });
+});
+
+describe('ExtensionUiDialog — host prompts (desktop input box and quick pick)', () => {
+  afterEach(() => { i18n.global.locale.value = 'en'; });
+
+  it('masks a password input, keeps it out of autofill, and forgets the value on cancel', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { kind: 'input', title: 'API key', password: true }));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+
+    const input = wrapper.get('input');
+    expect(input.attributes('type')).toBe('password');
+    expect(input.attributes('autocomplete')).toBe('new-password');
+    expect(input.attributes('spellcheck')).toBe('false');
+    await input.setValue('sk-secret');
+    await wrapper.findAll('button').find((b) => b.text() === 'Cancel')!.trigger('click');
+    await wrapper.vm.$nextTick();
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
+    store.setRequest(req('b', { kind: 'input', title: 'Name' }));
+    await wrapper.vm.$nextTick();
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.get('input').attributes('type')).toBe('text');
+  });
+
+  it('submits a typed value with Enter and drops it when the host withdraws the prompt', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { kind: 'input', title: 'Code' }));
+    store.setRequest(req('b', { kind: 'input', title: 'Other' }));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+
+    await wrapper.get('input').setValue('typed-then-withdrawn');
+    store.cancel('a');
+    await wrapper.vm.$nextTick();
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('');
+
+    await wrapper.get('input').setValue('abc');
+    await wrapper.get('input').trigger('keydown.enter');
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'b', value: 'abc' }]);
+  });
+
+  it('answers a quick pick with the item id and shows description and detail', async () => {
+    const store = useExtensionUiStore();
+    const { options: _labels, ...itemsRequest } = req('a');
+    store.setRequest({
+      ...itemsRequest,
+      items: [
+        { id: 'oauth', label: 'Sign in with browser', description: 'recommended', detail: 'Opens the system browser' },
+        { id: 'key', label: 'Paste an API key' },
+      ],
+    });
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+
+    expect(option(wrapper, 'Paste an API key').exists()).toBe(true);
+    expect(wrapper.text()).toContain('recommended');
+    expect(wrapper.text()).toContain('Opens the system browser');
+    await wrapper.findAll('[role="option"]')[1]!.trigger('click');
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'key' }]);
+  });
+
+  it('filters the list as the user types and picks the highlighted item with Enter', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { options: ['alpha', 'beta', 'gamma'] }));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+    await new Promise((r) => setTimeout(r, 0));
+
+    const filter = wrapper.get('input');
+    expect(document.activeElement).toBe(filter.element);
+    await filter.setValue('gam');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(wrapper.findAll('[role="option"]').map((o) => o.text())).toEqual(['gamma']);
+
+    await filter.trigger('keydown', { key: 'ArrowDown' });
+    await filter.trigger('keydown', { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'gamma' }]);
+  });
+
+  it('renders its own chrome in Greek', async () => {
+    i18n.global.locale.value = 'el';
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { kind: 'input', title: 'Κωδικός', agentName: 'Scout' }));
+    store.setRequest(req('b'));
+    const wrapper = mountDialog();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Πράκτορας');
+    expect(wrapper.text()).toContain('1 από 2');
+    expect(wrapper.findAll('button').map((b) => b.text())).toEqual(['Ακύρωση', 'Εντάξει']);
+  });
+});
+
+describe('ExtensionUiDialog over the layer it opened on', () => {
+  const settle = async () => {
+    await nextTick();
+    await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it('takes pointer events, focus and Escape from an open Settings sheet, which stays open', async () => {
+    const sheetClosed = vi.fn();
+    const SheetHarness = defineComponent({
+      setup: () => () => h(Sheet, { open: true, 'onUpdate:open': (open: boolean) => { if (!open) sheetClosed(); } }, {
+        default: () => h(SheetContent, null, { default: () => h('button', { type: 'button' }, 'inside the sheet') }),
+      }),
+    });
+    const sheet = mount(SheetHarness, { attachTo: document.body });
+    mounted.push(sheet as VueWrapper);
+    await settle();
+    expect(document.body.style.pointerEvents).toBe('none');
+
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { kind: 'input', title: 'Paste the code' }));
+    const wrapper = mountDialog();
+    await settle();
+
+    const input = wrapper.get('input').element as HTMLInputElement;
+    expect(input.closest('[style*="pointer-events: auto"]')).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
+    expect(sheetClosed).not.toHaveBeenCalled();
+  });
+
+  it('keeps Escape for itself over a stack overlay, which stays open', async () => {
+    const shell = mount(OverlayShell, { props: { title: 'panel', icon: StubIcon }, global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(shell as VueWrapper);
+    const store = useExtensionUiStore();
+    store.setRequest(req('a'));
+    const wrapper = mountDialog();
+    await settle();
+
+    await wrapper.get('h3').trigger('keydown', { key: 'Escape' });
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
+    expect(shell.emitted('close')).toBeUndefined();
+  });
+
+  it('starts each quick pick with an empty filter', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a', { options: ['alpha', 'beta', 'gamma'] }));
+    store.setRequest(req('b', { options: ['alpha', 'beta', 'gamma'] }));
+    const wrapper = mountDialog();
+    await settle();
+    await wrapper.get('input').setValue('gam');
+    await settle();
+    expect(wrapper.findAll('[role="option"]').map((o) => o.text())).toEqual(['gamma']);
+
+    await wrapper.findAll('button').find((b) => b.text() === 'Cancel')!.trigger('click');
+    await settle();
+
+    expect(wrapper.get('h3').text()).toBe('Question b');
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.findAll('[role="option"]').map((o) => o.text())).toEqual(['alpha', 'beta', 'gamma']);
   });
 });

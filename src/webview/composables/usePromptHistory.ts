@@ -1,12 +1,12 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { useVSCode } from './useVSCode';
+import { usePlatformBridge } from './usePlatformBridge';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 
 const MAX_LOCAL_HISTORY_SIZE = 500;
 const PREFETCH_THRESHOLD = 25;
 
 export function usePromptHistory() {
-  const { postMessage, onMessage } = useVSCode();
+  const { postMessage, onMessage } = usePlatformBridge();
 
   const history = ref<string[]>([]);
   const historyIndex = ref(-1);

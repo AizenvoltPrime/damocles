@@ -4,9 +4,9 @@ import type { ElementAttachment } from '@shared/types/browser';
 import { IconX, IconCode } from '@/components/icons';
 import ImageLightbox from './ImageLightbox.vue';
 import { formatElementContext } from '@/composables/useElementAttachments';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 defineProps<{
   attachments: ElementAttachment[];
@@ -46,7 +46,7 @@ function openElementCode(attachment: ElementAttachment): void {
           :src="`data:image/png;base64,${attachment.elementScreenshot}`"
           :alt="attachment.selector"
           class="w-16 h-16 object-cover rounded-md border border-border cursor-pointer hover:opacity-80 transition-opacity"
-          title="Click to preview"
+          :title="$t('elementAttachment.preview')"
           @click="openLightbox(attachment)"
         />
         <div
@@ -68,12 +68,12 @@ function openElementCode(attachment: ElementAttachment): void {
       <!-- Code card -->
       <div
         class="relative group shrink-0 flex items-center gap-2 px-2 py-1.5 rounded-md border border-border bg-card hover:bg-accent/50 transition-colors cursor-pointer"
-        title="Open element context"
+        :title="$t('elementAttachment.openContext')"
         @click="openElementCode(attachment)"
       >
         <IconCode :size="14" class="text-purple-400 shrink-0" />
         <div class="flex flex-col min-w-0">
-          <span class="text-[10px] font-medium text-purple-400 uppercase tracking-wider">Element</span>
+          <span class="text-[10px] font-medium text-purple-400 uppercase tracking-wider">{{ $t('elementAttachment.element') }}</span>
           <span class="text-xs text-foreground truncate max-w-[120px]" :title="attachment.selector">
             {{ attachment.selector }}
           </span>

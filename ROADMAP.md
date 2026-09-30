@@ -18,7 +18,7 @@ All three share one root cause: the agent has **no persistent, whole-system ment
 
 ## 2. What already exists in Damocles (the substrate we build on)
 
-**Compass** (`src/extension/compass/`) is a workspace-global **structural** code graph:
+**Compass** (`src/core/compass/`) is a workspace-global **structural** code graph:
 
 - **Storage:** SQLite at `~/.damocles/compass/<sha256(workspacePath).slice(0,12)>/graph.db`. Tables: `nodes` (kind ∈ File/Class/Function/Type/Test; `qualified_name` UNIQUE; `file_path`; FTS5 mirror `nodes_fts`), `edges` (kind ∈ CALLS/IMPORTS_FROM/INHERITS/IMPLEMENTS/CONTAINS/TESTED_BY/DEPENDS_ON/ REFERENCES), and **separate** `communities`, `flows`, `metadata` tables.
 - **Worker:** runs in a worker thread (`compass-worker.ts` → `dist/compass-worker.js`, built by `esbuild.config.mjs`). Main thread talks to it via a request/response protocol: the message types (`WorkerResponse{ok,data|error}`, `PostprocessRequest`, `TIMEOUTS`) live in `worker-protocol.ts`, while the transport method `_sendRequest({type,...})` is implemented in `CompassService` (`compass/index.ts`). A `LIGHT_TYPES` set marks read-only requests that interleave with builds; heavy requests (builds) run serially. `worker-core.ts` refuses to drain light requests during a DB transaction.
@@ -62,7 +62,7 @@ Likewise, **capability data lives in a dedicated `capabilities` table** (+ its o
 
 ## 5b. Thread-boundary rule (CRITICAL: model calls are main-thread only)
 
-**The Compass graph DB is owned by the worker thread; the model is reachable only from the main thread.** Verified: `compass-worker.ts` runs in a `worker_threads` worker with a **stubbed** `vscode` module (`worker-vscode-shim.js`), and `PiRuntime.runStructuredCompletion`/`hasAuthedSubCallModel` depend on pi services + the model registry + VS Code SecretStorage. None of those exist in the worker. Therefore:
+**The Compass graph DB is owned by the worker thread; the model is reachable only from the main thread.** Verified: `compass-worker.ts` runs in a `worker_threads` worker that imports no host module (it is core code, and core never imports `vscode`), and `PiRuntime.runStructuredCompletion`/`hasAuthedSubCallModel` depend on pi services + the model registry + VS Code SecretStorage. None of those exist in the worker. Therefore:
 
 - **Anything that calls the model runs MAIN-side**, in a new `SystemMapService` (in `compass/`, constructed on the main thread alongside `CompassService`), mirroring how `MemoryService` reaches the sub-call model main-side via `createMemorySubCallRunner()` (whose runner calls `PiRuntime.get().runStructuredCompletion`/`hasAuthedSubCallModel` internally). `SystemMapService` should **reuse that same sub-call runner** rather than hand-rolling `PiRuntime` access. This covers the capability-summary queue (Lens A) and the digest's prose summarization (Lens C).
 - **The worker keeps owning all storage/FTS/graph.** Generated rows are sent **into** the worker via a new write-path request (`mcp:systemMap:putCapabilities`) that persists + FTS-indexes them; reads (`whatExists`, graph) stay worker-side. This keeps ONE unified map (so Phase 6 renders capability nodes natively) at the cost of one cross-thread write request, serialized on the worker's heavy path like any other write.
@@ -105,7 +105,7 @@ The earlier draft placed capability generation "in post-process" (worker-side). 
 
 1. **Prerequisite: one authoritative home for path re-anchoring.** Move the module-private `toRepoAbsolute` and `reanchorOnWorkspace` out of `git.ts` into `compass/util.ts`, next to the existing `isWithinRoot`/`normalizePath`, and have `git.ts` import them back so `getChangedFiles` keeps its current behavior. This avoids duplicating the helpers in `co-change.ts` (which would risk the #1 documented risk, key-space drift). `co-change.ts` then imports the full trio (`toRepoAbsolute`, `reanchorOnWorkspace`, `isWithinRoot`) + `normalizePath` from `util.ts`.
    - **AC:** `getChangedFiles` output is unchanged (existing git tests pass); `toRepoAbsolute`/`reanchorOnWorkspace` are exported from `util.ts` and no longer defined in `git.ts`.
-2. New `src/extension/compass/co-change.ts`: `mineCoChange(workspaceRoot, {historyLimit, maxCommitFiles})` shells `git log --name-only -M --no-merges --pretty=format:%H -n <historyLimit> -- <workspaceRoot>` (project-scoped, a locked decision), parses into per-commit file-sets, **skips commits touching more than `maxCommitFiles` files (default 50)**, re-anchors each path onto the workspace (`toRepoAbsolute`→`isWithinRoot`→`reanchorOnWorkspace`→`normalizePath`, all imported from `util.ts`) so keys match Compass `file_path`, drops path-escaping files. Returns the kept records **plus the in-scope commit count**.
+2. New `src/core/compass/co-change.ts`: `mineCoChange(workspaceRoot, {historyLimit, maxCommitFiles})` shells `git log --name-only -M --no-merges --pretty=format:%H -n <historyLimit> -- <workspaceRoot>` (project-scoped, a locked decision), parses into per-commit file-sets, **skips commits touching more than `maxCommitFiles` files (default 50)**, re-anchors each path onto the workspace (`toRepoAbsolute`→`isWithinRoot`→`reanchorOnWorkspace`→`normalizePath`, all imported from `util.ts`) so keys match Compass `file_path`, drops path-escaping files. Returns the kept records **plus the in-scope commit count**.
    - **AC:** Against a fixed `git log` fixture, returns one record per kept commit in workspace-key space; merge commits and >`maxCommitFiles` commits excluded; a subdirectory workspace yields only in-subtree paths; an empty repo / shallow clone / missing-git returns `{records:[], commits:0}` (no throw).
 3. Compute `total(A)`, `co(A,B)`, `distinctPartners(B)`.
    - **AC:** Counts match a hand-computed 3-commit fixture with known overlaps.
@@ -116,11 +116,11 @@ The earlier draft placed capability generation "in post-process" (worker-side). 
 
 ### Files
 
-- `src/extension/compass/util.ts` (add `toRepoAbsolute`/`reanchorOnWorkspace`), `src/extension/compass/git.ts` (import them back), `src/extension/compass/co-change.ts` (new); `src/extension/compass/__tests__/co-change.test.ts` (new).
+- `src/core/compass/util.ts` (add `toRepoAbsolute`/`reanchorOnWorkspace`), `src/core/compass/git.ts` (import them back), `src/core/compass/co-change.ts` (new); `src/core/compass/__tests__/co-change.test.ts` (new).
 
 ### Verification
 
-- `npm run typecheck` compiles. `npx vitest run src/extension/compass/__tests__/co-change.test.ts` checks scoring on fixtures. `npm run lint`.
+- `npm run typecheck` compiles. `npx vitest run src/core/compass/__tests__/co-change.test.ts` checks scoring on fixtures. `npm run lint`.
 - **Proves:** the novel signal exists and scoring kills high-frequency-file noise, the central risk, with zero DB/agent risk. **Run against the IEMIS Laravel repo and eyeball the top pairs before Phase 1.**
 
 ---
@@ -135,7 +135,7 @@ The earlier draft placed capability generation "in post-process" (worker-side). 
 
 1. Schema migration: add a `cochange` table: `{ source_path TEXT, target_path TEXT, support INTEGER, confidence REAL, idf REAL, score REAL, last_seen INTEGER, PRIMARY KEY(source_path, target_path) }` + index on `source_path` and on `score`. Add a `file_change_stats` table `{ file_path TEXT PRIMARY KEY, total_changes INTEGER, distinct_partners INTEGER, updated_at INTEGER }` to cache idf inputs. Bump `CURRENT_SCHEMA_VERSION` (additive; **not** extraction-format). Add `GraphStore` methods: `replaceCoChange(records)`, `getCoChangeBySources(paths[])`, `getCoChangeTargetsAbove(paths[], minConfidence)`, `getAllCoChange()`.
    - **AC:** Opening an old DB upgrades without wiping `nodes`/`edges`; fresh DB installs the new version; re-running is idempotent (`IF NOT EXISTS`). The structural `edges` table is untouched. A regression test asserts `computeBlastRadius` output is byte-identical before/after the migration on a fixture graph.
-2. `src/extension/compass/co-change-store.ts`: `recomputeCoChange(store, workspaceRoot, opts)` calls `mineCoChange`, then `store.replaceCoChange(records)` (full delete+insert in one transaction), and persists the in-scope commit count to `metadata` (key `cochange_commit_count`) so the gate/injection can apply the `minHistory` thin-history floor. Expose `getCoChangeCommitCount()` on `GraphStore`.
+2. `src/core/compass/co-change-store.ts`: `recomputeCoChange(store, workspaceRoot, opts)` calls `mineCoChange`, then `store.replaceCoChange(records)` (full delete+insert in one transaction), and persists the in-scope commit count to `metadata` (key `cochange_commit_count`) so the gate/injection can apply the `minHistory` thin-history floor. Expose `getCoChangeCommitCount()` on `GraphStore`.
    - **AC:** After a build, `getAllCoChange()` returns directional records and `getCoChangeCommitCount()` returns the mined count; re-running produces no duplicates; a source file deleted from the repo leaves no stale records; a repo below `minHistory` commits reports its true (low) count so callers suppress.
 3. Wire into `runPostProcess` behind a `coChange?: boolean` flag; call with `coChange:true` from the worker's full-build, incremental, and `postprocess` paths; add `coChange` to `PostprocessRequest`.
    - **AC:** Full + incremental builds both refresh co-change inside the heavy path (no light-read race); `yieldFn` honored; latency within `TIMEOUTS.incrementalUpdate` (120s) on a large repo.
@@ -163,7 +163,7 @@ The earlier draft placed capability generation "in post-process" (worker-side). 
 
 ### The shared expansion engine
 
-Create `src/extension/compass/system-map/expand.ts`. Its `expandTouchPoints(store, {files, maxDepth, minConfidence})` returns `{ structural: [...], coChangeOnly: [...] }` where `structural` is `computeBlastRadius` output and `coChangeOnly` is high-confidence co-change targets that are **not** already in the structural set (the spots with no call edge). Because `computeBlastRadius` operates on **graph nodes** while co-change is keyed by **file path**, the engine resolves each seed file path to its Compass `File`/symbol node(s) for the structural query, while using the raw workspace-relative paths for the co-change lookup. This is the same path→node mapping Phase 6 applies for the graph view. **Phase 3's gate reuses this exact function** (decision 8): single engine, two callers.
+Create `src/core/compass/system-map/expand.ts`. Its `expandTouchPoints(store, {files, maxDepth, minConfidence})` returns `{ structural: [...], coChangeOnly: [...] }` where `structural` is `computeBlastRadius` output and `coChangeOnly` is high-confidence co-change targets that are **not** already in the structural set (the spots with no call edge). Because `computeBlastRadius` operates on **graph nodes** while co-change is keyed by **file path**, the engine resolves each seed file path to its Compass `File`/symbol node(s) for the structural query, while using the raw workspace-relative paths for the co-change lookup. This is the same path→node mapping Phase 6 applies for the graph view. **Phase 3's gate reuses this exact function** (decision 8): single engine, two callers.
 
 ### Work items & acceptance criteria
 
@@ -221,7 +221,7 @@ The gate composes **after** `tryBackgroundKeepAlive` and `tryPlanModeHold` and i
 
 ### Verification
 
-- `npm run typecheck`; `npx vitest run src/extension/pi-session/__tests__/pi-session.test.ts` `src/extension/pi-session/checkpoints/__tests__/`; `npm run lint`.
+- `npm run typecheck`; `npx vitest run src/core/pi-session/__tests__/pi-session.test.ts` `src/core/pi-session/checkpoints/__tests__/`; `npm run lint`.
 - **Proves:** the gate catches missed coupled files **before** "done", triggers exactly one continuation, can never loop or block indefinitely, and never creates a spurious checkpoint commit.
 
 ---
@@ -381,15 +381,15 @@ Capability summaries derive from **file content**, so they must refresh on edits
 
 ## Critical files (orientation for any implementer, with no prior context)
 
-- `src/extension/compass/git.ts` + `src/extension/compass/util.ts`: git plumbing the miner extends (foundation of the $0 Lens B signal); `util.ts` is the authoritative home for path re-anchoring (`isWithinRoot`/`normalizePath` today, plus `toRepoAbsolute`/`reanchorOnWorkspace` extracted from `git.ts` in Phase 0).
-- `src/extension/compass/migrations.ts`: schema-vs-extraction-format versioning; the wrong bump wipes the graph.
-- `src/extension/compass/database.ts` + `schema.ts`: `GraphStore`; `communities`/`flows` are the template for the new isolated `cochange`/`capabilities`/`systems` tables.
-- `src/extension/compass/impact.ts`: `computeBlastRadius` (reads `edges` with no kind filter, the reason co-change must stay in its own table); reused by the expansion engine.
-- `src/extension/compass/compass-worker.ts`: `dispatch()` + `LIGHT_TYPES` + build/post-process; all new worker requests + the recompute hooks land here under transaction-safe scheduling.
-- `src/extension/pi-session/tools/compass-tools.ts`: the exact tool pattern (`COMPASS_SPECS` source of truth, `defineTool`, catalog/gateable wiring) the three System Map tools mirror.
-- `src/extension/pi-session/agent-start.ts` (`buildAgentStartResult` → `buildCompassContext`, the per-turn injection seam for Lens C) + `pi-session.ts` (`onBeforeSettle`/`tryPlanModeHold`, the hold-once gate insertion point. Copy the draft pattern: return a `custom_message` draft and let the extension handler merge it with `continue: true`).
-- `src/extension/pi-session/pi-stream-adapter.ts` (the `agent_settled` handler, `observedAgentRun`): the single terminal state per run and the turn-active signal the capability queue polls; its `message_start` handler renders a bubble only for `role === 'assistant'`, so `display:false` custom notes are never shown (no suppression registration needed).
-- `src/extension/pi-session/checkpoints/repo-manager.ts` + `auto-checkpoint.ts` (`finalizeRun` = `stageAll` + `diffAgainst(beforeCommit)` → `parseDiffStats`) + `checkpoint-service.ts` (`onSettled`): the per-turn staged diff; the gate adds a read-only `peekChangedFiles()` (stage + `diffAgainst`, no commit) because the finalize happens only once the run is over, after the gate needs the diff.
-- `src/extension/memory/index.ts` (`armIdleTimer`, consolidation serialization, `startBackfill`): the idle-queue + resumable-backfill pattern the capability queue copies; its model seam is `createMemorySubCallRunner()` (it never imports `PiRuntime` directly), which `SystemMapService` reuses.
-- `src/extension/compass/compass-worker.ts` + `worker-vscode-shim.js` prove the worker has **no model access** (stubbed `vscode`, `worker_threads`), which is why capability/digest generation must run main-side (§5b) and only their finished rows are sent into the worker.
-- `src/extension/memory/subcall-runner.ts` + `query-expansion.ts`: the no-local-model sub-call + synonym-expansion pattern reused for capability summaries and search.
+- `src/core/compass/git.ts` + `src/core/compass/util.ts`: git plumbing the miner extends (foundation of the $0 Lens B signal); `util.ts` is the authoritative home for path re-anchoring (`isWithinRoot`/`normalizePath` today, plus `toRepoAbsolute`/`reanchorOnWorkspace` extracted from `git.ts` in Phase 0).
+- `src/core/compass/migrations.ts`: schema-vs-extraction-format versioning; the wrong bump wipes the graph.
+- `src/core/compass/database.ts` + `schema.ts`: `GraphStore`; `communities`/`flows` are the template for the new isolated `cochange`/`capabilities`/`systems` tables.
+- `src/core/compass/impact.ts`: `computeBlastRadius` (reads `edges` with no kind filter, the reason co-change must stay in its own table); reused by the expansion engine.
+- `src/core/compass/compass-worker.ts`: `dispatch()` + `LIGHT_TYPES` + build/post-process; all new worker requests + the recompute hooks land here under transaction-safe scheduling.
+- `src/core/pi-session/tools/compass-tools.ts`: the exact tool pattern (`COMPASS_SPECS` source of truth, `defineTool`, catalog/gateable wiring) the three System Map tools mirror.
+- `src/core/pi-session/agent-start.ts` (`buildAgentStartResult` → `buildCompassContext`, the per-turn injection seam for Lens C) + `pi-session.ts` (`onBeforeSettle`/`tryPlanModeHold`, the hold-once gate insertion point. Copy the draft pattern: return a `custom_message` draft and let the extension handler merge it with `continue: true`).
+- `src/core/pi-session/pi-stream-adapter.ts` (the `agent_settled` handler, `observedAgentRun`): the single terminal state per run and the turn-active signal the capability queue polls; its `message_start` handler renders a bubble only for `role === 'assistant'`, so `display:false` custom notes are never shown (no suppression registration needed).
+- `src/core/pi-session/checkpoints/repo-manager.ts` + `auto-checkpoint.ts` (`finalizeRun` = `stageAll` + `diffAgainst(beforeCommit)` → `parseDiffStats`) + `checkpoint-service.ts` (`onSettled`): the per-turn staged diff; the gate adds a read-only `peekChangedFiles()` (stage + `diffAgainst`, no commit) because the finalize happens only once the run is over, after the gate needs the diff.
+- `src/core/memory/index.ts` (`armIdleTimer`, consolidation serialization, `startBackfill`): the idle-queue + resumable-backfill pattern the capability queue copies; its model seam is `createMemorySubCallRunner()` (it never imports `PiRuntime` directly), which `SystemMapService` reuses.
+- `src/core/compass/compass-worker.ts` proves the worker has **no model access** (no host module, `worker_threads`), which is why capability/digest generation must run main-side (§5b) and only their finished rows are sent into the worker.
+- `src/core/memory/subcall-runner.ts` + `query-expansion.ts`: the no-local-model sub-call + synonym-expansion pattern reused for capability summaries and search.

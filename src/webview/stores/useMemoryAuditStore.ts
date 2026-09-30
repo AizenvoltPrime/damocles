@@ -1,6 +1,6 @@
 import { computed, ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import {
   MEMORY_AUDIT_BANNER_MIN_ELIGIBLE,
   type MemoryAuditCancelResult,
@@ -26,7 +26,7 @@ type PersistedState = Record<string, unknown>;
  * overlay is open and re-requested each time it opens.
  */
 export const useMemoryAuditStore = defineStore('memoryAudit', () => {
-  const { postMessage, getState, setState } = useVSCode();
+  const { postMessage, getState, setState } = usePlatformBridge();
 
   const isOverlayOpen = ref(false);
   const state = shallowRef<MemoryAuditStatePayload | null>(null);

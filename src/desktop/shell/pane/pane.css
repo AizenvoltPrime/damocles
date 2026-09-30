@@ -1,0 +1,7 @@
+@import "../style.css";
+
+/* The pane view is see-through, so the overlay scrim shows the chat beneath; the pane column paints its own background. */
+html,
+body {
+  background-color: transparent;
+}

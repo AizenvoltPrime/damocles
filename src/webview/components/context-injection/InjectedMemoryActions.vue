@@ -5,7 +5,7 @@ import { EyeOff, Pin, PinOff } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { IconExternalLink } from '@/components/icons';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useUIStore } from '@/stores/useUIStore';
 import type { MemoryKind } from '@shared/types/memory';
 
@@ -18,7 +18,7 @@ const props = defineProps<{
 }>();
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const uiStore = useUIStore();
 
 const confirmOpen = ref(false);

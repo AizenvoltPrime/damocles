@@ -25,7 +25,7 @@ const showErrorDot = computed(
     variant="ghost"
     size="icon-sm"
     class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
-    title="Memory consolidation"
+    :title="$t('consolidation.indicatorTitle')"
     @click="$emit('click')"
   >
     <IconDatabase :size="16" />
@@ -36,7 +36,7 @@ const showErrorDot = computed(
     <span
       v-if="showErrorDot"
       class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-error ring-2 ring-background pointer-events-none"
-      title="Last consolidation failed"
+      :title="$t('consolidation.lastFailed')"
     />
     <span
       v-if="isRunning"

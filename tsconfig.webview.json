@@ -58,6 +58,6 @@
       "@/*": ["./src/webview/*"]
     }
   },
-  "include": ["src/webview/**/*", "src/shared/**/*"],
+  "include": ["src/webview/**/*", "src/shared/**/*", "src/desktop/shell/**/*", "src/desktop/preload/shell-channels.ts"],
   "exclude": ["node_modules"]
 }

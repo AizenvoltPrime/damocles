@@ -21,7 +21,7 @@ defineEmits<{
 
     <div class="flex-1 min-w-0">
       <AlertTitle class="font-medium text-warning mb-0">
-        Claude authentication required
+        {{ $t('authBanner.title') }}
       </AlertTitle>
       <AlertDescription class="text-xs opacity-80 mt-0.5 truncate">
         {{ message }}
@@ -37,14 +37,14 @@ defineEmits<{
       class="h-7 shrink-0"
       @click="$emit('sign-in')"
     >
-      Sign In
+      {{ $t('authBanner.signIn') }}
     </Button>
 
     <Button
       variant="ghost"
       size="icon-sm"
       class="opacity-50 hover:opacity-100 h-6 w-6 shrink-0"
-      title="Dismiss"
+      :title="$t('common.dismiss')"
       @click="$emit('dismiss')"
     >
       <IconXMark :size="12" />

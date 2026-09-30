@@ -101,7 +101,75 @@ export interface RewindHistoryItem {
   filesAffected: number;
   files?: Array<{ path: string; displayName: string }>;
   linesChanged?: { added: number; removed: number };
+  /** Files this checkpoint left out; a rewind to it never modifies, deletes or restores them. */
+  skipped?: SkippedSummary;
+  /** Set when the turn has no usable baseline, so it cannot be rewound. */
+  notRewindable?: { reason: NotRewindableReason; params: NotRewindableParams };
 }
+
+export type SkipReason = "size" | "category" | "lfs";
+
+/**
+ * One row of a checkpoint's full skipped list. `path` is relative to the conversation's folder,
+ * `/`-separated; a directory skipped as a whole ends in `/` and has `bytes: null`.
+ */
+export interface SkippedFile {
+  path: string;
+  bytes: number | null;
+  reason: SkipReason;
+}
+
+export interface SkippedTally {
+  count: number;
+  bytes: number;
+}
+
+/** What one category or LFS exclude pattern matched; directories count 1 and 0 bytes. */
+export interface SkippedPattern {
+  pattern: string;
+  reason: "category" | "lfs";
+  count: number;
+  bytes: number;
+}
+
+/**
+ * What a snapshot left out. `manifest` is the object id of the full list in the folder repo (read with
+ * `requestSkippedFiles`), null when nothing was skipped. `patterns` counts what the folder's exclude
+ * rules matched; `byReason` and the manifest count every skip.
+ */
+export interface SkippedSummary {
+  totalCount: number;
+  totalBytes: number;
+  byReason: { size?: SkippedTally; category?: SkippedTally; lfs?: SkippedTally };
+  patterns: SkippedPattern[];
+  manifest: string | null;
+}
+
+export type NotRewindableReason = "baseline-timeout" | "baseline-failed";
+
+/** Rendered by the webview in the user's language; `error` is raw git text. */
+export interface NotRewindableParams {
+  tool?: string;
+  waitSeconds?: number;
+  error?: string;
+}
+
+/** What a pre-rewind snapshot was taken before: a rewind to a turn, or an undo of another snapshot. */
+export type PreRewindTarget = { kind: "turn"; userEntryId: string } | { kind: "undo"; preRewindId: string };
+
+/** A pre-rewind snapshot the rewind view offers as "Undo rewind"; the file fields are the live diff an undo applies. */
+export interface RestorePoint {
+  id: string;
+  createdAt: number;
+  target: PreRewindTarget;
+  skipped: SkippedSummary;
+  filesAffected: number;
+  files?: Array<{ path: string; displayName: string }>;
+  linesChanged?: { added: number; removed: number };
+}
+
+/** Whose full skipped list `requestSkippedFiles` reads: a turn's checkpoint or a restore point. */
+export type SkippedFilesTarget = { kind: "turn"; userEntryId: string } | { kind: "restore-point"; id: string };
 
 export type RewindOption =
   | 'fork-conversation'

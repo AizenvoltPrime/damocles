@@ -11,9 +11,16 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { IconWarning, IconChevronRight } from '@/components/icons';
-import type { RewindOption, RewindHistoryItem } from '@shared/types/session';
+import RewindCheckpointNotes from '@/components/RewindCheckpointNotes.vue';
+import type { RewindOption, RewindHistoryItem, SkippedFilesTarget } from '@shared/types/session';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useEditorStore } from '@/stores/useEditorStore';
 
 const { t } = useI18n();
+const settingsStore = useSettingsStore();
+const editorStore = useEditorStore();
+// A modal dialog traps focus and pointer events, so it steps aside (keeping its state) while an editor overlay is open over it.
+const suspended = computed(() => editorStore.hasOpenOverlay);
 
 const props = defineProps<{
   visible: boolean;
@@ -24,6 +31,10 @@ const props = defineProps<{
   files?: Array<{ path: string; displayName: string }> | undefined;
   linesChanged?: { added: number; removed: number } | undefined;
   loadingMetadata?: boolean | undefined;
+  skipped?: RewindHistoryItem['skipped'] | undefined;
+  notRewindable?: RewindHistoryItem['notRewindable'] | undefined;
+  /** The checkpoint's key, so the full "not restored" list can be loaded on demand. */
+  checkpointId?: string | undefined;
 }>();
 
 const emit = defineEmits<{
@@ -39,6 +50,7 @@ const filesExpanded = ref(false);
 const view = ref<ModalView>('options');
 const pendingFileRewindOption = ref<RewindOption | null>(null);
 const hasFileList = computed(() => !!props.files && props.files.length > 0);
+const skippedTarget = computed<SkippedFilesTarget | undefined>(() => (props.checkpointId ? { kind: 'turn', userEntryId: props.checkpointId } : undefined));
 
 interface Option {
   key: RewindOption;
@@ -84,8 +96,9 @@ const options = computed<Option[]>(() => [
   },
 ]);
 
+// A turn with no usable checkpoint can still be forked, but its files cannot be restored.
 function isDisabled(option: Option): boolean {
-  return option.requiresFork && !props.canFork;
+  return (option.requiresFork && !props.canFork) || (option.needsCodeConfirm && !!props.notRewindable);
 }
 
 watch(() => props.visible, (visible) => {
@@ -108,7 +121,7 @@ function handleDialogOpenUpdate(open: boolean) {
 }
 
 function handleKeyDown(event: KeyboardEvent) {
-  if (!props.visible) return;
+  if (!props.visible || suspended.value) return;
 
   const target = event.target as HTMLElement;
   if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) return;
@@ -217,7 +230,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AlertDialog :open="visible" @update:open="handleDialogOpenUpdate">
+  <AlertDialog :open="visible && !suspended" @update:open="handleDialogOpenUpdate">
     <AlertDialogContent class="bg-card border-border max-w-md">
       <template v-if="view === 'options'">
         <AlertDialogHeader>
@@ -281,19 +294,32 @@ onUnmounted(() => {
               v-if="hasFileList && filesExpanded"
               class="mt-2 rounded bg-muted/50 border border-border/60 max-h-40 overflow-y-auto"
             >
-              <button
+              <template
                 v-for="file in files"
                 :key="file.path"
-                type="button"
-                class="w-full text-left px-3 py-1.5 font-mono text-xs text-foreground/80 hover:bg-primary/10 hover:text-foreground focus:outline-none focus-visible:bg-primary/10 cursor-pointer truncate"
-                :title="t('rewind.openDiffTooltip', { path: file.path })"
-                @click="emit('openRewindDiff', file.path)"
               >
-                {{ file.displayName }}
-              </button>
+                <button
+                  v-if="settingsStore.hostCapabilities.diffReview"
+                  type="button"
+                  class="w-full text-left px-3 py-1.5 font-mono text-xs text-foreground/80 hover:bg-primary/10 hover:text-foreground focus:outline-none focus-visible:bg-primary/10 cursor-pointer truncate"
+                  :title="t('rewind.openDiffTooltip', { path: file.path })"
+                  @click="emit('openRewindDiff', file.path)"
+                >
+                  {{ file.displayName }}
+                </button>
+                <div
+                  v-else
+                  class="px-3 py-1.5 font-mono text-xs text-foreground/80 truncate"
+                  :title="file.path"
+                >
+                  {{ file.displayName }}
+                </div>
+              </template>
             </div>
           </template>
         </div>
+
+        <RewindCheckpointNotes v-if="!loadingMetadata" :skipped="skipped" :not-rewindable="notRewindable" :target="skippedTarget" />
 
         <div class="space-y-2">
           <button
@@ -336,7 +362,7 @@ onUnmounted(() => {
         <div class="pt-2 text-xs text-muted-foreground flex items-center gap-4">
           <span class="flex items-center gap-1">
             <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">1-4</kbd>
-            <span>or</span>
+            <span>{{ t('common.or') }}</span>
             <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">↑↓</kbd>
             <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">Enter</kbd>
           </span>

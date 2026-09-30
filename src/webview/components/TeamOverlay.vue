@@ -10,7 +10,7 @@ import TeamAgentCard from './TeamAgentCard.vue';
 import TeamTimeline from './TeamTimeline.vue';
 import TeamScratchpad from './TeamScratchpad.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { formatElapsed } from '@/composables/useTeamFormatting';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { addAgentUsage, emptyAgentUsage } from '@shared/usage-accounting';
@@ -20,7 +20,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
 const { teamDollarBilled } = useCostLabel();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const teamStore = useTeamStore();
 const { selectedTeam, activeTab, isOverlayOpen } = storeToRefs(teamStore);

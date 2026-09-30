@@ -9,6 +9,8 @@ export interface CompassIndexStatus {
 	flowCount: number;
 	lastIndexedAt: number | null;
 	error?: string;
+	/** Set when a newer Damocles migrated the index: it serves reads and refuses every rebuild. */
+	readOnly?: true;
 }
 
 export type CompassNodeKind = 'File' | 'Class' | 'Function' | 'Type' | 'Test';

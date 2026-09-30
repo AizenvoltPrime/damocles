@@ -6,12 +6,12 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconBan } from '@/components/icons';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { isShellTool } from '@shared/tool-names';
 
 const { t } = useI18n();
 
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const teamStore = useTeamStore();
 const { activePermission } = storeToRefs(teamStore);
 

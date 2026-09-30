@@ -5,6 +5,8 @@ import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ContextUsageOverlay from '../ContextUsageOverlay.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { at } from '@/__tests__/helpers';
 import { i18n, applyLocale } from '@/i18n';
 import type { ContextUsageData } from '@shared/types/session';
@@ -429,5 +431,22 @@ describe('ContextUsageOverlay — deferred built-in tool badges', () => {
     expect(rows.map(r => r.name)).toEqual(['Read', 'Write']);
     expect(at(rows, 0).text).toContain('8');
     expect(at(rows, 1).text).toContain('12');
+  });
+});
+
+describe('ContextUsageOverlay — markdown preview capability', () => {
+  async function systemPromptRow(markdownPreview: boolean) {
+    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, markdownPreview });
+    const wrapper = mountWithData(make({ systemPromptSections: [{ name: 'base', tokens: 5 }] }));
+    const trigger = wrapper.findAll('button').find(b => b.text().startsWith(i18n.global.t('context.systemPromptSections')))!;
+    await trigger.trigger('click');
+    const contentId = trigger.element.getAttribute('aria-controls');
+    return wrapper.get(`#${contentId}`).get(':scope > div > div');
+  }
+
+  it('offers to open a section only when the host can preview markdown', async () => {
+    expect((await systemPromptRow(true)).classes()).toContain('cursor-pointer');
+    setActivePinia(createPinia());
+    expect((await systemPromptRow(false)).classes()).not.toContain('cursor-pointer');
   });
 });

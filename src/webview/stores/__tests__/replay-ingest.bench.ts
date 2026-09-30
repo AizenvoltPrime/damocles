@@ -73,7 +73,7 @@ function ingest(items: readonly ReplayItem[]): void {
       taskStore: useTaskStore(),
       teamStore: useTeamStore(),
     },
-    vscode: { postMessage: () => {}, getState: () => undefined, setState: () => {} },
+    bridge: { postMessage: () => {}, getState: () => undefined, setState: () => {} },
   } as unknown as HandlerContext;
   for (const item of items) {
     const handler = handlers[item.type] as (m: ReplayItem, c: HandlerContext) => void;

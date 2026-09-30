@@ -1,8 +1,11 @@
 import * as esbuild from 'esbuild';
 import { existsSync } from 'node:fs';
 import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
+import { DESKTOP_EXTERNALS } from './scripts/desktop-externals.mjs';
 
 const isWatch = process.argv.includes('--watch');
+// --desktop builds the Electron main and preload plus the workers they spawn, and never the extension bundle.
+const isDesktop = process.argv.includes('--desktop');
 
 /**
  * Fail the build when an entry point produced no file. A missing dist/sentinel.js still packages
@@ -23,7 +26,7 @@ const assertOutfileWritten = {
 
 /** @type {esbuild.BuildOptions} */
 const extensionOptions = {
-  entryPoints: ['src/extension/extension.ts'],
+  entryPoints: ['src/vscode/extension.ts'],
   bundle: true,
   outfile: 'dist/extension.js',
   // The externals (and thus the VSIX node_modules allowlist) live in scripts/extension-externals.mjs so
@@ -41,7 +44,7 @@ const extensionOptions = {
 
 /** @type {esbuild.BuildOptions} */
 const workerOptions = {
-  entryPoints: ['src/extension/compass/compass-worker.ts'],
+  entryPoints: ['src/core/compass/compass-worker.ts'],
   bundle: true,
   outfile: 'dist/compass-worker.js',
   external: [
@@ -49,9 +52,6 @@ const workerOptions = {
     'node:sqlite',
     'web-tree-sitter',
   ],
-  alias: {
-    'vscode': './src/extension/compass/worker-vscode-shim.js',
-  },
   format: 'cjs',
   platform: 'node',
   target: 'node24',
@@ -63,7 +63,7 @@ const workerOptions = {
 
 /** @type {esbuild.BuildOptions} */
 const usageStatsWorkerOptions = {
-  entryPoints: ['src/extension/usage-stats/usage-stats-worker.ts'],
+  entryPoints: ['src/core/usage-stats/usage-stats-worker.ts'],
   bundle: true,
   outfile: 'dist/usage-stats-worker.js',
   // Node builtin, must not be bundled.
@@ -79,7 +79,7 @@ const usageStatsWorkerOptions = {
 
 /** @type {esbuild.BuildOptions} */
 const sentinelOptions = {
-  entryPoints: ['src/extension/pi-session/tools/shell-sentinel.ts'],
+  entryPoints: ['src/core/pi-session/tools/shell-sentinel.ts'],
   bundle: true,
   outfile: 'dist/sentinel.js',
   // No externals on purpose: this process has to keep working with the extension host gone, so it may
@@ -93,7 +93,69 @@ const sentinelOptions = {
   plugins: [assertOutfileWritten],
 };
 
+/** @type {esbuild.BuildOptions} */
+const desktopMainOptions = {
+  entryPoints: ['src/desktop/main/index.ts'],
+  bundle: true,
+  outfile: 'dist/desktop/main.js',
+  external: DESKTOP_EXTERNALS,
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: true,
+  minify: false,
+  logLevel: 'info',
+  plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
+const desktopPreloadOptions = {
+  entryPoints: ['src/desktop/preload/panel.ts'],
+  bundle: true,
+  outfile: 'dist/desktop/preload-panel.js',
+  // A sandboxed preload can require only electron and a few Node polyfills, so everything else is bundled.
+  external: ['electron'],
+  format: 'cjs',
+  platform: 'node',
+  target: 'node24',
+  sourcemap: false,
+  minify: false,
+  logLevel: 'info',
+  plugins: [assertOutfileWritten],
+};
+
+/** @type {esbuild.BuildOptions} */
+const desktopShellPreloadOptions = {
+  ...desktopPreloadOptions,
+  entryPoints: ['src/desktop/preload/shell.ts'],
+  outfile: 'dist/desktop/preload-shell.js',
+};
+
+/** @type {esbuild.BuildOptions} */
+const desktopPanePreloadOptions = {
+  ...desktopPreloadOptions,
+  entryPoints: ['src/desktop/preload/pane.ts'],
+  outfile: 'dist/desktop/preload-pane.js',
+};
+
+async function buildDesktop() {
+  await Promise.all([
+    esbuild.build(desktopMainOptions),
+    esbuild.build(desktopPreloadOptions),
+    esbuild.build(desktopShellPreloadOptions),
+    esbuild.build(desktopPanePreloadOptions),
+    esbuild.build(workerOptions),
+    esbuild.build(usageStatsWorkerOptions),
+    esbuild.build(sentinelOptions),
+  ]);
+  console.log('Desktop main + preload + workers + sentinel build complete');
+}
+
 async function build() {
+  if (isDesktop) {
+    await buildDesktop();
+    return;
+  }
   if (isWatch) {
     const [extCtx, workerCtx, usageStatsWorkerCtx, sentinelCtx] = await Promise.all([
       esbuild.context(extensionOptions),

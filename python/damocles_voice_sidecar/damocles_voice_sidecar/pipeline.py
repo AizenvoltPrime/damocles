@@ -43,8 +43,8 @@ FALSE_WAKE_TIMEOUT_MS = 1_500
 # Strip leading "Jarvis," / "Hey Jarvis," prefixes that survive the audio
 # offset. Case-insensitive; trailing punctuation/whitespace are absorbed.
 # MUST stay byte-identical to ``WAKE_PREFIX_RE`` in
-# src/extension/chat-panel/message-router/handlers/voice-stream-handlers.ts.
-# The TS-side test src/extension/voice/__tests__/wake-prefix-parity.test.ts
+# src/core/chat-panel/message-router/handlers/voice-stream-handlers.ts.
+# The TS-side test src/core/voice/__tests__/wake-prefix-parity.test.ts
 # reads both files as text and asserts the literals match.
 WAKE_PREFIX_RE = re.compile(r"^\s*(hey\s+)?jarvis[,.\s]*", re.IGNORECASE)
 

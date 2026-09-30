@@ -1,6 +1,6 @@
 """Read MODEL_MANIFEST.json bundled with the package.
 
-This is the Python-side counterpart to ``src/extension/voice/models/manifest.ts``.
+This is the Python-side counterpart to ``src/core/voice/models/manifest.ts``.
 The TS downloader writes models into ``<modelsDir>/<id>/v<version>/`` (see
 ``modelVersionDir`` over there); this module exposes the same path
 construction so the engines locate downloaded files at exactly the path

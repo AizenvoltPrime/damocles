@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,16 +21,17 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import ConsolidationStepper from './ConsolidationStepper.vue';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useRelativeTime } from '@/composables/useRelativeTime';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { folderName } from '@/lib/folder-name';
 import type { ConsolidationPersistOutcome } from '@shared/types/consolidation';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
+const { t, te } = useI18n();
 
 const store = useConsolidationStore();
 const { pendingCandidates, isRunning, pendingCount, lastResult, phase, phaseMeta, persistProgress } =
   storeToRefs(store);
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 function triggerNow(): void {
   // Doherty-threshold ack: flip the stepper to Claim-active immediately, before the round-trip.
@@ -49,23 +51,17 @@ function signIn(): void {
 }
 
 // ── Phase-aware header badge ──────────────────────────────────────────────────────────────────
-const PHASE_LABELS: Record<string, string> = {
-  claim: 'Claim',
-  extract: 'Extract',
-  persist: 'Persist',
-  maintain: 'Maintain',
-  profiles: 'Profiles',
-};
+const PHASES_WITH_LABELS = new Set(['claim', 'extract', 'persist', 'maintain', 'profiles']);
 
 const statusBadge = computed(() => {
   if (!isRunning.value) {
     return {
-      label: 'Idle',
+      label: t('consolidation.idle'),
       class: 'bg-muted text-muted-foreground border-border',
       showSpinner: false,
     };
   }
-  const base = PHASE_LABELS[phase.value] ?? 'Running';
+  const base = PHASES_WITH_LABELS.has(phase.value) ? t(`consolidation.phase.${phase.value}`) : t('consolidation.running');
   const label =
     phase.value === 'persist' && persistProgress.value.total > 0
       ? `${base} ${persistProgress.value.done}/${persistProgress.value.total}`
@@ -78,7 +74,7 @@ const statusBadge = computed(() => {
 });
 
 const subtitle = computed(() =>
-  isRunning.value ? 'Consolidating…' : `${pendingCount.value} turn${pendingCount.value === 1 ? '' : 's'} queued`,
+  isRunning.value ? t('consolidation.consolidating') : t('consolidation.turnsQueued', pendingCount.value),
 );
 
 // ── Honest progress strip ─────────────────────────────────────────────────────────────────────
@@ -113,14 +109,14 @@ onUnmounted(() => {
 const strip = computed(() => {
   switch (phase.value) {
     case 'claim':
-      return { mode: 'indeterminate' as const, label: 'Reviewing queued turns…' };
+      return { mode: 'indeterminate' as const, label: t('consolidation.strip.reviewing') };
     case 'extract':
       return {
         mode: 'indeterminate' as const,
         label:
           extractElapsedMs.value >= STILL_THINKING_MS
-            ? 'Still thinking — extraction can take up to 20s'
-            : `Reading ${claimCount.value} turn${claimCount.value === 1 ? '' : 's'}…`,
+            ? t('consolidation.strip.stillThinking')
+            : t('consolidation.strip.reading', claimCount.value),
       };
     case 'persist':
       // Until the total is known (the first persist event), show an indeterminate bar rather than a
@@ -128,15 +124,15 @@ const strip = computed(() => {
       return persistProgress.value.total > 0
         ? {
             mode: 'determinate' as const,
-            label: 'Persisting extracted memories',
+            label: t('consolidation.strip.persisting'),
             done: persistProgress.value.done,
             total: persistProgress.value.total,
           }
-        : { mode: 'indeterminate' as const, label: 'Persisting extracted memories…' };
+        : { mode: 'indeterminate' as const, label: t('consolidation.strip.persistingPending') };
     case 'maintain':
-      return { mode: 'indeterminate' as const, label: 'Running maintenance…' };
+      return { mode: 'indeterminate' as const, label: t('consolidation.strip.maintenance') };
     case 'profiles':
-      return { mode: 'indeterminate' as const, label: 'Updating user profiles…' };
+      return { mode: 'indeterminate' as const, label: t('consolidation.strip.profiles') };
     default:
       return null;
   }
@@ -152,29 +148,30 @@ const { relative: ranRelative, absolute: ranAbsolute } = useRelativeTime(
   () => lastResult.value?.ranAt ?? null,
 );
 
-const FAILURE_COPY: Record<string, string> = {
-  'no-model': 'No model is signed in — queued turns are safe and will retry.',
-  unavailable: 'Memory system is unavailable — try reloading the window.',
+const FAILURE_COPY_KEYS: Record<string, string> = {
+  'no-model': 'consolidation.failure.noModel',
+  unavailable: 'consolidation.failure.unavailable',
 };
 
 const failureMessage = computed(() => {
   const f = lastResult.value?.failure;
   if (!f) return '';
-  return FAILURE_COPY[f.kind] ?? f.detail ?? 'Consolidation failed.';
+  const key = FAILURE_COPY_KEYS[f.kind];
+  return key ? t(key) : f.detail ?? t('consolidation.failure.generic');
 });
 
 const failureFooter = computed(() => {
   const f = lastResult.value?.failure;
   if (!f) return '';
-  const when = ranRelative.value || 'just now';
-  return f.phase ? `Failed at ${f.phase} · ${when}` : when;
+  const when = ranRelative.value || t('consolidation.justNow');
+  return f.phase ? t('consolidation.failedAt', { phase: t(`consolidation.phase.${f.phase}`), when }) : when;
 });
 
 // ── Last-run summary (extracted / empty) ──────────────────────────────────────────────────────
 const triggerChip = computed(() => {
   const manual = lastResult.value?.trigger === 'manual';
   return {
-    label: manual ? 'Manual' : 'Auto',
+    label: manual ? t('consolidation.trigger.manual') : t('consolidation.trigger.auto'),
     icon: manual ? IconPlay : IconRepeat,
     class: manual
       ? 'bg-violet-500/15 text-violet-400 border-violet-500/30'
@@ -194,14 +191,14 @@ const rollup = computed<string[]>(() => {
   };
   for (const m of r.extracted) counts[m.outcome]++;
   const parts: string[] = [];
-  if (counts.inserted) parts.push(`${counts.inserted} new`);
-  if (counts.merged) parts.push(`${counts.merged} merged`);
-  if (counts.superseded) parts.push(`${counts.superseded} superseded`);
-  if (counts.deduped) parts.push(`${counts.deduped} deduped`);
-  if (counts.invalid) parts.push(`${counts.invalid} invalid`);
-  if (r.maintenance.promoted) parts.push(`${r.maintenance.promoted} promoted`);
-  if (r.maintenance.decayed) parts.push(`${r.maintenance.decayed} decayed`);
-  if (r.maintenance.pruned) parts.push(`${r.maintenance.pruned} pruned`);
+  if (counts.inserted) parts.push(t('consolidation.rollup.inserted', { n: counts.inserted }));
+  if (counts.merged) parts.push(t('consolidation.rollup.merged', { n: counts.merged }));
+  if (counts.superseded) parts.push(t('consolidation.rollup.superseded', { n: counts.superseded }));
+  if (counts.deduped) parts.push(t('consolidation.rollup.deduped', { n: counts.deduped }));
+  if (counts.invalid) parts.push(t('consolidation.rollup.invalid', { n: counts.invalid }));
+  if (r.maintenance.promoted) parts.push(t('consolidation.rollup.promoted', { n: r.maintenance.promoted }));
+  if (r.maintenance.decayed) parts.push(t('consolidation.rollup.decayed', { n: r.maintenance.decayed }));
+  if (r.maintenance.pruned) parts.push(t('consolidation.rollup.pruned', { n: r.maintenance.pruned }));
   return parts;
 });
 
@@ -234,7 +231,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
 
 <template>
   <OverlayShell
-    title="Memory Consolidation"
+    :title="t('consolidation.title')"
     :subtitle="subtitle"
     :icon="IconDatabase"
     icon-class="text-violet-400"
@@ -247,11 +244,11 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
         size="sm"
         class="gap-1.5 shrink-0"
         :disabled="isRunning"
-        title="Run a full consolidation pass now"
+        :title="t('consolidation.runNowTitle')"
         @click="triggerNow"
       >
         <IconPlay :size="14" />
-        <span>Run now</span>
+        <span>{{ t('consolidation.runNow') }}</span>
       </Button>
     </template>
 
@@ -317,7 +314,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
             @click="retry"
           >
             <IconRotateLeft :size="13" />
-            <span>Retry now</span>
+            <span>{{ t('consolidation.retryNow') }}</span>
           </Button>
           <Button
             v-if="lastResult.failure?.kind === 'no-model'"
@@ -327,7 +324,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
             @click="signIn"
           >
             <IconKey :size="13" />
-            <span>Sign in to a model</span>
+            <span>{{ t('consolidation.signIn') }}</span>
           </Button>
         </div>
       </section>
@@ -344,7 +341,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
           />
           <div class="space-y-1 min-w-0">
             <p class="text-sm text-foreground/80">
-              Nothing new to remember — reviewed {{ lastResult.candidatesReviewed }} turn{{ lastResult.candidatesReviewed === 1 ? '' : 's' }}.
+              {{ t('consolidation.nothingNew', lastResult.candidatesReviewed) }}
             </p>
             <div class="flex items-center gap-2 flex-wrap">
               <span
@@ -378,7 +375,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
             class="text-violet-400 shrink-0"
           />
           <span class="text-xs font-medium text-foreground/90">
-            Extracted {{ lastResult.extracted.length }}
+            {{ t('consolidation.extracted', { n: lastResult.extracted.length }) }}
           </span>
           <span
             class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
@@ -416,9 +413,9 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
                   class="h-1 w-1 rounded-full"
                   :class="PERSIST_TONE[m.outcome].dot"
                 />
-                {{ m.outcome }}
+                {{ t(`consolidation.outcome.${m.outcome}`) }}
               </span>
-              <span class="text-[10px] text-muted-foreground">{{ m.kind }} / {{ m.scope }}</span>
+              <span class="text-[10px] text-muted-foreground">{{ te(`memory.kind.${m.kind}`) ? t(`memory.kind.${m.kind}`) : m.kind }} / {{ te(`memory.scope.${m.scope}`) ? t(`memory.scope.${m.scope}`) : m.scope }}</span>
               <span
                 v-if="m.workspace"
                 class="text-[10px] text-muted-foreground truncate"
@@ -447,14 +444,14 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
             :size="12"
           />
           <IconFileText :size="13" />
-          <span>Queued for consolidation ({{ pendingCandidates.length }})</span>
+          <span>{{ t('consolidation.queued', { n: pendingCandidates.length }) }}</span>
         </button>
         <template v-if="queueOpen">
           <div
             v-if="pendingCandidates.length === 0"
             class="text-sm text-muted-foreground pl-1 py-2"
           >
-            No turns waiting — everything has been consolidated.
+            {{ t('consolidation.queueEmpty') }}
           </div>
           <div
             v-else
@@ -466,7 +463,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
               class="rounded-md border border-border/50 bg-muted/40 px-3 py-2 text-xs space-y-1.5 cursor-pointer hover:bg-muted/60 transition-colors"
             >
               <div>
-                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">User</span>
+                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">{{ t('consolidation.user') }}</span>
                 <MarkdownRenderer
                   :content="c.userPreview"
                   :allow-remote-images="false"
@@ -474,7 +471,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
                 />
               </div>
               <div>
-                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">Assistant</span>
+                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">{{ t('consolidation.assistant') }}</span>
                 <MarkdownRenderer
                   :content="c.assistantPreview"
                   :allow-remote-images="false"
@@ -495,9 +492,9 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
           :size="20"
           class="mx-auto mb-2 opacity-60"
         />
-        <p>No consolidation has run yet this session.</p>
+        <p>{{ t('consolidation.noRunYet') }}</p>
         <p class="text-xs mt-1">
-          Click <span class="text-foreground">Run now</span> to consolidate the queued turns.
+          {{ t('consolidation.noRunHintBefore') }} <span class="text-foreground">{{ t('consolidation.runNow') }}</span> {{ t('consolidation.noRunHintAfter') }}
         </p>
       </div>
     </div>

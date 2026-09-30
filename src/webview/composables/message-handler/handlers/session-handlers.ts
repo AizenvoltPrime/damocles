@@ -33,12 +33,12 @@ function resetConversationStores(ctx: HandlerContext): void {
 
 function resetConversationState(ctx: HandlerContext): void {
   const { uiStore, sessionStore } = ctx.stores;
-  const { vscode } = ctx;
+  const { bridge } = ctx;
 
   resetConversationStores(ctx);
   sessionStore.setResumedSession(null);
   sessionStore.setSelectedSession(null);
-  vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
+  bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
   uiStore.setProcessing(false);
 }
 
@@ -46,18 +46,21 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
   return {
     sessionStarted: (msg, ctx) => {
       const { sessionStore } = ctx.stores;
-      const { vscode } = ctx;
+      const { bridge } = ctx;
       sessionStore.setCurrentSession(msg.sessionId);
       sessionStore.setResumedSession(msg.sessionId);
-      if (sessionStore.selectedSessionId !== msg.sessionId) {
-        sessionStore.setSelectedSession(msg.sessionId);
-        vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: msg.sessionId });
+      if (sessionStore.selectedSessionId !== msg.sessionId) sessionStore.setSelectedSession(msg.sessionId);
+      // The persisted id is what a restart or reload asks the host to replay from disk, so it names only a stored conversation.
+      const saved = bridge.getState<{ sessionId?: string; sessionName?: string }>();
+      const restorable = msg.stored ? msg.sessionId : undefined;
+      if (saved?.sessionId !== restorable) {
+        bridge.setState({ ...saved, sessionId: restorable, ...(restorable ? {} : { sessionName: undefined }) });
       }
     },
 
     resumeAccepted: (msg, ctx) => {
       const { sessionStore, streamingStore, teamStore } = ctx.stores;
-      const { vscode } = ctx;
+      const { bridge } = ctx;
       const session = sessionStore.storedSessions.find((s) => s.id === msg.sessionId);
       const sessionName = session?.customTitle || session?.aiTitle || session?.preview || null;
       streamingStore.$reset();
@@ -65,7 +68,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       sessionStore.clearSessionData();
       sessionStore.setResumedSession(msg.sessionId);
       sessionStore.setSelectedSession(msg.sessionId, sessionName);
-      vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string | null }>(), sessionId: msg.sessionId, sessionName });
+      bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string | null }>(), sessionId: msg.sessionId, sessionName });
     },
 
     // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
@@ -87,13 +90,13 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
       const { uiStore, streamingStore, sessionStore } = ctx.stores;
-      const { vscode } = ctx;
+      const { bridge } = ctx;
 
       resetConversationStores(ctx);
 
       if (!sessionStore.currentResumedSessionId) {
         sessionStore.setSelectedSession(null);
-        vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
+        bridge.setState({ ...bridge.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
       }
       sessionStore.setResumedSession(null);
 
@@ -113,7 +116,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     workspaceFolderUpdate: (msg, ctx) => {
-      const { vscode } = ctx;
+      const { bridge } = ctx;
       ctx.stores.settingsStore.setWorkspaceFolders(msg.folders, msg.panelFolderKey, msg.defaultFolderKey);
       if (msg.switched) {
         resetConversationState(ctx);
@@ -122,13 +125,13 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
         // The extension re-sends the new folder's Compass status after this update.
         ctx.stores.compassStore.clearFolderData();
         if (ctx.stores.uiStore.showMemoryPanel) {
-          vscode.postMessage({ type: "requestMemories" });
-          vscode.postMessage({ type: "getProfile" });
+          bridge.postMessage({ type: "requestMemories" });
+          bridge.postMessage({ type: "getProfile" });
         }
         const folder = msg.folders.find((f) => f.key === msg.panelFolderKey);
         toast.success(i18n.global.t("toast.workspaceFolderSwitched", { folder: folder?.label ?? msg.panelFolderKey }));
       }
-      vscode.setState({ ...vscode.getState<{ workspaceFolderKey?: string }>(), workspaceFolderKey: msg.panelFolderKey });
+      bridge.setState({ ...bridge.getState<{ workspaceFolderKey?: string }>(), workspaceFolderKey: msg.panelFolderKey });
     },
 
     sessionCancelled: (_msg, ctx) => {

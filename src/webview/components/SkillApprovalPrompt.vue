@@ -105,7 +105,7 @@ watch(() => props.visible, (visible) => {
     v-if="visible"
     class="border-t border-border bg-background"
     role="region"
-    aria-label="Skill approval request"
+    :aria-label="t('skill.ariaLabel')"
   >
     <!-- Header question -->
     <div class="px-4 py-3 text-sm text-foreground">

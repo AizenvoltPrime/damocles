@@ -14,7 +14,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import type { ImageBlock } from '@shared/types/content';
 import { getAgentColor, formatElapsed } from '@/composables/useTeamFormatting';
@@ -22,7 +22,7 @@ import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 const teamStore = useTeamStore();
 const uiStore = useUIStore();
 const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen } = storeToRefs(teamStore);

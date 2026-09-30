@@ -13,6 +13,7 @@ import {
 
 interface EscapeEntry {
   readonly onClose: () => void;
+  readonly modal: boolean;
 }
 
 /** The bottom overlay sits here; each one opened on top of it takes the next value up. */
@@ -52,18 +53,27 @@ export function hasOpenOverlay(): boolean {
   return stack.value.length > 0;
 }
 
+export interface OverlayOptions {
+  /** A host prompt that must cover every overlay: it paints on MODAL_Z_INDEX and stays on top of overlays opened after it. */
+  readonly modal?: boolean;
+}
+
 /**
  * Registers a full-screen overlay in the shared overlay stack.
  *
  * Paint order and Escape routing both come from the order overlays were opened in, never from DOM
  * sibling order in `App.vue`; a nested overlay mounts strictly after the overlay it opens over.
  */
-export function useOverlayEscape(onClose: () => void): OverlayLayer {
-  const entry: EscapeEntry = { onClose };
+export function useOverlayEscape(onClose: () => void, options: OverlayOptions = {}): OverlayLayer {
+  const entry: EscapeEntry = { onClose, modal: options.modal === true };
 
   // Registered before the first render, so a nested overlay never paints one frame behind the one it opened over.
+  // An overlay opened under an open modal goes below it, so Escape and the Tab trap stay with the modal the user sees.
   onBeforeMount(() => {
-    stack.value = [...stack.value, entry];
+    const firstModal = entry.modal ? -1 : stack.value.findIndex((e) => e.modal);
+    stack.value = firstModal === -1
+      ? [...stack.value, entry]
+      : [...stack.value.slice(0, firstModal), entry, ...stack.value.slice(firstModal)];
   });
 
   // Scope stop runs synchronously inside unmount, while `onUnmounted` is queued post-flush and stops
@@ -84,6 +94,7 @@ export function useOverlayEscape(onClose: () => void): OverlayLayer {
   }, { target: document });
 
   const zIndex = computed(() => {
+    if (entry.modal) return MODAL_Z_INDEX;
     const depth = stack.value.indexOf(entry);
     if (depth === -1) return BASE_Z_INDEX;
     return Math.min(BASE_Z_INDEX + depth, MODAL_Z_INDEX - 1);

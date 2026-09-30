@@ -7,6 +7,57 @@
   "overlay": {
     "close": "Close"
   },
+  "editor": {
+    "loadFailed": "The editor could not load: {error}",
+    "readOnly": "Read-only",
+    "proposal": "Proposed edit. Approve or reject it here or in the chat.",
+    "proposalDecided": "Proposed edit. The decision is made in the chat.",
+    "checkpoint": "Changes since the checkpoint",
+    "approve": "Approve",
+    "reject": "Reject",
+    "untitled": "Unsaved buffer, shown read-only",
+    "line": "Line {line}",
+    "side": {
+      "original": "Original",
+      "modified": "Modified",
+      "document": "File"
+    },
+    "body": {
+      "tooLarge": "Too large to display ({size} MiB, limit {limit} MiB)",
+      "binary": "Binary file not shown",
+      "unreadable": "Could not read the file: {error}"
+    }
+  },
+  "settingsEditor": {
+    "title": {
+      "user": "User settings",
+      "project": "Project settings",
+      "local": "Local project settings"
+    },
+    "loading": "Loading settings file...",
+    "notCreated": "This file does not exist yet. Saving creates it.",
+    "parseError": "This file is not valid JSON, so it opens read-only. Fix it in another editor: {error}",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "unsaved": "Unsaved changes",
+    "conflict": "Not saved: the file changed on disk after you opened it. Compare your text with it, or overwrite it with your text.",
+    "changedOnDisk": "The file changed on disk.",
+    "reload": "Reload from disk",
+    "keepEditing": "Keep my edits",
+    "discardPrompt": "Close and discard your unsaved changes?",
+    "discard": "Discard",
+    "problems": "Problems: {count}",
+    "problemLine": "Line {line}: {message}",
+    "compare": "Compare",
+    "overwrite": "Overwrite",
+    "comparing": "Left: the file on disk, read-only. Right: your text. Merge on the right, then save.",
+    "endCompare": "Close comparison",
+    "overwriteTitle": "Overwrite the newer file?",
+    "overwriteDescription": "The file changed on disk after you opened it. Overwriting replaces those changes with your text.",
+    "switchPrompt": "Open {file} and discard your unsaved changes?",
+    "unreadable": "{path} cannot be read: {error}",
+    "reveal": "Show in file manager"
+  },
   "common": {
     "cancel": "Cancel",
     "save": "Save",
@@ -29,7 +80,8 @@
     "error": "Error",
     "add": "Add",
     "unpriced": "unpriced",
-    "unpricedTooltip": "No price is recorded for this model, so these tokens have no known cost. It is not $0."
+    "unpricedTooltip": "No price is recorded for this model, so these tokens have no known cost. It is not $0.",
+    "or": "or"
   },
   "time": {
     "justNow": "just now",
@@ -182,7 +234,7 @@
     "defaultForNewPanels": "Default for new panels",
     "workspace": "Workspace",
     "application": "All windows",
-    "applicationDescription": "Saved in your user settings and shared by every VS Code window. A workspace cannot set these.",
+    "applicationDescription": "Saved in your user settings and applied everywhere. Workspace and project settings cannot set these.",
     "teamSection": "Team",
     "teamSectionDescription": "Models and reasoning effort for each agent team role.",
     "teamLead": "Lead",
@@ -278,6 +330,29 @@
         "label": "Plan mode",
         "description": "Read-only, no execution"
       }
+    },
+    "source": {
+      "project": "Project",
+      "local": "Local",
+      "fromFile": "Set in {path}",
+      "summaryTitle": "Values from project files",
+      "summaryDescription": "These values come from the project's .damocles files and take precedence over your user settings. Changing one here saves it to that file.",
+      "userFileInfo": "Changes are saved to ~/.damocles/settings.json, or to the project's .damocles file when that file already sets the value. A trusted project can override your settings in .damocles/settings.json and .damocles/settings.local.json."
+    },
+    "jsonFiles": {
+      "title": "Settings files",
+      "edit": {
+        "user": "Edit user settings.json",
+        "project": "Edit project settings.json",
+        "local": "Edit local settings.local.json"
+      },
+      "noProject": "No project is open, so there is no project settings file.",
+      "untrusted": "The default project is not trusted, so its settings files do not apply.",
+      "return": {
+        "user": "Back to user settings.json",
+        "project": "Back to project settings.json",
+        "local": "Back to local settings.local.json"
+      }
     }
   },
   "session": {
@@ -333,8 +408,34 @@
       "confirm": "Roll back files",
       "cancel": "Back"
     },
-    "checkpointWarning": "File checkpoints are stored in memory. This action cannot be undone once the session ends.",
-    "compactionCaveat": "The restored conversation may be near the context limit, so automatic compaction could trigger again on your next message."
+    "checkpointWarning": "A rewind first saves your current files as a restore point. Use Undo rewind in the rewind list to bring them back.",
+    "compactionCaveat": "The restored conversation may be near the context limit, so automatic compaction could trigger again on your next message.",
+    "notRestored": {
+      "title": "Not restored by this checkpoint",
+      "summary": "{n} file, {size} | {n} files, {size}",
+      "toggle": "Show files not restored",
+      "hint": "A rewind leaves these files exactly as they are.",
+      "pattern": "{pattern}: {n} file | {pattern}: {n} files",
+      "reason": {
+        "size": "over the size limit",
+        "category": "media, archive or build output",
+        "lfs": "Git LFS file"
+      },
+      "loading": "Loading the full list…",
+      "loadFailed": "The full list could not be loaded."
+    },
+    "notRewindable": {
+      "title": "Files cannot be restored to this point",
+      "badge": "Not rewindable",
+      "reason": {
+        "baselineTimeout": "A file-changing tool ran before this turn's checkpoint was ready.",
+        "baselineFailed": "This turn's checkpoint could not be taken."
+      },
+      "detail": {
+        "baselineTimeout": "{tool} waited {n} s for this turn's checkpoint and ran without it.",
+        "baselineFailed": "Git reported: {error}"
+      }
+    }
   },
   "permission": {
     "runCommand": "Run this command?",
@@ -366,7 +467,8 @@
       "cancel": "Cancel"
     },
     "sendToClaude": "Send to Damocles",
-    "customPlaceholder": "e.g., Use a different approach, rename the file, add error handling..."
+    "customPlaceholder": "e.g., Use a different approach, rename the file, add error handling...",
+    "ariaLabel": "Permission request"
   },
   "question": {
     "questionTab": "Q{n}",
@@ -381,7 +483,8 @@
     "noAnswer": "(no answer)",
     "notesPlaceholder": "Add notes (optional)...",
     "showPreview": "Show preview",
-    "hidePreview": "Hide preview"
+    "hidePreview": "Hide preview",
+    "ariaLabel": "Question prompt"
   },
   "form": {
     "ariaLabel": "Input form prompt",
@@ -399,7 +502,8 @@
       "no": "No",
       "custom": "Tell Damocles what to do instead"
     },
-    "customPlaceholder": "e.g., Use a different skill, skip this step, try a different approach..."
+    "customPlaceholder": "e.g., Use a different skill, skip this step, try a different approach...",
+    "ariaLabel": "Skill approval request"
   },
   "budget": {
     "exceeded": "Budget limit exceeded",
@@ -846,7 +950,12 @@
     "compactionWarning": "No files change; turns after the compaction are not carried over",
     "compactionFullRewind": "Full rewind available: restore files, fork the conversation, or both",
     "compactionForkOnly": "Fork the conversation to recover the full pre-compaction context",
-    "compactionTurnsDropped": "Forking does not carry over turns after the compaction point"
+    "compactionTurnsDropped": "Forking does not carry over turns after the compaction point",
+    "restorePoints": "Restore points",
+    "beforeRewindAt": "Before rewind at {time}",
+    "beforeUndoAt": "Before undo at {time}",
+    "rewoundTo": "Rewound to \"{prompt}\"",
+    "undoRewind": "Undo rewind"
   },
   "stats": {
     "contextUsage": "Context window usage",
@@ -1053,7 +1162,12 @@
     "stopping": "Stopping...",
     "cancelNotePlaceholder": "Why stop? (optional)",
     "cancelNoteSubmit": "Stop",
-    "cancelNoteBack": "Back"
+    "cancelNoteBack": "Back",
+    "in": "IN",
+    "out": "OUT",
+    "inputFiles": "{n} files",
+    "inputPattern": "Pattern: {pattern}",
+    "inputQuery": "Query: {query}"
   },
   "questionTool": {
     "askingQuestion": "Asking a question",
@@ -1085,7 +1199,8 @@
     "executedSuccess": "Skill executed successfully",
     "feedbackSent": "Feedback sent to Damocles:",
     "userDenied": "User denied skill execution",
-    "requestSkipped": "Skill request was skipped"
+    "requestSkipped": "Skill request was skipped",
+    "unknownSkill": "Unknown skill"
   },
   "planModeTool": {
     "entered": "Plan mode entered",
@@ -1341,7 +1456,18 @@
     "queueReturned": "Stopped before your queued messages were sent - they are back in the input",
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
-    "noSessionToBindPlan": "Start a conversation before binding a plan file"
+    "noSessionToBindPlan": "Start a conversation before binding a plan file",
+    "authError": "Authentication error: {error}",
+    "configChange": {
+      "user": "User settings updated",
+      "project": "Project settings updated",
+      "local": "Local settings updated",
+      "policy": "Policy settings updated",
+      "skills": "Skills updated",
+      "other": "Settings updated"
+    },
+    "responseTruncated": "Response truncated: max output tokens reached",
+    "rewindUndone": "Files restored to before the rewind"
   },
   "backgroundTask": {
     "title": "Background Tasks",
@@ -1465,7 +1591,10 @@
     "reindexing": "Reindexing…"
   },
   "authBanner": {
-    "independenceNote": "Damocles has its own sign-in, independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
+    "independenceNote": "Damocles has its own sign-in, independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication.",
+    "title": "Claude authentication required",
+    "signIn": "Sign In",
+    "sessionExpired": "Your Claude session needs to be renewed. Sign in to continue."
   },
   "openai": {
     "sectionTitle": "OpenAI Authentication",
@@ -1497,7 +1626,7 @@
       "signedIn": "Signed in",
       "signInButton": "Sign In to ChatGPT",
       "signOut": "Sign out",
-      "browserHint": "Opens browser for OAuth (PKCE). Tokens stored in VS Code SecretStorage."
+      "browserHint": "Opens your browser for OAuth (PKCE). Tokens are stored in ~/.damocles/pi/agent/auth.json."
     },
     "preferApiKey": {
       "label": "Prefer API key over Codex",
@@ -1544,7 +1673,7 @@
       "saveFailed": "Failed to save key",
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
-      "hint": "Pay-per-token API key, stored in VS Code SecretStorage; enables DeepSeek V4 Pro and Flash."
+      "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables DeepSeek V4 Pro and Flash."
     }
   },
   "claudeAuth": {
@@ -1591,7 +1720,8 @@
       "editTooltip": "Loads the prompt into the input for editing, does not auto-send",
       "rewind": "Rewind to here",
       "rewindDisabledTooltip": "No checkpoint for this prompt"
-    }
+    },
+    "listLabel": "prompt navigator"
   },
   "memory": {
     "kind": {
@@ -1632,7 +1762,7 @@
       "dismiss": "Dismiss",
       "dismissLabel": "Dismiss the quality audit suggestion"
     },
-    "heldElsewhere": "Another VS Code window is running an audit. Wait for it to finish, then refresh.",
+    "heldElsewhere": "Another Damocles window is running an audit. Wait for it to finish, then refresh.",
     "refresh": "Refresh",
     "loading": "Loading audit…",
     "start": "Start audit",
@@ -1722,7 +1852,7 @@
       "undecided": "Undecided",
       "mixed": "Mixed"
     },
-    "cancelHeldElsewhere": "This audit is running in another VS Code window and can only be cancelled there.",
+    "cancelHeldElsewhere": "This audit is running in another Damocles window and can only be cancelled there.",
     "result": {
       "applied": "No changes applied. | Applied {count} change. | Applied {count} changes.",
       "rejected": "No proposals rejected. | {count} proposal rejected. | {count} proposals rejected.",
@@ -1734,10 +1864,263 @@
       "unavailable": "The memory system is not available.",
       "busy": "A quality audit is already running in this or another window.",
       "no-model": "No model with a configured credential is available for memory sub-calls, so the audit cannot run.",
-      "lease-lost": "Another VS Code window took over this audit run.",
+      "lease-lost": "Another Damocles window took over this audit run.",
       "all-failed": "Every grading call failed, so the audit made no proposals.",
       "run-failed": "The audit stopped on an unexpected error.",
       "request-failed": "The audit request failed. Try again."
     }
+  },
+  "extensionUi": {
+    "agent": "Agent",
+    "queuePosition": "1 of {total}",
+    "filterPlaceholder": "Type to filter",
+    "noMatches": "No matching items",
+    "ok": "OK"
+  },
+  "header": {
+    "viewAside": "View aside",
+    "openBrowser": "Open Browser",
+    "memory": "Memory",
+    "sessionHistory": "Session History"
+  },
+  "btw": {
+    "title": "Aside",
+    "subtitle": "Side question, not part of the main conversation",
+    "streaming": "Streaming",
+    "thinking": "Thinking..."
+  },
+  "elementAttachment": {
+    "preview": "Click to preview",
+    "openContext": "Open element context",
+    "element": "Element"
+  },
+  "elicitation": {
+    "ariaLabel": "MCP server elicitation",
+    "openInBrowser": "Open in Browser",
+    "decline": "Decline",
+    "accept": "Accept"
+  },
+  "explore": {
+    "badge": "Explorer ({model})"
+  },
+  "remoteImage": {
+    "label": "🖼️ image from {host}, click to load",
+    "unknownHost": "remote host"
+  },
+  "compass": {
+    "edgeKind": {
+      "CALLS": "Calls",
+      "IMPORTS_FROM": "Imports from",
+      "INHERITS": "Inherits",
+      "IMPLEMENTS": "Implements",
+      "CONTAINS": "Contains",
+      "TESTED_BY": "Tested by",
+      "DEPENDS_ON": "Depends on",
+      "REFERENCES": "References"
+    },
+    "nodeKind": {
+      "File": "File",
+      "Class": "Class",
+      "Function": "Function",
+      "Type": "Type",
+      "Test": "Test"
+    },
+    "edgeFilter": {
+      "trigger": "Filter edges ({visible}/{total})",
+      "title": "Edge filters",
+      "all": "All",
+      "none": "None"
+    },
+    "help": {
+      "title": "Compass keyboard shortcuts",
+      "description": "Keyboard shortcuts and graph legend reference.",
+      "shortcuts": "Shortcuts",
+      "nodeLegend": "Node legend",
+      "edgeLegend": "Edge legend",
+      "enterFocus": "Enter graph focus",
+      "exitFocus": "Exit graph focus",
+      "moveFocus": "Move focus to nearest node",
+      "openFile": "Open file at line",
+      "clearSelection": "Clear selection / close dialog",
+      "openHelp": "Open this dialog",
+      "fit": "Fit graph to view",
+      "refresh": "Refresh graph"
+    },
+    "search": {
+      "title": "Compass Search",
+      "placeholder": "Search code entities by name…",
+      "all": "All",
+      "searching": "Searching…",
+      "noResults": "No results found",
+      "hint": "Search code entities by name, qualified name, or file path"
+    },
+    "graph": {
+      "title": "Knowledge Graph",
+      "counts": "{nodes} nodes, {edges} edges",
+      "allCommunities": "All communities",
+      "fit": "Fit",
+      "refresh": "Refresh",
+      "blastRadiusActive": "Blast radius overlay active: {count} impacted nodes",
+      "loading": "Loading graph…"
+    },
+    "indicator": {
+      "error": "Graph error",
+      "indexingFiles": "Indexing {count}…",
+      "indexing": "Indexing…",
+      "nodes": "{count} nodes",
+      "never": "Never",
+      "justNow": "Just now",
+      "minutesAgo": "{n} min ago",
+      "hoursAgo": "{n} hr ago",
+      "daysAgo": "{n}d ago",
+      "state": "State",
+      "ready": "Ready",
+      "indexingState": "Indexing",
+      "idle": "Idle",
+      "files": "Files",
+      "communities": "Communities",
+      "indexed": "Indexed",
+      "readOnly": "Read only",
+      "readOnlyNotice": "A newer Damocles updated this index, so this version can only read it. Update Damocles to rebuild it.",
+      "reindex": "Reindex",
+      "retry": "Retry",
+      "access": "Access"
+    }
+  },
+  "consolidation": {
+    "indicatorTitle": "Memory consolidation",
+    "lastFailed": "Last consolidation failed",
+    "title": "Memory Consolidation",
+    "runNowTitle": "Run a full consolidation pass now",
+    "runNow": "Run now",
+    "retryNow": "Retry now",
+    "signIn": "Sign in to a model",
+    "idle": "Idle",
+    "running": "Running",
+    "consolidating": "Consolidating…",
+    "turnsQueued": "{n} turn queued | {n} turns queued",
+    "phase": {
+      "claim": "Claim",
+      "extract": "Extract",
+      "persist": "Persist",
+      "maintain": "Maintain",
+      "profiles": "Profiles"
+    },
+    "strip": {
+      "reviewing": "Reviewing queued turns…",
+      "stillThinking": "Still thinking, extraction can take up to 20s",
+      "reading": "Reading {n} turn… | Reading {n} turns…",
+      "persisting": "Persisting extracted memories",
+      "persistingPending": "Persisting extracted memories…",
+      "maintenance": "Running maintenance…",
+      "profiles": "Updating user profiles…"
+    },
+    "failure": {
+      "noModel": "No model is signed in. Queued turns are safe and will retry.",
+      "unavailable": "Memory system is unavailable. Try reloading the window.",
+      "generic": "Consolidation failed."
+    },
+    "justNow": "just now",
+    "failedAt": "Failed at {phase} · {when}",
+    "trigger": {
+      "manual": "Manual",
+      "auto": "Auto"
+    },
+    "rollup": {
+      "inserted": "{n} new",
+      "merged": "{n} merged",
+      "superseded": "{n} superseded",
+      "deduped": "{n} deduped",
+      "invalid": "{n} invalid",
+      "promoted": "{n} promoted",
+      "decayed": "{n} decayed",
+      "pruned": "{n} pruned"
+    },
+    "outcome": {
+      "inserted": "inserted",
+      "merged": "merged",
+      "superseded": "superseded",
+      "deduped": "deduped",
+      "invalid": "invalid"
+    },
+    "nothingNew": "Nothing new to remember, reviewed {n} turn. | Nothing new to remember, reviewed {n} turns.",
+    "extracted": "Extracted {n}",
+    "queued": "Queued for consolidation ({n})",
+    "queueEmpty": "No turns waiting, everything has been consolidated.",
+    "user": "User",
+    "assistant": "Assistant",
+    "noRunYet": "No consolidation has run yet this session.",
+    "noRunHintBefore": "Click",
+    "noRunHintAfter": "to consolidate the queued turns.",
+    "stepper": {
+      "turns": "{n} turn | {n} turns",
+      "readingTurns": "reading turns…",
+      "found": "{n} found",
+      "items": "{n} item | {n} items",
+      "profilesDone": "project · global",
+      "skippedBecause": "skipped: {reason}",
+      "skipped": "skipped",
+      "failed": "failed"
+    }
+  },
+  "memoryPanel": {
+    "title": "Memory",
+    "subtitle": "Browse and manage memories",
+    "searchPlaceholder": "Search all memories...",
+    "allKinds": "All",
+    "allScopes": "All scopes",
+    "showForgotten": "Forgotten",
+    "tabs": {
+      "memories": "Memories",
+      "notes": "Notes",
+      "observations": "Observations",
+      "results": "Results"
+    },
+    "userProfile": "User Profile",
+    "profileStatic": "Static",
+    "profileDynamic": "Dynamic",
+    "projectStaticPlaceholder": "Stable facts about the user/project...",
+    "globalStaticPlaceholder": "Stable facts that apply everywhere...",
+    "dynamicPlaceholder": "Recent activity...",
+    "noMatches": "No memories match the current filters.",
+    "copied": "Copied",
+    "copy": "Copy",
+    "copiedAria": "Copied to clipboard",
+    "copyAria": "Copy memory to clipboard",
+    "versionHistory": "Version history",
+    "versionHistoryDescription": "Earlier versions of this memory, from root to latest.",
+    "noVersionHistory": "No version history.",
+    "latest": "latest",
+    "relatedMemories": "Related memories",
+    "relatedDescription": "Memories linked to this one in the fact graph.",
+    "noRelated": "No related memories.",
+    "restore": "Restore",
+    "forget": "Forget",
+    "unpin": "Unpin",
+    "pin": "Pin",
+    "inferred": "inferred",
+    "sources": "{n} sources",
+    "forgotten": "forgotten",
+    "noNotesBefore": "No notes yet. Use",
+    "noNotesAfter": "to save one.",
+    "noObservations": "No observations yet. Claude will record observations as it works.",
+    "loadingMore": "Loading more...",
+    "loadMore": "Load more observations",
+    "searching": "Searching for \"{query}\"…",
+    "noResults": "No results for \"{query}\".",
+    "addPlaceholder": {
+      "session": "Add session memory...",
+      "project": "Add project memory...",
+      "global": "Add global memory...",
+      "note": "Add note memory..."
+    }
+  },
+  "voiceToast": {
+    "micDenied": "Microphone access denied. Enable it in system or browser settings.",
+    "micStolen": "Microphone was taken by another application. Voice paused.",
+    "noMic": "No microphone device available.",
+    "turnLost": "Voice turn lost, the sidecar restarted. Try again.",
+    "upgradeAvailable": "Voice models update available: {mb} MB",
+    "sidecarError": "Voice sidecar error"
   }
 }

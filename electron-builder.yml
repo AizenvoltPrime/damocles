@@ -1,0 +1,159 @@
+# Desktop app packaging. Build with `npm run dist`; every build passes `--publish never` (the release job uploads).
+appId: io.github.aizenvoltprime.damocles
+productName: Damocles
+copyright: Copyright © AizenvoltPrime
+extraMetadata:
+  # package.json `main` is the VS Code extension entry.
+  main: dist/desktop/main.js
+  # The Windows file metadata CompanyName.
+  author:
+    name: AizenvoltPrime
+
+directories:
+  output: dist-desktop
+  buildResources: build
+
+files:
+  - dist/desktop/**
+  - dist/desktop-shell/**
+  - dist/webview/**
+  - dist/compass-worker.js
+  - dist/usage-stats-worker.js
+  - dist/sentinel.js
+  # Nothing loads source maps at runtime (no --enable-source-maps); they were a quarter of app.asar.
+  - '!**/*.map'
+  - l10n/**
+  - resources/**
+  - python/**
+  - '!python/**/.venv{,/**}'
+  - '!python/**/__pycache__{,/**}'
+  - '!python/**/.pytest_cache{,/**}'
+  - '!python/**/.ruff_cache{,/**}'
+  - '!python/**/.mypy_cache{,/**}'
+  - '!python/**/*.egg-info{,/**}'
+  - '!python/**/tests{,/**}'
+  - '!python/**/scripts{,/**}'
+  - '!python/**/build{,/**}'
+  - '!python/**/dist{,/**}'
+  - '!python/**/uv.lock'
+  - package.json
+  - package.nls*.json
+  # MIT, ISC and BSD notices for the code bundled into dist/ must travel with every copy.
+  - LICENSE
+  - THIRD-PARTY-NOTICES.md
+  # Bundled into dist/desktop/main.js and required by no shipped package.
+  - '!node_modules/smol-toml{,/**}'
+  # Only chord's unreachable ./bundler export uses esbuild, the VSIX excludes it on the same review (scripts/sync-vscodeignore.mjs EXCLUDED_NESTED_DEPS),
+  # and electron-builder hoists it to the top-level node_modules.
+  - '!**/node_modules/{esbuild,@esbuild}{,/**}'
+
+# Monaco is a devDependency bundled into dist/webview, so the notices for the code it vendors ship from here, not from node_modules.
+extraResources:
+  - from: node_modules/monaco-editor/ThirdPartyNotices.txt
+    to: monaco-editor-ThirdPartyNotices.txt
+
+# Every native module is Node-API with prebuilds; a rebuild against the Electron ABI fails on Windows runners without CMake.
+npmRebuild: false
+
+asar:
+  # asarUnpack below is the complete unpacked set; it must equal ASAR_UNPACK in src/desktop/main/platform/unpacked-assets.ts.
+  smartUnpack: false
+asarUnpack:
+  - dist/compass-worker.js
+  - dist/usage-stats-worker.js
+  - dist/sentinel.js
+  - resources/grammars/**
+  - python/**
+  - node_modules/web-tree-sitter/**
+  - node_modules/@vscode/ripgrep-*/**
+  - node_modules/@koromix/koffi-*/**
+  - node_modules/@parcel/watcher-*/**
+
+# docs/invariants.md "Desktop packaging and updates"; scripts/verify-desktop-package.mjs reads these back from every built binary.
+electronFuses:
+  runAsNode: true
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+
+publish:
+  provider: github
+  owner: AizenvoltPrime
+  repo: damocles
+
+win:
+  # One arch per build; each Windows build also passes -c.publish.channel=latest-<arch> so the two feeds do not collide.
+  target: nsis
+  icon: resources/icon.png
+
+nsis:
+  oneClick: true
+  perMachine: false
+  # userData stays for a reinstall; ~/.damocles is shared with the VS Code extension and no uninstaller step touches it.
+  deleteAppDataOnUninstall: false
+  # No spaces: the release job uploads with `gh release create`, which would rename a spaced file away from the name latest-*.yml records.
+  artifactName: Damocles-Setup-${version}-${arch}.${ext}
+
+mac:
+  target:
+    - target: dmg
+      arch: arm64
+    - target: zip
+      arch: arm64
+  icon: resources/icon.png
+  category: public.app-category.developer-tools
+  minimumSystemVersion: '13.0'
+  # Ad hoc: no Apple Developer ID. Hardened runtime only matters for notarization.
+  identity: '-'
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  artifactName: Damocles-${version}-${arch}.${ext}
+
+linux:
+  # No arch list. It would add the other arch to every build, packed with this host's native modules.
+  target: [deb, rpm]
+  icon: resources/icon.png
+  executableName: damocles
+  category: Development
+  synopsis: AI coding agent desktop app
+  maintainer: AizenvoltPrime <alex11737@gmail.com>
+
+deb:
+  appArmorProfile: build/linux/apparmor.profile
+  afterInstall: build/linux/after-install.sh
+  afterRemove: build/linux/after-remove.sh
+  # electron-builder's defaults plus the GBM and ALSA libraries Chromium links against.
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libgbm1
+    - libasound2
+
+rpm:
+  # The package owns its directories, so removing it leaves no empty /opt/Damocles tree.
+  fpm: [--rpm-auto-add-directories]
+  appArmorProfile: build/linux/apparmor.profile
+  afterInstall: build/linux/after-install.sh
+  afterRemove: build/linux/after-remove.sh
+  depends:
+    - gtk3
+    - libnotify
+    - nss
+    - libXScrnSaver
+    - (libXtst or libXtst6)
+    - xdg-utils
+    - at-spi2-core
+    - (libuuid or libuuid1)
+    # Fedora names first, openSUSE names second.
+    - (mesa-libgbm or libgbm1)
+    - (alsa-lib or libasound2)

@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 import { useStreamingStore, useSubagentStore } from "@/stores";
 import { useTeamStore } from "@/stores/useTeamStore";
 import type { ExpandedToolSource } from "@/stores/useUIStore";
-import { useVSCode } from "./useVSCode";
+import { usePlatformBridge } from "./usePlatformBridge";
 
 export interface PendingToolCancel {
   requestId: string;
@@ -54,7 +54,7 @@ export interface ToolCancel {
 
 /** Asks the extension to cancel one running shell call and flags it optimistically in the store `source` names. */
 export function useToolCancel(source: MaybeRefOrGetter<ExpandedToolSource> = "session"): ToolCancel {
-  const { postMessage } = useVSCode();
+  const { postMessage } = usePlatformBridge();
   const streamingStore = useStreamingStore();
   const subagentStore = useSubagentStore();
   const teamStore = useTeamStore();

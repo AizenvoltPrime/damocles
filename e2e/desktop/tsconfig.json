@@ -1,0 +1,19 @@
+// Type-checks the desktop end-to-end suite (Playwright runs it untyped). Specs read page globals, so DOM is in lib.
+// `paths` resolve against the root tsconfig's baseUrl, the repo root.
+{
+  "extends": "../../tsconfig.tests.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "rootDir": "../..",
+    // global-setup imports the externals list from scripts/*.mjs, the bundles' single source.
+    "allowJs": true,
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@/*": ["./src/webview/*"]
+    }
+  },
+  "include": ["./**/*.ts", "../../playwright.desktop.config.ts", "../../src/**/*.d.ts"],
+  "files": ["../../src/webview/env.d.ts"],
+  "exclude": []
+}

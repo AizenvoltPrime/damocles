@@ -1,6 +1,7 @@
 import type { Ref, ComputedRef } from "vue";
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
+import { i18n } from "@/i18n";
 
 export type SidecarLifecycleState =
   | "stopped"
@@ -187,7 +188,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     modelsLoaded.value = nextModelsLoaded ?? [];
     sidecarStatusMessage.value = message ?? null;
     if (nextState === "error") {
-      errorMessage.value = message ?? "Voice sidecar error";
+      errorMessage.value = message ?? i18n.global.t("voiceToast.sidecarError");
     } else {
       errorMessage.value = null;
     }

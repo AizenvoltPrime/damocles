@@ -17,7 +17,7 @@ import OverlayShell from '../OverlayShell.vue';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
+import { MODAL_Z_INDEX, useOverlayEscape } from '@/composables/useOverlayEscape';
 import { i18n } from '@/i18n';
 import { at } from '@/__tests__/helpers';
 
@@ -337,6 +337,29 @@ describe('the stacking source', () => {
 
     for (const wrapper of deep) expect(zIndexOf(wrapper)).toBeLessThan(MODAL_Z_INDEX);
     expect(zIndexOf(at(deep, deep.length - 1))).toBe(MODAL_Z_INDEX - 1);
+  });
+
+  it('keeps a modal on top of an overlay opened after it, for paint and for Escape', () => {
+    const modalClosed = vi.fn();
+    const Modal = defineComponent({
+      setup() {
+        const { zIndex } = useOverlayEscape(modalClosed, { modal: true });
+        return () => h('div', { style: { zIndex: zIndex.value } });
+      },
+    });
+    const beneath = openShell('beneath');
+    const modal = track(mount(Modal, { attachTo: document.body }));
+    const later = openShell('opened later');
+
+    expect(zIndexOf(modal)).toBe(MODAL_Z_INDEX);
+    expect(zIndexOf(later)).toBe(BASE_Z + 1);
+    expect(zIndexOf(beneath)).toBe(BASE_Z);
+
+    pressEscape();
+
+    expect(modalClosed).toHaveBeenCalledTimes(1);
+    expect(later.emitted('close')).toBeUndefined();
+    expect(beneath.emitted('close')).toBeUndefined();
   });
 });
 

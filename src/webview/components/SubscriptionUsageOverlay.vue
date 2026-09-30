@@ -7,12 +7,12 @@ import { IconChartBar, IconRotateLeft } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { ProviderUsage, UsageSpend, UsageWindowBar } from '@shared/types/usage';
 
 const { t, te, locale } = useI18n();
 const store = useSubscriptionUsageStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 defineEmits<{
   (e: 'close'): void;

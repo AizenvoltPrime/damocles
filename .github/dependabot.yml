@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Electron supports its latest three majors; merge a major bump only while the pinned major is still supported.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: electron
+      # Exact-pinned release tools; the release job runs whatever the lockfile holds.
+      - dependency-name: "@vscode/vsce"
+      - dependency-name: ovsx
+    open-pull-requests-limit: 2
+  # The desktop update driver's own lockfile, which holds only playwright-core.
+  - package-ecosystem: npm
+    directory: /e2e/desktop/update
+    schedule:
+      interval: weekly
+  # Keeps the SHA pins in .github/workflows current, together with their `# vX.Y.Z` comments.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -45,3 +45,25 @@ describe('ConsolidationOverlay extracted workspace', () => {
     expect(labels[0]!.find('[aria-hidden="true"]').text()).toBe('→');
   });
 });
+
+describe('ConsolidationOverlay failure footer', () => {
+  afterEach(() => { i18n.global.locale.value = 'en'; });
+
+  it('names the failed phase in the UI language', () => {
+    i18n.global.locale.value = 'el';
+    useConsolidationStore().setResult({
+      ranAt: Date.now(),
+      trigger: 'manual',
+      status: 'failed',
+      extracted: [],
+      maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+      candidatesReviewed: 0,
+      failure: { kind: 'error', detail: 'boom', phase: 'extract' },
+    });
+    mounted.push(mount(ConsolidationOverlay, { global: { plugins: [i18n], stubs: { MarkdownRenderer: true } }, attachTo: document.body }));
+
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(`${i18n.global.t('consolidation.phase.extract')} ·`);
+    expect(text).not.toContain('extract ·');
+  });
+});

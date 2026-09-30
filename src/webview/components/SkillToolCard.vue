@@ -21,7 +21,7 @@ const props = defineProps<{
 
 const skillName = computed(() => {
   const input = props.toolCall.input;
-  return typeof input?.skill === 'string' ? input.skill : 'Unknown skill';
+  return typeof input?.skill === 'string' ? input.skill : t('skillTool.unknownSkill');
 });
 
 const skillDescription = computed(() => {

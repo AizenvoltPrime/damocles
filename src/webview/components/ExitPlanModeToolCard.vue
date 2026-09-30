@@ -15,10 +15,10 @@ import {
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useToolCardStatus } from '@/composables/useToolCardStatus';
 import { usePermissionStore } from '@/stores/usePermissionStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const props = defineProps<{
   toolCall: ToolCall;

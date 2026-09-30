@@ -32,7 +32,7 @@ export const EXTENSION_EXTERNALS = [
   '@modelcontextprotocol/sdk',
   '@modelcontextprotocol/sdk/*',
   // Patchright (patched Playwright, Apache-2.0) — the browser automation engine (Slice 1). CJS
-  // `require('patchright')` from src/extension/browser; must stay external and ship as real
+  // `require('patchright')` from src/core/browser; must stay external and ship as real
   // node_modules (it spawns a Node driver subprocess from patchright-core via process.execPath —
   // esbuild bundling would break that path resolution). `patchright-core` (the driver package) flows
   // into the VSIX allowlist automatically via the production-dependency closure walk. NO browsers are

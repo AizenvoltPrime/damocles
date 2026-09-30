@@ -1,6 +1,6 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, type Ref } from 'vue';
 import { Fzf, byLengthAsc } from 'fzf';
-import { useVSCode } from './useVSCode';
+import { usePlatformBridge } from './usePlatformBridge';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import type { SlashCommandItem } from '@shared/types/commands';
 import type { SteerTargetInfo } from '@shared/types/subagents';
@@ -11,7 +11,7 @@ export function useSlashCommandAutocomplete(
   inputText: Ref<string>,
   textareaRef: Ref<HTMLTextAreaElement | null>
 ) {
-  const { postMessage, onMessage } = useVSCode();
+  const { postMessage, onMessage } = usePlatformBridge();
 
   const isOpen = ref(false);
   const query = ref('');

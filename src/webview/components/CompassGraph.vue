@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { computed, ref, shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import CompassHelpDialog from './CompassHelpDialog.vue';
 import CompassEdgeFilterPopover from './CompassEdgeFilterPopover.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { EDGE_STYLE, NODE_EQUIVALENT_RADIUS, nodePathGenerator } from '@/composables/compass/useGraphSymbols';
 import type { Selection as D3Selection } from 'd3-selection';
 import type { Simulation, SimulationLinkDatum, SimulationNodeDatum } from 'd3-force';
@@ -17,10 +18,12 @@ import type {} from 'd3-transition';
 import type { CompassGraphNode, CompassEdgeKind } from '@shared/types/compass';
 
 const store = useCompassStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const containerRef = ref<HTMLElement | null>(null);
-const nodeCountText = ref('');
+const { t } = useI18n();
+const graphCounts = ref<{ nodes: number; edges: number } | null>(null);
+const nodeCountText = computed(() => (graphCounts.value ? t('compass.graph.counts', graphCounts.value) : ''));
 const loading = ref(false);
 
 interface SimNode extends CompassGraphNode, SimulationNodeDatum {}
@@ -438,7 +441,7 @@ function buildGraph(): void {
 
 	sim.on('tick', updatePositions).restart();
 
-	nodeCountText.value = `${simNodes.length} nodes, ${simLinks.length} edges`;
+	graphCounts.value = { nodes: simNodes.length, edges: simLinks.length };
 }
 
 function requestGraph(): void {
@@ -522,7 +525,7 @@ function handleFitToView(): void {
 
 <template>
 	<OverlayShell
-		title="Knowledge Graph"
+		:title="t('compass.graph.title')"
 		:subtitle="nodeCountText || undefined"
 		:icon="IconCompass"
 		icon-class="text-emerald-400"
@@ -535,10 +538,10 @@ function handleFitToView(): void {
 					@update:model-value="(v) => store.graphCommunityFilter = v === 'all' ? null : Number(v)"
 				>
 					<SelectTrigger class="h-auto text-[10px] bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border-0 gap-1 w-auto">
-						<SelectValue placeholder="All communities" />
+						<SelectValue :placeholder="t('compass.graph.allCommunities')" />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="all">All communities</SelectItem>
+						<SelectItem value="all">{{ t('compass.graph.allCommunities') }}</SelectItem>
 						<SelectItem
 							v-for="c in (store.graphData?.communities ?? [])"
 							:key="c.id"
@@ -552,13 +555,13 @@ function handleFitToView(): void {
 					class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
 					@click="handleFitToView"
 				>
-					Fit
+					{{ t('compass.graph.fit') }}
 				</button>
 				<button
 					class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
 					@click="requestGraph"
 				>
-					Refresh
+					{{ t('compass.graph.refresh') }}
 				</button>
 				<CompassEdgeFilterPopover />
 			</div>
@@ -569,12 +572,12 @@ function handleFitToView(): void {
 				v-if="store.hasBlastRadius"
 				class="px-3 py-1.5 bg-red-500/10 text-red-400 text-[10px] flex items-center justify-between border-b border-border shrink-0"
 			>
-				<span>Blast radius overlay active — {{ store.blastRadius?.total_impacted ?? 0 }} impacted nodes</span>
+				<span>{{ t('compass.graph.blastRadiusActive', { count: store.blastRadius?.total_impacted ?? 0 }) }}</span>
 				<button
 					class="text-[10px] underline cursor-pointer bg-transparent border-0 text-red-400"
 					@click="store.dismissBlastRadius()"
 				>
-					Dismiss
+					{{ t('common.dismiss') }}
 				</button>
 			</div>
 
@@ -588,9 +591,9 @@ function handleFitToView(): void {
 					class="absolute inset-0 flex items-center justify-center bg-background/50"
 				>
 					<span v-if="store.buildProgress" class="text-xs text-muted-foreground">
-						Building {{ store.buildProgress.current }} / {{ store.buildProgress.total }} files…
+						{{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
 					</span>
-					<span v-else class="text-xs text-muted-foreground">Loading graph…</span>
+					<span v-else class="text-xs text-muted-foreground">{{ t('compass.graph.loading') }}</span>
 				</div>
 			</div>
 		</div>

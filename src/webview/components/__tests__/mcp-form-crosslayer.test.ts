@@ -20,7 +20,7 @@ import {
   assertValidMcpServerConfig,
   assertValidMcpServerName,
   isFormEditableMcpServerConfig,
-} from '../../../extension/chat-panel/settings-manager/managers/mcp-config-validate';
+} from '../../../core/chat-panel/settings-manager/managers/mcp-config-validate';
 import { LOCAL_MCP_RELATIVE_PATH, mcpSourceOrder, SHADOWING_SOURCES } from '@shared/types/mcp';
 import type { McpServerSource } from '@shared/types/mcp';
 

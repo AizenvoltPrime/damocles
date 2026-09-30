@@ -395,3 +395,23 @@ describe('the composer taking back queued messages a stop never sent', () => {
     expect(imageStrip(wrapper)[0]).toMatchObject({ base64Data: 'AAAA', mediaType: 'image/png', dataUrl: 'data:image/png;base64,AAAA', width: 3, height: 2 });
   });
 });
+
+describe('Shift+Tab in the composer', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const press = (textarea: HTMLTextAreaElement, init: KeyboardEventInit): KeyboardEvent => {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true, ...init });
+    textarea.dispatchEvent(event);
+    return event;
+  };
+
+  it('takes a bare Shift+Tab for mode cycling but leaves modified chords to the host', () => {
+    const textarea = composer().get('textarea').element as HTMLTextAreaElement;
+
+    expect(press(textarea, {}).defaultPrevented).toBe(true);
+    // Ctrl+Shift+Tab is the previous-tab accelerator on desktop and the previous-editor chord in VS Code.
+    expect(press(textarea, { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press(textarea, { metaKey: true }).defaultPrevented).toBe(false);
+    expect(press(textarea, { altKey: true }).defaultPrevented).toBe(false);
+  });
+});

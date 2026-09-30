@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 
 const props = defineProps<{
   src: string;
@@ -7,6 +8,7 @@ const props = defineProps<{
   title?: string;
 }>();
 
+const { t } = useI18n();
 const loaded = ref(false);
 
 // If Vue reuses this instance for a different image, re-gate it — else the new src auto-loads unopted.
@@ -17,7 +19,7 @@ const host = computed(() => {
   try {
     return new URL(props.src).host;
   } catch {
-    return 'remote host';
+    return t('remoteImage.unknownHost');
   }
 });
 </script>
@@ -31,7 +33,7 @@ const host = computed(() => {
     :title="title"
     @click="loaded = true"
   >
-    🖼️ image from {{ host }} — click to load
+    {{ t('remoteImage.label', { host }) }}
   </button>
   <img
     v-else

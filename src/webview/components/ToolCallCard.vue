@@ -9,7 +9,7 @@ import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import type { ExpandedDiff } from "@/stores/useDiffStore";
 import type { ExpandedToolSource } from "@/stores/useUIStore";
-import { useVSCode } from "@/composables/useVSCode";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { ownEntry } from "@/utils/ownEntry";
 
 import {
@@ -53,7 +53,7 @@ import DiffView from "./DiffView.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 
 const { t } = useI18n();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "CodeSearch", "FeedRead", "YouTubeTranscript", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
 
@@ -376,16 +376,16 @@ function formatInput(input: Record<string, unknown>): string {
   }
   if ("changed_files" in input && Array.isArray(input.changed_files)) {
     const files = input.changed_files as string[];
-    return files.length === 1 ? files[0] ?? "" : `${files.length} files`;
+    return files.length === 1 ? files[0] ?? "" : t("toolCall.inputFiles", { n: files.length });
   }
   if ("pattern" in input) {
-    return `Pattern: ${input.pattern}`;
+    return t("toolCall.inputPattern", { pattern: String(input.pattern) });
   }
   if ("queries" in input && Array.isArray(input.queries)) {
-    return `Query: ${(input.queries as string[]).join(", ")}`;
+    return t("toolCall.inputQuery", { query: (input.queries as string[]).join(", ") });
   }
   if ("query" in input) {
-    return `Query: ${input.query}`;
+    return t("toolCall.inputQuery", { query: String(input.query) });
   }
   if ("selector" in input) {
     return input.selector as string;
@@ -554,7 +554,7 @@ const resultSummary = computed(() => {
 
     <CardContent v-else class="p-3 space-y-2">
       <div v-if="!isLs && (inputSummary || toolCall.name === 'CronList')" class="flex items-start gap-2 text-xs">
-        <span class="text-muted-foreground font-medium shrink-0">IN</span>
+        <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.in') }}</span>
         <span v-if="toolCall.name === 'CronList'" class="text-foreground/50 italic">{{ t('toolOverlay.cronInfo.listJobs') }}</span>
         <span v-else class="font-mono text-foreground/70 truncate">{{ inputSummary }}</span>
       </div>
@@ -579,7 +579,7 @@ const resultSummary = computed(() => {
 
       <div v-else-if="toolSearchMeta" class="text-xs border-t border-border/30 pt-2">
         <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
           <span class="font-mono text-foreground">
             {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
           </span>
@@ -588,7 +588,7 @@ const resultSummary = computed(() => {
 
       <div v-else-if="cronCreateMeta" class="text-xs border-t border-border/30 pt-2">
         <div class="flex items-center gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
           <span class="font-mono text-foreground">{{ cronCreateMeta.humanSchedule }}</span>
           <code class="text-xs px-1 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
             {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
@@ -598,7 +598,7 @@ const resultSummary = computed(() => {
 
       <div v-else-if="cronListMeta" class="text-xs border-t border-border/30 pt-2">
         <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
           <span class="font-mono text-foreground">
             {{ cronListMeta.jobs.length > 0
               ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.jobs.length })
@@ -610,7 +610,7 @@ const resultSummary = computed(() => {
 
       <div v-else-if="toolCall.result" class="text-xs border-t border-border/30 pt-2">
         <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
           <span class="font-mono overflow-x-auto" :class="toolCall.isError ? 'text-error' : 'text-foreground'">
             {{ resultSummary }}
           </span>

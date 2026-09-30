@@ -1,11 +1,19 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo } from '@shared/types/session';
+import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 type RewindSource = 'picker' | 'bubble' | null;
 
 export type ExpandedToolSource = 'session' | 'subagent' | 'team';
+
+/** The on-demand list of files a checkpoint or restore point left out. */
+export type SkippedFilesState = { status: 'loading' } | { status: 'loaded'; files: SkippedFile[] } | { status: 'error' };
+
+export function skippedFilesKey(target: SkippedFilesTarget): string {
+  return target.kind === 'turn' ? `turn:${target.userEntryId}` : `restore-point:${target.id}`;
+}
 
 /** A memory the panel should scroll to and highlight once it has loaded. */
 export interface MemoryPanelFocus {
@@ -23,6 +31,9 @@ export const useUIStore = defineStore('ui', () => {
   const showRewindTypeModal = ref(false);
   const showRewindBrowser = ref(false);
   const rewindHistoryItems = ref<RewindHistoryItem[]>([]);
+  const rewindRestorePoints = ref<RestorePoint[]>([]);
+  // Keyed by `skippedFilesKey`; a checkpoint's list never changes, so a loaded one is kept until reset.
+  const skippedFiles = ref<Record<string, SkippedFilesState>>({});
   const rewindHistoryLoading = ref(false);
   const rewindCanFork = ref(true);
   const selectedRewindItem = ref<RewindHistoryItem | null>(null);
@@ -133,8 +144,9 @@ export const useUIStore = defineStore('ui', () => {
     showRewindTypeModal.value = true;
   }
 
-  function setRewindHistory(items: RewindHistoryItem[], canFork: boolean) {
+  function setRewindHistory(items: RewindHistoryItem[], restorePoints: RestorePoint[], canFork: boolean) {
     rewindCanFork.value = canFork;
+    rewindRestorePoints.value = restorePoints;
     if (rewindSource.value === 'bubble' && selectedRewindItem.value && showRewindTypeModal.value) {
       const match = items.find((item) => item.messageId === selectedRewindItem.value!.messageId);
       if (match) selectedRewindItem.value = match;
@@ -143,6 +155,20 @@ export const useUIStore = defineStore('ui', () => {
     }
     rewindHistoryItems.value = items;
     rewindHistoryLoading.value = false;
+  }
+
+  /** Ask the host for a skipped list unless it is loaded or loading; a failed load is asked again. */
+  function requestSkippedFiles(target: SkippedFilesTarget) {
+    const key = skippedFilesKey(target);
+    const current = skippedFiles.value[key];
+    if (current && current.status !== 'error') return;
+    skippedFiles.value = { ...skippedFiles.value, [key]: { status: 'loading' } };
+    usePlatformBridge().postMessage({ type: 'requestSkippedFiles', target });
+  }
+
+  function setSkippedFiles(target: SkippedFilesTarget, files: SkippedFile[] | null) {
+    const state: SkippedFilesState = files ? { status: 'loaded', files } : { status: 'error' };
+    skippedFiles.value = { ...skippedFiles.value, [skippedFilesKey(target)]: state };
   }
 
   function selectRewindItem(item: RewindHistoryItem) {
@@ -255,6 +281,8 @@ export const useUIStore = defineStore('ui', () => {
     showRewindTypeModal.value = false;
     showRewindBrowser.value = false;
     rewindHistoryItems.value = [];
+    rewindRestorePoints.value = [];
+    skippedFiles.value = {};
     rewindHistoryLoading.value = false;
     rewindCanFork.value = true;
     selectedRewindItem.value = null;
@@ -279,6 +307,10 @@ export const useUIStore = defineStore('ui', () => {
     showRewindTypeModal,
     showRewindBrowser,
     rewindHistoryItems,
+    rewindRestorePoints,
+    skippedFiles,
+    requestSkippedFiles,
+    setSkippedFiles,
     rewindHistoryLoading,
     rewindCanFork,
     selectedRewindItem,

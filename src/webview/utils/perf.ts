@@ -1,12 +1,12 @@
 import { nextTick } from 'vue';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { formatPerfLine, type PerfFields } from '@shared/perf-line';
 
 /** Logs to the host output channel through the existing `log` message, and to the devtools console. */
 export function logPerf(label: string, ms: number, fields?: PerfFields): void {
   const message = formatPerfLine(label, ms, fields);
   console.debug(message);
-  useVSCode().postMessage({ type: 'log', message });
+  usePlatformBridge().postMessage({ type: 'log', message });
 }
 
 export function perfSpan(label: string): { end(fields?: PerfFields): void } {

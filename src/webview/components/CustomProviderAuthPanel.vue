@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { useVSCode } from "@/composables/useVSCode";
+import { usePlatformBridge } from "@/composables/usePlatformBridge";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,7 +18,7 @@ const props = defineProps<{ provider: "stepfun" | "deepseek" }>();
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
 const { stepfunConfigured, deepseekConfigured } = storeToRefs(settingsStore);
-const { postMessage, onMessage } = useVSCode();
+const { postMessage, onMessage } = usePlatformBridge();
 
 const configured = computed(() =>
   props.provider === "stepfun" ? stepfunConfigured.value : deepseekConfigured.value

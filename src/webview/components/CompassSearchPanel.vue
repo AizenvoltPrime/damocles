@@ -1,24 +1,26 @@
 <script setup lang="ts">
 import { onUnmounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { IconSearch } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { CompassNodeKind } from '@shared/types/compass';
 
+const { t } = useI18n();
 const store = useCompassStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
-const KIND_FILTERS: Array<{ label: string; value: CompassNodeKind | null }> = [
-	{ label: 'All', value: null },
-	{ label: 'File', value: 'File' },
-	{ label: 'Class', value: 'Class' },
-	{ label: 'Function', value: 'Function' },
-	{ label: 'Type', value: 'Type' },
-	{ label: 'Test', value: 'Test' },
+const KIND_FILTERS: Array<{ labelKey: string; value: CompassNodeKind | null }> = [
+	{ labelKey: 'compass.search.all', value: null },
+	{ labelKey: 'compass.nodeKind.File', value: 'File' },
+	{ labelKey: 'compass.nodeKind.Class', value: 'Class' },
+	{ labelKey: 'compass.nodeKind.Function', value: 'Function' },
+	{ labelKey: 'compass.nodeKind.Type', value: 'Type' },
+	{ labelKey: 'compass.nodeKind.Test', value: 'Test' },
 ];
 
 const KIND_ICON: Record<string, string> = {
@@ -81,7 +83,7 @@ function formatPath(filePath: string): string {
 
 <template>
 	<OverlayShell
-		title="Compass Search"
+		:title="t('compass.search.title')"
 		:icon="IconSearch"
 		icon-class="text-emerald-400"
 		@close="store.setActivePanel(null)"
@@ -89,14 +91,14 @@ function formatPath(filePath: string): string {
 		<div class="px-3 pt-3 pb-2 space-y-2 border-b border-border">
 			<Input
 				:model-value="store.searchQuery"
-				placeholder="Search code entities by name…"
+				:placeholder="t('compass.search.placeholder')"
 				class="h-8 text-xs"
 				@update:model-value="onInput($event as string)"
 			/>
 			<div class="flex flex-wrap gap-1">
 				<button
 					v-for="f in KIND_FILTERS"
-					:key="f.label"
+					:key="f.labelKey"
 					type="button"
 					class="px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors cursor-pointer border-0"
 					:class="store.searchKind === f.value
@@ -104,20 +106,20 @@ function formatPath(filePath: string): string {
 						: 'bg-secondary text-secondary-foreground hover:bg-secondary/80'"
 					@click="selectKind(f.value)"
 				>
-					{{ f.label }}
+					{{ t(f.labelKey) }}
 				</button>
 			</div>
 		</div>
 
 		<ScrollArea class="flex-1">
 			<div v-if="store.searchLoading" class="p-4 text-center text-xs text-muted-foreground">
-				Searching…
+				{{ t('compass.search.searching') }}
 			</div>
 			<div v-else-if="store.searchResults.length === 0 && store.searchQuery.trim()" class="p-4 text-center text-xs text-muted-foreground">
-				No results found
+				{{ t('compass.search.noResults') }}
 			</div>
 			<div v-else-if="!store.searchQuery.trim()" class="p-4 text-center text-xs text-muted-foreground">
-				Search code entities by name, qualified name, or file path
+				{{ t('compass.search.hint') }}
 			</div>
 			<div v-else class="divide-y divide-border">
 				<button

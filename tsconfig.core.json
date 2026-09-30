@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "vscode": ["./types/no-vscode.d.ts"],
+      "electron": ["./types/no-electron.d.ts"],
+      "electron/*": ["./types/no-electron.d.ts"]
+    }
+  },
+  "include": ["src/core", "src/platform", "src/shared"],
+  // Tests are checked by tsconfig.tests*.json.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/__tests__",
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts",
+    "src/**/*.bench.ts"
+  ]
+}

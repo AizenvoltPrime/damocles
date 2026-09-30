@@ -3,7 +3,7 @@
 The audio path is: OS mic -> PortAudio worker thread -> bounded asyncio
 queue -> Pipeline.feed() on the asyncio loop. Bypasses VS Code webview
 permission boundaries (which deny getUserMedia by default in the Electron
-sandbox) — same pattern as src/extension/voice/recorder.ts uses for the
+sandbox) — same pattern as src/core/voice/recorder.ts uses for the
 push-to-talk path with platform-native binaries.
 
 Threading model: sounddevice fires its callback on PortAudio's audio

@@ -120,7 +120,7 @@ function formatTimestamp(timestamp: number): string {
                 >
                   {{ triggerLabel }}
                 </span>
-                <span class="text-xs text-muted-foreground">{{ tokenReduction }} tokens</span>
+                <span class="text-xs text-muted-foreground">{{ tokenReduction }} {{ t('common.tokens') }}</span>
                 <span class="text-xs text-muted-foreground">•</span>
                 <span class="text-xs text-muted-foreground">{{ formatTimestamp(marker.timestamp) }}</span>
                 <template v-if="billedText">

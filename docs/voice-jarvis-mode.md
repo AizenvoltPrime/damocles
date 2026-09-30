@@ -73,7 +73,7 @@ useJarvisLifecycle ──ws──> voice-stream-handlers ──ws/json──> se
 - Bind: `127.0.0.1` only — sidecar refuses non-loopback connections at the socket layer.
 - Inbound (control-only): `init`, `tts_request`, `cancel_tts`, `set_muted`, `set_voice`, `shutdown`, `ping`. Audio is captured natively in the sidecar via sounddevice — no audio bytes cross the WebSocket.
 - Outbound: `ready`, `wake_detected`, `wake_aborted`, `vad_speech_started`, `vad_speech_ended`, `transcript_final`, `tts_audio_chunk` (binary float32 24 kHz follows JSON envelope), `tts_done`, `voice_changed`, `error`, `pong`.
-- Single source of truth for the contract: `python/.../protocol.py` (Python) and `src/extension/voice/sidecar/protocol.ts` (TypeScript Zod).
+- Single source of truth for the contract: `python/.../protocol.py` (Python) and `src/core/voice/sidecar/protocol.ts` (TypeScript Zod).
 
 ### Lifecycle
 

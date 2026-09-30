@@ -1,4 +1,4 @@
-Update `README.md`, `CHANGELOG.md` and `CLAUDE.md` to match the currently staged changes. This command is the user's explicit request to edit those three files.
+Update `README.md`, `CHANGELOG.md`, `CLAUDE.md` and the docs under `docs/` to match the currently staged changes. This command is the user's explicit request to edit those files.
 
 ## Read the change first
 
@@ -6,11 +6,11 @@ Run in parallel:
 
 - `git diff --staged` (the only source of truth; ignore unstaged and untracked work)
 - `git diff --staged --stat` to see the shape of the changeset
-- `git log -5` and the top of each doc, to match the house style rather than invent one
+- `git log -5`, the top of each root doc and the sections of `docs/` that cover the touched areas, to match the house style rather than invent one
 
 Read enough of the touched source to state what **behavior** changed. A diff tells you which lines moved; only the code tells you what a user or a future session now experiences. Do not document a change you could not trace to a behavior.
 
-If the staged set is large, split the reading across parallel `Explore` subagents by subsystem, then write the docs yourself so one voice runs through all three files.
+If the staged set is large, split the reading across parallel `Explore` subagents by subsystem, then write the docs yourself so one voice runs through every file.
 
 ## The bar for each file
 
@@ -21,8 +21,9 @@ Each file has a different reader, so the same change can belong in one and not t
 | `README.md` | Someone deciding whether to install, or looking for how to use a feature | A user-visible capability, setting, command, keybind or requirement appeared, changed or went away |
 | `CHANGELOG.md` | Someone upgrading, asking "what changed and does it affect me" | Any user-observable difference, including a fix and a dependency move |
 | `CLAUDE.md` | Every future agent session, on every turn | A session that lacks this line would make a wrong change |
+| `docs/*.md` | A session sent there by a CLAUDE.md pointer before changing a subsystem, and the owner | A behavior, invariant, failure mode, decision or measurement the doc states changed |
 
-An internal refactor with identical behavior earns nothing in any of the three.
+An internal refactor with identical behavior earns nothing in any of them.
 
 ## README.md
 
@@ -60,14 +61,25 @@ Before adding a line, apply the test: **would a session that never reads this li
 - What does not: implementation detail, a bug's backstory, anything already discoverable by reading one file, and anything that belongs in `docs/invariants.md`. Rationale and failure modes live there; CLAUDE.md carries the rule and the pointer.
 - An invariant bullet states the rule and the consequence of breaking it, in one or two sentences. No paragraph.
 
+## docs/
+
+Each fact lives in exactly one doc; a second copy drifts. `docs/invariants.md` holds the rationale and failure modes behind CLAUDE.md's rules, one `##` section per subsystem. The other files each own one topic.
+
+- Edit the doc or section that owns the area. The docs describe the current code: state what it does now, never how it came to be. Git holds the history.
+- When the change makes an assertion false, correct it in place, and everywhere else it is asserted (CLAUDE.md, README.md, source comments) in the same pass.
+- Keep headings stable: CLAUDE.md cites them by name ("Memory injection" in `docs/invariants.md`). If a heading must change, update every citation to it.
+- Keep each edit the smallest one that makes the doc true. Change the existing sentence, number or table row before adding a new one, and delete what the change made false rather than qualifying it.
+- A new paragraph needs a new rule, failure mode, measurement or derivation behind it. A restatement, a summary of the diff or an explanation of the change does not earn one.
+- Never cite a number you did not measure.
+
 ## Prose rules
 
-These hold in all three files: no em dashes, no puffery, no words like seamless, powerful or crucial. Name the actor and the mechanism. One idea per sentence. Sentence case headings. A sentence that would read the same in another project's docs says nothing about this one, so cut it.
+These hold in every file: no em dashes, no puffery, no words like seamless, powerful or crucial. Name the actor and the mechanism. One idea per sentence. Sentence case headings. A sentence that would read the same in another project's docs says nothing about this one, so cut it.
 
 ## Finish
 
-- Run `git diff -- README.md CHANGELOG.md CLAUDE.md` and read your own edit as a reviewer would.
+- Run `git diff -- README.md CHANGELOG.md CLAUDE.md docs/` and read your own edit as a reviewer would.
 - Do not stage and do not commit. Leave the edits in the working tree.
-- Report, briefly: what you added to each file, and for each file you left alone, the one-line reason. If you skipped something a reader might expect to see documented, say which and why.
+- Report, briefly: what you changed in each file, with the net line change for each doc under `docs/`, and for each file you left alone, the one-line reason. If a doc grew, name what was added and why an existing line could not carry it. If you skipped something a reader might expect to see documented, say which and why.
 
 $ARGUMENTS

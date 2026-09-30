@@ -105,7 +105,7 @@ for (const arg of process.argv.slice(2)) {
 }
 
 if (process.platform !== 'win32') {
-  fail('this script shells out to WSL; on Linux run `npx @vscode/vsce package --target <target>` directly');
+  fail('this script shells out to WSL; on Linux run `npm run package -- --target <target>` directly');
 }
 
 const target = readArg('target', 'linux-x64');
@@ -183,10 +183,8 @@ wsl(
       '| (cd "$BUILD_DIR" && tar -xf -)',
     'cd "$BUILD_DIR"',
     'npm ci',
-    // --yes: @vscode/vsce is not a devDependency, so npx would otherwise prompt to install it, and
-    // that prompt is the classic unbounded wait. vsce runs `vscode:prepublish` (sync-vscodeignore +
-    // full build), exactly as the release workflow does.
-    `npx --yes @vscode/vsce package --target ${sh(target)} --out ${sh(vsixName)}`,
+    // vsce runs `vscode:prepublish` (sync-vscodeignore + full build), exactly as the release workflow does.
+    `npm run package -- --target ${sh(target)} --out ${sh(vsixName)}`,
     `cp ${sh(vsixName)} ${sh(`${wslRepoRoot}/${vsixName}`)}`,
   ].join('\n'),
   { distro, timeoutMs: BUILD_TIMEOUT_MS, hint: buildHint },

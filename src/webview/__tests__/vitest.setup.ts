@@ -1,12 +1,8 @@
-/**
- * Webview test setup. Stubs the VS Code webview host API so that modules which
- * eagerly call `acquireVsCodeApi()` at import time (e.g. useVSCode.ts) don't
- * crash before any test runs.
- */
-const vscodeStub = {
+// usePlatformBridge selects its host at import time, so the VS Code API must exist before any module loads.
+const vscodeStub: VsCodeApi = {
   postMessage: () => {},
   getState: () => undefined,
   setState: () => {},
 };
 
-(globalThis as unknown as { acquireVsCodeApi: () => typeof vscodeStub }).acquireVsCodeApi = () => vscodeStub;
+(globalThis as unknown as { acquireVsCodeApi: () => VsCodeApi }).acquireVsCodeApi = () => vscodeStub;

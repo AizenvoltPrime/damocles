@@ -1,8 +1,10 @@
 import { toast } from "vue-sonner";
+import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { getVoiceTtsPlayback } from "@/composables/useVoiceTtsPlayback";
 
 export function createVoiceStreamHandlers(): Partial<HandlerRegistry> {
+  const { t } = i18n.global;
   return {
     voiceSidecarStatus: (msg, ctx) => {
       ctx.stores.voiceJarvisStore.setSidecarStatus(
@@ -56,16 +58,16 @@ export function createVoiceStreamHandlers(): Partial<HandlerRegistry> {
     voiceMicUnavailable: (msg, ctx) => {
       ctx.stores.voiceJarvisStore.setMicUnavailable(msg.reason);
       const messages: Record<typeof msg.reason, string> = {
-        denied: "Microphone access denied. Enable it in system or browser settings.",
-        stolen: "Microphone was taken by another application. Voice paused.",
-        "no-device": "No microphone device available.",
+        denied: t("voiceToast.micDenied"),
+        stolen: t("voiceToast.micStolen"),
+        "no-device": t("voiceToast.noMic"),
       };
       toast.error(messages[msg.reason]);
     },
 
     voiceTurnLost: (msg, ctx) => {
       ctx.stores.voiceJarvisStore.setTurnLost(msg.reason);
-      toast.warning("Voice turn lost — sidecar restarted. Try again.");
+      toast.warning(t("voiceToast.turnLost"));
     },
 
     voiceFirstRunRequired: (msg, ctx) => {
@@ -98,7 +100,7 @@ export function createVoiceStreamHandlers(): Partial<HandlerRegistry> {
       ctx.stores.voiceJarvisStore.setPendingUpgrades(msg.upgrades);
       const total = msg.upgrades.reduce((acc, u) => acc + u.bytesDelta, 0);
       const mb = (total / 1_000_000).toFixed(0);
-      toast.info(`Voice models update available — ${mb} MB`);
+      toast.info(t("voiceToast.upgradeAvailable", { mb }));
     },
 
     voiceFilesSizeUpdate: (msg, ctx) => {

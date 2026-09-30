@@ -7,11 +7,13 @@ import { IconChartBar, IconChevronRight } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const { t, te, locale } = useI18n();
 const store = useContextUsageStore();
-const { postMessage } = useVSCode();
+const settingsStore = useSettingsStore();
+const { postMessage } = usePlatformBridge();
 
 // Section rows arrive in upstream discovery order (filesystem walk, MCP registration, Map insertion),
 // which is neither stable nor meaningful to a reader scanning for a name. Sort by display label with a
@@ -88,7 +90,7 @@ const detailSections = computed((): DetailSection[] => {
         name: i.name,
         detail: i.serverName,
         tokens: i.tokens,
-        onOpen: () => postMessage({ type: 'openMcpToolInfo', piName: i.name }),
+        ...(settingsStore.hostCapabilities.markdownPreview ? { onOpen: () => postMessage({ type: 'openMcpToolInfo', piName: i.name }) } : {}),
         ...(i.isLoaded !== undefined ? { badge: i.isLoaded ? t('context.loaded') : t('context.deferred') } : {}),
       })),
     });
@@ -111,7 +113,7 @@ const detailSections = computed((): DetailSection[] => {
     sections.push({
       key: 'systemPromptSections',
       label: t('context.systemPromptSections'),
-      items: d.systemPromptSections.map(i => ({ name: promptSectionLabel(i.name), detail: '', tokens: i.tokens, title: i.name, onOpen: () => postMessage({ type: 'openSystemPrompt' }) })),
+      items: d.systemPromptSections.map(i => ({ name: promptSectionLabel(i.name), detail: '', tokens: i.tokens, title: i.name, ...(settingsStore.hostCapabilities.markdownPreview ? { onOpen: () => postMessage({ type: 'openSystemPrompt' }) } : {}) })),
     });
   }
   if (d.systemTools && d.systemTools.length > 0) {

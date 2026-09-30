@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import { ref, shallowRef, watch, nextTick } from 'vue';
+import { computed, ref, shallowRef, watch, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
+import { useI18n } from 'vue-i18n';
+import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
-import { useVSCode } from '@/composables/useVSCode';
-import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useOverlayEscape } from '@/composables/useOverlayEscape';
 
+const { t } = useI18n();
 const store = useExtensionUiStore();
 const { current, queue } = storeToRefs(store);
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
+
+// Mounted only while a request is queued (App.vue), so mounting is what takes the modal layer of the overlay stack.
+const { zIndex } = useOverlayEscape(() => cancel(), { modal: true });
 
 const textValue = ref('');
 const inputRef = ref<{ $el?: HTMLElement } | HTMLElement | null>(null);
@@ -33,6 +40,8 @@ watch(
   current,
   (req) => {
     displayed.value = req;
+    // A typed value (a password, a pasted OAuth code) never outlives the request it was typed for.
+    textValue.value = '';
     if (!req) return;
     if (req.kind === 'input' || req.kind === 'editor') {
       textValue.value = req.prefill ?? '';
@@ -43,14 +52,23 @@ watch(
         const focusable = el.matches('input, textarea') ? el : el.querySelector<HTMLElement>('input, textarea');
         focusable?.focus();
       });
+    } else if (req.kind === 'select') {
+      nextTick(() => dialogRef.value?.querySelector<HTMLElement>('input')?.focus());
     } else {
-      // select/confirm have no focusable field, so focus the container — otherwise the keydown lands on
-      // document.body and the Esc handler (bound to this element) never fires.
+      // confirm has no field; focusing the container keeps focus inside the dialog's focus trap.
       nextTick(() => dialogRef.value?.focus());
     }
   },
   { immediate: true },
 );
+
+/** Items answer with their id; bare options answer with the label, as they always have. */
+const selectEntries = computed(() => {
+  const req = displayed.value;
+  if (req?.kind !== 'select') return [];
+  if (req.items) return req.items.map((item) => ({ value: item.id, label: item.label, description: item.description, detail: item.detail }));
+  return (req.options ?? []).map((option) => ({ value: option, label: option, description: undefined, detail: undefined }));
+});
 
 function respond(value: string | boolean | null): void {
   const req = displayed.value;
@@ -59,157 +77,207 @@ function respond(value: string | boolean | null): void {
   store.resolve(req.requestId);
 }
 
+function onSelect(value: unknown): void {
+  if (typeof value === 'string') respond(value);
+}
+
 function cancel(): void {
   respond(displayed.value?.kind === 'confirm' ? false : null);
+}
+
+// reka dismisses this dialog on Escape only while the overlay stack yields Escape to an open reka layer beneath it, such as the Settings sheet.
+function onOpenChange(open: boolean): void {
+  if (!open) cancel();
 }
 </script>
 
 <template>
-  <div
+  <DialogRoot
     v-if="displayed"
-    ref="dialogRef"
-    tabindex="-1"
-    class="fixed inset-0 flex items-center justify-center bg-black/50 p-4 outline-none"
-    :style="{ zIndex: MODAL_Z_INDEX }"
-    @keydown.esc="cancel"
+    :open="true"
+    @update:open="onOpenChange"
   >
-    <div class="w-full max-w-md rounded-lg border border-border bg-background p-4 shadow-lg">
-      <!-- `agentName` is untrusted (model- or user-authored) and is sanitized extension-side at capture;
-           it stays TEXT here — never v-html.
-           The literal "Agent" is load-bearing, not decoration: without a Damocles-authored word saying
-           what the string IS, a badge holding only model-chosen text sits where users read panel chrome,
-           and a specialist named "Verified — approved" reads as the panel saying so. Sanitizing stops
-           line forging; only a frame stops semantic impersonation. `dir="ltr"` + bidi isolation keep a
-           name that survived sanitizing from re-ordering the label it sits next to.
-           The badge reads `displayed` (pinned to what the user was shown) while the counter reads the
-           live queue — deliberately different: the badge is an identity claim that must match the form
-           below it, the counter is a live depth indicator that should reflect an arrival. -->
-      <div
-        v-if="displayed.agentName || queue.length > 1"
-        class="mb-2 flex items-center gap-2 text-xs"
+    <DialogPortal>
+      <DialogOverlay
+        class="fixed inset-0 bg-black/50"
+        :style="{ zIndex }"
+      />
+      <DialogContent
+        data-overlay-layer
+        data-testid="extension-ui-dialog"
+        class="fixed left-1/2 top-1/2 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-background p-4 shadow-lg outline-none"
+        :style="{ zIndex }"
+        :aria-describedby="undefined"
+        @pointer-down-outside="(e: Event) => e.preventDefault()"
       >
-        <Badge
-          v-if="displayed.agentName"
-          variant="secondary"
-          class="max-w-[16rem] truncate"
+        <div
+          ref="dialogRef"
+          tabindex="-1"
+          class="outline-none"
         >
-          <span class="mr-1 text-muted-foreground">Agent</span>
-          <span
-            dir="ltr"
-            class="[unicode-bidi:isolate]"
-          >{{ displayed.agentName }}</span>
-        </Badge>
-        <span
-          v-if="queue.length > 1"
-          class="ml-auto text-muted-foreground"
-        >
-          1 of {{ queue.length }}
-        </span>
-      </div>
-
-      <!-- `whitespace-pre-wrap` because the title is AUTHORED as lines: the MCP elicitation renderer
-           builds "MCP Input Request\nServer: <name>\n\n<server message>", and its flattening exists so a
-           server cannot forge that `Server:` attribution line. Collapsing the newlines here would run
-           the trusted attribution and the third-party message together as one bold sentence, which
-           spends the producer's line discipline for nothing. -->
-      <h3 class="mb-2 whitespace-pre-wrap text-sm font-semibold text-foreground">
-        {{ displayed.title }}
-      </h3>
-      <p
-        v-if="displayed.message"
-        class="mb-3 whitespace-pre-wrap text-sm text-muted-foreground"
-      >
-        {{ displayed.message }}
-      </p>
-
-      <div
-        v-if="displayed.kind === 'select'"
-        class="flex flex-col gap-2"
-      >
-        <Button
-          v-for="option in displayed.options ?? []"
-          :key="option"
-          variant="outline"
-          class="justify-start"
-          @click="respond(option)"
-        >
-          {{ option }}
-        </Button>
-      </div>
-
-      <div
-        v-else-if="displayed.kind === 'confirm'"
-        class="flex justify-end gap-2"
-      >
-        <Button
-          variant="outline"
-          @click="respond(false)"
-        >
-          No
-        </Button>
-        <Button @click="respond(true)">
-          Yes
-        </Button>
-      </div>
-
-      <div
-        v-else-if="displayed.kind === 'input'"
-        class="flex flex-col gap-3"
-      >
-        <Input
-          ref="inputRef"
-          v-model="textValue"
-          :placeholder="displayed.placeholder ?? ''"
-          @keydown.enter="respond(textValue)"
-        />
-        <div class="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            @click="cancel"
+          <!-- `agentName` is untrusted (model- or user-authored) and is sanitized extension-side at capture;
+               it stays TEXT here — never v-html.
+               The literal "Agent" is load-bearing, not decoration: without a Damocles-authored word saying
+               what the string IS, a badge holding only model-chosen text sits where users read panel chrome,
+               and a specialist named "Verified — approved" reads as the panel saying so. Sanitizing stops
+               line forging; only a frame stops semantic impersonation. `dir="ltr"` + bidi isolation keep a
+               name that survived sanitizing from re-ordering the label it sits next to.
+               The badge reads `displayed` (pinned to what the user was shown) while the counter reads the
+               live queue — deliberately different: the badge is an identity claim that must match the form
+               below it, the counter is a live depth indicator that should reflect an arrival. -->
+          <div
+            v-if="displayed.agentName || queue.length > 1"
+            class="mb-2 flex items-center gap-2 text-xs"
           >
-            Cancel
-          </Button>
-          <Button @click="respond(textValue)">
-            OK
-          </Button>
-        </div>
-      </div>
+            <Badge
+              v-if="displayed.agentName"
+              variant="secondary"
+              class="max-w-[16rem] truncate"
+            >
+              <span class="mr-1 text-muted-foreground">{{ t('extensionUi.agent') }}</span>
+              <span
+                dir="ltr"
+                class="[unicode-bidi:isolate]"
+              >{{ displayed.agentName }}</span>
+            </Badge>
+            <span
+              v-if="queue.length > 1"
+              class="ml-auto text-muted-foreground"
+            >
+              {{ t('extensionUi.queuePosition', { total: queue.length }) }}
+            </span>
+          </div>
 
-      <div
-        v-else-if="displayed.kind === 'editor'"
-        class="flex flex-col gap-3"
-      >
-        <Textarea
-          ref="inputRef"
-          v-model="textValue"
-          rows="8"
-          class="font-mono text-xs"
-        />
-        <div class="flex justify-end gap-2">
-          <Button
-            variant="outline"
-            @click="cancel"
+          <!-- `whitespace-pre-wrap` because the title is AUTHORED as lines: the MCP elicitation renderer
+               builds "MCP Input Request\nServer: <name>\n\n<server message>", and its flattening exists so a
+               server cannot forge that `Server:` attribution line. Collapsing the newlines here would run
+               the trusted attribution and the third-party message together as one bold sentence, which
+               spends the producer's line discipline for nothing. -->
+          <DialogTitle
+            as="h3"
+            class="mb-2 whitespace-pre-wrap text-sm font-semibold text-foreground"
           >
-            Cancel
-          </Button>
-          <Button @click="respond(textValue)">
-            Save
-          </Button>
-        </div>
-      </div>
+            {{ displayed.title }}
+          </DialogTitle>
+          <p
+            v-if="displayed.message"
+            class="mb-3 whitespace-pre-wrap text-sm text-muted-foreground"
+          >
+            {{ displayed.message }}
+          </p>
 
-      <div
-        v-if="displayed.kind === 'select'"
-        class="mt-3 flex justify-end"
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          @click="cancel"
-        >
-          Cancel
-        </Button>
-      </div>
-    </div>
-  </div>
+          <Command
+            v-if="displayed.kind === 'select'"
+            :key="displayed.requestId"
+            highlight-on-hover
+            class="rounded-md border border-border bg-background"
+            @update:model-value="onSelect"
+          >
+            <CommandInput :placeholder="displayed.placeholder ?? t('extensionUi.filterPlaceholder')" />
+            <CommandList>
+              <CommandEmpty>{{ t('extensionUi.noMatches') }}</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  v-for="entry in selectEntries"
+                  :key="entry.value"
+                  :value="entry.value"
+                  class="flex-col items-start gap-0.5"
+                >
+                  <span class="flex w-full items-baseline gap-2">
+                    <span class="min-w-0 truncate">{{ entry.label }}</span>
+                    <span
+                      v-if="entry.description"
+                      class="min-w-0 truncate text-xs text-muted-foreground"
+                    >{{ entry.description }}</span>
+                  </span>
+                  <span
+                    v-if="entry.detail"
+                    class="w-full truncate text-xs text-muted-foreground"
+                  >{{ entry.detail }}</span>
+                </CommandItem>
+              </CommandGroup>
+            </CommandList>
+          </Command>
+
+          <div
+            v-else-if="displayed.kind === 'confirm'"
+            class="flex justify-end gap-2"
+          >
+            <Button
+              variant="outline"
+              @click="respond(false)"
+            >
+              {{ t('common.no') }}
+            </Button>
+            <Button @click="respond(true)">
+              {{ t('common.yes') }}
+            </Button>
+          </div>
+
+          <div
+            v-else-if="displayed.kind === 'input'"
+            class="flex flex-col gap-3"
+          >
+            <Input
+              ref="inputRef"
+              v-model="textValue"
+              :type="displayed.password ? 'password' : 'text'"
+              :autocomplete="displayed.password ? 'new-password' : 'off'"
+              spellcheck="false"
+              :aria-label="displayed.title"
+              :placeholder="displayed.placeholder ?? ''"
+              @keydown.enter="respond(textValue)"
+            />
+            <div class="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                @click="cancel"
+              >
+                {{ t('common.cancel') }}
+              </Button>
+              <Button @click="respond(textValue)">
+                {{ t('extensionUi.ok') }}
+              </Button>
+            </div>
+          </div>
+
+          <div
+            v-else-if="displayed.kind === 'editor'"
+            class="flex flex-col gap-3"
+          >
+            <Textarea
+              ref="inputRef"
+              v-model="textValue"
+              rows="8"
+              class="font-mono text-xs"
+            />
+            <div class="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                @click="cancel"
+              >
+                {{ t('common.cancel') }}
+              </Button>
+              <Button @click="respond(textValue)">
+                {{ t('common.save') }}
+              </Button>
+            </div>
+          </div>
+
+          <div
+            v-if="displayed.kind === 'select'"
+            class="mt-3 flex justify-end"
+          >
+            <Button
+              variant="ghost"
+              size="sm"
+              @click="cancel"
+            >
+              {{ t('common.cancel') }}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
 </template>

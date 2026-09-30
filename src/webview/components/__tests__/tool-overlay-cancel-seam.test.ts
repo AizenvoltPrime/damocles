@@ -35,7 +35,8 @@ function overlayFor(source: 'session' | 'subagent'): VueWrapper {
 
 /** Presses Stop, then Send, and returns what the webview posted. */
 async function cancelFromOverlay(wrapper: VueWrapper): Promise<Record<string, unknown>> {
-  const posted = vi.spyOn(globalThis.acquireVsCodeApi(), 'postMessage');
+  if (typeof acquireVsCodeApi !== 'function') throw new Error('vitest.setup.ts must install acquireVsCodeApi');
+  const posted = vi.spyOn(acquireVsCodeApi(), 'postMessage');
   const trigger = wrapper.get(`[aria-label="${i18n.global.t('toolCall.stopWithNote')}"]`);
   await trigger.trigger('click');
   await wrapper.vm.$nextTick();

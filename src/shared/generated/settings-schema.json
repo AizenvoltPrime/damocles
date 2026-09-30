@@ -1,0 +1,1394 @@
+{
+  "user": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "damocles.permissionMode": {
+        "type": "string",
+        "default": "default",
+        "enum": [
+          "default",
+          "acceptEdits",
+          "auto",
+          "plan"
+        ],
+        "enumDescriptions": [
+          "Standard behavior - prompts for dangerous operations",
+          "Auto-accept file edit operations",
+          "Auto mode - model classifier approves/denies tool permissions",
+          "Planning mode - read-only, no execution"
+        ],
+        "description": "How to handle tool permissions"
+      },
+      "damocles.maxTurns": {
+        "type": "number",
+        "default": 300,
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Maximum conversation turns per session"
+      },
+      "damocles.model": {
+        "type": "string",
+        "default": "",
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5, claude-fable-5-1"
+      },
+      "damocles.maxBudgetUsd": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 0,
+        "description": "Maximum budget in USD per session (null for unlimited)"
+      },
+      "damocles.taskBudget": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 1,
+        "description": "Token budget for the model to pace tool use (alpha). Set to null to disable."
+      },
+      "damocles.maxThinkingTokens": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 1000,
+        "maximum": 63999,
+        "description": "Thinking token budget for legacy models (Haiku 4.5). Applies only when thinking is not disabled. Null falls back to the default budget; use damocles.thinkingDisabled to turn thinking off."
+      },
+      "damocles.thinkingDisabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Disable thinking for all models. Suppresses adaptive thinking on 4.6+ models and extended thinking budget on legacy models (Haiku 4.5). Default: false."
+      },
+      "damocles.effortByModel": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode",
+            null
+          ]
+        },
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5) support up to ultracode; GPT-6 (Astra/Sol/Luna) support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+      },
+      "damocles.enableFileCheckpointing": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable file checkpointing for undo/rewind functionality"
+      },
+      "damocles.checkpoints.retentionDays": {
+        "type": "number",
+        "default": 30,
+        "minimum": 0,
+        "description": "Delete a session's file checkpoint (undo/rewind) history after this many days of inactivity to reclaim disk space. Checkpoint repos are always compacted; this setting controls only deletion. Set to 0 to keep checkpoint history forever."
+      },
+      "damocles.checkpoints.baselineWaitSeconds": {
+        "type": "number",
+        "default": 30,
+        "minimum": 5,
+        "maximum": 600,
+        "description": "How long a file-changing tool waits for the turn's starting checkpoint before it runs anyway. Read-only tools never wait. When the wait runs out, the tool runs and that turn cannot be rewound; the checkpoint still finishes in the background."
+      },
+      "damocles.checkpoints.maxFileSizeMB": {
+        "type": "number",
+        "default": 25,
+        "minimum": 1,
+        "maximum": 2048,
+        "description": "Files larger than this many megabytes are left out of checkpoints. A rewind never changes, deletes or restores them, and the rewind view lists them."
+      },
+      "damocles.showCacheMissNotices": {
+        "type": "boolean",
+        "default": false,
+        "description": "Show the token and cost figures the transcript otherwise leaves out. Damocles adds an inline notice when a prompt-cache miss re-bills tokens, for example after a long idle gap. It also puts what the summarizing call billed on the compaction boundary card. Off by default."
+      },
+      "damocles.showThinkingDroppedNotices": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show an inline notice in the transcript when Anthropic drops thinking blocks from the request because the conversation prefix changed (e.g. after you toggle plan mode or activate a tool group). On by default."
+      },
+      "damocles.dangerouslySkipPermissions": {
+        "type": "boolean",
+        "default": false,
+        "description": "Open new chat panels with YOLO mode (skip all permission prompts) enabled by default. Each panel can still toggle it off from the button next to the permission mode in the chat input."
+      },
+      "damocles.ideContext.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Attach the active editor's opened file / selection as context to messages. When disabled, new chat panels start with the IDE context chip turned off so it is not sent automatically."
+      },
+      "damocles.pinnedHeaderHidden": {
+        "type": "boolean",
+        "default": false,
+        "description": "Hide the pinned user-message header above the chat. A small floating chip lets you restore it."
+      },
+      "damocles.agentProgressSummaries": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable agent progress summaries (~30s interval status updates from subagents)"
+      },
+      "damocles.maxIndexedFiles": {
+        "type": "number",
+        "default": 5000,
+        "minimum": 100,
+        "maximum": 50000,
+        "description": "Maximum number of files to index for @ mention autocomplete"
+      },
+      "damocles.sandbox": {
+        "type": "object",
+        "default": {
+          "enabled": false
+        },
+        "description": "Sandbox settings for command execution isolation",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable sandbox mode for Bash commands"
+          },
+          "autoAllowBashIfSandboxed": {
+            "type": "boolean",
+            "default": true,
+            "description": "Auto-allow Bash commands when sandboxed"
+          },
+          "allowUnsandboxedCommands": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow commands that cannot be sandboxed"
+          },
+          "networkAllowedDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Allowed network domains in sandbox"
+          },
+          "networkAllowLocalBinding": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow binding to local ports in sandbox"
+          }
+        }
+      },
+      "damocles.debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Automatically reveal the Damocles output log channel when the extension activates."
+      },
+      "damocles.memory.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable persistent memory system"
+      },
+      "damocles.memory.pinnedTokenBudget": {
+        "type": "number",
+        "default": 500,
+        "minimum": 100,
+        "maximum": 2000,
+        "description": "Token budget for pinned memories, which are injected in full once per context"
+      },
+      "damocles.memory.injection.fullEntryLimit": {
+        "type": "integer",
+        "default": 4,
+        "minimum": 0,
+        "maximum": 10,
+        "description": "Maximum newly relevant memories rendered in full per prompt"
+      },
+      "damocles.memory.injection.compactEntryLimit": {
+        "type": "integer",
+        "default": 8,
+        "minimum": 0,
+        "maximum": 20,
+        "description": "Maximum further relevant memories rendered as one-line summaries per prompt, including full entries shortened to fit the token budget"
+      },
+      "damocles.memory.catalogTokenBudget": {
+        "type": "number",
+        "default": 2000,
+        "minimum": 500,
+        "maximum": 8000,
+        "description": "Token budget per prompt for the memories that pass the relevance gate (excludes mentioned ids, notices, and the pinned, session, preference and profile budgets)"
+      },
+      "damocles.memory.rerank.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether search_memories reranks BM25 candidates with an LLM."
+      },
+      "damocles.memory.rerank.candidatePool": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 5,
+        "description": "How many BM25 candidates to over-fetch before reranking."
+      },
+      "damocles.memory.rerank.injectMode": {
+        "type": "string",
+        "default": "off",
+        "enum": [
+          "off",
+          "blocking"
+        ],
+        "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard ~2s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary."
+      },
+      "damocles.memory.autoExtract.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically extract durable memories from conversations during consolidation."
+      },
+      "damocles.memory.autoExtract.idleSeconds": {
+        "type": "integer",
+        "default": 180,
+        "minimum": 30,
+        "description": "Seconds of inactivity before an idle consolidation pass runs."
+      },
+      "damocles.memory.profile.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Maintain and inject an auto-generated user profile."
+      },
+      "damocles.memory.profile.tokenBudget": {
+        "type": "integer",
+        "default": 600,
+        "minimum": 50,
+        "description": "Max tokens of profile injected once per context (again after compaction)."
+      },
+      "damocles.memory.dedup.threshold": {
+        "type": "number",
+        "default": 0.8,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
+      },
+      "damocles.browser.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable Damocles Browser integration with CDP automation and element picker."
+      },
+      "damocles.browser.headless": {
+        "type": "boolean",
+        "default": true,
+        "description": "Run the automation browser in headless-new mode (default). Disable for headful (off-screen) higher-stealth mode."
+      },
+      "damocles.browser.devToolsPort": {
+        "type": "boolean",
+        "default": false,
+        "description": "Launch the automation browser with a DevTools debugging port. This opens an UNAUTHENTICATED DevTools endpoint on loopback: any local process can attach and drive the browser with your logged-in profile. It exists only to power the DevTools button in the browser toolbar. Off by default; a browser relaunch is required for a change to take effect."
+      },
+      "damocles.mcp.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
+      },
+      "damocles.team.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable collaborative multi-agent team system"
+      },
+      "damocles.team.leadModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for the team lead agent. Leave empty to use the active panel model."
+      },
+      "damocles.team.leadEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for the team lead agent. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.team.implementorModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for implementor role specialists. Leave empty to use the active panel model."
+      },
+      "damocles.team.implementorEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for implementor role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.team.reviewerModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for reviewer role specialists. Leave empty to use the active panel model."
+      },
+      "damocles.team.reviewerEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for reviewer role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.compass.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable workspace knowledge graph (Compass) for structural code queries"
+      },
+      "damocles.compass.excludePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Regex patterns for files to exclude from Compass indexing"
+      },
+      "damocles.compass.autoReindex": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically reindex when files change"
+      },
+      "damocles.compass.blastRadiusDepth": {
+        "type": "number",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 5,
+        "description": "Maximum traversal depth for blast radius analysis"
+      },
+      "damocles.voice.provider": {
+        "type": "string",
+        "default": "openai-whisper",
+        "enum": [
+          "openai-whisper",
+          "deepgram",
+          "google-cloud-stt"
+        ],
+        "enumDescriptions": [
+          "OpenAI Whisper API",
+          "Deepgram Nova-2 API",
+          "Google Cloud Speech-to-Text API"
+        ],
+        "description": "Speech-to-text provider for voice input."
+      },
+      "damocles.voice.language": {
+        "type": "string",
+        "default": "en",
+        "description": "Language code for voice transcription (e.g., 'en', 'el', 'de')."
+      },
+      "damocles.voice.mode": {
+        "type": "string",
+        "default": "off",
+        "enum": [
+          "off",
+          "push-to-talk",
+          "wake-word"
+        ],
+        "enumDescriptions": [
+          "Voice input disabled. The chat input mic button is hidden.",
+          "Click the mic to start and stop recording (cloud STT via the configured provider).",
+          "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
+        ],
+        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+      },
+      "damocles.voice.wakeWord": {
+        "type": "string",
+        "default": "hey_jarvis",
+        "description": "Wake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+      },
+      "damocles.voice.wakeWordSensitivity": {
+        "type": "number",
+        "default": 0.5,
+        "minimum": 0.1,
+        "maximum": 0.95,
+        "description": "Wake-word detection threshold. Lower = more sensitive (more false wakes); higher = stricter (more missed wakes)."
+      },
+      "damocles.voice.tts.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Speak the assistant's final reply aloud at end of turn (Jarvis mode only). Adds ~1.5 GB GPU steady-state when enabled."
+      },
+      "damocles.voice.tts.voice": {
+        "type": "string",
+        "default": "en-Carter_man",
+        "enum": [
+          "en-Carter_man",
+          "en-Davis_man",
+          "en-Emma_woman",
+          "en-Frank_man",
+          "en-Grace_woman",
+          "en-Mike_man"
+        ],
+        "enumDescriptions": [
+          "English male — Carter (default)",
+          "English male — Davis",
+          "English female — Emma",
+          "English male — Frank",
+          "English female — Grace",
+          "English male — Mike"
+        ],
+        "description": "Voice prefill used by the on-device VibeVoice TTS. Changing this restarts the voice sidecar."
+      },
+      "damocles.voice.localGpu": {
+        "type": "string",
+        "default": "auto",
+        "enum": [
+          "auto",
+          "cuda",
+          "cpu"
+        ],
+        "enumDescriptions": [
+          "Auto-detect: use CUDA if available with sufficient free VRAM, otherwise CPU.",
+          "Force CUDA. Fails if CUDA is unavailable.",
+          "Force CPU. Slower but works without a GPU."
+        ],
+        "description": "Compute device for local voice models."
+      },
+      "damocles.voice.endOfTurnSilenceMs": {
+        "type": "integer",
+        "default": 800,
+        "minimum": 300,
+        "maximum": 3000,
+        "description": "Silence duration (ms) that ends a Jarvis-mode utterance and triggers transcription."
+      },
+      "damocles.voice.maxUtteranceMs": {
+        "type": "integer",
+        "default": 30000,
+        "minimum": 5000,
+        "maximum": 120000,
+        "description": "Hard cap (ms) on a single Jarvis-mode utterance. On cap hit, transcription is forced and the wake-listener resumes."
+      },
+      "damocles.voice.autoSubmit": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-send the message when the local transcript finalizes. When false, the transcript populates the input for review."
+      },
+      "damocles.voice.diagnostics": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose voice-sidecar logs in the 'Damocles Voice' output channel. Never includes transcript content."
+      },
+      "damocles.voice.runtimePath": {
+        "type": "string",
+        "default": "",
+        "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+      },
+      "damocles.voice.pinModelVersion": {
+        "type": "object",
+        "default": {},
+        "description": "Advanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
+      },
+      "damocles.autoCompact": {
+        "type": "object",
+        "default": {
+          "enabled": false,
+          "triggerPercent": 80
+        },
+        "description": "Auto-compact settings for managing context window usage",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable automatic context compaction when usage crosses the trigger threshold"
+          },
+          "triggerPercent": {
+            "type": "number",
+            "default": 80,
+            "minimum": 50,
+            "maximum": 95,
+            "description": "Compact automatically when context usage crosses this percentage of the window (default: 80%)"
+          },
+          "modelOverrides": {
+            "type": "object",
+            "default": {},
+            "description": "Per-model auto-compact budgets. Each key is the model value shown in the model picker (e.g. \"claude-opus-5-5\"), and its entry applies only while that model is active. Keys are matched exactly: a retired model id is never mapped to its successor, so an entry keyed by one has no effect.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "triggerPercent": {
+                  "type": "number",
+                  "minimum": 50,
+                  "maximum": 95,
+                  "description": "Replaces the top-level triggerPercent for this model only. Every other model keeps the top-level value."
+                },
+                "keepRecentPercent": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 50,
+                  "description": "Percentage of the context window kept as recent history when compaction runs for this model. Left unset, pi's own default applies."
+                }
+              }
+            }
+          }
+        }
+      },
+      "damocles.cacheWarming": {
+        "type": "string",
+        "default": "streaming",
+        "enum": [
+          "off",
+          "streaming",
+          "idle"
+        ],
+        "enumDescriptions": [
+          "No warming. The cache expires on the provider's schedule and the first request after that rebuilds it.",
+          "Warm only while an agent run is in flight.",
+          "Warm while an agent run is in flight, and also while you are idle, for up to 30 minutes after the last request."
+        ],
+        "description": "Prompt cache warming mode. Shortly before the provider drops the cached prompt, Damocles re-sends the last request with a one-token output budget whenever the expected saving is worth the cost, which resets the cache clock so the next real request is a cache read instead of a full cache rebuild. Small contexts and cheap models often miss that bar, so no warm request goes out. Each warm request is billed as a cache read of the full context plus one output token, and it never enters the conversation."
+      },
+      "damocles.pi.webSearch.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
+      },
+      "damocles.assetSourcePrecedence": {
+        "type": "string",
+        "enum": [
+          "claude",
+          "codex"
+        ],
+        "default": "claude",
+        "description": "Breaks a tie between .claude and .codex when a skill or slash command with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to the agent's loaded resources and the slash-command menu."
+      },
+      "damocles.tools.disabled": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Per-tool active-set names disabled in the Tools panel. Managed by the Tools panel; rarely edited by hand."
+      },
+      "damocles.subagents.maxConcurrent": {
+        "type": "number",
+        "default": 4,
+        "minimum": 1,
+        "maximum": 16,
+        "description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
+      },
+      "damocles.explore.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Intercept Explore subagent calls and redirect to alternative model"
+      },
+      "damocles.explore.provider": {
+        "type": "string",
+        "enum": [
+          "openrouter",
+          "gemini",
+          "stepfun"
+        ],
+        "default": "openrouter",
+        "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
+      },
+      "damocles.explore.modelByProvider": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.7-flash"
+      },
+      "damocles.explore.effort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "",
+        "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
+      },
+      "permissions": {
+        "type": "object",
+        "description": "Permission rules for Damocles tools. More specific files win: local over project over user.",
+        "default": {
+          "allow": [],
+          "deny": [],
+          "ask": []
+        },
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that run without asking, e.g. \"Bash(npm test:*)\" or \"Edit\"."
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that are always blocked. A deny rule wins over allow and ask."
+          },
+          "ask": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that always ask, even when another rule would allow them."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "project": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "damocles.permissionMode": {
+        "not": {},
+        "errorMessage": "damocles.permissionMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.permissionMode applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHow to handle tool permissions"
+      },
+      "damocles.maxTurns": {
+        "type": "number",
+        "default": 300,
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Maximum conversation turns per session"
+      },
+      "damocles.model": {
+        "type": "string",
+        "default": "",
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5, claude-fable-5-1"
+      },
+      "damocles.maxBudgetUsd": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 0,
+        "description": "Maximum budget in USD per session (null for unlimited)"
+      },
+      "damocles.taskBudget": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 1,
+        "description": "Token budget for the model to pace tool use (alpha). Set to null to disable."
+      },
+      "damocles.maxThinkingTokens": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "default": null,
+        "minimum": 1000,
+        "maximum": 63999,
+        "description": "Thinking token budget for legacy models (Haiku 4.5). Applies only when thinking is not disabled. Null falls back to the default budget; use damocles.thinkingDisabled to turn thinking off."
+      },
+      "damocles.thinkingDisabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Disable thinking for all models. Suppresses adaptive thinking on 4.6+ models and extended thinking budget on legacy models (Haiku 4.5). Default: false."
+      },
+      "damocles.effortByModel": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode",
+            null
+          ]
+        },
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5) support up to ultracode; GPT-6 (Astra/Sol/Luna) support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+      },
+      "damocles.enableFileCheckpointing": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable file checkpointing for undo/rewind functionality"
+      },
+      "damocles.checkpoints.retentionDays": {
+        "type": "number",
+        "default": 30,
+        "minimum": 0,
+        "description": "Delete a session's file checkpoint (undo/rewind) history after this many days of inactivity to reclaim disk space. Checkpoint repos are always compacted; this setting controls only deletion. Set to 0 to keep checkpoint history forever."
+      },
+      "damocles.checkpoints.baselineWaitSeconds": {
+        "type": "number",
+        "default": 30,
+        "minimum": 5,
+        "maximum": 600,
+        "description": "How long a file-changing tool waits for the turn's starting checkpoint before it runs anyway. Read-only tools never wait. When the wait runs out, the tool runs and that turn cannot be rewound; the checkpoint still finishes in the background."
+      },
+      "damocles.checkpoints.maxFileSizeMB": {
+        "type": "number",
+        "default": 25,
+        "minimum": 1,
+        "maximum": 2048,
+        "description": "Files larger than this many megabytes are left out of checkpoints. A rewind never changes, deletes or restores them, and the rewind view lists them."
+      },
+      "damocles.showCacheMissNotices": {
+        "type": "boolean",
+        "default": false,
+        "description": "Show the token and cost figures the transcript otherwise leaves out. Damocles adds an inline notice when a prompt-cache miss re-bills tokens, for example after a long idle gap. It also puts what the summarizing call billed on the compaction boundary card. Off by default."
+      },
+      "damocles.showThinkingDroppedNotices": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show an inline notice in the transcript when Anthropic drops thinking blocks from the request because the conversation prefix changed (e.g. after you toggle plan mode or activate a tool group). On by default."
+      },
+      "damocles.dangerouslySkipPermissions": {
+        "not": {},
+        "errorMessage": "damocles.dangerouslySkipPermissions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.dangerouslySkipPermissions applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nOpen new chat panels with YOLO mode (skip all permission prompts) enabled by default. Each panel can still toggle it off from the button next to the permission mode in the chat input."
+      },
+      "damocles.ideContext.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Attach the active editor's opened file / selection as context to messages. When disabled, new chat panels start with the IDE context chip turned off so it is not sent automatically."
+      },
+      "damocles.pinnedHeaderHidden": {
+        "not": {},
+        "errorMessage": "damocles.pinnedHeaderHidden applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.pinnedHeaderHidden applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nHide the pinned user-message header above the chat. A small floating chip lets you restore it."
+      },
+      "damocles.agentProgressSummaries": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable agent progress summaries (~30s interval status updates from subagents)"
+      },
+      "damocles.maxIndexedFiles": {
+        "type": "number",
+        "default": 5000,
+        "minimum": 100,
+        "maximum": 50000,
+        "description": "Maximum number of files to index for @ mention autocomplete"
+      },
+      "damocles.sandbox": {
+        "type": "object",
+        "default": {
+          "enabled": false
+        },
+        "description": "Sandbox settings for command execution isolation",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable sandbox mode for Bash commands"
+          },
+          "autoAllowBashIfSandboxed": {
+            "type": "boolean",
+            "default": true,
+            "description": "Auto-allow Bash commands when sandboxed"
+          },
+          "allowUnsandboxedCommands": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow commands that cannot be sandboxed"
+          },
+          "networkAllowedDomains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Allowed network domains in sandbox"
+          },
+          "networkAllowLocalBinding": {
+            "type": "boolean",
+            "default": false,
+            "description": "Allow binding to local ports in sandbox"
+          }
+        }
+      },
+      "damocles.debug": {
+        "type": "boolean",
+        "default": false,
+        "description": "Automatically reveal the Damocles output log channel when the extension activates."
+      },
+      "damocles.memory.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable persistent memory system"
+      },
+      "damocles.memory.pinnedTokenBudget": {
+        "type": "number",
+        "default": 500,
+        "minimum": 100,
+        "maximum": 2000,
+        "description": "Token budget for pinned memories, which are injected in full once per context"
+      },
+      "damocles.memory.injection.fullEntryLimit": {
+        "type": "integer",
+        "default": 4,
+        "minimum": 0,
+        "maximum": 10,
+        "description": "Maximum newly relevant memories rendered in full per prompt"
+      },
+      "damocles.memory.injection.compactEntryLimit": {
+        "type": "integer",
+        "default": 8,
+        "minimum": 0,
+        "maximum": 20,
+        "description": "Maximum further relevant memories rendered as one-line summaries per prompt, including full entries shortened to fit the token budget"
+      },
+      "damocles.memory.catalogTokenBudget": {
+        "type": "number",
+        "default": 2000,
+        "minimum": 500,
+        "maximum": 8000,
+        "description": "Token budget per prompt for the memories that pass the relevance gate (excludes mentioned ids, notices, and the pinned, session, preference and profile budgets)"
+      },
+      "damocles.memory.rerank.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether search_memories reranks BM25 candidates with an LLM."
+      },
+      "damocles.memory.rerank.candidatePool": {
+        "type": "integer",
+        "default": 30,
+        "minimum": 5,
+        "description": "How many BM25 candidates to over-fetch before reranking."
+      },
+      "damocles.memory.rerank.injectMode": {
+        "type": "string",
+        "default": "off",
+        "enum": [
+          "off",
+          "blocking"
+        ],
+        "markdownDescription": "How injected memories are ranked. `off`: lexical ranking only (zero added latency). `blocking`: rerank the memories that passed the relevance gate with a hard ~2s cap, degrading to the lexical order on timeout; a `low` grade shows a memory as a one-line summary."
+      },
+      "damocles.memory.autoExtract.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically extract durable memories from conversations during consolidation."
+      },
+      "damocles.memory.autoExtract.idleSeconds": {
+        "type": "integer",
+        "default": 180,
+        "minimum": 30,
+        "description": "Seconds of inactivity before an idle consolidation pass runs."
+      },
+      "damocles.memory.profile.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Maintain and inject an auto-generated user profile."
+      },
+      "damocles.memory.profile.tokenBudget": {
+        "type": "integer",
+        "default": 600,
+        "minimum": 50,
+        "description": "Max tokens of profile injected once per context (again after compaction)."
+      },
+      "damocles.memory.dedup.threshold": {
+        "type": "number",
+        "default": 0.8,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
+      },
+      "damocles.browser.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable Damocles Browser integration with CDP automation and element picker."
+      },
+      "damocles.browser.headless": {
+        "type": "boolean",
+        "default": true,
+        "description": "Run the automation browser in headless-new mode (default). Disable for headful (off-screen) higher-stealth mode."
+      },
+      "damocles.browser.devToolsPort": {
+        "type": "boolean",
+        "default": false,
+        "description": "Launch the automation browser with a DevTools debugging port. This opens an UNAUTHENTICATED DevTools endpoint on loopback: any local process can attach and drive the browser with your logged-in profile. It exists only to power the DevTools button in the browser toolbar. Off by default; a browser relaunch is required for a change to take effect."
+      },
+      "damocles.mcp.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
+      },
+      "damocles.team.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable collaborative multi-agent team system"
+      },
+      "damocles.team.leadModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for the team lead agent. Leave empty to use the active panel model."
+      },
+      "damocles.team.leadEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for the team lead agent. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.team.implementorModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for implementor role specialists. Leave empty to use the active panel model."
+      },
+      "damocles.team.implementorEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for implementor role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.team.reviewerModel": {
+        "type": "string",
+        "enum": [
+          "",
+          "claude-fable-5-1",
+          "claude-opus-5-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5-20251001",
+          "gpt-6-astra",
+          "gpt-6-sol",
+          "gpt-6-luna",
+          "step-3.7-flash",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ],
+        "default": "",
+        "description": "Model for reviewer role specialists. Leave empty to use the active panel model."
+      },
+      "damocles.team.reviewerEffort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultracode"
+        ],
+        "default": "",
+        "description": "Reasoning effort for reviewer role specialists. Leave empty to use the model default. Efforts unsupported by the resolved model are ignored."
+      },
+      "damocles.compass.enabled": {
+        "not": {},
+        "errorMessage": "damocles.compass.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.compass.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nEnable workspace knowledge graph (Compass) for structural code queries"
+      },
+      "damocles.compass.excludePatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Regex patterns for files to exclude from Compass indexing"
+      },
+      "damocles.compass.autoReindex": {
+        "type": "boolean",
+        "default": true,
+        "description": "Automatically reindex when files change"
+      },
+      "damocles.compass.blastRadiusDepth": {
+        "type": "number",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 5,
+        "description": "Maximum traversal depth for blast radius analysis"
+      },
+      "damocles.voice.provider": {
+        "type": "string",
+        "default": "openai-whisper",
+        "enum": [
+          "openai-whisper",
+          "deepgram",
+          "google-cloud-stt"
+        ],
+        "enumDescriptions": [
+          "OpenAI Whisper API",
+          "Deepgram Nova-2 API",
+          "Google Cloud Speech-to-Text API"
+        ],
+        "description": "Speech-to-text provider for voice input."
+      },
+      "damocles.voice.language": {
+        "type": "string",
+        "default": "en",
+        "description": "Language code for voice transcription (e.g., 'en', 'el', 'de')."
+      },
+      "damocles.voice.mode": {
+        "type": "string",
+        "default": "off",
+        "enum": [
+          "off",
+          "push-to-talk",
+          "wake-word"
+        ],
+        "enumDescriptions": [
+          "Voice input disabled. The chat input mic button is hidden.",
+          "Click the mic to start and stop recording (cloud STT via the configured provider).",
+          "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
+        ],
+        "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+      },
+      "damocles.voice.wakeWord": {
+        "not": {},
+        "errorMessage": "damocles.voice.wakeWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.voice.wakeWord applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nWake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+      },
+      "damocles.voice.wakeWordSensitivity": {
+        "type": "number",
+        "default": 0.5,
+        "minimum": 0.1,
+        "maximum": 0.95,
+        "description": "Wake-word detection threshold. Lower = more sensitive (more false wakes); higher = stricter (more missed wakes)."
+      },
+      "damocles.voice.tts.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Speak the assistant's final reply aloud at end of turn (Jarvis mode only). Adds ~1.5 GB GPU steady-state when enabled."
+      },
+      "damocles.voice.tts.voice": {
+        "type": "string",
+        "default": "en-Carter_man",
+        "enum": [
+          "en-Carter_man",
+          "en-Davis_man",
+          "en-Emma_woman",
+          "en-Frank_man",
+          "en-Grace_woman",
+          "en-Mike_man"
+        ],
+        "enumDescriptions": [
+          "English male — Carter (default)",
+          "English male — Davis",
+          "English female — Emma",
+          "English male — Frank",
+          "English female — Grace",
+          "English male — Mike"
+        ],
+        "description": "Voice prefill used by the on-device VibeVoice TTS. Changing this restarts the voice sidecar."
+      },
+      "damocles.voice.localGpu": {
+        "type": "string",
+        "default": "auto",
+        "enum": [
+          "auto",
+          "cuda",
+          "cpu"
+        ],
+        "enumDescriptions": [
+          "Auto-detect: use CUDA if available with sufficient free VRAM, otherwise CPU.",
+          "Force CUDA. Fails if CUDA is unavailable.",
+          "Force CPU. Slower but works without a GPU."
+        ],
+        "description": "Compute device for local voice models."
+      },
+      "damocles.voice.endOfTurnSilenceMs": {
+        "type": "integer",
+        "default": 800,
+        "minimum": 300,
+        "maximum": 3000,
+        "description": "Silence duration (ms) that ends a Jarvis-mode utterance and triggers transcription."
+      },
+      "damocles.voice.maxUtteranceMs": {
+        "type": "integer",
+        "default": 30000,
+        "minimum": 5000,
+        "maximum": 120000,
+        "description": "Hard cap (ms) on a single Jarvis-mode utterance. On cap hit, transcription is forced and the wake-listener resumes."
+      },
+      "damocles.voice.autoSubmit": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-send the message when the local transcript finalizes. When false, the transcript populates the input for review."
+      },
+      "damocles.voice.diagnostics": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable verbose voice-sidecar logs in the 'Damocles Voice' output channel. Never includes transcript content."
+      },
+      "damocles.voice.runtimePath": {
+        "not": {},
+        "errorMessage": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.voice.runtimePath applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+      },
+      "damocles.voice.pinModelVersion": {
+        "not": {},
+        "errorMessage": "damocles.voice.pinModelVersion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.voice.pinModelVersion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAdvanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
+      },
+      "damocles.autoCompact": {
+        "type": "object",
+        "default": {
+          "enabled": false,
+          "triggerPercent": 80
+        },
+        "description": "Auto-compact settings for managing context window usage",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable automatic context compaction when usage crosses the trigger threshold"
+          },
+          "triggerPercent": {
+            "type": "number",
+            "default": 80,
+            "minimum": 50,
+            "maximum": 95,
+            "description": "Compact automatically when context usage crosses this percentage of the window (default: 80%)"
+          },
+          "modelOverrides": {
+            "type": "object",
+            "default": {},
+            "description": "Per-model auto-compact budgets. Each key is the model value shown in the model picker (e.g. \"claude-opus-5-5\"), and its entry applies only while that model is active. Keys are matched exactly: a retired model id is never mapped to its successor, so an entry keyed by one has no effect.",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "triggerPercent": {
+                  "type": "number",
+                  "minimum": 50,
+                  "maximum": 95,
+                  "description": "Replaces the top-level triggerPercent for this model only. Every other model keeps the top-level value."
+                },
+                "keepRecentPercent": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 50,
+                  "description": "Percentage of the context window kept as recent history when compaction runs for this model. Left unset, pi's own default applies."
+                }
+              }
+            }
+          }
+        }
+      },
+      "damocles.cacheWarming": {
+        "not": {},
+        "errorMessage": "damocles.cacheWarming applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.cacheWarming applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPrompt cache warming mode. Shortly before the provider drops the cached prompt, Damocles re-sends the last request with a one-token output budget whenever the expected saving is worth the cost, which resets the cache clock so the next real request is a cache read instead of a full cache rebuild. Small contexts and cheap models often miss that bar, so no warm request goes out. Each warm request is billed as a cache read of the full context plus one output token, and it never enters the conversation."
+      },
+      "damocles.pi.webSearch.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
+      },
+      "damocles.assetSourcePrecedence": {
+        "type": "string",
+        "enum": [
+          "claude",
+          "codex"
+        ],
+        "default": "claude",
+        "description": "Breaks a tie between .claude and .codex when a skill or slash command with the same name exists in both. .damocles always outranks both and is not affected by this setting. Applies to the agent's loaded resources and the slash-command menu."
+      },
+      "damocles.tools.disabled": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Per-tool active-set names disabled in the Tools panel. Managed by the Tools panel; rarely edited by hand."
+      },
+      "damocles.subagents.maxConcurrent": {
+        "type": "number",
+        "default": 4,
+        "minimum": 1,
+        "maximum": 16,
+        "description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
+      },
+      "damocles.explore.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Intercept Explore subagent calls and redirect to alternative model"
+      },
+      "damocles.explore.provider": {
+        "type": "string",
+        "enum": [
+          "openrouter",
+          "gemini",
+          "stepfun"
+        ],
+        "default": "openrouter",
+        "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
+      },
+      "damocles.explore.modelByProvider": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.7-flash"
+      },
+      "damocles.explore.effort": {
+        "type": "string",
+        "enum": [
+          "",
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "",
+        "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
+      },
+      "permissions": {
+        "type": "object",
+        "description": "Permission rules for Damocles tools. More specific files win: local over project over user.",
+        "default": {
+          "allow": [],
+          "deny": [],
+          "ask": []
+        },
+        "properties": {
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that run without asking, e.g. \"Bash(npm test:*)\" or \"Edit\"."
+          },
+          "deny": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that are always blocked. A deny rule wins over allow and ask."
+          },
+          "ask": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Tool patterns that always ask, even when another rule would allow them."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  }
+}

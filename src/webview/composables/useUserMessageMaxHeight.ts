@@ -1,5 +1,5 @@
 import { ref, watch } from 'vue';
-import { useVSCode } from './useVSCode';
+import { usePlatformBridge } from './usePlatformBridge';
 
 const MIN_VH = 10;
 const MAX_VH = 80;
@@ -18,7 +18,7 @@ function ensureInitialized(): void {
   if (initialized) return;
   initialized = true;
 
-  const { getState, setState } = useVSCode();
+  const { getState, setState } = usePlatformBridge();
   const stored = (getState<Record<string, unknown>>() ?? {})[STATE_KEY];
   if (typeof stored === 'number') maxHeightVh.value = clamp(stored);
 

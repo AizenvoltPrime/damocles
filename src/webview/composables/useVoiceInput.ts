@@ -1,11 +1,11 @@
 import { ref, onUnmounted } from "vue";
 import type { VoiceStatus } from "@shared/types/voice";
-import { useVSCode } from "./useVSCode";
+import { usePlatformBridge } from "./usePlatformBridge";
 
 export function useVoiceInput() {
   const status = ref<VoiceStatus>("idle");
   const errorMessage = ref<string | null>(null);
-  const { postMessage } = useVSCode();
+  const { postMessage } = usePlatformBridge();
 
   function startRecording(): void {
     errorMessage.value = null;

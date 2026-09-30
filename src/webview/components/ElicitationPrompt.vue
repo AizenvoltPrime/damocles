@@ -3,10 +3,10 @@ import { ref, computed, watch } from 'vue';
 import type { ElicitationRequest } from '@shared/types/elicitation';
 import { Button } from '@/components/ui/button';
 import { useElicitationStore } from '@/stores/useElicitationStore';
-import { useVSCode } from '@/composables/useVSCode';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const store = useElicitationStore();
-const { postMessage } = useVSCode();
+const { postMessage } = usePlatformBridge();
 
 const currentElicitation = computed((): ElicitationRequest | undefined =>
   store.pendingElicitations[0]
@@ -79,7 +79,7 @@ function updateFormValue(key: string, value: unknown) {
     v-if="currentElicitation"
     class="border-t border-border bg-background"
     role="region"
-    aria-label="MCP server elicitation"
+    :aria-label="$t('elicitation.ariaLabel')"
   >
     <div class="px-4 pt-3 pb-1">
       <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs bg-primary/20 text-primary border border-border">
@@ -101,7 +101,7 @@ function updateFormValue(key: string, value: unknown) {
           class="mb-2"
           @click="handleOpenUrl"
         >
-          Open in Browser
+          {{ $t('elicitation.openInBrowser') }}
         </Button>
       </div>
     </template>
@@ -144,10 +144,10 @@ function updateFormValue(key: string, value: unknown) {
 
     <div class="px-4 pb-3 flex justify-end gap-2 border-t border-border/30 pt-3">
       <Button variant="ghost" size="sm" @click="handleDecline">
-        Decline
+        {{ $t('elicitation.decline') }}
       </Button>
       <Button size="sm" @click="handleAccept">
-        Accept
+        {{ $t('elicitation.accept') }}
       </Button>
     </div>
   </div>

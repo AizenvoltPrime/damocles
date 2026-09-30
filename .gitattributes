@@ -2,3 +2,5 @@
 # Pin it to LF so the committed canonical form is deterministic across platforms (the script also
 # tolerates CRLF working trees, but this keeps `--check` stable on a fresh Windows clone).
 .vscodeignore text eol=lf
+# Linux package scripts and the AppArmor profile run on Linux; CRLF breaks the shebang and apparmor_parser.
+build/linux/** text eol=lf

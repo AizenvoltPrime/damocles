@@ -1,0 +1,217 @@
+import type { McpServerConfig, McpServerSource, McpWriteErrorCode, McpWriteErrorInfo } from "../../../../shared/types/mcp";
+import { DAMOCLES_MCP_CONFIG_PATH } from "./mcp-config-import";
+import { JsonConfigWriteError, writeJsonConfig } from "../../../config/json-config-write";
+import { assertValidMcpServerConfig, assertValidMcpServerName } from "./mcp-config-validate";
+import { log } from "../../../logger";
+
+/**
+ * The write side of `~/.damocles/mcp.json` — the ONLY MCP file Damocles ever writes. The workspace
+ * `.mcp.json` belongs to the project and `~/.claude*` / `~/.codex/config.toml` belong to other tools;
+ * all three are read-only imports (`mcp-config-import.ts`) and nothing here may touch them.
+ *
+ * Deliberately a sibling of `mcp-config-import.ts` rather than part of it: that module is scoped by
+ * name and header comment to read-only import, and coupling it to the settings write queue would make
+ * "import" a lie. It exports only the path constant, which is imported here.
+ *
+ * Every mutation is a read-modify-write performed INSIDE one `writeJsonConfig` critical section.
+ * Reading outside the queue would reintroduce the interleaving race the queue exists to prevent: two
+ * rapid edits would both read the pre-edit map and the second would erase the first.
+ */
+
+/** A parsed `~/.damocles/mcp.json`, keeping every top-level key the user put there. */
+interface DamoclesMcpDocument {
+  /** The whole document, so unknown top-level keys (`$schema`, comments-as-keys, …) survive. */
+  root: Record<string, unknown>;
+  /** The `mcpServers` map, mutated in place and written back under that key. */
+  servers: Record<string, McpServerConfig>;
+}
+
+/**
+ * A refused write, carrying a code the webview translates instead of an English sentence. The message
+ * stays human-readable for the output channel; `info` is what crosses to the panel.
+ */
+export class McpWriteError extends Error {
+  readonly info: McpWriteErrorInfo;
+
+  constructor(code: McpWriteErrorCode, message: string, params?: Record<string, string>) {
+    super(message);
+    this.name = "McpWriteError";
+    this.info = params ? { code, params } : { code };
+  }
+}
+
+/** Run a validator, re-labelling its English message as `invalidDefinition` detail. */
+function asInvalidDefinition(assert: () => void): void {
+  try {
+    assert();
+  } catch (err) {
+    throw new McpWriteError("invalidDefinition", err instanceof Error ? err.message : "invalid definition", {
+      detail: err instanceof Error ? err.message : "invalid definition",
+    });
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A missing file is zero servers, exactly as every reader treats it — the file is created on first
+ * write. Anything else (unreadable, unparseable, wrong shape) THROWS: overwriting a file we could not
+ * understand would destroy hand-authored JSON, so the write is abandoned and the handler surfaces the
+ * failure instead. The parser's message is never included — it quotes the offending source line, which
+ * may be the very line holding a credential, and this text reaches the panel and the output channel.
+ */
+function parseDocument(text: string | undefined): DamoclesMcpDocument {
+  if (text === undefined) return { root: {}, servers: {} };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new McpWriteError("fileUnparseable", "~/.damocles/mcp.json is not valid JSON; fix the file by hand and try again");
+  }
+  if (!isPlainObject(parsed)) {
+    throw new McpWriteError("fileNotObject", "~/.damocles/mcp.json must contain a JSON object; fix the file by hand and try again");
+  }
+
+  const existing = parsed["mcpServers"];
+  if (existing !== undefined && !isPlainObject(existing)) {
+    throw new McpWriteError("fileServersNotObject", '~/.damocles/mcp.json has an "mcpServers" key that is not an object; fix the file by hand and try again');
+  }
+  // Carried through as-is rather than via `coerceServerMap()`, which DROPS entries it does not
+  // recognise — right for the spawn chokepoint, wrong here: it would delete a server mid-hand-edit.
+  //
+  // Re-homed onto a null prototype so `servers[name] = …` means what it says: against a normal object
+  // "__proto__" hits the setter, mutating the prototype while `JSON.stringify` drops the key — the
+  // save reports success having written nothing. Server names are JSON keys, so that is reachable.
+  const servers: Record<string, McpServerConfig> = Object.assign(Object.create(null), existing ?? {});
+  return { root: parsed, servers };
+}
+
+/**
+ * Apply `mutate` to the `mcpServers` map of `~/.damocles/mcp.json` and write the result back,
+ * preserving every other top-level key. `mutate` throwing abandons the write with the file untouched,
+ * which is how the collision rules reject inside the critical section.
+ */
+async function writeDamoclesMcpServers(
+  mutate: (servers: Record<string, McpServerConfig>) => void,
+): Promise<void> {
+  let count = 0;
+  try {
+    // 0600/0700 because `env`/`headers` values are the usual home for a token.
+    await writeJsonConfig(DAMOCLES_MCP_CONFIG_PATH, (text) => {
+      const { root, servers } = parseDocument(text);
+      mutate(servers);
+      root["mcpServers"] = servers;
+      count = Object.keys(servers).length;
+      return `${JSON.stringify(root, null, 2)}\n`;
+    }, { fileMode: 0o600, dirMode: 0o700 });
+  } catch (err) {
+    if (!(err instanceof JsonConfigWriteError)) throw err;
+    if (err.stage === "read") {
+      throw new McpWriteError("fileUnreadable", `~/.damocles/mcp.json could not be read (${err.code ?? "unknown error"})`);
+    }
+    throw new McpWriteError("writeFailed", `~/.damocles/mcp.json could not be written (${err.code ?? "unknown error"})`);
+  }
+  // Names and counts only. A config object, an `env` map or a `headers` map must never reach this
+  // channel — it is written to disk, and Damocles has a prior incident of a credential landing there
+  // through `%O` inspection.
+  log("[McpConfigWrite] Wrote %d MCP server(s) to ~/.damocles/mcp.json", count);
+}
+
+/**
+ * The short label of each source's file, for naming the offending one in a rejection. Keyed by the
+ * full union so a new source cannot be added without deciding what to call its file; only the sources
+ * that outrank `~/.damocles/mcp.json` can actually reach the message.
+ */
+const FILE_BY_SOURCE: Record<McpServerSource, string> = {
+  workspace: ".mcp.json",
+  damocles: "~/.damocles/mcp.json",
+  "damocles-local": ".damocles/mcp.local.json",
+  claude: "~/.claude.json",
+  "claude-local": "~/.claude.json",
+  codex: "~/.codex/config.toml",
+};
+
+/**
+ * Names defined by a source that outranks `~/.damocles/mcp.json` at merge time, so writing one of them
+ * would succeed on disk and then be invisible in the panel. Rejecting is the honest outcome; silently
+ * writing a server the user cannot see is not.
+ *
+ * Names owned by `claude`/`claude-local`/`codex` are deliberately NOT in scope: `damocles` outranks all
+ * three, so overriding an imported server is the intended path and the entry is visibly re-tagged
+ * `damocles`.
+ */
+function assertNotShadowed(name: string, shadowingNames: ReadonlyMap<string, McpServerSource>): void {
+  const source = shadowingNames.get(name);
+  if (source === undefined) return;
+  const file = FILE_BY_SOURCE[source];
+  // Names only. A config value, an `env` map or a `headers` map must never reach `params`; it is
+  // translated into the panel and logged.
+  throw new McpWriteError("nameShadowed", `"${name}" is already defined by ${file}, which takes precedence, so the server would never be used`, { name, file });
+}
+
+export async function addDamoclesMcpServer(
+  name: string,
+  config: McpServerConfig,
+  shadowingNames: ReadonlyMap<string, McpServerSource>,
+): Promise<void> {
+  asInvalidDefinition(() => { assertValidMcpServerName(name); assertValidMcpServerConfig(config); });
+  assertNotShadowed(name, shadowingNames);
+
+  await writeDamoclesMcpServers(servers => {
+    if (Object.hasOwn(servers, name)) throw new McpWriteError("nameExists", `"${name}" already exists in ~/.damocles/mcp.json`, { name });
+    servers[name] = config;
+  });
+}
+
+/**
+ * Edit a server, optionally renaming it. A rename is ONE write: the old key is removed and the new key
+ * inserted inside the same critical section, so the file is never observably left with both entries or
+ * with neither.
+ */
+export async function updateDamoclesMcpServer(
+  name: string,
+  newName: string | undefined,
+  config: McpServerConfig,
+  shadowingNames: ReadonlyMap<string, McpServerSource>,
+): Promise<void> {
+  asInvalidDefinition(() => assertValidMcpServerConfig(config));
+
+  // Only the name being WRITTEN is checked against the naming rules. `name` identifies a key that is
+  // already in the file, and nothing on the import path imposes these rules — a hand-authored
+  // `"my server"` is a perfectly real entry the panel offers Edit and Delete for. Validating it here
+  // would reject both, leaving the user with a server they can see and cannot remove. Ownership is
+  // what actually needs enforcing, and the `hasOwn` check inside the critical section does that.
+  const targetName = newName ?? name;
+  asInvalidDefinition(() => assertValidMcpServerName(targetName));
+  if (targetName !== name) {
+    assertNotShadowed(targetName, shadowingNames);
+  }
+
+  await writeDamoclesMcpServers(servers => {
+    // The backstop behind the panel's `readonly` gate: Damocles can only mutate what it owns, so an
+    // imported or workspace server can never be edited through this path even if the UI let it try.
+    if (!Object.hasOwn(servers, name)) throw new McpWriteError("nameMissing", `"${name}" is not defined in ~/.damocles/mcp.json, so Damocles cannot edit it`, { name });
+    if (targetName !== name && Object.hasOwn(servers, targetName)) {
+      throw new McpWriteError("nameExists", `"${targetName}" already exists in ~/.damocles/mcp.json`, { name: targetName });
+    }
+    // Only a rename removes a key. An in-place edit assigns over the existing one, which keeps the
+    // server where the user put it in the file instead of migrating it to the bottom on every save.
+    if (targetName !== name) delete servers[name];
+    servers[targetName] = config;
+  });
+}
+
+/**
+ * Remove a server. The name is deliberately NOT run through `assertValidMcpServerName` — see
+ * `updateDamoclesMcpServer`: it names an existing key, and a hand-authored one need not satisfy rules
+ * that only govern what the form writes. Being unable to delete such a server is the worse outcome.
+ */
+export async function deleteDamoclesMcpServer(name: string): Promise<void> {
+  await writeDamoclesMcpServers(servers => {
+    if (!Object.hasOwn(servers, name)) throw new McpWriteError("nameMissing", `"${name}" is not defined in ~/.damocles/mcp.json, so Damocles cannot remove it`, { name });
+    delete servers[name];
+  });
+}
