@@ -19,7 +19,7 @@ export interface FileResult {
  * The binary is provided per-platform via that package's optional dependencies,
  * so the path no longer depends on the host editor's install layout.
  */
-async function resolveRgPath(paths: AppPaths): Promise<string> {
+export async function resolveRgPath(paths: Pick<AppPaths, "resourceRoot" | "unpackedRoot">): Promise<string> {
   if (!ripgrepModulePromise) {
     ripgrepModulePromise = import("@vscode/ripgrep");
   }

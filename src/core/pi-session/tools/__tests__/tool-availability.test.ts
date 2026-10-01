@@ -13,10 +13,12 @@ function fakePi(): PiCodingAgentModule {
   return {
     defineTool: (tool: unknown) => tool,
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn() })),
-    // Both shell overrides spread their metadata from a pi definition, so these stubs must answer with
-    // a whole definition, not just an `execute`.
+    // The shell and search overrides spread their metadata from a pi definition, so these stubs must
+    // answer with a whole definition, not just an `execute`.
     createBashToolDefinition: vi.fn(() => ({ name: 'bash', label: 'Bash', description: 'pi bash', parameters: {}, execute: vi.fn() })),
     createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn() })),
+    createGrepToolDefinition: vi.fn(() => ({ name: 'grep', label: 'grep', description: 'pi grep', parameters: {}, execute: vi.fn() })),
+    createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
   } as unknown as PiCodingAgentModule;
 }
 

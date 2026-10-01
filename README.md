@@ -651,7 +651,13 @@ It never publishes. See [docs/release.md](docs/release.md) for the release workf
 
 ## Code signing policy
 
-Code signing is pending. Windows builds are not signed yet: the project will apply to the SignPath Foundation's free code signing program for open source projects with its first desktop release, and this section will then state the signing policy, the team roles and SignPath's attribution. macOS builds are signed ad hoc, and Linux packages are not signed. The procedure is in [docs/desktop-signing.md](docs/desktop-signing.md).
+Windows releases are signed from the first release after the SignPath Foundation approves this project; until then they are unsigned. Free code signing is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+Team roles: Authors, Reviewers and Approvers are all [AizenvoltPrime](https://github.com/AizenvoltPrime), the sole maintainer.
+
+Signed files: `Damocles.exe`, the other Windows binaries inside the app and the Windows installers, each built by this repository's release workflow from a tagged commit. Each signing request is approved by hand.
+
+macOS builds are signed ad hoc, and Linux packages are not signed. The procedure is in [docs/desktop-signing.md](docs/desktop-signing.md).
 
 **Privacy statement.** Damocles collects no telemetry, crash reports or analytics. It sends your prompts and files to the model providers you configure, and connects to the MCP servers, web tools and voice services you turn on. The desktop app also contacts GitHub (github.com and its release download servers) at startup to check for a newer release, and on Windows and Linux to download it. It sends nothing else to any networked system unless you ask it to.
 

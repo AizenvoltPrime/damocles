@@ -392,12 +392,14 @@ class DesktopApp {
     if (!persisted.some((panel) => panel.kind === 'chat')) {
       await core.provider.show();
     }
-    for (const panel of persisted) {
-      const host = views.create({ options: CHAT_PANEL, restore: { panelId: panel.panelId, state: panel.state } });
+    const saved = new Map(persisted.map((panel) => [panel.panelId, panel]));
+    for (const host of views.restore(persisted, selected, CHAT_PANEL)) {
+      // A tab closed while an earlier one loaded is gone; setting up a session for it would leak one.
+      const panel = saved.get(host.panelId);
+      if (!panel || views.panel(host.panelId) !== host) continue;
       await core.provider.restorePanel(host, restoredWorkspaceFolderKey(panel.state));
       this.restorePages(host, panel.pane.pages, panel.pane.activePage);
     }
-    if (selected !== undefined && views.panel(selected)) views.show(selected, { focus: true });
   }
 
   // Reopens a chat tab's saved pages in its pane once the browser relaunches, which the remaining tabs and the updater

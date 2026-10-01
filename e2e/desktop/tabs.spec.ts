@@ -90,9 +90,7 @@ test('tabs: two projects, per-tab thinking, fork with replayed history, restart 
     desktop = await launch();
     app = desktop.app;
     await answerMessageBoxes(app);
-    const restoredAlpha = await tabById(app, alphaId);
-    await expect(restoredAlpha.getByText('Echo: alpha two', { exact: true })).toBeVisible();
-    await tabById(app, forkId);
+    // Every tab is listed with the saved one selected before any of them loads.
     await expect.poll(async () => (await shellState(app)).tabs.map((t) => t.id)).toEqual(order);
     state = await shellState(app);
     expect(state.selectedTabId).toBe(betaId);
@@ -101,8 +99,14 @@ test('tabs: two projects, per-tab thinking, fork with replayed history, restart 
     expect(tabOf(betaId)?.projectName).toBe('beta');
     await expect.poll(async () => (await shellState(app)).tabs.find((t) => t.id === alphaId)?.title).toBe(alphaTitle);
 
-    // Closing every tab fires the core's all-panels-closed event, which desktop main logs.
+    // A tab behind the selected one lays out only when first shown, so its conversation is read after selecting it.
     const restartedShell = await shellPage(app);
+    const restoredAlpha = await tabById(app, alphaId);
+    await restartedShell.evaluate((id) => window.damoclesShell!.selectTab(id), alphaId);
+    await expect(restoredAlpha.getByText('Echo: alpha two', { exact: true })).toBeVisible();
+    await tabById(app, forkId);
+
+    // Closing every tab fires the core's all-panels-closed event, which desktop main logs.
     for (const id of order) await restartedShell.evaluate((tabId) => window.damoclesShell!.closeTab(tabId), id);
     await expect.poll(async () => (await shellState(app)).tabs).toEqual([]);
     await expect.poll(() => desktop.output()).toContain('[tabs] the last chat tab closed');

@@ -132,13 +132,15 @@ Artifact configuration sketches (validate them in SignPath's artifact configurat
 ## Obligations
 
 - **Roles.** Declare the Authors, Reviewers and Approvers roles publicly in the README's "Code signing policy" section. One maintainer holds all three: AizenvoltPrime (Authors: commit rights; Reviewers: reviews every change before release; Approvers: approves each signing request in SignPath).
-- **Code signing policy.** The README section states what is signed, by whom, and carries SignPath's attribution and the privacy statement. Keep this document's text and the README's identical; change both in one commit.
+- **Code signing policy.** The README section states what is signed, by whom, and carries SignPath's attribution and the privacy statement. Keep this document's text and the README's identical, except for the interim first sentence described under "Code signing policy text (README)"; change both in one commit.
 - **Metadata.** Every signed binary carries product name and version metadata. electron-builder writes `ProductName` `Damocles` and the release version into `Damocles.exe` and the installers from `productName` and `package.json` `version`. The signing policy can enforce them; third party files keep their own metadata.
 - **Publisher check.** `win.signtoolOptions.publisherName` in `electron-builder.yml` is set to the certificate's common name (electron-builder 26 has no top level `win.publisherName` key, and electron-updater accepts a common name or a full distinguished name), so electron-updater verifies the Authenticode publisher of every downloaded update before it runs it (`NsisUpdater` reads `publisherName` from the packaged `app-update.yml`).
 - **Browser feature disclosure.** The application states the browser feature in the text below.
 - **The DevTools port.** `damocles.browser.devToolsPort` defaults to `false`, so the browser opens no unauthenticated debugging endpoint unless the user turns it on.
 
 ### Code signing policy text (README)
+
+Until the first signed release ships, the first sentence reads "Windows releases are signed from the first release after the SignPath Foundation approves this project; until then they are unsigned." Replace it with "Windows releases are signed." in the release that first ships signed installers.
 
 > Windows releases are signed. Free code signing is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 >

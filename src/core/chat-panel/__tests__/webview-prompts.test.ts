@@ -225,6 +225,58 @@ describe('PanelManager.promptTarget', () => {
     expect((await second)?.panelId).toBe((await first)?.panelId);
   });
 
+  it('waits for a panel whose session is still being created rather than opening another', async () => {
+    h = createHarness([folderEntry('/ws/a')]);
+    let release!: () => void;
+    h.holdCreation.gate = new Promise((resolve) => { release = resolve; });
+    const opening = h.manager.show();
+    await flush();
+    const opened = h.platform.window.panels.at(-1)!;
+    opened.fireMessage({ type: 'ready' });
+
+    const pending = h.manager.promptTarget(undefined);
+    await flush();
+    expect(h.platform.window.panels).toHaveLength(1);
+    h.holdCreation.gate = null;
+    release();
+    const target = await pending;
+    expect(target?.host).toBe(opened);
+    expect(target?.panelId).toBe(await opening);
+    expect(h.platform.window.panels).toHaveLength(1);
+  });
+
+  it('opens a panel when the one being set up closes before it registers', async () => {
+    h = createHarness([folderEntry('/ws/a')]);
+    let release!: () => void;
+    h.holdCreation.gate = new Promise((resolve) => { release = resolve; });
+    void h.manager.show();
+    await flush();
+    const pending = h.manager.promptTarget(undefined);
+    await flush();
+    h.platform.window.panels[0]!.close();
+    h.holdCreation.gate = null;
+    release();
+    await flush();
+    await flush();
+    expect(h.platform.window.panels).toHaveLength(2);
+    const replacement = h.platform.window.panels[1]!;
+    replacement.fireMessage({ type: 'ready' });
+    expect((await pending)?.host).toBe(replacement);
+  });
+
+  it('answers undefined when the signal aborts while a panel is still being set up', async () => {
+    h = createHarness([folderEntry('/ws/a')]);
+    h.holdCreation.gate = new Promise(() => undefined);
+    void h.manager.show();
+    await flush();
+    const abort = new AbortController();
+    const pending = h.manager.promptTarget(abort.signal);
+    await flush();
+    abort.abort();
+    await expect(pending).resolves.toBeUndefined();
+    expect(h.platform.window.panels).toHaveLength(1);
+  });
+
   it('reuses an open panel rather than opening another', async () => {
     h = createHarness([folderEntry('/ws/a')]);
     const pending = h.manager.promptTarget(undefined);

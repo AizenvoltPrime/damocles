@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [3.1.0] - 2026-10-01
+
+### Fixed
+
+- **The agent's `grep` and `find` tools no longer download programs from GitHub.** On a computer without `rg` or `fd` on PATH, the first search downloaded them from their GitHub releases into `~/.pi/agent/bin`, the pi command-line tool's folder, a connection the privacy statement did not name. Both tools now run the ripgrep that ships with Damocles, so a search makes no network connection and writes no file. `find` still honors `.gitignore` and matches patterns as before, but it lists a folder only when the folder holds a listed file, so empty folders and symlinks no longer appear in its results.
+- **Desktop: a command that asks for input no longer opens an extra tab while the app starts.** Choosing a menu command such as Set Explore API Key before the first tab had finished starting its conversation opened a second tab and asked there. The question now appears in the tab that is starting.
+- **Desktop: a restart no longer passes the selection through every tab.** While the app reopened your tabs, each one was selected and took the keyboard focus as it loaded, and the tab you had selected came back only after the last tab loaded; quitting during that time lost your selection. Every tab now appears at once with your tab selected, and that tab loads first.
+
 ## [3.0.0] - 2026-09-30
 
 ### Added
@@ -4299,6 +4307,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[3.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.36.0...v3.0.0
 [2.36.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.35.0...v2.36.0
 [2.35.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.34.0...v2.35.0

@@ -46,6 +46,21 @@ function onViewStateChange(host: PanelHost, read: () => boolean, listener: () =>
   });
 }
 
+/** Settles when `work` settles or `signal` aborts, whichever comes first; never rejects. */
+async function settledOrAborted(work: Promise<unknown>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return;
+  let onAbort = (): void => undefined;
+  const aborted = new Promise<void>((resolve) => {
+    onAbort = () => resolve();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([work.then(() => undefined, () => undefined), aborted]);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Webview messages that arrive while the panel has no usable session wait here, in order. */
 interface MessageGate {
   open: boolean;
@@ -110,8 +125,8 @@ export class PanelManager {
   private readonly folderChangeSubscription: Disposable;
   /** Session disposals still running; `dispose()` awaits them, so a panel closed first still releases its lease before exit. */
   private readonly closingSessions = new Set<Promise<void>>();
-  /** A panel `promptTarget` is opening, so concurrent host prompts share one new tab. */
-  private promptPanel: Promise<string> | null = null;
+  /** One entry per panel being opened or set up, removed as it settles; a host prompt waits for these before opening a panel. */
+  private readonly opening = new Set<Promise<void>>();
 
   constructor(config: PanelManagerConfig) {
     this.platform = config.platform;
@@ -146,7 +161,11 @@ export class PanelManager {
   }
 
   /** Opens a chat panel on the default folder; resolves its panel id. */
-  async show(): Promise<string> {
+  show(): Promise<string> {
+    return this.trackOpening(this.openDefaultPanel());
+  }
+
+  private async openDefaultPanel(): Promise<string> {
     const host = await this.platform.window.createPanelInOwnColumn({
       kind: "chat",
       title: "Damocles",
@@ -159,29 +178,37 @@ export class PanelManager {
   }
 
   /**
-   * The chat panel a host prompt renders in: the last active one, else any open one, else a new one on the
-   * default folder. Resolves once its webview is ready; undefined when it closed or the signal aborted first.
+   * The chat panel a host prompt renders in: the last active one, else any open one, else one still being opened,
+   * else a new one on the default folder. Resolves once its webview is ready; undefined when it closed or the
+   * signal aborted first.
    */
   async promptTarget(signal: AbortSignal | undefined): Promise<PromptTarget | undefined> {
-    const panelId = this.lastActivePanelId ?? this.findFallbackActivePanelId() ?? this.panels.keys().next().value ?? await this.showPromptPanel();
+    const panelId = await this.promptPanelId(signal);
+    if (panelId === undefined) return undefined;
     const instance = this.panels.get(panelId);
     if (!instance) return undefined;
-    if (instance.webviewReady && !signal?.aborted) {
-      let onAbort = (): void => undefined;
-      const aborted = new Promise<void>((resolve) => {
-        onAbort = () => resolve();
-        signal?.addEventListener("abort", onAbort, { once: true });
-      });
-      await Promise.race([instance.webviewReady, aborted]);
-      signal?.removeEventListener("abort", onAbort);
-    }
+    if (instance.webviewReady) await settledOrAborted(instance.webviewReady, signal);
     if (signal?.aborted || this.panels.get(panelId) !== instance) return undefined;
     return { panelId, host: instance.host };
   }
 
-  private showPromptPanel(): Promise<string> {
-    this.promptPanel ??= this.show().finally(() => { this.promptPanel = null; });
-    return this.promptPanel;
+  // A panel registers only once its session exists, well after its webview shows, so one still opening is waited for.
+  private async promptPanelId(signal: AbortSignal | undefined): Promise<string | undefined> {
+    for (;;) {
+      const open = this.lastActivePanelId ?? this.findFallbackActivePanelId() ?? this.panels.keys().next().value;
+      if (open !== undefined) return open;
+      if (this.opening.size === 0) return this.show();
+      await settledOrAborted(Promise.race(this.opening), signal);
+      if (signal?.aborted) return undefined;
+    }
+  }
+
+  private trackOpening(work: Promise<string>): Promise<string> {
+    const settled: Promise<void> = work.then(() => undefined, () => undefined).then(() => {
+      this.opening.delete(settled);
+    });
+    this.opening.add(settled);
+    return work;
   }
 
   async showForked(args: ForkSpawnArgs): Promise<HostInstance | null> {
@@ -251,7 +278,14 @@ export class PanelManager {
     }
   }
 
-  async initializeHost(
+  initializeHost(
+    host: PanelHost,
+    options?: { forkContext?: ForkContext; sourcePanelId?: string; initialFolderKey?: string },
+  ): Promise<string> {
+    return this.trackOpening(this.setUpHost(host, options));
+  }
+
+  private async setUpHost(
     host: PanelHost,
     options?: { forkContext?: ForkContext; sourcePanelId?: string; initialFolderKey?: string },
   ): Promise<string> {

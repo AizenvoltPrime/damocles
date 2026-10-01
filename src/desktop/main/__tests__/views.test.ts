@@ -249,6 +249,49 @@ describe('PanelViews teardown', () => {
   });
 });
 
+describe('PanelViews restore', () => {
+  const saved = (...ids: string[]) => ids.map((panelId) => ({ panelId, state: null }));
+
+  it('lists every saved tab in its place and selects only the saved one, which loads first', () => {
+    const tabs = views();
+    const select = vi.spyOn(states, 'select');
+    const loadOrder = tabs.restore(saved('home', 'alpha', 'beta', 'fork'), 'beta', CHAT);
+
+    expect(tabs.panelIds()).toEqual(['home', 'alpha', 'beta', 'fork']);
+    expect(loadOrder.map((tab) => tab.panelId)).toEqual(['beta', 'home', 'alpha', 'fork']);
+    expect(tabs.selected()?.panelId).toBe('beta');
+    expect(select.mock.calls).toEqual([['beta']]);
+    const [beta, ...others] = loadOrder;
+    expect(beta!.visible).toBe(true);
+    expect(contentsOf(beta!).focus).toHaveBeenCalled();
+    for (const tab of others) {
+      expect(tab.visible).toBe(false);
+      expect(contentsOf(tab).focus).not.toHaveBeenCalled();
+    }
+  });
+
+  it('selects the first tab when the saved selection is not among them', () => {
+    const tabs = views();
+    const loadOrder = tabs.restore(saved('home', 'alpha'), 'gone', CHAT);
+    expect(tabs.selected()?.panelId).toBe('home');
+    expect(loadOrder.map((tab) => tab.panelId)).toEqual(['home', 'alpha']);
+  });
+
+  it('restores nothing and selects nothing when no tab was saved', () => {
+    const tabs = views();
+    expect(tabs.restore([], 'beta', CHAT)).toEqual([]);
+    expect(tabs.selected()).toBeUndefined();
+  });
+
+  it('still selects and focuses a new chat tab', () => {
+    const tabs = views();
+    tabs.restore(saved('home'), 'home', CHAT);
+    const created = tabs.create({ options: CHAT });
+    expect(tabs.selected()).toBe(created);
+    expect(contentsOf(created).focus).toHaveBeenCalled();
+  });
+});
+
 describe('panel IPC', () => {
   it('carries no panel id to the renderer and listens only on the view\'s own webContents.ipc', async () => {
     const tabs = views();
@@ -475,9 +518,9 @@ describe('browser pages in a chat tab pane', () => {
   it('restores a maximized pane with focus in the pane rather than the hidden composer', () => {
     states = fakeStates([{ panelId: 'saved', kind: 'chat', state: null, pane: { open: true, maximized: true, pages: [] } }]);
     const tabs = views();
-    const chat = tabs.create({ options: CHAT, restore: { panelId: 'saved', state: null } });
+    const [chat] = tabs.restore([{ panelId: 'saved', state: null }], 'saved', CHAT);
     expect(paneView(tabs).webContents.focus).toHaveBeenCalled();
-    expect(contentsOf(chat).focus).not.toHaveBeenCalled();
+    expect(contentsOf(chat!).focus).not.toHaveBeenCalled();
   });
 
   it('hides the pane while the browser is turned off and ignores the toggle', () => {

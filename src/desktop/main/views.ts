@@ -508,7 +508,8 @@ export class PanelViews {
     return this.paneHost;
   }
 
-  // A browser page must name its open chat tab as owner; a chat tab is selected and focused, as a new tab is.
+  // A browser page must name its open chat tab as owner. A new chat tab is selected and focused; a restored one is
+  // not, because `restore` selects the saved tab.
   create(request: CreatePanelRequest): DesktopPanel {
     if (request.restore && this.panels.has(request.restore.panelId)) throw new Error(`Panel ${request.restore.panelId} is already open`);
     if (request.options.kind === 'browser') return this.createPage(request);
@@ -517,8 +518,20 @@ export class PanelViews {
     this.panels.set(panel.panelId, panel);
     this.order.push(panel.panelId);
     this.deps.window.contentView.addChildView(panel.view);
-    this.show(panel.panelId, { focus: true });
+    if (request.restore) this.deps.onChange();
+    else this.show(panel.panelId, { focus: true });
     return panel;
+  }
+
+  // Every saved chat tab joins the strip in its saved place, and the saved selection, else the first tab, is selected
+  // before any of them loads. Returns them in load order, selected tab first. The others lay out when first shown:
+  // Chromium sends a view's size to its page only once the view has been visible.
+  restore(saved: readonly { readonly panelId: string; readonly state: unknown }[], selectedId: string | undefined, options: PanelOptions): DesktopPanel[] {
+    const tabs = saved.map((panel) => this.create({ options, restore: panel }));
+    const selected = tabs.find((tab) => tab.panelId === selectedId) ?? tabs[0];
+    if (!selected) return [];
+    this.show(selected.panelId, { focus: true });
+    return [selected, ...tabs.filter((tab) => tab !== selected)];
   }
 
   htmlFor(panelId: string): string | undefined {

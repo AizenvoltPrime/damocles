@@ -21,6 +21,9 @@ import {
 } from '../../../shared/tool-names';
 import { createEditTool } from './edit-tool';
 import { createBashTool, type ShellOptions } from './bash-tool';
+import { createFindTool, createGrepTool } from './search-tools';
+import { resolveRgPath } from '../../chat-panel/ripgrep';
+import { platform } from '../../platform-host';
 import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
 import type { ShellSessionJob } from './process-tree';
@@ -111,7 +114,7 @@ export interface ModuleToolNameDeps {
  * `CUSTOM_TOOL_NAMES` because `PI_NATIVE_ACTIVE_TOOLS` already carries them, and listing an override
  * in both makes `fullActiveToolNames` name it twice.
  */
-export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash'];
+export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find'];
 
 /**
  * Names of the Damocles custom tools, in active-set order. Every name MUST also be passed in the
@@ -135,17 +138,21 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
  * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, the Task list tools, plan,
- * question). The native `read/write/grep/find/ls` come from pi directly. `bash` is pi's own tool,
- * re-registered here under the same name so the panel owns a per-call abort controller for it.
+ * question). The native `read/write/ls` come from pi directly. `bash` is pi's own tool, re-registered
+ * here under the same name so the panel owns a per-call abort controller for it; `grep` and `find`
+ * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
+  const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
   const tools: ToolDefinition[] = [
     createBashTool(pi, cwd, { getShellOptions, cancelRegistry, shellJob }),
+    createGrepTool(pi, cwd, rgPath),
+    createFindTool(pi, cwd, rgPath),
     createEditTool(pi, cwd),
     withPerCallCancel(createPowerShellTool(pi, cwd, shellJob), cancelRegistry),
     taskCreate,
