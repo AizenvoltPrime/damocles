@@ -16,10 +16,14 @@ import type { CompassService } from "../compass";
 import { CompassRegistry } from "../compass/compass-registry";
 import { VoiceService } from "../voice/service";
 import { UsageStatsService } from "../usage-stats";
-import { SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
+import { OPENAI_KEY_MOVED_MARKER_PATH, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
+import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import { PiRuntime } from "../pi-session/pi-runtime";
+import { typesafeAuthStatus } from "./settings-manager/managers/explore-manager";
+import { TYPESAFE_SECRET_KEY } from "../pi-session/custom-providers";
+import { EXPLORE_SECRET_KEYS } from "../pi-session/explore-providers";
 import { setSessionMetaCacheVersion } from "../pi-session/session-store";
 import { WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
@@ -57,6 +61,7 @@ export class ChatPanelProvider {
 
   private readonly subscriptions: Disposable[];
   private readonly platform: Platform;
+  private memoryJudgeReads = 0;
 
   constructor(platform: Platform, hostDeps: ChatPanelHostDeps) {
     this.subscriptions = hostDeps.subscriptions;
@@ -87,6 +92,11 @@ export class ChatPanelProvider {
     this.historyManager = new HistoryManager({
       postMessage,
       maxCheckpointFileSizeBytes: () => checkpointMaxFileSizeBytes(platform.settings),
+      modelReasons: async () => {
+        // A panel restored at startup replays before its session creates the runtime, so the replay may create it.
+        const models = await PiRuntime.unlessRetired()?.modelRuntimeReady();
+        return models ? (provider, modelId) => models.getModel(provider, modelId)?.reasoning : undefined;
+      },
     });
 
     this.workspaceManager = new WorkspaceManager({
@@ -97,6 +107,12 @@ export class ChatPanelProvider {
 
     this.memoryService = new MemoryService(platform);
     this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
+    const stopJudgeUpdates = PiRuntime.onMemoryJudgeChange(() => this.broadcastMemoryJudge());
+    this.subscriptions.push({ dispose: stopJudgeUpdates });
+    // Before pi starts, the status is read from these secrets alone, so their changes are an input too.
+    this.subscriptions.push(platform.secrets.onDidChange((key) => {
+      if (key === TYPESAFE_SECRET_KEY || key === EXPLORE_SECRET_KEYS.openrouter) this.broadcastMemoryJudge();
+    }));
     this.memoryService.setFallbackWorkspace(() => this.folderRegistry.defaultTarget().fsPath);
     this.memoryService.setWorkspaceRoots(this.folderRegistry.targets().map((t) => t.fsPath));
     this.browserService = new BrowserService(platform);
@@ -254,6 +270,22 @@ export class ChatPanelProvider {
 
     void this.storageManager.setupSessionWatcher();
 
+    showOpenAIKeyMovedNotice({
+      secrets: platform.secrets,
+      state: platform.state.global,
+      notifications: platform.notifications,
+      agentDir: PI_AGENT_DIR,
+      markerPath: OPENAI_KEY_MOVED_MARKER_PATH,
+      host: platform.appInfo.host,
+      openAuthPanel: () => {
+        void this.panelManager.promptTarget(undefined).then((target) => {
+          if (!target) return;
+          target.host.reveal();
+          this.panelManager.postMessage(target.host, { type: "openOpenAIAuthPanel" });
+        });
+      },
+    }).catch((err: unknown) => log("[ChatPanelProvider] OpenAI key-moved notice failed: %s", err instanceof Error ? err.message : String(err)));
+
     // A single-folder window indexes its folder at startup, before any panel targets it.
     if (!this.folderRegistry.isMultiRoot) {
       const compassSpan = perfSpan("compass.startFor");
@@ -383,6 +415,16 @@ export class ChatPanelProvider {
       return true;
     }
     return false;
+  }
+
+  /** Reads overlap, so only the newest read is broadcast; an older one may have read state the newer one replaced. */
+  private broadcastMemoryJudge(): void {
+    const read = ++this.memoryJudgeReads;
+    typesafeAuthStatus(this.platform)
+      .then((msg) => {
+        if (read === this.memoryJudgeReads) this.panelManager.broadcast(msg);
+      })
+      .catch((err: unknown) => log("[ChatPanelProvider] reading the memory judge status failed: %s", err instanceof Error ? err.message : String(err)));
   }
 
   private postToFolderPanels(folderKey: string, message: ExtensionToWebviewMessage): void {

@@ -34,13 +34,18 @@ import { detectEnv } from './env';
 import { preloadSkills } from './skill-loader';
 import { resolveAgentToolset } from './agent-toolset';
 import {
+  agentResultTextOnBranch,
+  deliveredBackgroundResults,
   findAgentFile,
   isResumableSubagentStatus,
+  latestSubagentInvocations,
   readAgentFile,
+  segmentForInvocation,
   subagentBranchIndex,
   subagentLatestState,
   terminalAgentStatus,
   toolCallArgumentsOnBranch,
+  type AgentFile,
   type AgentInvocationData,
   type AgentSegmentData,
   type AgentStatusData,
@@ -53,13 +58,14 @@ import {
 import { DAMOCLES_AGENT_LAUNCH_ENTRY, DAMOCLES_AGENT_SEGMENT_ENTRY, DAMOCLES_AGENT_STATUS_ENTRY } from '../session-store/constants';
 import { createSubagentExtensionFactory } from './subagent-extension-factory';
 import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-bridge';
-import { runSubagent, getAgentConversation } from './subagent-runner';
+import { runSubagent } from './subagent-runner';
 import { getStatusNote } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
 import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
 import type { ImageBlock } from '../../../shared/types/content';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
+import { sessionEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
 
 export const DEFAULT_MAX_CONCURRENT = 4;
 
@@ -73,6 +79,21 @@ function newSubagentId(): string {
 
 export function isSubagentId(id: string): boolean {
   return SUBAGENT_ID.test(id);
+}
+
+/**
+ * Whether `record` ran the branch's latest invocation of its id. A record whose own invocation entry
+ * failed to append still does while its `Agent` call is on the branch, because any later invocation of
+ * the id would have replaced the record in the manager.
+ */
+function ranLatestInvocation(
+  record: AgentRecord,
+  branch: readonly SessionEntry[],
+  index: SubagentBranchIndex,
+  latest: ReadonlyMap<string, AgentInvocationData>,
+): boolean {
+  if (latest.get(record.id)?.toolCallId === record.toolCallId) return true;
+  return !index.invocations.some((inv) => inv.toolCallId === record.toolCallId) && toolCallArgumentsOnBranch(branch, record.toolCallId) !== undefined;
 }
 
 /** Outcome of resolving a model for a spawn. */
@@ -175,6 +196,16 @@ export interface ResumeRequest {
   signal?: AbortSignal;
 }
 
+/** A subagent this branch invoked, read from the branch and its file rather than from the manager. */
+export interface BranchAgent {
+  state: SubagentLatestState;
+  file: AgentFile | null;
+  /** The status entry of the latest invocation's segment. */
+  status?: AgentStatusData;
+  /** The latest invocation's result as the branch holds it: its results injection, else its foreground `Agent` result. */
+  branchResult?: string;
+}
+
 /** A validated resume: the agent file to reopen, or null to re-run it fresh from `launch`. */
 export interface ResumeTarget {
   agentId: string;
@@ -197,12 +228,13 @@ function runInBackground(spec: RunSpec): boolean {
 interface PreparedRun {
   systemPrompt: string;
   eligibleToolNames: string[];
+  directMcpToolNames: string[];
   customTools: ToolDefinition[];
   extensionFactory: ExtensionFactory;
 }
 
-function deliverSteer(session: AgentSession, steer: PendingSteer): Promise<void> {
-  return steer.images ? session.steer(steer.text, extractImages(steer.images)) : session.steer(steer.text);
+async function deliverSteer(session: AgentSession, steer: PendingSteer): Promise<void> {
+  await (steer.images ? session.steer(steer.text, extractImages(steer.images)) : session.steer(steer.text));
 }
 
 function stillActiveError(id: string, status: string): Error {
@@ -377,7 +409,7 @@ export class AgentManager {
     }
   }
 
-  /** Rebuild the launch of an agent that stopped before its first response, so it has no file, from the
+  /** Rebuild the launch of an agent that stopped before its task was committed, so it has no file, from the
    *  arguments of the `Agent` call that spawned it. */
   private launchFromSpawnCall(
     agentId: string,
@@ -454,29 +486,40 @@ export class AgentManager {
     return 'queued';
   }
 
-  /** Get a subagent's conversation transcript (for GetSubagentResult verbose mode). */
-  getConversation(id: string): string {
-    const session = this.agents.get(id)?.session;
-    return session ? getAgentConversation(session) : '';
+  /**
+   * A subagent read from the parent branch and its file, whether or not this manager holds it. Null for
+   * a malformed id or one this branch never invoked, even when a file with that id exists.
+   */
+  async readBranchAgent(id: string): Promise<BranchAgent | null> {
+    if (!isSubagentId(id)) return null;
+    const branch = this.engine.parentBranch();
+    const index = subagentBranchIndex(branch);
+    if (!index.invocations.some((inv) => inv.id === id)) return null;
+    const path = await findAgentFile(this.engine.subagentStoreDir(), id);
+    const file = path ? await readAgentFile(path) : null;
+    const state = subagentLatestState(index, id, file, this.liveStatus(id));
+    if (!state) return null;
+    const status = file ? segmentForInvocation(file, state.latest)?.status : undefined;
+    const branchResult = index.injected.get(state.latest.toolCallId)?.result ?? agentResultTextOnBranch(branch, state.latest.toolCallId);
+    return { state, file, ...(status ? { status } : {}), ...(branchResult !== undefined ? { branchResult } : {}) };
+  }
+
+  /**
+   * The tracked record of `id` when it ran this branch's latest invocation of `id`. A record from another
+   * branch is never answered for, so the model reaches only agents its own conversation invoked.
+   */
+  branchRecord(id: string): AgentRecord | undefined {
+    const record = this.agents.get(id);
+    if (!record) return undefined;
+    const branch = this.engine.parentBranch();
+    const index = subagentBranchIndex(branch);
+    return ranLatestInvocation(record, branch, index, latestSubagentInvocations(index)) ? record : undefined;
   }
 
   /** Whether any background subagent is still running or queued. */
   hasPendingBackground(): boolean {
     for (const r of this.agents.values()) {
       if (r.background && (r.status === 'running' || r.status === 'queued')) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Whether any background subagent has a result the parent has not yet incorporated — still
-   * running/queued, OR terminal-but-unconsumed (it finished mid-turn but was never fetched via
-   * GetSubagentResult). Drives the parent keep-alive hold: gating on this (not hasPendingBackground)
-   * is what stops a background result that completes during the turn from being silently dropped.
-   */
-  hasUnconsumedBackground(): boolean {
-    for (const r of this.agents.values()) {
-      if (r.background && !r.resultConsumed) return true;
     }
     return false;
   }
@@ -501,18 +544,20 @@ export class AgentManager {
     return Promise.allSettled(runs).then(() => undefined);
   }
 
-  /** Take terminal, not-yet-consumed background subagent records (marks them consumed). For the parent
-   *  keep-alive: their results are injected back into the parent once, then never re-injected. */
-  takeCompletedBackgroundResults(): AgentRecord[] {
-    const out: AgentRecord[] = [];
-    for (const r of this.agents.values()) {
-      const terminal = r.status !== 'running' && r.status !== 'queued';
-      if (r.background && terminal && !r.resultConsumed) {
-        r.resultConsumed = true;
-        out.push(r);
-      }
-    }
-    return out;
+  /**
+   * Background records whose result this branch was never handed: terminal, not discarded, the agent's
+   * latest invocation on the branch, and not in D(branch). Every push path delivers exactly these.
+   */
+  deliverableLive(): AgentRecord[] {
+    const finished = [...this.agents.values()].filter(
+      (r) => r.background && r.status !== 'running' && r.status !== 'queued' && !r.discarded,
+    );
+    if (finished.length === 0) return [];
+    const branch = this.engine.parentBranch();
+    const index = subagentBranchIndex(branch);
+    const delivered = deliveredBackgroundResults(index);
+    const latest = latestSubagentInvocations(index);
+    return finished.filter((r) => ranLatestInvocation(r, branch, index, latest) && !delivered.has(r.toolCallId));
   }
 
   private newRecord(id: string, spec: RunSpec, queued: boolean): AgentRecord {
@@ -680,15 +725,17 @@ export class AgentManager {
       // the shell too — otherwise its own description promises a read-only mode the runtime never had.
       readOnlyShell: toolset.readOnly,
       parentToolUseId,
-      deferrableToolNames: deferredToolNames(eligibleToolNames, mcp.names),
+      deferrableToolNames: deferredToolNames(eligibleToolNames, mcp.deferrable),
       // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
       // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
       // included, falls through to full approval.
       isMcpReadOnly: mcp.isReadOnly,
+      mcpToolIdentity: mcp.identity,
       mcpDescriptions: mcp.descriptions,
+      directMcpGroups: mcp.directGroups,
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
-    return { systemPrompt, eligibleToolNames, customTools, extensionFactory };
+    return { systemPrompt, eligibleToolNames, directMcpToolNames: [...mcp.direct], customTools, extensionFactory };
   }
 
   private async run(
@@ -700,7 +747,7 @@ export class AgentManager {
   ): Promise<string> {
     const prepared = this.prepareRun(record, config, spec.toolCallId);
     const reopenPath = spec.kind === 'resume' ? spec.target.path : null;
-    // A fresh run: a spawn, or a resume of an agent that stopped before its first response.
+    // A fresh run: a spawn, or a resume of an agent that stopped before its task was committed.
     const fresh = spec.kind === 'spawn'
       ? { description: spec.description, prompt: spec.prompt, background: spec.runInBackground, thinking: spec.thinking }
       : { ...spec.target.launch, thinking: spec.target.launch.thinkingOverride };
@@ -719,6 +766,7 @@ export class AgentManager {
         // where `createSubagentSession` reads this agent's MCP set back from, for the deferred baseline.
         tools: prepared.eligibleToolNames,
         customTools: prepared.customTools,
+        directMcpToolNames: prepared.directMcpToolNames,
 
         excludeTools: [...PI_EXCLUDED_TOOLS],
         extensionFactory: prepared.extensionFactory,
@@ -738,10 +786,11 @@ export class AgentManager {
       ...(resolved.modelLabel ? { modelLabel: resolved.modelLabel } : {}),
       ...(resolved.dollarBilled !== undefined ? { dollarBilled: resolved.dollarBilled } : {}),
     };
-    const segment = (dollarBilled: boolean | undefined): AgentSegmentData | null => spec.kind === 'spawn' ? null : {
+    const segment = (dollarBilled: boolean | undefined, effort: EffortBadgeLevel | undefined): AgentSegmentData | null => spec.kind === 'spawn' ? null : {
       toolCallId: spec.toolCallId,
       ...(spec.message !== undefined ? { message: spec.message } : {}),
       ...(dollarBilled !== undefined ? { dollarBilled } : {}),
+      ...(effort ? { effort } : {}),
     };
     let prompt = fresh.prompt;
     if (spec.kind === 'resume') {
@@ -759,11 +808,13 @@ export class AgentManager {
         record.session = session;
         // A reopened session runs on the model its file recorded, which may bill differently from the launch.
         const dollarBilled = reopenPath !== null && session.model ? this.engine.modelDollarBilled(session.model) : resolved.dollarBilled;
-        record.bridgeUnsub = bridge.attach(session, dollarBilled);
+        // The level pi clamped to this session's model, never the requested one.
+        const effort = sessionEffort(session);
+        record.bridgeUnsub = bridge.attach(session, dollarBilled, effort);
         // Appended before prompt(), so each entry precedes this run's messages. A new file is only
-        // written once the first assistant message arrives; a reopened file takes the entry at once.
-        if (launch) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, launch);
-        const segmentData = segment(dollarBilled);
+        // written once pi commits the task prompt; a reopened file takes the entry at once.
+        if (launch) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, effort ? { ...launch, effort } : launch);
+        const segmentData = segment(dollarBilled, effort);
         if (segmentData) session.sessionManager.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, segmentData);
         record.outputFile = session.sessionManager.getSessionFile();
         if (record.pendingSteers?.length) {
@@ -801,8 +852,10 @@ export class AgentManager {
   /** Emit the card resolution + dispose the session + drain the queue. */
   private afterComplete(id: string, record: AgentRecord, bridge: SubagentStreamBridge): void {
     const browserSuccess = record.status === 'completed' || record.status === 'steered';
+    // A record `clear()` dropped belongs to a session the panel no longer shows, and its spend is already counted.
+    const tracked = !this.disposed && this.agents.get(id) === record;
     // Settle before the card resolves: spend that raised no event, such as a cache warm, rolls here.
-    bridge.settleUsage();
+    if (tracked) bridge.settleUsage();
     if (record.bridgeUnsub) {
       try { record.bridgeUnsub(); } catch { /* ignore */ }
       record.bridgeUnsub = undefined;
@@ -819,7 +872,7 @@ export class AgentManager {
       totalTokens: getLifetimeTotal(record.lifetimeUsage),
       totalToolUseCount: record.toolUses,
     });
-    if (!this.disposed) {
+    if (tracked) {
       bridge.finish({
         ...(record.session ? { session: record.session } : {}),
         responseText,
@@ -844,15 +897,17 @@ export class AgentManager {
     // most likely to have left a prompt on screen, and there is no "keep it open for inspection" case
     // for a modal nobody can answer.
     this.engine.cancelAgentDialogs(id);
-    this.bridges.delete(id);
-    if (record.background) this.emitBackgroundTaskCompleted(record);
+    if (tracked) {
+      this.bridges.delete(id);
+      if (record.background) this.emitBackgroundTaskCompleted(record);
+    }
     this.running = Math.max(0, this.running - 1);
     this.settleDone(id, responseText);
     this.drainQueue();
   }
 
   /** Append the terminal `damocles-agent-status` entry to the agent's own session, once. A session
-   *  that never produced an assistant message keeps it buffered, so such an agent has no file. */
+   *  that never committed a user or assistant message keeps it buffered, so such an agent has no file. */
   private recordStatus(record: AgentRecord, resultText: string): void {
     if (record.statusRecorded || !record.session) return;
     if (record.status === 'queued' || record.status === 'running') return;
@@ -954,10 +1009,9 @@ export class AgentManager {
   }
 
   /**
-   * Abort all running + queued subagents (interrupt / reset / budget). Returns the count aborted.
-   * A killed agent has no result to incorporate, so its record is marked consumed: otherwise
-   * `hasUnconsumedBackground()` keeps returning true and the NEXT turn's keep-alive injects
-   * "(no output)" and pays for a synthesis round over agents this abort just killed.
+   * Abort all running + queued subagents (interrupt / reset / budget / shutdown). Returns the count
+   * aborted. A killed agent has no result to deliver, so its record is discarded and no push path
+   * injects it.
    */
   abortAll(reason: AgentStopReason): number {
     this.abortEpoch++;
@@ -968,7 +1022,7 @@ export class AgentManager {
         record.status = 'stopped';
         record.stopReason = reason;
         record.completedAt = Date.now();
-        record.resultConsumed = true;
+        record.discarded = true;
         // Never-delivered steers on a queued agent must not survive the abort (see abort()).
         record.pendingSteers = undefined;
         record.userSteers = undefined;
@@ -983,7 +1037,7 @@ export class AgentManager {
         record.stopReason = reason;
         record.abortController?.abort();
         record.completedAt = Date.now();
-        record.resultConsumed = true;
+        record.discarded = true;
         count++;
       }
     }
@@ -997,6 +1051,19 @@ export class AgentManager {
       this.agents.delete(id);
       this.bridges.delete(id);
     }
+  }
+
+  /**
+   * Drop every record, so nothing of a session that is no longer bound stays cached. A run still ending
+   * would write its status only after that conversation could be re-bound and scanned, so a stopped
+   * record's status is written now, as `dispose` does.
+   */
+  clear(): void {
+    for (const record of this.agents.values()) {
+      this.recordStatus(record, (record.result ?? record.error ?? '') + getStatusNote(record.status, record.stopReason, record.id));
+    }
+    this.agents.clear();
+    this.bridges.clear();
   }
 
   /** Whether any subagent is still running or queued. */

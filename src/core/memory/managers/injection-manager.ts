@@ -31,6 +31,7 @@ import {
 import { estimateTokens, truncateToChars } from '../token-estimate';
 import type { ProfileManager } from './profile-manager';
 import type { MemorySubCallRunner } from '../subcall-runner';
+import { LLM_RERANK_MIN_MS, RERANK_QUERY_CHARS, classifierRerank } from '../classifier-judges';
 import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../injection/details';
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
 import {
@@ -73,6 +74,13 @@ function rerankSortWeight(relevance: RerankRelevance | undefined): number {
 
 interface InjectRerankResult {
   results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
+}
+
+/** `reason` comes from the LLM rerank, `classifierScore` (0..1) from Jev. */
+interface RerankGrade {
+  relevance: RerankRelevance;
+  reason?: string;
+  classifierScore?: number;
 }
 
 /** The runner's `T` is an unvalidated cast; a hallucinated shape would throw at `value.results`. */
@@ -174,7 +182,6 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const RERANK_CANDIDATE_CAP = 30;
 const RERANK_TIMEOUT_MS = 2000;
 const RERANK_SNIPPET_CHARS = 160;
-const RERANK_QUERY_CHARS = 2000;
 const SNIPPET_CHARS = 160;
 const MAX_MENTIONED = 10;
 const SESSION_CANDIDATE_LIMIT = 50;
@@ -267,6 +274,7 @@ interface Selected {
   forgottenMention: boolean;
   rerankRelevance?: RerankRelevance;
   rerankReason?: string;
+  rerankClassifierScore?: number;
 }
 
 interface GatedCandidate {
@@ -279,6 +287,7 @@ interface GatedCandidate {
   fullAllowed: boolean;
   rerankRelevance?: RerankRelevance;
   rerankReason?: string;
+  rerankClassifierScore?: number;
 }
 
 function toLoaded(row: MemoryRow): Loaded {
@@ -374,6 +383,7 @@ function toInjectedMemory(s: Selected): InjectedMemory {
     ...(s.forgottenMention ? { isForgotten: true } : {}),
     ...(s.rerankRelevance ? { rerankRelevance: s.rerankRelevance } : {}),
     ...(s.rerankReason ? { rerankReason: s.rerankReason } : {}),
+    ...(s.rerankClassifierScore !== undefined ? { rerankClassifierScore: s.rerankClassifierScore } : {}),
   };
 }
 
@@ -989,6 +999,7 @@ export class InjectionManager {
         forgottenMention: false,
         ...(g.rerankRelevance ? { rerankRelevance: g.rerankRelevance } : {}),
         ...(g.rerankReason ? { rerankReason: g.rerankReason } : {}),
+        ...(g.rerankClassifierScore !== undefined ? { rerankClassifierScore: g.rerankClassifierScore } : {}),
       };
       taken.add(id);
       (tier === 'full' ? gatedFull : gatedCompact).push(entry);
@@ -1078,8 +1089,9 @@ export class InjectionManager {
   }
 
   /**
-   * Reorder the gated set with one hard-capped (~2s) blocking LLM rerank over its top entries; a
-   * `low` grade demotes to compact. On timeout, null or failure the lexical order stands.
+   * Reorder the gated set with one hard-capped (~2s) blocking rerank over its top entries: Jev when a
+   * classifier is configured, else (or when Jev fails) the LLM in the time left. A `low` grade demotes
+   * to compact. On timeout, null or failure the lexical order stands.
    */
   private async rerank(userPrompt: string, gated: GatedCandidate[]): Promise<GatedCandidate[] | null> {
     const pool = gated.slice(0, RERANK_CANDIDATE_CAP);
@@ -1088,8 +1100,21 @@ export class InjectionManager {
       title: g.loaded.entry.title ?? null,
       snippet: truncateToChars(g.loaded.entry.content, RERANK_SNIPPET_CHARS),
     }));
-    const prompt = `Query: ${truncateToChars(userPrompt, RERANK_QUERY_CHARS)}\n\nCandidates:\n${JSON.stringify(items)}`;
 
+    let llmTimeoutMs = RERANK_TIMEOUT_MS;
+    if (this.runner.hasClassifier?.()) {
+      const started = Date.now();
+      const jev = await classifierRerank(this.runner, userPrompt, items, RERANK_TIMEOUT_MS);
+      if (jev) {
+        const graded = new Map<string, RerankGrade>();
+        for (const [id, g] of jev) graded.set(id, { relevance: g.relevance, classifierScore: g.score });
+        return this.applyRerankGrades(pool, gated, graded);
+      }
+      llmTimeoutMs -= Date.now() - started;
+      if (llmTimeoutMs < LLM_RERANK_MIN_MS) return null;
+    }
+
+    const prompt = `Query: ${truncateToChars(userPrompt, RERANK_QUERY_CHARS)}\n\nCandidates:\n${JSON.stringify(items)}`;
     let value: InjectRerankResult | null;
     try {
       const result = await this.runner.run<InjectRerankResult>({
@@ -1097,7 +1122,7 @@ export class InjectionManager {
         systemPrompt: INJECT_RERANK_SYSTEM_PROMPT,
         prompt,
         schema: INJECT_RERANK_SCHEMA,
-        timeoutMs: RERANK_TIMEOUT_MS,
+        timeoutMs: llmTimeoutMs,
       });
       value = result.value;
     } catch (err) {
@@ -1106,7 +1131,7 @@ export class InjectionManager {
     }
     if (!isInjectRerankResult(value)) return null;
 
-    const graded = new Map<string, { relevance: RerankRelevance; reason?: string }>();
+    const graded = new Map<string, RerankGrade>();
     for (const item of value.results) {
       if (!Object.hasOwn(RELEVANCE_RANK, item.relevance)) continue;
       const reason = typeof item.reason === 'string' && item.reason ? item.reason : undefined;
@@ -1116,7 +1141,10 @@ export class InjectionManager {
       }
     }
     if (graded.size === 0) return null;
+    return this.applyRerankGrades(pool, gated, graded);
+  }
 
+  private applyRerankGrades(pool: GatedCandidate[], gated: GatedCandidate[], graded: ReadonlyMap<string, RerankGrade>): GatedCandidate[] {
     const reordered = pool
       .map((g, index) => {
         const grade = graded.get(g.loaded.row.id);
@@ -1125,6 +1153,7 @@ export class InjectionManager {
               ...g,
               rerankRelevance: grade.relevance,
               ...(grade.reason ? { rerankReason: grade.reason } : {}),
+              ...(grade.classifierScore !== undefined ? { rerankClassifierScore: grade.classifierScore } : {}),
               fullAllowed: g.fullAllowed && grade.relevance !== 'low',
             }
           : g;

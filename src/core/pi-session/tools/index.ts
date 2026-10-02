@@ -33,7 +33,10 @@ import { createPlanModeTools } from './plan-mode-tools';
 import { createAskUserQuestionTool } from './ask-user-question-tool';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
-import { buildBrowserPiTools, abortableTool, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { abortableTool } from './abortable-tool';
+import { createGenerateImageTool, type ImageToolDeps } from './image-tools';
+import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 import { createBrowserRequestInputTool } from './browser-request-input-tool';
 import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools } from './subagent-tools';
@@ -92,6 +95,9 @@ export interface CustomToolDeps {
    * customTools are built WITHOUT this, so they never get the main team tools (no nested-team recursion).
    */
   teamService?: TeamServiceRef;
+  /** When present, `GenerateImage` is appended. Only the primary session passes it: image generation never
+   *  reaches a subagent or a team agent. */
+  imageGeneration?: Pick<ImageToolDeps, 'getRuntime' | 'getModelId'>;
   /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
    *  Selects whether the team rung appears in the EnterPlanMode guidance's delivery-mechanism ladder. */
   isTeamEnabled?: () => boolean;
@@ -107,6 +113,8 @@ export interface ModuleToolNameDeps {
   compassService?: CompassService;
   /** The live `damocles.browser.enabled` read, computed by the caller (PiSession). */
   browserEnabled: boolean;
+  /** `damocles.imageGeneration.enabled` AND `imageAvailability(...).available`, computed by the caller. */
+  imageEligible: boolean;
 }
 
 /**
@@ -143,16 +151,17 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
+  const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled } = deps;
   // Bound here because this is the only place that knows which agent the tools being built run in.
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
+  const readRuleFilter = (): Promise<(filePath: string) => boolean> => permissionHandler.readRuleFilter();
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
   const tools: ToolDefinition[] = [
     createBashTool(pi, cwd, { getShellOptions, cancelRegistry, shellJob }),
-    createGrepTool(pi, cwd, rgPath),
-    createFindTool(pi, cwd, rgPath),
+    createGrepTool(pi, cwd, rgPath, readRuleFilter),
+    createFindTool(pi, cwd, rgPath, readRuleFilter),
     createEditTool(pi, cwd),
     withPerCallCancel(createPowerShellTool(pi, cwd, shellJob), cancelRegistry),
     taskCreate,
@@ -205,6 +214,11 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // them up front lets `tools:*` subagents inherit them and the live toggle take effect with no reload.
   tools.push(...buildWebPiTools({ pi }));
 
+  // Built while inert, like the web tools, so enabling it mid-conversation activates it live.
+  if (imageGeneration) {
+    tools.push(createGenerateImageTool({ pi, cwd, ...imageGeneration }));
+  }
+
   return tools;
 }
 
@@ -219,5 +233,6 @@ export function moduleToolNames(deps: ModuleToolNameDeps): string[] {
   if (deps.memoryService?.isEnabled) names.push(...MEMORY_PI_TOOL_NAMES);
   if (deps.compassService?.isEnabled) names.push(...COMPASS_PI_TOOL_NAMES);
   if (deps.browserEnabled) names.push(...BROWSER_PI_TOOL_NAMES);
+  if (deps.imageEligible) names.push(...IMAGE_PI_TOOL_NAMES);
   return names;
 }

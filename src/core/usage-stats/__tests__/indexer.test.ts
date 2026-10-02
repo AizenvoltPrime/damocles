@@ -574,6 +574,29 @@ describe('indexUsage entry kinds', () => {
       .toEqual({ input: expected.input, output: expected.output, cacheRead: expected.cacheRead, cacheWrite: expected.cacheWrite });
     expect(t.requests).toBe(7);
   });
+
+  it('attributes a GenerateImage result to the image model its details name, failures included, and leaves the chat model alone', async () => {
+    const image = (id: string, at_: string, details: Record<string, unknown>) => ({
+      type: 'message', id, parentId: null, timestamp: at_,
+      message: { role: 'toolResult', toolCallId: id, toolName: 'GenerateImage', content: [], isError: false, details, usage: usage(0.04), timestamp: T0 },
+    });
+    writeLines(mainPath('sess-i'), [
+      header('sess-i', at(0)),
+      userMessage('00000001', at(0.1)),
+      assistant('a0000001', at(1), 0.01),
+      image('a0000002', at(2), { provider: 'openrouter', model: 'google/gemini-image', filePath: '/w/fox.png', mimeType: 'image/png', bytes: 9 }),
+      image('a0000003', at(3), { provider: 'openrouter', model: 'google/gemini-image' }),
+      assistant('a0000004', at(4), 0.01),
+    ]);
+    await scan();
+
+    expect(rows().map((r) => ({ id: r.key.split('|')[0], modelKey: r.modelKey }))).toEqual([
+      { id: 'a0000001', modelKey: 'anthropic/claude-sonnet-4-5' },
+      { id: 'a0000002', modelKey: 'openrouter/google/gemini-image' },
+      { id: 'a0000003', modelKey: 'openrouter/google/gemini-image' },
+      { id: 'a0000004', modelKey: 'anthropic/claude-sonnet-4-5' },
+    ]);
+  });
 });
 
 describe('indexUsage malformed input', () => {

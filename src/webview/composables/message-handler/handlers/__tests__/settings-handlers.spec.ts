@@ -6,6 +6,7 @@ import { createHandlerRegistry } from '../../handler-registry';
 import type { HandlerRegistry, HandlerContext } from '../../types';
 import { i18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useUIStore } from '@/stores/useUIStore';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 
 /**
@@ -48,6 +49,7 @@ const serverStatus = (localMcpUnignored: boolean): ExtensionToWebviewMessage => 
   servers: [],
   mcpEnabled: true,
   configErrors: [],
+  toolExposureScopes: ['user'],
   localMcpUnignored,
 });
 
@@ -56,6 +58,18 @@ const configUpdate = (localMcpUnignored: boolean): ExtensionToWebviewMessage => 
   servers: [],
   configErrors: [],
   localMcpUnignored,
+});
+
+describe('toolExposureScopes reaching the settings store', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('starts at User and takes the scopes each mcpServerStatus offers', () => {
+    const ctx = context();
+    expect(ctx.stores.settingsStore.mcpToolExposureScopes).toEqual(['user']);
+
+    dispatch({ ...serverStatus(false), toolExposureScopes: ['user', 'project', 'local'] } as ExtensionToWebviewMessage, ctx);
+    expect(ctx.stores.settingsStore.mcpToolExposureScopes).toEqual(['user', 'project', 'local']);
+  });
 });
 
 describe('localMcpUnignored reaching the settings store', () => {
@@ -96,5 +110,47 @@ describe('localMcpUnignored reaching the settings store', () => {
     dispatch(serverStatus(false), ctx);
 
     expect(ctx.stores.settingsStore.mcpLocalUnignored).toBe(false);
+  });
+});
+
+describe('ChatGPT sign-in messages reaching the settings store', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function openaiContext(): HandlerContext {
+    return { stores: { settingsStore: useSettingsStore(), uiStore: useUIStore() } } as unknown as HandlerContext;
+  }
+
+  it('records a failure error, clears it when a sign-in starts, and ends the in-flight state on completion', () => {
+    const ctx = openaiContext();
+    const registry = buildRegistry();
+
+    dispatch({ type: 'openaiChatGPTAuthFailed', error: 'port busy' }, ctx, registry);
+    expect(ctx.stores.settingsStore.openaiChatGPTAuthError).toBe('port busy');
+
+    dispatch({ type: 'openaiChatGPTAuthStarted' }, ctx, registry);
+    expect(ctx.stores.settingsStore.openaiChatGPTAuthInFlight).toBe(true);
+    expect(ctx.stores.settingsStore.openaiChatGPTAuthError).toBeNull();
+
+    dispatch({ type: 'openaiChatGPTAuthCompleted' }, ctx, registry);
+    expect(ctx.stores.settingsStore.openaiChatGPTAuthInFlight).toBe(false);
+  });
+
+  it('stores the ChatGPT, Codex and key status as sent', () => {
+    const ctx = openaiContext();
+    const status = { chatgpt: { signedIn: true, expiresAt: 1 }, codex: { signedIn: false }, apikey: { configured: true } };
+
+    dispatch({ type: 'openaiAuthStatusChanged', status, preferApiKey: true }, ctx);
+
+    expect(ctx.stores.settingsStore.openaiAuthStatus).toEqual(status);
+    expect(ctx.stores.settingsStore.openaiPreferApiKey).toBe(true);
+  });
+
+  it('openOpenAIAuthPanel opens Settings and asks it to reveal the OpenAI section', () => {
+    const ctx = openaiContext();
+
+    dispatch({ type: 'openOpenAIAuthPanel' }, ctx);
+
+    expect(ctx.stores.uiStore.showSettingsPanel).toBe(true);
+    expect(ctx.stores.settingsStore.openaiAuthPanelRequested).toBe(true);
   });
 });

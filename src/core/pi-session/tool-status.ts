@@ -1,4 +1,5 @@
 import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from '../../shared/types/tools';
+import type { ImageAvailability } from './tools/image-tools';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import { PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from './pi-models';
@@ -31,10 +32,16 @@ export interface ToolStatusDeps {
   browserAvailable: boolean;
   /** `this.isBrowserEnabled()`. */
   browserEnabled: boolean;
+  /** `damocles.imageGeneration.enabled`, a user-scope setting. */
+  imageEnabled: boolean;
+  /** The chosen model resolves in pi's image catalog and pi holds an OpenRouter credential. */
+  imageAvailability: ImageAvailability;
   /** `this.isMcpEnabled()`. */
   mcpEnabled: boolean;
-  /** `this.mcpToolNames()`. */
+  /** `this.mcpToolNames()`: every MCP tool, whatever its exposure; `disabled` removes the `off` ones. */
   mcpToolNames: string[];
+  /** The MCP tools whose exposure is `deferred`; Always-loaded ones are active from the first turn. */
+  mcpDeferrableToolNames: string[];
   /** `this.disabledToolSet()`. */
   disabled: Set<string>;
 }
@@ -61,6 +68,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
       ...(deps.memoryService ? { memoryService: deps.memoryService } : {}),
       ...(deps.compassService ? { compassService: deps.compassService } : {}),
       browserEnabled: deps.browserEnabled,
+      imageEligible: deps.imageEnabled && deps.imageAvailability.available,
     }),
     ...(deps.mcpEnabled ? deps.mcpToolNames : []),
   ];
@@ -71,7 +79,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
 }
 
 /**
- * The live active set: the eligible universe with the deferrable tools (browser + compass + web + MCP) held
+ * The live active set: the eligible universe with the deferrable tools (browser + compass + web + image + deferred MCP) held
  * back until `ToolSearch` activates them. The union is computed HERE, from a freshly-derived eligible
  * set, which is what keeps eligibility authoritative: disabling the browser subsystem drops its tools
  * on the next recompute even though `activated` still names them. The activated set is a preference,
@@ -79,7 +87,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
  */
 export function activeToolNamesWithDeferral(deps: ToolStatusDeps, activated: ReadonlySet<string>): string[] {
   const eligible = fullActiveToolNames(deps);
-  const deferred = deferredToolNames(eligible, deps.mcpEnabled ? deps.mcpToolNames : []);
+  const deferred = deferredToolNames(eligible, deps.mcpEnabled ? deps.mcpDeferrableToolNames : []);
   return initialActiveToolNames(eligible, deferred, activated);
 }
 
@@ -100,6 +108,7 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     compass: !!deps.compassService?.isEnabled,
     browser: deps.browserEnabled,
     web: deps.webEnabled,
+    image: deps.imageEnabled,
     subagents: true,
     team: deps.teamEnabled,
   };
@@ -108,6 +117,12 @@ export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
     { group: 'compass', enabled: groupEnabled.compass, available: !!deps.compassService },
     { group: 'browser', enabled: groupEnabled.browser, available: deps.browserAvailable },
     { group: 'web', enabled: groupEnabled.web, available: true },
+    {
+      group: 'image',
+      enabled: groupEnabled.image,
+      available: deps.imageAvailability.available,
+      ...(deps.imageAvailability.available ? {} : { unavailableReason: deps.imageAvailability.reason }),
+    },
     { group: 'subagents', enabled: groupEnabled.subagents, available: true },
     { group: 'team', enabled: groupEnabled.team, available: deps.teamAvailable },
     { group: 'core', enabled: true, available: true },

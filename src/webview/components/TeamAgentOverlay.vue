@@ -19,6 +19,7 @@ import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import type { ImageBlock } from '@shared/types/content';
 import { getAgentColor, formatElapsed } from '@/composables/useTeamFormatting';
 import AgentUsageStats from './AgentUsageStats.vue';
+import EffortBadge from './EffortBadge.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
@@ -46,15 +47,21 @@ function isSteer(content: string): boolean {
 }
 
 const { elapsedMs } = useElapsedTimer(
-  () => selectedAgent.value?.status === 'running',
-  () => selectedAgent.value?.startTime ?? null,
-  () => selectedAgent.value?.endTime ?? null,
+  () => selectedAgent.value?.runningSince != null,
+  () => selectedAgent.value ?? null,
 );
 
-const subtitle = computed(() => {
+// Split around the model, so the effort badge renders beside it.
+const subtitleHead = computed(() => {
   if (!selectedAgent.value) return '';
   const a = selectedAgent.value;
-  const parts = [a.role, a.model].filter(Boolean);
+  return [a.role, a.model].filter(Boolean).join(' | ');
+});
+
+const subtitleTail = computed(() => {
+  if (!selectedAgent.value) return '';
+  const a = selectedAgent.value;
+  const parts: string[] = [];
   if (a.toolCount > 0) parts.push(t('team.toolCount', { n: a.toolCount }, a.toolCount));
   parts.push(formatElapsed(elapsedMs.value));
   return parts.join(' | ');
@@ -164,7 +171,10 @@ const AgentIcon = {
     @close="close"
   >
     <template #subtitle>
-      <span>{{ subtitle }}</span>
+      <span>{{ subtitleHead }}</span>
+      <EffortBadge v-if="selectedAgent.effort" :effort="selectedAgent.effort" class="mx-1.5" />
+      <span v-else> | </span>
+      <span>{{ subtitleTail }}</span>
       <AgentUsageStats :usage="selectedAgent" :dollar-billed="selectedAgent.dollarBilled" variant="subtitle" separator="|" />
     </template>
 

@@ -360,6 +360,7 @@ export class PanelManager {
       ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
       ?? this.folderRegistry.defaultTarget();
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
+    permissionHandler.setCwd(folder.fsPath);
 
     const ideContextManager = new IdeContextManager(this.platform.editor, (context) => {
       this.postMessage(host, { type: "ideContextUpdate", context });
@@ -652,6 +653,7 @@ export class PanelManager {
     if (moved && this.lastActivePanelId === panelId) this.notifyActivePanelChanged();
     const { permissionHandler, host } = instance;
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
+    permissionHandler.setCwd(folder.fsPath);
     this.bindSessionCallbacks(instance);
     // A new conversation resets what clearing does; mode, model and reasoning stay.
     permissionHandler.resetForNewConversation();

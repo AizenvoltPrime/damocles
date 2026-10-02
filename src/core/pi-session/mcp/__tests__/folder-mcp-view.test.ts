@@ -1,13 +1,28 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { rmSync } from 'node:fs';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { FolderMcpView } from '../folder-mcp-view';
 import { McpClientManager } from '../mcp-client-manager';
 import { FolderRuntime } from '../../folder-runtime';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import type { McpServerConfig } from '../../../../shared/types/mcp';
 import type { McpTool } from '../types';
-import { fakeServerManager, managerWithFake } from './fake-server-manager';
+import { fakeServerManager, managerWithFake, specOf } from './fake-server-manager';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+
+// FolderRuntime migrates renamed-tool rules in ~/.damocles/settings*.json, so home points into a temp dir.
+const { fakeHome } = vi.hoisted(() => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const nodeFs = require('fs') as typeof import('fs');
+  const nodeOs = require('os') as typeof import('os');
+  const nodePath = require('path') as typeof import('path');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return { fakeHome: nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'damocles-folder-view-home-')) };
+});
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: () => fakeHome };
+});
+afterAll(() => rmSync(fakeHome, { recursive: true, force: true }));
 
 /** Trust and watchers for the folder runtimes built here; trusted by default, as the host is. */
 const testPlatform = createFakePlatform();
@@ -22,7 +37,7 @@ const TOOLS: Record<string, McpTool[]> = {
   hidden: [{ name: 'secret' }],
 };
 
-const cfg = (command: string): McpServerConfig => ({ command });
+const cfg = (command: string) => specOf({ command });
 
 const disposables: { dispose(): unknown }[] = [];
 afterEach(async () => {
@@ -37,7 +52,7 @@ function track<T extends { dispose(): unknown }>(value: T): T {
 /** A user manager plus a folder manager behind one view, wired the way `FolderRuntime` wires them. */
 function viewOver(user: McpClientManager, folderTools: Record<string, McpTool[]> = TOOLS) {
   const holder: { view?: FolderMcpView } = {};
-  const folder = managerWithFake(folderTools, () => holder.view!.reservedPrefixes());
+  const folder = managerWithFake(folderTools, () => holder.view!.reservedToolNames());
   track(folder.manager);
   const view = track(new FolderMcpView(user, folder.manager));
   holder.view = view;
@@ -125,20 +140,21 @@ describe('FolderMcpView: what a folder sees', () => {
     expect(user.fake.callTool).not.toHaveBeenCalled();
   });
 
-  it('a folder server colliding with a visible user prefix is renamed, the user tool keeps its name', async () => {
+  it('a folder tool whose name a visible user tool holds gets the hash suffix; the user tool keeps its name', async () => {
     const user = userManager({ 'a-b': [{ name: 'x' }] });
     await user.manager.reconcile({ 'a-b': cfg('user-ab') });
     const { view, folder } = viewOver(user.manager, { 'a.b': [{ name: 'x' }] });
     view.setUserVisible(['a-b']);
     await folder.manager.reconcile({ 'a.b': cfg('folder-ab') });
 
-    expect(sortedNames(view)).toEqual(['mcp__a_b_2__x', 'mcp__a_b__x']);
+    expect(sortedNames(view)).toEqual(['mcp__a_b__x', expect.stringMatching(/^mcp__a_b__x_[0-9a-f]{8}$/)]);
+    expect(folder.manager.getToolDescriptor(sortedNames(view)[1]!)?.serverName).toBe('a.b');
     await view.callTool('mcp__a_b__x', {});
     expect(user.fake.callTool).toHaveBeenCalledTimes(1);
     expect(folder.fake.callTool).not.toHaveBeenCalled();
   });
 
-  it('a user server that appears later takes its prefix back from the folder server', async () => {
+  it('a user server that appears later takes its tool name back from the folder server', async () => {
     const user = userManager({ a_b: [{ name: 'x' }] });
     await user.manager.reconcile({});
     const { view, folder } = viewOver(user.manager, { 'a-b': [{ name: 'x' }] });
@@ -148,28 +164,41 @@ describe('FolderMcpView: what a folder sees', () => {
     view.setUserVisible(['a_b']);
     await user.manager.reconcile({ a_b: cfg('user-ab') });
 
-    expect(sortedNames(view)).toEqual(['mcp__a_b_2__x', 'mcp__a_b__x']);
+    expect(sortedNames(view)).toEqual(['mcp__a_b__x', expect.stringMatching(/^mcp__a_b__x_[0-9a-f]{8}$/)]);
     await view.callTool('mcp__a_b__x', {});
     expect(user.fake.callTool).toHaveBeenCalledTimes(1);
     expect(folder.fake.callTool).not.toHaveBeenCalled();
   });
 
   it('refuses a tool name both managers claim instead of picking one', async () => {
-    const user = userManager({ dup: [{ name: 'x' }] });
-    await user.manager.reconcile({ dup: cfg('user-dup') });
-    // No reservation provider: models a folder rename still in flight onto the user prefix.
-    const folder = managerWithFake({ 'dup-': [{ name: 'x' }] });
+    const user = userManager({ 'd-p': [{ name: 'x' }] });
+    await user.manager.reconcile({ 'd-p': cfg('user-dp') });
+    // No reservation provider: models a folder rename still in flight onto the user tool name.
+    const folder = managerWithFake({ 'd.p': [{ name: 'x' }] });
     track(folder.manager);
     const view = track(new FolderMcpView(user.manager, folder.manager));
-    view.setUserVisible(['dup']);
-    await folder.manager.reconcile({ 'dup-': cfg('folder-dup') });
+    view.setUserVisible(['d-p']);
+    await folder.manager.reconcile({ 'd.p': cfg('folder-dp') });
 
-    expect(folder.manager.allToolNames()).toEqual(['mcp__dup__x']);
+    expect(folder.manager.allToolNames()).toEqual(['mcp__d_p__x']);
     expect(view.allToolNames()).toEqual([]);
-    expect(view.getToolDescriptor('mcp__dup__x')).toBeUndefined();
-    await expect(view.callTool('mcp__dup__x', {})).rejects.toThrow('Unknown MCP tool');
+    expect(view.getToolDescriptor('mcp__d_p__x')).toBeUndefined();
+    await expect(view.callTool('mcp__d_p__x', {})).rejects.toThrow('Unknown MCP tool');
     expect(user.fake.callTool).not.toHaveBeenCalled();
     expect(folder.fake.callTool).not.toHaveBeenCalled();
+  });
+
+  it('describes its tools\u2019 legacy names for the rule migration, with the folder prefix suffixed around user servers', async () => {
+    const user = userManager({ 'my-server': [{ name: 'a-b' }] });
+    await user.manager.reconcile({ 'my-server': cfg('u') });
+    const { view, folder } = viewOver(user.manager, { 'my.server': [{ name: 'x-y' }] });
+    view.setUserVisible(['my-server']);
+    await folder.manager.reconcile({ 'my.server': cfg('f') });
+
+    const input = view.legacyToolNameInput();
+    expect(input).toMatchObject({ userServers: ['my-server'], visibleUserServers: ['my-server'], folderServers: ['my.server'] });
+    expect(input.userTools.map((t) => t.rawToolName)).toEqual(['a-b']);
+    expect(input.folderTools.map((t) => t.rawToolName)).toEqual(['x-y']);
   });
 
   it('connects only what it is fed: a server absent from the folder partition never connects', async () => {
@@ -196,22 +225,22 @@ describe('FolderMcpView: what a folder sees', () => {
 
     await user.manager.reconcile({ a_b: cfg('user-ab') });
 
-    expect(sortedNames(view)).toEqual(['mcp__a_b_2__x', 'mcp__a_b__x']);
+    expect(sortedNames(view)).toEqual(['mcp__a_b__x', expect.stringMatching(/^mcp__a_b__x_[0-9a-f]{8}$/)]);
     expect(userEmits.mock.calls.length).toBeGreaterThan(0);
     expect(listener).toHaveBeenCalledTimes(userEmits.mock.calls.length);
   });
 
   it('logs a lasting tool-name conflict once, not on every change', async () => {
     logMock.mockClear();
-    const user = userManager({ dup: [{ name: 'x' }], other: [{ name: 'y' }] });
-    await user.manager.reconcile({ dup: cfg('user-dup') });
-    // No reservation provider: models a folder rename still in flight onto the user prefix.
-    const folder = managerWithFake({ 'dup-': [{ name: 'x' }] });
+    const user = userManager({ 'd-p': [{ name: 'x' }], other: [{ name: 'y' }] });
+    await user.manager.reconcile({ 'd-p': cfg('user-dp') });
+    // No reservation provider: models a folder rename still in flight onto the user tool name.
+    const folder = managerWithFake({ 'd.p': [{ name: 'x' }] });
     track(folder.manager);
     const view = track(new FolderMcpView(user.manager, folder.manager));
-    view.setUserVisible(['dup', 'other']);
-    await folder.manager.reconcile({ 'dup-': cfg('folder-dup') });
-    await user.manager.reconcile({ dup: cfg('user-dup'), other: cfg('other') });
+    view.setUserVisible(['d-p', 'other']);
+    await folder.manager.reconcile({ 'd.p': cfg('folder-dp') });
+    await user.manager.reconcile({ 'd-p': cfg('user-dp'), other: cfg('other') });
 
     const conflictLogs = logMock.mock.calls.filter(([message]) => String(message).includes('claimed by both'));
     expect(conflictLogs).toHaveLength(1);
@@ -286,7 +315,11 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
       agentDir: '/tmp/agent',
       modelRuntime: {} as ModelRuntime,
       userMcp: user,
-      createFolderMcp: (reservedPrefixes) => new McpClientManager({ serverManagerFactory: pool.factory, reservedPrefixes }),
+      createFolderMcp: (reservedToolNames) =>
+        new McpClientManager({ clientVersion: 'test', serverManagerFactory: pool.factory, reservedToolNames }),
+      noticeMemory: { has: () => false, add: async () => {} },
+      projectDisabledTools: () => null,
+      toolExposureSetting: () => ({}),
       renameSession: async () => undefined,
       trust: testPlatform.trust,
       fileWatchers: testPlatform.fileWatchers,
@@ -363,5 +396,101 @@ describe('FolderRuntime: one folder manager per folder over the one user manager
     await only.runtime.reconcileFolder(folderServers, Object.keys(userServers));
 
     expect(only.runtime.mcp.allToolNames().sort()).toEqual(legacy.manager.allToolNames().sort());
+  });
+});
+
+describe('FolderMcpView: per-tool exposure', () => {
+  const C7: Record<string, McpTool[]> = {
+    context7: [{ name: 'resolve-library-id' }, { name: 'query-docs' }, { name: 'get_docs' }, { name: 'get_page' }],
+    local: [{ name: 'run' }],
+  };
+
+  /** A view whose exposure context is mutable, read on every call as the folder runtime's is. */
+  function exposedView(config: Parameters<typeof specOf>[0], inspection: Record<string, unknown> = {}, trusted = true) {
+    const user = userManager(C7);
+    const holder: { view?: FolderMcpView } = {};
+    const folder = managerWithFake(C7, () => holder.view!.reservedToolNames());
+    track(folder.manager);
+    const context = { inspection, trusted };
+    const view = track(new FolderMcpView(user.manager, folder.manager, () => context));
+    holder.view = view;
+    return { user, folder, view, context, ready: async () => {
+      await user.manager.reconcile({ context7: specOf(config) });
+      view.setUserVisible(['context7']);
+    } };
+  }
+
+  const exposureOf = (view: FolderMcpView) =>
+    Object.fromEntries(view.getAllToolDescriptors().map((d) => [d.rawToolName, `${d.exposure}/${d.exposureSource}`]));
+
+  it('a config `toolExposure: {"get_*": "direct"}` makes those tools Always loaded, sourced from config', async () => {
+    const { view, ready } = exposedView({ command: 'c7', toolExposure: { 'get_*': 'direct' } });
+    await ready();
+    expect(exposureOf(view)).toEqual({
+      'resolve-library-id': 'deferred/config',
+      'query-docs': 'deferred/config',
+      get_docs: 'direct/config',
+      get_page: 'direct/config',
+    });
+    expect(view.deferrableToolNames().sort()).toEqual(['mcp__context7__query_docs', 'mcp__context7__resolve_library_id']);
+    expect(view.offToolNames()).toEqual([]);
+    const tools = view.getServerStatuses().find((s) => s.name === 'context7')!.tools!;
+    expect(tools.find((t) => t.name === 'get_docs')).toMatchObject({ exposure: 'direct', exposureSource: 'config', configExposure: 'direct' });
+  });
+
+  it('turning one context7 tool off leaves the others loadable', async () => {
+    const { view, ready } = exposedView({ command: 'c7' }, { userValue: { context7: { 'resolve-library-id': 'off' } } });
+    await ready();
+    expect(view.offToolNames()).toEqual(['mcp__context7__resolve_library_id']);
+    expect(view.deferrableToolNames()).toEqual(expect.arrayContaining(['mcp__context7__query_docs', 'mcp__context7__get_docs']));
+    expect(view.deferrableToolNames()).not.toContain('mcp__context7__resolve_library_id');
+    // Still listed: the panel shows it, with the scope that turned it off.
+    expect(view.getToolDescriptor('mcp__context7__resolve_library_id')).toMatchObject({ exposure: 'off', exposureSource: 'user' });
+  });
+
+  it('a project Off overrides a user On in a trusted folder only, and the row names the winning scope', async () => {
+    const inspection = {
+      userValue: { context7: { 'query-docs': 'deferred', get_docs: 'direct' } },
+      projectValue: { context7: { 'query-docs': 'off' } },
+    };
+    const { view, ready, context } = exposedView({ command: 'c7' }, inspection);
+    await ready();
+    expect(exposureOf(view)['query-docs']).toBe('off/project');
+    expect(exposureOf(view)['get_docs']).toBe('direct/user');
+    const row = () => view.getServerStatuses().find((s) => s.name === 'context7')!.tools!.find((t) => t.name === 'query-docs');
+    expect(row()).toMatchObject({ exposure: 'off', exposureSource: 'project' });
+
+    context.trusted = false;
+    expect(exposureOf(view)['query-docs']).toBe('deferred/user');
+    expect(row()).toMatchObject({ exposure: 'deferred', exposureSource: 'user' });
+  });
+
+  it('a setting change applies on the next read, with no reconnect', async () => {
+    const { user, view, ready, context } = exposedView({ command: 'c7' });
+    await ready();
+    const connects = user.fake.connect.mock.calls.length;
+    context.inspection = { localValue: { context7: { 'query-docs': 'direct' } } };
+    expect(exposureOf(view)['query-docs']).toBe('direct/local');
+    expect(user.fake.connect.mock.calls.length).toBe(connects);
+  });
+
+  it('pendingDirectServers names a connecting server only when it has, or may have, an Always-loaded tool', () => {
+    const { user, view, context } = exposedView({ command: 'c7' });
+    // Fed but never started: every server is still connecting.
+    user.manager.initialize({
+      context7: specOf({ command: 'c7' }),
+      local: specOf({ command: 'local', toolExposure: { run: 'direct' } }),
+    });
+    view.setUserVisible(['context7', 'local']);
+    expect(view.pendingDirectServers()).toEqual(['local']);
+
+    context.inspection = { userValue: { context7: { 'query-docs': 'direct' } } };
+    expect(view.pendingDirectServers().sort()).toEqual(['context7', 'local']);
+  });
+
+  it('a connected server is never pending', async () => {
+    const { view, ready } = exposedView({ command: 'c7', exposure: 'direct' });
+    await ready();
+    expect(view.pendingDirectServers()).toEqual([]);
   });
 });

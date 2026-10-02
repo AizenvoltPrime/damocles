@@ -15,6 +15,8 @@ import CacheMissNotice from './CacheMissNotice.vue';
 import CompactionAbortedNotice from './CompactionAbortedNotice.vue';
 import ThinkingDroppedNotice from './ThinkingDroppedNotice.vue';
 import RefusalCard from './RefusalCard.vue';
+import EffortBadge from './EffortBadge.vue';
+import ErrorMessageText from './ErrorMessageText.vue';
 
 const { t } = useI18n();
 
@@ -113,13 +115,16 @@ onUnmounted(() => {
       :thinking="item.message.thinking || item.message.thinkingContent"
       :is-streaming="item.message.isThinkingPhase"
       :duration="item.message.thinkingDuration"
+      :effort="item.effort"
     />
 
     <div v-else-if="item.type === 'text-block'" class="pl-4">
+      <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
       <MessageContent :content="item.text ?? ''" :is-streaming="false" :is-thinking-phase="false" />
     </div>
 
     <div v-else-if="item.type === 'streaming-text'" class="pl-4">
+      <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
       <MessageContent :content="item.text ?? ''" :is-streaming="true" :is-thinking-phase="item.message.isThinkingPhase ?? false" />
     </div>
 
@@ -137,7 +142,7 @@ onUnmounted(() => {
     </div>
 
     <div v-else-if="item.type === 'error-message'" class="pl-4 text-error">
-      {{ t('common.error') }}: {{ item.text }}
+      {{ t('common.error') }}: <ErrorMessageText :text="item.text ?? ''" />
     </div>
 
     <RefusalCard

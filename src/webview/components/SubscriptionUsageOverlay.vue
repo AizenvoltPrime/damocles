@@ -114,6 +114,57 @@ function spendText(spend: UsageSpend): string {
 const claude = computed<ProviderUsage | undefined>(() => store.data?.claude);
 const gpt = computed<ProviderUsage | undefined>(() => store.data?.gpt);
 
+// Raw profile values look like `default_claude_max_20x`; the vendor prefixes tell the user nothing.
+function readableProfileValue(raw: string): string {
+  const words = raw.replace(/^default_/, '').replace(/^claude_/, '').split('_').filter(Boolean);
+  return words.map((w) => (/^\d+x$/.test(w) ? w : capitalize(w))).join(' ');
+}
+
+interface ProfileRow {
+  key: string;
+  label: string;
+  value: string;
+}
+
+const profileRows = computed<ProfileRow[]>(() => {
+  const p = claude.value?.profile;
+  if (!p) return [];
+  const rows: ProfileRow[] = [];
+  const add = (key: string, raw: string | null): void => {
+    if (raw) rows.push({ key, label: t(`usage.account.${key}`), value: readableProfileValue(raw) });
+  };
+  add('plan', p.organizationType);
+  add('seatTier', p.seatTier);
+  add('rateLimitTier', p.rateLimitTier);
+  add('subscriptionStatus', p.subscriptionStatus);
+  if (p.hasExtraUsageEnabled !== null) {
+    rows.push({
+      key: 'extraUsage',
+      label: t('usage.account.extraUsage'),
+      value: t(p.hasExtraUsageEnabled ? 'usage.account.on' : 'usage.account.off'),
+    });
+  }
+  return rows;
+});
+
+type IdentityKey = 'email' | 'organizationName';
+
+const identityRows = computed<(ProfileRow & { key: IdentityKey })[]>(() => {
+  const p = claude.value?.profile;
+  if (!p) return [];
+  return (['email', 'organizationName'] as const).flatMap((key) => {
+    const value = p[key];
+    return value ? [{ key, label: t(`usage.account.${key}`), value }] : [];
+  });
+});
+
+// Never persisted: the overlay unmounts on close, so identifying fields are masked again on reopen.
+const revealed = ref<Record<IdentityKey, boolean>>({ email: false, organizationName: false });
+
+function openUsageUrl(url: string): void {
+  postMessage({ type: 'openExternalUrl', url });
+}
+
 function refresh(): void {
   store.refresh();
   postMessage({ type: 'requestSubscriptionUsage' });
@@ -190,6 +241,34 @@ function refresh(): void {
             {{ spendText(claude!.spend) }}
           </p>
         </template>
+        <div v-if="claude!.profile" class="space-y-1.5 pt-1" data-testid="claude-account">
+          <h4 class="text-xs font-medium text-foreground">{{ t('usage.account.title') }}</h4>
+          <dl class="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-1 text-xs">
+            <template v-for="row in profileRows" :key="row.key">
+              <dt class="text-muted-foreground">{{ row.label }}</dt>
+              <dd class="text-foreground truncate">{{ row.value }}</dd>
+            </template>
+            <template v-for="row in identityRows" :key="row.key">
+              <dt class="text-muted-foreground">{{ row.label }}</dt>
+              <dd class="min-w-0">
+                <span v-if="revealed[row.key]" class="text-foreground truncate block select-text">{{ row.value }}</span>
+                <Button
+                  v-else
+                  variant="ghost"
+                  class="h-6 px-1.5 text-xs font-normal text-muted-foreground"
+                  :aria-label="t('usage.account.reveal', { field: row.label })"
+                  :title="t('usage.account.reveal', { field: row.label })"
+                  @click="revealed[row.key] = true"
+                >
+                  ••••••••
+                </Button>
+              </dd>
+            </template>
+          </dl>
+        </div>
+        <p v-else-if="claude!.profileError && claude!.status === 'ok'" class="text-xs text-muted-foreground">
+          {{ t('usage.account.unavailable') }}
+        </p>
       </section>
 
       <!-- GPT -->
@@ -208,6 +287,17 @@ function refresh(): void {
         <p v-else-if="gpt!.status === 'error'" class="text-xs text-rose-400">
           {{ t('usage.fetchError') }}<template v-if="gpt!.error">: {{ gpt!.error }}</template>
         </p>
+        <div v-else-if="gpt!.usageUrl && gpt!.bars.length === 0" class="space-y-1" data-testid="gpt-usage-link">
+          <p class="text-xs text-muted-foreground">{{ t('usage.gptUsageElsewhere') }}</p>
+          <Button
+            variant="link"
+            class="h-auto p-0 text-xs"
+            :title="t('usage.openChatGPTUsage')"
+            @click="openUsageUrl(gpt!.usageUrl)"
+          >
+            {{ t('usage.gptUsageLink') }}
+          </Button>
+        </div>
         <template v-else>
           <div v-for="bar in gpt!.bars" :key="bar.id" class="space-y-1">
             <div class="flex items-center gap-2 text-xs">

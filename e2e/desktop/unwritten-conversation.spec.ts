@@ -6,7 +6,7 @@ import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { chatInput, hostMessages, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
-// pi writes a conversation's file with its first reply, so a new tab's conversation has an id and no file until then.
+// pi writes a conversation's file when it commits the first prompt, so a new tab's conversation has an id and no file until then.
 
 const MISSING_FILE = /could not be found|δεν βρέθηκε/;
 const GREEK_PLACEHOLDER = 'Ρωτήστε τον Damocles οτιδήποτε...';
@@ -49,10 +49,38 @@ test('reloading a tab that holds a new, empty conversation reopens that conversa
     await sendAndAwaitEcho(tab, 'after the reload');
 
     await expect(tab.getByText(MISSING_FILE)).toHaveCount(0);
-    // The reply wrote the same conversation the tab held before the reload, and made it the tab's restore target.
+    // The prompt wrote the same conversation the tab held before the reload, and made it the tab's restore target.
     await expect.poll(() => savedSessionId(tab)).toBe(unwritten);
     expect(sessionFiles(home.agentDir, unwritten)).toHaveLength(1);
   } finally {
+    await stub.close();
+  }
+});
+
+test('the first prompt writes the conversation and makes it the restore target before any reply arrives', async ({ home, launch }) => {
+  test.setTimeout(180_000);
+  const stub = await startOpenAIStub();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  try {
+    seedStubModel(home, stub.baseUrl);
+    stub.replies.push({ chunks: ['Held reply', ' finished.'], holdAfterFirst: held });
+    const { app } = await launch();
+    const tab = await chatTab(app);
+    await recordHostMessages(tab);
+    const sessionId = await startedSessionId(tab);
+    await chatInput(tab).fill('written before the reply');
+    await chatInput(tab).press('Enter');
+    await expect(tab.getByText('Held reply', { exact: false })).toBeVisible();
+
+    const files = sessionFiles(home.agentDir, sessionId);
+    expect(files).toHaveLength(1);
+    expect(fs.readFileSync(files[0]!, 'utf8')).toContain('written before the reply');
+    await expect.poll(() => savedSessionId(tab)).toBe(sessionId);
+    release();
+    await expect(tab.getByText('Held reply finished.')).toBeVisible();
+  } finally {
+    release();
     await stub.close();
   }
 });

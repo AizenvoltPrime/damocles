@@ -2,7 +2,7 @@
 import { computed, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
-import { TOOL_STRUCTURED_OUTPUT, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
+import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
 import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -45,6 +45,7 @@ import {
   IconEye,
   IconLayers,
   IconPlay,
+  IconImage,
 } from "@/components/icons";
 import LoadingSpinner from "./LoadingSpinner.vue";
 import LiveOutputPane from "./LiveOutputPane.vue";
@@ -55,7 +56,7 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 const { t } = useI18n();
 const { postMessage } = usePlatformBridge();
 
-const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "CodeSearch", "FeedRead", "YouTubeTranscript", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
+const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "CodeSearch", "FeedRead", "YouTubeTranscript", "ToolSearch", "CronCreate", "CronDelete", "CronList", TOOL_GENERATE_IMAGE]);
 
 /** Memory tool active-set names (source of truth: pi-session/tools/memory-tools.ts MEMORY_SPECS). They
  *  share no common prefix, so they are matched explicitly; browser/compass tools are matched by prefix. */
@@ -86,6 +87,7 @@ const TEAM_TOOL_ICONS: Record<string, Component> = {
   team_report_complete: IconCheck,
   team_flag_brief_conflict: IconWarning,
   team_resolve_brief_conflict: IconCheckCircle,
+  team_dismiss_review: IconBan,
   team_record_verification: IconClipboard,
   team_synthesize_result: IconLayers,
 };
@@ -304,6 +306,7 @@ const BUILT_IN_TOOL_ICONS: Record<string, Component> = {
   CronList: IconClock,
   LSP: IconWrench,
   Agent: IconClipboard,
+  [TOOL_GENERATE_IMAGE]: IconImage,
   [TOOL_STRUCTURED_OUTPUT]: IconCode,
 };
 

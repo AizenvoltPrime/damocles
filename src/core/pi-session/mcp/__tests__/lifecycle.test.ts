@@ -1,19 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { McpLifecycleManager } from '../lifecycle';
 import type { McpServerManager, ServerConnection } from '../server-manager';
-import type { McpServerDefinition } from '../types';
+import { McpServerConnectError } from '../connect-failure';
+import { installLogSink } from '../../../logger';
+import type { McpServerSpec } from '../types';
 
 function fakeManager() {
-  const connections = new Map<string, { status: ServerConnection['status'] }>();
+  const connections = new Map<string, Pick<ServerConnection, 'status' | 'inFlight'>>();
   return {
     connections,
     getConnection: (n: string) => connections.get(n),
     connect: vi.fn(async (n: string) => {
-      const c = { status: 'connected' as const };
+      const c = { status: 'connected' as const, inFlight: 0 };
       connections.set(n, c);
       return c;
     }),
     isIdle: vi.fn(() => false),
+    answersPing: vi.fn(async (_name: string) => true),
     close: vi.fn(async (n: string) => {
       connections.delete(n);
     }),
@@ -21,7 +24,7 @@ function fakeManager() {
   };
 }
 
-const def: McpServerDefinition = { command: 'x' };
+const def: McpServerSpec = { config: { command: 'x' }, valueFormat: 'pi', folderScoped: false, trusted: true };
 
 describe('McpLifecycleManager', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -29,7 +32,7 @@ describe('McpLifecycleManager', () => {
 
   it('idle-shuts-down an unsupervised (lazy / explicit-idleTimeout) server that reports idle', async () => {
     const fake = fakeManager();
-    fake.connections.set('s', { status: 'connected' });
+    fake.connections.set('s', { status: 'connected', inFlight: 0 });
     fake.isIdle.mockReturnValue(true);
     const onIdle = vi.fn();
 
@@ -63,7 +66,7 @@ describe('McpLifecycleManager', () => {
 
   it('never idle-shuts-down a supervised server even when it reports idle', async () => {
     const fake = fakeManager();
-    fake.connections.set('k', { status: 'connected' });
+    fake.connections.set('k', { status: 'connected', inFlight: 0 });
     fake.isIdle.mockReturnValue(true);
     const onIdle = vi.fn();
 
@@ -82,7 +85,7 @@ describe('McpLifecycleManager', () => {
 
   it('does not idle-shutdown when isIdle is false', async () => {
     const fake = fakeManager();
-    fake.connections.set('s', { status: 'connected' });
+    fake.connections.set('s', { status: 'connected', inFlight: 0 });
     const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
     lifecycle.registerServer('s', def);
     lifecycle.startHealthChecks(1000);
@@ -115,6 +118,94 @@ describe('McpLifecycleManager', () => {
     await vi.advanceTimersByTimeAsync(0); // let the in-flight pass settle, clearing the guard
     await vi.advanceTimersByTimeAsync(1000); // tick 3: runs again
     expect(reconnectFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('pings a connected supervised server and leaves it alone when it answers', async () => {
+    const fake = fakeManager();
+    fake.connections.set('k', { status: 'connected', inFlight: 0 });
+    const reconnectFn = vi.fn(async () => {});
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(reconnectFn);
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fake.answersPing).toHaveBeenCalledWith('k');
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(reconnectFn).not.toHaveBeenCalled();
+  });
+
+  it('sends no ping to a supervised server with a call in flight, and leaves it connected', async () => {
+    const fake = fakeManager();
+    fake.connections.set('k', { status: 'connected', inFlight: 1 });
+    fake.answersPing.mockResolvedValue(false);
+    const reconnectFn = vi.fn(async () => {});
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(reconnectFn);
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fake.answersPing).not.toHaveBeenCalled();
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(reconnectFn).not.toHaveBeenCalled();
+  });
+
+  it('closes and reconnects a connected supervised server that stopped answering ping', async () => {
+    const fake = fakeManager();
+    fake.connections.set('k', { status: 'connected', inFlight: 0 });
+    fake.answersPing.mockResolvedValueOnce(false);
+    const reconnectFn = vi.fn(async () => {});
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(reconnectFn);
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fake.close).toHaveBeenCalledWith('k');
+    expect(reconnectFn).toHaveBeenCalledWith('k', def);
+  });
+
+  it('logs a failed health-check reconnect over HTTP by its status, never the response body', async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => lines.push(line), show: () => {}, dispose: () => {} });
+    const fake = fakeManager();
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(async () => {
+      throw new McpServerConnectError('MCP HTTP request failed with status 503: secret=BODY-SECRET', { logText: 'McpHttpError: HTTP status 503' });
+    });
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(lines.some((line) => line.includes('failed to reconnect to k: McpHttpError: HTTP status 503'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('BODY-SECRET');
+  });
+
+  it('logs a failed health-check reconnect by message only, never the stderr tail', async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => lines.push(line), show: () => {}, dispose: () => {} });
+    const fake = fakeManager();
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(async () => {
+      throw new McpServerConnectError('k exited with code 1', { stderrTail: 'password=SECRET-TAIL' });
+    });
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(lines.some((line) => line.includes('k exited with code 1'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('SECRET-TAIL');
   });
 
   it('clears the health timer on graceful shutdown', async () => {

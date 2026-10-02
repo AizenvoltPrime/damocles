@@ -66,7 +66,7 @@ interface Panel {
 
 /**
  * A panel's TeamService with the real TeamRunner and AgentRunner. The engine hands out FakeSessions and,
- * for a new member file, writes a real pi session file the way pi does after a first response, so the
+ * for a new member file, writes a real pi session file the way pi does once it commits the task, so the
  * resume path finds and reopens it.
  */
 function panel(cwd = path.join(DAMOCLES_HOME_DIR, crypto.randomUUID().slice(0, 8)), sessionId = SESSION): Panel {
@@ -425,6 +425,9 @@ describe('the runs of a team', () => {
     const ended = [...p.webview, ...q.webview].flatMap((m) => (m.type === 'teamCompleted' && m.run.toolUseId !== 'tc-cut' ? [m.run] : []));
     expect(ended).toEqual(loaded.runs.filter((r) => r.toolUseId !== 'tc-cut'));
     for (const r of loaded.runs) expect(r.endTime).toBeGreaterThanOrEqual(r.startTime);
+    // Each agent's stopwatch is derived from the same entry timestamps on both sides, so it matches to the millisecond.
+    const timing = (state: WebviewTeamState) => state.agents.map((a) => [a.name, a.activeMs, a.runningSince]);
+    expect(timing(liveAtEnd!)).toEqual(timing(loaded));
   });
 });
 

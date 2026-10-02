@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { runSubagent, normalizeMaxTurns } from '../subagent-runner';
+import { formatAgentConversation, runSubagent, normalizeMaxTurns } from '../subagent-runner';
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -151,5 +151,24 @@ describe('runSubagent turn-limit enforcement', () => {
 
     f.finishPrompt();
     await p;
+  });
+});
+
+describe('formatAgentConversation', () => {
+  it('formats persisted messages: user and assistant text, tool calls, and tool results cut at 200 characters', () => {
+    const out = formatAgentConversation([
+      { role: 'user', content: [{ type: 'text', text: ' find the bug ' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'looking' }, { type: 'toolCall', name: 'grep', arguments: {} }] },
+      { role: 'toolResult', toolName: 'grep', content: [{ type: 'text', text: 'x'.repeat(250) }] },
+      { role: 'custom', content: 'ignored' },
+      { role: 'assistant', content: [{ type: 'text', text: 'fixed it' }] },
+    ]);
+    expect(out).toBe(
+      ['[User]: find the bug', '[Assistant]: looking', '[Tool Calls]:\n  Tool: grep', `[Tool Result (grep)]: ${'x'.repeat(200)}...`, '[Assistant]: fixed it'].join('\n\n'),
+    );
+  });
+
+  it('is empty for an agent with no messages', () => {
+    expect(formatAgentConversation([])).toBe('');
   });
 });

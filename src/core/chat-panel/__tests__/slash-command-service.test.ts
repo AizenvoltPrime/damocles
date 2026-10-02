@@ -980,7 +980,7 @@ describe('SlashCommandService asset-source precedence', () => {
       svc.setOnCacheInvalidate(invalidated);
       await svc.getSkills();
 
-      await platform.settings.update('damocles.model', 'gpt-6-sol', 'user');
+      await platform.settings.update('damocles.model', 'gpt-6.1-sol', 'user');
 
       expect(invalidated).not.toHaveBeenCalled();
 

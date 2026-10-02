@@ -36,7 +36,7 @@ export function buildUserDenyResult(customMessage: string | undefined, defaultMe
  * actually happened, never a user quote.
  */
 export function buildUnaskedDenyResult(diagnostic: string | undefined, defaultMessage: string): PermissionResult {
-  return { behavior: 'deny', message: diagnostic ?? defaultMessage };
+  return { behavior: 'deny', message: diagnostic ?? defaultMessage, policy: true };
 }
 
 export function buildAllowResult(input: unknown): PermissionResult {

@@ -9,8 +9,10 @@
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import {
   agentInvocationsOnBranch,
+  deliveredBackgroundResults,
   indexAgentFiles,
   isResumableSubagentStatus,
+  latestSubagentInvocations,
   readAgentFile,
   subagentBranchIndex,
   subagentLatestState,
@@ -62,13 +64,20 @@ function noticeKey(agent: Pick<InterruptedAgent, 'id' | 'toolCallId'>): string {
 /** Resumable subagents on the branch: stopped by the user or a shutdown, or killed with no status. */
 export async function collectInterruptedSubagents(sources: InterruptionSources): Promise<InterruptedAgent[]> {
   const index = subagentBranchIndex(sources.branch);
-  const ids = [...new Set(index.invocations.map((inv) => inv.id))];
+  const delivered = deliveredBackgroundResults(index);
+  // An agent whose latest result was delivered already carries its status note and resume call.
+  const ids = [...latestSubagentInvocations(index).values()].filter((inv) => !delivered.has(inv.toolCallId)).map((inv) => inv.id);
   if (ids.length === 0) return [];
   const files = await indexAgentFiles(sources.subagentDir);
   const out: InterruptedAgent[] = [];
   for (const id of ids) {
-    const path = files.get(id);
+    const path = files.paths.get(id);
     let file: AgentFile | null = null;
+    if (!path && files.unreadable.length > 0 && sources.liveSubagent(id) === undefined) {
+      // Its file may be one that could not be read, and the branch alone would call a finished agent interrupted.
+      log('[interruption-notice] skipping subagent %s: some agent files could not be read', id);
+      continue;
+    }
     if (path) {
       try {
         file = await readAgentFile(path);

@@ -282,8 +282,11 @@ describe('subscription plugin migration', () => {
           cwd: path.join(root, 'ws', label),
           agentDir: root,
           modelRuntime: modelRuntime as unknown as ModelRuntime,
-          userMcp: new McpClientManager(),
-          createFolderMcp: (reservedPrefixes) => new McpClientManager({ reservedPrefixes }),
+          userMcp: new McpClientManager({ clientVersion: 'test' }),
+          createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
+          noticeMemory: { has: () => false, add: async () => {} },
+          projectDisabledTools: () => null,
+          toolExposureSetting: () => ({}),
           renameSession: async () => undefined,
           trust: testPlatform.trust,
           fileWatchers: testPlatform.fileWatchers,
@@ -426,6 +429,18 @@ describe('subscription plugin migration', () => {
     // Without the unregister, pi's merge would keep the legacy registration's `oauth`.
     expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
     expect(fs.existsSync(h.cloneDir(LEGACY))).toBe(false);
+  });
+
+  it('(a1) re-pins an install still listing the previous plugin pin to the current one at startup', async () => {
+    const previous = 'https://github.com/gotgenes/pi-anthropic-auth@fc183fc54171c1fc511570733d8f86b9f66426f6';
+    expect(classifySubscriptionSource(previous)).toBe('stale');
+    const h = setup({ packages: [previous], clones: [previous] });
+
+    await reconcile(h);
+
+    expect(h.calls).toContain(`install:${CURRENT}`);
+    expect(diskSources(h)).toEqual([CURRENT]);
+    expect(h.providers.get('anthropic')).toEqual({ tag: 'current' });
   });
 
   it('(a2) the provider reset and flush cover every folder loader, with no gap between them', async () => {

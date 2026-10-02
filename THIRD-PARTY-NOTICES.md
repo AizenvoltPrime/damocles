@@ -351,11 +351,11 @@ SOFTWARE.
 
 ## pi (agent runtime)
 
-Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui` packages ship in the VSIX as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.js`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, and the extension/MCP plumbing Damocles builds on. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file.
+Damocles runs on the **pi** agent runtime and redistributes it: the `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui` and `@earendil-works/pi-mcp` packages ship in the VSIX and the desktop app as real `node_modules` (kept external and loaded via dynamic `import()`, not bundled into `dist/extension.js`). They are the agent engine behind every session — provider auth, the streaming agent loop, tool dispatch, the extension plumbing Damocles builds on, and (pi-mcp) the MCP client protocol, transports and OAuth. Listed here for attribution and MIT compliance because the published packages declare `"license": "MIT"` but do not carry their own `LICENSE` file.
 
 - **Source**: https://github.com/earendil-works/pi
-- **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`
-- **Use**: the sole agent backend (`PiSession` / `PiRuntime` in `src/core/pi-session/`), redistributed in the VSIX node_modules
+- **Packages**: `@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-mcp`
+- **Use**: the sole agent backend (`PiSession` / `PiRuntime` in `src/core/pi-session/`) and the MCP client layer under Damocles' host layer (`src/core/pi-session/mcp/`), redistributed as node_modules
 
 ```
 MIT License
@@ -416,12 +416,44 @@ SOFTWARE.
 
 ---
 
+## MCP TypeScript SDK
+
+`@earendil-works/pi-mcp` adapts OAuth code from the MCP TypeScript SDK and ships the SDK's license as `LICENSES/modelcontextprotocol-typescript-sdk.txt`, which the VSIX and the desktop app keep. Damocles also ports the SDK's stdio environment allowlist (`DEFAULT_INHERITED_ENV_VARS` and `getDefaultEnvironment()`, from `@modelcontextprotocol/sdk` 1.29.0 `dist/esm/client/stdio.js`) into `src/core/pi-session/mcp/stdio-env.ts`, which esbuild bundles into `dist/extension.js` and `dist/desktop/main.js`. The SDK package itself is a development dependency and does not ship.
+
+- **Source**: https://github.com/modelcontextprotocol/typescript-sdk (`@modelcontextprotocol/sdk`)
+
+```
+MIT License
+
+Copyright (c) 2024 Anthropic, PBC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## pi-mcp-adapter
 
-The native MCP client (`src/core/pi-session/mcp/`) is lifted from the pi-mcp-adapter — its transports, lifecycle/health/reconnect, tool registrar (content transform), metadata cache, npx/npm-exec binary resolver, OAuth client provider + auth flow + localhost callback server, resource-as-tool naming, and elicitation handler. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
+Damocles' MCP host layer (`src/core/pi-session/mcp/`) began as a port of pi-mcp-adapter. The protocol client, the stdio and streamable-HTTP transports and the OAuth authorization flow now come from `@earendil-works/pi-mcp`. These files still carry code adapted from pi-mcp-adapter and say so in their headers: `server-manager.ts` (the connection pool: connect dedup, tool and resource discovery), `lifecycle.ts` (health checks, reconnect and idle shutdown), `metadata-cache.ts`, `npx-resolver.ts`, `mcp-auth.ts` (OAuth credential storage), `mcp-callback-server.ts` (the localhost OAuth callback), `content.ts`, `elicitation-handler.ts` and `utils.ts`. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
 
 - **Source**: pi-mcp-adapter (`pi-mcp-adapter`)
-- **Ported patterns**: stdio / streamable-HTTP / SSE transport selection with probe-then-fallback, connect dedup + 60s failure backoff + 30s health checks + idle shutdown + keep-alive reconnect, paginated `tools/list`/`resources/list` collection, on-disk metadata cache keyed by config hash with atomic temp+rename writes, `${VAR}`/`$env:VAR` interpolation, npx/npm-exec real-binary resolution, OAuth 2.1 (authorization_code PKCE + client_credentials) client provider + localhost callback, MCP content → text/image block transformation, resource-name → `get_*` tool slugging, form elicitation request handling
+- **Ported patterns**: connect dedup + 60s failure backoff + health checks + idle shutdown + keep-alive reconnect, paginated `tools/list`/`resources/list` collection, on-disk metadata cache keyed by config hash with atomic temp+rename writes, `${VAR}`/`$env:VAR` interpolation, npx/npm-exec real-binary resolution, OAuth credential storage + localhost callback server, MCP content → text/image block transformation, resource-name → `get_*` tool slugging, form elicitation request handling
 
 ```
 MIT License
@@ -783,9 +815,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
-## Bundled runtime libraries (file locking, desktop networking, watching and editing)
+## Bundled runtime libraries (file locking, gitignore matching, desktop networking, watching and editing)
 
-These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first six into the bundle each entry names (they are not externals), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
+These npm packages ship inside the VSIX, the desktop app or both. esbuild bundles the first seven into the bundle each entry names (they are not externals), Vite bundles Monaco into the desktop app's `dist/webview/assets/monaco-*`, and electron-builder ships the last two as `node_modules` in the desktop app. Listed here for attribution and license compliance.
 
 - **proper-lockfile** (v4.1.2) — MIT, Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio> — https://github.com/moxystudio/node-proper-lockfile
   — cross-process locks for config, auth and session-lease writes; bundled into `dist/extension.js` and `dist/desktop/main.js`.
@@ -799,6 +831,8 @@ These npm packages ship inside the VSIX, the desktop app or both. esbuild bundle
   — the desktop app's process-wide HTTP dispatcher and proxy support; bundled into `dist/desktop/main.js`.
 - **picomatch** (v4.0.7) — MIT, Copyright (c) 2017-present, Jon Schlinkert. — https://github.com/micromatch/picomatch
   — glob matching for the desktop file watchers; bundled into `dist/desktop/main.js`.
+- **ignore** (v7.0.12) — MIT, Copyright (c) 2013 Kael Zhang <i@kael.me>, contributors — https://github.com/kaelzhang/node-ignore
+  — gitignore-style path matching for permission rules; bundled into `dist/extension.js` and `dist/desktop/main.js`.
 - **monaco-editor** (v0.57.0) — MIT, Copyright (c) 2016 - present Microsoft Corporation — https://github.com/microsoft/monaco-editor
   — the desktop app's file and diff editor. Monaco vendors further components (among them marked and DOMPurify); their notices are in Monaco's `ThirdPartyNotices.txt`, which the desktop app ships as `resources/monaco-editor-ThirdPartyNotices.txt`, and DOMPurify's license comment stays in the bundle.
 - **electron-updater** (v6.8.9) — MIT, Copyright (c) 2015 Loopline Systems — https://github.com/electron-userland/electron-builder

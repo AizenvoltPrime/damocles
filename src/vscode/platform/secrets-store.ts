@@ -7,6 +7,7 @@ export function createVsCodeSecretsStore(secrets: vscode.SecretStorage): Secrets
     store: async (key, value) => { await secrets.store(key, value); },
     delete: async (key) => { await secrets.delete(key); },
     keys: async () => secrets.keys(),
+    onDidChange: (listener) => secrets.onDidChange((event) => listener(event.key)),
     isPersistent: true,
   };
 }

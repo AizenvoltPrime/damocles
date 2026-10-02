@@ -1,25 +1,45 @@
 import type { FileWatcher } from "../../../../platform/file-watcher";
 import type { Memento } from "../../../../platform/key-value-state";
 import type { Platform } from "../../../../platform/platform";
+import type { SettingsScope } from "../../../../platform/settings-store";
 import * as path from "path";
-import { LOCAL_MCP_RELATIVE_PATH } from "../../../../shared/types/mcp";
-import type { McpConfigError, McpServerConfig, McpServerSource, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
+import { homedir } from "os";
+import { LOCAL_MCP_RELATIVE_PATH, MCP_TOOL_EXPOSURE_SETTING, mcpServerNamespaceKey } from "../../../../shared/types/mcp";
+import type {
+  McpConfigError,
+  McpServerConfig,
+  McpServerSource,
+  McpServerStatusInfo,
+  McpToolExposureScope,
+  McpToolExposureSetting,
+  McpToolInfo,
+} from "../../../../shared/types/mcp";
 import type { McpServerEntry } from "../types";
 import type { McpScope } from "../../../session-types";
-import type { FolderTarget } from "../../../workspace-folders/folder-registry";
+import type { McpServerSpec } from "../../../pi-session/mcp/types";
+import { defaultProjectPath, type FolderTarget } from "../../../workspace-folders/folder-registry";
 import {
   mergeMcpEntries,
   orderMcpSources,
   readMcpConfigFile,
   readGlobalMcpSources,
+  sourceBatch,
   localMcpConfigPath,
+  piProjectMcpConfigPath,
   CODEX_CONFIG_PATH,
   DAMOCLES_MCP_CONFIG_PATH,
+  PI_MCP_CONFIG_PATH,
+  MCP_SCOPE_BY_SOURCE,
   REPO_AUTHORED_BY_SOURCE,
+  VALUE_FORMAT_BY_SOURCE,
 } from "./mcp-config-import";
 import type { McpSourceServers } from "./mcp-config-import";
+import { McpWriteError, migrateOwnedMcpFile } from "./mcp-config-write";
 import { isLocalMcpFileUnignored } from "./mcp-local-gitignore";
 import { isFormEditableMcpServerConfig } from "./mcp-config-validate";
+import { createMcpToolName, legacyServerPrefixMap, parseLegacyMcpToolName } from "../../../pi-session/mcp/naming";
+import { resolveConfigPath } from "../../../pi-session/mcp/utils";
+import { stripControlChars } from "../../../pi-session/untrusted-text";
 import { getAssetSourcePrecedence } from "../../../asset-sources";
 import { log } from "../../../logger";
 
@@ -34,6 +54,54 @@ export const MCP_DISABLED_SPLIT_MIGRATED_KEY = "damocles.mcp.disabledProjectServ
  * and per folder the names the user has toggled there since, which the split no longer touches.
  */
 export const MCP_DISABLED_SPLIT_PENDING_KEY = "damocles.mcp.disabledProjectServersMigrationPending";
+/** workspaceState key for user-scope names enabled despite a config `enabled: false`, window-wide. */
+export const MCP_ENABLED_SERVERS_KEY = "damocles.mcp.enabledServers";
+/** workspaceState key for folder-scope names enabled despite a config `enabled: false`, `Record<folderKey, string[]>`. */
+export const MCP_ENABLED_PROJECT_SERVERS_KEY = "damocles.mcp.enabledProjectServers";
+
+export type McpToolExposureMap = Record<string, Record<string, McpToolExposureSetting>>;
+
+/** Server description cap shared with the ToolSearch menu line. */
+const MAX_SERVER_DESCRIPTION_CHARS = 120;
+
+/** A server's one-line description: control characters flattened, capped at 120 characters. */
+export function serverDescriptionLine(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  const flattened = stripControlChars(text);
+  if (!flattened) return undefined;
+  return flattened.length > MAX_SERVER_DESCRIPTION_CHARS ? `${flattened.slice(0, MAX_SERVER_DESCRIPTION_CHARS - 3)}...` : flattened;
+}
+
+/** `~`, `~/…` (and `~\…` on Windows) name the home directory, as pi's `expandHome` reads them. */
+function expandHome(value: string): string {
+  if (value === "~") return homedir();
+  if (value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"))) {
+    return path.join(homedir(), value.slice(2));
+  }
+  return value;
+}
+
+/**
+ * pi's path rules for a stdio entry (`pi-coding-agent/src/extensions/mcp/runtime.ts`
+ * `createDefaultTransport`): `cwd` resolves against `baseDir`, which is also the default, so no server
+ * inherits the host process's working directory. In a pi-format entry `~` expands in `command`, `args`
+ * and `cwd`; a legacy entry keeps its `${VAR}`/`$env:VAR` expansion of `cwd` and leaves `command` and
+ * `args` as written. Returns a copy; the stored entry stays as written.
+ */
+function resolveStdioPaths(config: McpServerConfig, baseDir: string, valueFormat: "pi" | "legacy"): McpServerConfig {
+  if (!("command" in config)) return config;
+  if (valueFormat === "legacy") return { ...config, cwd: path.resolve(baseDir, resolveConfigPath(config.cwd ?? ".")!) };
+  const expanded = { ...config, command: expandHome(config.command), cwd: path.resolve(baseDir, expandHome(config.cwd ?? ".")) };
+  if (config.args) expanded.args = config.args.map(expandHome);
+  return expanded;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The scopes a migration may write: never the repository's committed `.damocles/settings.json`. */
+const MIGRATABLE_SCOPES: readonly SettingsScope[] = ["user", "local"];
 
 interface DisabledSplitPending {
   names: string[];
@@ -112,12 +180,11 @@ interface FolderRead {
   localMcpUnignored: boolean;
 }
 
-const FOLDER_WATCHED_FILES = [".mcp.json", LOCAL_MCP_RELATIVE_PATH, ".gitignore"] as const;
+const FOLDER_WATCHED_FILES = [".mcp.json", LOCAL_MCP_RELATIVE_PATH, ".pi/mcp.json", ".gitignore"] as const;
 
 export class McpManager {
   private folderStates = new Map<string, FolderMcpState>();
   private configLoaded = false;
-  private userServerNames: string[] = [];
   private loadGeneration = 0;
   private userWatchers: FileWatcher[] = [];
   private readonly folderWatchers = new Map<string, FileWatcher[]>();
@@ -138,7 +205,7 @@ export class McpManager {
   }
 
   /**
-   * The user files Damocles or Codex own are watched once; each open folder's files are watched by
+   * The user files Damocles, Codex or pi own are watched once; each open folder's files are watched by
    * `syncFolderWatchers`. A watcher only reaches outside the workspace when its pattern has a base path.
    *
    * The two `~/.claude*` files are deliberately not watched: Claude Code rewrites its global file
@@ -147,14 +214,14 @@ export class McpManager {
    */
   setupWatcher(): void {
     if (this.userWatchers.length === 0) {
-      this.userWatchers = [DAMOCLES_MCP_CONFIG_PATH, CODEX_CONFIG_PATH].map(file =>
+      this.userWatchers = [DAMOCLES_MCP_CONFIG_PATH, CODEX_CONFIG_PATH, PI_MCP_CONFIG_PATH].map(file =>
         this.watch(path.dirname(file), path.basename(file)));
     }
     this.syncFolderWatchers();
   }
 
   /**
-   * Watch `.mcp.json`, `.damocles/mcp.local.json` and `.gitignore` in every open folder and drop the
+   * Watch `.mcp.json`, `.damocles/mcp.local.json`, `.pi/mcp.json` and `.gitignore` in every open folder and drop the
    * watchers of folders no longer open. `.gitignore` is watched because the leak warning is sampled on
    * load, so adding the line the panel asks for would otherwise change nothing on screen.
    */
@@ -219,6 +286,21 @@ export class McpManager {
     return lists;
   }
 
+  private getUserEnabledOverride(): string[] {
+    const raw = this.workspaceState.get<unknown>(MCP_ENABLED_SERVERS_KEY, []);
+    return Array.isArray(raw) ? raw.filter((name): name is string => typeof name === "string") : [];
+  }
+
+  private getProjectEnabledOverride(): Map<string, string[]> {
+    const raw = this.workspaceState.get<unknown>(MCP_ENABLED_PROJECT_SERVERS_KEY, {});
+    const lists = new Map<string, string[]>();
+    if (!isRecord(raw)) return lists;
+    for (const [key, names] of Object.entries(raw)) {
+      if (Array.isArray(names)) lists.set(key, names.filter((name): name is string => typeof name === "string"));
+    }
+    return lists;
+  }
+
   /**
    * Every read-modify-write of either disabled list runs under `toggleLock`, so a toggle, a rename and
    * the one-time migration cannot interleave and lose one another's change.
@@ -234,6 +316,26 @@ export class McpManager {
     } finally {
       releaseLock!();
     }
+  }
+
+  /** Record whether a server whose config says `enabled: false` is switched on here anyway. */
+  private async setEnabledOverride(scope: "user" | "folder", folderKey: string, serverName: string, enabled: boolean): Promise<void> {
+    await this.withToggleLock(async () => {
+      if (scope === "user") {
+        const names = new Set(this.getUserEnabledOverride());
+        if (enabled) names.add(serverName);
+        else names.delete(serverName);
+        await this.workspaceState.update(MCP_ENABLED_SERVERS_KEY, [...names]);
+        return;
+      }
+      const lists = this.getProjectEnabledOverride();
+      const names = new Set(lists.get(folderKey) ?? []);
+      if (enabled) names.add(serverName);
+      else names.delete(serverName);
+      if (names.size > 0) lists.set(folderKey, [...names]);
+      else lists.delete(folderKey);
+      await this.workspaceState.update(MCP_ENABLED_PROJECT_SERVERS_KEY, Object.fromEntries(lists));
+    });
   }
 
   private async mutateUserDisabled(mutate: (disabled: Set<string>) => void): Promise<void> {
@@ -297,7 +399,7 @@ export class McpManager {
           continue;
         }
         migrated.add(read.target.key);
-        const defined = new Set(read.sources.flatMap(batch => Object.keys(batch.servers)));
+        const defined = new Set(read.sources.flatMap(batch => [...Object.keys(batch.servers), ...Object.keys(batch.invalid)]));
         const copied = legacyNamesFor(pending, read.target.key).filter(name => defined.has(name));
         if (copied.length === 0) continue;
         lists.set(read.target.key, [...new Set([...(lists.get(read.target.key) ?? []), ...copied])]);
@@ -329,7 +431,8 @@ export class McpManager {
 
   /**
    * Write the toggle to the list of the name's scope in that folder: a folder-scope entry goes to the
-   * folder's project list, anything else to the window-wide user list.
+   * folder's project list, anything else to the window-wide user list. A config `enabled: false` is
+   * overridden in workspace state, never by editing the config file, which another tool may own.
    */
   async setServerEnabled(folderKey: string, serverName: string, enabled: boolean): Promise<void> {
     if (!this.isOpenFolder(folderKey)) {
@@ -348,6 +451,7 @@ export class McpManager {
       log("[McpManager] setServerEnabled: %s is not a server in %s; ignored", serverName, folderKey);
       return;
     }
+    if (entry.config?.enabled === false) await this.setEnabledOverride(entry.scope, folderKey, serverName, enabled);
     if (entry.scope === "folder") {
       await this.mutateProjectDisabled(folderKey, serverName, toggle);
       // Re-read after the await: a reload may have installed a state read before this write landed.
@@ -375,14 +479,27 @@ export class McpManager {
       if (!disabled.delete(oldName)) return;
       disabled.add(newName);
     });
+    await this.mutateUserEnabledOverride(names => {
+      if (!names.delete(oldName)) return;
+      names.add(newName);
+    });
   }
 
   /**
-   * Drop a deleted `~/.damocles/mcp.json` server from the user disabled list, so re-adding the same
-   * name later does not come back switched off by a decision about a server that no longer exists.
+   * Drop a deleted `~/.damocles/mcp.json` server from the user disabled list and enabled overrides, so
+   * re-adding the same name later is not decided by a choice about a server that no longer exists.
    */
   async pruneDisabledServer(name: string): Promise<void> {
     await this.mutateUserDisabled(disabled => { disabled.delete(name); });
+    await this.mutateUserEnabledOverride(names => { names.delete(name); });
+  }
+
+  private async mutateUserEnabledOverride(mutate: (names: Set<string>) => void): Promise<void> {
+    await this.withToggleLock(async () => {
+      const names = new Set(this.getUserEnabledOverride());
+      mutate(names);
+      await this.workspaceState.update(MCP_ENABLED_SERVERS_KEY, [...names]);
+    });
   }
 
   /**
@@ -398,8 +515,9 @@ export class McpManager {
     const state = this.stateFor(folderKey, "getEnabledServers");
     if (!state) return { userUnion, userVisible: [], folder: {} };
 
+    const target = this.folders().find(candidate => candidate.key === folderKey)!;
     const trusted = this.isFolderTrusted(folderKey);
-    const enabled = state.entries.filter(entry => entry.enabled);
+    const enabled = state.entries.filter(isLoadable);
     return {
       userUnion,
       userVisible: enabled.filter(entry => entry.scope === "user").map(entry => entry.name),
@@ -407,17 +525,18 @@ export class McpManager {
         enabled
           .filter(entry => entry.scope === "folder")
           .filter(entry => trusted || !isRepoAuthored(entry))
-          .map(entry => [entry.name, entry.config]),
+          .map(entry => [entry.name, serverSpec(entry, entry.config!, target.fsPath, trusted)]),
       ),
     };
   }
 
   /** Enabled user-scope servers visible in at least one open folder; one connection each, window-wide. */
-  private userUnion(): Record<string, McpServerConfig> {
-    const union = new Map<string, McpServerConfig>();
+  private userUnion(): Record<string, McpServerSpec> {
+    const union = new Map<string, McpServerSpec>();
     for (const target of this.folders()) {
       for (const entry of this.folderStates.get(target.key)?.entries ?? []) {
-        if (entry.scope === "user" && entry.enabled) union.set(entry.name, entry.config);
+        // A user server is shared by every folder, so its relative paths resolve against the home directory.
+        if (entry.scope === "user" && isLoadable(entry)) union.set(entry.name, serverSpec(entry, entry.config!, homedir(), true));
       }
     }
     return Object.fromEntries(union);
@@ -437,11 +556,27 @@ export class McpManager {
     return target !== undefined && this.platform.trust.isTrusted(target.fsPath);
   }
 
+  /**
+   * The scopes a per-tool exposure can be saved to from a panel in `folderKey`, lowest first. Project
+   * and local apply only in a trusted folder with a project layer. The settings store writes them for
+   * the default project (`defaultProjectPath`), which refuses an untrusted project, so that folder must
+   * be trusted too. Local is offered only where the host keeps a local settings file (`scopeFile`),
+   * which VS Code does not.
+   */
+  toolExposureScopes(folderKey: string): McpToolExposureScope[] {
+    const target = this.folders().find(candidate => candidate.key === folderKey);
+    if (!target?.projectScope || !this.platform.trust.isTrusted(target.fsPath)) return ["user"];
+    const writeTarget = defaultProjectPath(this.platform.workspaceFolders, this.workspaceState);
+    if (writeTarget === undefined || !this.platform.trust.isTrusted(writeTarget)) return ["user"];
+    return this.platform.settings.scopeFile("local") === undefined ? ["user", "project"] : ["user", "project", "local"];
+  }
+
   getServersForUI(folderKey: string): McpServerStatusInfo[] {
     const state = this.stateFor(folderKey, "getServersForUI");
     const trusted = this.isFolderTrusted(folderKey);
     return (state?.entries ?? []).map(entry => {
-      const info = this.toStatusInfo(entry, entry.enabled ? "idle" : "disabled");
+      const status = !entry.enabled ? "disabled" : entry.error ? "failed" : "idle";
+      const info = this.toStatusInfo(entry, status);
       if (this.isUntrustedRepoServer(entry, trusted)) info.untrusted = true;
       return info;
     });
@@ -457,9 +592,10 @@ export class McpManager {
   }
 
   /**
-   * The names a source folded above `~/.damocles/mcp.json` wins in `folderKey`, mapped to that source.
-   * The write path refuses these for a panel in that folder, where the written server would be hidden.
-   * Read off the folder's actual fold, so an untrusted folder's demoted files refuse nothing.
+   * The namespace keys (`mcpServerNamespaceKey`) a source folded above `~/.damocles/mcp.json` holds in
+   * `folderKey`, mapped to that source. The write path refuses a name with one of these keys for a panel
+   * in that folder, where the written server would be hidden. Read off the folder's actual fold, so an
+   * untrusted folder's demoted files refuse nothing.
    */
   getShadowingServerNames(folderKey: string): ReadonlyMap<string, McpServerSource> {
     return this.stateFor(folderKey, "getShadowingServerNames")?.shadowingNames ?? new Map();
@@ -474,11 +610,67 @@ export class McpManager {
   }
 
   /**
-   * Every user-scope server name, enabled or not. A rename remaps tool names over this set, because a
-   * disabled server's tools stay in `damocles.tools.disabled` under the prefix they had while enabled.
+   * Move per-tool MCP disables from `damocles.tools.disabled` (legacy `mcp__<prefix>__<tool>` names) into
+   * `damocles.mcp.toolExposure` as `off`, at the scope the entry came from. Prefixes are rebuilt with the
+   * legacy algorithm over the servers the legacy managers held, as `legacyToCurrentToolNames` does: the
+   * enabled user servers, then each folder's enabled servers with the prefixes of the user servers
+   * visible there reserved. An untrusted folder's repository-authored servers take no part, and nothing
+   * moves while any config file is unreadable. Only an entry naming exactly one server and differing
+   * from that tool's current name moves: `damocles.tools.disabled` still matches current names exactly,
+   * so the rest stay, and a server absent for now migrates when it appears. Project scope is left alone:
+   * it is the repository's committed file.
    */
-  getUserServerNames(): string[] {
-    return [...this.userServerNames];
+  private async migrateDisabledMcpTools(folderStates: ReadonlyMap<string, FolderMcpState>, trustedByKey: ReadonlyMap<string, boolean>): Promise<void> {
+    const enabledByFolder = [...folderStates].map(([key, state]) => ({
+      user: state.entries.filter(entry => entry.scope === "user" && isLoadable(entry)).map(entry => entry.name),
+      folder: state.entries
+        .filter(entry => entry.scope === "folder" && isLoadable(entry) && (trustedByKey.get(key) === true || !isRepoAuthored(entry)))
+        .map(entry => entry.name),
+    }));
+    const userPrefixes = legacyServerPrefixMap([...new Set(enabledByFolder.flatMap(names => names.user))]);
+    const serversByPrefix = new Map<string, Set<string>>();
+    const addPrefixes = (prefixes: Map<string, string>): void => {
+      for (const [server, prefix] of prefixes) {
+        const servers = serversByPrefix.get(prefix) ?? new Set<string>();
+        servers.add(server);
+        serversByPrefix.set(prefix, servers);
+      }
+    };
+    addPrefixes(userPrefixes);
+    for (const names of enabledByFolder) {
+      const reserved = new Set(names.user.flatMap(name => {
+        const prefix = userPrefixes.get(name);
+        return prefix === undefined ? [] : [prefix];
+      }));
+      addPrefixes(legacyServerPrefixMap(names.folder, reserved));
+    }
+
+    const disabledInspection = this.platform.settings.inspect<unknown>("damocles.tools.disabled");
+    const exposureInspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
+    for (const scope of MIGRATABLE_SCOPES) {
+      const list = scope === "user" ? disabledInspection.userValue : disabledInspection.localValue;
+      if (!Array.isArray(list)) continue;
+      const exposureValue = scope === "user" ? exposureInspection.userValue : exposureInspection.localValue;
+      const exposure: McpToolExposureMap = isRecord(exposureValue) ? structuredClone(exposureValue as McpToolExposureMap) : {};
+      const kept: unknown[] = [];
+      let moved = 0;
+      for (const item of list) {
+        const parsed = typeof item === "string" ? parseLegacyMcpToolName(item) : null;
+        const servers = parsed ? serversByPrefix.get(parsed.prefix) : undefined;
+        const [server] = servers ?? [];
+        if (!parsed || !servers || servers.size !== 1 || createMcpToolName(server!, parsed.tool) === item) {
+          kept.push(item);
+          continue;
+        }
+        exposure[server!] = { ...(isRecord(exposure[server!]) ? exposure[server!] : {}), [parsed.tool]: "off" };
+        moved++;
+      }
+      if (moved === 0) continue;
+      // The exposure lands before the disabled entries leave, so an interrupted migration never re-enables a tool.
+      await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, exposure, scope);
+      await this.platform.settings.update("damocles.tools.disabled", kept, scope);
+      log("[McpManager] moved %d per-tool MCP disables into %s at %s scope", moved, MCP_TOOL_EXPOSURE_SETTING, scope);
+    }
   }
 
   async loadConfig(): Promise<void> {
@@ -493,6 +685,7 @@ export class McpManager {
     const trustedByKey = new Map(targets.map(target => [target.key, this.platform.trust.isTrusted(target.fsPath)]));
     const projectTargets = targets.filter(target => target.projectScope);
 
+    await migrateOwnedFile(DAMOCLES_MCP_CONFIG_PATH);
     const [global, fileReads] = await Promise.all([
       readGlobalMcpSources(projectTargets.map(target => target.fsPath)),
       Promise.all(projectTargets.map(target => this.readFolderFiles(target, trustedByKey.get(target.key) === true))),
@@ -500,13 +693,15 @@ export class McpManager {
 
     const folderReads: FolderRead[] = fileReads.map(read => ({
       ...read,
-      sources: [...read.sources, { source: "claude-local", servers: global.claudeLocal.get(read.target.fsPath)! }],
+      sources: [...read.sources, { source: "claude-local", ...global.claudeLocal.get(read.target.fsPath)! }],
       complete: read.complete && !global.claudeLocalUnreadable,
     }));
     const pendingSplit = await this.migrateDisabledSplit(folderReads);
 
     const userDisabled = new Set(this.getUserDisabled());
     const projectDisabled = this.getProjectDisabled();
+    const userEnabledOverride = new Set(this.getUserEnabledOverride());
+    const projectEnabledOverride = this.getProjectEnabledOverride();
     const readsByKey = new Map(folderReads.map(read => [read.target.key, read]));
     const folderStates = new Map<string, FolderMcpState>();
     for (const target of targets) {
@@ -520,31 +715,70 @@ export class McpManager {
       if (pendingSplit && !pendingSplit.migratedFolders.includes(target.key)) {
         for (const name of legacyNamesFor(pendingSplit, target.key)) folderDisabled.add(name);
       }
-      const entries = mergeMcpEntries(folded, { user: userDisabled, folder: folderDisabled });
+      const entries = mergeMcpEntries(
+        folded,
+        { user: userDisabled, folder: folderDisabled },
+        { user: userEnabledOverride, folder: new Set(projectEnabledOverride.get(target.key) ?? []) },
+      );
       const shadowingSources = sourcesFoldedAbove("damocles", folded);
       folderStates.set(target.key, {
         entries,
-        shadowingNames: new Map(entries.filter(entry => shadowingSources.has(entry.source)).map(entry => [entry.name, entry.source])),
+        shadowingNames: new Map(
+          entries.filter(entry => shadowingSources.has(entry.source)).map(entry => [mcpServerNamespaceKey(entry.name), entry.source]),
+        ),
         configErrors: [...global.errors, ...(read?.errors ?? [])],
         localMcpUnignored: read?.localMcpUnignored ?? false,
       });
     }
-    const userServerNames = [...new Set(global.sources.flatMap(batch => Object.keys(batch.servers)))];
-
     if (generation !== this.loadGeneration) return;
     this.folderStates = folderStates;
-    this.userServerNames = userServerNames;
     this.configLoaded = true;
+    // Queued on the toggle lock but not awaited, so a load never waits behind a slow toggle write.
+    void this.pruneStaleEnabledOverrides(folderStates).catch(err => log("[McpManager] Pruning stale enabled overrides failed:", err));
+    if (folderReads.every(read => read.complete) && global.errors.length === 0) {
+      await this.migrateDisabledMcpTools(folderStates, trustedByKey);
+    }
+  }
+
+  /**
+   * Drop the enabled overrides of servers whose config no longer says `enabled: false`, so a later
+   * `enabled: false` in that config applies again. A server absent from this load keeps its override.
+   */
+  private async pruneStaleEnabledOverrides(folderStates: ReadonlyMap<string, FolderMcpState>): Promise<void> {
+    const configAllows = (entry: McpServerEntry): boolean => entry.config !== null && entry.config.enabled !== false;
+    const states = [...folderStates.values()];
+    await this.withToggleLock(async () => {
+      const user = this.getUserEnabledOverride();
+      const keptUser = user.filter(name => !states.some(state => state.entries.some(e => e.scope === "user" && e.name === name && configAllows(e))));
+      if (keptUser.length !== user.length) await this.workspaceState.update(MCP_ENABLED_SERVERS_KEY, keptUser);
+
+      const lists = this.getProjectEnabledOverride();
+      let changed = false;
+      for (const [key, names] of lists) {
+        const entries = folderStates.get(key)?.entries ?? [];
+        const kept = names.filter(name => !entries.some(e => e.scope === "folder" && e.name === name && configAllows(e)));
+        if (kept.length === names.length) continue;
+        changed = true;
+        if (kept.length > 0) lists.set(key, kept);
+        else lists.delete(key);
+      }
+      if (changed) await this.workspaceState.update(MCP_ENABLED_PROJECT_SERVERS_KEY, Object.fromEntries(lists));
+    });
   }
 
   /**
    * One folder's working-tree files. Asking git runs the repository's own `.git/config`, and
    * `core.fsmonitor` in it is a command git executes, so an untrusted workspace never gets asked.
+   * `.pi/mcp.json` is read only in a trusted folder, as pi does, and the owned-file migration never
+   * rewrites a local file an untrusted repository may have supplied.
    */
   private async readFolderFiles(target: FolderTarget, trusted: boolean): Promise<FolderRead> {
+    const localFile = localMcpConfigPath(target.fsPath);
+    if (trusted) await migrateOwnedFile(localFile);
     const files: readonly (readonly [McpServerSource, string])[] = [
       ["workspace", path.join(target.fsPath, ".mcp.json")],
-      ["damocles-local", localMcpConfigPath(target.fsPath)],
+      ...(trusted ? [["pi-project", piProjectMcpConfigPath(target.fsPath)] as const] : []),
+      ["damocles-local", localFile],
     ];
     const [reads, localMcpUnignored] = await Promise.all([
       Promise.all(files.map(async ([source, file]) => ({ source, read: await readMcpConfigFile(file) }))),
@@ -552,7 +786,7 @@ export class McpManager {
     ]);
     return {
       target,
-      sources: reads.map(({ source, read }) => ({ source, servers: read.servers })),
+      sources: reads.map(({ source, read }) => sourceBatch(source, read)),
       errors: reads.flatMap(({ read }) => (read.error ? [read.error] : [])),
       complete: reads.every(({ read }) => read.error === null),
       localMcpUnignored,
@@ -571,10 +805,14 @@ export class McpManager {
         : entry.enabled
           ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
           : "disabled";
-      const info = this.toStatusInfo(entry, status);
+      const info = this.toStatusInfo(entry, entry.error && status !== "disabled" ? "failed" : status);
       if (untrusted) info.untrusted = true;
+      if (entry.error) return info;
       if (sdkServer?.serverInfo) info.serverInfo = sdkServer.serverInfo;
       if (sdkServer?.error && !untrusted) info.error = sdkServer.error;
+      if (sdkServer?.errorInfo && !untrusted) info.errorInfo = sdkServer.errorInfo;
+      if (sdkServer?.stderrTail && !untrusted) info.stderrTail = sdkServer.stderrTail;
+      if (sdkServer?.description && info.description === undefined) info.description = sdkServer.description;
       if (sdkServer?.tools) info.tools = sdkServer.tools as McpToolInfo[];
       if (entry.enabled && !untrusted && sdkServer?.supportsOAuth) info.supportsOAuth = true;
       return info;
@@ -585,6 +823,12 @@ export class McpManager {
     const info: McpServerStatusInfo = { name: entry.name, status, enabled: entry.enabled };
     if (entry.source) info.source = entry.source;
     if (entry.readonly !== undefined) info.readonly = entry.readonly;
+    if (entry.error) {
+      info.error = entry.error.message;
+      info.errorInfo = entry.error.errorInfo;
+    }
+    const description = serverDescriptionLine(entry.config?.description);
+    if (description) info.description = description;
     // The edit form has nothing else to pre-populate from, so a Damocles-owned definition is sent
     // whenever the form can represent it losslessly, which is exactly when the write path would take
     // it back. Everything else is withheld, so Edit cannot destroy a definition it cannot show.
@@ -592,9 +836,34 @@ export class McpManager {
     // Copied rather than aliased: the same object sits in the folder merge and is handed to
     // `setMcpServers()`, so an in-extension consumer mutating what it received here would corrupt the
     // definition feeding the spawn chokepoint.
-    if (entry.source === "damocles" && isFormEditableMcpServerConfig(entry.config)) {
+    if (entry.source === "damocles" && entry.config && isFormEditableMcpServerConfig(entry.config)) {
       info.editableConfig = { ...entry.config };
     }
     return info;
+  }
+}
+
+/** An enabled entry that can connect: it passed validation and no other server's name took its tools. */
+function isLoadable(entry: McpServerEntry): boolean {
+  return entry.enabled && entry.config !== null && entry.error === undefined;
+}
+
+function serverSpec(entry: McpServerEntry, config: McpServerConfig, baseDir: string, trusted: boolean): McpServerSpec {
+  const valueFormat = VALUE_FORMAT_BY_SOURCE[entry.source];
+  return {
+    config: resolveStdioPaths(config, baseDir, valueFormat),
+    valueFormat,
+    folderScoped: MCP_SCOPE_BY_SOURCE[entry.source] === "folder",
+    trusted,
+  };
+}
+
+/** The owned-file migration fails only on IO; the read that follows reports the file as today. */
+async function migrateOwnedFile(file: string): Promise<void> {
+  try {
+    await migrateOwnedMcpFile(file);
+  } catch (err) {
+    if (!(err instanceof McpWriteError)) throw err;
+    log("[McpManager] %s could not be migrated (%s); it is read as written", file, err.info.code);
   }
 }

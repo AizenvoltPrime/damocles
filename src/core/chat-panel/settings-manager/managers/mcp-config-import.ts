@@ -2,16 +2,18 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { promises as fs } from "node:fs";
 import { parse as parseToml, TomlError } from "smol-toml";
-import { mcpSourceOrder } from "../../../../shared/types/mcp";
+import { mcpServerNamespaceKey, mcpSourceOrder } from "../../../../shared/types/mcp";
 import type {
   McpConfigError,
   McpHttpServerConfig,
   McpServerConfig,
+  McpServerErrorInfo,
   McpServerSource,
   McpStdioServerConfig,
 } from "../../../../shared/types/mcp";
 import type { AssetSourcePrecedence } from "../../../asset-sources";
-import type { McpServerEntry, McpServerScope } from "../types";
+import type { McpServerEntry, McpServerEntryError, McpServerScope } from "../types";
+import { validateMcpServerEntry } from "./mcp-config-validate";
 import { log } from "../../../logger";
 
 // Precedence is declared in the shared module so the webview form reads the same order. Re-exported
@@ -33,16 +35,28 @@ export const DAMOCLES_MCP_CONFIG_PATH: string = join(homedir(), ".damocles", "mc
 /** Codex's global config; only its `mcp_servers` table is read, and mapped onto `McpServerConfig`. */
 export const CODEX_CONFIG_PATH: string = join(homedir(), ".codex", "config.toml");
 
+/** The pi CLI's user MCP file, read-only. */
+export const PI_MCP_CONFIG_PATH: string = join(homedir(), ".pi", "agent", "mcp.json");
+
+/** The pi CLI's project MCP file, read-only and only in a trusted folder. */
+export function piProjectMcpConfigPath(workspaceRoot: string): string {
+  return join(workspaceRoot, ".pi", "mcp.json");
+}
+
+/** An entry that names a server but cannot be used; it still claims its name in the merge. */
+export type McpInvalidServers = Record<string, McpServerEntryError>;
+
 /** A provenance-tagged batch of servers, as handed to `mergeMcpEntries` in precedence order. */
 export interface McpSourceServers {
   source: McpServerSource;
   servers: Record<string, McpServerConfig>;
+  invalid: McpInvalidServers;
 }
 
 /** The user-scope sources, Claude Code's local scope per requested folder, and any Damocles file that failed to parse. */
 export interface GlobalMcpSources {
   sources: McpSourceServers[];
-  claudeLocal: ReadonlyMap<string, Record<string, McpServerConfig>>;
+  claudeLocal: ReadonlyMap<string, McpServerMap>;
   /** Not surfaced on the panel, but tells a caller the Claude local scope is unknown rather than empty. */
   claudeLocalUnreadable: boolean;
   errors: McpConfigError[];
@@ -60,6 +74,8 @@ const READONLY_BY_SOURCE: Record<McpServerSource, boolean> = {
   damocles: false,
   claude: true,
   codex: true,
+  pi: true,
+  "pi-project": true,
   "claude-local": true,
   "damocles-local": true,
 };
@@ -74,6 +90,8 @@ export const REPO_AUTHORED_BY_SOURCE: Record<McpServerSource, boolean> = {
   damocles: false,
   claude: false,
   codex: false,
+  pi: false,
+  "pi-project": true,
   "claude-local": false,
   "damocles-local": true,
 };
@@ -84,43 +102,78 @@ export const MCP_SCOPE_BY_SOURCE: Record<McpServerSource, McpServerScope> = {
   damocles: "user",
   claude: "user",
   codex: "user",
+  pi: "user",
+  "pi-project": "folder",
   "claude-local": "folder",
   "damocles-local": "folder",
 };
 
 /**
- * Recognised configs are returned **UNCHANGED, never normalised**: this filters entries, it does not
- * strip keys. `editableConfig` (`mcp-manager.toStatusInfo`) asks `isFormEditableMcpServerConfig` about
- * this exact object, so stripping a key here would make a config the edit form cannot represent — and
- * would silently destroy on save — look editable. Pinned by `__tests__/mcp-manager-editable-config.test.ts`
- * ("omits it entirely for a Damocles server storing a non-form key").
+ * Which value rules a source's file follows. pi's files and Damocles' own follow pi's
+ * `resolveConfigValue` (`!command`, `$VAR`, `${VAR}`); the other tools' formats keep `${VAR}` and
+ * `$env:VAR` with a leading `!` literal.
  */
-function coerceServerConfig(raw: unknown): McpServerConfig | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const o = raw as Record<string, unknown>;
-  if (typeof o["command"] === "string") return o as unknown as McpServerConfig;
-  if (typeof o["url"] === "string") return o as unknown as McpServerConfig;
-  return null;
+export const VALUE_FORMAT_BY_SOURCE: Record<McpServerSource, "pi" | "legacy"> = {
+  workspace: "legacy",
+  damocles: "pi",
+  claude: "legacy",
+  codex: "legacy",
+  pi: "pi",
+  "pi-project": "pi",
+  "claude-local": "legacy",
+  "damocles-local": "pi",
+};
+
+/** A raw `mcpServers` map split into usable configs and entries that name a server but cannot be used. */
+export interface McpServerMap {
+  servers: Record<string, McpServerConfig>;
+  invalid: McpInvalidServers;
+}
+
+const UNEXPANDED_CWD_DETAIL = "cwd must not contain ${VAR} or $env:VAR, because this file's format does not expand variables in cwd";
+
+/**
+ * One source's servers, tagged. pi does not expand variables in `cwd`, so in a pi-format file an entry
+ * whose `cwd` holds `${` or `$env:` fails, instead of spawning in a directory literally named that.
+ */
+export function sourceBatch(source: McpServerSource, map: McpServerMap): McpSourceServers {
+  if (VALUE_FORMAT_BY_SOURCE[source] !== "pi") return { source, servers: map.servers, invalid: map.invalid };
+  const servers: Record<string, McpServerConfig> = {};
+  const invalid: McpInvalidServers = { ...map.invalid };
+  for (const [name, config] of Object.entries(map.servers)) {
+    if ("cwd" in config && typeof config.cwd === "string" && /\$\{|\$env:/.test(config.cwd)) {
+      invalid[name] = { message: UNEXPANDED_CWD_DETAIL, errorInfo: { code: "invalidConfig", params: { detail: UNEXPANDED_CWD_DETAIL } } };
+    } else {
+      servers[name] = config;
+    }
+  }
+  return { source, servers, invalid };
 }
 
 /**
- * Validate a raw `mcpServers` map, dropping entries that are not a real stdio/remote server config.
- * Shared by the Claude-import and workspace `.mcp.json` paths so junk keys (`$schema`, typos) can never
- * become phantom servers fed to the spawn chokepoint.
+ * Validate a raw `mcpServers` map. Non-object values (`$schema`, comments-as-keys) are not servers and
+ * are skipped; every object is a server, kept when valid and reported when not, so a typo shows up as
+ * a failed row instead of a server that silently vanished.
+ *
+ * Valid configs are returned **UNCHANGED, never normalised**: `editableConfig` (`mcp-manager.toStatusInfo`)
+ * asks `isFormEditableMcpServerConfig` about this exact object, so stripping a key here would make a
+ * config the edit form cannot represent, and would silently destroy on save, look editable. Pinned by
+ * `__tests__/mcp-manager-editable-config.test.ts`.
  */
-export function coerceServerMap(raw: unknown): Record<string, McpServerConfig> {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out: Record<string, McpServerConfig> = {};
+export function coerceServerMap(raw: unknown): McpServerMap {
+  const map: McpServerMap = { servers: {}, invalid: {} };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return map;
   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    const config = coerceServerConfig(value);
-    if (config) out[name] = config;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const validation = validateMcpServerEntry(value as Record<string, unknown>);
+    if (validation.ok) map.servers[name] = validation.config;
+    else map.invalid[name] = { message: validation.error, errorInfo: validation.errorInfo };
   }
-  return out;
+  return map;
 }
 
 /** The outcome of reading one `{ "mcpServers": {...} }` file. */
-export interface McpFileRead {
-  servers: Record<string, McpServerConfig>;
+export interface McpFileRead extends McpServerMap {
   error: McpConfigError | null;
 }
 
@@ -199,7 +252,7 @@ async function readJsonConfigFile(path: string): Promise<JsonFileRead> {
 /** Read the top-level `mcpServers` map of one `{ "mcpServers": {...} }` file. */
 export async function readMcpConfigFile(path: string): Promise<McpFileRead> {
   const { document, error } = await readJsonConfigFile(path);
-  return { servers: document ? coerceServerMap(document["mcpServers"]) : {}, error };
+  return { ...coerceServerMap(document ? document["mcpServers"] : undefined), error };
 }
 
 /** The personal per-project Damocles MCP file: gitignored, read-only, highest precedence. */
@@ -239,7 +292,7 @@ function stripTrailingSeparator(target: string): string {
 function claudeLocalScopes(
   document: Record<string, unknown>,
   workspaceRoots: readonly string[],
-): Map<string, Record<string, McpServerConfig>> {
+): Map<string, McpServerMap> {
   const projects = document["projects"];
   const byNormalizedKey = new Map<string, unknown>();
   if (isTable(projects)) {
@@ -250,16 +303,16 @@ function claudeLocalScopes(
 
   return new Map(workspaceRoots.map(root => {
     const project = byNormalizedKey.get(normalizeProjectKey(root));
-    return [root, isTable(project) ? coerceServerMap(project["mcpServers"]) : {}];
+    return [root, coerceServerMap(isTable(project) ? project["mcpServers"] : undefined)];
   }));
 }
 
 /** Both Claude Code MCP scopes, as read from one parse of `~/.claude.json`. */
 export interface ClaudeMcpScopes {
   /** Claude Desktop, then the top level of `~/.claude.json`, which wins a name collision. */
-  user: Record<string, McpServerConfig>;
+  user: McpServerMap;
   /** `projects[<root>]` for every requested root, keyed by the root as passed; empty on no matching key. */
-  local: ReadonlyMap<string, Record<string, McpServerConfig>>;
+  local: ReadonlyMap<string, McpServerMap>;
   /** `~/.claude.json` exists but could not be read or parsed, so `local` is empty for lack of data. */
   localUnreadable: boolean;
 }
@@ -275,19 +328,27 @@ export interface ClaudeMcpScopes {
  */
 export async function readClaudeMcpScopes(workspaceRoots: readonly string[]): Promise<ClaudeMcpScopes> {
   const [desktop, global] = await Promise.all([
-    readMcpServersFromFile(CLAUDE_DESKTOP_CONFIG_PATH),
+    readMcpConfigFile(CLAUDE_DESKTOP_CONFIG_PATH),
     readJsonConfigFile(CLAUDE_GLOBAL_CONFIG_PATH),
   ]);
   const document = global.document;
+  const top = coerceServerMap(document ? document["mcpServers"] : undefined);
   return {
-    user: { ...desktop, ...(document ? coerceServerMap(document["mcpServers"]) : {}) },
-    local: document ? claudeLocalScopes(document, workspaceRoots) : new Map(workspaceRoots.map(root => [root, {}])),
+    user: overlayServerMaps(desktop, top),
+    local: document ? claudeLocalScopes(document, workspaceRoots) : new Map(workspaceRoots.map(root => [root, coerceServerMap(undefined)])),
     localUnreadable: global.error !== null,
   };
 }
 
-async function readMcpServersFromFile(path: string): Promise<Record<string, McpServerConfig>> {
-  return (await readMcpConfigFile(path)).servers;
+/** `above` wins every name it claims, valid or not. */
+function overlayServerMaps(below: McpServerMap, above: McpServerMap): McpServerMap {
+  const claimed = new Set([...Object.keys(above.servers), ...Object.keys(above.invalid)]);
+  const keep = <T>(record: Record<string, T>): Record<string, T> =>
+    Object.fromEntries(Object.entries(record).filter(([name]) => !claimed.has(name)));
+  return {
+    servers: { ...keep(below.servers), ...above.servers },
+    invalid: { ...keep(below.invalid), ...above.invalid },
+  };
 }
 
 /** The user-global Damocles MCP servers. Same file shape as `.mcp.json`, so the same reader serves it. */
@@ -369,16 +430,16 @@ function mapCodexServer(raw: unknown): McpServerConfig | null {
  * the JSON readers do; an unparseable file yields `{}` and logs exactly once — failing to read one
  * ecosystem must never stop the others loading.
  *
- * The final `coerceServerMap()` cannot filter anything today — every value came from `mapCodexServer`,
- * which returns only shapes `coerceServerConfig` accepts. It is kept so the spawn chokepoint has one
- * validation path regardless of which reader fed it, and so a future mapping change cannot bypass it.
+ * The final `coerceServerMap()` runs the same validator as every other source, so the spawn chokepoint
+ * has one validation path regardless of which reader fed it.
  */
-export async function readCodexMcpServers(): Promise<Record<string, McpServerConfig>> {
+export async function readCodexMcpServers(): Promise<McpServerMap> {
+  const none = coerceServerMap(undefined);
   let text: string;
   try {
     text = await fs.readFile(CODEX_CONFIG_PATH, "utf-8");
   } catch {
-    return {};
+    return none;
   }
 
   let parsed: unknown;
@@ -389,12 +450,12 @@ export async function readCodexMcpServers(): Promise<Record<string, McpServerCon
     // can be the very line holding a credential, and this channel is written to disk.
     const where = err instanceof TomlError ? `line ${err.line}, column ${err.column}` : "an unknown position";
     log("[McpImport] ~/.codex/config.toml is not valid TOML (%s); no Codex MCP servers loaded", where);
-    return {};
+    return none;
   }
 
-  if (!isTable(parsed)) return {};
+  if (!isTable(parsed)) return none;
   const table = parsed["mcp_servers"];
-  if (!isTable(table)) return {};
+  if (!isTable(table)) return none;
 
   const mapped: Record<string, McpServerConfig> = {};
   for (const [name, entry] of Object.entries(table)) {
@@ -425,20 +486,22 @@ export function orderMcpSources(
 export async function readGlobalMcpSources(
   workspaceRoots: readonly string[],
 ): Promise<GlobalMcpSources> {
-  const [claude, codex, damocles] = await Promise.all([
+  const [claude, codex, pi, damocles] = await Promise.all([
     readClaudeMcpScopes(workspaceRoots),
     readCodexMcpServers(),
+    readMcpConfigFile(PI_MCP_CONFIG_PATH),
     readDamoclesMcpServers(),
   ]);
   return {
     sources: [
-      { source: "claude", servers: claude.user },
-      { source: "codex", servers: codex },
-      { source: "damocles", servers: damocles.servers },
+      { source: "claude", ...claude.user },
+      { source: "codex", ...codex },
+      sourceBatch("pi", pi),
+      sourceBatch("damocles", damocles),
     ],
     claudeLocal: claude.local,
     claudeLocalUnreadable: claude.localUnreadable,
-    // Only the file Damocles owns is surfaced. The Claude and Codex imports are other tools' files:
+    // Only the file Damocles owns is surfaced. The Claude, Codex and pi imports are other tools' files:
     // a parse failure there is logged, but is theirs to fix and not worth a notice in this panel.
     errors: damocles.error ? [damocles.error] : [],
   };
@@ -450,28 +513,55 @@ export interface McpDisabledNames {
   folder: ReadonlySet<string>;
 }
 
+interface FoldedEntry {
+  entry: McpServerEntry;
+  /** Index of the batch the entry came from; a higher rank outranks a lower one. */
+  rank: number;
+  /** Position in its batch: valid entries in file order, then invalid ones in file order. */
+  index: number;
+}
+
 /**
  * Fold provenance-tagged server maps into the entry list, lowest precedence FIRST: a later source
  * overwrites an earlier one on a name collision, so precedence reads off the caller's array order.
- * `readonly` and `scope` come from the source, and each entry reads the disabled list of its scope.
+ * An invalid entry claims its name like a valid one. Names that differ but share a namespace key
+ * (`mcpServerNamespaceKey`) are one server: the highest-ranked keeps it (on a tie within one file, a
+ * valid entry before an invalid one, then the first in the file) and the rest become failed
+ * `nameCollision` rows.
+ *
+ * `readonly` and `scope` come from the source. An entry is enabled unless its scope's disabled list
+ * names it; a config `enabled: false` also disables it unless its scope's `enabledOverride` names it.
  */
 export function mergeMcpEntries(
   sources: readonly McpSourceServers[],
   disabled: McpDisabledNames,
+  enabledOverride: McpDisabledNames,
 ): McpServerEntry[] {
-  const merged = new Map<string, McpServerEntry>();
-  for (const { source, servers } of sources) {
+  const merged = new Map<string, FoldedEntry>();
+  sources.forEach(({ source, servers, invalid }, rank) => {
     const scope = MCP_SCOPE_BY_SOURCE[source];
+    const base = { source, scope, readonly: READONLY_BY_SOURCE[source] };
+    let index = 0;
     for (const [name, config] of Object.entries(servers)) {
-      merged.set(name, {
-        name,
-        config,
-        enabled: !disabled[scope].has(name),
-        source,
-        scope,
-        readonly: READONLY_BY_SOURCE[source],
-      });
+      const enabled = !disabled[scope].has(name) && (config.enabled !== false || enabledOverride[scope].has(name));
+      merged.set(name, { entry: { name, config, enabled, ...base }, rank, index: index++ });
     }
+    for (const [name, error] of Object.entries(invalid)) {
+      merged.set(name, { entry: { name, config: null, error, enabled: !disabled[scope].has(name), ...base }, rank, index: index++ });
+    }
+  });
+
+  const owners = new Map<string, FoldedEntry>();
+  for (const folded of merged.values()) {
+    const key = mcpServerNamespaceKey(folded.entry.name);
+    const owner = owners.get(key);
+    if (!owner || folded.rank > owner.rank || (folded.rank === owner.rank && folded.index < owner.index)) owners.set(key, folded);
   }
-  return [...merged.values()];
+  return [...merged.values()].map(({ entry }) => {
+    const owner = owners.get(mcpServerNamespaceKey(entry.name))!.entry;
+    if (owner === entry) return entry;
+    const errorInfo: McpServerErrorInfo = { code: "nameCollision", params: { kept: owner.name, keptSource: owner.source } };
+    const message = `"${entry.name}" and "${owner.name}" name the same tools; only "${owner.name}" from ${owner.source} is loaded`;
+    return { ...entry, error: { message, errorInfo } };
+  });
 }

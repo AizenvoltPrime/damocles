@@ -7,7 +7,7 @@ import { resolveEnabledModels, isModelInScope, readEnabledModels } from '../enab
 
 const registry = {
   getAvailableSnapshot: () => [
-    { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Sonnet' },
+    { provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Sonnet' },
     { provider: 'anthropic', id: 'claude-opus-4-8', name: 'Opus' },
     { provider: 'openai', id: 'gpt-6-luna', name: 'GPT' },
   ],
@@ -24,7 +24,7 @@ describe('resolveEnabledModels / isModelInScope', () => {
     expect(scope).toBeDefined();
     expect(isModelInScope({ provider: 'anthropic', id: 'claude-opus-4-8' }, scope!)).toBe(true);
     expect(isModelInScope({ provider: 'openai', id: 'gpt-6-luna' }, scope!)).toBe(true);
-    expect(isModelInScope({ provider: 'anthropic', id: 'claude-sonnet-5' }, scope!)).toBe(false);
+    expect(isModelInScope({ provider: 'anthropic', id: 'claude-sonnet-5-5' }, scope!)).toBe(false);
   });
 
   it('denies all (empty set) when an allowlist is configured but nothing resolves', () => {

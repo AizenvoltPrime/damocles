@@ -1,3 +1,4 @@
+import type { ClassifierAnswer, ClassifierQuestion, JsonObject } from '@earendil-works/pi-ai';
 import { PiRuntime } from '../pi-session/pi-runtime';
 
 /** The kind of memory sub-call, used to size the per-call timeout. */
@@ -20,8 +21,21 @@ export interface MemorySubCallRequest {
   timeoutMs?: number;
 }
 
+/** A Jev request: untrusted text only in `state`; `questions` come from constants in code. */
+export interface MemoryClassifyRequest {
+  purpose: Extract<MemorySubCallPurpose, 'merge' | 'rerank'>;
+  state: JsonObject;
+  questions: Record<string, ClassifierQuestion>;
+  timeoutMs: number;
+  abortSignal?: AbortSignal;
+}
+
 export interface MemorySubCallRunner {
   run<T>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>>;
+  /** Absent or false: the judges use `run` alone. */
+  hasClassifier?(): boolean;
+  /** The answers, or null on any failure. Never throws. */
+  classify?(req: MemoryClassifyRequest): Promise<Record<string, ClassifierAnswer> | null>;
 }
 
 const RERANK_TIMEOUT_MS = 12_000;
@@ -61,6 +75,18 @@ export function createMemorySubCallRunner(): MemorySubCallRunner {
       });
       if (value === null) return { value: null, failure: 'transient' };
       return { value };
+    },
+    hasClassifier(): boolean {
+      return PiRuntime.get().hasClassifier();
+    },
+    classify(req: MemoryClassifyRequest): Promise<Record<string, ClassifierAnswer> | null> {
+      return PiRuntime.get().runClassification({
+        state: req.state,
+        questions: req.questions,
+        purpose: `memory-${req.purpose}`,
+        timeoutMs: req.timeoutMs,
+        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+      });
     },
   };
 }

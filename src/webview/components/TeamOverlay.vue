@@ -16,6 +16,7 @@ import { useCostLabel } from '@/composables/useCostLabel';
 import { addAgentUsage, emptyAgentUsage } from '@shared/usage-accounting';
 import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
+import { runsStopwatch } from '@shared/team-stopwatch';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
@@ -64,8 +65,7 @@ const statusBadge = computed(() => {
 
 const { elapsedMs } = useElapsedTimer(
   () => selectedTeam.value?.status === 'running',
-  () => selectedTeam.value?.startTime ?? null,
-  () => selectedTeam.value?.endTime ?? null,
+  () => (selectedTeam.value ? runsStopwatch(selectedTeam.value.runs) : null),
 );
 
 const totalUsage = computed(() => (selectedTeam.value?.agents ?? []).reduce(addAgentUsage, emptyAgentUsage()));

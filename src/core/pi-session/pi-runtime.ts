@@ -1,5 +1,5 @@
 import type { ModelRuntime, PackageManager, PackageSource, SettingsManager } from '@earendil-works/pi-coding-agent';
-import type { Model, Api, AuthInteraction } from '@earendil-works/pi-ai';
+import type { Model, Api, AuthInteraction, ClassifierAnswer, ClassifierApi, ClassifierModel, ClassifierQuestion, JsonObject } from '@earendil-works/pi-ai';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -12,13 +12,18 @@ import { assetSources } from '../asset-sources';
 import { renamePiSession, type LiveSessionMetaSource } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { createMcpAuthProviderFactory, shutdownOAuth } from './mcp/mcp-auth-flow';
+import { removeSavedMcpOutputs } from './mcp/content';
+import type { NoticeMemory } from './mcp/tool-name-migration';
 import { resolvePiModel, piSupportedModels, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
 import { piModelDollarBilled } from './account-billing';
-import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
-import { describeAuthError } from './describe-error';
+import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
+import { describeAuthError, isCredentialSyncError } from './describe-error';
 import { isAbortError } from './web-access/util';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
-import { appendSubCallUsage } from '../usage-stats/subcall-ledger';
+import { appendSubCallUsage, type SubCallPurpose } from '../usage-stats/subcall-ledger';
+import { CLASSIFIER_MODELS, classifierFailureCause, httpStatusOf, isInputRefusal, memoryJudgeOf, pickClassifierModel, type ClassifierModelRef } from './classifier-model';
+import { CLASSIFIER_PROBE_AFTER_MS, createClassifierBreakers, credentialRejectionOf, type ClassifierOutcome } from './classifier-breaker';
+import type { ClassifierProvider, MemoryJudge } from '../../shared/types/settings';
 import {
   LEGACY_SUBSCRIPTION_REPOS,
   SUBSCRIPTION_SOURCE,
@@ -29,19 +34,27 @@ import {
 } from './subscription';
 import { forceRemoveDir } from './fs-remove';
 import {
+  OPENAI_API_KEY_SECRET,
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
-  OPENAI_CODEX_BROWSER_LOGIN,
+  OPENAI_PREFER_API_KEY_STATE,
+  openaiAuthStatus,
+  openaiRuntimeKeyWanted,
   readOpenAIAuthFromDisk,
   type OpenAIAuthStatus,
 } from './openai-auth';
+import { syncOpenAIRuntimeKey } from './openai-runtime-key';
+import { migrateOpenAIApiKey } from './openai-key-migration';
+import { OPENAI_KEY_MOVED_MARKER_PATH } from '../paths';
 import { FolderRuntime, type ExtensionLoadError } from './folder-runtime';
+import { MCP_TOOL_EXPOSURE_SETTING } from '../../shared/types/mcp';
 import { folderKey } from '../workspace-folders/folder-key';
 import { withQueuePolicy } from './queue-policy';
 import { platform } from '../platform-host';
 import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher } from '../../platform/file-watcher';
+import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -54,10 +67,26 @@ const CUSTOM_PROVIDER_SYNC_TIMEOUT_MS = 3000;
 /** pi rewrites auth.json as a truncate then a write, which a watcher reports as more than one event. */
 const AUTH_REPUBLISH_DEBOUNCE_MS = 150;
 
+/** Module-level so subscribing never creates the singleton: activation must leave `PiRuntime.exists` false. */
+const memoryJudgeListeners = new Set<() => void>();
+function notifyMemoryJudgeListeners(): void {
+  for (const listener of memoryJudgeListeners) listener();
+}
+
 /** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
  *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
 function keyInteraction(key: string): AuthInteraction {
   return { prompt: async () => key, notify: () => {} };
+}
+
+/** One Jev request. Untrusted text (memories, prompts) goes only in `state`; `questions` are built from
+ *  constants in code, the same data-position rule `runStructuredCompletion` keeps. */
+export interface ClassificationRequest {
+  state: JsonObject;
+  questions: Record<string, ClassifierQuestion>;
+  purpose: Extract<SubCallPurpose, 'memory-merge' | 'memory-rerank'>;
+  timeoutMs: number;
+  abortSignal?: AbortSignal;
 }
 
 interface HotReloadResult {
@@ -67,11 +96,48 @@ interface HotReloadResult {
 }
 
 /** Every MCP manager, user or folder, gets the same OAuth wiring; elicitation is routed inside the manager. */
-function newMcpManager(reservedPrefixes?: () => ReadonlySet<string>): McpClientManager {
+function newMcpManager(options: {
+  clientVersion: string;
+  shellPath: () => string | undefined;
+  reservedToolNames?: () => ReadonlySet<string>;
+}): McpClientManager {
   return new McpClientManager({
+    clientVersion: options.clientVersion,
+    shellPath: options.shellPath,
     authProviderFactoryBuilder: createMcpAuthProviderFactory,
-    ...(reservedPrefixes ? { reservedPrefixes } : {}),
+    ...(options.reservedToolNames ? { reservedToolNames: options.reservedToolNames } : {}),
   });
+}
+
+/** Workspace and global state key: renamed-tool notice entries already shown, `Record<file, rule[]>`. */
+const MCP_RENAMED_RULE_NOTICES_KEY = 'damocles.mcp.renamedToolRuleNotices';
+
+/**
+ * Entries for files inside the folder are remembered per workspace; entries for every other file (home
+ * config, user agents) globally, since that file and its notice are the same in every workspace.
+ */
+export function renamedRuleNoticeMemory(state: Platform['state'], folder: string): NoticeMemory {
+  const stateFor = (file: string) => {
+    const relative = path.relative(folderKey(folder), folderKey(file));
+    const inFolder = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+    return inFolder ? state.workspace : state.global;
+  };
+  const read = (memento: Platform['state']['workspace']): Record<string, string[]> => {
+    const raw = memento.get<unknown>(MCP_RENAMED_RULE_NOTICES_KEY, {});
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, string[]>) : {};
+  };
+  return {
+    has: (file, rule) => {
+      const rules = read(stateFor(file))[file];
+      return Array.isArray(rules) && rules.includes(rule);
+    },
+    add: async (file, rules) => {
+      const memento = stateFor(file);
+      const all = read(memento);
+      const known = Array.isArray(all[file]) ? all[file] : [];
+      await memento.update(MCP_RENAMED_RULE_NOTICES_KEY, { ...all, [file]: [...new Set([...known, ...rules])] });
+    },
+  };
 }
 
 function packageSourceString(pkg: PackageSource): string {
@@ -116,10 +182,13 @@ export interface LiveSessionMutator extends LiveSessionMetaSource {
  */
 export class PiRuntime {
   private static _instance: PiRuntime | null = null;
+  private static _retired = false;
 
   private _initPromise: Promise<void> | null = null;
   private readonly _agentDir: string;
   private _modelRuntime: ModelRuntime | null = null;
+  /** `modelRuntimeReady()` callers waiting for init to create the model runtime. */
+  private readonly _modelRuntimeWaiters = new Set<(models: ModelRuntime) => void>();
   /** User-scope settings for package operations; the subscription plugin is only ever listed there. */
   private _userSettings: SettingsManager | null = null;
   /** Creation promises by folder key, so concurrent `folder()` calls share one creation. */
@@ -144,13 +213,30 @@ export class PiRuntime {
   private _userDebounce: NodeJS.Timeout | null = null;
   private _authWatcher: FileWatcher | null = null;
   private _authDebounce: NodeJS.Timeout | null = null;
+  /** OpenAI credential changes, the key migration and every runtime-key sync run one at a time on this
+   *  chain, so a sync reads the state it applies and no sign-in lands between the migration's check and delete. */
+  private _openaiCredentialSync: Promise<void> = Promise.resolve();
+  /** Whether the OpenAI key secret is present: read at init and on every secret change, so status stays synchronous. */
+  private _openaiKeyPresent = false;
+  /** Set once init's first OpenAI key sync has run; before that `_openaiKeyPresent` has not been read. */
+  private _openaiStatusReady = false;
+  private _secretsListener: Disposable | null = null;
   /** Granting trust admits a folder's project layer, which needs a reload to reach its loader. */
   private _trustListener: Disposable | null = null;
+  /** `damocles.imageGeneration.*` decides whether GenerateImage is eligible. */
+  private _imageSettingsListener: Disposable | null = null;
+  /** `damocles.mcp.toolExposure` decides which MCP tools are eligible, active and on the ToolSearch menu. */
+  private _toolExposureListener: Disposable | null = null;
+  /** `damocles.explore.*` picks the sub-call model, which the memory judge status names. */
+  private _exploreSettingsListener: Disposable | null = null;
+  /** Set once a custom-provider sync has applied the stored keys, which `hasConfiguredAuth` reads. */
+  private _customProvidersSynced = false;
   /** Read once from the host-installed accessor: this process singleton has no owner to inject it. */
   private readonly _platform: Platform;
   /** Cancels an in-flight custom-provider credential sync on dispose, so a closing window does not
    *  leave a credential operation running against the shared `auth.json` lock. */
   private readonly _syncAbort = new AbortController();
+  private readonly _classifierBreakers = createClassifierBreakers();
   private _disposed = false;
 
   private constructor(agentDir: string) {
@@ -159,14 +245,24 @@ export class PiRuntime {
     }
     this._agentDir = agentDir;
     this._platform = platform();
+    this._classifierBreakers.onChange(notifyMemoryJudgeListeners);
   }
 
   /** Get (lazily creating) the process-wide PiRuntime singleton. */
   static get(agentDir: string = PI_AGENT_DIR): PiRuntime {
     if (!PiRuntime._instance) {
       PiRuntime._instance = new PiRuntime(agentDir);
+      PiRuntime._retired = false;
     }
     return PiRuntime._instance;
+  }
+
+  /**
+   * The singleton, created if needed, or null once `disposeInstance` retired it and nothing has created
+   * one since. For work that may run late at shutdown, where a new runtime's watchers would outlive it.
+   */
+  static unlessRetired(): PiRuntime | null {
+    return PiRuntime._retired ? null : PiRuntime.get();
   }
 
   /** Whether the singleton has been created. */
@@ -174,8 +270,22 @@ export class PiRuntime {
     return PiRuntime._instance !== null;
   }
 
+  /** Fires when an input of `describeMemoryJudge()` may have changed. Subscribing does not create the singleton. */
+  static onMemoryJudgeChange(listener: () => void): () => void {
+    memoryJudgeListeners.add(listener);
+    return () => {
+      memoryJudgeListeners.delete(listener);
+    };
+  }
+
+  /** For judge inputs that change outside the runtime: a Claude or OpenAI credential change republishes the account. */
+  static notifyMemoryJudgeChange(): void {
+    notifyMemoryJudgeListeners();
+  }
+
   /** Tear down and clear the singleton (extension deactivation and tests). */
   static async disposeInstance(): Promise<void> {
+    PiRuntime._retired = true;
     if (PiRuntime._instance) {
       await PiRuntime._instance.dispose();
       PiRuntime._instance = null;
@@ -189,6 +299,22 @@ export class PiRuntime {
   /** The model runtime every folder shares, or `null` before `init()` resolves. */
   get modelRuntime(): ModelRuntime | null {
     return this._modelRuntime;
+  }
+
+  /**
+   * The model registry as soon as `init()` has built it from local files, without waiting for init's
+   * credential sync, which can sit behind pi's cross-process auth lock. Starts init when it has not
+   * started; null when init fails or the runtime is disposed.
+   */
+  modelRuntimeReady(): Promise<ModelRuntime | null> {
+    if (this._modelRuntime) return Promise.resolve(this._modelRuntime);
+    return new Promise((resolve) => {
+      this._modelRuntimeWaiters.add(resolve);
+      this.init().then(
+        () => resolve(this._modelRuntime),
+        () => resolve(null),
+      ).finally(() => this._modelRuntimeWaiters.delete(resolve));
+    });
   }
 
   /** Register/replace the live mutator for a panel's pi session (called on start + rebind). A panel
@@ -282,6 +408,15 @@ export class PiRuntime {
     return run;
   }
 
+  private _withOpenAICredentialSync<T>(op: () => Promise<T>): Promise<T> {
+    const run = this._openaiCredentialSync.then(op);
+    this._openaiCredentialSync = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   /**
    * Build a folder's services on the shared `ModelRuntime`, then check the subscription plugin against
    * its loader before anyone can start a session on it. Runs on `_providerSync`.
@@ -296,7 +431,16 @@ export class PiRuntime {
       agentDir: this._agentDir,
       modelRuntime: this._modelRuntime,
       userMcp: this._userMcp,
-      createFolderMcp: (reservedPrefixes) => newMcpManager(reservedPrefixes),
+      createFolderMcp: (reservedToolNames, shellPath) =>
+        newMcpManager({ clientVersion: this._platform.appInfo.version, shellPath, reservedToolNames }),
+      noticeMemory: renamedRuleNoticeMemory(this._platform.state, cwd),
+      projectDisabledTools: () => {
+        const names = this._platform.settings.inspect<unknown>('damocles.tools.disabled').projectValue;
+        const file = this._platform.settings.scopeFile('project');
+        if (!Array.isArray(names) || file === undefined) return null;
+        return { path: file, names: names.filter((name): name is string => typeof name === 'string') };
+      },
+      toolExposureSetting: () => this._platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING),
       renameSession: async (sessionId, sessionCwd, newName) => {
         const mutator = this.getSessionMutator(sessionId);
         if (mutator) await mutator.renameActiveSession(newName);
@@ -327,7 +471,10 @@ export class PiRuntime {
       await folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
     }
     // A folder removed mid-creation stays out of the map; `disposeFolder` disposes it once this resolves.
-    if (isCurrent()) this._folders.set(folder.key, folder);
+    if (isCurrent()) {
+      this._folders.set(folder.key, folder);
+      notifyMemoryJudgeListeners();
+    }
     return folder;
   }
 
@@ -365,15 +512,16 @@ export class PiRuntime {
   }
 
   /**
-   * Republish every live session's account chip when auth.json changes: a login or logout in another
-   * Damocles app or a pi CLI, or a token refresh anywhere, lands only in that file.
+   * Re-sync the OpenAI runtime key and republish every live session's account chip when auth.json
+   * changes: a login or logout in another Damocles app or a pi CLI, or a token refresh anywhere, lands
+   * only in that file.
    */
   private _setupAuthWatcher(): void {
     const onChange = (): void => {
       if (this._authDebounce) clearTimeout(this._authDebounce);
       this._authDebounce = setTimeout(() => {
         this._authDebounce = null;
-        for (const session of new Set(this._sessionMutators.values())) session.publishAccountInfo();
+        void this._resyncOpenAIAndRepublish('auth.json change');
       }, AUTH_REPUBLISH_DEBOUNCE_MS);
     };
     const watcher = this._platform.fileWatchers.watch(this._agentDir, 'auth.json');
@@ -381,6 +529,25 @@ export class PiRuntime {
     watcher.onDidChange(onChange);
     watcher.onDidDelete(onChange);
     this._authWatcher = watcher;
+  }
+
+  /**
+   * Republishes before the sync, which can wait behind a pending ChatGPT sign-in on the credential chain, and
+   * again after it. A failed sync is logged and the chip still republishes, so it shows the state the sync left.
+   */
+  private async _resyncOpenAIAndRepublish(reason: string): Promise<void> {
+    this._publishAccountInfoToSessions();
+    try {
+      await this.syncOpenAIRuntimeKey();
+    } catch (err) {
+      log('[PiRuntime] OpenAI runtime key sync after %s failed: %s', reason, describeAuthError(err));
+    }
+    this._publishAccountInfoToSessions();
+  }
+
+  private _publishAccountInfoToSessions(): void {
+    for (const session of new Set(this._sessionMutators.values())) session.publishAccountInfo();
+    notifyMemoryJudgeListeners();
   }
 
   /**
@@ -406,9 +573,41 @@ export class PiRuntime {
       authPath: path.join(this._agentDir, 'auth.json'),
       modelsPath: path.join(this._agentDir, 'models.json'),
     });
+    for (const resolve of this._modelRuntimeWaiters) resolve(this._modelRuntime);
+    this._modelRuntimeWaiters.clear();
     this._userSettings = withQueuePolicy(pi.SettingsManager.create(this._agentDir, this._agentDir));
-    // The manager loads the MCP SDK + eager-connects only once `setMcpServers` feeds it the enabled set.
-    this._userMcp = newMcpManager();
+    // Before the first sync, so a change between its secret read and init's end is not missed; the resync awaits init.
+    this._secretsListener?.dispose();
+    // Fires for a key changed in another window too, so that window's change reaches this runtime and its breakers.
+    this._secretsListener = this._platform.secrets.onDidChange((key) => {
+      if (key === OPENAI_API_KEY_SECRET) void this._resyncOpenAIAndRepublish('a key secret change');
+      else if (CUSTOM_PROVIDER_DEFS.some((def) => def.secretKey === key)) void this.syncCustomProviders((k) => this._platform.secrets.get(k));
+    });
+    // Before the auth.json watcher and before init resolves, which every OpenAI sign-in awaits.
+    await this._withOpenAICredentialSync(async () => {
+      try {
+        await migrateOpenAIApiKey({
+          modelRuntime: this._modelRuntime!,
+          secrets: this._platform.secrets,
+          agentDir: this._agentDir,
+          markerPath: OPENAI_KEY_MOVED_MARKER_PATH,
+          host: this._platform.appInfo.host,
+        });
+      } catch (err) {
+        log('[PiRuntime] OpenAI API key migration failed; it runs again at the next start: %s', describeAuthError(err));
+      }
+      try {
+        await this._syncOpenAIRuntimeKeyNow();
+      } catch (err) {
+        log('[PiRuntime] OpenAI runtime key sync at init failed: %s', describeAuthError(err));
+      }
+      this._openaiStatusReady = true;
+    });
+    // The manager loads pi-mcp and eager-connects only once `setMcpServers` feeds it the enabled set.
+    this._userMcp = newMcpManager({
+      clientVersion: this._platform.appInfo.version,
+      shellPath: () => this._userSettings?.getShellPath(),
+    });
     this._setupUserWatchers();
     this._setupAuthWatcher();
     // Folder settings managers were created with the trust state of their creation, which excluded the
@@ -421,6 +620,15 @@ export class PiRuntime {
         folder.reloadBare().catch((err) => log('[PiRuntime] trust-grant reload failed (%s): %O', folder.cwd, err));
       }
     });
+    this._imageSettingsListener = this._platform.settings.onDidChange(IMAGE_SETTINGS_SECTION, () => {
+      for (const folder of this.folders()) folder.refreshActiveTools();
+    });
+    // Every writer reaches the panels here: the MCP panel, a settings.json edit, Settings Sync, another window.
+    // Each session's refresher also re-sends its panel's MCP status.
+    this._toolExposureListener = this._platform.settings.onDidChange(MCP_TOOL_EXPOSURE_SETTING, () => {
+      for (const folder of this.folders()) folder.refreshActiveTools();
+    });
+    this._exploreSettingsListener = this._platform.settings.onDidChange('damocles.explore', notifyMemoryJudgeListeners);
     log('[PiRuntime] initialized (agentDir=%s)', this._agentDir);
   }
 
@@ -450,11 +658,12 @@ export class PiRuntime {
   async syncCustomProviders(getSecret: SecretResolver): Promise<{ wired: string[]; notWired: string[]; timedOut: boolean }> {
     if (this._disposed || !this._modelRuntime) return { wired: [], notWired: [], timedOut: false };
     try {
-      const { wired, aborted, notWired } = await syncCustomProviders({
+      const { wired, aborted, notWired, changed } = await syncCustomProviders({
         modelRuntime: this._modelRuntime,
         getSecret,
         signal: AbortSignal.any([this._syncAbort.signal, AbortSignal.timeout(CUSTOM_PROVIDER_SYNC_TIMEOUT_MS)]),
       });
+      for (const provider of changed) this._classifierBreakers.reset(provider);
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
       const timedOut = aborted && !this._syncAbort.signal.aborted;
       if (timedOut) {
@@ -467,6 +676,11 @@ export class PiRuntime {
       const timedOut = !this._syncAbort.signal.aborted && isAbortError(err);
       log('[PiRuntime] syncCustomProviders failed (non-fatal): %s', describeAuthError(err));
       return { wired: [], notWired: [], timedOut };
+    } finally {
+      // GenerateImage's eligibility reads `hasConfiguredAuth('openrouter')`, which only now reflects the secret.
+      for (const folder of this.folders()) folder.refreshActiveTools();
+      this._customProvidersSynced = true;
+      notifyMemoryJudgeListeners();
     }
   }
 
@@ -586,66 +800,162 @@ export class PiRuntime {
   }
 
   /**
-   * Store an OpenAI API key (bills the API account). Independent of the codex OAuth grant — both can
-   * be configured, and the settings panel chooses which to use via the prefer-api-key flag.
+   * The ChatGPT access token, only while ChatGPT is the active `openai` credential. pi resolves the runtime
+   * key before the stored grant, so without both gates this would return the API key.
+   */
+  async getChatGPTAccessToken(): Promise<string | undefined> {
+    await this.init();
+    const status = this.getOpenAIAuthStatus();
+    if (!status.chatgpt || openaiRuntimeKeyWanted(status, this._preferOpenAIApiKey())) return undefined;
+    const resolved = await this._modelRuntime!.getAuth(OPENAI_API_PROVIDER);
+    return resolved?.source === 'OAuth' ? resolved.auth.apiKey : undefined;
+  }
+
+  private _preferOpenAIApiKey(): boolean {
+    return this._platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false);
+  }
+
+  /** Runs on `_openaiCredentialSync`. */
+  private async _syncOpenAIRuntimeKeyNow(): Promise<void> {
+    if (!this._modelRuntime) throw new Error('PiRuntime: runtime not initialized');
+    await syncOpenAIRuntimeKey({
+      modelRuntime: this._modelRuntime,
+      secrets: this._platform.secrets,
+      agentDir: this._agentDir,
+      preferApiKey: this._preferOpenAIApiKey(),
+      onKeyPresence: (present) => {
+        this._openaiKeyPresent = present;
+      },
+    });
+  }
+
+  /** Re-apply the OpenAI runtime key from the secret, auth.json and the prefer toggle. */
+  async syncOpenAIRuntimeKey(): Promise<void> {
+    await this.init();
+    await this._withOpenAICredentialSync(() => this._syncOpenAIRuntimeKeyNow());
+  }
+
+  /**
+   * Store the OpenAI API key in the host secret store. No network validation. Where that store is not
+   * persistent, auth.json is the durable copy the migration leaves in place, so the key goes there, or a
+   * restart would bring back the previous one. auth.json has one `openai` slot: while it holds a ChatGPT
+   * grant, which writing a key would delete, the key lasts until restart.
    */
   async setOpenAIApiKey(key: string): Promise<OpenAIAuthStatus> {
     await this.init();
-    if (!this._modelRuntime) throw new Error('PiRuntime.setOpenAIApiKey: runtime not initialized');
-    // `login` persists the api_key credential under 'openai' and refreshes; the 'openai-codex' grant
-    // is a separate provider and is left intact.
-    await this._modelRuntime.login(OPENAI_API_PROVIDER, 'api_key', keyInteraction(key));
-    return this.getOpenAIAuthStatus();
-  }
-
-  /** Clear the stored OpenAI API key, leaving any codex OAuth grant intact. */
-  async clearOpenAIApiKey(): Promise<OpenAIAuthStatus> {
-    if (this._modelRuntime) {
-      // `logout('openai')` clears only the API-key provider; 'openai-codex' is untouched.
-      await this._modelRuntime.logout(OPENAI_API_PROVIDER);
-      log('[PiRuntime] openai api key cleared');
-    }
+    await this._withOpenAICredentialSync(async () => {
+      if (this._platform.secrets.isPersistent || readOpenAIAuthFromDisk(this._agentDir).chatgpt) {
+        await this._platform.secrets.store(OPENAI_API_KEY_SECRET, key);
+      } else {
+        await this._platform.secrets.delete(OPENAI_API_KEY_SECRET);
+        try {
+          await this._modelRuntime!.login(OPENAI_API_PROVIDER, 'api_key', keyInteraction(key));
+        } catch (err) {
+          if (!isCredentialSyncError(err)) throw err;
+          log('[PiRuntime] openai api key is stored, but pi could not resynchronize its model snapshot: %s', describeAuthError(err));
+        }
+      }
+      await this._syncOpenAIRuntimeKeyNow();
+    });
     return this.getOpenAIAuthStatus();
   }
 
   /**
-   * Sign in to ChatGPT (Codex subscription) via pi's native codex OAuth. Unlike Anthropic, the codex
-   * provider emits a `select` prompt to pick a login method — PiRuntime intercepts it and always
-   * selects the browser / local-callback PKCE flow (127.0.0.1:1455), so the caller's interaction never
-   * sees it; all other prompts/notifications delegate to the caller. pi owns the callback server, PKCE,
-   * and token refresh.
+   * Delete the OpenAI API key secret, and a plain-text key still in auth.json, which a start with a
+   * non-persistent secret store leaves there. Any ChatGPT or Codex grant stays intact.
    */
-  async signInCodex(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
+  async clearOpenAIApiKey(): Promise<OpenAIAuthStatus> {
     await this.init();
-    if (!this._modelRuntime) throw new Error('PiRuntime.signInCodex: runtime not initialized');
-    const wrapped: AuthInteraction = {
-      ...(interaction.signal ? { signal: interaction.signal } : {}),
-      prompt: (prompt) => (prompt.type === 'select' ? Promise.resolve(OPENAI_CODEX_BROWSER_LOGIN) : interaction.prompt(prompt)),
-      notify: (event) => interaction.notify(event),
-    };
-    await this._modelRuntime.login(OPENAI_CODEX_PROVIDER, 'oauth', wrapped);
-    log('[PiRuntime] codex sign-in complete');
-    return this.getOpenAIAuthStatus();
-  }
-
-  /** Clear the stored codex OAuth grant, leaving any OpenAI API key intact. */
-  async signOutCodex(): Promise<OpenAIAuthStatus> {
-    if (this._modelRuntime) {
-      await this._modelRuntime.logout(OPENAI_CODEX_PROVIDER);
-      log('[PiRuntime] codex signed out');
-    }
+    await this._withOpenAICredentialSync(async () => {
+      await this._platform.secrets.delete(OPENAI_API_KEY_SECRET);
+      // auth.json holds one `openai` credential, so an api_key there means no ChatGPT grant to lose.
+      if (readOpenAIAuthFromDisk(this._agentDir).storedApiKey) await this._modelRuntime!.logout(OPENAI_API_PROVIDER);
+      await this._syncOpenAIRuntimeKeyNow();
+    });
+    log('[PiRuntime] openai api key cleared');
     return this.getOpenAIAuthStatus();
   }
 
   /**
-   * Current OpenAI auth state — API key and codex grant are reported independently. Derived strictly
-   * from the Damocles-owned stored credentials on disk (auth.json), NOT pi's `hasConfiguredAuth`
-   * (which also reports `true` for ambient `OPENAI_API_KEY` env vars / runtime overrides). Every
-   * login/logout persists to auth.json before resolving, so reading disk keeps the live status in
-   * lockstep and ensures `clearOpenAIApiKey` actually flips the reported state ("disk truth" contract).
+   * Sign in with ChatGPT on pi's `openai` provider. pi races its 127.0.0.1:1455 callback against a
+   * `manual_code` paste-the-redirect-URL prompt. The device id comes from the user settings. On success
+   * the legacy Codex grant is removed.
+   */
+  async signInChatGPT(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
+    await this.init();
+    const settings = this._settings();
+    await this._withOpenAICredentialSync(() =>
+      this._resyncOpenAIAfter(async () => {
+        const modelRuntime = this._modelRuntime!;
+        try {
+          await modelRuntime.login(OPENAI_API_PROVIDER, 'oauth', interaction, { getDeviceId: () => settings.getOrCreateDeviceId() });
+        } catch (err) {
+          if (!isCredentialSyncError(err)) throw err;
+          log('[PiRuntime] chatgpt sign-in is stored, but pi could not resynchronize its model snapshot: %s', describeAuthError(err));
+        }
+        log('[PiRuntime] chatgpt sign-in complete');
+        try {
+          await modelRuntime.logout(OPENAI_CODEX_PROVIDER);
+        } catch (err) {
+          // The sign-in succeeded; a Codex grant left behind stays visible in the auth panel with its own sign-out.
+          log('[PiRuntime] removing the legacy Codex grant after the ChatGPT sign-in failed: %s', describeAuthError(err));
+        }
+      }),
+    );
+    return this.getOpenAIAuthStatus();
+  }
+
+  /** Remove the ChatGPT grant, leaving the API key secret intact. */
+  async signOutChatGPT(): Promise<OpenAIAuthStatus> {
+    await this.init();
+    await this._withOpenAICredentialSync(() =>
+      this._resyncOpenAIAfter(async () => {
+        await this._modelRuntime!.logout(OPENAI_API_PROVIDER);
+        log('[PiRuntime] chatgpt signed out');
+      }),
+    );
+    return this.getOpenAIAuthStatus();
+  }
+
+  /**
+   * Run an `openai` login or logout, then apply the runtime key rule again even when it failed: pi's login
+   * keeps the runtime key, its logout drops it, and a failed one may still have changed auth.json.
+   */
+  private async _resyncOpenAIAfter(op: () => Promise<void>): Promise<void> {
+    try {
+      await op();
+    } catch (err) {
+      await this._syncOpenAIRuntimeKeyNow().catch((syncErr: unknown) =>
+        log('[PiRuntime] OpenAI runtime key sync after a failed credential change failed: %s', describeAuthError(syncErr)),
+      );
+      throw err;
+    }
+    await this._syncOpenAIRuntimeKeyNow();
+  }
+
+  /** Remove the legacy Codex grant, leaving the API key secret intact. */
+  async signOutCodex(): Promise<OpenAIAuthStatus> {
+    await this.init();
+    await this._withOpenAICredentialSync(() =>
+      this._resyncOpenAIAfter(async () => {
+        await this._modelRuntime!.logout(OPENAI_CODEX_PROVIDER);
+        log('[PiRuntime] codex signed out');
+      }),
+    );
+    return this.getOpenAIAuthStatus();
+  }
+
+  /**
+   * Current OpenAI auth state: the grants from auth.json and the key secret's cached presence. Not pi's
+   * `hasConfiguredAuth`, which also counts ambient `OPENAI_API_KEY` env vars and runtime overrides.
    */
   getOpenAIAuthStatus(): OpenAIAuthStatus {
-    return readOpenAIAuthFromDisk(this._agentDir);
+    return openaiAuthStatus(readOpenAIAuthFromDisk(this._agentDir), this._openaiKeyPresent);
+  }
+
+  /** Whether `getOpenAIAuthStatus` reflects the key secret: false until init's first key sync has run. */
+  get openaiStatusReady(): boolean {
+    return this._openaiStatusReady;
   }
 
   /**
@@ -963,9 +1273,10 @@ export class PiRuntime {
     // An Explore model with no credential is no model at all, never a fallback to another provider.
     if (explore) return registry.hasConfiguredAuth(explore.model.provider) ? explore.model : null;
     const openai = this.getOpenAIAuthStatus();
-    const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai);
+    const preferApiKey = this._preferOpenAIApiKey();
+    const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai, preferApiKey);
     if (anthropic.model && anthropic.authed) return anthropic.model;
-    const openaiModel = resolvePiModel(PI_SMALL_FAST_OPENAI, registry, openai);
+    const openaiModel = resolvePiModel(PI_SMALL_FAST_OPENAI, registry, openai, preferApiKey);
     if (openaiModel.model && openaiModel.authed) return openaiModel.model;
     return null;
   }
@@ -982,12 +1293,13 @@ export class PiRuntime {
   describeSubCallModel(): { provider: string; id: string; inputPerMTok: number; outputPerMTok: number; dollarBilled: boolean } | null {
     const model = this._resolveSmallFastModel();
     if (!model) return null;
-    // preferApiKey only picks between OpenAI credentials, and the resolved provider already names that credential.
+    // The API key and ChatGPT share `openai`, so the provider alone does not name the credential; the rule does.
     const dollarBilled = piModelDollarBilled(model, {
       supportedModels: piSupportedModels(),
       claudeAuthMode: this.getClaudeAuthStatus().mode,
       openai: this.getOpenAIAuthStatus(),
-      preferApiKey: false,
+      preferApiKey: this._preferOpenAIApiKey(),
+      registry: this._modelRuntime ?? undefined,
     });
     return { provider: model.provider, id: model.id, inputPerMTok: model.cost.input, outputPerMTok: model.cost.output, dollarBilled };
   }
@@ -1034,6 +1346,95 @@ export class PiRuntime {
     }
   }
 
+  /** The first classifier in preference order whose provider has credentials and passes `admits`. */
+  private _pickClassifier(
+    admits: (provider: ClassifierProvider) => boolean,
+  ): { ref: ClassifierModelRef; model: ClassifierModel<ClassifierApi> } | null {
+    const registry = this._modelRuntime;
+    if (!registry) return null;
+    const ref = pickClassifierModel((provider) => registry.hasConfiguredAuth(provider) && admits(provider));
+    const model = ref ? registry.getModelOfType('classifier', ref.provider, ref.id) : undefined;
+    return ref && model ? { ref, model } : null;
+  }
+
+  /** Whether the memory judges may send their next request to Jev. */
+  hasClassifier(): boolean {
+    return this._pickClassifier((provider) => this._classifierBreakers.admits(provider)) !== null;
+  }
+
+  /**
+   * The model the memory judges run on, for the settings status line. A refused provider reads as refused
+   * until an answer or a credential change clears it, even while a probe is allowed.
+   */
+  describeMemoryJudge(): MemoryJudge {
+    const registry = this._modelRuntime;
+    const rejected = CLASSIFIER_MODELS.flatMap(({ provider }) => {
+      const reason = registry?.hasConfiguredAuth(provider) ? this._classifierBreakers.rejection(provider) : undefined;
+      return reason ? [{ via: provider, reason }] : [];
+    });
+    const picked = this._pickClassifier((provider) => this._classifierBreakers.rejection(provider) === undefined);
+    return memoryJudgeOf(picked?.ref ?? null, picked ? null : this._resolveSmallFastModel(), rejected);
+  }
+
+  /**
+   * Whether `describeMemoryJudge()` reflects the credentials: the stored keys were applied once, and a folder
+   * runtime exists, which the sub-call model needs.
+   */
+  get memoryJudgeKnown(): boolean {
+    return this._modelRuntime !== null && this._folders.size > 0 && this._customProvidersSynced;
+  }
+
+  /** The user saved `provider`'s key again: a 402 can clear with the same key, so the refusal no longer stands. */
+  resetClassifierBreaker(provider: ClassifierProvider): void {
+    this._classifierBreakers.reset(provider);
+  }
+
+  /**
+   * One Jev classification through `ModelRuntime.classify()`. Resolves to the answers, or `null` when no
+   * classifier is usable, the request did not stop normally, or an answer is missing; never throws.
+   * Appends a ledger line whenever the service reported usage, including for a failed request.
+   */
+  async runClassification(req: ClassificationRequest): Promise<Record<string, ClassifierAnswer> | null> {
+    const modelRuntime = this._modelRuntime;
+    const picked = this._pickClassifier((provider) => this._classifierBreakers.admits(provider));
+    if (!modelRuntime || !picked) return null;
+    // Claimed in the same tick as the pick, so a breaker past its cooldown hands out exactly one probe.
+    const ticket = this._classifierBreakers.claim(picked.ref.provider);
+    let outcome: ClassifierOutcome = { kind: 'failed' };
+    try {
+      const deadline = AbortSignal.timeout(req.timeoutMs);
+      const signal = req.abortSignal ? AbortSignal.any([req.abortSignal, deadline]) : deadline;
+      const result = await modelRuntime.classify(picked.model, { state: req.state, questions: req.questions }, { signal, timeoutMs: req.timeoutMs });
+      if (result.usage) {
+        appendSubCallUsage({ provider: result.provider, model: result.model, stopReason: result.stopReason, usage: result.usage }, req.purpose);
+      }
+      if (result.stopReason !== 'stop') {
+        const rejection = isInputRefusal(result.errorMessage) ? null : credentialRejectionOf(httpStatusOf(result.errorMessage));
+        if (rejection) outcome = { kind: 'rejected', reason: rejection };
+        log(
+          '[PiRuntime] runClassification (%s) on %s/%s ended with %s: %s',
+          req.purpose, result.provider, result.model, result.stopReason, classifierFailureCause(result.errorMessage),
+        );
+        return null;
+      }
+      outcome = { kind: 'answered' };
+      for (const [id, question] of Object.entries(req.questions)) {
+        if (!Object.hasOwn(result.answers, id) || result.answers[id]?.type !== question.type) return null;
+      }
+      return result.answers;
+    } catch (err) {
+      log('[PiRuntime] runClassification failed: %s', describeAuthError(err));
+      return null;
+    } finally {
+      const before = this._classifierBreakers.rejection(ticket.provider);
+      this._classifierBreakers.settle(ticket, outcome);
+      const after = this._classifierBreakers.rejection(ticket.provider);
+      if (after !== undefined && after !== before) {
+        log('[PiRuntime] memory judges skip %s (%s) until its key changes or a probe in %d min succeeds', ticket.provider, after, CLASSIFIER_PROBE_AFTER_MS / 60_000);
+      }
+    }
+  }
+
   async dispose(): Promise<void> {
     this._disposed = true;
     // Cancel any in-flight credential sync so a closing window releases the auth.json lock at once.
@@ -1072,6 +1473,11 @@ export class PiRuntime {
     } catch (err) {
       log('[PiRuntime] OAuth shutdown error: %O', err);
     }
+    try {
+      await removeSavedMcpOutputs();
+    } catch (err) {
+      log('[PiRuntime] Removing saved MCP outputs failed: %O', err);
+    }
     if (this._userDebounce) {
       clearTimeout(this._userDebounce);
       this._userDebounce = null;
@@ -1084,8 +1490,16 @@ export class PiRuntime {
     }
     this._authWatcher?.dispose();
     this._authWatcher = null;
+    this._secretsListener?.dispose();
+    this._secretsListener = null;
     this._trustListener?.dispose();
     this._trustListener = null;
+    this._imageSettingsListener?.dispose();
+    this._imageSettingsListener = null;
+    this._toolExposureListener?.dispose();
+    this._toolExposureListener = null;
+    this._exploreSettingsListener?.dispose();
+    this._exploreSettingsListener = null;
     this._modelRuntime = null;
     this._userSettings = null;
     this._initPromise = null;

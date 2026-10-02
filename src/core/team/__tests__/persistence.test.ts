@@ -14,7 +14,7 @@ vi.mock('../../paths', async () => {
 
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
-import { TeamPersistence, isTeamCheckpoint } from '../persistence';
+import { TeamPersistence, isTeamCheckpoint, parseTeamEventLog } from '../persistence';
 import type { TeamCheckpoint } from '../types';
 import { ensurePiSessionDir } from '../../pi-session/session-store';
 import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
@@ -324,7 +324,7 @@ describe('TeamPersistence team state round trip', () => {
     });
     persistence.appendTeamEntry({
       type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'lead', status: 'completed',
-      result: 'done', toolCallCount: 4, durationMs: 900,
+      result: 'done', toolCallCount: 4,
       totalInputTokens: 300, totalOutputTokens: 80,
       cacheReadTokens: 52_900_000, cacheCreationTokens: 30, costUsd: 26.45,
       timestamp: '2026-08-26T00:00:02.000Z',
@@ -380,7 +380,7 @@ describe('TeamPersistence team state round trip', () => {
     });
     persistence.appendTeamEntry({
       type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'cancelled',
-      result: 'ALPHA-READ-1: FULL', toolCallCount: 5, durationMs: 14_914,
+      result: 'ALPHA-READ-1: FULL', toolCallCount: 5,
       totalInputTokens: 8, totalOutputTokens: 665,
       cacheReadTokens: 56_118, cacheCreationTokens: 19_628, costUsd: 0.15659350000000002,
       timestamp: '2026-09-01T10:40:38.479Z',
@@ -392,7 +392,7 @@ describe('TeamPersistence team state round trip', () => {
     });
     persistence.appendTeamEntry({
       type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'completed',
-      result: 'ALPHA-DONE: reported the read outcome after redispatch.', toolCallCount: 4, durationMs: 28_654,
+      result: 'ALPHA-DONE: reported the read outcome after redispatch.', toolCallCount: 4,
       totalInputTokens: 8, totalOutputTokens: 1106,
       cacheReadTokens: 73_473, cacheCreationTokens: 1960, costUsd: 0.06200525,
       timestamp: '2026-09-01T10:41:15.527Z',
@@ -403,7 +403,7 @@ describe('TeamPersistence team state round trip', () => {
     expect(state?.agents[0]).toMatchObject({
       name: 'alpha', status: 'completed', attempt: 1,
       // Work is per attempt: the card times and counts the run that finished last.
-      toolCount: 4,
+      toolCount: 4, activeMs: 28_655, runningSince: null,
       result: 'ALPHA-DONE: reported the read outcome after redispatch.',
       // Spend is cumulative: the cancelled attempt burned these tokens under the same name.
       totalInputTokens: 16, totalOutputTokens: 1771,
@@ -428,7 +428,7 @@ describe('TeamPersistence team state round trip', () => {
     });
     persistence.appendTeamEntry({
       type: 'agent-completed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'alpha', status: 'cancelled',
-      result: 'ALPHA-READ-1: FULL', toolCallCount: 5, durationMs: 14_914,
+      result: 'ALPHA-READ-1: FULL', toolCallCount: 5,
       totalInputTokens: 8, totalOutputTokens: 665,
       cacheReadTokens: 56_118, cacheCreationTokens: 19_628, costUsd: 0.15659350000000002,
       timestamp: '2026-09-01T10:40:38.479Z',
@@ -442,10 +442,8 @@ describe('TeamPersistence team state round trip', () => {
 
     const state = await persistence.loadTeamState(TEAM_ID);
 
-    const respawned = new Date('2026-09-01T10:40:46.872Z').getTime();
     expect(state?.agents[0]).toMatchObject({
-      status: 'cancelled', attempt: 1, toolCount: 0, endTime: respawned, result: null,
-      startTime: respawned,
+      status: 'cancelled', attempt: 1, toolCount: 0, activeMs: 0, runningSince: null, result: null,
       // The cancelled attempt still spent this, so it stays on the card.
       totalOutputTokens: 665,
     });
@@ -509,7 +507,7 @@ describe('TeamPersistence.loadTeamState after a resume', () => {
     for (const [agentId, name] of [['lead-1', 'lead'], [AGENT_ID, 'dev'], ['rev-1', 'rev']] as const) {
       persistence.appendTeamEntry({
         type: 'agent-completed', teamId: TEAM_ID, agentId, name, status: 'cancelled', result: null,
-        toolCallCount: 2, durationMs: 10, timestamp: '2026-09-01T10:05:00.000Z',
+        toolCallCount: 2, timestamp: '2026-09-01T10:05:00.000Z',
       });
     }
     persistence.appendTeamEntry({
@@ -548,11 +546,12 @@ describe('TeamPersistence.loadTeamState after a resume', () => {
 
     const last = Date.parse('2026-09-01T11:00:03.000Z');
     expect(state).toMatchObject({ status: 'cancelled', result: null, endTime: last, toolUseId: 'tu-create' });
-    expect(state?.agents.map((a) => [a.name, a.status, a.endTime])).toEqual([
-      ['lead', 'cancelled', last],
-      ['dev', 'cancelled', last],
-      ['rev', 'cancelled', last],
-      ['idle', 'pending', null],
+    // Each stopwatch counts its first run and the resumed run up to the log's last entry, never the hour between them.
+    expect(state?.agents.map((a) => [a.name, a.status, a.activeMs, a.runningSince])).toEqual([
+      ['lead', 'cancelled', 299_000 + 2_000, null],
+      ['dev', 'cancelled', 298_000 + 1_000, null],
+      ['rev', 'cancelled', 297_000, null],
+      ['idle', 'pending', 0, null],
     ]);
     expect(state?.agents[1]).toMatchObject({ attempt: 0, logFilePath: devFile });
   });
@@ -592,6 +591,46 @@ describe('TeamPersistence.loadTeamState after a resume', () => {
     const state = await persistence.loadTeamState(TEAM_ID);
 
     expect(state).toMatchObject({ status: 'cancelled', result: 'second partial' });
+    // The resumed run closes at its team-completed; the downtime between the runs never counts.
+    expect(state?.agents.find((a) => a.name === 'dev')?.activeMs).toBe(298_000 + 298_000);
+  });
+
+  it('a resumed member shows the effort of its new session, the card loader and the resume reader agreeing', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'resume-effort');
+    const persistence = new TeamPersistence(cwd, SESSION_ID);
+    persistence.initTeamFile(TEAM_ID);
+    const t = (second: number): string => `2026-09-01T10:00:${String(second).padStart(2, '0')}.000Z`;
+    persistence.appendTeamEntry({
+      type: 'team-created', teamId: TEAM_ID, title: 'efforts', brief: 'b', toolUseId: 'tu-create',
+      agents: [{ name: 'lead', role: 'lead' }, { name: 'dev', role: 'specialist' }, { name: 'old', role: 'specialist' }, { name: 'idle', role: 'specialist' }],
+      timestamp: t(0),
+    });
+    const spawned = (agentId: string, name: string, role: string, second: number) => persistence.appendTeamEntry({
+      type: 'agent-spawned', teamId: TEAM_ID, agentId, name, role, specialization: name, model: 'opus', attempt: 0, timestamp: t(second),
+    });
+    const started = (agentId: string, effort: string | null, second: number) => persistence.appendTeamEntry({
+      type: 'agent-session-started', teamId: TEAM_ID, agentId, attempt: 0, effort, timestamp: t(second),
+    });
+    spawned('lead-1', 'lead', 'lead', 1);
+    started('lead-1', 'high', 2);
+    spawned(AGENT_ID, 'dev', 'specialist', 3);
+    started(AGENT_ID, 'medium', 4);
+    // Spawned by a build that wrote no agent-session-started entry.
+    spawned('old-1', 'old', 'specialist', 5);
+    persistence.appendTeamEntry({ type: 'team-completed', teamId: TEAM_ID, status: 'cancelled', synthesizedResult: 'partial', agentResults: [], timestamp: t(6) });
+    persistence.appendTeamEntry({ type: 'team-resumed', teamId: TEAM_ID, toolUseId: 'tu-resume', checkpoint: 1, timestamp: t(10) });
+    persistence.appendTeamEntry({
+      type: 'agent-resumed', teamId: TEAM_ID, agentId: AGENT_ID, name: 'dev', attempt: 0, resumeCount: 1,
+      mode: 'relaunch', status: 'running', timestamp: t(11),
+    });
+    started(AGENT_ID, 'xhigh', 12);
+    await persistence.flush();
+
+    const state = await persistence.loadTeamState(TEAM_ID);
+    const log = parseTeamEventLog(TEAM_ID, fs.readFileSync(teamEventLogPath(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID), 'utf-8'));
+
+    expect(state?.agents.map((a) => [a.name, a.effort])).toEqual([['lead', 'high'], ['dev', 'xhigh'], ['old', null], ['idle', null]]);
+    expect(Object.fromEntries(log.efforts)).toEqual({ 'lead-1': 'high', [AGENT_ID]: 'xhigh' });
   });
 });
 
@@ -746,5 +785,54 @@ describe('TeamPersistence checkpoint files', () => {
     it.each([['negative', -1], ['fractional', 0.5], ['a string', '1'], ['null', null]])('rejects a steer attempt that is %s', (_label, attempt) => {
       expect(isTeamCheckpoint(withSteers([{ memberName: 'dev', message: 'm', attempt }]))).toBe(false);
     });
+  });
+
+  describe('review coverage', () => {
+    const coverage = {
+      landed: [['backend', { attempt: 0, round: 1 }]],
+      signoffs: [['appsec', [['backend', { stamp: { attempt: 0, round: 1 }, verdict: 'approve' }], ['frontend', { stamp: null, verdict: 'changes_requested' }]]]],
+      dismissals: [['appsec', [['frontend', { stamp: { attempt: 0, round: 0 }, reason: 'accepted as remaining work', why: 'appsec requested changes on it' }]]]],
+      reReviewOwed: ['appsec'],
+    };
+    const withCoverage = (value: unknown): unknown => ({ ...checkpoint(), review: { ...checkpoint().review, coverage: value } });
+
+    it('accepts a checkpoint with coverage, and one written before coverage existed', () => {
+      expect(isTeamCheckpoint(withCoverage(coverage))).toBe(true);
+      expect(isTeamCheckpoint(checkpoint())).toBe(true);
+    });
+
+    it.each([
+      ['a stamp with a negative round', { ...coverage, landed: [['backend', { attempt: 0, round: -1 }]] }],
+      ['an unknown verdict', { ...coverage, signoffs: [['appsec', [['backend', { stamp: null, verdict: 'lgtm' }]]]] }],
+      ['a dismissal with no reason', { ...coverage, dismissals: [['appsec', [['frontend', { stamp: { attempt: 0, round: 0 }, why: 'w' }]]]] }],
+      ['a dismissal with a null stamp', { ...coverage, dismissals: [['appsec', [['frontend', { stamp: null, reason: 'r', why: 'w' }]]]] }],
+      ['no owed list', { ...coverage, reReviewOwed: undefined }],
+      ['a non-object', 'coverage'],
+    ])('rejects coverage with %s', (_label, value) => {
+      expect(isTeamCheckpoint(withCoverage(value))).toBe(false);
+    });
+  });
+});
+
+describe('parseTeamEventLog reviewer pairs', () => {
+  const lines = (spawn: Record<string, unknown>): string => [
+    { type: 'team-created', teamId: TEAM_ID, title: 't', brief: 'b', toolUseId: 'tu', agents: [{ name: 'appsec', role: 'specialist' }], timestamp: '2026-09-01T10:00:00.000Z' },
+    { type: 'agent-spawned', teamId: TEAM_ID, agentId: AGENT_ID, name: 'appsec', role: 'specialist', specialization: 'review', model: 'm', attempt: 0, timestamp: '2026-09-01T10:00:01.000Z', ...spawn },
+  ].map((e) => JSON.stringify(e)).join('\n');
+
+  it('reads a reviewer pairs, [] included, and none for a spawn that declares none', () => {
+    expect(parseTeamEventLog(TEAM_ID, lines({ kind: 'reviewer', reviews: ['backend'] })).spawns[0]!.reviews).toEqual(['backend']);
+    expect(parseTeamEventLog(TEAM_ID, lines({ kind: 'reviewer', reviews: [] })).spawns[0]!.reviews).toEqual([]);
+    expect(parseTeamEventLog(TEAM_ID, lines({ kind: 'reviewer' })).spawns[0]).not.toHaveProperty('reviews');
+    expect(parseTeamEventLog(TEAM_ID, lines({})).spawns[0]).not.toHaveProperty('reviews');
+  });
+
+  it.each([
+    ['a string', { kind: 'reviewer', reviews: 'backend' }],
+    ['a non-string name', { kind: 'reviewer', reviews: [1] }],
+    ['pairs on an implementor', { kind: 'implementor', reviews: ['backend'] }],
+    ['pairs with no kind', { reviews: ['backend'] }],
+  ])('refuses %s', (_label, spawn) => {
+    expect(() => parseTeamEventLog(TEAM_ID, lines(spawn))).toThrow('line 2: "reviews" is invalid');
   });
 });

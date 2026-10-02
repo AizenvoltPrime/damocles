@@ -14,6 +14,7 @@ vi.mock("../../../../pi-session/subscription-usage", () => ({
 }));
 
 import { createUsageHandlers } from "../usage-handlers";
+import { installFakePlatform } from "../../../../../__mocks__/fake-platform";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage } from "../../../../../shared/types/messages";
 
@@ -35,6 +36,7 @@ const OK_DATA = {
 
 describe("createUsageHandlers", () => {
   beforeEach(() => {
+    installFakePlatform();
     H.fetchSubscriptionUsage.mockReset();
   });
 
@@ -48,7 +50,7 @@ describe("createUsageHandlers", () => {
     expect(posted[0]).toEqual({ type: "subscriptionUsage", data: OK_DATA });
   });
 
-  it("still posts exactly one reply (both providers errored) when the fetch throws", async () => {
+  it("still posts exactly one reply (both providers errored) with a constant message when the fetch throws", async () => {
     H.fetchSubscriptionUsage.mockRejectedValue(new Error("boom"));
     const { handler, ctx, posted } = setup();
 
@@ -57,12 +59,14 @@ describe("createUsageHandlers", () => {
     expect(posted).toHaveLength(1);
     const msg = posted[0] as Extract<ExtensionToWebviewMessage, { type: "subscriptionUsage" }>;
     expect(msg.type).toBe("subscriptionUsage");
-    expect(msg.data.claude).toEqual({ status: "error", bars: [], error: "boom" });
-    expect(msg.data.gpt).toEqual({ status: "error", bars: [], error: "boom" });
+    const error = "Could not load subscription usage.";
+    expect(msg.data.claude).toEqual({ status: "error", bars: [], error });
+    expect(msg.data.gpt).toEqual({ status: "error", bars: [], error });
     expect(typeof msg.data.fetchedAt).toBe("number");
+    expect(JSON.stringify(posted)).not.toContain("boom");
   });
 
-  it("coerces a non-Error throw to a string error without hanging", async () => {
+  it("answers a non-Error throw with the same constant message without hanging", async () => {
     H.fetchSubscriptionUsage.mockRejectedValue("weird");
     const { handler, ctx, posted } = setup();
 
@@ -70,6 +74,6 @@ describe("createUsageHandlers", () => {
 
     expect(posted).toHaveLength(1);
     const msg = posted[0] as Extract<ExtensionToWebviewMessage, { type: "subscriptionUsage" }>;
-    expect(msg.data.claude.error).toBe("weird");
+    expect(msg.data.claude.error).toBe("Could not load subscription usage.");
   });
 });

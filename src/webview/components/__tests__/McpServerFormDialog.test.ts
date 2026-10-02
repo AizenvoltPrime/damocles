@@ -91,6 +91,12 @@ const buttonByLabel = (label: string): HTMLButtonElement => {
 
 const bodyText = (): string => document.body.textContent ?? '';
 
+const byField = (field: string): HTMLInputElement => {
+  const found = document.body.querySelector<HTMLInputElement>(`[data-field="${field}"]`);
+  if (!found) throw new Error(`no input with data-field "${field}"`);
+  return found;
+};
+
 afterEach(() => {
   while (mounted.length) mounted.pop()!.unmount();
   applyLocale('en');
@@ -144,19 +150,64 @@ describe('McpServerFormDialog — add', () => {
     });
   });
 
-  it('switches to remote mode and emits the type discriminant', async () => {
+  it('switches to remote mode and emits the http discriminant, with no SSE choice offered', async () => {
     const wrapper = mountForm();
     await nextTick();
     await type(byPlaceholder('my-server'), 'remote-one');
     await chooseRadio('remote');
     await type(byPlaceholder('https://example.com/mcp'), 'https://mcp.example.com/v1');
-    await chooseRadio('sse');
+
+    expect(inputs().some((el) => el.type === 'radio' && el.value === 'sse')).toBe(false);
+    expect(bodyText()).not.toMatch(/\bSSE\b/);
     await click(buttonByText('Save'));
 
     expect(wrapper.emitted('save')![0]![1]).toEqual({
-      type: 'sse',
+      type: 'http',
       url: 'https://mcp.example.com/v1',
     });
+  });
+
+  it('emits description, timeout and the OAuth fields the user filled in', async () => {
+    const wrapper = mountForm();
+    await nextTick();
+    await type(byPlaceholder('my-server'), 'remote-one');
+    await chooseRadio('remote');
+    await type(byPlaceholder('https://example.com/mcp'), 'https://mcp.example.com/v1');
+    await type(byField('description'), 'Issue tracker');
+    await type(byField('timeout'), '30');
+    await type(byField('oauthClientName'), 'Acme Agent');
+    await type(byField('oauthAuthServerMetadataUrl'), 'https://auth.example.com/meta');
+    await type(byField('oauthCallbackUrl'), 'http://localhost:8080/callback');
+    await type(byField('oauthCallbackPort'), '8080');
+    await click(buttonByText('Save'));
+
+    expect(wrapper.emitted('save')![0]![1]).toEqual({
+      type: 'http',
+      url: 'https://mcp.example.com/v1',
+      description: 'Issue tracker',
+      timeout: 30,
+      oauth: {
+        clientName: 'Acme Agent',
+        authServerMetadataUrl: 'https://auth.example.com/meta',
+        callbackUrl: 'http://localhost:8080/callback',
+        callbackPort: 8080,
+      },
+    });
+  });
+
+  it('offers OAuth fields only in remote mode, and Description and Timeout in both', async () => {
+    mountForm();
+    await nextTick();
+    expect(document.body.querySelector('[data-field="oauthClientName"]')).toBeNull();
+    expect(byField('description')).toBeTruthy();
+    expect(byField('timeout')).toBeTruthy();
+
+    await chooseRadio('remote');
+    for (const field of ['oauthClientName', 'oauthAuthServerMetadataUrl', 'oauthCallbackUrl', 'oauthCallbackPort']) {
+      expect(byField(field).id).not.toBe('');
+      expect(document.body.querySelector(`label[for="${byField(field).id}"]`)?.textContent?.trim()).toBeTruthy();
+    }
+    expect(Array.from(document.body.querySelectorAll('legend')).map((el) => el.textContent?.trim())).toContain('OAuth');
   });
 });
 
@@ -224,6 +275,42 @@ describe('McpServerFormDialog — invalid input is rejected with a visible error
 
     expect(wrapper.emitted('save')).toBeUndefined();
     expect(bodyText()).toContain('A URL must use http or https.');
+  });
+
+  it.each([
+    ['timeout', '0', 'The timeout must be a positive number of seconds.'],
+    ['oauthAuthServerMetadataUrl', 'http://auth.example.com/meta', 'This must be an https URL'],
+    ['oauthCallbackUrl', 'https://localhost:8080/cb', 'This must be an http URL on localhost'],
+    ['oauthCallbackPort', '65536', 'This must be a port number from 1 to 65535.'],
+  ])('marks %s invalid inline, with an alert, and emits nothing', async (field, value, message) => {
+    const wrapper = mountForm();
+    await nextTick();
+    await type(byPlaceholder('my-server'), 'remote-one');
+    await chooseRadio('remote');
+    await type(byPlaceholder('https://example.com/mcp'), 'https://mcp.example.com');
+    await type(byField(field), value);
+    await click(buttonByText('Save'));
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(byField(field).getAttribute('aria-invalid')).toBe('true');
+    const errorId = byField(field).getAttribute('aria-describedby')?.split(' ').at(-1);
+    const alert = document.getElementById(errorId ?? '');
+    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.textContent).toContain(message);
+  });
+
+  it('flags a callback port that differs from the callback URL\u2019s port', async () => {
+    const wrapper = mountForm();
+    await nextTick();
+    await type(byPlaceholder('my-server'), 'remote-one');
+    await chooseRadio('remote');
+    await type(byPlaceholder('https://example.com/mcp'), 'https://mcp.example.com');
+    await type(byField('oauthCallbackUrl'), 'http://localhost:8080/cb');
+    await type(byField('oauthCallbackPort'), '9090');
+    await click(buttonByText('Save'));
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(bodyText()).toContain('The callback URL names a different port.');
   });
 });
 
@@ -331,7 +418,7 @@ describe('McpServerFormDialog — i18n', () => {
     mountForm();
     await nextTick();
 
-    expect(bodyText()).toContain('Προσθήκη MCP server');
+    expect(bodyText()).toContain('Προσθήκη διακομιστή MCP');
     expect(bodyText()).toContain('Όνομα');
     expect(bodyText()).not.toContain('Add MCP server');
 
@@ -372,6 +459,24 @@ describe('McpServerFormDialog — secret values', () => {
     mountForm();
     await nextTick();
     expect(bodyText()).toContain('stored in plain text');
+  });
+
+  // ~/.damocles/mcp.json is pi format, so a typed $ or leading ! changes what the value means.
+  it('explains how $ and a leading ! are read, for env and header values alike', async () => {
+    mountForm();
+    await nextTick();
+    const hint = '$NAME and ${NAME} insert an environment variable, and $$ is a literal $. A value starting with ! runs as a shell command';
+    expect(bodyText()).toContain(hint);
+
+    await chooseRadio('remote');
+    expect(bodyText()).toContain(hint);
+  });
+
+  it('explains it in Greek too', async () => {
+    applyLocale('el');
+    mountForm();
+    await nextTick();
+    expect(bodyText()).toContain('Τα $NAME και ${NAME} εισάγουν μια μεταβλητή περιβάλλοντος');
   });
 });
 
@@ -431,15 +536,46 @@ describe('McpServerFormDialog — discarding work', () => {
   });
 });
 
-describe('McpServerFormDialog — tool prefix', () => {
-  it('warns without blocking when the tool prefix collides with another server', async () => {
-    const wrapper = mountForm({ servers: [{ name: 'my-server', source: 'damocles' }] });
+describe('McpServerFormDialog — tool names shared with another server', () => {
+  it('notes without blocking that a lower-precedence server with the same tool names will not load', async () => {
+    const wrapper = mountForm({ servers: [{ name: 'my-server', source: 'claude' }] });
     await nextTick();
     await type(byPlaceholder('my-server'), 'my.server');
     await type(byPlaceholder('npx'), 'node');
 
-    expect(bodyText()).toContain('my-server');
+    expect(bodyText()).toContain('"my-server" gets the same tool names as this name, so "my-server" will not load.');
     await click(buttonByText('Save'));
     expect(wrapper.emitted('save')).toHaveLength(1);
+  });
+
+  it('blocks a name that gets the same tool names as another server in ~/.damocles/mcp.json', async () => {
+    const wrapper = mountForm({ servers: [{ name: 'my-server', source: 'damocles' }] });
+    await nextTick();
+    await type(byPlaceholder('my-server'), 'my.server');
+    await type(byPlaceholder('npx'), 'node');
+    await click(buttonByText('Save'));
+
+    expect(wrapper.emitted('save')).toBeUndefined();
+    expect(bodyText()).toContain('"my-server" in ~/.damocles/mcp.json gets the same tool names.');
+  });
+});
+
+describe('McpServerFormDialog — fields carried through an edit', () => {
+  it('round-trips streamable-http, enabled:false and the OAuth fields untouched', async () => {
+    const stored: McpServerConfig = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com',
+      enabled: false,
+      description: 'Docs',
+      timeout: 1.5,
+      oauth: { clientName: 'Acme', callbackPort: 8080 },
+    };
+    const wrapper = mountForm({ editingName: 'docs', editingConfig: stored });
+    await nextTick();
+
+    expect(byField('description').value).toBe('Docs');
+    expect(byField('timeout').value).toBe('1.5');
+    await click(buttonByText('Save'));
+    expect(wrapper.emitted('save')![0]).toEqual(['docs', stored]);
   });
 });

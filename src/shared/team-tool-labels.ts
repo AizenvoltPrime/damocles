@@ -1,6 +1,6 @@
 /**
- * The single presentation table for the twenty team tools: four main coordination tools the primary
- * agent calls, and sixteen `team_*` tools each team agent calls. It holds the human label plus how a
+ * The single presentation table for the twenty-one team tools: four main coordination tools the primary
+ * agent calls, and seventeen `team_*` tools each team agent calls. It holds the human label plus how a
  * tool card summarises that tool's input and its result.
  *
  * The summaries are for the card only. The tool results themselves are the model's contract and are
@@ -237,6 +237,16 @@ export const TEAM_TOOL_PRESENTATION: Readonly<Record<string, TeamToolPresentatio
   team_resolve_brief_conflict: {
     label: 'Resolve brief conflict',
     summarizeInput: (input) => labelled(line(input['name'], INPUT_MAX), line(input['resolution'], INPUT_MAX)),
+    summarizeResult: rawResult,
+  },
+  team_dismiss_review: {
+    label: 'Dismiss review',
+    summarizeInput: (input) => {
+      const reviewer = line(input['reviewer'], INPUT_MAX);
+      const implementor = line(input['implementor'], INPUT_MAX);
+      const pair = reviewer && implementor ? `${reviewer} on ${implementor}` : reviewer || implementor;
+      return labelled(pair, line(input['reason'], INPUT_MAX));
+    },
     summarizeResult: rawResult,
   },
   team_record_verification: {

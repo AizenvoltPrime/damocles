@@ -33,10 +33,7 @@ export interface CheckpointMaintenanceSummary {
   orphanSessionsPruned: number;
 }
 
-/**
- * A conversation's refs whose registered session file is missing are an orphan only past this age:
- * pi writes a new session's file after its first reply, while its baseline ref already exists.
- */
+/** A registration or fork copy can precede its session file, so missing-file refs are an orphan only once the newest ref or registration is past this age. */
 export const ORPHAN_SESSION_GRACE_MS: number = 24 * 3_600_000;
 
 /** Default throttle window: a sweep that ran under 20 hours ago is skipped, so the 24h interval fires cleanly. */

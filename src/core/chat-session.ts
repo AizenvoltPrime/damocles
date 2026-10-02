@@ -50,7 +50,7 @@ export interface ChatSession {
   holdsSession(sessionId: string): boolean;
   /** True when a resume or fork target is pending, a turn is processing, or the live session has messages. */
   hasConversation(): boolean;
-  /** Whether the started session has its file on disk; pi writes none before the conversation's first reply. */
+  /** Whether the started session has its file on disk; pi writes none before the conversation's first prompt. */
   hasSessionFile(): boolean;
   setResumeSession(sessionId: string | null): void;
   initializeEarly(): Promise<void>;

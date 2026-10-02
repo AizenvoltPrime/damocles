@@ -20,7 +20,7 @@ function descriptor(overrides: Partial<McpToolDescriptor> = {}): McpToolDescript
     serverName: 'git',
     serverId: 'test/git',
     kind: 'tool',
-    originalName: 'commit',
+    rawToolName: 'commit',
     description: 'Create a commit',
     inputSchema: {
       type: 'object',
@@ -28,6 +28,9 @@ function descriptor(overrides: Partial<McpToolDescriptor> = {}): McpToolDescript
       required: ['message'],
     },
     readOnly: false,
+    exposure: 'deferred',
+    exposureSource: 'config',
+    configExposure: 'deferred',
     ...overrides,
   };
 }

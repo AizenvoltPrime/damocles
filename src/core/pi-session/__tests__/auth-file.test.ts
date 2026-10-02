@@ -88,14 +88,14 @@ describe('readAuthFile', () => {
     expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'apikey' });
     fs.writeFileSync(authPath(), '');
     expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'apikey' });
-    expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ apiKey: true, codex: false });
+    expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ chatgpt: false, codex: false, storedApiKey: true });
   });
 
   it('throws on a corrupt file, which the status readers show as signed out', () => {
     fs.writeFileSync(authPath(), '{"anthropic":');
     expect(() => readAuthFile(agentDir)).toThrow(SyntaxError);
     expect(readClaudeAuthFromDisk(agentDir)).toEqual({ mode: 'none' });
-    expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ apiKey: false, codex: false });
+    expect(readOpenAIAuthFromDisk(agentDir)).toEqual({ chatgpt: false, codex: false, storedApiKey: false });
   });
 
   // A JSON.parse message quotes the text it failed on, and auth.json holds tokens.

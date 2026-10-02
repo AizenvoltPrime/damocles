@@ -1,11 +1,11 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState } from '@shared/types/settings';
-import type { McpConfigError, McpServerStatusInfo, McpWriteErrorInfo } from '@shared/types/mcp';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, CacheWarmingMode, ContextWarningLevel, PanelThinkingState, MemoryJudge, ImageGenerationSettings } from '@shared/types/settings';
+import type { McpConfigError, McpRenamedToolRuleNotice, McpServerStatusInfo, McpToolExposureScope, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
 import type { WorkspaceFolderInfo } from '@shared/types/workspace-folders';
-import { VSCODE_HOST_CAPABILITIES, type HostCapabilities, type SettingSource } from '@shared/types/messages';
+import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type HostCapabilities, type SettingSource } from '@shared/types/messages';
 import {
   DEFAULT_TTS_VOICE,
   DEFAULT_WAKE_SENSITIVITY,
@@ -79,6 +79,12 @@ const LIVE_MCP_STATUSES = new Set<McpServerStatusInfo["status"]>([
   "pending",
 ]);
 
+type OpenAIAuthStatusView = Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>["status"];
+
+function signedOutOpenAIStatus(): OpenAIAuthStatusView {
+  return { chatgpt: { signedIn: false }, codex: { signedIn: false }, apikey: { configured: false } };
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const { postMessage } = usePlatformBridge();
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
@@ -95,6 +101,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const mcpConfigErrors = ref<McpConfigError[]>([]);
   /** True when `<ws>/.damocles/mcp.local.json` exists and git does not ignore it. */
   const mcpLocalUnignored = ref<boolean>(false);
+  /** The settings scopes a per-tool MCP exposure can be saved to in this panel's folder, lowest first. */
+  const mcpToolExposureScopes = ref<McpToolExposureScope[]>(["user"]);
+  /** Rules in files Damocles must not rewrite that still name renamed MCP tools. The host sends each once. */
+  const mcpRenamedToolRules = ref<McpRenamedToolRuleNotice[]>([]);
   /**
    * Counts applied `mcpConfigUpdate` payloads. `mcpReloadConfig` carries no requestId and the reply
    * usually renders identically to what is on screen, so this counter is what tells the panel a
@@ -126,19 +136,22 @@ export const useSettingsStore = defineStore('settings', () => {
   const exploreModel = ref('');
   const exploreEffort = ref('');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
-  const openaiAuthStatus = ref<{
-    codex: { signedIn: boolean; accountId?: string; expiresAt?: number };
-    apikey: { configured: boolean };
-  }>({ codex: { signedIn: false }, apikey: { configured: false } });
+  const openaiAuthStatus = ref<OpenAIAuthStatusView>(signedOutOpenAIStatus());
   const openaiPreferApiKey = ref(false);
-  const openaiCodexAuthInFlight = ref(false);
-  const openaiCodexAuthError = ref<string | null>(null);
+  const openaiChatGPTAuthInFlight = ref(false);
+  const openaiChatGPTAuthError = ref<string | null>(null);
   const pendingOpenAIModel = ref<string | null>(null);
+  const openaiAuthPanelRequested = ref(false);
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
   const stepfunConfigured = ref(false);
   const deepseekConfigured = ref(false);
+  const typesafeConfigured = ref(false);
+  const openrouterConfigured = ref(false);
+  const memoryJudge = ref<MemoryJudge | null>(null);
+  // Null until the host's first `imageGenerationSettings`, which waits for the pi runtime.
+  const imageGeneration = ref<ImageGenerationSettings | null>(null);
   const workspaceFolders = ref<WorkspaceFolderInfo[]>([]);
   const panelWorkspaceFolderKey = ref<string>("");
   const defaultWorkspaceFolderKey = ref<string>("");
@@ -246,6 +259,30 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpLocalUnignored.value = unignored;
   }
 
+  function setMcpToolExposureScopes(scopes: McpToolExposureScope[]) {
+    mcpToolExposureScopes.value = scopes;
+  }
+
+  /** Later notices for a file already on screen join its list, so one file never shows twice. */
+  function addMcpRenamedToolRules(notices: McpRenamedToolRuleNotice[]) {
+    const merged = mcpRenamedToolRules.value.map((notice) => ({ ...notice, rules: [...notice.rules] }));
+    for (const notice of notices) {
+      const existing = merged.find((entry) => entry.path === notice.path);
+      if (!existing) {
+        merged.push({ ...notice, rules: [...notice.rules] });
+        continue;
+      }
+      for (const rule of notice.rules) {
+        if (!existing.rules.some((known) => known.old === rule.old)) existing.rules.push(rule);
+      }
+    }
+    mcpRenamedToolRules.value = merged;
+  }
+
+  function dismissMcpRenamedToolRules() {
+    mcpRenamedToolRules.value = [];
+  }
+
   /** A write has been sent; the form stays open and disabled until `settleMcpWrite` matches it. */
   function beginMcpWrite(requestId: string) {
     mcpWriteRequestId.value = requestId;
@@ -351,21 +388,18 @@ export const useSettingsStore = defineStore('settings', () => {
     authStatus.value = status;
   }
 
-  function setOpenAIAuthStatus(
-    status: { codex: { signedIn: boolean; accountId?: string; expiresAt?: number }; apikey: { configured: boolean } },
-    preferApiKey: boolean
-  ) {
+  function setOpenAIAuthStatus(status: OpenAIAuthStatusView, preferApiKey: boolean) {
     openaiAuthStatus.value = status;
     openaiPreferApiKey.value = preferApiKey;
   }
 
-  function setCodexAuthInFlight(value: boolean) {
-    openaiCodexAuthInFlight.value = value;
-    if (value) openaiCodexAuthError.value = null;
+  function setChatGPTAuthInFlight(value: boolean) {
+    openaiChatGPTAuthInFlight.value = value;
+    if (value) openaiChatGPTAuthError.value = null;
   }
 
-  function setCodexAuthError(error: string | null) {
-    openaiCodexAuthError.value = error;
+  function setChatGPTAuthError(error: string | null) {
+    openaiChatGPTAuthError.value = error;
   }
 
   function setClaudeAuthMode(mode: "none" | "apikey" | "allowance" | "extra") {
@@ -389,6 +423,19 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseekConfigured.value = configured;
   }
 
+  function setTypesafeStatus(configured: boolean, judge: MemoryJudge) {
+    typesafeConfigured.value = configured;
+    memoryJudge.value = judge;
+  }
+
+  function setOpenrouterConfigured(configured: boolean) {
+    openrouterConfigured.value = configured;
+  }
+
+  function setImageGeneration(settings: ImageGenerationSettings) {
+    imageGeneration.value = settings;
+  }
+
   function setWorkspaceFolders(folders: WorkspaceFolderInfo[], panelFolderKey: string, defaultFolderKey: string) {
     workspaceFolders.value = folders;
     panelWorkspaceFolderKey.value = panelFolderKey;
@@ -406,6 +453,10 @@ export const useSettingsStore = defineStore('settings', () => {
     pendingOpenAIModel.value = model;
   }
 
+  function setOpenAIAuthPanelRequested(value: boolean) {
+    openaiAuthPanelRequested.value = value;
+  }
+
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     settingSources.value = {};
@@ -415,6 +466,8 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpEnabled.value = true;
     mcpConfigErrors.value = [];
     mcpLocalUnignored.value = false;
+    mcpToolExposureScopes.value = ["user"];
+    mcpRenamedToolRules.value = [];
     mcpConfigRevision.value = 0;
     mcpWriteRequestId.value = null;
     mcpWriteError.value = null;
@@ -434,16 +487,21 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreModel.value = '';
     exploreEffort.value = '';
     authStatus.value = null;
-    openaiAuthStatus.value = { codex: { signedIn: false }, apikey: { configured: false } };
+    openaiAuthStatus.value = signedOutOpenAIStatus();
     openaiPreferApiKey.value = false;
-    openaiCodexAuthInFlight.value = false;
-    openaiCodexAuthError.value = null;
+    openaiChatGPTAuthInFlight.value = false;
+    openaiChatGPTAuthError.value = null;
     claudeAuthMode.value = "none";
     claudeAuthBusy.value = false;
     claudeAuthError.value = null;
     stepfunConfigured.value = false;
     deepseekConfigured.value = false;
+    typesafeConfigured.value = false;
+    openrouterConfigured.value = false;
+    memoryJudge.value = null;
+    imageGeneration.value = null;
     pendingOpenAIModel.value = null;
+    openaiAuthPanelRequested.value = false;
     workspaceFolders.value = [];
     panelWorkspaceFolderKey.value = "";
     defaultWorkspaceFolderKey.value = "";
@@ -457,6 +515,8 @@ export const useSettingsStore = defineStore('settings', () => {
     mcpServers,
     mcpConfigErrors,
     mcpLocalUnignored,
+    mcpToolExposureScopes,
+    mcpRenamedToolRules,
     mcpConfigRevision,
     mcpWriteRequestId,
     mcpWriteError,
@@ -492,6 +552,9 @@ export const useSettingsStore = defineStore('settings', () => {
     reconcileMcpServers,
     setMcpConfigErrors,
     setMcpLocalUnignored,
+    setMcpToolExposureScopes,
+    addMcpRenamedToolRules,
+    dismissMcpRenamedToolRules,
     beginMcpWrite,
     settleMcpWrite,
     setMcpEnabled,
@@ -520,8 +583,8 @@ export const useSettingsStore = defineStore('settings', () => {
     setAuthStatus,
     openaiAuthStatus,
     openaiPreferApiKey,
-    openaiCodexAuthInFlight,
-    openaiCodexAuthError,
+    openaiChatGPTAuthInFlight,
+    openaiChatGPTAuthError,
     claudeAuthMode,
     claudeAuthBusy,
     claudeAuthError,
@@ -529,14 +592,23 @@ export const useSettingsStore = defineStore('settings', () => {
     deepseekConfigured,
     setStepfunConfigured,
     setDeepseekConfigured,
+    typesafeConfigured,
+    memoryJudge,
+    setTypesafeStatus,
+    openrouterConfigured,
+    setOpenrouterConfigured,
+    imageGeneration,
+    setImageGeneration,
     pendingOpenAIModel,
     setOpenAIAuthStatus,
-    setCodexAuthInFlight,
-    setCodexAuthError,
+    setChatGPTAuthInFlight,
+    setChatGPTAuthError,
     setClaudeAuthMode,
     setClaudeAuthBusy,
     setClaudeAuthError,
     setPendingOpenAIModel,
+    openaiAuthPanelRequested,
+    setOpenAIAuthPanelRequested,
     workspaceFolders,
     panelWorkspaceFolderKey,
     defaultWorkspaceFolderKey,

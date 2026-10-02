@@ -14,6 +14,30 @@ function dispatch(msg: ToolResult): void {
   handler(msg, {} as HandlerContext);
 }
 
+describe('teamAgentStatusUpdate', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it("forwards the update's stopwatch to the store, which takes the agent's time from it", () => {
+    const teamStore = useTeamStore();
+    teamStore.restoreTeamFromHistory({
+      teamId: 'team-1', toolUseId: 'tc-1', title: 'Team', status: 'running', phase: 'working',
+      agents: [{
+        agentId: 'agent-1', name: 'backend', role: 'specialist', specialization: '', model: 'm', profileId: null, attempt: 0,
+        status: 'running', activeMs: 0, runningSince: 1_000, toolCount: 0, lastToolName: null,
+        totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
+        dollarBilled: true, effort: null, progressSummary: null, result: null, logFilePath: null,
+      }],
+      messages: [], scratchpad: [], result: null, startTime: 1_000, endTime: null, totalToolCount: 0, runs: [],
+    });
+
+    const handler = createTeamHandlers().teamAgentStatusUpdate;
+    if (!handler) throw new Error('no teamAgentStatusUpdate handler registered');
+    handler({ type: 'teamAgentStatusUpdate', teamId: 'team-1', agentId: 'agent-1', status: 'completed', stopwatch: { activeMs: 42_400, runningSince: null } }, {} as HandlerContext);
+
+    expect(teamStore.teams['team-1']?.agents[0]).toMatchObject({ status: 'completed', activeMs: 42_400, runningSince: null });
+  });
+});
+
 describe('teamAgentToolResult', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

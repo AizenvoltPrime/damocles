@@ -1,303 +1,306 @@
 /*
- * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
- * Implementation of the MCP SDK `OAuthClientProvider` interface: dynamic-registration metadata,
- * token/client-info/PKCE/state persistence, and authorization redirection. SDK value classes
- * (`UnauthorizedError`) are obtained from the dynamically-imported bundle (the SDK is esbuild-external).
+ * OAuth providers for remote MCP servers on pi-mcp (`@earendil-works/pi-mcp/oauth`): the
+ * authorization_code provider (pi-mcp's `McpOAuthProvider` over the keychain store) and the
+ * client_credentials `AuthProvider`, which pi-mcp has no grant for.
  */
+import type { AuthProvider, McpFetch } from '@earendil-works/pi-mcp';
 import type {
-  AddClientAuthentication,
-  OAuthClientProvider,
-} from '@modelcontextprotocol/sdk/client/auth.js';
-import type {
+  AuthorizationServerMetadata,
+  McpOAuthProvider,
+  McpOAuthStateStore,
+  OAuthClientInformationMixed,
   OAuthClientMetadata,
-  OAuthTokens,
-  OAuthClientInformation,
-  OAuthClientInformationFull,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
+  OAuthDiscoveryState,
+  OAuthProtectedResourceMetadata,
+} from '@earendil-works/pi-mcp/oauth';
 import type { McpOAuthConfig } from '../../../shared/types/mcp';
-import type { McpSdkBundle } from './mcp-sdk-loader';
-import { getOAuthCallbackPath, getOAuthCallbackPort } from './mcp-callback-server';
+import type { McpOAuthModule } from './mcp-client-loader';
 import {
-  getAuthEntry,
-  updateTokens,
-  updateClientInfo,
-  updateCodeVerifier,
-  updateOAuthState,
-  clearAllCredentials,
   clearClientInfo,
-  clearTokens,
-  type StoredTokens,
-  type StoredClientInfo,
+  getAuthEntry,
+  TOKEN_EXPIRY_SKEW_SECONDS,
+  updateClientInfo,
+  updateTokens,
   type McpAuthIdentity,
 } from './mcp-auth';
+import { flattenServerText } from './utils';
 
 const DEFAULT_CLIENT_NAME = 'Damocles';
 const DEFAULT_CLIENT_URI = 'https://github.com/AizenvoltPrime/damocles';
+/** Bounds each OAuth request so a stalled authorization server cannot hold a sign-in, a connect or a sign-out. */
+const TOKEN_REQUEST_TIMEOUT_MS = 15_000;
 
-/** Callbacks for OAuth flow interactions (browser redirect handoff). */
-export interface McpOAuthCallbacks {
-  onRedirect: (url: URL) => void | Promise<void>;
+/** Dynamic client registration metadata, without the redirect URI the provider adds. */
+function registrationMetadata(config: McpOAuthConfig): Omit<OAuthClientMetadata, 'redirect_uris'> {
+  return {
+    client_name: config.clientName ?? DEFAULT_CLIENT_NAME,
+    client_uri: config.clientUri ?? DEFAULT_CLIENT_URI,
+    ...(config.scope !== undefined ? { scope: config.scope } : {}),
+  };
+}
+
+/** The authorization_code provider for one server identity; `redirectUrl` is sent exactly as given. */
+export function createAuthorizationCodeProvider(
+  oauth: McpOAuthModule,
+  options: {
+    serverUrl: string;
+    config: McpOAuthConfig;
+    redirectUrl: string;
+    store: McpOAuthStateStore;
+    onRedirect: (url: URL) => void;
+  },
+): McpOAuthProvider {
+  const { config } = options;
+  return new oauth.McpOAuthProvider({
+    serverUrl: options.serverUrl,
+    redirectUrl: options.redirectUrl,
+    clientMetadata: registrationMetadata(config),
+    ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
+    ...(config.clientSecret !== undefined ? { clientSecret: config.clientSecret } : {}),
+    store: options.store,
+    onRedirect: options.onRedirect,
+  });
+}
+
+/** Whether a URL is https, or http on a loopback host (pi-mcp's rule for any endpoint that receives a credential). */
+export function isSecureEndpoint(url: URL): boolean {
+  return url.protocol === 'https:' || ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname);
+}
+
+/** https, or http only on a loopback host (pi-mcp's rule for any endpoint that receives a credential). */
+export function assertSecureEndpoint(oauth: McpOAuthModule, value: string | URL): URL {
+  const url = new URL(value);
+  if (!isSecureEndpoint(url)) throw new oauth.OAuthInsecureEndpointError(url.href);
+  return url;
 }
 
 /**
- * OAuth provider for a single MCP server, implementing the MCP SDK `OAuthClientProvider` interface.
- * Constructed per server URL; the SDK drives it through `auth()` / transport `finishAuth()`.
+ * The fetch every OAuth request goes through (discovery, registration, token, revocation): it refuses
+ * an endpoint that is not https or loopback before any byte is sent, never follows a redirect (a 3xx
+ * reaches pi-mcp as a failed response), and bounds the request, body included, by
+ * `TOKEN_REQUEST_TIMEOUT_MS` on top of the caller's own signal.
  */
-export class McpOAuthProvider implements OAuthClientProvider {
-  private readonly sdk: McpSdkBundle;
-  private readonly serverName: string;
-  private readonly id: McpAuthIdentity;
-  private readonly config: McpOAuthConfig;
-  private readonly callbacks: McpOAuthCallbacks;
-  private readonly redirectUrlSnapshot: string | undefined;
+export function createOAuthFetch(oauth: McpOAuthModule): McpFetch {
+  return async (input, init) => {
+    const url = assertSecureEndpoint(oauth, input);
+    const timeout = AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS);
+    // A followed 307 would re-send the body (code, client secret) to an endpoint this check never saw.
+    return fetch(url, { ...init, redirect: 'manual', signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+  };
+}
 
-  constructor(
-    sdk: McpSdkBundle,
-    serverName: string,
-    serverUrl: string,
-    config: McpOAuthConfig,
-    callbacks: McpOAuthCallbacks,
-  ) {
-    this.sdk = sdk;
-    this.serverName = serverName;
-    this.id = { serverName, serverUrl };
-    this.config = config;
-    this.callbacks = callbacks;
-    this.redirectUrlSnapshot =
-      config.grantType === 'client_credentials'
-        ? undefined
-        : (config.redirectUri ?? `http://127.0.0.1:${getOAuthCallbackPort()}${getOAuthCallbackPath()}`);
+/**
+ * Authenticate the client on a token or revocation request with the method the authorization server
+ * supports. Basic credentials are form-urlencoded before the colon join (RFC 6749 §2.3.1), so a secret
+ * holding ':' or non-ASCII stays intact.
+ */
+export function applyClientAuthentication(
+  headers: Headers,
+  params: URLSearchParams,
+  client: OAuthClientInformationMixed,
+  metadata: AuthorizationServerMetadata | undefined,
+): void {
+  const supported = metadata?.token_endpoint_auth_methods_supported ?? [];
+  const secret = client.client_secret;
+  let method: 'client_secret_basic' | 'client_secret_post' | 'none';
+  if (secret !== undefined && supported.includes('client_secret_basic')) method = 'client_secret_basic';
+  else if (secret !== undefined && supported.includes('client_secret_post')) method = 'client_secret_post';
+  else if (supported.includes('none')) method = 'none';
+  else method = secret !== undefined ? 'client_secret_post' : 'none';
+
+  if (method === 'client_secret_basic' && secret !== undefined) {
+    const basic = Buffer.from(`${encodeURIComponent(client.client_id)}:${encodeURIComponent(secret)}`).toString('base64');
+    headers.set('Authorization', `Basic ${basic}`);
+    return;
   }
+  params.set('client_id', client.client_id);
+  if (method === 'client_secret_post' && secret !== undefined) params.set('client_secret', secret);
+}
 
-  private get usesClientCredentials(): boolean {
-    return this.config.grantType === 'client_credentials';
+/** Scopes of every list, each once (pi's `mergeScopes`, `pi-coding-agent/src/extensions/mcp/oauth.ts`). */
+export function mergeScopes(...scopes: (string | undefined)[]): string | undefined {
+  const merged = [...new Set(scopes.flatMap((scope) => scope?.split(/\s+/).filter(Boolean) ?? []))];
+  return merged.length > 0 ? merged.join(' ') : undefined;
+}
+
+/** Port of `stepUpScope` in pi-mcp/src/oauth/flow.ts: the challenged scopes plus the ones granted so far. */
+export function stepUpScope(granted: string | undefined, challenged: string | undefined): string | undefined {
+  if (!challenged) return undefined;
+  const scopes = [granted, challenged].flatMap((scope) => scope?.split(/\s+/).filter(Boolean) ?? []);
+  return [...new Set(scopes)].join(' ');
+}
+
+function requiredUrl(value: unknown, name: string): string {
+  if (typeof value !== 'string' || !URL.canParse(value)) throw new Error(`Invalid ${name}`);
+  if (['javascript:', 'data:', 'vbscript:'].includes(new URL(value).protocol)) throw new Error(`Invalid ${name}`);
+  return value;
+}
+
+/** The structural checks of pi-mcp's `parseAuthorizationServerMetadata` (src/oauth/types.ts) that the flow relies on. */
+function parseAuthorizationServerMetadata(value: unknown): AuthorizationServerMetadata {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid authorization server metadata');
+  const input = value as Record<string, unknown>;
+  const responseTypes = input['response_types_supported'];
+  if (!Array.isArray(responseTypes) || responseTypes.some((item) => typeof item !== 'string')) {
+    throw new Error('Invalid response_types_supported');
   }
+  return {
+    ...input,
+    issuer: requiredUrl(input['issuer'], 'authorization server issuer'),
+    authorization_endpoint: requiredUrl(input['authorization_endpoint'], 'authorization endpoint'),
+    token_endpoint: requiredUrl(input['token_endpoint'], 'token endpoint'),
+    response_types_supported: responseTypes as string[],
+  };
+}
 
-  /** The redirect URL for OAuth callbacks; must match the redirect_uri in client metadata. */
-  get redirectUrl(): string | undefined {
-    return this.redirectUrlSnapshot;
+/**
+ * Discovery for a server: pi-mcp's RFC 9728 / RFC 8414 discovery, or with `oauth.authServerMetadataUrl`
+ * that document, trusted as configured so its issuer is not checked (pi's rule). pi-mcp 0.99.2's
+ * `authorizeMcp` has no metadata URL option, so callers prime the provider's discovery state with this.
+ */
+export async function discoverAuthorizationServer(
+  oauth: McpOAuthModule,
+  serverUrl: string,
+  config: McpOAuthConfig,
+): Promise<OAuthDiscoveryState> {
+  const oauthFetch = createOAuthFetch(oauth);
+  if (config.authServerMetadataUrl === undefined) return oauth.discoverOAuthServerInfo(serverUrl, { fetch: oauthFetch });
+  let resourceMetadata: OAuthProtectedResourceMetadata | undefined;
+  try {
+    resourceMetadata = await oauth.discoverProtectedResourceMetadata(serverUrl, { fetch: oauthFetch });
+  } catch (error) {
+    // As in pi-mcp's discovery: a server without resource metadata has none; only a network failure aborts.
+    if (error instanceof TypeError) throw error;
   }
+  const url = new URL(config.authServerMetadataUrl);
+  const response = await oauthFetch(url, { headers: { Accept: 'application/json' } });
+  if (!response.ok) throw new Error(`HTTP ${response.status} loading authorization server metadata from ${url.href}`);
+  const metadata = parseAuthorizationServerMetadata(await response.json());
+  return {
+    authorizationServerUrl: metadata.issuer,
+    authorizationServerMetadata: metadata,
+    ...(resourceMetadata ? { resourceMetadata } : {}),
+  };
+}
 
-  /** Client metadata for dynamic registration (describes this client to the auth server). */
-  get clientMetadata(): OAuthClientMetadata {
-    if (this.usesClientCredentials) {
-      return {
-        client_name: this.config.clientName ?? DEFAULT_CLIENT_NAME,
-        client_uri: this.config.clientUri ?? DEFAULT_CLIENT_URI,
+/** The configured client, else a stored dynamically registered one whose secret has not expired. */
+export async function knownClient(id: McpAuthIdentity, config: McpOAuthConfig): Promise<OAuthClientInformationMixed | undefined> {
+  if (config.clientId !== undefined) {
+    return { client_id: config.clientId, ...(config.clientSecret !== undefined ? { client_secret: config.clientSecret } : {}) };
+  }
+  const info = (await getAuthEntry(id))?.clientInfo;
+  if (!info) return undefined;
+  if (info.clientSecretExpiresAt && info.clientSecretExpiresAt < Date.now() / 1000) return undefined;
+  return { client_id: info.clientId, ...(info.clientSecret !== undefined ? { client_secret: info.clientSecret } : {}) };
+}
+
+/**
+ * Get a client_credentials token: pi-mcp discovery (or `authServerMetadataUrl`), dynamic registration
+ * when no client is configured or stored, then a token POST. The token is stored in the keychain entry.
+ */
+export async function requestClientCredentialsToken(
+  oauth: McpOAuthModule,
+  id: McpAuthIdentity,
+  config: McpOAuthConfig,
+  scope: string | undefined,
+): Promise<string> {
+  const oauthFetch = createOAuthFetch(oauth);
+  const info = await discoverAuthorizationServer(oauth, id.serverUrl, config);
+  const metadata = info.authorizationServerMetadata;
+  const resource = oauth.selectResource(id.serverUrl, info.resourceMetadata);
+  const tokenUrl = assertSecureEndpoint(oauth, metadata?.token_endpoint ?? new URL('/token', info.authorizationServerUrl));
+
+  let client = await knownClient(id, config);
+  if (!client) {
+    const registered = await oauth.registerClient(info.authorizationServerUrl, {
+      fetch: oauthFetch,
+      ...(metadata ? { metadata } : {}),
+      clientMetadata: {
+        ...registrationMetadata(config),
         redirect_uris: [],
         grant_types: ['client_credentials'],
-        token_endpoint_auth_method: this.config.clientSecret ? 'client_secret_post' : 'none',
-      };
-    }
-
-    const redirectUrl = this.redirectUrl;
-    if (!redirectUrl) {
-      throw new Error('redirectUrl is required for authorization_code flow');
-    }
-
-    const metadata: OAuthClientMetadata = {
-      redirect_uris: [redirectUrl],
-      client_name: this.config.clientName ?? DEFAULT_CLIENT_NAME,
-      client_uri: this.config.clientUri ?? DEFAULT_CLIENT_URI,
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-      token_endpoint_auth_method: this.config.clientSecret ? 'client_secret_post' : 'none',
-    };
-    if (this.config.scope !== undefined) metadata.scope = this.config.scope;
-    return metadata;
+        token_endpoint_auth_method: 'client_secret_post',
+      },
+      ...(scope !== undefined ? { scope } : {}),
+    });
+    client = registered;
+    await updateClientInfo(id, {
+      clientId: registered.client_id,
+      ...(registered.client_secret !== undefined ? { clientSecret: registered.client_secret } : {}),
+      ...(registered.client_id_issued_at !== undefined ? { clientIdIssuedAt: registered.client_id_issued_at } : {}),
+      ...(registered.client_secret_expires_at !== undefined ? { clientSecretExpiresAt: registered.client_secret_expires_at } : {}),
+    });
   }
 
-  /** Pre-registered (config) or dynamically registered client info; undefined triggers registration. */
-  async clientInformation(): Promise<OAuthClientInformation | undefined> {
-    if (this.config.clientId) {
-      const info: OAuthClientInformation = { client_id: this.config.clientId };
-      if (this.config.clientSecret !== undefined) info.client_secret = this.config.clientSecret;
-      return info;
-    }
-
-    const entry = await getAuthEntry(this.id);
-    if (entry?.clientInfo) {
-      if (
-        entry.clientInfo.clientSecretExpiresAt &&
-        entry.clientInfo.clientSecretExpiresAt < Date.now() / 1000
-      ) {
-        return undefined;
-      }
-      const info: OAuthClientInformation = { client_id: entry.clientInfo.clientId };
-      if (entry.clientInfo.clientSecret !== undefined) info.client_secret = entry.clientInfo.clientSecret;
-      return info;
-    }
-
-    return undefined;
+  const params = new URLSearchParams({ grant_type: 'client_credentials' });
+  if (scope) params.set('scope', scope);
+  if (resource) params.set('resource', resource);
+  const headers = new Headers({ Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' });
+  applyClientAuthentication(headers, params, client, metadata);
+  const response = await oauthFetch(tokenUrl, { method: 'POST', headers, body: params });
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    // A non-JSON body is reported by status alone; its text is never echoed.
+    body = undefined;
   }
-
-  /** Persist client info from dynamic registration. */
-  async saveClientInformation(info: OAuthClientInformationFull): Promise<void> {
-    const redirectUris = info.redirect_uris ?? (this.redirectUrl ? [this.redirectUrl] : undefined);
-    const clientInfo: StoredClientInfo = { clientId: info.client_id };
-    if (info.client_secret !== undefined) clientInfo.clientSecret = info.client_secret;
-    if (info.client_id_issued_at !== undefined) clientInfo.clientIdIssuedAt = info.client_id_issued_at;
-    if (info.client_secret_expires_at !== undefined) {
-      clientInfo.clientSecretExpiresAt = info.client_secret_expires_at;
-    }
-    if (redirectUris !== undefined) clientInfo.redirectUris = redirectUris;
-    await updateClientInfo(this.id, clientInfo);
+  const fields = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+  if (typeof fields['error'] === 'string') {
+    if (fields['error'] === 'invalid_client' && config.clientId === undefined) await clearClientInfo(id);
+    const description = typeof fields['error_description'] === 'string' ? fields['error_description'] : fields['error'];
+    throw new oauth.OAuthError(fields['error'], flattenServerText(description));
   }
+  if (!response.ok) throw new oauth.OAuthError('server_error', `HTTP ${response.status} from the token endpoint`);
+  const accessToken = fields['access_token'];
+  if (typeof accessToken !== 'string' || accessToken.length === 0) throw new Error('The token endpoint returned no access_token');
+  const expiresIn = fields['expires_in'];
+  const grantedScope = typeof fields['scope'] === 'string' && fields['scope'] ? fields['scope'] : scope;
+  await updateTokens(id, {
+    accessToken,
+    ...(typeof expiresIn === 'number' && Number.isFinite(expiresIn) ? { expiresAt: Date.now() / 1000 + expiresIn } : {}),
+    ...(grantedScope !== undefined ? { scope: grantedScope } : {}),
+  });
+  return accessToken;
+}
 
-  /** Stored OAuth tokens for this server identity (name + URL), or undefined when none. */
-  async tokens(): Promise<OAuthTokens | undefined> {
-    const entry = await getAuthEntry(this.id);
-    if (!entry?.tokens) return undefined;
-
-    const result: OAuthTokens = {
-      access_token: entry.tokens.accessToken,
-      token_type: 'Bearer',
-    };
-    if (entry.tokens.refreshToken !== undefined) result.refresh_token = entry.tokens.refreshToken;
-    if (entry.tokens.expiresAt !== undefined) {
-      result.expires_in = Math.max(0, Math.floor(entry.tokens.expiresAt - Date.now() / 1000));
-    }
-    if (entry.tokens.scope !== undefined) result.scope = entry.tokens.scope;
-    return result;
-  }
-
-  /** Persist OAuth tokens (converting `expires_in` to an absolute expiry). */
-  async saveTokens(tokens: OAuthTokens): Promise<void> {
-    const storedTokens: StoredTokens = { accessToken: tokens.access_token };
-    if (tokens.refresh_token !== undefined) storedTokens.refreshToken = tokens.refresh_token;
-    if (tokens.expires_in !== undefined) storedTokens.expiresAt = Date.now() / 1000 + tokens.expires_in;
-    if (tokens.scope !== undefined) storedTokens.scope = tokens.scope;
-    await updateTokens(this.id, storedTokens);
-  }
-
-  /**
-   * Redirect the user to the authorization URL (hands the URL to `onRedirect`). Throws
-   * `UnauthorizedError` when called with no saved state — the post-refresh authorize fallback
-   * a library host cannot complete in-process.
-   */
-  async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    if (this.usesClientCredentials) {
-      throw new Error('redirectToAuthorization is not used for client_credentials flow');
-    }
-    const entry = await getAuthEntry(this.id);
-    if (!entry?.oauthState) {
-      throw new this.sdk.auth.UnauthorizedError(
-        `Re-authentication required for MCP server: ${this.serverName}`,
-      );
-    }
-    await this.callbacks.onRedirect(authorizationUrl);
-  }
-
-  /** Persist the PKCE code verifier. */
-  async saveCodeVerifier(codeVerifier: string): Promise<void> {
-    await updateCodeVerifier(this.id, codeVerifier);
-  }
-
-  /** The stored PKCE code verifier (throws when absent). */
-  async codeVerifier(): Promise<string> {
-    if (this.usesClientCredentials) {
-      throw new Error('codeVerifier is not used for client_credentials flow');
-    }
-    const entry = await getAuthEntry(this.id);
-    if (!entry?.codeVerifier) {
-      throw new Error(`No code verifier saved for MCP server: ${this.serverName}`);
-    }
-    return entry.codeVerifier;
-  }
-
-  /** Persist the CSRF state parameter. */
-  async saveState(state: string): Promise<void> {
-    await updateOAuthState(this.id, state);
-  }
-
-  /** The stored CSRF state (throws `UnauthorizedError` when no flow is in progress). */
-  async state(): Promise<string> {
-    if (this.usesClientCredentials) {
-      throw new Error('state is not used for client_credentials flow');
-    }
-    const entry = await getAuthEntry(this.id);
-    if (!entry?.oauthState) {
-      throw new this.sdk.auth.UnauthorizedError(
-        `Re-authentication required for MCP server: ${this.serverName}`,
-      );
-    }
-    return entry.oauthState;
-  }
-
-  /** Invalidate credentials when authentication fails. */
-  async invalidateCredentials(type: 'all' | 'client' | 'tokens'): Promise<void> {
-    switch (type) {
-      case 'all':
-        await clearAllCredentials(this.id);
-        break;
-      case 'client':
-        await clearClientInfo(this.id);
-        break;
-      case 'tokens':
-        await clearTokens(this.id);
-        break;
-    }
-  }
-
-  /** Apply the configured scope and the negotiated token-endpoint auth method to token requests. */
-  addClientAuthentication: AddClientAuthentication = async (headers, params, _url, metadata) => {
-    if (params.get('grant_type') === 'authorization_code' && !params.has('scope') && this.config.scope) {
-      params.set('scope', this.config.scope);
-    }
-
-    const clientInfo = await this.clientInformation();
-    if (!clientInfo) {
-      return;
-    }
-
-    const supportedMethods = metadata?.token_endpoint_auth_methods_supported ?? [];
-    const hasClientSecret = clientInfo.client_secret !== undefined;
-    let authMethod: 'client_secret_basic' | 'client_secret_post' | 'none';
-
-    if (supportedMethods.length === 0) {
-      authMethod = hasClientSecret ? 'client_secret_post' : 'none';
-    } else if (hasClientSecret && supportedMethods.includes('client_secret_basic')) {
-      authMethod = 'client_secret_basic';
-    } else if (hasClientSecret && supportedMethods.includes('client_secret_post')) {
-      authMethod = 'client_secret_post';
-    } else if (supportedMethods.includes('none')) {
-      authMethod = 'none';
-    } else {
-      authMethod = hasClientSecret ? 'client_secret_post' : 'none';
-    }
-
-    if (authMethod === 'client_secret_basic') {
-      if (!clientInfo.client_secret) {
-        throw new Error('client_secret_basic authentication requires a client_secret');
-      }
-      // RFC 6749 §2.3.1: client_id and client_secret are form-urlencoded before the colon-join + base64,
-      // so a secret containing ':' or non-ASCII does not malform the Basic credentials.
-      const basic = Buffer.from(
-        `${encodeURIComponent(clientInfo.client_id)}:${encodeURIComponent(clientInfo.client_secret)}`,
-      ).toString('base64');
-      headers.set('Authorization', `Basic ${basic}`);
-      return;
-    }
-
-    if (!params.has('client_id')) {
-      params.set('client_id', clientInfo.client_id);
-    }
-    if (authMethod === 'client_secret_post' && clientInfo.client_secret && !params.has('client_secret')) {
-      params.set('client_secret', clientInfo.client_secret);
-    }
+/**
+ * The client_credentials `AuthProvider`: the stored token while it is valid, else a new one; after a
+ * 401 a new one unless another request already replaced the rejected token. A 401 or 403 challenge is
+ * handed to `onChallenge` first, and an `insufficient_scope` one throws pi-mcp's
+ * `McpOAuthAuthorizationRequiredError`, so the server shows as needing authentication.
+ */
+export function createClientCredentialsAuthProvider(
+  oauth: McpOAuthModule,
+  id: McpAuthIdentity,
+  config: McpOAuthConfig,
+  onChallenge: (challenge: ReturnType<McpOAuthModule['parseWwwAuthenticate']>) => void,
+): AuthProvider {
+  let inFlight: Promise<string> | undefined;
+  const fetchToken = (): Promise<string> => {
+    // A step-up grant's scope stays in the next token.
+    inFlight ??= getAuthEntry(id)
+      .then((entry) => requestClientCredentialsToken(oauth, id, config, mergeScopes(config.scope, entry?.tokens?.scope)))
+      .finally(() => {
+        inFlight = undefined;
+      });
+    return inFlight;
   };
-
-  /** Build the token request body for the client_credentials grant (undefined for other grants). */
-  prepareTokenRequest(scope?: string): URLSearchParams | undefined {
-    if (!this.usesClientCredentials) {
-      return undefined;
-    }
-
-    const params = new URLSearchParams({ grant_type: 'client_credentials' });
-    const requestedScope = scope ?? this.config.scope;
-    if (requestedScope) {
-      params.set('scope', requestedScope);
-    }
-    return params;
-  }
+  return {
+    token: async () => {
+      const tokens = (await getAuthEntry(id))?.tokens;
+      const expired = tokens?.expiresAt !== undefined && tokens.expiresAt < Date.now() / 1000 + TOKEN_EXPIRY_SKEW_SECONDS;
+      if (tokens && !expired) return tokens.accessToken;
+      return fetchToken();
+    },
+    onUnauthorized: async (context) => {
+      const challenge = oauth.parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
+      onChallenge(challenge);
+      if (challenge.error === 'insufficient_scope') throw new oauth.McpOAuthAuthorizationRequiredError();
+      const current = (await getAuthEntry(id))?.tokens?.accessToken;
+      if (current !== undefined && current !== context.token) return;
+      await fetchToken();
+    },
+  };
 }

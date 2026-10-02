@@ -903,7 +903,7 @@ async function withStopHook(body: (hook: StopHook, fake: FakeSession) => Promise
 
 /**
  * A completed assistant message carrying one tool call per name, each paired with the successful result
- * pi builds for it (`createToolResultMessage`, `agent-loop.js:620-626`, keys the result to the call id and carries `isError`).
+ * pi builds for it (`createToolResultMessage`, `agent-loop.js:649-662` in pi 0.99.2, keys the result to the call id and carries `isError`).
  */
 function turnWith(...names: string[]): AgentTurnContext {
   return {

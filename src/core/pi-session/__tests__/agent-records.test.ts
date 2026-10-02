@@ -5,16 +5,23 @@ import * as path from 'node:path';
 import { SessionManager, type SessionEntry } from '@earendil-works/pi-coding-agent';
 import {
   agentInvocationsOnBranch,
+  agentResultTextOnBranch,
+  deliveredBackgroundResults,
+  fetchedAgentResultsOnBranch,
   findAgentFile,
   indexAgentFiles,
   indexTeamMemberFiles,
   injectedAgentResultsOnBranch,
   isAgentInvocationData,
-  isAgentLaunchData,
   isAgentStatusData,
+  parseAgentLaunchData,
+  parseAgentSegmentData,
+  isSubagentResultFetchDetails,
+  latestSubagentInvocations,
   readAgentFile,
   resolveAgentStatus,
   segmentForInvocation,
+  subagentBranchIndex,
   subagentsDir,
   teamMemberSessionId,
   type SubagentLaunchData,
@@ -90,11 +97,11 @@ describe('agent-records — custom entries round-trip through a pi session file'
   });
 
   it('validators reject malformed persisted payloads', () => {
-    expect(isAgentLaunchData(launch('a'))).toBe(true);
-    expect(isAgentLaunchData({ ...launch('a'), background: 'yes' })).toBe(false);
-    expect(isAgentLaunchData({ ...launch('a'), thinkingOverride: 'ultra' })).toBe(false);
-    expect(isAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1, memberName: 'n', role: 'lead', task: 'x' })).toBe(true);
-    expect(isAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1.5, memberName: 'n', role: 'lead', task: 'x' })).toBe(false);
+    expect(parseAgentLaunchData(launch('a'))).toEqual(launch('a'));
+    expect(parseAgentLaunchData({ ...launch('a'), background: 'yes' })).toBeNull();
+    expect(parseAgentLaunchData({ ...launch('a'), thinkingOverride: 'ultra' })).toBeNull();
+    expect(parseAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1, memberName: 'n', role: 'lead', task: 'x' })).not.toBeNull();
+    expect(parseAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1.5, memberName: 'n', role: 'lead', task: 'x' })).toBeNull();
     expect(isAgentStatusData({ status: 'stopped', stopReason: 'user', result: '' })).toBe(true);
     expect(isAgentStatusData({ status: 'stopped', stopReason: 'bored', result: '' })).toBe(false);
     expect(isAgentStatusData({ status: 'running', result: '' })).toBe(false);
@@ -167,9 +174,56 @@ describe('agent-records — segments', () => {
 
 describe('agent-records — launch billing flag', () => {
   it('accepts a launch with or without the flag and rejects a non-boolean one', () => {
-    expect(isAgentLaunchData({ ...launch('a'), dollarBilled: false })).toBe(true);
-    expect(isAgentLaunchData(launch('a'))).toBe(true);
-    expect(isAgentLaunchData({ ...launch('a'), dollarBilled: 'yes' })).toBe(false);
+    expect(parseAgentLaunchData({ ...launch('a'), dollarBilled: false })).not.toBeNull();
+    expect(parseAgentLaunchData(launch('a'))).not.toBeNull();
+    expect(parseAgentLaunchData({ ...launch('a'), dollarBilled: 'yes' })).toBeNull();
+  });
+});
+
+describe('agent-records — effort', () => {
+  it('keeps a pi thinking level and drops any other effort without rejecting the entry', () => {
+    expect(parseAgentLaunchData({ ...launch('a'), effort: 'high' })).toEqual({ ...launch('a'), effort: 'high' });
+    expect(parseAgentLaunchData({ ...launch('a'), effort: 'ultracode' })).toEqual(launch('a'));
+    expect(parseAgentLaunchData({ ...launch('a'), effort: 3 })).toEqual(launch('a'));
+    expect(parseAgentSegmentData({ toolCallId: 'tc', effort: 'minimal' })).toEqual({ toolCallId: 'tc', effort: 'minimal' });
+    expect(parseAgentSegmentData({ toolCallId: 'tc' })).toEqual({ toolCallId: 'tc' });
+    expect(parseAgentSegmentData({ toolCallId: 'tc', effort: 'High' })).toEqual({ toolCallId: 'tc' });
+  });
+
+  // A newer build sharing ~/.damocles can write a level this build does not know.
+  it('a launch or resume segment with an unknown effort still loads, and the resume keeps its own segment', async () => {
+    const dir = tempDir();
+    const sm = SessionManager.create(dir, dir, { id: 'agent-n' });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, { ...launch('agent-n'), effort: 'hyper' });
+    sm.appendMessage(user('first'));
+    sm.appendMessage(assistant('partial'));
+    sm.appendCustomEntry(DAMOCLES_AGENT_STATUS_ENTRY, { status: 'stopped', stopReason: 'user', result: 'partial' });
+    sm.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, { toolCallId: 'tc-resume', effort: 'hyper' });
+    sm.appendMessage(user('carry on'));
+    sm.appendMessage(assistant('done'));
+    sm.appendCustomEntry(DAMOCLES_AGENT_STATUS_ENTRY, { status: 'completed', result: 'done' });
+
+    const read = (await readAgentFile(sm.getSessionFile()!))!;
+    expect(read.launch).toEqual(launch('agent-n'));
+    expect(read.segments).toHaveLength(2);
+    expect(read.segments[1]).not.toHaveProperty('effort');
+    expect(segmentForInvocation(read, { toolCallId: 'tc-resume', resume: true })?.status).toEqual({ status: 'completed', result: 'done' });
+    expect((await indexAgentFiles(dir)).paths.get('agent-n')).toBe(sm.getSessionFile());
+  });
+
+  it('keeps each run’s effort: the launch entry’s for the spawn, the segment’s for a resume', async () => {
+    const dir = tempDir();
+    const sm = SessionManager.create(dir, dir, { id: 'agent-e' });
+    sm.appendCustomEntry(DAMOCLES_AGENT_LAUNCH_ENTRY, { ...launch('agent-e'), effort: 'medium' });
+    sm.appendMessage(user('first'));
+    sm.appendMessage(assistant('partial'));
+    sm.appendCustomEntry(DAMOCLES_AGENT_SEGMENT_ENTRY, { toolCallId: 'tc-resume', effort: 'high' });
+    sm.appendMessage(user('carry on'));
+
+    const read = (await readAgentFile(sm.getSessionFile()!))!;
+    expect(read.launch).toMatchObject({ effort: 'medium' });
+    expect(read.segments[0]).not.toHaveProperty('effort');
+    expect(read.segments[1]!.effort).toBe('high');
   });
 });
 
@@ -186,7 +240,7 @@ describe('agent-records — findAgentFile / indexAgentFiles', () => {
     expect(await findAgentFile(dir, 'agent-b')).toBe(renamed);
     expect(await findAgentFile(dir, 'unrelated-name')).toBeNull();
     expect(await findAgentFile(dir, 'missing')).toBeNull();
-    expect([...(await indexAgentFiles(dir)).keys()].sort()).toEqual(['agent-a', 'agent-b']);
+    expect([...(await indexAgentFiles(dir)).paths.keys()].sort()).toEqual(['agent-a', 'agent-b']);
   });
 
   it('skips a file that cannot be read and still finds the others in the folder', async () => {
@@ -203,17 +257,32 @@ describe('agent-records — findAgentFile / indexAgentFiles', () => {
     flush(memberSm);
     const member = memberSm.getSessionFile()!;
 
-    expect([...(await indexAgentFiles(dir)).entries()]).toEqual([['agent-a', good], ['member', member]]);
+    const index = await indexAgentFiles(dir);
+    expect([...index.paths.entries()]).toEqual([['agent-a', good], ['member', member]]);
+    expect(index.unreadable).toEqual([path.join(dir, '0-unreadable.jsonl')]);
     expect(await findAgentFile(dir, 'agent-a')).toBe(good);
     expect([...(await indexTeamMemberFiles(dir)).keys()]).toEqual(['member']);
   });
 
-  it('an agent stopped before its first response has no file, and a missing folder is empty', async () => {
+  it('an agent stopped before its task was committed has no file, and a missing folder is empty', async () => {
     const dir = tempDir();
-    writeAgentSession(dir, 'agent-c', 'agent-c', (sm) => sm.appendMessage(user('go')));
+    writeAgentSession(dir, 'agent-c', 'agent-c', () => {});
     expect(fs.readdirSync(dir)).toEqual([]);
     expect(await findAgentFile(dir, 'agent-c')).toBeNull();
-    expect((await indexAgentFiles(path.join(dir, 'nope'))).size).toBe(0);
+    expect(await indexAgentFiles(path.join(dir, 'nope'))).toEqual({ paths: new Map(), unreadable: [] });
+  });
+
+  it('an agent stopped before its first response has a file holding its launch and task', async () => {
+    const dir = tempDir();
+    const file = writeAgentSession(dir, 'agent-d', 'agent-d', (sm) => {
+      sm.appendMessage(user('go'));
+      sm.appendCustomEntry(DAMOCLES_AGENT_STATUS_ENTRY, { status: 'stopped', result: '' });
+    });
+    expect(await findAgentFile(dir, 'agent-d')).toBe(file);
+    const read = (await readAgentFile(file))!;
+    expect(read.launch.agentId).toBe('agent-d');
+    expect(read.messages.map((m) => m['role'])).toEqual(['user']);
+    expect(read.status).toMatchObject({ status: 'stopped' });
   });
 });
 
@@ -270,6 +339,55 @@ describe('agent-records — parent branch readers', () => {
     const results = injectedAgentResultsOnBranch(branch);
     expect([...results.keys()]).toEqual(['tc1']);
     expect(results.get('tc1')?.result).toBe('boom');
+  });
+
+  const toolResult = (toolName: string, details: unknown) =>
+    ({ type: 'message', id: `r${Math.random()}`, message: { role: 'toolResult', toolCallId: 'tc-get', toolName, content: [], details, isError: false } }) as unknown as SessionEntry;
+
+  it('keys GetSubagentResult fetch markers by the fetched invocation and skips results that carry none', () => {
+    const branch = [
+      toolResult('GetSubagentResult', { agentId: 'a1', toolCallId: 'tc1', status: 'completed' }),
+      toolResult('GetSubagentResult', undefined),
+      toolResult('GetSubagentResult', { agentId: 'a2', toolCallId: 'tc2', status: 'running' }),
+      toolResult('Agent', { agentId: 'a3', toolCallId: 'tc3', status: 'completed' }),
+    ];
+    expect([...fetchedAgentResultsOnBranch(branch)]).toEqual([['tc1', { agentId: 'a1', toolCallId: 'tc1', status: 'completed' }]]);
+    expect(isSubagentResultFetchDetails({ agentId: 'a1', toolCallId: '', status: 'completed' })).toBe(false);
+  });
+
+  it('D(branch) is every injected and every fetched invocation, and the index carries the fetches', () => {
+    const branch = [
+      custom(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'subagent', id: 'a1', toolCallId: 'tc1', resume: false }),
+      custom(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'subagent', id: 'a2', toolCallId: 'tc2', resume: false }),
+      custom(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'subagent', id: 'a1', toolCallId: 'tc3', resume: true }),
+      {
+        type: 'custom_message',
+        id: 'm1',
+        customType: SUBAGENT_RESULTS_CUSTOM_TYPE,
+        content: 'x',
+        display: false,
+        details: { agents: [{ agentId: 'a1', toolCallId: 'tc1', status: 'completed', result: 'r' }] },
+      } as unknown as SessionEntry,
+      toolResult('GetSubagentResult', { agentId: 'a2', toolCallId: 'tc2', status: 'error' }),
+    ];
+    const index = subagentBranchIndex(branch);
+    expect([...index.fetched.keys()]).toEqual(['tc2']);
+    expect(deliveredBackgroundResults(index)).toEqual(new Set(['tc1', 'tc2']));
+    expect([...latestSubagentInvocations(index)].map(([id, inv]) => [id, inv.toolCallId])).toEqual([['a1', 'tc3'], ['a2', 'tc2']]);
+  });
+
+  it("reads a finished Agent call's response text, and nothing from a launch acknowledgement or a thrown call", () => {
+    const agentResult = (toolCallId: string, text: string) =>
+      ({ type: 'message', id: `r-${toolCallId}`, message: { role: 'toolResult', toolCallId, toolName: 'Agent', content: [{ type: 'text', text }], isError: false } }) as unknown as SessionEntry;
+    const branch = [
+      agentResult('tc-fg', JSON.stringify({ content: [{ type: 'text', text: 'the answer' }], agentId: 'a1', agentStatus: 'completed' })),
+      agentResult('tc-bg', JSON.stringify({ status: 'async_launched', agentId: 'a2' })),
+      agentResult('tc-err', 'Subagent "x" was a "y" agent, which is no longer available.'),
+    ];
+    expect(agentResultTextOnBranch(branch, 'tc-fg')).toBe('the answer');
+    expect(agentResultTextOnBranch(branch, 'tc-bg')).toBeUndefined();
+    expect(agentResultTextOnBranch(branch, 'tc-err')).toBeUndefined();
+    expect(agentResultTextOnBranch(branch, 'tc-none')).toBeUndefined();
   });
 });
 

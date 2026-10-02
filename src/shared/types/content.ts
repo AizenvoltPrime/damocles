@@ -86,6 +86,8 @@ export interface HistoryToolCall {
   /** Success results only; the images load on demand. */
   imageCount?: number;
   feedback?: string;
+  /** A Stop abandoned this call, so it replays as abandoned whatever result pi wrote while stopping. */
+  stopped?: true;
   agentToolCalls?: HistoryToolCall[];
   agentModel?: string;
   agentTemplatePath?: string;
@@ -106,6 +108,8 @@ export interface HistoryToolCall {
   agentUsage?: AgentUsageTotals;
   /** Whether the agent's model bills real dollars; unset when its launch record predates the flag. */
   agentDollarBilled?: boolean;
+  /** The effort this invocation's own run ran at, from its segment record, else its launch record. */
+  agentEffort?: import('../effort-badge').EffortBadgeLevel;
   metadata?: Record<string, unknown>;
 }
 

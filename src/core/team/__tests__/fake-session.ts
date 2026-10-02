@@ -119,7 +119,7 @@ export class FakeSession {
   }
 
   /**
-   * Mirrors a real run starting: pi marks the session streaming (`agent-session.js:1080`) and then emits
+   * Mirrors a real run starting: pi marks the session streaming (`agent-session.js:1326` in pi 0.99.2) and then emits
    * `agent_start` (`agent-loop.js:50`). Opt-in, since most tests model a held turn as not streaming.
    */
   startStreaming(): void {
@@ -129,7 +129,7 @@ export class FakeSession {
 
   /**
    * An abort that lands in a tool call: pi's loop still drains the steering queue into the transcript
-   * before its aborted model call (`agent-loop.js:185-186`). Off by default, which is an abort mid-response.
+   * before its aborted model call (`agent-loop.js:186`). Off by default, which is an abort mid-response.
    */
   drainOnAbort = false;
   /** Steers pi delivered on its way out of an aborted run. */
@@ -199,7 +199,7 @@ export class FakeSession {
 
   /**
    * Messages pi enqueued straight onto the agent, which its mirror never sees
-   * (`sendCustomMessage`, `agent-session.js:1481`, steers the agent directly). Only `peekQueuedMessages` reports these.
+   * (`sendCustomMessage`, `agent-session.js:1738`, steers the agent directly). Only `peekQueuedMessages` reports these.
    */
   private readonly agentOnlyQueued: string[] = [];
 
@@ -259,7 +259,7 @@ export class FakeSession {
     const message = { role: 'assistant', content };
     this.emit({ type: 'message_end', message });
     // pi pairs every executed call with a result message, keyed by the call id (`createToolResultMessage`,
-    // `agent-loop.js:620-626`).
+    // `agent-loop.js:649-662`).
     const toolResults = toolCalls.map((c) => ({ role: 'toolResult', toolCallId: c.id, toolName: c.name, content: [], isError: false }));
     const turn = { message, toolResults, context: {}, newMessages: [] } as unknown as AgentTurnContext;
     const decision = await this.agent.finishTurn?.(turn);

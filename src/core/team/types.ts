@@ -8,6 +8,7 @@ import type { TeamRunSummary } from '../../shared/types/team';
 import type { ImageBlock } from '../../shared/types/content';
 import type { UserSteerNote } from '../../shared/steer';
 import type { AgentUsageTotals } from '../../shared/usage-accounting';
+import type { EffortBadgeLevel } from '../../shared/effort-badge';
 import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
 import type { SubagentSessionStore } from '../pi-session/folder-runtime';
 
@@ -53,6 +54,8 @@ export interface TeamSessionOptions {
   customTools: ToolDefinition[];
   excludeTools?: string[];
   extensionFactory: import('@earendil-works/pi-coding-agent').ExtensionFactory;
+  /** The spawn snapshot's Always-loaded `mcp__*` names; every other `mcp__*` name in `tools` starts deferred. */
+  directMcpToolNames?: readonly string[];
   /** Where the member's pi session lives: one file per member attempt. */
   store: SubagentSessionStore;
 }
@@ -83,11 +86,13 @@ export interface TeamEngine {
     toolNames: string[];
     customTools: ToolDefinition[];
     mcp: NestedMcpToolset;
+    /** True when `toolNames` holds no write-category tool; the gate then holds the shell read-only. */
+    readOnly: boolean;
   };
   /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). Takes the
    *  spawn's frozen `mcp` snapshot so the gate's read-only classifier and the nested ToolSearch
-   *  inventory come from the same read as the agent's `tools:`. */
-  buildExtensionFactory: (agentName: string, agentId: string, mcp: NestedMcpToolset) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
+   *  inventory come from the same read as the agent's `tools:`, and the same spawn's `readOnly`. */
+  buildExtensionFactory: (agentName: string, agentId: string, mcp: NestedMcpToolset, readOnly: boolean) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
   /** Roll a team agent session's cost delta (USD) into the panel budget meter. */
   onAgentCost: (deltaUsd: number) => void;
   /** Dispose a team agent's browser tab scope at its run-settle point. `closeTabs` closes its tabs only
@@ -136,8 +141,10 @@ export interface TeamAgent {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
   model: string;
   profileId: string | null;
-  startTime: number | null;
-  endTime: number | null;
+  /** The attempt's closed active segments (`shared/team-stopwatch.ts`). */
+  activeMs: number;
+  /** The open segment's start, the timestamp of the entry that opened it; null while stopped. */
+  runningSince: number | null;
   toolCallCount: number;
   /** Tool calls this attempt made before a resume. A resume continues the attempt, a redispatch starts a new one at zero. */
   carriedToolCallCount: number;
@@ -151,6 +158,8 @@ export interface TeamAgent {
   carriedUsage: AgentUsageTotals;
   /** Whether this agent's resolved model bills real dollars, so the card labels its cost a charge. */
   dollarBilled: boolean;
+  /** A work field: the attempt's session's published effort, null until that session exists. */
+  effort: EffortBadgeLevel | null;
   finalResponse: string | null;
   error: string | null;
   logFilePath: string | null;
@@ -284,7 +293,6 @@ export interface AgentResult {
   status: 'completed' | 'failed' | 'cancelled';
   finalResponse: string | null;
   toolCallCount: number;
-  durationMs: number;
   totalInputTokens: number;
   totalOutputTokens: number;
   cacheReadTokens: number;
@@ -346,9 +354,45 @@ export interface TeamCheckpoint {
     conflictNudges: number;
     leadReviewStalls: number;
     lastReviewRoundNotification: string | null;
+    /** Absent in checkpoints written before review coverage existed; their logs declare no pairs. */
+    coverage?: ReviewCoverageState;
   };
   // `attempt` is optional because checkpoints written before steers recorded it must still load.
   operatorSteers: Array<Omit<OperatorSteer, 'attempt'> & { attempt?: number }>;
+}
+
+/** An implementor's landed work: its attempt and its revision-round count when it landed. */
+export interface ReviewStamp {
+  attempt: number;
+  round: number;
+}
+
+export type ReviewVerdict = 'approve' | 'changes_requested';
+
+export interface ReviewVerdictInput {
+  implementor: string;
+  verdict: ReviewVerdict;
+}
+
+/** A null stamp: the reviewer reported before the implementor had landed anything. */
+export interface ReviewSignoff {
+  stamp: ReviewStamp | null;
+  verdict: ReviewVerdict;
+}
+
+/** `why` is fixed when the lead dismisses, since later state can no longer say why the review was unsatisfied. */
+export interface ReviewDismissal {
+  stamp: ReviewStamp;
+  reason: string;
+  why: string;
+}
+
+/** Checkpointed review coverage. The pairs are not here: restore reads them from each member's latest `agent-spawned`. */
+export interface ReviewCoverageState {
+  landed: Array<[implementor: string, stamp: ReviewStamp]>;
+  signoffs: Array<[reviewer: string, Array<[implementor: string, signoff: ReviewSignoff]>]>;
+  dismissals: Array<[reviewer: string, Array<[implementor: string, dismissal: ReviewDismissal]>]>;
+  reReviewOwed: string[];
 }
 
 /** One user `/steer` a team member's run accepted, and the member attempt that accepted it. */
@@ -373,6 +417,8 @@ export interface TeamLogSpawn {
   timestamp: number;
   /** Specialists only. */
   kind?: SpecialistKind;
+  /** A reviewer's declared implementors, the effective list for this attempt. Absent for an implementor. */
+  reviews?: string[];
 }
 
 /** What a resume reads back from the team event log. */
@@ -394,6 +440,10 @@ export interface TeamEventLog {
   resumedCheckpoints: ReadonlySet<number>;
   /** Every run the log records, each ended. */
   runs: TeamRunSummary[];
+  /** Each member's effort in its latest attempt, by agentId (`TeamRunLog.memberEffort`). */
+  efforts: ReadonlyMap<string, EffortBadgeLevel>;
+  /** Each member's active time in its latest attempt, by agentId (`TeamRunLog.memberActiveMs`). */
+  activeMs: ReadonlyMap<string, number>;
 }
 
 export interface TeamJSONLEntry {
@@ -418,6 +468,8 @@ export interface AgentMcpContext {
   /** The owning team, carried into this agent's MCP elicitation attribution alongside agentId/agentName. */
   teamId: string;
   role: 'lead' | 'specialist';
+  /** A specialist's spawn kind; a `reviewer` gets the read-only toolset and shell. Unset for the lead. */
+  kind?: SpecialistKind;
   messageBus: MessageBus;
   scratchpad: Scratchpad;
   /**
@@ -427,9 +479,10 @@ export interface AgentMcpContext {
    * `unsubscribeBus()` has already fired, and again when the sender token equals this agent's own name.
    */
   deliverUserNote: (text: string) => boolean;
-  startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
-  /** Re-run a failed/cancelled specialist as a fresh attempt (reuses agentId, preserves transcript). */
-  redispatchSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
+  /** `reviews` is a reviewer's declared implementors: required with `kind: 'reviewer'`, rejected otherwise. */
+  startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
+  /** Re-run a failed/cancelled specialist as a fresh attempt (reuses agentId, preserves transcript). An absent `reviews` keeps a reviewer's pairs. */
+  redispatchSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind, reviews?: string[]) => string;
   /** Mechanical read-gate: the lead cannot spawn until it has read the immutable `mission-brief`. */
   checkBriefReadGate: () => { ok: boolean; error?: string };
   /** Whether a message to `name` can be delivered now — false (with guidance) for undeliverable statuses. */
@@ -447,7 +500,12 @@ export interface AgentMcpContext {
   getNonSettledSpecialistDetails: () => Array<{name: string; status: TeamAgent['status']; toolCallCount: number}>;
   getAllAgents: () => TeamAgent[];
   enterStandby: (agentName: string) => void;
-  reportComplete: (agentName: string, summary: string) => void;
+  /** A reviewer with declared implementors passes one verdict per implementor it reviews that has landed work. */
+  reportComplete: (agentName: string, summary: string, verdicts?: ReviewVerdictInput[]) => void;
+  /** Lead-only: dismiss a reviewer's unsatisfied review of an implementor's current revision, with a written reason. */
+  dismissReview: (reviewer: string, implementor: string, reason: string) => void;
+  /** Each unsatisfied required review of an implementor with landed work that is not cancelled or failed, rendered with the move that clears it. */
+  getUnsatisfiedReviews: () => string[];
   /**
    * Append one entry to the shared `verification` ledger. The caller supplies only the rendered entry —
    * the tree fingerprint is computed by the tool from git state, never taken from the agent, because a

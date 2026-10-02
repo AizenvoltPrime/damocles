@@ -9,7 +9,7 @@ import { addProject, answerMessageBoxes, chatInput, hostMessages, postFromWebvie
 type RewindItem = { messageId: string; content: string };
 
 // A catalog model whose thinking can be turned off, so the per-tab override shows in panelThinkingUpdate.
-const OTHER_MODEL = 'claude-sonnet-5';
+const OTHER_MODEL = 'claude-haiku-4-5-20251001';
 
 test('tabs: two projects, per-tab thinking, fork with replayed history, restart restores tabs, projects, conversation and selection, closing the last tab', async ({ home, launch }) => {
   test.setTimeout(240_000);

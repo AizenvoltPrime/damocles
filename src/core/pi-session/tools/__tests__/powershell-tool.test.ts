@@ -129,6 +129,13 @@ function textOf(result: AgentToolResult<unknown>): string {
   return first.text;
 }
 
+/** The text of an error result: pi's shell tool returns a non-zero exit as `isError`, which the agent loop treats as a failure. */
+async function errorTextOf(pending: Promise<unknown>): Promise<string> {
+  const result = (await pending) as AgentToolResult<unknown> & { isError?: boolean };
+  if (result.isError !== true) throw new Error('the tool returned a success where it had to report an error');
+  return textOf(result);
+}
+
 /** Marking the rejection handled here keeps a pending failure off the unhandled-rejection reporter. */
 function start(
   params: { command: string; timeout?: number },
@@ -294,7 +301,7 @@ describe('the PowerShell tool result', () => {
     expect(textOf(await settled)).toContain('ok');
   });
 
-  it('THROWS "Command exited with code 42" for a non-zero exit instead of returning a success', async () => {
+  it('reports "Command exited with code 42" as an error result for a non-zero exit, never a success', async () => {
     const shell = armFakeShell();
     const settled = start({ command: 'exit 42' });
     await shell.spawned;
@@ -302,34 +309,34 @@ describe('the PowerShell tool result', () => {
     shell.child.stdout.emit('data', Buffer.from('build failed\n'));
     shell.child.emit('close', 42);
 
-    const message = await messageOf(settled);
+    const message = await errorTextOf(settled);
     expect(message).toContain('build failed');
     expect(message.endsWith('Command exited with code 42')).toBe(true);
-    // The trailing `[exit code 42]` note of a success-shaped result is not an error to the agent loop.
+    // The trailing `[exit code 42]` note belongs to a success-shaped result.
     expect(message).not.toContain('[exit code');
   });
 
-  it('throws "Command exited with code 137" for a shell killed by SIGKILL', async () => {
+  it('reports "Command exited with code 137" as an error result for a shell killed by SIGKILL', async () => {
     const shell = armFakeShell();
     const settled = start({ command: 'Start-Sleep 30' });
     await shell.spawned;
 
     shell.child.emit('close', null, 'SIGKILL');
 
-    const message = await messageOf(settled);
+    const message = await errorTextOf(settled);
     // 128 + SIGKILL, the shell convention the operations layer reports in place of a null exit code.
     expect(128 + osConstants.signals.SIGKILL).toBe(137);
     expect(message.endsWith('Command exited with code 137')).toBe(true);
   });
 
-  it('throws "Command exited with code 1", not "terminated without an exit code", for a close with no code and no signal', async () => {
+  it('reports "Command exited with code 1", not "terminated without an exit code", for a close with no code and no signal', async () => {
     const shell = armFakeShell();
     const settled = start({ command: 'Write-Output ok' });
     await shell.spawned;
 
     shell.child.emit('close', null, null);
 
-    const message = await messageOf(settled);
+    const message = await errorTextOf(settled);
     expect(message.endsWith('Command exited with code 1')).toBe(true);
     // pi reaches that wording only for an `exitCode: null`, which the operations layer never returns.
     expect(message).not.toContain('terminated without an exit code');
@@ -482,10 +489,10 @@ describe.runIf(process.platform === 'win32')('PowerShell process lifetime', () =
     expect(killProcessTree).not.toHaveBeenCalled();
   }, 30_000);
 
-  it('throws the exit code of a real failing command', async () => {
+  it('reports the exit code of a real failing command as an error result', async () => {
     const tool = createPowerShellTool(pi, CWD, undefined);
 
-    const message = await messageOf(tool.execute('ps-3', { command: 'exit 42' }, undefined, undefined, ctx));
+    const message = await errorTextOf(tool.execute('ps-3', { command: 'exit 42' }, undefined, undefined, ctx));
 
     expect(message.endsWith('Command exited with code 42')).toBe(true);
   }, 30_000);

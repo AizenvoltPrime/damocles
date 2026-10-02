@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { Agent } from '@earendil-works/pi-agent-core';
-import { AgentSession, SessionManager, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { AgentSession, SessionManager, createExtensionRuntime, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
@@ -361,13 +361,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       getExtensions: () => ({
         extensions: [],
         errors: [],
-        runtime: {
-          flagValues: new Map(),
-          pendingProviderRegistrations: [],
-          pendingNativeProviderRegistrations: [],
-          assertActive: () => {},
-          invalidate: () => {},
-        },
+        runtime: createExtensionRuntime(),
       }),
       getSystemPrompt: () => 'sys',
       getAppendSystemPrompt: () => [],
@@ -382,7 +376,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:141-144):
+      // Mirrors what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:145-148 in pi 0.99.2):
       // `tools:` becomes BOTH the allowlist and the construction-time active set.
       allowedToolNames: tools,
       initialActiveToolNames: tools,
@@ -634,6 +628,43 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
     expect(session.getAllTools().map((t) => t.name)).toEqual(expect.arrayContaining(MCP_NAMES));
   });
 
+  it('an Always-loaded MCP tool is active in the first request; the rest of the MCP set stays deferred', async () => {
+    const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+    const tools = ['read', TOOL_TOOL_SEARCH, ...MCP_NAMES];
+    await folder.createSubagentSession({
+      cwd: '/cwd',
+      systemPrompt: 'sp',
+      tools,
+      customTools: [],
+      extensionFactory: toolSearchFactory,
+      directMcpToolNames: ['mcp__git__status'],
+      store: { kind: 'memory' },
+    });
+    const baseline = H.sessions.at(-1)!.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null;
+
+    expect(baseline).toEqual(['read', TOOL_TOOL_SEARCH, 'mcp__git__status']);
+    // Deferred or not, every name stays in `tools:`, so the registry holds all of them.
+    for (const n of MCP_NAMES) expect(H.created.at(-1)!.tools!, n).toContain(n);
+    // Exactly the deferrable MCP names are subtracted, through the one deferral function.
+    expect(baseline).toEqual(tools.filter((n) => !deferredToolNames(tools, ['mcp__git__commit', 'mcp__ctx7__query_docs']).includes(n)));
+  });
+
+  it('a `directMcpToolNames` name outside `tools:` activates nothing: it only subtracts from the deferral', async () => {
+    const folder = await PiRuntime.get('/fake/agent').folder('/cwd');
+    await folder.createSubagentSession({
+      cwd: '/cwd',
+      systemPrompt: 'sp',
+      tools: ['read', TOOL_TOOL_SEARCH, ...MCP_NAMES],
+      customTools: [],
+      extensionFactory: toolSearchFactory,
+      directMcpToolNames: ['mcp__other__tool'],
+      store: { kind: 'memory' },
+    });
+    const baseline = H.sessions.at(-1)!.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null;
+
+    expect(baseline).toEqual(['read', TOOL_TOOL_SEARCH]);
+  });
+
   it('an MCP-only agent (no browser/compass/web) still defers, and still keeps `tools:` whole', async () => {
     // The default workspace with one MCP server configured: MCP is the ONLY deferrable group. An
     // implementation that keyed deferral off the built-in catalogs would silently do nothing here.
@@ -654,7 +685,7 @@ describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, c
  * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
  * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
  * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
- * (`dist/core/agent-session.js:1949`), not through a post-bind `registerTool`.
+ * (`dist/core/agent-session.js:2757` in pi 0.99.2), not through a post-bind `registerTool`.
  *
  * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
  * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
@@ -680,13 +711,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       getExtensions: () => ({
         extensions: [],
         errors: [],
-        runtime: {
-          flagValues: new Map(),
-          pendingProviderRegistrations: [],
-          pendingNativeProviderRegistrations: [],
-          assertActive: () => {},
-          invalidate: () => {},
-        },
+        runtime: createExtensionRuntime(),
       }),
       getSystemPrompt: () => 'sys',
       getAppendSystemPrompt: () => [],
@@ -701,7 +726,7 @@ describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSessio
       cwd: process.cwd(),
       resourceLoader,
       modelRuntime: { getAvailableSnapshot: () => [] } as never,
-      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:134-136).
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:145-148 in pi 0.99.2).
       allowedToolNames: tools,
       initialActiveToolNames: tools,
       customTools,

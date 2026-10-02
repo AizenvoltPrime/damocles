@@ -36,7 +36,7 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     subagentModelUpdate: (msg, ctx) => {
-      ctx.stores.subagentStore.updateSubagentModel(msg.agentToolId, msg.model);
+      ctx.stores.subagentStore.updateSubagentModel(msg.agentToolId, msg.model, msg.effort);
     },
 
     subagentTemplateUpdate: (msg, ctx) => {

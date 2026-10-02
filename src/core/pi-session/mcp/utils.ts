@@ -5,25 +5,24 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import type { McpServerDefinition } from './types';
+import { stripBidiControls, stripControlChars } from '../untrusted-text';
+
+const MAX_SERVER_TEXT_CHARS = 300;
+
+/**
+ * Server-supplied text as one capped line for a human or the log: control and bidi characters removed
+ * and whitespace collapsed, so it cannot forge a line or reorder the text around it.
+ */
+export function flattenServerText(text: string, maxChars: number = MAX_SERVER_TEXT_CHARS): string {
+  const chars = Array.from(stripBidiControls(stripControlChars(text)).replace(/\s+/g, ' ').trim());
+  return chars.length > maxChars ? `${chars.slice(0, maxChars).join('')}…` : chars.join('');
+}
 
 /** Interpolate `${VAR}` and `$env:VAR` references against the current environment (read-only). */
 export function interpolateEnvVars(value: string): string {
   return value
     .replace(/\$\{(\w+)\}/g, (_, name: string) => process.env[name] ?? '')
     .replace(/\$env:(\w+)/g, (_, name: string) => process.env[name] ?? '');
-}
-
-/** Interpolate every value in a record; returns undefined for an undefined input. */
-export function interpolateEnvRecord(
-  values: Record<string, string> | undefined,
-): Record<string, string> | undefined {
-  if (!values) return undefined;
-  const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(values)) {
-    resolved[key] = interpolateEnvVars(value);
-  }
-  return resolved;
 }
 
 /** Resolve a config path: interpolate env vars, then expand a leading `~`. */
@@ -37,18 +36,8 @@ export function resolveConfigPath(value: string | undefined): string | undefined
   return resolved;
 }
 
-/** Resolve a static bearer token from an inline value (interpolated) or an env-var name. */
-export function resolveBearerToken(
-  definition: Pick<McpServerDefinition, 'bearerToken' | 'bearerTokenEnv'>,
-): string | undefined {
-  if (definition.bearerToken !== undefined) {
-    return interpolateEnvVars(definition.bearerToken);
-  }
-  return definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : undefined;
-}
-
 /**
- * Kill a process and its descendant tree. A direct `child.kill()` / SDK `transport.close()` signals
+ * Kill a process and its descendant tree. A direct `child.kill()` signals
  * only the root process, orphaning any workers it spawned; on Windows `taskkill /T` walks the tree
  * from the root pid (`/F` is a hard terminate). POSIX tree-killing needs a detached process group we
  * do not spawn, so there we SIGKILL the root only. Resolves once the kill has been dispatched.

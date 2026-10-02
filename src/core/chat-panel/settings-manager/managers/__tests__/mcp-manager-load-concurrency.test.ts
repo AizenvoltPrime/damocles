@@ -16,7 +16,8 @@ const readFileMock = vi.hoisted(() => vi.fn());
 const accessMock = vi.hoisted(() => vi.fn());
 const execMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ stdout: "", stderr: "" })));
 
-vi.mock("node:fs", () => ({ promises: { readFile: readFileMock, access: accessMock } }));
+// existsSync answers the owned-file migration that runs before the reads; no owned file exists here.
+vi.mock("node:fs", () => ({ promises: { readFile: readFileMock, access: accessMock }, existsSync: () => false }));
 vi.mock("../../../../pi-session/checkpoints/exec", () => ({ exec: execMock }));
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 

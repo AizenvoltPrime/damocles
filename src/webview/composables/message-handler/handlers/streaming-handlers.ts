@@ -79,6 +79,9 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       if (thinkingContent) {
         updates.thinking = thinkingContent;
       }
+      if (assistantMsg.message.effort) {
+        updates.effort = assistantMsg.message.effort;
+      }
       if (toolCalls.length > 0) {
         updates.toolCalls = streamingStore.mergeToolCalls(currentMsg.toolCalls, toolCalls);
       }

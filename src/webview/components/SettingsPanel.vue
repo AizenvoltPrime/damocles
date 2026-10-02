@@ -154,6 +154,7 @@ const defaultsEffortLevels = computed(() => defaultsModelInfo.value?.supportedEf
 const settingsStore = useSettingsStore();
 const {
   pendingOpenAIModel,
+  openaiAuthPanelRequested,
   openaiAuthStatus: pendingAuthStatus,
   workspaceFolders,
   panelWorkspaceFolderKey,
@@ -162,6 +163,7 @@ const {
   hostCapabilities,
   settingSources,
   voiceControlsAvailable,
+  imageGeneration,
 } = storeToRefs(settingsStore);
 const projectSourcedSettings = computed(() =>
   Object.entries(settingSources.value)
@@ -199,6 +201,25 @@ function handleCloseAutoFocus(event: Event) {
   event.preventDefault();
 }
 
+watch(
+  () => props.visible,
+  (visible) => {
+    if (visible) postMessage({ type: "requestImageGenerationSettings" });
+  },
+  { immediate: true },
+);
+const imageModelUnknown = computed(() => {
+  const settings = imageGeneration.value;
+  return settings !== null && settings.model !== "" && !settings.imageModels.some((m) => m.id === settings.model);
+});
+function handleImageGenerationEnabledChange(enabled: boolean) {
+  postMessage({ type: "setImageGenerationEnabled", enabled });
+}
+function handleImageGenerationModelChange(model: string) {
+  if (model === imageGeneration.value?.model) return;
+  postMessage({ type: "setImageGenerationModel", model });
+}
+
 function handleDefaultWorkspaceFolderChange(folderKey: string) {
   if (folderKey === defaultWorkspaceFolderKey.value) return;
   postMessage({ type: "setDefaultWorkspaceFolder", folderKey });
@@ -224,10 +245,18 @@ watch(pendingOpenAIModel, async (next) => {
   flashOpenAIAuthPanel();
 }, { immediate: true });
 
+watch(openaiAuthPanelRequested, async (requested) => {
+  if (!requested) return;
+  settingsStore.setOpenAIAuthPanelRequested(false);
+  await nextTick();
+  openaiAuthPanelRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+  flashOpenAIAuthPanel();
+}, { immediate: true });
+
 watch(
   () => ({
     pending: pendingOpenAIModel.value,
-    signedIn: pendingAuthStatus.value.codex.signedIn,
+    signedIn: pendingAuthStatus.value.chatgpt.signedIn || pendingAuthStatus.value.codex.signedIn,
     apiKey: pendingAuthStatus.value.apikey.configured,
   }),
   (current) => {
@@ -1034,6 +1063,60 @@ function handleDeleteExploreApiKey() {
         </p>
       </section>
 
+      <template v-if="imageGeneration">
+        <Separator class="my-4 bg-border" />
+
+        <section class="mb-6" data-testid="image-generation-settings">
+          <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+            {{ t("settings.imageGeneration.title") }}
+          </h3>
+
+          <div
+            v-if="!imageGeneration.openRouterConfigured"
+            class="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
+            role="status"
+            data-testid="image-generation-needs-key"
+          >
+            {{ t("settings.imageGeneration.needsOpenRouterKey") }}
+          </div>
+
+          <div class="mb-3 flex items-center justify-between">
+            <Label for="image-generation-enabled" class="text-sm font-normal text-foreground">
+              {{ t("settings.imageGeneration.enabledLabel") }}
+            </Label>
+            <Switch
+              id="image-generation-enabled"
+              :checked="imageGeneration.enabled"
+              @update:checked="handleImageGenerationEnabledChange"
+            />
+          </div>
+
+          <div class="mb-3">
+            <Label id="image-generation-model-label" for="image-generation-model-trigger" class="text-xs text-muted-foreground mb-1 block">{{ t("settings.imageGeneration.model") }}<SettingSourceBadge setting-key="damocles.imageGeneration.model" /></Label>
+            <Select
+              :model-value="imageGeneration.model"
+              @update:model-value="handleImageGenerationModelChange"
+            >
+              <SelectTrigger id="image-generation-model-trigger" aria-labelledby="image-generation-model-label" class="w-full bg-input border-border">
+                <SelectValue :placeholder="t('settings.imageGeneration.modelPlaceholder')" />
+              </SelectTrigger>
+              <SelectContent class="bg-popover border-border">
+                <SelectItem v-for="model in imageGeneration.imageModels" :key="model.id" :value="model.id">
+                  {{ model.name }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p v-if="imageModelUnknown" class="text-xs text-warning mt-1">
+              {{ t("settings.imageGeneration.unknownModel", { model: imageGeneration.model }) }}
+            </p>
+          </div>
+
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.imageGeneration.description") }}
+          </p>
+        </section>
+      </template>
+
       <Separator class="my-4 bg-border" />
 
       <!-- ========================================================== -->
@@ -1067,6 +1150,20 @@ function handleDeleteExploreApiKey() {
       <!-- SECTION 3e: DeepSeek Authentication                         -->
       <!-- ========================================================== -->
       <CustomProviderAuthPanel provider="deepseek" />
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3f: TypeSafe Authentication (memory judges)         -->
+      <!-- ========================================================== -->
+      <CustomProviderAuthPanel provider="typesafe" />
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3g: OpenRouter Authentication                       -->
+      <!-- ========================================================== -->
+      <CustomProviderAuthPanel provider="openrouter" />
 
       <Separator v-if="voiceControlsAvailable" class="my-4 bg-border" />
 

@@ -61,6 +61,8 @@ const SERVER_BY_SOURCE: Record<McpServerSource, string> = {
   damocles: "plainStdio",
   claude: "fromClaude",
   codex: "fromCodex",
+  pi: "fromPi",
+  "pi-project": "fromProjectPi",
   "claude-local": "fromClaudeLocal",
   "damocles-local": "fromLocalDamocles",
 };
@@ -84,6 +86,8 @@ beforeAll(async () => {
   fs.mkdirSync(path.join(fakeHome, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(fakeHome, ".codex", "config.toml"), '[mcp_servers.fromCodex]\ncommand = "codex-server"\n', "utf-8");
   writeJson(path.join(fakeWorkspace, ".mcp.json"), { mcpServers: { fromWorkspace: { command: "ws-server" } } });
+  writeJson(path.join(fakeHome, ".pi", "agent", "mcp.json"), { mcpServers: { fromPi: { command: "pi-server" } } });
+  writeJson(path.join(fakeWorkspace, ".pi", "mcp.json"), { mcpServers: { fromProjectPi: { command: "pi-project-server" } } });
   writeJson(path.join(fakeWorkspace, ".damocles", "mcp.local.json"), {
     mcpServers: { fromLocalDamocles: { command: "local-server" } },
   });
@@ -100,7 +104,7 @@ afterAll(() => {
 describe("McpManager — editableConfig", () => {
   it("loads every source, so the gate is being tested against a real merge", () => {
     expect([...servers.keys()].sort()).toEqual([
-      "fromClaude", "fromClaudeLocal", "fromCodex", "fromLocalDamocles", "fromWorkspace",
+      "fromClaude", "fromClaudeLocal", "fromCodex", "fromLocalDamocles", "fromPi", "fromProjectPi", "fromWorkspace",
       "hasBearerToken", "hasLifecycle", "plainRemote", "plainStdio",
     ]);
     // Every member of the union really is represented, or the assertions below prove nothing.
@@ -136,7 +140,7 @@ describe("McpManager — editableConfig", () => {
     expect(servers.get("hasLifecycle")?.source).toBe("damocles");
   });
 
-  it.each(["fromClaude", "fromClaudeLocal", "fromCodex", "fromWorkspace", "fromLocalDamocles"])(
+  it.each(["fromClaude", "fromClaudeLocal", "fromCodex", "fromWorkspace", "fromLocalDamocles", "fromPi", "fromProjectPi"])(
     "omits it for the %s server regardless of how simple its config is",
     (name) => {
       expect(servers.get(name)?.editableConfig).toBeUndefined();
@@ -148,6 +152,8 @@ describe("McpManager — editableConfig", () => {
     expect(servers.get("fromClaude")).toMatchObject({ source: "claude", readonly: true });
     expect(servers.get("fromCodex")).toMatchObject({ source: "codex", readonly: true });
     expect(servers.get("fromWorkspace")).toMatchObject({ source: "workspace", readonly: false });
+    expect(servers.get("fromPi")).toMatchObject({ source: "pi", readonly: true });
+    expect(servers.get("fromProjectPi")).toMatchObject({ source: "pi-project", readonly: true });
   });
 
   it("marks both new sources readonly with nothing for the form to pre-populate from", () => {

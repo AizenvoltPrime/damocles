@@ -33,7 +33,7 @@ import type { Api, AuthOperationOptions, Model } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { log } from '../logger';
-import { describeAuthError } from './describe-error';
+import { describeAuthError, isCredentialSyncError } from './describe-error';
 import type { ModelLookup } from './pi-models';
 import { effortToPiThinking } from './pi-models';
 import { DEFAULT_MODELS, parseEffortLevel } from '../../shared/types/constants';
@@ -55,8 +55,9 @@ export interface CustomProviderDef {
   secretKey: string;
   /** Whether pi already ships this provider (only auth needed) or it must be registered fresh. */
   mode: 'register' | 'authenticate';
-  /** The provider's designated cheap model id (used for the provider-matched Explore default). */
-  cheapModelId: string;
+  /** The provider's designated cheap model id (used for the provider-matched Explore default). Absent for
+   *  a provider with no chat models (TypeSafe serves only classifiers). */
+  cheapModelId?: string;
   /** Full `registerProvider` config for `mode: 'register'` providers (StepFun). */
   registerConfig?: ProviderConfigInput;
 }
@@ -67,6 +68,8 @@ export interface CustomProviderDef {
  * the subscription product (flat fee), NOT the pay-per-token standard API at `…/v1`.
  */
 const STEPFUN_BASE_URL = 'https://api.stepfun.ai/step_plan';
+
+export const TYPESAFE_SECRET_KEY = 'damocles.typesafe.apiKey';
 
 /**
  * The three explore-key-backed providers, registered/authenticated only when their secret is present.
@@ -128,6 +131,12 @@ export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = [
     mode: 'authenticate',
     cheapModelId: 'gemini-3-flash-preview',
   },
+  {
+    // Classifier-only (Jev) for the memory judges; its key is not an Explore key.
+    provider: 'typesafe',
+    secretKey: TYPESAFE_SECRET_KEY,
+    mode: 'authenticate',
+  },
 ];
 
 /** Find the custom-provider def for a pi provider name. */
@@ -155,6 +164,8 @@ export interface SyncCustomProvidersResult {
    *  because the signal fired AND it is known-configured. A provider with no secret is deauthenticated
    *  rather than "not wired", so it appears in neither list. Disjoint from `wired`. */
   notWired: string[];
+  /** Providers whose live credential this sync replaced or removed. */
+  changed: string[];
 }
 
 /**
@@ -177,11 +188,11 @@ async function deauthCustomProvider(
   def: CustomProviderDef,
   cache: Map<string, string>,
   authOptions: AuthOperationOptions,
-): Promise<void> {
+): Promise<boolean> {
   const hadOverride = cache.delete(def.provider);
   const status = runtime.getProviderAuthStatus(def.provider);
   const damoclesSupplied = status.configured && (status.source === 'runtime' || status.source === 'stored');
-  if (!hadOverride && !damoclesSupplied) return;
+  if (!hadOverride && !damoclesSupplied) return false;
   // Fresh-registered providers (StepFun) are dropped entirely — the register config carries the key.
   // `unregisterProvider` is synchronous and takes no options, so it gets no signal.
   if (def.mode === 'register') runtime.unregisterProvider(def.provider);
@@ -189,12 +200,7 @@ async function deauthCustomProvider(
   // Delete any stored credential: today a no-op, for ≤2.6 upgraders the plaintext-key sweep.
   await runtime.logout(def.provider, authOptions);
   log('[custom-providers] deauthenticated %s (secret absent)', def.provider);
-}
-
-/** Matched by `name`, never `instanceof`: importing the class value would turn this module's type-only
- *  `pi-coding-agent` import into a runtime one, and the package is an esbuild external. */
-function isCredentialSyncError(err: unknown): boolean {
-  return err instanceof Error && err.name === 'CredentialSynchronizationError';
+  return true;
 }
 
 /** The outcome of one secret read. `failed` and `aborted` are deliberately distinct from a successful
@@ -259,6 +265,7 @@ function isKnownConfigured(
 export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promise<SyncCustomProvidersResult> {
   const wired: string[] = [];
   const notWired: string[] = [];
+  const changed: string[] = [];
   /** Read this sync and non-empty — the only evidence that the provider cut short mid-apply is configured. */
   const sawSecret = new Set<string>();
   let cutShortAt = -1;
@@ -291,7 +298,7 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
     if (key) sawSecret.add(def.provider);
     try {
       if (!key) {
-        await deauthCustomProvider(deps.modelRuntime, def, cache, authOptions);
+        if (await deauthCustomProvider(deps.modelRuntime, def, cache, authOptions)) changed.push(def.provider);
         continue;
       }
       if (cache.get(def.provider) === key) {
@@ -307,6 +314,7 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
       await deps.modelRuntime.setRuntimeApiKey(def.provider, key, authOptions);
       cache.set(def.provider, key);
       wired.push(def.provider);
+      changed.push(def.provider);
     } catch (err) {
       // Abort first: a cancelled operation is not a provider failure, and its key must NOT be cached
       // because it may never have been applied.
@@ -320,9 +328,11 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
       if (key && isCredentialSyncError(err)) {
         cache.set(def.provider, key);
         wired.push(def.provider);
+        changed.push(def.provider);
         log('[custom-providers] %s is wired, but pi could not resynchronize its local model snapshot (it may be stale): %s', def.provider, describeAuthError(err));
         continue;
       }
+      if (!key && isCredentialSyncError(err)) changed.push(def.provider);
       notWired.push(def.provider);
       log('[custom-providers] failed to wire %s: %s', def.provider, describeAuthError(err));
     }
@@ -334,7 +344,7 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
     notWired.push(...unreached);
     log('[custom-providers] sync cut short (aborted); not wired: %s', unreached.join(', ') || '(none configured)');
   }
-  return { wired, aborted: cutShortAt >= 0, notWired };
+  return { wired, aborted: cutShortAt >= 0, notWired, changed };
 }
 
 /** The Explore-section model resolution result: the pi model plus the pi thinking level derived from
@@ -393,6 +403,7 @@ export function resolveExploreSectionModel(registry: ModelLookup, settings: Sett
  */
 export function cheapModelValueForProvider(mainModelValue: string, registry: ModelLookup): string | undefined {
   for (const def of CUSTOM_PROVIDER_DEFS) {
+    if (!def.cheapModelId) continue;
     const model = registry.getModel(def.provider, mainModelValue);
     if (model) return def.cheapModelId;
     if (mainModelValue === def.cheapModelId) return def.cheapModelId;

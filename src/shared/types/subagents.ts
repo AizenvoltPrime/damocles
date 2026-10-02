@@ -1,6 +1,7 @@
 import type { ChatMessage, ToolCall } from './session';
 import type { TeamAgentStatus } from './team';
 import type { AgentUsageTotals } from '../usage-accounting';
+import type { EffortBadgeLevel } from '../effort-badge';
 
 export interface SubagentResult {
   content: string;
@@ -23,6 +24,8 @@ export interface SubagentState {
   toolCalls: ToolCall[];
   result?: SubagentResult;
   model?: string;
+  /** This card's run only: a resume can run at a different level. */
+  effort?: EffortBadgeLevel;
   /** Absolute path to the agent's markdown template file, when it ran from one (clickable in the UI). */
   templatePath?: string;
   sdkAgentId?: string;

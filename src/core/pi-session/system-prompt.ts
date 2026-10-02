@@ -29,10 +29,12 @@ export function getKnowledgeCutoff(model: string): string | null {
   if (m.includes("claude-opus-5-5")) return "June 2026";
   if (m.includes("claude-opus-5")) return "May 2026";
   if (m.includes("claude-opus-4-8")) return "January 2026";
+  if (m.includes("claude-sonnet-5-5")) return "June 2026";
   if (m.includes("claude-sonnet-5")) return "January 2026";
   if (m.includes("claude-haiku-4")) return "February 2025";
   if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
   if (m.startsWith("gpt-6-astra")) return "April 2026";
+  if (m.startsWith("gpt-6.1-sol")) return "April 2026";
   if (m.startsWith("gpt-6-sol")) return "April 2026";
   if (m.startsWith("gpt-6-luna")) return "May 2026";
   if (m.startsWith("gpt-5.6-sol") || m.startsWith("gpt-5.6-luna")) return "February 2026";
@@ -46,11 +48,13 @@ function getModelDisplayName(model: string): string | null {
   if (m.includes("claude-opus-5-5")) return "Opus 5.5";
   if (m.includes("claude-opus-5")) return "Opus 5";
   if (m.includes("claude-opus-4-8")) return "Opus 4.8";
+  if (m.includes("claude-sonnet-5-5")) return "Sonnet 5.5";
   if (m.includes("claude-sonnet-5")) return "Sonnet 5";
   if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
   if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
   if (m.includes("claude-haiku-4")) return "Haiku 4";
   if (m.startsWith("gpt-6-astra")) return "GPT-6 Astra";
+  if (m.startsWith("gpt-6.1-sol")) return "GPT-6.1 Sol";
   if (m.startsWith("gpt-6-sol")) return "GPT-6 Sol";
   if (m.startsWith("gpt-6-luna")) return "GPT-6 Luna";
   if (m.startsWith("gpt-5.6-sol")) return "GPT-5.6 Sol";

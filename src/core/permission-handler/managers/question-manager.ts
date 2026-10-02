@@ -2,6 +2,7 @@ import { ASK_USER_QUESTION_LIMITS, type Question, type QuestionAnnotations } fro
 import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { buildUnaskedDenyResult } from '../utils';
 
 export type ValidationResult =
   | { ok: true; questions: Question[] }
@@ -79,14 +80,16 @@ export class QuestionManager {
   ): Promise<PermissionResult> {
     const validated = validateQuestions(input['questions']);
     if (!validated.ok) {
-      return { behavior: 'deny', message: `AskUserQuestion input invalid: ${validated.reason}` };
+      return buildUnaskedDenyResult(undefined, `AskUserQuestion input invalid: ${validated.reason}`);
     }
     const questions = validated.questions;
 
     const result = await this.requestQuestionFromWebview(questions, context);
 
     if (!result.approved || !result.answers) {
-      return { behavior: 'deny', message: 'User cancelled the question prompt' };
+      return result.userAnswered
+        ? { behavior: 'deny', message: 'User cancelled the question prompt' }
+        : buildUnaskedDenyResult(undefined, 'Damocles could not ask the user the question, so this tool call was denied');
     }
 
     return {
@@ -151,6 +154,7 @@ export class QuestionManager {
     pending.cleanup();
     pending.resolve({
       approved: answers !== null,
+      userAnswered: true,
       ...(answers !== null ? { answers } : {}),
       ...(annotations && { annotations }),
     });

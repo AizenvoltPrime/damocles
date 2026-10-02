@@ -151,6 +151,32 @@ describe('reconstructMessages — compaction', () => {
   });
 });
 
+describe('reconstructMessages — reply effort', () => {
+  const replyAt = (id: string, provider: string, model: string, thinkingLevel?: string): SessionEntry =>
+    ({ id, type: 'message', message: { role: 'assistant', provider, model, ...(thinkingLevel ? { thinkingLevel } : {}), content: [{ type: 'text', text: id }] } }) as unknown as SessionEntry;
+  const reasons = (provider: string, modelId: string): boolean | undefined =>
+    provider === 'anthropic' ? modelId !== 'claude-haiku-4-5' : undefined;
+  const efforts = (branch: SessionEntry[]) =>
+    reconstructMessages(branch, reasons).messages.filter((m) => m.kind === 'assistant').map((m) => ('effort' in m ? m.effort : undefined));
+
+  it("publishes each reply's recorded level when the registry says its model reasons", () => {
+    expect(efforts([userMsg('u1', 'q'), replyAt('a1', 'anthropic', 'claude-opus-5', 'high'), replyAt('a2', 'anthropic', 'claude-opus-5', 'max')])).toEqual(['high', 'max']);
+  });
+
+  it('publishes nothing for a model that does not reason, one missing from the registry, or a reply recorded before pi kept the level', () => {
+    expect(efforts([
+      replyAt('a1', 'anthropic', 'claude-haiku-4-5', 'off'),
+      replyAt('a2', 'custom', 'local-model', 'high'),
+      replyAt('a3', 'anthropic', 'claude-opus-5'),
+    ])).toEqual([undefined, undefined, undefined]);
+  });
+
+  it('publishes nothing without a registry lookup', () => {
+    const { messages } = reconstructMessages([replyAt('a1', 'anthropic', 'claude-opus-5', 'high')]);
+    expect(messages[0]).not.toHaveProperty('effort');
+  });
+});
+
 describe('reconstructMessages — original slash-command input', () => {
   it('shows the original typed command instead of pi\'s expanded body', () => {
     const branch = [
@@ -623,7 +649,7 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
     expect(tool!.agentMessages![1]!.contentBlocks[0]).toMatchObject({ type: 'tool_use', id: 'n1', result: 'body' });
   });
 
-  it('a background agent that failed before its first response takes its error from the injection details', async () => {
+  it('a background agent that failed before its task was committed takes its error from the injection details', async () => {
     hoisted.branch = [
       userMsg('u1', 'explore in the background'),
       agentCall('a1', 'tc2', true),
@@ -763,6 +789,69 @@ describe('loadPiSessionHistory — subagent cards from invocation entries and ag
 
     expect(original).not.toHaveProperty('agentDollarBilled');
     expect(resumed!.agentDollarBilled).toBe(true);
+  });
+
+  it('gives each card the effort its own run recorded: the launch for the spawn, the segment for a resume', async () => {
+    writeAgentFile('agent-9', 'agent-9', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text: 'first half' }] } },
+      { type: 'custom', id: 'g1', parentId: 'm1', timestamp: ts(10), customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: { toolCallId: 'tc-r9', effort: 'high' } },
+      { type: 'message', id: 'm2', parentId: 'g1', timestamp: ts(12), message: { role: 'assistant', content: [{ type: 'text', text: 'second half' }] } },
+    ], { effort: 'medium' });
+    hoisted.branch = [
+      userMsg('u1', 'go'),
+      agentCall('a1', 'tc9'),
+      invocation('agent-9', 'tc9'),
+      {
+        id: 'a2',
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'toolCall', id: 'tc-r9', name: 'Agent', arguments: { resume: 'agent-9' } }] },
+      } as unknown as SessionEntry,
+      { id: 'i-r9', type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-9', toolCallId: 'tc-r9', resume: true } } as unknown as SessionEntry,
+    ];
+
+    const [original, resumed] = await replayedAgentTools();
+
+    expect(original!.agentEffort).toBe('medium');
+    expect(resumed!.agentEffort).toBe('high');
+  });
+
+  it('a resume card whose segment recorded no effort, or that has no segment, shows none, as its live card did', async () => {
+    writeAgentFile('agent-11', 'agent-11', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text: 'first half' }] } },
+      { type: 'custom', id: 'g1', parentId: 'm1', timestamp: ts(10), customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: { toolCallId: 'tc-r11' } },
+      { type: 'message', id: 'm2', parentId: 'g1', timestamp: ts(12), message: { role: 'assistant', content: [{ type: 'text', text: 'second half' }] } },
+    ], { effort: 'medium' });
+    const resumeCall = (entryId: string, toolCallId: string): SessionEntry[] => [
+      { id: entryId, type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: toolCallId, name: 'Agent', arguments: { resume: 'agent-11' } }] } } as unknown as SessionEntry,
+      { id: `i-${toolCallId}`, type: 'custom', customType: DAMOCLES_AGENT_INVOCATION_ENTRY, data: { kind: 'subagent', id: 'agent-11', toolCallId, resume: true } } as unknown as SessionEntry,
+    ];
+    // tc-r11b was killed before its session existed, so it opened no segment.
+    hoisted.branch = [userMsg('u1', 'go'), agentCall('a1', 'tc11'), invocation('agent-11', 'tc11'), ...resumeCall('a2', 'tc-r11'), ...resumeCall('a3', 'tc-r11b')];
+
+    const [original, resumed, killed] = await replayedAgentTools();
+
+    expect(original!.agentEffort).toBe('medium');
+    expect(resumed).not.toHaveProperty('agentEffort');
+    expect(killed).not.toHaveProperty('agentEffort');
+  });
+
+  it('a launch recorded before effort, or for a model that does not reason, shows no effort', async () => {
+    writeAgentFile('agent-10', 'agent-10', [
+      { type: 'message', id: 'm1', parentId: 'l1', timestamp: ts(2), message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ]);
+    hoisted.branch = [userMsg('u1', 'go'), agentCall('a1', 'tc10'), invocation('agent-10', 'tc10')];
+    const [tool] = await replayedAgentTools();
+    expect(tool).not.toHaveProperty('agentEffort');
+  });
+
+  it("replays a reply's effort through the registry lookup the host resolves", async () => {
+    hoisted.branch = [
+      userMsg('u1', 'go'),
+      { id: 'a1', type: 'message', message: { role: 'assistant', provider: 'anthropic', model: 'claude-opus-5', thinkingLevel: 'high', content: [{ type: 'text', text: 'done' }] } } as unknown as SessionEntry,
+    ];
+    const posts: ExtensionToWebviewMessage[] = [];
+    await loadPiSessionHistory('/cwd', SESSION_ID, (m) => posts.push(m), undefined, Promise.resolve(() => true));
+    expect(posts.find((p) => p.type === 'assistantReplay')).toMatchObject({ content: 'done', effort: 'high' });
   });
 
   it('display:false custom messages, such as the interruption notice, render nothing', async () => {

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { McpClientManager } from '../mcp-client-manager';
 import { MCP_METADATA_CACHE_DIR } from '../paths';
+import { specOf } from './fake-server-manager';
 
 const fixtureDir = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures');
 const echoServer = join(fixtureDir, 'echo-server.mjs');
@@ -22,10 +23,11 @@ afterEach(async () => {
   if (existsSync(cacheFile)) rmSync(cacheFile);
 });
 
+// Interop: pi-mcp's client against a server built on the official MCP SDK.
 describe('MCP end-to-end (real stdio echo server)', () => {
   it('connects, lists tools, calls echo, and converts the result', async () => {
-    manager = new McpClientManager({ healthCheckMs: 60_000 });
-    manager.initialize({ [SERVER]: { command: process.execPath, args: [echoServer] } });
+    manager = new McpClientManager({ clientVersion: 'test', healthCheckMs: 60_000 });
+    manager.initialize({ [SERVER]: specOf({ command: process.execPath, args: [echoServer] }) });
     await manager.whenReady();
 
     expect(manager.getServerStatus(SERVER)?.status).toBe('connected');
@@ -39,8 +41,8 @@ describe('MCP end-to-end (real stdio echo server)', () => {
   }, 30_000);
 
   it('cancels an in-flight call when the abort signal fires', async () => {
-    manager = new McpClientManager({ healthCheckMs: 60_000 });
-    manager.initialize({ [SERVER]: { command: process.execPath, args: [echoServer] } });
+    manager = new McpClientManager({ clientVersion: 'test', healthCheckMs: 60_000 });
+    manager.initialize({ [SERVER]: specOf({ command: process.execPath, args: [echoServer] }) });
     await manager.whenReady();
 
     const controller = new AbortController();
@@ -52,8 +54,8 @@ describe('MCP end-to-end (real stdio echo server)', () => {
 
   it('auto-reconnects after the server process crashes (onclose self-heal)', async () => {
     // Long health interval so the recovery is driven by the onclose handler, not a periodic check.
-    manager = new McpClientManager({ healthCheckMs: 60_000 });
-    manager.initialize({ [SERVER]: { command: process.execPath, args: [echoServer] } });
+    manager = new McpClientManager({ clientVersion: 'test', healthCheckMs: 60_000 });
+    manager.initialize({ [SERVER]: specOf({ command: process.execPath, args: [echoServer] }) });
     await manager.whenReady();
     expect(manager.getServerStatus(SERVER)?.status).toBe('connected');
 

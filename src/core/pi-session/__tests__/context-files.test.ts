@@ -11,8 +11,8 @@ import {
 } from '../context-files';
 
 /**
- * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:71-72`
- * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^0.87.0`. It is a literal, not an import,
+ * Copied by hand from pi `packages/coding-agent/src/core/resource-loader.ts:184-185`
+ * (`loadContextFileFromDir`) at the pinned `@earendil-works/pi-coding-agent@^0.99.2`. It is a literal, not an import,
  * so a pi upgrade that changes the candidate order fails here instead of silently diverging.
  */
 const PI_CONTEXT_FILE_CANDIDATES = [

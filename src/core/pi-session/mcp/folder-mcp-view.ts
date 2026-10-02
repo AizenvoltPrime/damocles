@@ -1,13 +1,22 @@
 import type { McpServerStatusInfo } from '../../../shared/types/mcp';
+import type { SettingInspection } from '../../../platform/settings-store';
 import type { McpToolDescriptor } from './types';
 import type { McpCallResult, McpClientManager } from './mcp-client-manager';
+import type { LegacyToolNameInput } from './tool-name-migration';
 import type { McpToolCallOptions, McpToolSource } from './tool-source';
+import { layersExposeDirect, resolveToolExposure, toolExposureLayers, type ToolExposureLayer } from './exposure';
 import { log } from '../../logger';
+
+/** This folder's `damocles.mcp.toolExposure` layers and whether the folder is trusted, read on every call. */
+export type ToolExposureContext = () => { inspection: SettingInspection<unknown>; trusted: boolean };
 
 /**
  * One folder's MCP tools: its own folder-scope manager plus the user-scope servers visible in that folder.
  * A user server outside `userVisible`, or shadowed by a same-named folder server, never appears here and
  * cannot be called, reconnected, authenticated or signed out through it.
+ *
+ * The managers give each tool its config exposure; this view overlays `damocles.mcp.toolExposure`,
+ * because project and local values apply only in a trusted folder and the user manager serves every folder.
  */
 export class FolderMcpView implements McpToolSource {
   private userVisible = new Set<string>();
@@ -16,37 +25,46 @@ export class FolderMcpView implements McpToolSource {
   private readonly user: McpClientManager;
   private readonly folder: McpClientManager;
   private readonly unsubscribers: (() => void)[];
+  private readonly exposureContext: ToolExposureContext | undefined;
 
-  constructor(user: McpClientManager, folder: McpClientManager) {
+  constructor(user: McpClientManager, folder: McpClientManager, exposureContext?: ToolExposureContext) {
     this.user = user;
     this.folder = folder;
+    this.exposureContext = exposureContext;
     this.unsubscribers = [
       user.onToolsChanged(() => {
-        // User prefixes can move on a user reconcile; the folder side must step off them before anyone reads names.
+        // User tool names can move on a user reconcile; the folder side must step off them before anyone reads names.
         // A folder rename already emitted through the folder listener below.
-        if (!this.folder.refreshReservedPrefixes()) this.emit();
+        if (!this.folder.refreshReservedToolNames()) this.emit();
       }),
       folder.onToolsChanged(() => this.emit()),
     ];
   }
 
-  /** Replace the user servers visible in this folder; renames folder tools off newly visible user prefixes. */
+  /** Replace the user servers visible in this folder; renames folder tools off newly visible user tool names. */
   setUserVisible(names: readonly string[]): void {
     const next = new Set(names);
     if (next.size === this.userVisible.size && [...next].every((name) => this.userVisible.has(name))) return;
     this.userVisible = next;
-    if (!this.folder.refreshReservedPrefixes()) this.emit();
+    if (!this.folder.refreshReservedToolNames()) this.emit();
   }
 
-  /** The prefixes the user manager assigned to the user servers visible here; the folder manager must avoid them. */
-  reservedPrefixes(): ReadonlySet<string> {
-    const reserved = new Set<string>();
-    for (const name of this.userVisible) {
-      if (this.folderHas(name)) continue;
-      const prefix = this.user.serverPrefix(name);
-      if (prefix !== undefined) reserved.add(prefix);
-    }
-    return reserved;
+  /** The tool names the user servers visible here hold; the folder manager must avoid them. */
+  reservedToolNames(): ReadonlySet<string> {
+    return new Set(
+      this.user.getAllToolDescriptors().filter((d) => this.isVisibleUserServer(d.serverName)).map((d) => d.piName),
+    );
+  }
+
+  /** What this folder's tools' legacy names were built from, for migrating stored names. */
+  legacyToolNameInput(): LegacyToolNameInput {
+    return {
+      userServers: this.user.enabledServerNames(),
+      visibleUserServers: [...this.userVisible].filter((name) => !this.folderHas(name)),
+      folderServers: this.folder.enabledServerNames(),
+      userTools: this.user.toolNameEntries().filter((entry) => this.isVisibleUserServer(entry.serverName)),
+      folderTools: this.folder.toolNameEntries(),
+    };
   }
 
   onToolsChanged(listener: () => void): () => void {
@@ -58,16 +76,40 @@ export class FolderMcpView implements McpToolSource {
     const folderTools = this.folder.getAllToolDescriptors();
     const userTools = this.user.getAllToolDescriptors().filter((d) => this.isVisibleUserServer(d.serverName));
     const conflicts = conflictingNames(folderTools, userTools);
-    return [...userTools, ...folderTools].filter((d) => !conflicts.has(d.piName));
+    const layers = this.exposureLayers();
+    return [...userTools, ...folderTools].filter((d) => !conflicts.has(d.piName)).map((d) => withExposure(d, layers));
   }
 
   getToolDescriptor(piName: string): McpToolDescriptor | undefined {
     const owner = this.toolOwner(piName);
-    return owner?.getToolDescriptor(piName);
+    const descriptor = owner?.getToolDescriptor(piName);
+    return descriptor && withExposure(descriptor, this.exposureLayers());
   }
 
   allToolNames(): string[] {
     return this.getAllToolDescriptors().map((d) => d.piName);
+  }
+
+  offToolNames(): string[] {
+    return this.getAllToolDescriptors().filter((d) => d.exposure === 'off').map((d) => d.piName);
+  }
+
+  deferrableToolNames(): string[] {
+    return this.getAllToolDescriptors().filter((d) => d.exposure === 'deferred').map((d) => d.piName);
+  }
+
+  pendingDirectServers(): string[] {
+    const layers = this.exposureLayers();
+    const descriptors = this.getAllToolDescriptors();
+    const pending = (manager: McpClientManager, names: readonly string[]): string[] =>
+      names.filter((name) =>
+        manager.serverConfigMayExposeDirect(name) ||
+        layersExposeDirect(layers, name) ||
+        descriptors.some((d) => d.serverName === name && d.exposure === 'direct'));
+    return [
+      ...pending(this.user, this.user.connectingServerNames().filter((name) => this.isVisibleUserServer(name))),
+      ...pending(this.folder, this.folder.connectingServerNames()),
+    ];
   }
 
   isMcpReadOnly(piName: string): boolean {
@@ -76,7 +118,15 @@ export class FolderMcpView implements McpToolSource {
 
   getServerStatuses(): McpServerStatusInfo[] {
     const userStatuses = this.user.getServerStatuses().filter((status) => this.isVisibleUserServer(status.name));
-    return [...userStatuses, ...this.folder.getServerStatuses()];
+    const layers = this.exposureLayers();
+    return [...userStatuses, ...this.folder.getServerStatuses()].map((status) => {
+      if (!status.tools) return status;
+      const tools = status.tools.map((tool) => {
+        const resolved = resolveToolExposure(layers, status.name, tool.name, tool.configExposure ?? 'deferred');
+        return { ...tool, exposure: resolved.exposure, exposureSource: resolved.source };
+      });
+      return { ...status, tools };
+    });
   }
 
   callTool(piName: string, args: Record<string, unknown>, opts?: McpToolCallOptions): Promise<McpCallResult> {
@@ -106,8 +156,14 @@ export class FolderMcpView implements McpToolSource {
     this.listeners.clear();
   }
 
+  private exposureLayers(): ToolExposureLayer[] {
+    if (!this.exposureContext) return [];
+    const { inspection, trusted } = this.exposureContext();
+    return toolExposureLayers(inspection, trusted);
+  }
+
   private folderHas(name: string): boolean {
-    return this.folder.serverPrefix(name) !== undefined;
+    return this.folder.hasServer(name);
   }
 
   private isVisibleUserServer(name: string): boolean {
@@ -154,7 +210,13 @@ export class FolderMcpView implements McpToolSource {
   }
 }
 
-/** Names both sides claim; reserved prefixes make this empty except while a rename is in flight. */
+function withExposure(descriptor: McpToolDescriptor, layers: readonly ToolExposureLayer[]): McpToolDescriptor {
+  if (layers.length === 0) return descriptor;
+  const resolved = resolveToolExposure(layers, descriptor.serverName, descriptor.rawToolName, descriptor.configExposure);
+  return { ...descriptor, exposure: resolved.exposure, exposureSource: resolved.source };
+}
+
+/** Names both sides claim; reserved tool names make this empty except while a rename is in flight. */
 function conflictingNames(a: readonly McpToolDescriptor[], b: readonly McpToolDescriptor[]): Set<string> {
   const names = new Set(a.map((d) => d.piName));
   return new Set(b.filter((d) => names.has(d.piName)).map((d) => d.piName));

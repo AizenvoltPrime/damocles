@@ -7,6 +7,7 @@ import type {
 } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
+import { buildUnaskedDenyResult } from '../utils';
 
 export class PlanManager {
   private state: PermissionState;
@@ -48,16 +49,18 @@ export class PlanManager {
     const resolved = await this.getPlanContent?.();
     const planContent = resolved && resolved.trim() ? resolved : null;
     if (!planContent) {
-      return {
-        behavior: 'deny',
-        message:
-          'No plan file found for this session. Write your complete plan to your plan file (the path named ' +
+      return buildUnaskedDenyResult(
+        undefined,
+        'No plan file found for this session. Write your complete plan to your plan file (the path named ' +
           'in your system prompt / EnterPlanMode result) before calling ExitPlanMode.',
-      };
+      );
     }
 
     const result = await this.requestPlanApprovalFromWebview(planContent, context);
 
+    if (!result.approved && !result.userAnswered) {
+      return buildUnaskedDenyResult(undefined, 'Damocles could not show the plan to the user for approval, so this tool call was denied');
+    }
     if (!result.approved) {
       const message = result.feedback
         ? `The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user provided the following reason for the rejection: ${result.feedback}`
@@ -89,15 +92,15 @@ export class PlanManager {
 
     return new Promise<PlanApprovalResult>((resolve) => {
       const abortHandler = () => {
-        const approved = !this.state.sessionAborting;
-        log('[PlanManager] Abort signal on plan approval: toolUseId=%s, approved=%s', toolUseId, approved);
+        log('[PlanManager] Abort signal on plan approval: toolUseId=%s', toolUseId);
         this.state.removePendingPlanApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
+          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve({ approved, ...(approved ? { approvalMode: 'acceptEdits' } : {}) });
+        resolve({ approved: false });
       };
 
       const cleanup = () => {
@@ -136,6 +139,7 @@ export class PlanManager {
     pending.cleanup();
     pending.resolve({
       approved,
+      userAnswered: true,
       ...(options?.approvalMode !== undefined ? { approvalMode: options.approvalMode } : {}),
       ...(options?.feedback !== undefined ? { feedback: options.feedback } : {}),
     });

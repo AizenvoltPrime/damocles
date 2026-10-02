@@ -18,6 +18,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       annotations: { readOnlyHint: true },
     },
     {
+      name: 'env',
+      description: 'Return the names of the environment variables the server process received.',
+      inputSchema: { type: 'object', properties: {} },
+      annotations: { readOnlyHint: true },
+    },
+    {
       name: 'crash',
       description: 'Exit the server process shortly after responding (drop simulation).',
       inputSchema: { type: 'object', properties: {} },
@@ -30,6 +36,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === 'crash') {
     setTimeout(() => process.exit(1), 50);
     return { content: [{ type: 'text', text: 'crashing' }] };
+  }
+  if (request.params.name === 'env') {
+    return { content: [{ type: 'text', text: JSON.stringify(Object.keys(process.env)) }] };
   }
   const text = request.params.arguments?.text ?? '';
   return { content: [{ type: 'text', text: `echo: ${text}` }] };

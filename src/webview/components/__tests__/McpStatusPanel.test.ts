@@ -201,6 +201,8 @@ describe('McpStatusPanel: source badges', () => {
     codex: 'From Codex',
     'claude-local': 'From Claude Code (local)',
     'damocles-local': 'From project .damocles',
+    pi: 'From pi',
+    'pi-project': 'From project .pi',
   } as const satisfies Record<NonNullable<McpServerStatusInfo['source']>, string>;
 
   it('gives every member of the source union a distinct label', () => {
@@ -730,7 +732,7 @@ describe('McpStatusPanel — i18n', () => {
     applyLocale('el');
     mountPanel([editableDamocles]);
     await nextTick();
-    expect(bodyText()).toContain('Προσθήκη server');
+    expect(bodyText()).toContain('Προσθήκη διακομιστή');
     expect(bodyText()).toContain('Επεξεργασία');
     expect(bodyText()).toContain('Διαγραφή');
     expect(bodyText()).not.toContain('Add server');
@@ -745,5 +747,249 @@ describe('McpStatusPanel — i18n', () => {
     expect(bodyText()).toContain('γραμμή 14, στήλη 1');
     expect(bodyText()).toContain('Άνοιγμα αρχείου');
     expect(bodyText()).not.toContain('Invalid JSON');
+  });
+});
+
+describe('McpStatusPanel — error rows', () => {
+  const failed = (over: Partial<McpServerStatusInfo>): McpServerStatusInfo => ({
+    name: 'srv',
+    status: 'failed',
+    enabled: true,
+    source: 'damocles',
+    readonly: true,
+    ...over,
+  });
+  const errorRow = (): string => document.body.querySelector('[data-testid="mcp-server-error"]')?.textContent?.trim() ?? '';
+
+  it('translates an SSE entry\u2019s error by code instead of showing the English fallback', async () => {
+    mountPanel([failed({ error: 'english fallback', errorInfo: { code: 'sseUnsupported' } })]);
+    await nextTick();
+    expect(errorRow()).toBe("Legacy SSE transport is not supported. Use the server's streamable HTTP URL.");
+  });
+
+  it('names the missing variable and its field, never a value', async () => {
+    mountPanel([failed({ errorInfo: { code: 'missingVariable', params: { variable: 'API_KEY', field: 'headers.Authorization' } } })]);
+    await nextTick();
+    expect(errorRow()).toBe('The environment variable API_KEY is not set (used in headers.Authorization).');
+  });
+
+  it('names the kept server and its source badge for a tool-name collision', async () => {
+    mountPanel([failed({ errorInfo: { code: 'nameCollision', params: { kept: 'my-server', keptSource: 'damocles' } } })]);
+    await nextTick();
+    expect(errorRow()).toBe('Not loaded: its tool names would clash with "my-server" (From Damocles).');
+  });
+
+  it.each([
+    ['commandUntrusted', { field: 'env.TOKEN' }, 'env.TOKEN runs a command, which is allowed only in a trusted folder.'],
+    ['commandFailed', { field: 'env.TOKEN' }, 'The command for env.TOKEN failed or timed out.'],
+    ['authProviderUnsupported', undefined, 'auth.provider is not supported in Damocles.'],
+    ['invalidConfig', { detail: 'timeout must be greater than 0' }, 'Invalid configuration: timeout must be greater than 0'],
+  ] as const)('renders %s', async (code, params, text) => {
+    mountPanel([failed({ errorInfo: params ? { code, params } : { code } })]);
+    await nextTick();
+    expect(errorRow()).toContain(text);
+  });
+
+  it('says a step-up needs more permission on a needs-auth row', async () => {
+    mountPanel([failed({ status: 'needs-auth', errorInfo: { code: 'insufficientScope' } })]);
+    await nextTick();
+    expect(errorRow()).toBe('The server needs more permission. Authenticate again to grant it.');
+  });
+
+  it('falls back to the error string on a failed row without errorInfo', async () => {
+    mountPanel([failed({ error: 'spawn ENOENT' })]);
+    await nextTick();
+    expect(errorRow()).toBe('spawn ENOENT');
+  });
+
+  it('translates error rows into Greek', async () => {
+    applyLocale('el');
+    mountPanel([failed({ errorInfo: { code: 'sseUnsupported' } })]);
+    await nextTick();
+    expect(errorRow()).not.toBe('');
+    expect(errorRow()).not.toContain('Legacy SSE');
+    expect(errorRow()).not.toContain('mcp.serverErrors');
+  });
+
+  it('keeps the stderr tail collapsed behind a button, and renders it as text', async () => {
+    mountPanel([failed({ error: 'exited', stderrTail: 'boom <b>x</b>' })]);
+    await nextTick();
+    const toggle = document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-server-stderr-toggle"]')!;
+    const tail = document.body.querySelector<HTMLElement>('[data-testid="mcp-server-stderr"]')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.getAttribute('aria-controls')).toBe(tail.id);
+    expect(tail.style.display).toBe('none');
+
+    await click(toggle);
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(tail.style.display).not.toBe('none');
+    expect(tail.textContent).toBe('boom <b>x</b>');
+    expect(tail.querySelector('b')).toBeNull();
+  });
+
+  it('shows no stderr control on a row that did not fail', async () => {
+    mountPanel([failed({ status: 'connected', stderrTail: 'noise' })]);
+    await nextTick();
+    expect(document.body.querySelector('[data-testid="mcp-server-stderr-toggle"]')).toBeNull();
+  });
+});
+
+describe('McpStatusPanel — description and enable control', () => {
+  it('shows the server description under its name', async () => {
+    mountPanel([{ ...editableDamocles, description: 'Weather forecasts' }]);
+    await nextTick();
+    expect(document.body.querySelector('[data-testid="mcp-server-description"]')?.textContent?.trim()).toBe('Weather forecasts');
+  });
+
+  it('labels each server switch and emits toggle for a server the config disables', async () => {
+    const wrapper = mountPanel([{ ...editableDamocles, enabled: false }]);
+    await nextTick();
+    const toggle = document.body.querySelector<HTMLButtonElement>('[aria-label="Enable weather"]');
+    expect(toggle).not.toBeNull();
+
+    await click(toggle!);
+
+    expect(wrapper.emitted('toggle')).toEqual([['weather', true]]);
+  });
+});
+
+describe('McpStatusPanel — per-tool exposure', () => {
+  const context7: McpServerStatusInfo = {
+    name: 'context7',
+    status: 'connected',
+    enabled: true,
+    source: 'pi',
+    tools: [
+      { name: 'resolve-library-id', exposure: 'off', exposureSource: 'project', configExposure: 'deferred' },
+      { name: 'query-docs', exposure: 'deferred', exposureSource: 'config', configExposure: 'deferred' },
+      { name: 'get_docs', exposure: 'direct', exposureSource: 'config', configExposure: 'direct' },
+    ],
+  };
+
+  async function mountExpanded(scopes?: ('user' | 'project' | 'local')[]) {
+    const wrapper = track(mount(McpStatusPanel, {
+      props: {
+        servers: [context7],
+        configErrors: [],
+        mcpWriteInFlight: false,
+        mcpWriteError: null,
+        mcpEnabled: true,
+        localMcpUnignored: false,
+        configRevision: 0,
+        visible: true,
+        ...(scopes ? { toolExposureScopes: scopes } : {}),
+      },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+    const toolsLabel = i18n.global.t('mcp.tools', { count: 3 });
+    const expand = buttons().find((el) => el.textContent?.includes(toolsLabel));
+    if (!expand) throw new Error(`no "${toolsLabel}" toggle`);
+    await click(expand);
+    return wrapper;
+  }
+
+  const groupFor = (tool: string): HTMLElement => {
+    const label = i18n.global.t('mcp.toolExposureLabel', { name: tool });
+    const group = Array.from(document.body.querySelectorAll<HTMLElement>('[data-testid="mcp-tool-exposure"]')).find((el) => el.getAttribute('aria-label') === label);
+    if (!group) throw new Error(`no exposure control for ${tool}`);
+    return group;
+  };
+  const option = (tool: string, exposure: string): HTMLButtonElement =>
+    groupFor(tool).querySelector<HTMLButtonElement>(`[data-exposure="${exposure}"]`)!;
+  const pressed = (tool: string): string | undefined =>
+    Array.from(groupFor(tool).querySelectorAll<HTMLElement>('[data-exposure]')).find((el) => el.getAttribute('data-state') === 'on')?.dataset.exposure;
+  const sources = (): string[] =>
+    Array.from(document.body.querySelectorAll('[data-testid="mcp-tool-exposure-source"]')).map((el) => el.textContent?.trim() ?? '');
+
+  it('gives every tool row an Off / On / Always loaded control showing its state, named for the tool', async () => {
+    await mountExpanded();
+    expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure"]')).toHaveLength(3);
+    expect(groupFor('query-docs').getAttribute('aria-label')).toBe('query-docs exposure');
+    expect(Array.from(groupFor('query-docs').querySelectorAll('[data-exposure]')).map((el) => el.textContent?.trim())).toEqual(['Off', 'On', 'Always loaded']);
+    expect(pressed('resolve-library-id')).toBe('off');
+    expect(pressed('query-docs')).toBe('deferred');
+    expect(pressed('get_docs')).toBe('direct');
+  });
+
+  it('labels where each state comes from, and the tooltip says Always loaded costs context every turn', async () => {
+    await mountExpanded();
+    expect(sources()).toEqual(['Project', 'Config', 'Config']);
+    expect(groupFor('get_docs').getAttribute('title')).toContain('costs context on every turn');
+  });
+
+  it('emits setToolExposure with the server, the raw tool name and the default User scope', async () => {
+    const wrapper = await mountExpanded(['user', 'project', 'local']);
+    await click(option('query-docs', 'direct'));
+    expect(wrapper.emitted('setToolExposure')).toEqual([['context7', 'query-docs', 'direct', 'user']]);
+  });
+
+  it('saves to the scope picked in Save to, which offers only the scopes the host can write', async () => {
+    const wrapper = await mountExpanded(['user', 'project']);
+    const picker = document.body.querySelector<HTMLElement>('[data-testid="mcp-tool-exposure-scope"]')!;
+    expect(Array.from(picker.querySelectorAll('[data-scope]')).map((el) => el.textContent?.trim())).toEqual(['User', 'Project']);
+    const labelId = picker.getAttribute('aria-labelledby')!;
+    expect(document.getElementById(labelId)?.textContent?.trim()).toBe('Save to');
+
+    await click(picker.querySelector<HTMLButtonElement>('[data-scope="project"]')!);
+    await click(option('resolve-library-id', 'deferred'));
+
+    expect(wrapper.emitted('setToolExposure')).toEqual([['context7', 'resolve-library-id', 'deferred', 'project']]);
+  });
+
+  it('pressing the active state again emits nothing, since a single choice cannot be cleared', async () => {
+    const wrapper = await mountExpanded();
+    await click(option('get_docs', 'direct'));
+    expect(wrapper.emitted('setToolExposure')).toBeUndefined();
+    expect(pressed('get_docs')).toBe('direct');
+  });
+
+  it('shows one Save to picker for the whole panel, whichever servers are expanded', async () => {
+    const other: McpServerStatusInfo = { ...context7, name: 'git', tools: [{ name: 'status', exposure: 'deferred', exposureSource: 'config', configExposure: 'deferred' }] };
+    track(mount(McpStatusPanel, {
+      props: {
+        servers: [context7, other],
+        configErrors: [],
+        mcpWriteInFlight: false,
+        mcpWriteError: null,
+        mcpEnabled: true,
+        localMcpUnignored: false,
+        configRevision: 0,
+        visible: true,
+        toolExposureScopes: ['user', 'project'],
+      },
+      attachTo: document.body,
+      global: { plugins: [i18n] },
+    }));
+    await nextTick();
+    expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure-scope"]')).toHaveLength(1);
+
+    for (const count of [3, 1]) {
+      const label = i18n.global.t('mcp.tools', { count });
+      await click(buttons().find((el) => el.textContent?.includes(label))!);
+    }
+    expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure"]')).toHaveLength(4);
+    expect(document.body.querySelectorAll('[data-testid="mcp-tool-exposure-scope"]')).toHaveLength(1);
+  });
+
+  it('offers User alone when the host sends no scopes', async () => {
+    await mountExpanded();
+    const picker = document.body.querySelector<HTMLElement>('[data-testid="mcp-tool-exposure-scope"]')!;
+    expect(Array.from(picker.querySelectorAll('[data-scope]')).map((el) => el.getAttribute('data-scope'))).toEqual(['user']);
+  });
+
+  it('the controls are reachable by keyboard: each option is a button', async () => {
+    await mountExpanded();
+    for (const el of groupFor('query-docs').querySelectorAll('[data-exposure]')) expect(el.tagName).toBe('BUTTON');
+  });
+
+  it('translates the control, its source labels and the picker', async () => {
+    applyLocale('el');
+    await mountExpanded();
+    await nextTick();
+    expect(Array.from(groupFor('query-docs').querySelectorAll('[data-exposure]')).map((el) => el.textContent?.trim())).toEqual(['Ανενεργό', 'Ενεργό', 'Πάντα φορτωμένο']);
+    expect(sources()[0]).toBe('Έργο');
   });
 });

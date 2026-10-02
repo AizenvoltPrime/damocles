@@ -17,7 +17,7 @@ import {
  * snapshot the class assembles from live auth state.
  */
 
-const openaiModel: ModelInfo = { value: 'gpt-6-sol', displayName: 'GPT-6 Sol', description: '', backend: 'openai' };
+const openaiModel: ModelInfo = { value: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol', description: '', backend: 'openai' };
 const stepfunModel: ModelInfo = { value: 'step-2', displayName: 'Step 2', description: '', piProvider: 'stepfun', flatFee: true };
 const deepseekModel: ModelInfo = { value: 'deepseek-v4-pro', displayName: 'DeepSeek', description: '', piProvider: 'deepseek' };
 const anthropicModel: ModelInfo = { value: 'claude-opus-4-8', displayName: 'Opus', description: '' };
@@ -27,7 +27,7 @@ function deps(overrides: Partial<AccountBillingDeps>): AccountBillingDeps {
     modelValue: 'claude-opus-4-8',
     modelInfo: anthropicModel,
     claudeAuthMode: 'allowance',
-    openaiAuthStatus: { apiKey: false, codex: false } as OpenAIAuthStatus,
+    openaiAuthStatus: { apiKey: false, chatgpt: false, codex: false } as OpenAIAuthStatus,
     preferApiKey: false,
     ...overrides,
   };
@@ -35,21 +35,45 @@ function deps(overrides: Partial<AccountBillingDeps>): AccountBillingDeps {
 
 describe('openaiTokenSource', () => {
   it('codex-oauth when a codex grant exists and API key is not preferred', () => {
-    expect(openaiTokenSource(deps({ openaiAuthStatus: { apiKey: true, codex: true } }))).toBe('codex-oauth');
+    expect(openaiTokenSource(deps({ openaiAuthStatus: { apiKey: true, chatgpt: false, codex: true } }))).toBe('codex-oauth');
   });
 
   it('openai-api-key when prefer-API-key is set and a key is configured', () => {
-    expect(openaiTokenSource(deps({ preferApiKey: true, openaiAuthStatus: { apiKey: true, codex: true } }))).toBe('openai-api-key');
+    expect(openaiTokenSource(deps({ preferApiKey: true, openaiAuthStatus: { apiKey: true, chatgpt: false, codex: true } }))).toBe('openai-api-key');
+  });
+
+  it('chatgpt-oauth when a ChatGPT grant exists, over a Codex grant and an unpreferred key', () => {
+    expect(openaiTokenSource(deps({ openaiAuthStatus: { apiKey: true, chatgpt: true, codex: true } }))).toBe('chatgpt-oauth');
+    expect(openaiTokenSource(deps({ preferApiKey: true, openaiAuthStatus: { apiKey: false, chatgpt: true, codex: false } }))).toBe('chatgpt-oauth');
+  });
+
+  it('a preferred key wins over a ChatGPT grant', () => {
+    expect(openaiTokenSource(deps({ preferApiKey: true, openaiAuthStatus: { apiKey: true, chatgpt: true, codex: false } }))).toBe('openai-api-key');
   });
 
   it('falls back to openai-api-key when no codex grant exists', () => {
-    expect(openaiTokenSource(deps({ openaiAuthStatus: { apiKey: true, codex: false } }))).toBe('openai-api-key');
+    expect(openaiTokenSource(deps({ openaiAuthStatus: { apiKey: true, chatgpt: false, codex: false } }))).toBe('openai-api-key');
+  });
+
+  // A GPT model outside the Codex catalog resolves to `openai` on the key although a Codex grant exists.
+  it('names the key when the model resolved to openai despite a Codex grant, and bills dollars', () => {
+    const status = { apiKey: true, chatgpt: false, codex: true };
+    const resolved = deps({ modelInfo: openaiModel, openaiAuthStatus: status, resolvedProvider: 'openai' });
+    expect(openaiTokenSource(resolved)).toBe('openai-api-key');
+    expect(dollarBilled(resolved)).toBe(true);
+    expect(openaiTokenSource({ ...resolved, resolvedProvider: 'openai-codex' })).toBe('codex-oauth');
+  });
+
+  it('names ChatGPT on openai only while the runtime key rule does not want the key', () => {
+    const status = { apiKey: true, chatgpt: true, codex: false };
+    expect(openaiTokenSource(deps({ openaiAuthStatus: status, resolvedProvider: 'openai' }))).toBe('chatgpt-oauth');
+    expect(openaiTokenSource(deps({ openaiAuthStatus: status, resolvedProvider: 'openai', preferApiKey: true }))).toBe('openai-api-key');
   });
 });
 
 describe('apiKeySource', () => {
   it('openai backend → the openai token source', () => {
-    expect(apiKeySource(deps({ modelInfo: openaiModel, openaiAuthStatus: { apiKey: false, codex: true } }))).toBe('codex-oauth');
+    expect(apiKeySource(deps({ modelInfo: openaiModel, openaiAuthStatus: { apiKey: false, chatgpt: false, codex: true } }))).toBe('codex-oauth');
   });
 
   it('piProvider model → its provider id', () => {
@@ -66,14 +90,14 @@ describe('apiKeySource', () => {
 
   it('openai backend honors prefer-API-key only when a key exists, else codex', () => {
     // preferApiKey set but NO api key configured → must NOT claim openai-api-key; falls to codex.
-    expect(apiKeySource(deps({ modelInfo: openaiModel, preferApiKey: true, openaiAuthStatus: { apiKey: false, codex: true } }))).toBe('codex-oauth');
+    expect(apiKeySource(deps({ modelInfo: openaiModel, preferApiKey: true, openaiAuthStatus: { apiKey: false, chatgpt: false, codex: true } }))).toBe('codex-oauth');
   });
 });
 
 describe('buildAccountInfo', () => {
   it('openai backend sets tokenSource, no subscriptionType', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'gpt-6-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, codex: false } }));
-    expect(info).toEqual({ model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    const info = buildAccountInfo(deps({ modelValue: 'gpt-6.1-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, chatgpt: false, codex: false } }));
+    expect(info).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
   });
 
   it('piProvider model sets tokenSource = provider id (no Claude chip)', () => {
@@ -93,8 +117,14 @@ describe('buildAccountInfo', () => {
 });
 
 describe('dollarBilled', () => {
+  it('openai under ChatGPT is not dollar-metered until the key is preferred', () => {
+    const status = { apiKey: true, chatgpt: true, codex: false };
+    expect(dollarBilled(deps({ modelInfo: openaiModel, openaiAuthStatus: status }))).toBe(false);
+    expect(dollarBilled(deps({ modelInfo: openaiModel, openaiAuthStatus: status, preferApiKey: true }))).toBe(true);
+  });
+
   it('openai with an API key is dollar-metered', () => {
-    expect(dollarBilled(deps({ modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, codex: false }, preferApiKey: true }))).toBe(true);
+    expect(dollarBilled(deps({ modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, chatgpt: false, codex: false }, preferApiKey: true }))).toBe(true);
   });
 
   it('anthropic subscription (allowance) is NOT dollar-metered', () => {
@@ -121,16 +151,28 @@ describe('piModelDollarBilled', () => {
   const billing = (over: Partial<ModelBillingDeps> = {}): ModelBillingDeps => ({
     supportedModels: [openaiModel, stepfunModel, deepseekModel, anthropicModel],
     claudeAuthMode: 'allowance',
-    openai: { apiKey: true, codex: true } as OpenAIAuthStatus,
+    openai: { apiKey: true, chatgpt: false, codex: true } as OpenAIAuthStatus,
     preferApiKey: false,
+    registry: undefined,
     ...over,
   });
 
   it('bills an OpenAI model by the provider it resolved to, whatever the panel prefers', () => {
     // The panel prefers Codex OAuth here, so the catalog rule alone would call the API-key model flat.
-    expect(modelDollarBilled('gpt-6-sol', billing())).toBe(false);
-    expect(piModelDollarBilled({ provider: 'openai', id: 'gpt-6-sol' }, billing())).toBe(true);
-    expect(piModelDollarBilled({ provider: 'openai-codex', id: 'gpt-6-sol' }, billing({ preferApiKey: true }))).toBe(false);
+    expect(modelDollarBilled('gpt-6.1-sol', billing())).toBe(false);
+    expect(piModelDollarBilled({ provider: 'openai', id: 'gpt-6.1-sol' }, billing())).toBe(true);
+    expect(piModelDollarBilled({ provider: 'openai-codex', id: 'gpt-6.1-sol' }, billing({ preferApiKey: true }))).toBe(false);
+  });
+
+  it('bills openai only while the runtime key is wanted over a ChatGPT grant', () => {
+    const chatgpt = (apiKey: boolean) => ({ apiKey, chatgpt: true, codex: false });
+    const sol = { provider: 'openai', id: 'gpt-6.1-sol' };
+    expect(piModelDollarBilled(sol, billing({ openai: chatgpt(false) }))).toBe(false);
+    expect(piModelDollarBilled(sol, billing({ openai: chatgpt(true) }))).toBe(false);
+    expect(piModelDollarBilled(sol, billing({ openai: chatgpt(true), preferApiKey: true }))).toBe(true);
+    expect(piModelDollarBilled(sol, billing({ openai: chatgpt(false), preferApiKey: true }))).toBe(false);
+    // With neither credential Damocles cannot tell, so it reads as a charge.
+    expect(piModelDollarBilled(sol, billing({ openai: { apiKey: false, chatgpt: false, codex: false } }))).toBe(true);
   });
 
   it('bills an Anthropic model by the Claude auth mode, curated or not', () => {

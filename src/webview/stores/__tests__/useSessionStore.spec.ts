@@ -35,6 +35,17 @@ describe('useSessionStore.addCompactMarker — entryId (rewind-to-before-compact
   });
 });
 
+describe('useSessionStore.trackFileAccess', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('lists an image GenerateImage creates as a created file', () => {
+    const store = useSessionStore();
+    store.trackFileAccess('GenerateImage', { prompt: 'a fox', file_path: 'assets/fox.png' });
+
+    expect(store.accessedFiles['assets/fox.png']).toEqual({ path: 'assets/fox.png', operation: 'create' });
+  });
+});
+
 describe('useSessionStore.addCompactMarker: billed usage', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

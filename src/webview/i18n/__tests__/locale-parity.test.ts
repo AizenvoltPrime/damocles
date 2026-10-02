@@ -170,6 +170,23 @@ describe('MCP copy', () => {
     expect(EL.get('mcp.form.writeErrors.nameShadowed')).toContain('διακομιστής');
     expect(EL.get('mcp.form.errors.nameShadowedByProject')).not.toContain(' server ');
   });
+
+  it('uses one Greek word each for "server" and "agent" across the MCP panel', () => {
+    // Input placeholders and the `"mcpServers"` JSON key keep their English spelling.
+    const offenders = [...EL]
+      .filter(([key]) => key.startsWith('mcp.') && !key.endsWith('Placeholder'))
+      .filter(([, value]) => /\bservers?\b|\bagents?\b/i.test(value.replace('"mcpServers"', '')))
+      .map(([key]) => key);
+
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('account copy', () => {
+  it('names the subscription plan with the word the ChatGPT strings use', () => {
+    expect(EL.get('usage.account.plan')).toBe('Πλάνο');
+    expect(EL.get('usage.gptUsageElsewhere')).toContain('πλάνου');
+  });
 });
 
 describe('session status copy', () => {

@@ -13,6 +13,7 @@ import { McpWriteError } from "../../../settings-manager/managers/mcp-config-wri
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { McpScope } from "../../../../session-types";
+import { specOf } from "../../../../pi-session/mcp/__tests__/fake-server-manager";
 
 /**
  * The three `~/.damocles/mcp.json` handlers. What matters here is the *wiring* the brief specifies —
@@ -39,9 +40,9 @@ function setup(failure?: Error) {
     setServerEnabled: vi.fn(async () => {}),
     loadMcpConfig: vi.fn(async () => { calls.push("loadMcpConfig"); }),
     getEnabledMcpServers: vi.fn((folderKey: string): McpScope => ({
-      userUnion: { docs: { command: "docs-server" } },
+      userUnion: { docs: specOf({ command: "docs-server" }) },
       userVisible: ["docs"],
-      folder: { [`${folderKey}-only`]: { command: folderKey } },
+      folder: { [`${folderKey}-only`]: specOf({ command: folderKey }, { folderScoped: true }) },
     })),
     buildMcpConfigUpdate: vi.fn((folderKey: string) => {
       calls.push("buildMcpConfigUpdate");
@@ -86,7 +87,7 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
     expect(calls).toEqual([
       "write", "loadMcpConfig", "setMcpServers", "buildMcpConfigUpdate", "sendMcpStatus",
     ]);
-    expect(fedServers[0]).toEqual({ userUnion: { docs: { command: "docs-server" } }, userVisible: ["docs"], folder: { "a-only": { command: "a" } } });
+    expect(fedServers[0]).toEqual({ userUnion: { docs: specOf({ command: "docs-server" }) }, userVisible: ["docs"], folder: { "a-only": specOf({ command: "a" }, { folderScoped: true }) } });
     expect(acks(posted)).toEqual([{ type: "mcpWriteResult", requestId: REQ, ok: true }]);
   });
 
@@ -119,7 +120,7 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
 
     await handlers.mcpReloadConfig!({ type: "mcpReloadConfig" }, { host: {}, session: { setMcpServers: () => {} }, folder: { key: "a" } } as unknown as HandlerContext);
 
-    expect(otherFed).toEqual([{ userUnion: { docs: { command: "docs-server" } }, userVisible: ["docs"], folder: { "b-only": { command: "b" } } }]);
+    expect(otherFed).toEqual([{ userUnion: { docs: specOf({ command: "docs-server" }) }, userVisible: ["docs"], folder: { "b-only": specOf({ command: "b" }, { folderScoped: true }) } }]);
     const update = otherPosted.find((m): m is Extract<ExtensionToWebviewMessage, { type: "mcpConfigUpdate" }> => m.type === "mcpConfigUpdate");
     expect(update?.servers.map(server => server.name)).toEqual(["b-only"]);
   });

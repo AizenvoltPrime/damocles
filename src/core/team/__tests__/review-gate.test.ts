@@ -4,13 +4,16 @@ import {
   checkApprovalReadGate,
   checkBriefReadGate,
   checkReviewActionPrecondition,
+  checkReviewerReportGate,
   checkSynthesisReadGate,
   classifyStrandedStandby,
   classifyTerminalContract,
   formatReviewRoundReadyNotification,
   isDeliverableStatus,
+  isSpecialistFinal,
   isSpecialistSettled,
 } from '../review-gate';
+import { ReviewCoverage, type CoverageView } from '../review-coverage';
 import type { TeamAgent } from '../types';
 
 /** The rejection text of a gate decision, failing if it was accepted or carried no reason. */
@@ -29,8 +32,8 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     status: 'awaiting-review',
     model: 'test',
     profileId: null,
-    startTime: null,
-    endTime: null,
+    activeMs: 0,
+    runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -39,6 +42,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
     dollarBilled: true,
+    effort: null,
     finalResponse: null,
     error: null,
     logFilePath: null,
@@ -572,5 +576,122 @@ describe('checkReviewActionPrecondition', () => {
     );
     expect(decision.ok).toBe(false);
     expect(rejection(decision)).toContain('Review round not ready — specialists still working: frontend (running, 2 tools).');
+  });
+});
+
+describe('isSpecialistFinal', () => {
+  it.each(['completed', 'cancelled', 'failed'] as Array<TeamAgent['status']>)('%s is final', (status) => {
+    expect(isSpecialistFinal(status)).toBe(true);
+  });
+
+  it.each(['awaiting-review', 'running', 'standby', 'pending', 'monitoring'] as Array<TeamAgent['status']>)('%s is not final', (status) => {
+    expect(isSpecialistFinal(status)).toBe(false);
+  });
+});
+
+describe('checkReviewerReportGate', () => {
+  it('passes once the reviewer holds the current version of every implementor section', () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('backend-api', 'v1', 'backend');
+    scratchpad.markRead('appsec', 'backend-api');
+    expect(checkReviewerReportGate('appsec', ['backend'], scratchpad)).toEqual({ ok: true, stale: [] });
+  });
+
+  it('lists every unread or stale implementor section, in the brief text', () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('backend-api', 'v1', 'backend');
+    scratchpad.markRead('appsec', 'backend-api');
+    scratchpad.set('backend-api', 'v2', 'backend');
+    scratchpad.set('frontend-ui', 'v1', 'frontend');
+    scratchpad.set('unrelated', 'v1', 'qa');
+    expect(rejection(checkReviewerReportGate('appsec', ['backend', 'frontend'], scratchpad))).toBe(
+      'Cannot report complete: your review is out of date. "backend-api" is v2 by backend (you last read v1); "frontend-ui" is v1 by frontend (never read). ' +
+      'Read each listed section with team_read_scratchpad, update your review, then report again.',
+    );
+  });
+
+  it('gates nothing for a reviewer of nobody', () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('backend-api', 'v1', 'backend');
+    expect(checkReviewerReportGate('qa', [], scratchpad).ok).toBe(true);
+  });
+});
+
+describe('formatReviewRoundReadyNotification coverage lines', () => {
+  const statusOf = (map: Record<string, TeamAgent['status']>) => (name: string): TeamAgent['status'] => map[name] ?? 'awaiting-review';
+
+  const viewOf = (status: Record<string, TeamAgent['status']>, scratchpad: Scratchpad): CoverageView => ({
+    statusOf: statusOf(status),
+    staleReads: (reviewer, implementor) => scratchpad.getStaleSectionsFor(reviewer, implementor),
+  });
+
+  function notify(coverage: ReviewCoverage, agents: TeamAgent[], status: Record<string, TeamAgent['status']> = {}, scratchpad = new Scratchpad()): string {
+    return formatReviewRoundReadyNotification(agents, scratchpad, 'Lead', [], [], { model: coverage, view: viewOf(status, scratchpad) })!;
+  }
+
+  function paired(): ReviewCoverage {
+    const coverage = new ReviewCoverage();
+    coverage.declare('appsec', ['backend']);
+    coverage.land('backend', { attempt: 0, round: 2 });
+    return coverage;
+  }
+
+  const backend = makeAgent({ name: 'backend', role: 'specialist' });
+  const appsec = makeAgent({ name: 'appsec', role: 'specialist' });
+
+  it('APPROVED and current', () => {
+    const coverage = paired();
+    coverage.recordSignoffs('appsec', [{ implementor: 'backend', verdict: 'approve' }]);
+    expect(notify(coverage, [backend])).toContain('  - backend: no scratchpad section authored\n    reviewed by appsec: APPROVED revision 2 [current]');
+  });
+
+  it('CHANGES REQUESTED blocks approval', () => {
+    const coverage = paired();
+    coverage.recordSignoffs('appsec', [{ implementor: 'backend', verdict: 'changes_requested' }]);
+    expect(notify(coverage, [backend])).toContain('reviewed by appsec: CHANGES REQUESTED on revision 2 [approval blocked: revise or dismiss]');
+  });
+
+  it('a sign-off on an older revision is NOT CURRENT', () => {
+    const coverage = new ReviewCoverage();
+    coverage.declare('appsec', ['backend']);
+    coverage.land('backend', { attempt: 0, round: 1 });
+    coverage.recordSignoffs('appsec', [{ implementor: 'backend', verdict: 'approve' }]);
+    coverage.land('backend', { attempt: 0, round: 2 });
+    expect(notify(coverage, [backend])).toContain('reviewed by appsec: signed off on revision 1 [NOT CURRENT, approval blocked]');
+  });
+
+  it('a current approve over a section the implementor changed after it is NOT CURRENT, through the same decision as the gate', () => {
+    const scratchpad = new Scratchpad();
+    scratchpad.set('backend-api', 'v1', 'backend');
+    scratchpad.markRead('appsec', 'backend-api');
+    const coverage = paired();
+    coverage.recordSignoffs('appsec', [{ implementor: 'backend', verdict: 'approve' }]);
+    scratchpad.set('backend-api', 'v2 after a peer question', 'backend');
+
+    expect(notify(coverage, [backend], {}, scratchpad))
+      .toContain('reviewed by appsec: APPROVED revision 2 but has not read "backend-api" v2 [NOT CURRENT, approval blocked]');
+    expect(coverage.checkApproval('backend', viewOf({}, scratchpad))).toContain('appsec signed off on it but has not read "backend-api" v2');
+  });
+
+  it('a final reviewer that never reviewed the revision offers redispatch or dismissal, and a completed one only dismissal', () => {
+    expect(notify(paired(), [backend], { appsec: 'cancelled' })).toContain('appsec cancelled, revision 2 unreviewed [approval blocked: redispatch appsec or dismiss with team_dismiss_review]');
+    expect(notify(paired(), [backend], { appsec: 'completed' })).toContain('appsec completed, revision 2 unreviewed [approval blocked: dismiss with team_dismiss_review]');
+  });
+
+  it('a dismissed review reads as current', () => {
+    const coverage = paired();
+    coverage.dismiss('appsec', 'backend', 'accepted as remaining work', viewOf({ appsec: 'failed' }, new Scratchpad()));
+    expect(notify(coverage, [backend], { appsec: 'failed' })).toContain('reviewed by appsec: review of revision 2 DISMISSED by you [current]');
+  });
+
+  it('a reviewer line asks for its implementor first, and the round closes with the ordering rule', () => {
+    const text = notify(paired(), [backend, appsec]);
+    expect(text).toContain('  - appsec: no scratchpad section authored\n    reviews backend: awaiting review [approval blocked: approve or revise backend first]');
+    expect(text.endsWith('for each. Approve implementors before their reviewers.')).toBe(true);
+  });
+
+  it('a team with no pairs renders exactly as without coverage', () => {
+    const agents = [backend];
+    expect(notify(new ReviewCoverage(), agents)).toBe(formatReviewRoundReadyNotification(agents, new Scratchpad(), 'Lead', [], []));
   });
 });

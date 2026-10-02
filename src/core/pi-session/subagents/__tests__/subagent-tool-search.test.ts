@@ -12,7 +12,7 @@ import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { TEAM_AGENT_PI_TOOL_NAMES } from '../../tools/team-tools';
 import { TOOL_TOOL_SEARCH } from '../../../../shared/tool-names';
 import { buildNestedMcpToolset, type NestedMcpToolset } from '../../tools/mcp-tools';
-import { buildServerPrefixMap, formatMcpToolName } from '../../mcp/naming';
+import { assignServerToolNames, createMcpToolName } from '../../mcp/naming';
 import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
@@ -246,7 +246,7 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     expect(current()).toContain('BrowserOpen');
   });
 
-  it('the universe is the DEFERRABLE set, not the ACTIVE set — an active non-deferrable name is unknown', async () => {
+  it('the universe is the DEFERRABLE set, not the ACTIVE set — an active non-deferrable name is reported active, never resolved', async () => {
     // A precise boundary that a plausible-looking implementation gets wrong: building the port's `names`
     // from `getActiveTools()` (or unioning it in) would make every already-active tool "resolvable".
     // That is not merely redundant — it is the hole §3.4 relies on being closed, because a `tools: *`
@@ -266,7 +266,9 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
 
     expect(result.details?.matches).toEqual([]);
     expect(setActiveTools).not.toHaveBeenCalled();
-    expect(result.content[0]!.text).toMatch(/Unknown entries/);
+    // Named as already active (an Always-loaded MCP tool is the case that needs it), never resolved.
+    expect(result.content[0]!.text).toMatch(/Already active, no loading needed/);
+    expect(result.content[0]!.text).not.toMatch(/Loaded \d/);
     for (const n of ['Edit', 'read', TOOL_TOOL_SEARCH]) expect(result.content[0]!.text, n).toContain(n);
   });
 
@@ -341,10 +343,13 @@ function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor
     serverName: 'git',
     serverId: `test/${over.serverName ?? 'git'}`,
     kind: 'tool',
-    originalName: over.piName.split('__').slice(2).join('__'),
+    rawToolName: over.piName.split('__').slice(2).join('__'),
     description: '',
     inputSchema: { type: 'object', properties: {} },
     readOnly: false,
+    exposure: 'deferred',
+    exposureSource: 'config',
+    configExposure: 'deferred',
     ...over,
   };
 }
@@ -515,21 +520,17 @@ describe('nested ToolSearch — per-server activation and execution (criterion 4
   });
 });
 
-describe('nested ToolSearch — the group name ROUND-TRIPS through sanitization (criterion 5 / §4.7)', () => {
-  // `buildServerPrefixMap` sanitizes and de-collides server keys, so `descriptor.serverName` ("my-server")
-  // and the group embedded in the pi tool name ("my_server") DIVERGE. The menu must advertise the one
-  // `resolveToolSearchEntries` accepts back — deriving it from `serverName` produces a group name the
-  // model is told to use and the resolver then rejects as unknown.
-  const prefix = buildServerPrefixMap(['my-server']).get('my-server')!;
-  const piName = formatMcpToolName(prefix, 'do_thing');
-  const DESCRIPTORS = [mcpDescriptor({ piName, serverName: 'my-server', originalName: 'do_thing', description: 'Do the thing' })];
+describe('nested ToolSearch — the group comes from the server name, never the tool name (criterion 5 / §4.7)', () => {
+  // A server name with punctuation prints as its namespace key, and a hash-suffixed tool name says
+  // nothing reliable about its server, so the menu and the resolver both read `serverName`.
+  const piName = createMcpToolName('my-server', 'do-thing');
+  const DESCRIPTORS = [mcpDescriptor({ piName, serverName: 'my-server', rawToolName: 'do-thing', description: 'Do the thing' })];
 
-  it('sanity: the raw server name and the pi-name group really do differ', () => {
-    expect(prefix).toBe('my_server');
+  it('sanity: pi naming sanitizes the whole name', () => {
     expect(piName).toBe('mcp__my_server__do_thing');
   });
 
-  it('advertises the SANITIZED group name, never the raw server name', () => {
+  it('advertises the printable group name, never the raw server name', () => {
     const { mcp } = snapshot(DESCRIPTORS);
     const description = registerWithMcp({ mcp }).tool!.description;
 
@@ -545,29 +546,22 @@ describe('nested ToolSearch — the group name ROUND-TRIPS through sanitization 
     expect(ok.details?.matches).toEqual([piName]);
     expect(current()).toContain(piName);
 
-    // The other direction closes the loop: if the group had been derived from `serverName`, the menu
-    // would advertise `my-server` and THIS would be the working call while the advertised one failed.
     const raw = await call(tool!, ['my-server']);
     expect(raw.details?.matches).toEqual([]);
     expect(raw.content[0]!.text).toMatch(/Unknown entries/);
   });
 
-  it('two servers that sanitize to the same prefix stay addressable as distinct groups', () => {
-    // `buildServerPrefixMap` de-collides with `_2`; both prefixes must survive into the menu, or one
-    // server's tools become unreachable by group.
-    const map = buildServerPrefixMap(['my-server', 'my.server']);
-    const a = formatMcpToolName(map.get('my-server')!, 'alpha');
-    const b = formatMcpToolName(map.get('my.server')!, 'beta');
-    expect(map.get('my.server')).toBe('my_server_2');
-
+  it('keeps hash-suffixed tools in their server\u2019s group', async () => {
+    const names = assignServerToolNames('docs', ['a-b', 'a_b'], new Set());
     const { mcp } = snapshot([
-      mcpDescriptor({ piName: a, serverName: 'my-server', description: 'A' }),
-      mcpDescriptor({ piName: b, serverName: 'my.server', description: 'B' }),
+      mcpDescriptor({ piName: names.get('a-b')!, serverName: 'docs', rawToolName: 'a-b', description: 'A' }),
+      mcpDescriptor({ piName: names.get('a_b')!, serverName: 'docs', rawToolName: 'a_b', description: 'B' }),
     ]);
-    const description = registerWithMcp({ mcp }).tool!.description;
+    const { tool } = registerWithMcp({ mcp });
 
-    expect(description).toContain('my_server (1):');
-    expect(description).toContain('my_server_2 (1):');
+    expect(tool!.description).toContain('docs (2):');
+    const loaded = await call(tool!, ['docs']);
+    expect([...(loaded.details?.matches ?? [])].sort()).toEqual([...names.values()].sort());
   });
 });
 
@@ -701,7 +695,7 @@ describe('nested ToolSearch — hostile MCP descriptors cannot forge the menu (c
     expect(description).not.toContain('D'.repeat(121));
     // The RAW description is still what the snapshot carries — capping is a RENDER-time concern, so the
     // definition's own description (which the model reads once the tool is loaded) is not truncated.
-    expect(mcp.descriptions.get('mcp__git__status')).toHaveLength(500);
+    expect(mcp.descriptions.get('mcp__git__status')?.description).toHaveLength(500);
   });
 
   it('an over-long name is omitted from the MENU but stays activatable by its exact name', async () => {

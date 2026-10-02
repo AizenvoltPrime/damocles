@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setActivePinia, createPinia } from 'pinia';
 
@@ -16,6 +16,9 @@ import { DAMOCLES_HOME_DIR } from '../../paths';
 import { TeamRunner } from '../team-runner';
 import { AgentRunner } from '../agent-runner';
 import { TeamPersistence } from '../persistence';
+import { TeamRunLog } from '../runs';
+import { teamEventLogPath } from '../../pi-session/agent-records';
+import { ensurePiSessionDir } from '../../pi-session/session-store';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession } from './fake-session';
@@ -55,7 +58,8 @@ const ATTEMPT_2 = {
 interface AgentFigures {
   status: string;
   toolCount: number;
-  durationMs: number | null;
+  activeMs: number;
+  runningSince: number | null;
   totalInputTokens: number;
   totalOutputTokens: number;
   cacheReadTokens: number;
@@ -67,7 +71,8 @@ function figures(agent: WebviewTeamAgent): AgentFigures {
   return {
     status: agent.status,
     toolCount: agent.toolCount,
-    durationMs: agent.startTime !== null && agent.endTime !== null ? agent.endTime - agent.startTime : null,
+    activeMs: agent.activeMs,
+    runningSince: agent.runningSince,
     totalInputTokens: agent.totalInputTokens,
     totalOutputTokens: agent.totalOutputTokens,
     cacheReadTokens: agent.cacheReadTokens,
@@ -79,11 +84,11 @@ function figures(agent: WebviewTeamAgent): AgentFigures {
 function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
     agentId: `id-${name}`, teamId: TEAM_ID, name, role, attempt: 0, specialization: '',
-    status: 'pending', model: 'test', profileId: null, startTime: null, endTime: null,
+    status: 'pending', model: 'test', profileId: null, activeMs: 0, runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
-    dollarBilled: false, finalResponse: null, error: null, logFilePath: null,
+    dollarBilled: false, effort: null, finalResponse: null, error: null, logFilePath: null,
   };
 }
 
@@ -265,8 +270,9 @@ describe('a cancelled and re-dispatched specialist', () => {
     expect(figures(live)).toMatchObject({
       status: 'completed',
       toolCount: ATTEMPT_2.tools.length,
-      // The card times the attempt now running, so the clock starts at the redispatch.
-      durationMs: 28_655,
+      // The card times the attempt now running, so the stopwatch starts at the redispatch.
+      activeMs: 28_655,
+      runningSince: null,
       totalOutputTokens: ATTEMPT_1.usage.output + ATTEMPT_2.usage.output,
       costUsd: ATTEMPT_1.cost + ATTEMPT_2.cost,
     });
@@ -304,5 +310,56 @@ describe('a cancelled and re-dispatched specialist', () => {
     // Both entries carry an attempt-local figure, and the restored total is exactly their sum.
     expect(alpha?.costUsd).toBeCloseTo(ATTEMPT_1.cost + ATTEMPT_2.cost, 10);
     expect(alpha?.attempt).toBe(1);
+  });
+});
+
+describe('a team agent effort', () => {
+  /** pi reports the clamped level on the session, and the model's reasoning flag beside it. */
+  const runningAt = (session: FakeSession, thinkingLevel: string, reasoning = true): FakeSession =>
+    Object.assign(session, { thinkingLevel, model: { reasoning } });
+
+  it('shows each attempt its own session level, the same live and after a reload, and resets on a new attempt', async () => {
+    const cwd = join(DAMOCLES_HOME_DIR, 'effort-attempts');
+    const h = await makeHarness(cwd);
+
+    const first = runningAt(h.queueSession(), 'high');
+    h.runner.startSpecialist('alpha', TASK);
+    await first.whenPrompted(1);
+    await h.settle();
+    await h.persistence.flush();
+    expect(h.liveAgent('alpha').effort).toBe('high');
+    expect((await h.loadedAgent('alpha')).effort).toBe('high');
+
+    h.runner.cancelSpecialist('alpha');
+    first.emit({ type: 'turn_end' });
+    await h.settle();
+
+    const second = runningAt(h.queueSession(), 'medium');
+    h.runner.redispatchSpecialist('alpha', TASK);
+    // The new attempt's session does not exist yet, so neither surface may keep the dead attempt's level.
+    expect(h.liveAgent('alpha').effort).toBeNull();
+    // Read synchronously, before the session the redispatch is creating can append its entry.
+    const log = new TeamRunLog();
+    for (const line of readFileSync(teamEventLogPath(ensurePiSessionDir(cwd), SESSION_ID, TEAM_ID), 'utf-8').split(String.fromCharCode(10)).filter(Boolean)) log.add(JSON.parse(line));
+    expect(log.memberEffort('id-alpha')).toBeNull();
+
+    await second.whenPrompted(1);
+    await h.settle();
+    await h.persistence.flush();
+    expect(h.liveAgent('alpha').effort).toBe('medium');
+    expect((await h.loadedAgent('alpha')).effort).toBe('medium');
+  });
+
+  it('shows no effort for a model that does not reason, on either surface', async () => {
+    const h = await makeHarness(join(DAMOCLES_HOME_DIR, 'effort-no-reasoning'));
+
+    const session = runningAt(h.queueSession(), 'off', false);
+    h.runner.startSpecialist('alpha', TASK);
+    await session.whenPrompted(1);
+    await h.settle();
+    await h.persistence.flush();
+
+    expect(h.liveAgent('alpha').effort).toBeNull();
+    expect((await h.loadedAgent('alpha')).effort).toBeNull();
   });
 });

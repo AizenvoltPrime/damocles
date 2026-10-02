@@ -1,80 +1,70 @@
 import { describe, it, expect } from 'vitest';
 import {
-  sanitizeServerName,
-  formatMcpToolName,
-  buildServerPrefixMap,
-  resourceNameToToolName,
+  assignServerToolNames,
+  createMcpToolName,
   isMcpToolName,
+  legacyMcpToolName,
+  legacyServerPrefixMap,
   MCP_TOOL_PREFIX,
-  remapMcpToolNamesForRename,
+  parseLegacyMcpToolName,
+  resourceNameToToolName,
 } from '../naming';
 
-describe('mcp naming', () => {
-  it('sanitizes server names to alphanumeric/underscore', () => {
-    expect(sanitizeServerName('my-server')).toBe('my_server');
-    expect(sanitizeServerName('my.server')).toBe('my_server');
-    expect(sanitizeServerName('@scope/pkg')).toBe('scope_pkg');
-    expect(sanitizeServerName('___')).toBe('server');
+describe('createMcpToolName (pi port)', () => {
+  it('keeps names that are already [A-Za-z0-9_] and within 64 characters', () => {
+    expect(createMcpToolName('git', 'status')).toBe('mcp__git__status');
+    expect(createMcpToolName('docs', 'a__b')).toBe('mcp__docs__a__b');
   });
 
-  it('formats the mcp__ double-underscore scheme', () => {
-    expect(formatMcpToolName('git', 'status')).toBe('mcp__git__status');
+  it('replaces every other character with _ across the whole name, server and tool alike', () => {
+    expect(createMcpToolName('context7', 'resolve-library-id')).toBe('mcp__context7__resolve_library_id');
+    expect(createMcpToolName('my.server', 'search')).toBe('mcp__my_server__search');
+    expect(createMcpToolName('@scope/pkg', 'a.b c')).toBe('mcp___scope_pkg__a_b_c');
+  });
+
+  it('cuts a name over 64 characters and appends the 8-character hash pi computes', () => {
+    const name = createMcpToolName('github', 'a'.repeat(80));
+    expect(name).toBe('mcp__github__aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_16bc6b69');
+    expect(name).toHaveLength(64);
+  });
+
+  it('gives a taken name the hash suffix, distinct per raw tool name', () => {
+    const taken = () => true;
+    expect(createMcpToolName('docs', 'a-b', taken)).toBe('mcp__docs__a_b_4f33a9a2');
+    expect(createMcpToolName('docs', 'a_b', taken)).toBe('mcp__docs__a_b_63617bb9');
+  });
+
+  it('marks MCP names by prefix', () => {
     expect(isMcpToolName('mcp__git__status')).toBe(true);
     expect(isMcpToolName('Edit')).toBe(false);
     expect(MCP_TOOL_PREFIX).toBe('mcp__');
   });
+});
 
-  it('de-duplicates distinct servers that sanitize to the same prefix', () => {
-    const map = buildServerPrefixMap(['my-server', 'my.server', 'other']);
-    expect(map.get('my-server')).toBe('my_server');
-    expect(map.get('my.server')).toBe('my_server_2');
-    expect(map.get('other')).toBe('other');
-    // The two distinct servers never collide on the final tool name.
-    expect(formatMcpToolName(map.get('my-server') as string, 't')).not.toBe(
-      formatMcpToolName(map.get('my.server') as string, 't'),
-    );
-  });
+describe('assignServerToolNames', () => {
+  it('suffixes every tool whose plain name collides, whatever the list order', () => {
+    const forward = assignServerToolNames('docs', ['a-b', 'a_b', 'c'], new Set());
+    const reversed = assignServerToolNames('docs', ['c', 'a_b', 'a-b'], new Set());
 
-  it('assigns the same prefixes whatever order the caller supplies the names in', () => {
-    // The de-collision suffix is assigned by iteration order, and the caller's order comes from MCP
-    // config merge order — which `damocles.assetSourcePrecedence` can flip. Since `damocles.tools.disabled`
-    // stores fully-qualified `mcp__<prefix>__<tool>` names, an order-dependent prefix would silently
-    // repoint a user's disabled-tool entries at a different server.
-    const forward = buildServerPrefixMap(['my-server', 'my.server', 'other']);
-    const reversed = buildServerPrefixMap(['other', 'my.server', 'my-server']);
+    expect(Object.fromEntries(forward)).toEqual({
+      'a-b': 'mcp__docs__a_b_4f33a9a2',
+      a_b: 'mcp__docs__a_b_63617bb9',
+      c: 'mcp__docs__c',
+    });
     expect(Object.fromEntries(reversed)).toEqual(Object.fromEntries(forward));
-    expect(reversed.get('my-server')).toBe('my_server');
-    expect(reversed.get('my.server')).toBe('my_server_2');
   });
 
-  it('leaves existing servers\u2019 prefixes untouched when new sources contribute more servers', () => {
-    // `damocles.tools.disabled` stores fully-qualified `mcp__<prefix>__<tool>` names. Adding sources
-    // adds names, and if that moved an existing server's prefix every tool the user had switched off
-    // individually would silently come back on.
-    const existing = ['my-server', 'my.server', 'docs'];
-    const before = buildServerPrefixMap(existing);
-    const after = buildServerPrefixMap([...existing, 'personal-notes', 'claudeAdded']);
-
-    for (const [name, prefix] of before) expect(after.get(name)).toBe(prefix);
-    expect(formatMcpToolName(after.get('my.server') as string, 'search')).toBe('mcp__my_server_2__search');
+  it('suffixes a name another server already holds', () => {
+    const names = assignServerToolNames('docs', ['x'], new Set(['mcp__docs__x']));
+    expect(names.get('x')).toMatch(/^mcp__docs__x_[0-9a-f]{8}$/);
   });
 
-  it('does not mutate the caller-supplied array while sorting', () => {
-    const names = ['zeta', 'alpha'];
-    buildServerPrefixMap(names);
-    expect(names).toEqual(['zeta', 'alpha']);
+  it('names a tool listed twice once', () => {
+    expect([...assignServerToolNames('docs', ['x', 'x'], new Set()).entries()]).toEqual([['x', 'mcp__docs__x']]);
   });
+});
 
-  it('orders by codepoint rather than locale, so prefixes do not depend on the user locale', () => {
-    // All three sanitize to `my_server`, and the two orderings disagree about which gets the bare prefix:
-    // by codepoint `-` (0x2D) < `.` (0x2E) < `_` (0x5F), while an ICU collation puts `my_server` first.
-    // Only the codepoint order is reproducible across machines and locales.
-    const map = buildServerPrefixMap(['my_server', 'my-server', 'my.server']);
-    expect(map.get('my-server')).toBe('my_server');
-    expect(map.get('my.server')).toBe('my_server_2');
-    expect(map.get('my_server')).toBe('my_server_3');
-  });
-
+describe('resourceNameToToolName', () => {
   it('slugs resource names for get_* tools', () => {
     expect(resourceNameToToolName('My Resource')).toBe('my_resource');
     expect(resourceNameToToolName('123abc')).toBe('resource_123abc');
@@ -82,107 +72,42 @@ describe('mcp naming', () => {
   });
 });
 
-describe('buildServerPrefixMap — de-collision never steals a real name', () => {
-  it('leaves a server named like a derived prefix holding its own name', () => {
-    // One pass hands `my.server` the prefix `my_server_2` before the server ACTUALLY called
-    // `my_server_2` is reached, pushing it to `my_server_2_2`. Claiming every base first means a
-    // numeric suffix can only land on a prefix no server asked for.
-    const map = buildServerPrefixMap(['my.server', 'my-server', 'my_server_2']);
+describe('legacyServerPrefixMap (migration only)', () => {
+  it('reproduces the old prefixes: collapsed punctuation, sorted numeric suffixes', () => {
+    const map = legacyServerPrefixMap(['my-server', 'my.server', 'other']);
+    expect(Object.fromEntries(map)).toEqual({ 'my-server': 'my_server', 'my.server': 'my_server_2', other: 'other' });
+    expect(Object.fromEntries(legacyServerPrefixMap(['other', 'my.server', 'my-server']))).toEqual(Object.fromEntries(map));
+  });
 
+  it('orders by code unit, not locale', () => {
+    const map = legacyServerPrefixMap(['my_server', 'my-server', 'my.server']);
+    expect(map.get('my-server')).toBe('my_server');
+    expect(map.get('my.server')).toBe('my_server_2');
+    expect(map.get('my_server')).toBe('my_server_3');
+  });
+
+  it('never lets a derived prefix take a real server\u2019s name', () => {
+    const map = legacyServerPrefixMap(['my.server', 'my-server', 'my_server_2']);
     expect(map.get('my_server_2')).toBe('my_server_2');
     expect(new Set(map.values()).size).toBe(3);
   });
 
-  it('still de-collides when every base is taken', () => {
-    const map = buildServerPrefixMap(['a-b', 'a.b', 'a_b']);
-    expect(new Set(map.values()).size).toBe(3);
-    expect(map.get('a-b')).toBe('a_b');
-  });
-});
-
-describe('sanitizeServerName — length bound', () => {
-  it('bounds an imported name so one server cannot brick every request', () => {
-    // Imported names (`~/.claude*`, `.mcp.json`, a TOML table key) are never checked against the
-    // 64-char rule the form enforces. Providers cap the whole `mcp__<prefix>__<tool>` name — OpenAI at
-    // 64 — by rejecting the entire request, so an over-long one fails every turn with an opaque 400.
-    const prefix = sanitizeServerName('x'.repeat(300));
-
-    expect(prefix.length).toBeLessThanOrEqual(48);
-    expect(formatMcpToolName(prefix, 'read').length).toBeLessThanOrEqual(64);
+  it('cuts long names to 48 characters without a trailing underscore', () => {
+    expect(legacyServerPrefixMap(['x'.repeat(300)]).get('x'.repeat(300))).toBe('x'.repeat(48));
+    expect(legacyServerPrefixMap([`${'a'.repeat(47)}-b`]).get(`${'a'.repeat(47)}-b`)).not.toMatch(/_$/);
+    expect(legacyServerPrefixMap(['___']).get('___')).toBe('server');
   });
 
-  it('does not leave a trailing underscore when the cut lands on one', () => {
-    expect(sanitizeServerName(`${'a'.repeat(47)}-b`)).not.toMatch(/_$/);
-  });
-
-  it('still de-collides names that only differ past the cut', () => {
-    const long = 'y'.repeat(60);
-    const map = buildServerPrefixMap([`${long}-one`, `${long}-two`]);
-    expect(new Set(map.values()).size).toBe(2);
-  });
-});
-
-describe('remapMcpToolNamesForRename', () => {
-  it('follows the renamed server so individually disabled tools stay disabled', () => {
-    const remapped = remapMcpToolNamesForRename(
-      ['mcp__docs__search', 'mcp__docs__fetch', 'Bash'],
-      ['docs', 'weather'],
-      'docs',
-      'handbook',
-    );
-
-    expect(remapped).toEqual(['mcp__handbook__search', 'mcp__handbook__fetch', 'Bash']);
-  });
-
-  it('follows a THIRD server whose prefix the rename moved', () => {
-    // De-collision suffixes are handed out over the whole sorted set, so renaming `my-server` away
-    // promotes `my.server` from `my_server_2` to `my_server`. A string-replace of only the renamed
-    // server's prefix would leave that entry pointing at nothing.
-    const remapped = remapMcpToolNamesForRename(
-      ['mcp__my_server_2__go'],
-      ['my-server', 'my.server'],
-      'my-server',
-      'zulu',
-    );
-
-    expect(remapped).toEqual(['mcp__my_server__go']);
-  });
-
-  it('leaves a tool name whose own half contains __ intact', () => {
-    expect(remapMcpToolNamesForRename(['mcp__docs__a__b'], ['docs'], 'docs', 'handbook'))
-      .toEqual(['mcp__handbook__a__b']);
-  });
-
-  it('is a no-op when nothing moved', () => {
-    const names = ['mcp__docs__search'];
-    expect(remapMcpToolNamesForRename(names, ['docs'], 'docs', 'docs')).toEqual(names);
-  });
-});
-
-describe('buildServerPrefixMap — reserved prefixes', () => {
-  it('suffixes a server whose prefix another manager already holds (AC4.3)', () => {
-    const map = buildServerPrefixMap(['my.server', 'docs'], new Set(['my_server']));
-    expect(map.get('my.server')).toBe('my_server_2');
-    expect(map.get('docs')).toBe('docs');
-  });
-
-  it('skips reserved suffixes too, and keeps a real server name unclaimed by derived ones', () => {
-    const map = buildServerPrefixMap(['a-b', 'a_b_3'], new Set(['a_b', 'a_b_2']));
+  it('suffixes around prefixes another manager reserved, as folder servers did around user servers', () => {
+    const map = legacyServerPrefixMap(['a-b', 'a_b_3'], new Set(['a_b', 'a_b_2']));
     expect(map.get('a-b')).toBe('a_b_4');
     expect(map.get('a_b_3')).toBe('a_b_3');
   });
 
-  it('is unchanged when nothing is reserved', () => {
-    const names = ['my-server', 'my.server', 'my_server_2', 'docs'];
-    expect(buildServerPrefixMap(names, new Set())).toEqual(buildServerPrefixMap(names));
-  });
-
-  it('gives a typical user+folder split the same names one combined map did (AC4.7)', () => {
-    const user = ['github', 'context7', 'brave-search'];
-    const folder = ['playwright', 'my-db'];
-    const combined = buildServerPrefixMap([...user, ...folder]);
-    const userMap = buildServerPrefixMap(user);
-    const folderMap = buildServerPrefixMap(folder, new Set(userMap.values()));
-    expect(new Map([...userMap, ...folderMap])).toEqual(combined);
+  it('round-trips a legacy tool name through parse and format', () => {
+    expect(parseLegacyMcpToolName('mcp__my_server_2__resolve-library-id')).toEqual({ prefix: 'my_server_2', tool: 'resolve-library-id' });
+    expect(parseLegacyMcpToolName('mcp__docs__a__b')).toEqual({ prefix: 'docs', tool: 'a__b' });
+    expect(parseLegacyMcpToolName('Bash')).toBeNull();
+    expect(legacyMcpToolName('context7', 'resolve-library-id')).toBe('mcp__context7__resolve-library-id');
   });
 });

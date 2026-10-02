@@ -16,6 +16,12 @@ export interface McpToolSource {
   getAllToolDescriptors(): McpToolDescriptor[];
   getToolDescriptor(piName: string): McpToolDescriptor | undefined;
   allToolNames(): string[];
+  /** Tools whose exposure is `off`; the panel subtracts them from eligibility. */
+  offToolNames(): string[];
+  /** Tools whose exposure is `deferred`: the only MCP tools ToolSearch may offer or activate. */
+  deferrableToolNames(): string[];
+  /** Enabled servers still connecting whose tools include, or may include, an Always-loaded one. */
+  pendingDirectServers(): string[];
   /** Unknown name is not read-only, so the permission gate asks. */
   isMcpReadOnly(piName: string): boolean;
   getServerStatuses(): McpServerStatusInfo[];

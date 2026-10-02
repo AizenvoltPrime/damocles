@@ -4,23 +4,28 @@ import type { Result } from "../pi-session/checkpoints";
 import type { ChatSession } from "../chat-session";
 import type { PanelHost } from "../../platform/window-service";
 import { loadPiSessionHistory, getPiRewindHistory, getPiFileCheckpointContent, getPiSkippedFiles } from "../pi-session/session-store";
+import type { ModelReasonsLookup } from "../pi-session/session-store/history-loader";
 
 export interface HistoryManagerConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
   /** The checkpoint size cap in bytes, so the rewind preview protects the files the restore protects. */
   maxCheckpointFileSizeBytes: () => number;
+  /** Resolves the registry lookup a replayed reply's effort is published under, as the live rule does. */
+  modelReasons?: () => Promise<ModelReasonsLookup | undefined>;
 }
 
 /** Every read takes as `cwd` the folder whose session dir holds the session. */
 export class HistoryManager {
   private readonly postMessage: HistoryManagerConfig["postMessage"];
   private readonly maxCheckpointFileSizeBytes: HistoryManagerConfig["maxCheckpointFileSizeBytes"];
+  private readonly modelReasons: HistoryManagerConfig["modelReasons"];
   private readonly inflight = new Map<PanelHost, AbortController>();
   private readonly wiredHosts = new WeakSet<PanelHost>();
 
   constructor(config: HistoryManagerConfig) {
     this.postMessage = config.postMessage;
     this.maxCheckpointFileSizeBytes = config.maxCheckpointFileSizeBytes;
+    this.modelReasons = config.modelReasons;
   }
 
   /**
@@ -54,7 +59,7 @@ export class HistoryManager {
 
     // The pi tree-store loader emits sessionCleared itself. The fork-prefix path is unused
     // on pi — a forked panel resumes an already-truncated branched session file (US-013c).
-    const rewindableIds = await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
+    const rewindableIds = await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal, this.modelReasons?.());
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
     // The replay contract carries no account state, and a restored panel may never run a turn.
     session.publishAccountInfo();

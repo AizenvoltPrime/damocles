@@ -4,28 +4,27 @@
  * Extracted from the component because nothing in this repo unit-tests a `.vue` script block;
  * keeping the rules here means they are covered by ordinary unit tests.
  *
- * Note this file is NOT type-checked by `npm run typecheck` either: the root `tsconfig.json` excludes
- * `src/webview` entirely, and `tsconfig.webview.json` is not wired to a script. The unit tests are the
- * only thing standing behind this module.
- *
- * The rules mirror `mcp-write-contract` §3/§4 exactly. The extension re-validates and is the source
+ * The rules mirror `mcp-config-validate.ts` exactly. The extension re-validates and is the source
  * of truth — this layer exists so the user sees an inline error on the offending field instead of a
  * notification arriving after the fact.
  */
-import { SHADOWING_SOURCES } from '@shared/types/mcp';
+import { mcpServerNamespaceKey, SHADOWING_SOURCES } from '@shared/types/mcp';
 import type {
   McpServerConfig,
   McpServerStatusInfo,
   McpStdioServerConfig,
   McpHttpServerConfig,
-  McpSseServerConfig,
+  McpOAuthConfig,
 } from '@shared/types/mcp';
 
 /** Which half of the `McpServerConfig` union the form is editing. */
 export type McpFormMode = 'stdio' | 'remote';
 
-/** The remote transport discriminant. `stdio` needs no discriminant — `command` identifies it. */
-export type McpRemoteType = 'http' | 'sse';
+/**
+ * The remote transport discriminant, kept as read so an edit writes back the spelling the file had,
+ * absence included. `stdio` needs no discriminant: `command` identifies it.
+ */
+export type McpRemoteType = McpHttpServerConfig['type'];
 
 /**
  * Row identity, minted once per row and never reused.
@@ -72,6 +71,15 @@ export interface McpServerFormState {
   remoteType: McpRemoteType;
   headers: McpKeyValueRow[];
   bearerTokenEnv: string;
+  description: string;
+  /** Seconds, as typed. */
+  timeout: string;
+  /** No control edits this; a stored value is written back unchanged so Edit never drops it. */
+  enabled: boolean | null;
+  oauthClientName: string;
+  oauthAuthServerMetadataUrl: string;
+  oauthCallbackUrl: string;
+  oauthCallbackPort: string;
 }
 
 /** Fields that can carry an inline error. */
@@ -81,7 +89,11 @@ export type McpFormField =
   | 'env'
   | 'url'
   | 'headers'
-  | 'bearerTokenEnv';
+  | 'bearerTokenEnv'
+  | 'timeout'
+  | 'oauthAuthServerMetadataUrl'
+  | 'oauthCallbackUrl'
+  | 'oauthCallbackPort';
 
 /** An inline error as an i18n key plus its interpolation params, so no English lives in this file. */
 export interface McpFormFieldError {
@@ -121,6 +133,13 @@ export function createEmptyFormState(): McpServerFormState {
     remoteType: 'http',
     headers: [],
     bearerTokenEnv: '',
+    description: '',
+    timeout: '',
+    enabled: null,
+    oauthClientName: '',
+    oauthAuthServerMetadataUrl: '',
+    oauthCallbackUrl: '',
+    oauthCallbackPort: '',
   };
 }
 
@@ -136,12 +155,20 @@ function recordToRows(record: Record<string, string> | undefined): McpKeyValueRo
 export function formStateFromConfig(name: string, config: McpServerConfig): McpServerFormState {
   const state = createEmptyFormState();
   state.name = name;
+  state.description = config.description ?? '';
+  state.timeout = config.timeout === undefined ? '' : String(config.timeout);
+  state.enabled = config.enabled ?? null;
   if ('url' in config) {
     state.mode = 'remote';
     state.url = config.url;
     state.remoteType = config.type;
     state.headers = recordToRows(config.headers);
     state.bearerTokenEnv = config.bearerTokenEnv ?? '';
+    const oauth = config.oauth === false ? undefined : config.oauth;
+    state.oauthClientName = oauth?.clientName ?? '';
+    state.oauthAuthServerMetadataUrl = oauth?.authServerMetadataUrl ?? '';
+    state.oauthCallbackUrl = oauth?.callbackUrl ?? '';
+    state.oauthCallbackPort = oauth?.callbackPort === undefined ? '' : String(oauth.callbackPort);
     return state;
   }
   state.mode = 'stdio';
@@ -210,20 +237,34 @@ function validateNameCollision(
   servers: readonly McpCollisionServer[],
 ): McpFormFieldError | null {
   if (originalName !== null && name === originalName) return null;
-  const clash = servers.find((server) => server.name === name);
-  if (!clash) return null;
+  // Names with one namespace key are one server to the merge, so a key clash is a name clash.
+  const key = mcpServerNamespaceKey(name);
+  for (const clash of servers) {
+    if (clash.name === originalName || mcpServerNamespaceKey(clash.name) !== key) continue;
+    const error = collisionError(clash, clash.name === name);
+    if (error) return error;
+  }
+  return null;
+}
+
+/** A clash under a different spelling names the other server, or the refusal reads as baffling. */
+function collisionError(clash: McpCollisionServer, sameName: boolean): McpFormFieldError | null {
   // Demoted below `~/.damocles/mcp.json`, so it cannot hide the write. It cannot be the write's own
   // target either: only repo-authored sources are ever marked untrusted, and `damocles` is not one.
   // Both of those follow from the source, so a flag arriving without one earns no allowance and falls
   // through to the refusal below.
   if (clash.untrusted === true && clash.source !== undefined) return null;
   if (clash.source !== undefined && SHADOWING_SOURCES.has(clash.source)) {
-    return { key: 'mcp.form.errors.nameShadowedByProject' };
+    return sameName
+      ? { key: 'mcp.form.errors.nameShadowedByProject' }
+      : { key: 'mcp.form.errors.namespaceShadowedByProject', params: { other: clash.name } };
   }
   // `source` is optional on `McpServerStatusInfo`, and a clash whose provenance is unknown is still a
   // clash, so the form refuses rather than submitting a name the merged list already holds.
   if (clash.source === 'damocles' || clash.source === undefined) {
-    return { key: 'mcp.form.errors.nameExists' };
+    return sameName
+      ? { key: 'mcp.form.errors.nameExists' }
+      : { key: 'mcp.form.errors.namespaceExists', params: { other: clash.name } };
   }
   return null;
 }
@@ -257,6 +298,55 @@ function validateUrl(raw: string): McpFormFieldError | null {
   return null;
 }
 
+/** The hosts pi's OAuth rules treat as loopback (`pi-coding-agent/src/core/mcp-servers.ts`). */
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
+
+/** Null for text that is not an absolute URL. */
+function parseUrl(text: string): URL | null {
+  return URL.canParse(text) ? new URL(text) : null;
+}
+
+function validateTimeout(raw: string): McpFormFieldError | null {
+  const text = raw.trim();
+  if (text === '') return null;
+  const seconds = Number(text);
+  return Number.isFinite(seconds) && seconds > 0 ? null : { key: 'mcp.form.errors.timeoutInvalid' };
+}
+
+/** Ported from `validateOAuth` in `pi-coding-agent/src/core/mcp-servers.ts`; blank fields are omitted. */
+function validateOAuthFields(state: McpServerFormState, errors: McpFormErrors): void {
+  const metadataText = state.oauthAuthServerMetadataUrl.trim();
+  if (metadataText !== '') {
+    const url = parseUrl(metadataText);
+    const allowed =
+      url !== null &&
+      (url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.includes(url.hostname)));
+    if (!allowed) errors.oauthAuthServerMetadataUrl = { key: 'mcp.form.errors.authServerMetadataUrlInvalid' };
+  }
+
+  const portText = state.oauthCallbackPort.trim();
+  const port = /^\d+$/.test(portText) ? Number(portText) : null;
+  const portValid = port !== null && port >= 1 && port <= 65535;
+  if (portText !== '' && !portValid) errors.oauthCallbackPort = { key: 'mcp.form.errors.callbackPortInvalid' };
+
+  const callbackText = state.oauthCallbackUrl.trim();
+  if (callbackText === '') return;
+  const url = parseUrl(callbackText);
+  const loopback =
+    url !== null &&
+    url.protocol === 'http:' &&
+    LOOPBACK_HOSTS.includes(url.hostname) &&
+    url.search === '' &&
+    url.hash === '';
+  if (!loopback) {
+    errors.oauthCallbackUrl = { key: 'mcp.form.errors.callbackUrlInvalid' };
+    return;
+  }
+  if (portValid && url.port !== '' && Number(url.port) !== port) {
+    errors.oauthCallbackPort = { key: 'mcp.form.errors.callbackPortMismatch' };
+  }
+}
+
 /**
  * Full form validation. An empty result means the form is submittable; anything else blocks submit,
  * so an invalid definition is never sent to the extension.
@@ -270,6 +360,8 @@ export function validateMcpServerForm(
 
   const nameError = validateName(state.name, originalName, servers);
   if (nameError) errors.name = nameError;
+  const timeoutError = validateTimeout(state.timeout);
+  if (timeoutError) errors.timeout = timeoutError;
 
   if (state.mode === 'stdio') {
     if (state.command.trim() === '') errors.command = { key: 'mcp.form.errors.commandRequired' };
@@ -298,6 +390,7 @@ export function validateMcpServerForm(
   if (bearerTokenEnv !== '' && !ENV_VAR_NAME_PATTERN.test(bearerTokenEnv)) {
     errors.bearerTokenEnv = { key: 'mcp.form.errors.bearerTokenEnvInvalid' };
   }
+  validateOAuthFields(state, errors);
   return errors;
 }
 
@@ -306,36 +399,27 @@ export function isMcpFormValid(errors: McpFormErrors): boolean {
 }
 
 /**
- * Mirror of `sanitizeServerName` in `pi-session/mcp/naming.ts`: the server name becomes part of every
- * tool name as `mcp__<prefix>__<tool>`, with non-alphanumerics collapsed to `_`.
- */
-function sanitizeServerNameForTools(name: string): string {
-  return name.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48).replace(/_+$/, '') || 'server';
-}
-
-/**
- * A name that is legal but whose TOOL prefix collides with an existing server's.
- *
- * `my.server` and `my-server` are two distinct, permitted names that both sanitize to `my_server`, so
- * the second one silently ends up exposing `mcp__my_server_2__*`. Not an error — the config is valid
- * and the servers both work — but the user should not have to discover the numbered prefix by reading
- * the tool list.
+ * A legal name whose namespace key matches a lower-precedence server's under a different spelling.
+ * The write is accepted and the merge drops that other server (a `nameCollision` row), so the form
+ * says so up front. Clashes that would refuse the write are `validateNameCollision`'s errors and
+ * take the field's place first.
  */
 export function mcpToolPrefixCollision(
   name: string,
   originalName: string | null,
   servers: readonly McpCollisionServer[],
-): string | null {
+): McpCollisionServer | null {
   const trimmed = name.trim();
   if (trimmed === '') return null;
-  const prefix = sanitizeServerNameForTools(trimmed);
-  const clash = servers.find(
-    (server) =>
-      server.name !== trimmed &&
-      server.name !== originalName &&
-      sanitizeServerNameForTools(server.name) === prefix,
+  const key = mcpServerNamespaceKey(trimmed);
+  return (
+    servers.find(
+      (server) =>
+        server.name !== trimmed &&
+        server.name !== originalName &&
+        mcpServerNamespaceKey(server.name) === key,
+    ) ?? null
   );
-  return clash ? clash.name : null;
 }
 
 function rowsToRecord(rows: readonly McpKeyValueRow[]): Record<string, string> {
@@ -372,20 +456,41 @@ function buildStdioConfig(state: McpServerFormState): McpStdioServerConfig {
   return config;
 }
 
-function buildRemoteConfig(state: McpServerFormState): McpHttpServerConfig | McpSseServerConfig {
-  const url = state.url.trim();
+/** OAuth URLs are trimmed like `url`; the client name is prose and stays verbatim. */
+function buildOAuthConfig(state: McpServerFormState): McpOAuthConfig | null {
+  const oauth: McpOAuthConfig = {};
+  if (state.oauthClientName.trim() !== '') oauth.clientName = state.oauthClientName;
+  const metadataUrl = state.oauthAuthServerMetadataUrl.trim();
+  if (metadataUrl !== '') oauth.authServerMetadataUrl = metadataUrl;
+  const callbackUrl = state.oauthCallbackUrl.trim();
+  if (callbackUrl !== '') oauth.callbackUrl = callbackUrl;
+  const callbackPort = state.oauthCallbackPort.trim();
+  if (callbackPort !== '') oauth.callbackPort = Number(callbackPort);
+  return Object.keys(oauth).length > 0 ? oauth : null;
+}
+
+function buildRemoteConfig(state: McpServerFormState): McpHttpServerConfig {
+  const config: McpHttpServerConfig = { ...(state.remoteType !== undefined ? { type: state.remoteType } : {}), url: state.url.trim() };
   const headers = rowsToRecord(state.headers);
+  if (Object.keys(headers).length > 0) config.headers = headers;
   const bearerTokenEnv = state.bearerTokenEnv.trim();
-  const optional: { headers?: Record<string, string>; bearerTokenEnv?: string } = {};
-  if (Object.keys(headers).length > 0) optional.headers = headers;
-  if (bearerTokenEnv !== '') optional.bearerTokenEnv = bearerTokenEnv;
-  return state.remoteType === 'sse'
-    ? { type: 'sse', url, ...optional }
-    : { type: 'http', url, ...optional };
+  if (bearerTokenEnv !== '') config.bearerTokenEnv = bearerTokenEnv;
+  const oauth = buildOAuthConfig(state);
+  if (oauth) config.oauth = oauth;
+  return config;
+}
+
+/** Description is prose and stays verbatim, like `cwd`; trimming decides only whether it is sent. */
+function withCommonFields<T extends McpServerConfig>(config: T, state: McpServerFormState): T {
+  if (state.description.trim() !== '') config.description = state.description;
+  const timeout = state.timeout.trim();
+  if (timeout !== '') config.timeout = Number(timeout);
+  if (state.enabled !== null) config.enabled = state.enabled;
+  return config;
 }
 
 /**
- * Assemble the config the extension receives. Only the keys of `mcp-write-contract` §2 are produced
+ * Assemble the config the extension receives. Only the keys `mcp-config-validate.ts` accepts are produced
  * and empty optionals are omitted entirely, so the JSON written to `~/.damocles/mcp.json` stays
  * minimal and the extension's reject-unknown-keys check never trips on our own output.
  *
@@ -398,7 +503,7 @@ function buildRemoteConfig(state: McpServerFormState): McpHttpServerConfig | Mcp
  * reach `~/.damocles/mcp.json` through this path.
  */
 export function buildMcpServerConfig(state: McpServerFormState): McpServerConfig {
-  return state.mode === 'stdio' ? buildStdioConfig(state) : buildRemoteConfig(state);
+  return withCommonFields(state.mode === 'stdio' ? buildStdioConfig(state) : buildRemoteConfig(state), state);
 }
 
 /** The trimmed name the config will be stored under. */

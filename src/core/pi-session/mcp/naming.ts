@@ -1,4 +1,4 @@
-import { log } from '../../logger';
+import { createHash } from 'node:crypto';
 
 /** Prefix that marks a pi tool as MCP-backed; webview routing keys on it (App.vue). */
 export const MCP_TOOL_PREFIX = 'mcp__';
@@ -8,50 +8,93 @@ export function isMcpToolName(name: string): boolean {
   return name.startsWith(MCP_TOOL_PREFIX);
 }
 
-/**
- * Longest sanitized server prefix. The finished tool name is `mcp__<prefix>__<tool>`, and providers cap
- * the whole thing — OpenAI at 64 characters, Anthropic at 128 — by rejecting the entire request, so one
- * over-long name does not degrade that server, it fails every turn with an opaque 400. Only
- * user-authored names go through `assertValidMcpServerName`'s 64-char rule; names imported from
- * `~/.claude*`, `.mcp.json` and `~/.codex/config.toml` arrive unchecked, and a TOML table key can be
- * any length. Truncation can create a new collision, which `buildServerPrefixMap` already resolves.
- */
-const MAX_SERVER_PREFIX_LENGTH = 48;
+/** Provider tool names are limited to 64 characters of `[A-Za-z0-9_-]`. */
+const MAX_TOOL_NAME_LENGTH = 64;
+const HASH_LENGTH = 8;
+/** How much of a hashed name `createMcpToolName` keeps before `_<hash>`. */
+const HASHED_NAME_KEPT_LENGTH = MAX_TOOL_NAME_LENGTH - HASH_LENGTH - 1;
 
-/** Sanitize a server key for use in a tool name: non-alphanumerics collapse to `_`. */
-export function sanitizeServerName(name: string): string {
+/** Every character outside `[A-Za-z0-9_]` replaced by `_`, as tool names are built. */
+export function sanitizeMcpToolName(name: string): string {
+  return name.replace(/[^A-Za-z0-9_]/g, '_');
+}
+
+/**
+ * Ported from pi-coding-agent/src/extensions/mcp/tools.ts `createMcpToolName`. `mcp__<server>__<tool>`
+ * with everything but `[A-Za-z0-9_]` replaced by `_`, and an 8-character hash suffix when the name is
+ * over 64 characters or `isTaken` reports it used by a different tool.
+ */
+export function createMcpToolName(
+  server: string,
+  tool: string,
+  isTaken: (name: string) => boolean = () => false,
+): string {
+  const name = sanitizeMcpToolName(`${MCP_TOOL_PREFIX}${server}__${tool}`);
+  if (name.length <= MAX_TOOL_NAME_LENGTH && !isTaken(name)) return name;
+  const hash = createHash('sha256').update(`${server}\0${tool}`).digest('hex').slice(0, HASH_LENGTH);
+  return `${name.slice(0, HASHED_NAME_KEPT_LENGTH)}_${hash}`;
+}
+
+/**
+ * Names for one server's tools, ported from pi-coding-agent/src/extensions/mcp/index.ts `registerTools`:
+ * every tool whose plain name collides with another of the server's tools gets the hash suffix, so which
+ * one keeps the plain name does not depend on list order. `taken` holds names other servers already hold.
+ */
+export function assignServerToolNames(
+  server: string,
+  rawToolNames: readonly string[],
+  taken: ReadonlySet<string>,
+): Map<string, string> {
+  const unique = [...new Set(rawToolNames)];
+  const plain = unique.map((tool) => createMcpToolName(server, tool));
+  const current = new Set<string>();
+  const assigned = new Map<string, string>();
+  for (const tool of unique) {
+    const name = createMcpToolName(
+      server,
+      tool,
+      (candidate) => taken.has(candidate) || current.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate),
+    );
+    current.add(name);
+    assigned.set(tool, name);
+  }
+  return assigned;
+}
+
+/** Convert an MCP resource name into a tool-name-safe slug for `get_{slug}`. */
+export function resourceNameToToolName(name: string): string {
+  let result = name
+    .replace(/[^a-zA-Z0-9]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+/, '')
+    .replace(/_+$/, '')
+    .toLowerCase();
+  if (!result || /^\d/.test(result)) {
+    result = 'resource' + (result ? '_' + result : '');
+  }
+  return result;
+}
+
+/** Longest server prefix the legacy names used. */
+const MAX_LEGACY_SERVER_PREFIX_LENGTH = 48;
+
+function legacySanitizeServerName(name: string): string {
   const cleaned = name
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
-    .slice(0, MAX_SERVER_PREFIX_LENGTH)
+    .slice(0, MAX_LEGACY_SERVER_PREFIX_LENGTH)
     .replace(/_+$/, '');
   return cleaned || 'server';
 }
 
-/** Build the final pi tool name from a (already unique) server prefix and an MCP tool name. */
-export function formatMcpToolName(serverPrefix: string, toolName: string): string {
-  return `${MCP_TOOL_PREFIX}${serverPrefix}__${toolName}`;
-}
-
 /**
- * Map each server key to a unique sanitized prefix; collisions ("my-server" vs "my.server") get a
- * numeric suffix and a log.
- *
- * Sorted first (on a copy) because the suffix depends on iteration order, and the caller's order comes
- * from config merge order, which `damocles.assetSourcePrecedence` can flip — which would silently
- * repoint the `mcp__<prefix>__<tool>` names in `damocles.tools.disabled` at a different server.
- * `Array#sort`'s default code-unit order, never `localeCompare`, so it is locale-independent too.
- *
- * Two passes, because one pass lets a derived prefix steal a real server's name: given
- * `["my.server", "my-server", "my_server_2"]`, `my.server` would take `my_server_2` and push aside the
- * server actually called that. Claiming every base first confines suffixes to unclaimed prefixes.
- *
- * `reserved` holds prefixes another manager already assigned; a server whose base is reserved gets a suffix.
+ * The server prefixes of the legacy `mcp__<prefix>__<tool>` names, for migrating stored names only.
+ * Sorted, two passes (bases first, then numeric suffixes), and `reserved` prefixes taken by another manager.
  */
-export function buildServerPrefixMap(serverNames: string[], reserved?: ReadonlySet<string>): Map<string, string> {
+export function legacyServerPrefixMap(serverNames: readonly string[], reserved?: ReadonlySet<string>): Map<string, string> {
   const sorted = [...serverNames].sort();
-  const bases = sorted.map(name => ({ name, base: sanitizeServerName(name) }));
-  const claimedBases = new Set(bases.map(entry => entry.base));
+  const bases = sorted.map((name) => ({ name, base: legacySanitizeServerName(name) }));
+  const claimedBases = new Set(bases.map((entry) => entry.base));
 
   const assigned = new Map<string, string>();
   const used = new Set<string>(reserved);
@@ -67,58 +110,18 @@ export function buildServerPrefixMap(serverNames: string[], reserved?: ReadonlyS
     while (used.has(prefix) || claimedBases.has(prefix)) prefix = `${base}_${++n}`;
     used.add(prefix);
     assigned.set(name, prefix);
-    log('[McpNaming] server prefix collision: "%s" -> "%s"', name, prefix);
   }
 
-  return new Map(sorted.map(name => [name, assigned.get(name)!]));
+  return new Map(sorted.map((name) => [name, assigned.get(name)!]));
 }
 
-/**
- * Rewrite `mcp__<prefix>__<tool>` names to follow a server rename, so `damocles.tools.disabled` does
- * not silently re-enable every tool the user switched off individually.
- *
- * Mapped per server identity across both name sets, not by string-replacing the renamed prefix:
- * renaming one server can move ANOTHER's suffix, since they are handed out over the whole sorted set.
- * A prefix never contains `__` (runs of non-alphanumerics collapse to one `_`), so the first `__` is
- * always the separator.
- */
-export function remapMcpToolNamesForRename(
-  toolNames: readonly string[],
-  oldServerNames: readonly string[],
-  renamedFrom: string,
-  renamedTo: string,
-): string[] {
-  if (renamedFrom === renamedTo) return [...toolNames];
-
-  const oldMap = buildServerPrefixMap([...oldServerNames]);
-  const newMap = buildServerPrefixMap(oldServerNames.map(name => (name === renamedFrom ? renamedTo : name)));
-
-  const moves = new Map<string, string>();
-  for (const oldName of oldServerNames) {
-    const from = oldMap.get(oldName);
-    const to = newMap.get(oldName === renamedFrom ? renamedTo : oldName);
-    if (from && to && from !== to) moves.set(from, to);
-  }
-  if (moves.size === 0) return [...toolNames];
-
-  return toolNames.map(toolName => {
-    const match = /^mcp__(.+?)__(.+)$/.exec(toolName);
-    if (!match) return toolName;
-    const moved = moves.get(match[1]!);
-    return moved ? formatMcpToolName(moved, match[2]!) : toolName;
-  });
+/** A legacy tool name split at its first `__` (a legacy prefix never contains `__`), or null. */
+export function parseLegacyMcpToolName(name: string): { prefix: string; tool: string } | null {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name);
+  return match ? { prefix: match[1]!, tool: match[2]! } : null;
 }
 
-/** Convert an MCP resource name into a tool-name-safe slug for `get_{slug}`. */
-export function resourceNameToToolName(name: string): string {
-  let result = name
-    .replace(/[^a-zA-Z0-9]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+/, '')
-    .replace(/_+$/, '')
-    .toLowerCase();
-  if (!result || /^\d/.test(result)) {
-    result = 'resource' + (result ? '_' + result : '');
-  }
-  return result;
+/** The legacy pi name of a tool, given its server's legacy prefix. */
+export function legacyMcpToolName(prefix: string, rawToolName: string): string {
+  return `${MCP_TOOL_PREFIX}${prefix}__${rawToolName}`;
 }

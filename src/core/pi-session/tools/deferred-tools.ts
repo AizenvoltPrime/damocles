@@ -1,6 +1,7 @@
 import { BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
+import { IMAGE_PI_TOOL_NAMES } from './image-tool-specs';
 
 /**
  * Which tools are deferrable, and what group names address them. A leaf module by design: it composes
@@ -14,18 +15,20 @@ import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
  * import is fine", retiring the guard for every group at once.
  */
 
-export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web';
+export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web' | 'image';
 
 /**
  * The built-in deferrable groups, in the order the ToolSearch inventory lists them — what the model
  * reads, so it is pinned by test rather than left to import order. The pin encodes exactly one claim:
- * `web` comes last, after `browser`. It is NOT "mirrors `FULL_TOOL_CATALOG`", which runs
- * compass → browser → web and so already disagrees. Group #4 needs a deliberate position and a pin edit.
+ * `web` comes after `browser`, and `image` comes last. It is NOT "mirrors `FULL_TOOL_CATALOG`", which
+ * runs compass → browser → web → image and so already disagrees. A new group needs a deliberate
+ * position and a pin edit.
  */
 export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; names: readonly string[] }[] = [
   { group: 'browser', names: BROWSER_PI_TOOL_NAMES },
   { group: 'compass', names: COMPASS_PI_TOOL_NAMES },
   { group: 'web', names: WEB_PI_TOOL_NAMES },
+  { group: 'image', names: IMAGE_PI_TOOL_NAMES },
 ];
 
 export interface ToolSearchResolution {
@@ -33,6 +36,13 @@ export interface ToolSearchResolution {
   matches: string[];
   /** Entries that named neither a known group nor a deferrable tool, in entry order, de-duplicated. */
   unknown: string[];
+  /**
+   * Exact names of tools outside the deferrable universe that are already active, such as an
+   * Always-loaded MCP tool: callable as they are, so neither loaded nor unknown.
+   */
+  alreadyActive: string[];
+  /** Requested MCP server groups with no deferrable tool whose tools are Always loaded, so already active. */
+  alreadyActiveGroups: string[];
   /** Requested built-in group names that also name an MCP server; the built-in won. */
   shadowedGroups: string[];
   /**
@@ -46,7 +56,8 @@ export interface ToolSearchResolution {
 }
 
 /**
- * The deferrable subset of an eligible set: browser + compass + web + MCP, intersected with `eligible`.
+ * The deferrable subset of an eligible set: browser + compass + web + image + the given MCP names, intersected
+ * with `eligible`. Callers pass only the MCP tools whose exposure is `deferred`.
  * Intersecting here is what makes eligibility authoritative — a tool the user disabled via
  * `damocles.tools.disabled`, or whose subsystem is off, is absent from `eligible` and therefore never
  * deferrable, so `ToolSearch` can never resurrect it.
@@ -76,12 +87,16 @@ export function resolveToolSearchEntries(
   entries: readonly string[],
   deferrable: Iterable<string>,
   mcpGroups: ReadonlyMap<string, readonly string[]>,
+  active: ReadonlySet<string> = new Set(),
+  directMcpGroups: ReadonlySet<string> = new Set(),
 ): ToolSearchResolution {
   const universe = new Set(deferrable);
   const matches: string[] = [];
   const matched = new Set<string>();
   const unknown: string[] = [];
   const unknownSeen = new Set<string>();
+  const alreadyActive: string[] = [];
+  const alreadyActiveGroups: string[] = [];
   const shadowedGroups: string[] = [];
   const inertGroups: string[] = [];
 
@@ -115,11 +130,19 @@ export function resolveToolSearchEntries(
       addMatch(entry);
       continue;
     }
+    if (active.has(entry)) {
+      if (!alreadyActive.includes(entry)) alreadyActive.push(entry);
+      continue;
+    }
+    if (directMcpGroups.has(entry)) {
+      if (!alreadyActiveGroups.includes(entry)) alreadyActiveGroups.push(entry);
+      continue;
+    }
     if (!unknownSeen.has(entry)) {
       unknownSeen.add(entry);
       unknown.push(entry);
     }
   }
 
-  return { matches, unknown, shadowedGroups, inertGroups };
+  return { matches, unknown, alreadyActive, alreadyActiveGroups, shadowedGroups, inertGroups };
 }

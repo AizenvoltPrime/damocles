@@ -30,7 +30,7 @@
       "damocles.model": {
         "type": "string",
         "default": "",
-        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5, claude-fable-5-1"
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1"
       },
       "damocles.maxBudgetUsd": {
         "type": [
@@ -84,7 +84,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5) support up to ultracode; GPT-6 (Astra/Sol/Luna) support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5) support up to ultracode; GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.enableFileCheckpointing": {
         "type": "boolean",
@@ -226,7 +226,7 @@
       "damocles.memory.rerank.enabled": {
         "type": "boolean",
         "default": true,
-        "description": "Whether search_memories reranks BM25 candidates with an LLM."
+        "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
       },
       "damocles.memory.rerank.candidatePool": {
         "type": "integer",
@@ -292,6 +292,22 @@
         "default": true,
         "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
       },
+      "damocles.mcp.toolExposure": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "off",
+              "deferred",
+              "direct"
+            ]
+          }
+        },
+        "description": "Per-tool MCP control, keyed by server name and then by the tool name the server uses. \"off\" removes the tool, \"deferred\" keeps it loadable through ToolSearch, and \"direct\" loads it from the first turn, which costs context on every turn. A tool with no entry takes its exposure from the server config. Local beats project beats user, per tool; project and local values apply only in a trusted folder."
+      },
       "damocles.team.enabled": {
         "type": "boolean",
         "default": false,
@@ -303,10 +319,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -335,10 +351,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -367,10 +383,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -605,6 +621,16 @@
         "default": false,
         "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
       },
+      "damocles.imageGeneration.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Let the agent generate images with an OpenRouter image model and save them as new files at the path you approve (the GenerateImage tool). Each image is billed to your OpenRouter key. Read from your user settings only, so a repository cannot turn it on."
+      },
+      "damocles.imageGeneration.model": {
+        "type": "string",
+        "default": "",
+        "description": "The OpenRouter image model GenerateImage uses, by its id in pi's image catalog. Empty means no model is chosen and the tool stays unavailable. Read from your user settings only, so a repository cannot choose what you are billed for."
+      },
       "damocles.assetSourcePrecedence": {
         "type": "string",
         "enum": [
@@ -722,7 +748,7 @@
       "damocles.model": {
         "type": "string",
         "default": "",
-        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5, claude-fable-5-1"
+        "description": "Claude model to use (empty for default). Examples: claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1"
       },
       "damocles.maxBudgetUsd": {
         "type": [
@@ -776,7 +802,7 @@
             null
           ]
         },
-        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5) support up to ultracode; GPT-6 (Astra/Sol/Luna) support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
+        "description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-5-5\"). Values: none, low, medium, high, xhigh, max, ultracode. Supported levels vary by model: the flagship Anthropic models (Fable 5.1, Opus 5.5, Sonnet 5.5) support up to ultracode; GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna support up to max (xhigh and max); DeepSeek V4 Pro/Flash support high and max. Unsupported levels are ignored for that model. At a given level Opus 5.5 thinks more per turn than Opus 5 did, so keep xhigh and max for work where a quality gain has been measured."
       },
       "damocles.enableFileCheckpointing": {
         "type": "boolean",
@@ -920,7 +946,7 @@
       "damocles.memory.rerank.enabled": {
         "type": "boolean",
         "default": true,
-        "description": "Whether search_memories reranks BM25 candidates with an LLM."
+        "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
       },
       "damocles.memory.rerank.candidatePool": {
         "type": "integer",
@@ -986,6 +1012,22 @@
         "default": true,
         "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
       },
+      "damocles.mcp.toolExposure": {
+        "type": "object",
+        "default": {},
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "off",
+              "deferred",
+              "direct"
+            ]
+          }
+        },
+        "description": "Per-tool MCP control, keyed by server name and then by the tool name the server uses. \"off\" removes the tool, \"deferred\" keeps it loadable through ToolSearch, and \"direct\" loads it from the first turn, which costs context on every turn. A tool with no entry takes its exposure from the server config. Local beats project beats user, per tool; project and local values apply only in a trusted folder."
+      },
       "damocles.team.enabled": {
         "type": "boolean",
         "default": false,
@@ -997,10 +1039,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -1029,10 +1071,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -1061,10 +1103,10 @@
           "",
           "claude-fable-5-1",
           "claude-opus-5-5",
-          "claude-sonnet-5",
+          "claude-sonnet-5-5",
           "claude-haiku-4-5-20251001",
           "gpt-6-astra",
-          "gpt-6-sol",
+          "gpt-6.1-sol",
           "gpt-6-luna",
           "step-3.7-flash",
           "deepseek-v4-pro",
@@ -1293,6 +1335,18 @@
         "type": "boolean",
         "default": false,
         "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
+      },
+      "damocles.imageGeneration.enabled": {
+        "not": {},
+        "errorMessage": "damocles.imageGeneration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.imageGeneration.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nLet the agent generate images with an OpenRouter image model and save them as new files at the path you approve (the GenerateImage tool). Each image is billed to your OpenRouter key. Read from your user settings only, so a repository cannot turn it on."
+      },
+      "damocles.imageGeneration.model": {
+        "not": {},
+        "errorMessage": "damocles.imageGeneration.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.imageGeneration.model applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nThe OpenRouter image model GenerateImage uses, by its id in pi's image catalog. Empty means no model is chosen and the tool stays unavailable. Read from your user settings only, so a repository cannot choose what you are billed for."
       },
       "damocles.assetSourcePrecedence": {
         "type": "string",

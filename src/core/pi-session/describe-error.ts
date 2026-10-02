@@ -15,3 +15,12 @@ export function describeAuthError(err: unknown): string {
   const cause = (err as { cause?: unknown }).cause;
   return `${err.name}: ${err.message}${cause instanceof Error ? ` (cause: ${cause.name}: ${cause.message})` : ''}`;
 }
+
+/**
+ * pi's error for a credential change that it committed but could not follow with a model snapshot sync.
+ * Matched by `name`, never `instanceof`: importing the class value would turn a type-only `pi-coding-agent`
+ * import into a runtime one, and the package is an esbuild external.
+ */
+export function isCredentialSyncError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'CredentialSynchronizationError';
+}

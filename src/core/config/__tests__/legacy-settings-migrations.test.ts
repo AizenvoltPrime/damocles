@@ -65,13 +65,14 @@ function stub(seed: Seed): { settings: SettingsStore; updates: UpdateCall[] } {
 
 describe('migrateLegacyModelValue', () => {
   it('maps every legacy GPT id to its GPT-6 successor', () => {
-    expect(migrateLegacyModelValue('gpt-5.5')).toBe('gpt-6-sol');
-    expect(migrateLegacyModelValue('gpt-5.3-codex')).toBe('gpt-6-sol');
-    expect(migrateLegacyModelValue('gpt-5.4')).toBe('gpt-6-sol');
+    expect(migrateLegacyModelValue('gpt-5.5')).toBe('gpt-6.1-sol');
+    expect(migrateLegacyModelValue('gpt-5.3-codex')).toBe('gpt-6.1-sol');
+    expect(migrateLegacyModelValue('gpt-5.4')).toBe('gpt-6.1-sol');
     expect(migrateLegacyModelValue('gpt-5.4-mini')).toBe('gpt-6-luna');
     expect(migrateLegacyModelValue('gpt-5.2')).toBe('gpt-6-luna');
-    expect(migrateLegacyModelValue('gpt-5.6-sol')).toBe('gpt-6-sol');
+    expect(migrateLegacyModelValue('gpt-5.6-sol')).toBe('gpt-6.1-sol');
     expect(migrateLegacyModelValue('gpt-5.6-luna')).toBe('gpt-6-luna');
+    expect(migrateLegacyModelValue('gpt-6-sol')).toBe('gpt-6.1-sol');
   });
 
   // The map is resolved in one lookup, so a target that is itself retired would strand the user on it.
@@ -86,16 +87,17 @@ describe('migrateLegacyModelValue', () => {
     expect(migrateLegacyModelValue('claude-fable-5')).toBe('claude-fable-5-1');
     expect(migrateLegacyModelValue('claude-opus-5')).toBe('claude-opus-5-5');
     expect(migrateLegacyModelValue('claude-opus-4-8')).toBe('claude-opus-5-5');
+    expect(migrateLegacyModelValue('claude-sonnet-5')).toBe('claude-sonnet-5-5');
   });
 
-  it('covers exactly the ten retired ids and nothing else', () => {
+  it('covers exactly the twelve retired ids and nothing else', () => {
     expect(Object.keys(LEGACY_MODEL_MAP).sort()).toEqual(
-      ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-5', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol'],
+      ['claude-fable-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-sonnet-5', 'gpt-5.2', 'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-sol'],
     );
   });
 
   it('is identity for non-legacy values (new ids, Anthropic, empty string)', () => {
-    expect(migrateLegacyModelValue('gpt-6-sol')).toBe('gpt-6-sol');
+    expect(migrateLegacyModelValue('gpt-6.1-sol')).toBe('gpt-6.1-sol');
     // No GPT-6 Terra exists and Terra is deliberately left unmapped.
     expect(migrateLegacyModelValue('gpt-5.6-terra')).toBe('gpt-5.6-terra');
     expect(migrateLegacyModelValue('gpt-6-luna')).toBe('gpt-6-luna');
@@ -113,7 +115,23 @@ describe('migrateLegacyModelSetting — damocles.model rewrite', () => {
     await migrateLegacyModelSetting(settings);
 
     const modelUpdates = updates.filter((u) => u.key === 'model');
-    expect(modelUpdates).toEqual([{ key: 'model', value: 'gpt-6-sol', target: G }]);
+    expect(modelUpdates).toEqual([{ key: 'model', value: 'gpt-6.1-sol', target: G }]);
+  });
+
+  it('rewrites stored Sonnet 5 and GPT-6 Sol selections, and their effort entries, to Sonnet 5.5 and GPT-6.1 Sol', async () => {
+    const { settings, updates } = stub({
+      model: { global: 'claude-sonnet-5', workspace: 'gpt-6-sol' },
+      team: { 'team.reviewerModel': { global: 'gpt-6-sol' } },
+      effortByModel: { global: { 'claude-sonnet-5': 'ultracode', 'gpt-6-sol': 'max' } },
+    });
+    await migrateLegacyModelSetting(settings);
+
+    expect(updates).toEqual([
+      { key: 'model', value: 'claude-sonnet-5-5', target: G },
+      { key: 'team.reviewerModel', value: 'gpt-6.1-sol', target: G },
+      { key: 'effortByModel', value: { 'claude-sonnet-5-5': 'ultracode', 'gpt-6.1-sol': 'max' }, target: G },
+      { key: 'model', value: 'gpt-6.1-sol', target: W },
+    ]);
   });
 
   it('rewrites independently per scope (Global + Workspace both migrated)', async () => {
@@ -122,7 +140,7 @@ describe('migrateLegacyModelSetting — damocles.model rewrite', () => {
 
     const modelUpdates = updates.filter((u) => u.key === 'model');
     expect(modelUpdates).toEqual([
-      { key: 'model', value: 'gpt-6-sol', target: G },
+      { key: 'model', value: 'gpt-6.1-sol', target: G },
       { key: 'model', value: 'gpt-6-luna', target: W },
     ]);
   });
@@ -133,13 +151,13 @@ describe('migrateLegacyModelSetting — damocles.model rewrite', () => {
     await migrateLegacyModelSetting(settings);
 
     expect(updates).toEqual([
-      { key: 'model', value: 'gpt-6-sol', target: 'local' },
-      { key: 'effortByModel', value: { 'gpt-6-sol': 'high' }, target: 'local' },
+      { key: 'model', value: 'gpt-6.1-sol', target: 'local' },
+      { key: 'effortByModel', value: { 'gpt-6.1-sol': 'high' }, target: 'local' },
     ]);
   });
 
   it('leaves an already-current (non-legacy) model value untouched — no writes at all', async () => {
-    const { settings, updates } = stub({ model: { global: 'gpt-6-sol' } });
+    const { settings, updates } = stub({ model: { global: 'gpt-6.1-sol' } });
     await migrateLegacyModelSetting(settings);
 
     expect(updates).toEqual([]);
@@ -168,7 +186,7 @@ describe('migrateLegacyModelSetting — damocles.team.*Model rewrite', () => {
 
     expect(updates).toEqual([
       { key: 'team.leadModel', value: 'claude-opus-5-5', target: G },
-      { key: 'team.reviewerModel', value: 'gpt-6-sol', target: W },
+      { key: 'team.reviewerModel', value: 'gpt-6.1-sol', target: W },
     ]);
   });
 
@@ -176,7 +194,7 @@ describe('migrateLegacyModelSetting — damocles.team.*Model rewrite', () => {
   it('leaves current, unset and unmapped team role models untouched', async () => {
     const { settings, updates } = stub({
       team: {
-        'team.leadModel': { global: 'gpt-6-sol' },
+        'team.leadModel': { global: 'gpt-6.1-sol' },
         'team.implementorModel': { global: '' },
         'team.reviewerModel': { global: 'gpt-5.6-terra' },
       },
@@ -194,21 +212,21 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
   it('re-keys a legacy effort entry to the mapped id, preserving a supported effort level', async () => {
     // Non-legacy model value opens the scope gate without a model rewrite; 'high' is supported by sol.
     const { settings, updates } = stub({
-      model: { global: 'gpt-6-sol' },
+      model: { global: 'gpt-6.1-sol' },
       effortByModel: { global: { 'gpt-5.5': 'high' } },
     });
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
     expect(effortUpdate?.target).toBe(G);
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-sol': 'high' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'high' });
     // The legacy key must be gone.
     expect(effortUpdate?.value).not.toHaveProperty('gpt-5.5');
   });
 
   it("clamps an unsupported carried effort ('none') to the target model's lowest level ('low')", async () => {
     const { settings, updates } = stub({
-      model: { global: 'gpt-6-sol' },
+      model: { global: 'gpt-6.1-sol' },
       effortByModel: { global: { 'gpt-5.2': 'none' } }, // gpt-5.2 → luna; 'none' unsupported → 'low'
     });
     await migrateLegacyModelSetting(settings);
@@ -219,19 +237,19 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
 
   it('does NOT clobber an existing entry for the mapped id (drops the legacy key, keeps the current effort)', async () => {
     const { settings, updates } = stub({
-      model: { global: 'gpt-6-sol' },
-      // gpt-5.4 → gpt-6-sol, but gpt-6-sol already has an effort; the existing 'low' must survive, not become 'xhigh'.
-      effortByModel: { global: { 'gpt-5.4': 'xhigh', 'gpt-6-sol': 'low' } },
+      model: { global: 'gpt-6.1-sol' },
+      // gpt-5.4 → gpt-6.1-sol, but gpt-6.1-sol already has an effort; the existing 'low' must survive, not become 'xhigh'.
+      effortByModel: { global: { 'gpt-5.4': 'xhigh', 'gpt-6.1-sol': 'low' } },
     });
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-sol': 'low' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'low' });
     expect(effortUpdate?.value).not.toHaveProperty('gpt-5.4');
   });
 
   it('two legacy ids mapping to the same successor: first-wins deterministically (no last-wins clobber)', async () => {
-    // gpt-5.5 AND gpt-5.3-codex both → gpt-6-sol. The non-clobber check tests the in-progress
+    // gpt-5.5 AND gpt-5.3-codex both → gpt-6.1-sol. The non-clobber check tests the in-progress
     // nextMap, so the first-iterated legacy id (gpt-5.5, insertion order) wins and the second is
     // dropped without overwriting it. Regression for M1 (checking currentMap gave order-dependent
     // last-wins, since neither collides in the STORED map).
@@ -241,21 +259,21 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-sol': 'high' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'high' });
     expect(effortUpdate?.value).not.toHaveProperty('gpt-5.5');
     expect(effortUpdate?.value).not.toHaveProperty('gpt-5.3-codex');
   });
 
   it('preserves an unrelated (non-legacy) effort entry while re-keying a legacy sibling', async () => {
     const { settings, updates } = stub({
-      model: { global: 'gpt-6-sol' },
-      effortByModel: { global: { 'gpt-5.4-mini': 'medium', 'claude-sonnet-5': 'xhigh' } },
+      model: { global: 'gpt-6.1-sol' },
+      effortByModel: { global: { 'gpt-5.4-mini': 'medium', 'claude-sonnet-5-5': 'xhigh' } },
     });
     await migrateLegacyModelSetting(settings);
 
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
     // gpt-5.4-mini → gpt-6-luna (medium is supported); the Anthropic entry is untouched.
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-luna': 'medium', 'claude-sonnet-5': 'xhigh' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6-luna': 'medium', 'claude-sonnet-5-5': 'xhigh' });
   });
 
   it('re-keys both retired Opus ids onto Opus 5.5, first id winning the collision', async () => {
@@ -271,8 +289,8 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
 
   it('does not write effortByModel when there is nothing legacy to re-key', async () => {
     const { settings, updates } = stub({
-      model: { global: 'gpt-6-sol' },
-      effortByModel: { global: { 'gpt-6-luna': 'high', 'claude-sonnet-5': 'low' } },
+      model: { global: 'gpt-6.1-sol' },
+      effortByModel: { global: { 'gpt-6-luna': 'high', 'claude-sonnet-5-5': 'low' } },
     });
     await migrateLegacyModelSetting(settings);
 
@@ -290,7 +308,7 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
     expect(updates.filter((u) => u.key === 'model')).toEqual([]);
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
     expect(effortUpdate?.target).toBe(G);
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-sol': 'high' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'high' });
   });
 
   it('re-keys effortByModel even when the scope model itself is a legacy id (both migrations run)', async () => {
@@ -301,10 +319,10 @@ describe('migrateLegacyModelSetting — effortByModel re-keying', () => {
     await migrateLegacyModelSetting(settings);
 
     expect(updates.filter((u) => u.key === 'model')).toEqual([
-      { key: 'model', value: 'gpt-6-sol', target: G },
+      { key: 'model', value: 'gpt-6.1-sol', target: G },
     ]);
     const effortUpdate = updates.find((u) => u.key === 'effortByModel');
-    expect(effortUpdate?.value).toEqual({ 'gpt-6-sol': 'low' });
+    expect(effortUpdate?.value).toEqual({ 'gpt-6.1-sol': 'low' });
   });
 });
 
@@ -359,13 +377,13 @@ describe('migrateLegacyModelSetting — DeepSeek effort-value migration (xhigh �
 
     const effortUpdates = updates.filter((u) => u.key === 'effortByModel');
     expect(effortUpdates).toHaveLength(1);
-    expect(effortUpdates[0]!.value).toEqual({ 'gpt-6-sol': 'high', 'deepseek-v4-pro': 'max' });
+    expect(effortUpdates[0]!.value).toEqual({ 'gpt-6.1-sol': 'high', 'deepseek-v4-pro': 'max' });
   });
 
   it('does not write when a scope has only a non-migrating DeepSeek entry alongside a legacy GPT key in another scope', async () => {
     const { settings, updates } = stub({
       effortByModel: {
-        global: { 'gpt-5.4': 'medium' }, // migrates → gpt-6-sol
+        global: { 'gpt-5.4': 'medium' }, // migrates → gpt-6.1-sol
         workspace: { 'deepseek-v4-pro': 'high' }, // supported, no change
       },
     });
@@ -373,7 +391,7 @@ describe('migrateLegacyModelSetting — DeepSeek effort-value migration (xhigh �
 
     const effortUpdates = updates.filter((u) => u.key === 'effortByModel');
     expect(effortUpdates).toEqual([
-      { key: 'effortByModel', value: { 'gpt-6-sol': 'medium' }, target: G },
+      { key: 'effortByModel', value: { 'gpt-6.1-sol': 'medium' }, target: G },
     ]);
   });
 });
@@ -439,7 +457,7 @@ describe('migrateLegacyEffortSetting', () => {
   it('moves damocles.effort into effortByModel under the active model, per scope, and removes it', async () => {
     const { settings } = createFakePlatform({
       settings: {
-        user: { 'damocles.model': 'gpt-6-sol', 'damocles.effort': 'high', 'damocles.effortByModel': { 'gpt-6-luna': 'low' } },
+        user: { 'damocles.model': 'gpt-6.1-sol', 'damocles.effort': 'high', 'damocles.effortByModel': { 'gpt-6-luna': 'low' } },
         local: { 'damocles.effort': 'max' },
       },
     });
@@ -447,19 +465,19 @@ describe('migrateLegacyEffortSetting', () => {
 
     expect(settings.inspect('damocles.effort')).toStrictEqual({});
     expect(settings.inspect('damocles.effortByModel')).toStrictEqual({
-      userValue: { 'gpt-6-luna': 'low', 'gpt-6-sol': 'high' },
-      localValue: { 'gpt-6-sol': 'max' },
+      userValue: { 'gpt-6-luna': 'low', 'gpt-6.1-sol': 'high' },
+      localValue: { 'gpt-6.1-sol': 'max' },
     });
   });
 
   it('keeps an effortByModel entry the active model already has and still removes damocles.effort', async () => {
     const { settings } = createFakePlatform({
-      settings: { user: { 'damocles.model': 'gpt-6-sol', 'damocles.effort': 'high', 'damocles.effortByModel': { 'gpt-6-sol': 'low' } } },
+      settings: { user: { 'damocles.model': 'gpt-6.1-sol', 'damocles.effort': 'high', 'damocles.effortByModel': { 'gpt-6.1-sol': 'low' } } },
     });
     await migrateLegacyEffortSetting(settings);
 
     expect(settings.inspect('damocles.effort')).toStrictEqual({});
-    expect(settings.inspect('damocles.effortByModel')).toStrictEqual({ userValue: { 'gpt-6-sol': 'low' } });
+    expect(settings.inspect('damocles.effortByModel')).toStrictEqual({ userValue: { 'gpt-6.1-sol': 'low' } });
   });
 });
 
@@ -471,6 +489,6 @@ describe('runLegacySettingsMigrations', () => {
     const update = vi.spyOn(settings, 'update').mockRejectedValue(new Error('read-only scope'));
 
     await expect(runLegacySettingsMigrations(settings)).resolves.toBeUndefined();
-    expect(update).toHaveBeenCalledWith('damocles.model', 'gpt-6-sol', 'project');
+    expect(update).toHaveBeenCalledWith('damocles.model', 'gpt-6.1-sol', 'project');
   });
 });

@@ -119,7 +119,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       // Starting the session builds the pi runtime, folder runtime and project MCP, which block this thread
       // in long stretches, so it waits until the conversation and the lists are posted.
       const current = deps.getPanels().get(ctx.panelId)?.session;
-      if (current) void current.initializeEarly().then(() => settingsManager.sendAvailableModels(current, ctx.host));
+      if (current) {
+        void current.initializeEarly().then(async () => {
+          await settingsManager.sendAvailableModels(current, ctx.host);
+          // The image catalog and OpenRouter auth come from pi's runtime, which exists only from here on.
+          settingsManager.sendImageGenerationSettings(ctx.host);
+        }).catch((err: unknown) => log("[SessionHandlers] posting the models after the session started failed: %O", err));
+      }
     },
 
     renameSession: async (msg, ctx) => {

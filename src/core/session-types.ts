@@ -3,7 +3,7 @@ import type { Platform } from '../platform/platform';
 import type { PanelHost } from '../platform/window-service';
 import type { PermissionHandler } from './permission-handler';
 import type { ExtensionToWebviewMessage } from '../shared/types/messages';
-import type { McpServerConfig } from '../shared/types/mcp';
+import type { McpServerSpec } from './pi-session/mcp/types';
 import type { UserContentBlock } from '../shared/types/content';
 import type { EffortLevel } from '../shared/types/settings';
 import type { MemoryService } from './memory';
@@ -15,11 +15,11 @@ import type { ForkContext, ForkSpawnArgs } from '../shared/types/session';
 /** MCP servers one panel may use, split by scope so user-scope servers share one connection window-wide. */
 export interface McpScope {
   /** Enabled user-scope servers visible in at least one open folder; fed to the one process-wide user manager. */
-  userUnion: Record<string, McpServerConfig>;
+  userUnion: Record<string, McpServerSpec>;
   /** Keys of `userUnion` visible in this panel's folder (not shadowed by a folder-scope entry there). */
   userVisible: string[];
   /** This folder's enabled, trust-permitted folder-scope servers. */
-  folder: Record<string, McpServerConfig>;
+  folder: Record<string, McpServerSpec>;
 }
 
 /** Options for creating a chat session. */
@@ -28,7 +28,7 @@ export interface SessionOptions {
   platform: Platform;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;
-  /** `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first reply. */
+  /** `stored`: the session already has its file on disk (a resumed or forked one); a new one gets it with its first prompt. */
   onSessionIdChange?: (sessionId: string | null, stored: boolean) => void;
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
@@ -50,7 +50,7 @@ export interface SessionOptions {
     effort: EffortLevel | null;
     maxThinkingTokens: number | null;
   };
-  /** Whether to prefer the OpenAI API key over Codex OAuth when both are configured (pi path). */
+  /** Whether to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */
   getPreferOpenAIApiKey?: () => boolean;
   secrets?: SecretsStore;
 }

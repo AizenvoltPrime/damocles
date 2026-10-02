@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { reconcileInterruptions, type NoticeMessage } from '../interruption-notice';
 import { readAgentFile, type LiveAgentStatus } from '../agent-records';
+import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 
 // A recording pass-through, so a case can fail one file's read.
 vi.mock('../agent-records', async (importOriginal) => {
@@ -119,7 +120,7 @@ describe('reconcileInterruptions', () => {
     expect(sent[0]!.details.agents).toEqual([{ kind: 'subagent', id: A, toolCallId: 'tc1' }]);
   });
 
-  it('no file: an agent stopped before its first response is listed with its spawn description', async () => {
+  it('no file: an agent stopped before its task was committed is listed with its spawn description', async () => {
     const dir = tempDir();
     const parent = SessionManager.inMemory('/ws');
     invoke(parent, A, 'tc1');
@@ -176,6 +177,52 @@ describe('reconcileInterruptions', () => {
 
     // B finished; read as "no file" it would have been listed as interrupted.
     expect(announced.map((a) => a.id)).toEqual([A]);
+  });
+
+  it('an agent with no indexed file is skipped while another agent file could not be indexed', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    invoke(parent, A, 'tc1', { details: { agentId: A, status: 'async_launched' } });
+    // A directory, so indexing it fails with EISDIR; it may be A's finished file.
+    fs.mkdirSync(path.join(dir, '0-unreadable.jsonl'));
+
+    expect((await reconcile(parent, dir)).sent).toEqual([]);
+
+    fs.rmdirSync(path.join(dir, '0-unreadable.jsonl'));
+    expect((await reconcile(parent, dir)).announced.map((a) => a.id)).toEqual([A]);
+  });
+
+  it('an agent whose latest result was delivered is not listed again; an undelivered one still is', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    writeAgentFile(dir, A, { status: 'stopped', stopReason: 'user' });
+    writeAgentFile(dir, B, { status: 'stopped', stopReason: 'user' });
+    invoke(parent, A, 'tc1', { details: { agentId: A, status: 'async_launched' } });
+    invoke(parent, B, 'tc2', { details: { agentId: B, status: 'async_launched' } });
+    // A card stop delivered with its resume note; the live record still reads stopped by the user.
+    parent.appendCustomMessageEntry(SUBAGENT_RESULTS_CUSTOM_TYPE, 'results', false, {
+      agents: [{ agentId: A, toolCallId: 'tc1', status: 'stopped', stopReason: 'user', result: 'half' }],
+    });
+    const read = vi.mocked(readAgentFile);
+
+    const { announced } = await reconcile(parent, dir, (id) => (id === A ? { toolCallId: 'tc1', status: 'stopped', stopReason: 'user' } : undefined));
+
+    expect(announced.map((a) => a.id)).toEqual([B]);
+    expect(read.mock.calls.map(([file]) => file.endsWith(`_${A}.jsonl`))).toEqual([false]);
+  });
+
+  it('an agent whose latest result GetSubagentResult fetched is not listed', async () => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    writeAgentFile(dir, A, { status: 'stopped', stopReason: 'user' });
+    invoke(parent, A, 'tc1', { details: { agentId: A, status: 'async_launched' } });
+    parent.appendMessage(assistant([{ type: 'toolCall', id: 'tc-get', name: 'GetSubagentResult', arguments: { agent_id: A } }]));
+    parent.appendMessage({
+      role: 'toolResult', toolCallId: 'tc-get', toolName: 'GetSubagentResult', content: [{ type: 'text', text: 'half' }],
+      details: { agentId: A, toolCallId: 'tc1', status: 'stopped' }, isError: false, timestamp: Date.now(),
+    } as unknown as Parameters<SessionManager['appendMessage']>[0]);
+
+    expect((await reconcile(parent, dir)).sent).toEqual([]);
   });
 
   it('an agent invoked only on a rewound branch is not listed', async () => {

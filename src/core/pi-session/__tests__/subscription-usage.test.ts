@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { parseClaudeUsage, parseCodexUsage, fetchSubscriptionUsage } from '../subscription-usage';
+import { parseClaudeUsage, parseCodexUsage, parseClaudeProfile, fetchSubscriptionUsage } from '../subscription-usage';
 import type { PiRuntime } from '../pi-runtime';
 
 describe('parseClaudeUsage (limits array — current API shape)', () => {
@@ -325,11 +325,13 @@ describe('parseCodexUsage', () => {
   });
 });
 
-// The network layer only calls getClaudeAccessToken/getCodexAccessToken on the runtime, so a stub suffices.
-function stubRuntime(claudeToken: string | undefined, codexToken: string | undefined): PiRuntime {
+// The network layer only calls the runtime's access-token getters, so a stub suffices.
+function stubRuntime(claudeToken: string | undefined, codexToken: string | undefined, chatgptToken?: string, chatgptSignedIn = chatgptToken !== undefined): PiRuntime {
   return {
     getClaudeAccessToken: async () => claudeToken,
     getCodexAccessToken: async () => codexToken,
+    getChatGPTAccessToken: async () => chatgptToken,
+    getOpenAIAuthStatus: () => ({ apiKey: false, chatgpt: chatgptSignedIn, codex: codexToken !== undefined }),
   } as unknown as PiRuntime;
 }
 
@@ -376,7 +378,7 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     });
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, SECRET));
-    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'HTTP 429' });
+    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'HTTP 429', profileError: 'HTTP 429' });
     expect(JSON.stringify(data)).not.toContain(SECRET);
   });
 
@@ -409,7 +411,7 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     });
 
     const data = await fetchSubscriptionUsage(stubRuntime(SECRET, SECRET));
-    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'Network error' });
+    expect(data.claude).toEqual({ status: 'error', bars: [], error: 'Network error', profileError: 'Network error' });
     expect(data.gpt.status).toBe('ok');
     expect(data.gpt.planType).toBe('free');
   });
@@ -439,5 +441,172 @@ describe('fetchSubscriptionUsage (network layer)', () => {
     expect(data.gpt.bars.map((b) => b.id)).toEqual(['codex_primary', 'codex_secondary']);
     expect(data.gpt.planType).toBe('plus');
     expect(data.fetchedAt).toBeGreaterThanOrEqual(before);
+  });
+});
+
+describe('fetchSubscriptionUsage (GPT under Sign in with ChatGPT)', () => {
+  const CHATGPT = 'chatgpt-access-token';
+  const USAGE_PAGE = { status: 'ok', bars: [], usageUrl: 'https://chatgpt.com/settings/usage' };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function whamWith(response: Response): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (input: unknown, _init?: RequestInit) =>
+      String(input).includes('chatgpt.com') ? response : jsonResponse({ limits: [] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  function authorizationSent(fetchMock: ReturnType<typeof vi.fn>): string | undefined {
+    const call = fetchMock.mock.calls.find(([url]) => String(url).includes('chatgpt.com'));
+    return (call?.[1] as { headers: Record<string, string> } | undefined)?.headers['Authorization'];
+  }
+
+  it('shows bars when wham/usage accepts the ChatGPT token, which wins over a Codex token', async () => {
+    const fetchMock = whamWith(jsonResponse({ plan_type: 'plus', rate_limit: { primary_window: { used_percent: 9, reset_at: 1 } } }));
+
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, 'codex-token', CHATGPT));
+
+    expect(authorizationSent(fetchMock)).toBe(`Bearer ${CHATGPT}`);
+    expect(data.gpt).toMatchObject({ status: 'ok', planType: 'plus' });
+    expect(data.gpt.bars.map((b) => b.id)).toEqual(['codex_primary']);
+    expect(data.gpt.usageUrl).toBeUndefined();
+  });
+
+  it.each([401, 403])('links to the ChatGPT usage page when wham/usage answers %i', async (status) => {
+    whamWith(jsonResponse({}, false, status));
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined, CHATGPT));
+    expect(data.gpt).toEqual(USAGE_PAGE);
+    expect(JSON.stringify(data)).not.toContain(CHATGPT);
+  });
+
+  it('links to the ChatGPT usage page when wham/usage answers HTML', async () => {
+    whamWith({ ok: true, status: 200, headers: { get: () => 'text/html' }, json: async () => { throw new Error('HTML'); } } as unknown as Response);
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined, CHATGPT));
+    expect(data.gpt).toEqual(USAGE_PAGE);
+  });
+
+  it('keeps reporting other failures as errors', async () => {
+    whamWith(jsonResponse({}, false, 500));
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined, CHATGPT));
+    expect(data.gpt).toEqual({ status: 'error', bars: [], error: 'HTTP 500' });
+  });
+
+  it('links to the usage page without any request while a preferred key overrides the ChatGPT grant', async () => {
+    const fetchMock = whamWith(jsonResponse({}));
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined, undefined, true));
+    expect(data.gpt).toEqual(USAGE_PAGE);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('chatgpt.com'))).toBe(false);
+  });
+
+  it('keeps the Codex token on its error path for a 401', async () => {
+    whamWith(jsonResponse({}, false, 401));
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, 'codex-token'));
+    expect(data.gpt).toEqual({ status: 'error', bars: [], error: 'HTTP 401' });
+  });
+});
+
+const PROFILE_BODY = {
+  account: { email: 'person@example.com' },
+  organization: {
+    name: "person@example.com's Organization",
+    organization_type: 'claude_max',
+    rate_limit_tier: 'default_claude_max_20x',
+    seat_tier: null,
+    subscription_status: 'active',
+    has_extra_usage_enabled: false,
+  },
+};
+
+describe('parseClaudeProfile', () => {
+  it('maps the account and organization fields', () => {
+    expect(parseClaudeProfile(PROFILE_BODY)).toEqual({
+      organizationType: 'claude_max',
+      rateLimitTier: 'default_claude_max_20x',
+      seatTier: null,
+      subscriptionStatus: 'active',
+      hasExtraUsageEnabled: false,
+      email: 'person@example.com',
+      organizationName: "person@example.com's Organization",
+    });
+  });
+
+  it('nulls missing or mistyped fields and rejects a non-object body', () => {
+    expect(parseClaudeProfile({ organization: { organization_type: 3, has_extra_usage_enabled: 'yes' }, account: [] })).toEqual({
+      organizationType: null,
+      rateLimitTier: null,
+      seatTier: null,
+      subscriptionStatus: null,
+      hasExtraUsageEnabled: null,
+      email: null,
+      organizationName: null,
+    });
+    expect(parseClaudeProfile(null)).toBeUndefined();
+    expect(parseClaudeProfile([PROFILE_BODY])).toBeUndefined();
+  });
+});
+
+describe('fetchSubscriptionUsage (Claude account profile)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const USAGE_BODY = { limits: [{ kind: 'session', percent: 12, resets_at: null }] };
+
+  it('fetches the profile with the usage token and the OAuth beta header', async () => {
+    const calls: { url: string; headers: Record<string, string> }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, headers: init?.headers as Record<string, string> });
+      return jsonResponse(url.endsWith('/api/oauth/profile') ? PROFILE_BODY : USAGE_BODY);
+    }));
+
+    const data = await fetchSubscriptionUsage(stubRuntime(SECRET, undefined));
+    const profileCall = calls.find((c) => c.url === 'https://api.anthropic.com/api/oauth/profile');
+    expect(profileCall?.headers['Authorization']).toBe(`Bearer ${SECRET}`);
+    expect(profileCall?.headers['anthropic-beta']).toBe('oauth-2025-04-20');
+    expect(data.claude.status).toBe('ok');
+    expect(data.claude.bars).toHaveLength(1);
+    expect(data.claude.profile?.organizationType).toBe('claude_max');
+    expect(data.claude.profileError).toBeUndefined();
+  });
+
+  it('sends no Claude request at all without a subscription token (API-key credential)', async () => {
+    mockFetch((url) => {
+      if (url.includes('anthropic.com')) throw new Error(`no Claude request may be sent: ${url}`);
+      return jsonResponse({});
+    });
+
+    const data = await fetchSubscriptionUsage(stubRuntime(undefined, undefined));
+    expect(data.claude).toEqual({ status: 'not-connected', bars: [] });
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it('keeps the usage bars when the profile request fails', async () => {
+    mockFetch((url) => {
+      if (url.endsWith('/api/oauth/profile')) throw new TypeError('connection reset');
+      return jsonResponse(USAGE_BODY);
+    });
+
+    const data = await fetchSubscriptionUsage(stubRuntime(SECRET, undefined));
+    expect(data.claude.status).toBe('ok');
+    expect(data.claude.bars).toHaveLength(1);
+    expect(data.claude.profile).toBeUndefined();
+    expect(data.claude.profileError).toBe('Network error');
+  });
+
+  it('reports a non-OK profile response by status alone', async () => {
+    mockFetch((url) =>
+      url.endsWith('/api/oauth/profile') ? jsonResponse({ error: SECRET }, false, 401) : jsonResponse(USAGE_BODY),
+    );
+
+    const data = await fetchSubscriptionUsage(stubRuntime(SECRET, undefined));
+    expect(data.claude.profileError).toBe('HTTP 401');
+    expect(data.claude.bars).toHaveLength(1);
+    expect(JSON.stringify(data)).not.toContain(SECRET);
   });
 });

@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
-import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
+import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { buildPlanModeGuidance } from '../plan-mode-guidance';
 import { isWebSearchEnabled } from '../web-access';
 import { TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE } from '../../../shared/tool-names';
@@ -71,7 +71,7 @@ export function createPlanModeTools(
         // thrown error into an `isError` result, which the webview renders as the "denied" card
         // (red, with the feedback) instead of a green "completed" that would override the optimistic
         // denied state the overlay already set. The marker keeps it "denied" rather than "failed".
-        throw new Error(formatDenyReason(result.message));
+        throw new Error(result.policy ? formatPolicyBlockReason(result.message) : formatDenyReason(result.message));
       }
       return { content: [{ type: 'text', text: 'Plan approved. Proceeding with implementation.' }], details: undefined };
     },

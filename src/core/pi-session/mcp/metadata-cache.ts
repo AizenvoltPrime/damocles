@@ -8,7 +8,6 @@ import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmSync 
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { McpTool, McpResource, McpServerDefinition } from './types';
-import { interpolateEnvRecord, resolveBearerToken, resolveConfigPath } from './utils';
 import { MCP_METADATA_CACHE_DIR } from './paths';
 
 const CACHE_VERSION = 1;
@@ -40,17 +39,21 @@ function cacheFilePath(serverName: string): string {
   return join(MCP_METADATA_CACHE_DIR, `${hash}.json`);
 }
 
-/** Hash only the fields that determine which tools/resources a server exposes. */
+/**
+ * Hash only the fields that determine which tools/resources a server exposes, as written in the config.
+ * Values are never resolved here: that would run `!command` values outside a connect and write a hash
+ * of resolved secrets to disk.
+ */
 export function computeServerHash(definition: McpServerDefinition): string {
   const identity: Record<string, unknown> = {
     command: definition.command,
     args: definition.args,
-    env: interpolateEnvRecord(definition.env),
-    cwd: resolveConfigPath(definition.cwd),
+    env: definition.env,
+    cwd: definition.cwd,
     url: definition.url,
-    headers: interpolateEnvRecord(definition.headers),
+    headers: definition.headers,
     auth: definition.auth,
-    bearerToken: resolveBearerToken(definition),
+    bearerToken: definition.bearerToken,
     bearerTokenEnv: definition.bearerTokenEnv,
     exposeResources: definition.exposeResources,
   };

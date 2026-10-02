@@ -35,6 +35,7 @@ export function extractDenialFeedback(errorMessage: string): string | undefined 
  * marker, the same signal the live path reads off the error text; anything else errored on its own.
  */
 function historyToolStatus(tool: HistoryToolCall, denialFeedback: string | undefined): ToolCall["status"] {
+  if (tool.stopped === true) return "abandoned";
   if (tool.isError === true) return denialFeedback !== undefined ? "denied" : "failed";
   if (tool.result === undefined) return "unrecorded";
   return "completed";

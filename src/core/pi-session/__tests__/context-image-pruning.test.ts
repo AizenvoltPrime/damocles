@@ -15,7 +15,7 @@ import {
 
 /** The placeholder is spelled out here, not imported: a change to it invalidates the prompt cache. */
 const PLACEHOLDER =
-  '[Image removed: an older screenshot was pruned to keep the request within provider size limits. Capture a fresh screenshot (BrowserScreenshot) or re-read the file if this content is still needed.]';
+  '[Image removed: an older image was pruned to keep the request within provider size limits. Capture a fresh screenshot (BrowserScreenshot) or re-read the file if this content is still needed.]';
 
 type Block = { type: string; text?: string; data?: string; mimeType?: string };
 

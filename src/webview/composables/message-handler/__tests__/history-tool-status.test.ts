@@ -37,6 +37,11 @@ describe('convertHistoryTools', () => {
     expect(convert({ ...CALL, result: '' }).status).toBe('completed');
   });
 
+  it('restores a call a Stop abandoned as abandoned, whatever result pi wrote while stopping', () => {
+    expect(convert({ ...CALL, stopped: true, result: 'Operation aborted', isError: true }).status).toBe('abandoned');
+    expect(convert({ ...CALL, stopped: true, result: 'done' }).status).toBe('abandoned');
+  });
+
   it('restores a recorded success as completed', () => {
     expect(convert({ ...CALL, result: 'a.ts\nb.ts', isError: false }).status).toBe('completed');
   });

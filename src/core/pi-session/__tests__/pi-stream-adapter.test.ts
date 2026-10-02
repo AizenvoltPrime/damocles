@@ -420,6 +420,23 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(turns).toEqual(['idle']);
   });
 
+  it('a Stop returns the calls it abandoned and shows no error from its wind-down', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const events: unknown[] = [{ type: 'tool_execution_start', toolCallId: 'tc-1', toolName: 'read', args: { path: 'README.md' } }];
+    const session = fakeSession(events);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+
+    expect(adapter.markAborted()).toEqual(['tc-1']);
+
+    events.splice(0, events.length, { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'This operation was aborted' } } });
+    out.length = 0;
+    session.play();
+    expect(out.some((m) => m.type === 'error' || m.type === 'authFailure')).toBe(false);
+  });
+
   it('a stream-originated abort emits sessionCancelled once and still lowers the spinner at the settle', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const turns: TurnState[] = [];
@@ -529,6 +546,34 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
 
     const assistantMsg = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'assistant' }> => m.type === 'assistant');
     expect(assistantMsg?.data.message.content).toContainEqual({ type: 'text', text: 'Final answer' });
+  });
+
+  describe('reply effort', () => {
+    const replyAt = (thinkingLevel: string | undefined, reasoning: boolean | undefined) => {
+      const out: ExtensionToWebviewMessage[] = [];
+      const adapter = makeAdapter(out);
+      const session = {
+        ...fakeSession([
+          { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], ...(thinkingLevel ? { thinkingLevel } : {}), usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } },
+        ]),
+        model: reasoning === undefined ? undefined : { reasoning },
+      };
+      adapter.subscribe(session as never);
+      adapter.beginTurn('c');
+      session.play();
+      const assistantMsg = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'assistant' }> => m.type === 'assistant');
+      return assistantMsg?.data.message;
+    };
+
+    it("carries the level pi ran the reply at, for a reasoning model", () => {
+      expect(replyAt('high', true)?.effort).toBe('high');
+    });
+
+    it('carries no effort for a model that does not reason, or a reply pi recorded no level for', () => {
+      expect(replyAt('off', false)).not.toHaveProperty('effort');
+      expect(replyAt(undefined, true)).not.toHaveProperty('effort');
+      expect(replyAt('high', undefined)).not.toHaveProperty('effort');
+    });
   });
 
   it('correlates the user message and maps an aborted error to sessionCancelled', () => {

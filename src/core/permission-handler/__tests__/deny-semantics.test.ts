@@ -75,6 +75,7 @@ describe('deny builders — only an answered prompt may end the turn', () => {
     expect(buildUnaskedDenyResult(undefined, 'Permission denied by settings rule')).toEqual({
       behavior: 'deny',
       message: 'Permission denied by settings rule',
+      policy: true,
     });
     expect(buildUnaskedDenyResult('webview not available', 'unused')).not.toHaveProperty('interrupt');
   });
@@ -108,9 +109,8 @@ describe('ApprovalManager — infra failures must not end the turn', () => {
     expect(shell).not.toHaveProperty('interrupt');
   });
 
-  it('an abort during session teardown denies without interrupt', async () => {
+  it('an abort before the answer denies without interrupt', async () => {
     const state = new PermissionState();
-    state.sessionAborting = true;
     const manager = new ApprovalManager(state, makeDiffManager(), () => (vi.fn() as unknown as PostMessageFn));
     const controller = new AbortController();
 

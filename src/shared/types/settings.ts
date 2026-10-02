@@ -59,6 +59,22 @@ export interface ExtensionSettings {
   team: TeamRoleSettings;
 }
 
+/** One OpenRouter image model from pi's image catalog. */
+export interface ImageModelOption {
+  id: string;
+  name: string;
+}
+
+/** The image generation section: `damocles.imageGeneration.enabled` and `.model`, the catalog, and OpenRouter auth. */
+export interface ImageGenerationSettings {
+  enabled: boolean;
+  /** "" when none is chosen. */
+  model: string;
+  imageModels: ImageModelOption[];
+  /** pi's `hasConfiguredAuth('openrouter')`, the same check the tool's eligibility uses. */
+  openRouterConfigured: boolean;
+}
+
 /**
  * Per-role model + reasoning-effort overrides for agent teams.
  * An empty-string model means "use the active panel model"; a null effort
@@ -137,6 +153,26 @@ export interface AccountInfo {
   /** False on a flat subscription, where a rendered dollar cost is an estimate rather than a charge. */
   dollarBilled: boolean;
 }
+
+/** A provider that serves the Jev classifier. */
+export type ClassifierProvider = "typesafe" | "openrouter";
+
+/** Why a classifier provider's credential was refused: HTTP 401, 402 or 403. */
+export type ClassifierRejection = "unauthorized" | "payment-required" | "forbidden";
+
+/**
+ * The model the memory contradiction judge and reranks run on. `model` is `<provider>/<id>`. `unknown`: no
+ * classifier key, and the sub-call model is resolved only once a chat has started pi.
+ */
+export type MemoryJudge = (
+  | { kind: "jev"; via: ClassifierProvider }
+  | { kind: "model"; model: string }
+  | { kind: "none" }
+  | { kind: "unknown" }
+) & {
+  /** Configured classifier providers the judges skip because their credential was refused. */
+  rejected?: { via: ClassifierProvider; reason: ClassifierRejection }[];
+};
 
 export interface BudgetWarningInfo {
   currentSpend: number;

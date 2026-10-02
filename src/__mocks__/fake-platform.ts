@@ -46,6 +46,8 @@ export interface FakePlatformInit {
   /** resourceRoot and unpackedRoot; workers resolve under `<appRoot>/dist` as on VS Code. */
   readonly appRoot?: string;
   readonly version?: string;
+  /** Defaults to 'vscode'. */
+  readonly host?: 'vscode' | 'desktop';
   /** Defaults to 'en'. */
   readonly language?: string;
   /** Overrides of the VS Code capability values. */
@@ -314,6 +316,10 @@ function createSettingsStore(init: FakePlatformInit['settings']): SettingsStore 
 
 function createSecretsStore(values: Readonly<Record<string, string>> | undefined, isPersistent: boolean): FakeSecretsStore {
   const entries = new Map(Object.entries(values ?? {}));
+  const listeners = new Set<(key: string) => void>();
+  const fire = (key: string): void => {
+    for (const listener of [...listeners]) listener(key);
+  };
   return {
     entries,
     isPersistent,
@@ -321,11 +327,17 @@ function createSecretsStore(values: Readonly<Record<string, string>> | undefined
     keys: () => Promise.resolve([...entries.keys()]),
     store: (key, value) => {
       entries.set(key, value);
+      fire(key);
       return Promise.resolve();
     },
     delete: (key) => {
       entries.delete(key);
+      fire(key);
       return Promise.resolve();
+    },
+    onDidChange: (listener) => {
+      listeners.add(listener);
+      return { dispose: () => { listeners.delete(listener); } };
     },
   };
 }
@@ -856,7 +868,7 @@ export function createFakePlatform(init: FakePlatformInit = {}): FakePlatform {
     fileWatchers: createFileWatcherFactory(workspaceFolders),
     notifications: createNotificationService(),
     paths: createAppPaths(init.appRoot ?? path.resolve(__dirname, '..', '..')),
-    appInfo: { version: init.version ?? '0.0.0-test' },
+    appInfo: { version: init.version ?? '0.0.0-test', host: init.host ?? 'vscode' },
     localization: createLocalization(init.language ?? 'en'),
     clipboard: createClipboard(),
     shell: createShell(),

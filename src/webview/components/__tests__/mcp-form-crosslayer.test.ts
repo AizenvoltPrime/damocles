@@ -72,14 +72,37 @@ function everyFormShape(): McpServerFormState[] {
       base({ mode: 'remote', url: 'https://example.test', headers: kvRows({ key: 'H', value: w }) }),
       base({
         mode: 'remote',
-        remoteType: 'sse',
+        remoteType: 'streamable-http',
         url: 'https://example.test',
         headers: kvRows({ key: `H${w}`, value: 'v' }),
       }),
+      base({ description: w }),
+      base({ timeout: w }),
+      base({ mode: 'remote', url: 'https://example.test', oauthClientName: w }),
+      base({ mode: 'remote', url: 'https://example.test', oauthAuthServerMetadataUrl: w }),
+      base({ mode: 'remote', url: 'https://example.test', oauthCallbackUrl: w }),
+      base({ mode: 'remote', url: 'https://example.test', oauthCallbackPort: w }),
     );
   }
+  states.push(...OAUTH_AND_TIMEOUT_SHAPES);
   return states;
 }
+
+/** Values on both sides of each ported pi rule, where the form and the validator must agree. */
+const OAUTH_AND_TIMEOUT_SHAPES: McpServerFormState[] = [
+  ...['30', '1.5', '0', '-1', 'abc'].map((timeout) => base({ timeout })),
+  ...['https://auth.test/meta', 'http://localhost:9/meta', 'http://127.0.0.1/meta', 'http://[::1]/meta', 'http://auth.test/meta', 'ftp://localhost/x'].map(
+    (oauthAuthServerMetadataUrl) => base({ mode: 'remote', url: 'https://example.test', oauthAuthServerMetadataUrl }),
+  ),
+  ...['http://localhost:8080/cb', 'http://127.0.0.1/cb', 'https://localhost/cb', 'http://localhost/cb?x=1', 'http://localhost/cb#f', 'http://example.test/cb'].map(
+    (oauthCallbackUrl) => base({ mode: 'remote', url: 'https://example.test', oauthCallbackUrl }),
+  ),
+  ...['1', '65535', '0', '65536', '80a'].map((oauthCallbackPort) =>
+    base({ mode: 'remote', url: 'https://example.test', oauthCallbackPort }),
+  ),
+  base({ mode: 'remote', url: 'https://example.test', oauthCallbackUrl: 'http://localhost:8080/cb', oauthCallbackPort: '9090' }),
+  base({ mode: 'remote', url: 'https://example.test', oauthCallbackUrl: 'http://localhost:8080/cb', oauthCallbackPort: '8080' }),
+];
 
 describe('cross-layer: a form the UI accepts is a definition the extension accepts', () => {
   it('never emits a name or config the extension validator rejects', () => {
@@ -152,6 +175,23 @@ describe('cross-layer: a form the UI accepts is a definition the extension accep
     }
 
     expect([...formRejects].sort()).toEqual([...SHADOWING_SOURCES].sort());
+  });
+
+  it('rejects exactly the timeout and OAuth values the extension validator rejects', () => {
+    // A form error the extension would accept blocks a working config; the reverse loses the typed form.
+    const disagreements: string[] = [];
+    for (const state of OAUTH_AND_TIMEOUT_SHAPES) {
+      const formAccepts = isMcpFormValid(validateMcpServerForm(state, null, []));
+      const config = buildMcpServerConfig(state);
+      let extensionAccepts = true;
+      try {
+        assertValidMcpServerConfig(config);
+      } catch {
+        extensionAccepts = false;
+      }
+      if (formAccepts !== extensionAccepts) disagreements.push(`${JSON.stringify(config)} form=${formAccepts} extension=${extensionAccepts}`);
+    }
+    expect(disagreements).toEqual([]);
   });
 
   it('covers a meaningful number of shapes — a vacuous pass would prove nothing', () => {

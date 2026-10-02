@@ -167,10 +167,9 @@ export interface ModelResolution {
 /**
  * Resolve a Damocles model `value` to a pi `Model` under a SUPPORTED CANONICAL provider — never the
  * gateway/reseller duplicates (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that
- * carry the same ids without the user's auth. GPT values split across pi's two OpenAI providers:
- * Codex OAuth (`openai-codex`) wins by default when configured, unless `preferApiKey` is set AND an
- * API key is configured, in which case the `openai` (API-key) provider wins. Claude values resolve
- * against the first-party `anthropic` provider.
+ * carry the same ids without the user's auth. GPT values resolve in this order: the preferred API key
+ * (`openai`), a ChatGPT grant (`openai`), a legacy Codex grant (`openai-codex`), the API key (`openai`),
+ * else `openai` with `authRequired`. Claude values resolve against the first-party `anthropic` provider.
  */
 export function resolvePiModel(
   value: string,
@@ -182,20 +181,13 @@ export function resolvePiModel(
 
   if (info?.backend === 'openai') {
     const id = info.openaiModelId ?? value;
-    const codexModel = openai.codex ? registry.getModel(OPENAI_CODEX_PROVIDER, id) : undefined;
     const apiModel = registry.getModel(OPENAI_API_PROVIDER, id);
-
-    const codexRes: ModelResolution | undefined = codexModel ? { model: codexModel, authed: true } : undefined;
-    const apiRes: ModelResolution | undefined = apiModel
-      ? (openai.apiKey ? { model: apiModel, authed: true } : { model: apiModel, authRequired: true })
-      : undefined;
-
-    // The toggle only takes effect when an API key actually exists; otherwise Codex OAuth keeps its
-    // default precedence so the user is never routed to a credential they don't have.
-    const ordered = preferApiKey && openai.apiKey ? [apiRes, codexRes] : [codexRes, apiRes];
-    const authed = ordered.find((r) => r?.authed);
-    if (authed) return authed;
-    return apiRes ?? { authRequired: true };
+    // The key and ChatGPT both serve `openai`; the runtime key rule picks which of them pi sends.
+    if (apiModel && ((preferApiKey && openai.apiKey) || openai.chatgpt)) return { model: apiModel, authed: true };
+    const codexModel = openai.codex ? registry.getModel(OPENAI_CODEX_PROVIDER, id) : undefined;
+    if (codexModel) return { model: codexModel, authed: true };
+    if (apiModel) return openai.apiKey ? { model: apiModel, authed: true } : { model: apiModel, authRequired: true };
+    return { authRequired: true };
   }
 
   if (info?.piProvider) {

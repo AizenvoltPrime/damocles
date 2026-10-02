@@ -25,8 +25,8 @@ export interface BootOptions {
 
 const MODELS: ModelInfo[] = [
   { value: 'claude-opus-5-5', displayName: 'Opus 5.5', description: 'Most capable model for agentic work', contextWindow: 1_000_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'], defaultEffort: 'high', thinkingAlwaysOn: true },
-  { value: 'claude-sonnet-5', displayName: 'Sonnet 5', description: 'Best balance of speed and capability', contextWindow: 1_000_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'] },
-  { value: 'gpt-6-sol', displayName: 'GPT-6 Sol', description: 'OpenAI Codex', contextWindow: 272_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  { value: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5', description: 'Best balance of speed and capability', contextWindow: 1_000_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'], defaultEffort: 'high', thinkingAlwaysOn: true },
+  { value: 'gpt-6.1-sol', displayName: 'GPT-6.1 Sol', description: 'OpenAI Codex', contextWindow: 272_000, supportsAdaptiveThinking: true, supportsEffort: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'], thinkingAlwaysOn: true },
 ];
 
 export function settings(permissionMode: PermissionMode = 'default', yolo = false): ExtensionSettings {

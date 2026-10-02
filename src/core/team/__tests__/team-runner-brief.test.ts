@@ -28,7 +28,6 @@ function completedResult(agentId: string): AgentResult {
     status: 'completed',
     finalResponse: 'lead done',
     toolCallCount: 0,
-    durationMs: 1,
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cacheReadTokens: 0,
@@ -159,7 +158,7 @@ describe('TeamRunner.run — seeds the immutable mission-brief section', () => {
     (config as unknown as { resolveRoleModel: (role: TeamRole) => { error?: string; modelLabel?: string } }).resolveRoleModel =
       (role: TeamRole) =>
         role === 'lead'
-          ? { error: 'Team role "lead" is configured to model "gpt-6-sol" (damocles.team.leadModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+          ? { error: 'Team role "lead" is configured to model "gpt-6.1-sol" (damocles.team.leadModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
           : { modelLabel: 'spec-model' };
     const runner = new TeamRunner(config, () => undefined);
 

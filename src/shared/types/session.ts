@@ -1,5 +1,6 @@
 import type { ContentBlock, UserContentBlock } from './content';
 import type { AgentUsageTotals } from '../usage-accounting';
+import type { EffortBadgeLevel } from '../effort-badge';
 
 export interface SystemInitData {
   model: string;
@@ -207,6 +208,8 @@ export interface AssistantMessage {
     content: ContentBlock[];
     model: string;
     stop_reason: string | null;
+    /** The level pi ran this reply at, published only for a reasoning model. */
+    effort?: EffortBadgeLevel;
   };
   session_id: string;
 }
@@ -253,6 +256,8 @@ export interface ChatMessage {
   checkpointId?: string;
   thinking?: string;
   thinkingDuration?: number;
+  /** An assistant reply's effort; which rows show it is derived at render time (`useVirtualizedMessages.ts`). */
+  effort?: EffortBadgeLevel;
   parentToolUseId?: string | null;
   isQueued?: boolean;
   isInjected?: boolean;

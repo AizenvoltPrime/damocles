@@ -1,5 +1,7 @@
 import type { TeamRunSummary } from '../../shared/types/team';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../shared/usage-accounting';
+import { isEffortBadgeLevel, type EffortBadgeLevel } from '../../shared/effort-badge';
+import { stopStopwatch, type Stopwatch } from '../../shared/team-stopwatch';
 
 /** The work totals a `team-completed` or `team-cancelled` entry records for its run. */
 export type TeamRunTotals = { toolCount: number } & AgentUsageTotals;
@@ -41,6 +43,11 @@ function readRunTotals(value: unknown): ReadRunTotals | null {
  * field adds nothing. A run's totals are the ones its `team-completed` entry recorded, else the ones
  * its `team-cancelled` entry recorded, else the sum of its members' `agent-completed` entries. A run
  * with no `team-completed` was cut short by a reload, so it ends cancelled at the log's last entry.
+ * It also holds each member's effort and active time, per-attempt work fields, so every log reader applies
+ * one rule. A member's stopwatch opens at its `agent-spawned` (a new attempt, from zero) or `agent-resumed`
+ * entry and closes at its `agent-completed` or the run's `team-completed`; a run cut short closes it at the
+ * entry before the next run starts, or at the log's last entry. An `agent-completed` stamped with another
+ * run's `toolUseId` counts toward nothing in the open run.
  */
 export class TeamRunLog {
   private readonly ended: TeamRunSummary[] = [];
@@ -48,6 +55,10 @@ export class TeamRunLog {
   private openCancelTotals: ReadRunTotals | null = null;
   // Each member's logged tool calls in its current attempt, since `agent-completed` carries that running count.
   private readonly attemptToolCounts = new Map<string, number>();
+  // By agentId: a spawn starts an attempt with no effort, and only that attempt's own sessions set it.
+  private readonly efforts = new Map<string, { attempt: number; effort: EffortBadgeLevel | null }>();
+  // By agentId, with the same attempt rule as `efforts`.
+  private readonly stopwatches = new Map<string, { attempt: number; stopwatch: Stopwatch }>();
   private lastTime: number | null = null;
 
   add(entry: unknown): void {
@@ -63,16 +74,45 @@ export class TeamRunLog {
         const toolUseId = entry['toolUseId'];
         if (typeof toolUseId !== 'string' || !timed) break;
         this.closeOpenRun();
+        if (this.lastTime !== null) this.stopAll(this.lastTime);
         this.open = { toolUseId, status: 'running', startTime: time, endTime: null, toolCount: 0, usage: emptyAgentUsage() };
         break;
       }
       case 'team-cancelled':
         if (this.open) this.openCancelTotals = readRunTotals(entry['run']) ?? this.openCancelTotals;
         break;
-      case 'agent-spawned':
+      case 'agent-spawned': {
         if (typeof name === 'string') this.attemptToolCounts.set(name, 0);
+        const agentId = entry['agentId'];
+        // A log written before the attempt counter existed carries none, and its spawns are the first attempt.
+        const attempt = isCount(entry['attempt']) ? entry['attempt'] : 0;
+        if (typeof agentId === 'string') this.efforts.set(agentId, { attempt, effort: null });
+        if (typeof agentId === 'string' && timed) this.stopwatches.set(agentId, { attempt, stopwatch: { activeMs: 0, runningSince: time } });
         break;
+      }
+      case 'agent-resumed': {
+        const agentId = entry['agentId'];
+        const current = typeof agentId === 'string' ? this.stopwatches.get(agentId) : undefined;
+        const attempt = isCount(entry['attempt']) ? entry['attempt'] : 0;
+        if (!current || !timed || attempt !== current.attempt || current.stopwatch.runningSince !== null) break;
+        current.stopwatch = { ...current.stopwatch, runningSince: time };
+        break;
+      }
+      case 'agent-session-started': {
+        const agentId = entry['agentId'];
+        const current = typeof agentId === 'string' ? this.efforts.get(agentId) : undefined;
+        // A redispatch may have started a newer attempt before an older attempt's session opened.
+        if (!current || entry['attempt'] !== current.attempt) break;
+        current.effort = isEffortBadgeLevel(entry['effort']) ? entry['effort'] : null;
+        break;
+      }
       case 'agent-completed': {
+        // A late settle of an earlier run belongs to that run; an entry without the field predates it.
+        const runId = entry['toolUseId'];
+        if (typeof runId === 'string' && runId !== this.open?.toolUseId) break;
+        const agentId = entry['agentId'];
+        const current = typeof agentId === 'string' ? this.stopwatches.get(agentId) : undefined;
+        if (current && timed) current.stopwatch = stopStopwatch(current.stopwatch, time);
         if (typeof name !== 'string') break;
         const count = entry['toolCallCount'];
         if (isCount(count)) {
@@ -92,6 +132,7 @@ export class TeamRunLog {
       }
       case 'team-completed': {
         const status = entry['status'];
+        if (timed) this.stopAll(time);
         if (!this.open || !timed || !isEndedStatus(status)) break;
         this.ended.push({ ...this.open, ...(readRunTotals(entry['run']) ?? this.openCancelTotals), status, endTime: time });
         this.open = null;
@@ -104,9 +145,40 @@ export class TeamRunLog {
     if (timed) this.lastTime = time;
   }
 
+  /** The member's effort in its latest attempt; null before that attempt's session started or in a log that predates the entry. */
+  memberEffort(agentId: string): EffortBadgeLevel | null {
+    return this.efforts.get(agentId)?.effort ?? null;
+  }
+
+  /** Every member's non-null effort, by agentId. */
+  memberEfforts(): Map<string, EffortBadgeLevel> {
+    const out = new Map<string, EffortBadgeLevel>();
+    for (const [agentId, { effort }] of this.efforts) if (effort) out.set(agentId, effort);
+    return out;
+  }
+
+  /** The member's active time in its latest attempt; a stopwatch still open closes at the log's last entry. */
+  memberActiveMs(agentId: string): number {
+    const current = this.stopwatches.get(agentId);
+    return current ? this.closedAtEnd(current.stopwatch) : 0;
+  }
+
+  /** Every member's active time in its latest attempt, by agentId. */
+  memberActiveTimes(): Map<string, number> {
+    return new Map([...this.stopwatches].map(([agentId, { stopwatch }]) => [agentId, this.closedAtEnd(stopwatch)]));
+  }
+
   /** Every run so far, each ended; an open one reads as cut short. */
   runs(): TeamRunSummary[] {
     return this.open ? [...this.ended, this.cutShort(this.open)] : [...this.ended];
+  }
+
+  private closedAtEnd(stopwatch: Stopwatch): number {
+    return stopStopwatch(stopwatch, this.lastTime ?? 0).activeMs;
+  }
+
+  private stopAll(at: number): void {
+    for (const current of this.stopwatches.values()) current.stopwatch = stopStopwatch(current.stopwatch, at);
   }
 
   private closeOpenRun(): void {

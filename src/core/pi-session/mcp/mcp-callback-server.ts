@@ -1,12 +1,13 @@
 /*
  * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
- * Localhost (127.0.0.1 / localhost) HTTP server that captures the OAuth authorization code and
- * CSRF state from the browser redirect. Singleton bound lazily from the auth flow and closed once no
+ * Loopback HTTP server that captures the OAuth authorization code, the RFC 9207 `iss` and the CSRF
+ * state from the browser redirect. Singleton bound lazily from the auth flow and closed once no
  * authorization is pending or reserved (RFC 8252: the loopback receiver lives for the request); owns
- * the configured callback port/path so the OAuth provider can derive its redirect URL.
+ * the bound callback port/path so the sign-in flow can derive its redirect URL.
  */
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
 import { log } from '../../logger';
+import { flattenServerText } from './utils';
 
 const DEFAULT_OAUTH_CALLBACK_PORT = 19876;
 const DEFAULT_OAUTH_CALLBACK_PATH = '/callback';
@@ -76,18 +77,6 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-const MAX_CALLBACK_ERROR_LENGTH = 300;
-
-/**
- * Flatten + cap a server-supplied error string before it becomes a thrown Error (which flows to logs and
- * the webview error surface). Collapsing newlines stops log forging / UI text injection (M4); HTML output
- * is separately escaped via escapeHtml.
- */
-function flattenServerError(text: string): string {
-  const flattened = text.replace(/\s+/g, ' ').trim();
-  return flattened.length > MAX_CALLBACK_ERROR_LENGTH ? `${flattened.slice(0, MAX_CALLBACK_ERROR_LENGTH)}…` : flattened;
-}
-
 // The authorization code rides in the request URL, so every response must forbid caching and stop the
 // page from leaking that URL as a `Referer`; the CSP blocks any subresource/network load (the pages are
 // fully self-contained, with only inline style + the success page's inline window.close()) (M1).
@@ -129,8 +118,14 @@ function htmlError(error: string): string {
 </html>`;
 }
 
+/** What the authorization server's redirect delivered; `iss` is absent when the server sent none. */
+export interface OAuthCallbackResult {
+  code: string;
+  iss?: string;
+}
+
 interface PendingAuth {
-  resolve: (code: string) => void;
+  resolve: (result: OAuthCallbackResult) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
@@ -151,6 +146,8 @@ export interface EnsureCallbackServerOptions {
   callbackPath?: string;
   oauthState?: string;
   reserveState?: boolean;
+  /** For a non-strict bind: the port of the redirect URI a stored dynamic client was registered with. */
+  preferredPort?: number;
 }
 
 function setOAuthCallbackPath(path: string): void {
@@ -164,7 +161,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  // The Host header and the request target are client-supplied; neither may throw inside the listener.
+  const target = req.url ?? '/';
+  if (!URL.canParse(target, 'http://127.0.0.1')) {
+    res.writeHead(400, textHeaders());
+    res.end('Bad Request');
+    return;
+  }
+  const url = new URL(target, 'http://127.0.0.1');
 
   if (url.pathname !== oauthCallbackPath) {
     res.writeHead(404, textHeaders());
@@ -195,7 +199,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       return;
     }
 
-    const errorMsg = flattenServerError(errorDescription || error);
+    const errorMsg = flattenServerText(errorDescription || error);
     res.writeHead(200, htmlHeaders());
     res.end(htmlError(errorMsg));
     reservedAuthStates.delete(state);
@@ -222,7 +226,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   clearTimeout(pending.timeout);
   pendingAuths.delete(state);
-  pending.resolve(code);
+  const iss = url.searchParams.get('iss');
+  pending.resolve(iss === null ? { code } : { code, iss });
 
   res.writeHead(200, htmlHeaders());
   res.end(HTML_SUCCESS);
@@ -311,7 +316,7 @@ async function ensureCallbackServerLocked(options: EnsureCallbackServerOptions =
   let candidateServer: Server | undefined;
 
   try {
-    candidateServer = strictPort ? await listenOn(requiredPort, requestedHost) : await listenOnEphemeralPort(requestedHost);
+    candidateServer = strictPort ? await listenOn(requiredPort, requestedHost) : await listenOnEphemeralPort(requestedHost, options.preferredPort ?? lastEphemeralPort);
 
     if (strictPort) {
       oauthCallbackPort = requiredPort;
@@ -347,7 +352,7 @@ async function ensureCallbackServerLocked(options: EnsureCallbackServerOptions =
 
     if (strictPort && nodeError.code === 'EADDRINUSE') {
       throw new Error(
-        `OAuth callback port ${requiredPort} is already in use, possibly by another Damocles window completing a login for this server; finish or cancel that login and retry. Otherwise, pre-registered OAuth clients require an exact redirect URI; set MCP_OAUTH_CALLBACK_PORT to your registered port or free port ${requiredPort}`,
+        `OAuth callback port ${requiredPort} is already in use, possibly by another Damocles window completing a login for this server; finish or cancel that login and retry. Otherwise, pre-registered OAuth clients require an exact redirect URI; set the server's oauth.callbackUrl or oauth.callbackPort (or MCP_OAUTH_CALLBACK_PORT) to your registered port, or free port ${requiredPort}`,
         { cause: error },
       );
     }
@@ -379,15 +384,15 @@ async function listenOn(port: number, host: string): Promise<Server> {
 
 /**
  * A dynamically registered client is registered with the redirect URI of the flow that registered it, so a
- * non-strict flow first retries the port the previous one was given and asks the OS for another only when it is taken.
+ * non-strict flow first retries that port (the stored client's, else the previous flow's) and asks the OS for another only when it is taken.
  */
-async function listenOnEphemeralPort(host: string): Promise<Server> {
-  if (lastEphemeralPort !== undefined) {
+async function listenOnEphemeralPort(host: string, preferredPort: number | undefined): Promise<Server> {
+  if (preferredPort !== undefined) {
     try {
-      return await listenOn(lastEphemeralPort, host);
+      return await listenOn(preferredPort, host);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
-      log('[McpCallbackServer] port %d is taken; binding a new one, so a registered redirect URI may change', lastEphemeralPort);
+      log('[McpCallbackServer] port %d is taken; binding a new one, so a registered redirect URI may change', preferredPort);
     }
   }
   return listenOn(0, host);
@@ -404,10 +409,10 @@ export function releaseCallbackServer(oauthState: string): void {
   closeWhenIdle();
 }
 
-/** Wait for the browser redirect carrying the given CSRF state; resolves with the auth code. */
-export function waitForCallback(oauthState: string): Promise<string> {
+/** Wait for the browser redirect carrying the given CSRF state; resolves with the code and `iss`. */
+export function waitForCallback(oauthState: string): Promise<OAuthCallbackResult> {
   reservedAuthStates.delete(oauthState);
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<OAuthCallbackResult>((resolve, reject) => {
     const timeout = setTimeout(() => {
       if (pendingAuths.has(oauthState)) {
         pendingAuths.delete(oauthState);

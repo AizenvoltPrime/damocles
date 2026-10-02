@@ -12,17 +12,48 @@ import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 
 // Single key-field auth panel shared by the custom (non-first-party) providers. The provider id doubles
-// as the i18n section key (`stepfun.*` / `deepseek.*`) and selects the store ref + message variants.
-const props = defineProps<{ provider: "stepfun" | "deepseek" }>();
+// as the i18n section key (`stepfun.*` / `deepseek.*` / `typesafe.*` / `openrouter.*`) and selects the store ref + message variants.
+const props = defineProps<{ provider: "stepfun" | "deepseek" | "typesafe" | "openrouter" }>();
+
+const ACK_TYPES = {
+  stepfun: { set: "setStepfunApiKeyAck", clear: "clearStepfunApiKeyAck" },
+  deepseek: { set: "setDeepseekApiKeyAck", clear: "clearDeepseekApiKeyAck" },
+  typesafe: { set: "setTypesafeApiKeyAck", clear: "clearTypesafeApiKeyAck" },
+  openrouter: { set: "setOpenrouterApiKeyAck", clear: "clearOpenrouterApiKeyAck" },
+} as const;
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
-const { stepfunConfigured, deepseekConfigured } = storeToRefs(settingsStore);
+const { stepfunConfigured, deepseekConfigured, typesafeConfigured, openrouterConfigured, memoryJudge } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
 
-const configured = computed(() =>
-  props.provider === "stepfun" ? stepfunConfigured.value : deepseekConfigured.value
-);
+const configured = computed(() => ({
+  stepfun: stepfunConfigured.value,
+  deepseek: deepseekConfigured.value,
+  typesafe: typesafeConfigured.value,
+  openrouter: openrouterConfigured.value,
+})[props.provider]);
+
+const memoryJudgeText = computed(() => {
+  const judge = memoryJudge.value;
+  if (props.provider !== "typesafe" || !judge) return null;
+  if (judge.kind === "jev") return judge.via === "typesafe" ? t("typesafe.memoryJudge.jevTypesafe") : t("typesafe.memoryJudge.jevOpenrouter");
+  if (judge.kind === "model") return t("typesafe.memoryJudge.model", { model: judge.model });
+  if (judge.kind === "unknown") return t("typesafe.memoryJudge.unknown");
+  return t("typesafe.memoryJudge.none");
+});
+
+const rejectedJudgeLines = computed(() => {
+  const judge = memoryJudge.value;
+  if (props.provider !== "typesafe" || !judge?.rejected) return [];
+  return judge.rejected.map(({ via, reason }) => ({
+    via,
+    text: t("typesafe.memoryJudge.rejected", {
+      provider: via === "typesafe" ? t("typesafe.memoryJudge.jevTypesafe") : t("typesafe.memoryJudge.jevOpenrouter"),
+      reason: t(`typesafe.memoryJudge.rejection.${reason}`),
+    }),
+  }));
+});
 
 const apiKeyInput = ref("");
 const showKey = ref(false);
@@ -37,18 +68,30 @@ function makeRequestId(): string {
 }
 
 function postSet(key: string, requestId: string) {
-  if (props.provider === "stepfun") postMessage({ type: "setStepfunApiKey", key, requestId });
-  else postMessage({ type: "setDeepseekApiKey", key, requestId });
+  switch (props.provider) {
+    case "stepfun": postMessage({ type: "setStepfunApiKey", key, requestId }); break;
+    case "deepseek": postMessage({ type: "setDeepseekApiKey", key, requestId }); break;
+    case "typesafe": postMessage({ type: "setTypesafeApiKey", key, requestId }); break;
+    case "openrouter": postMessage({ type: "setOpenrouterApiKey", key, requestId }); break;
+  }
 }
 
 function postClear(requestId: string) {
-  if (props.provider === "stepfun") postMessage({ type: "clearStepfunApiKey", requestId });
-  else postMessage({ type: "clearDeepseekApiKey", requestId });
+  switch (props.provider) {
+    case "stepfun": postMessage({ type: "clearStepfunApiKey", requestId }); break;
+    case "deepseek": postMessage({ type: "clearDeepseekApiKey", requestId }); break;
+    case "typesafe": postMessage({ type: "clearTypesafeApiKey", requestId }); break;
+    case "openrouter": postMessage({ type: "clearOpenrouterApiKey", requestId }); break;
+  }
 }
 
 function postGetStatus() {
-  if (props.provider === "stepfun") postMessage({ type: "getStepfunAuthStatus" });
-  else postMessage({ type: "getDeepseekAuthStatus" });
+  switch (props.provider) {
+    case "stepfun": postMessage({ type: "getStepfunAuthStatus" }); break;
+    case "deepseek": postMessage({ type: "getDeepseekAuthStatus" }); break;
+    case "typesafe": postMessage({ type: "getTypesafeAuthStatus" }); break;
+    case "openrouter": postMessage({ type: "getOpenrouterAuthStatus" }); break;
+  }
 }
 
 function handleSave() {
@@ -71,8 +114,7 @@ function handleClear() {
 }
 
 function handleAck(msg: ExtensionToWebviewMessage) {
-  const setAck = props.provider === "stepfun" ? "setStepfunApiKeyAck" : "setDeepseekApiKeyAck";
-  const clearAck = props.provider === "stepfun" ? "clearStepfunApiKeyAck" : "clearDeepseekApiKeyAck";
+  const { set: setAck, clear: clearAck } = ACK_TYPES[props.provider];
   if (msg.type === setAck) {
     if (msg.requestId !== pendingRequestId.value) return;
     pendingRequestId.value = null;
@@ -146,6 +188,7 @@ const messageClass = computed(() => {
             v-model="apiKeyInput"
             :type="showKey ? 'text' : 'password'"
             :placeholder="tk('apiKey.placeholder')"
+            :aria-label="tk('apiKey.label')"
             class="bg-input border-border placeholder:text-muted-foreground pr-9"
             :disabled="saving"
             @keydown.enter="handleSave"
@@ -154,6 +197,7 @@ const messageClass = computed(() => {
             type="button"
             class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             :title="showKey ? tk('apiKey.hide') : tk('apiKey.show')"
+            :aria-label="showKey ? tk('apiKey.hide') : tk('apiKey.show')"
             @click="showKey = !showKey"
           >
             <EyeOff
@@ -179,6 +223,7 @@ const messageClass = computed(() => {
           size="icon"
           class="h-9 w-9 shrink-0 text-destructive hover:text-destructive/80 hover:bg-destructive/10"
           :title="tk('apiKey.clear')"
+          :aria-label="tk('apiKey.clear')"
           :disabled="saving"
           @click="handleClear"
         >
@@ -199,6 +244,26 @@ const messageClass = computed(() => {
       >
         {{ tk('apiKey.hint') }}
       </p>
+      <div
+        v-if="memoryJudgeText"
+        role="status"
+        class="mt-1 space-y-0.5 text-xs"
+      >
+        <p
+          class="text-muted-foreground"
+          data-testid="memory-judge"
+        >
+          {{ t('typesafe.memoryJudge.label', { judge: memoryJudgeText }) }}
+        </p>
+        <p
+          v-for="line in rejectedJudgeLines"
+          :key="line.via"
+          class="text-warning"
+          data-testid="memory-judge-rejected"
+        >
+          {{ line.text }}
+        </p>
+      </div>
     </div>
   </section>
 </template>

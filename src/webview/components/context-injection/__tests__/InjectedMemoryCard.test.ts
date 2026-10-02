@@ -63,6 +63,13 @@ describe('InjectedMemoryCard', () => {
     expect(wrapper.find('[data-badge="rerank"]').attributes('title')).toBe('names the test runner');
   });
 
+  it("renders a classifier grade as the locale's verdict template", () => {
+    const memory = injected({ rerankRelevance: 'high', rerankClassifierScore: 0.82 });
+    expect(mountCard(memory).find('[data-badge="rerank"]').attributes('title')).toBe('Classifier: directly relevant (0.82)');
+    applyLocale('el');
+    expect(mountCard(memory).find('[data-badge="rerank"]').attributes('title')).toBe('Ταξινομητής: άμεσα σχετική (0,82)');
+  });
+
   it('shows the current pin, not the one recorded with the prompt', () => {
     const wrapper = mountCard(injected({ isPinned: false }), false, true);
     expect(wrapper.find('[data-badge="pinned"]').exists()).toBe(true);

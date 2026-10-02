@@ -81,6 +81,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         ...(msg.thinking !== undefined && { thinking: msg.thinking }),
         ...(toolCalls !== undefined && { toolCalls }),
         ...(msg.contentBlocks !== undefined && { contentBlocks: msg.contentBlocks }),
+        ...(msg.effort !== undefined && { effort: msg.effort }),
         timestamp: Date.now(),
         isReplay: true,
       }));

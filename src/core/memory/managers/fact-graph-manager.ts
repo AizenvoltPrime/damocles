@@ -4,6 +4,7 @@ import { normalizedContentHash } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
 import type { MemorySubCallRunner } from '../subcall-runner';
 import { buildFtsMatchQuery } from '../text-tokenize';
+import { classifyContradiction } from '../classifier-judges';
 
 /** Directed relationship kinds stored in `memory_edges`. */
 export type EdgeKind = 'UPDATES' | 'EXTENDS' | 'DERIVES' | 'SUPERSEDES';
@@ -68,8 +69,9 @@ const CONFLICT_SCHEMA = {
 } as const;
 
 /**
- * Owns the memory fact graph: edge primitives, version-lineage maintenance, and LLM-judged conflict
- * resolution. Candidate selection and the LLM verdict run outside the write queue; every invariant
+ * Owns the memory fact graph: edge primitives, version-lineage maintenance, and judged conflict
+ * resolution (Jev first, the LLM when Jev is undecided or unavailable). Candidate selection and the
+ * verdicts run outside the write queue; every invariant
  * re-check plus its dependent mutations run inside one synchronous {@link MemoryWriteQueue.run}
  * callback so concurrent operations never interleave a read-modify-write.
  */
@@ -149,11 +151,14 @@ export class FactGraphManager {
   }
 
   /**
-   * Asks the LLM whether NEW contradicts the candidate. Three-valued: `true`, `false`, or `null`
-   * (judge outage). The null case is load-bearing: a transient outage must stay distinct from a
-   * definite "no" so the caller can defer and re-check later — never coerce it to false.
+   * Asks whether NEW contradicts the candidate: Jev first when a classifier is configured, the LLM when
+   * Jev is undecided or unavailable. Three-valued: `true`, `false`, or `null` (judge outage). The null
+   * case is load-bearing: a transient outage must stay distinct from a definite "no" so the caller can
+   * defer and re-check later — never coerce it to false.
    */
   private async judgeContradiction(newRow: MemoryRow, candidate: MemoryRow): Promise<boolean | null> {
+    const jev = await classifyContradiction(this.runner, newRow.content, candidate.content);
+    if (jev === true || jev === false) return jev;
     const result = await this.runner.run<{ contradicts: boolean }>({
       purpose: 'merge',
       systemPrompt: CONFLICT_SYSTEM_PROMPT,
@@ -166,7 +171,7 @@ export class FactGraphManager {
 
   /**
    * Resolves conflicts for a freshly written fact: FTS-selects up to 5 latest, non-forgotten
-   * same-scope/kind candidates, asks the LLM which ones the new fact contradicts, then under the
+   * same-scope/kind candidates, asks the contradiction judge which ones the new fact contradicts, then under the
    * write lock joins the new fact to a SINGLE canonical lineage — the oldest contradicted fact's
    * root — as its next version (`UPDATES` edge), and demotes every other contradicted fact with a
    * `SUPERSEDES` edge without re-rooting the new fact.
@@ -196,7 +201,7 @@ export class FactGraphManager {
     }
 
     return this.writeQueue.run(() => {
-      // The judging window ran outside the lock (up to 5×45s). Re-read newRow: a racing edit/forget
+      // The judging window ran outside the lock (up to 5×(15s Jev + 45s LLM)). Re-read newRow: a racing edit/forget
       // may have demoted it, and blindly re-marking is_latest=1 below would resurrect a co-latest head.
       const live = this.getRow(newRow.id);
       if (!live || live.is_latest !== 1 || live.forgotten !== 0) return { superseded: [] };

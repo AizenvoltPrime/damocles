@@ -128,10 +128,10 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     expect(blocked?.block).toBe(true);
   });
 
-  it('no-ops when no panel is registered for the session', async () => {
+  it('blocks even a read when no panel is registered for the session', async () => {
     const handlers: Handlers = {};
     createDamoclesExtensionFactory(reader(), noCheckpoints())(fakePi(handlers) as never);
-    expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('missing'))).toBeUndefined();
+    expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('missing'))).toMatchObject({ block: true });
   });
 
   it('writes the Damocles system prompt into the event options (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
@@ -165,6 +165,40 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     const missingEvent = eventFor();
     expect(await handler(handlers, 'before_agent_start')(missingEvent, ctxFor('missing'))).toBeUndefined();
     expect(missingEvent.systemPromptOptions.customPrompt).toBeUndefined();
+  });
+
+  it('holds the prompt on the dispatching panel’s Always-loaded MCP wait, by session id, before building it', async () => {
+    // The instance is shared by every panel of the folder, so the wait is the panel's, chosen per
+    // dispatch; the extension keeps no record of which session already waited.
+    const handlers: Handlers = {};
+    let release!: () => void;
+    const panelA = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(() => new Promise<void>((resolve) => { release = resolve; })) };
+    const panelB = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => undefined) };
+    const registry = new Map<string, PanelGateContext>([['A', panelA], ['B', panelB]]);
+    createDamoclesExtensionFactory(reader(registry), noCheckpoints())(fakePi(handlers) as never);
+    const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
+
+    const started = handler(handlers, 'before_agent_start')(event, ctxFor('A')) as Promise<unknown>;
+    await Promise.resolve();
+    expect(panelA.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A');
+    expect(panelB.waitForAlwaysLoadedMcp).not.toHaveBeenCalled();
+    expect(event.systemPromptOptions.customPrompt).toBeUndefined();
+
+    release();
+    await started;
+    expect(event.systemPromptOptions.customPrompt).toContain('AI coding agent');
+  });
+
+  it('a failing Always-loaded MCP wait still builds the Damocles prompt', async () => {
+    const handlers: Handlers = {};
+    const failing = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => { throw new Error('inspect failed'); }) };
+    createDamoclesExtensionFactory(readerOf(failing), noCheckpoints())(fakePi(handlers) as never);
+    const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
+
+    await handler(handlers, 'before_agent_start')(event, ctxFor('A'));
+
+    expect(failing.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A');
+    expect(event.systemPromptOptions.customPrompt).toContain('AI coding agent');
   });
 });
 
@@ -774,8 +808,11 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         cwd: '/tmp/ws',
         agentDir: '/tmp/agent',
         modelRuntime: {} as ModelRuntime,
-        userMcp: new McpClientManager(),
-        createFolderMcp: (reservedPrefixes) => new McpClientManager({ reservedPrefixes }),
+        userMcp: new McpClientManager({ clientVersion: 'test' }),
+        createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
+        noticeMemory: { has: () => false, add: async () => {} },
+        projectDisabledTools: () => null,
+        toolExposureSetting: () => ({}),
         renameSession: async () => undefined,
         trust: testPlatform.trust,
         fileWatchers: testPlatform.fileWatchers,

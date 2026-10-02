@@ -62,13 +62,11 @@ const TURN_ENDING_TOOLS = new Set(['team_standby', 'team_report_complete']);
  */
 export class AgentRunner {
   async startAgent(config: AgentRunConfig): Promise<AgentResult> {
-    const startTime = Date.now();
     const empty = (status: 'cancelled' | 'failed', finalResponse: string | null): AgentResult => ({
       agentId: config.agentId,
       status,
       finalResponse,
       toolCallCount: 0,
-      durationMs: Date.now() - startTime,
       totalInputTokens: 0,
       totalOutputTokens: 0,
       cacheReadTokens: 0,
@@ -147,13 +145,12 @@ export class AgentRunner {
       return parked ? { action: 'end' } : undefined;
     });
 
-    return this.runAgent(config, session, startTime, inbox, release);
+    return this.runAgent(config, session, inbox, release);
   }
 
   private async runAgent(
     config: AgentRunConfig,
     session: AgentSession,
-    startTime: number,
     inbox: RunInbox,
     release: () => void,
   ): Promise<AgentResult> {
@@ -269,7 +266,7 @@ export class AgentRunner {
       // A parked run starts where a turn-end leaves one: waiting, with no prompt and no `running` status.
       let parked = config.initial.kind === 'park';
       if (config.initial.kind === 'prompt') {
-        this.emitStatus(config, 'running');
+        this.emitRunning(config);
         // The opening task — emitted to the webview + persisted as the first user message.
         this.emitUserMessage(config, config.initial.text);
         await session.prompt(config.initial.text);
@@ -342,12 +339,7 @@ export class AgentRunner {
       if (last) finalResponse = last;
     }
 
-    const durationMs = Date.now() - startTime;
-    this.emitStatus(config, status, status === 'completed'
-      ? { progressSummary: `Completed (${toolCallCount} tools, ${Math.round(durationMs / 1000)}s)` }
-      : undefined);
-
-    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, ...usage };
+    return { agentId: config.agentId, status, finalResponse, toolCallCount, ...usage };
   }
 
   /** Map one pi session event to the existing `team*` webview messages (no contract change). */
@@ -470,17 +462,8 @@ export class AgentRunner {
     });
   }
 
-  private emitStatus(
-    config: AgentRunConfig,
-    status: 'running' | 'completed' | 'failed' | 'cancelled',
-    extra?: { progressSummary?: string },
-  ): void {
-    config.onMessage({
-      type: 'teamAgentStatusUpdate',
-      teamId: config.teamId,
-      agentId: config.agentId,
-      status,
-      ...(extra?.progressSummary ? { progressSummary: extra.progressSummary } : {}),
-    });
+  // The team runner emits the settled status, with the attempt's stopwatch.
+  private emitRunning(config: AgentRunConfig): void {
+    config.onMessage({ type: 'teamAgentStatusUpdate', teamId: config.teamId, agentId: config.agentId, status: 'running' });
   }
 }

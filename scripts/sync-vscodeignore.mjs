@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTENSION_EXTERNALS } from './extension-externals.mjs';
 import { DESKTOP_EXTERNALS } from './desktop-externals.mjs';
@@ -95,6 +95,7 @@ function computeClosure() {
     const deps = { ...(json.dependencies || {}), ...(json.optionalDependencies || {}), ...(json.peerDependencies || {}) };
     if (Object.hasOwn(deps, 'esbuild')) esbuildDependents.add(json.name);
     for (const dep of Object.keys(deps)) {
+      if (isUnreachableOptionalPeer(json, dep)) continue;
       const resolved = resolveDep(dir, dep);
       if (!resolved) continue; // optional/peer dep not installed (other platform / host-provided) — nothing to ship
       if (resolved.hoisted) {
@@ -126,6 +127,24 @@ function computeClosure() {
   return [...topLevel].sort();
 }
 
+/**
+ * Optional peers a shipped package declares that no shipped code path loads, so they are not walked.
+ * openai 7 requires undici only from its opt-in `auth/x509-transport` subpath, which neither pi nor
+ * Damocles imports; the hoisted undici is the desktop bundle's. Re-check on an openai bump.
+ * @google/genai names @modelcontextprotocol/sdk only in its type declarations, and the hoisted SDK is the
+ * MCP interop test's devDependency. Re-check on a @google/genai bump.
+ */
+const UNREACHABLE_OPTIONAL_PEERS = new Map([
+  ['openai', new Set(['undici'])],
+  ['@google/genai', new Set(['@modelcontextprotocol/sdk'])],
+]);
+
+function isUnreachableOptionalPeer(json, dep) {
+  if (!UNREACHABLE_OPTIONAL_PEERS.get(json.name)?.has(dep)) return false;
+  const declaredOnlyAsPeer = !Object.hasOwn(json.dependencies || {}, dep) && !Object.hasOwn(json.optionalDependencies || {}, dep);
+  return declaredOnlyAsPeer && json.peerDependenciesMeta?.[dep]?.optional === true;
+}
+
 /** Fail loudly when a package outside the reviewed set brings esbuild into the ship closure. */
 function assertEsbuildDependentsReviewed(dependents) {
   const unreviewed = [...dependents].filter((name) => !ESBUILD_DEPENDENTS_REVIEWED.has(name)).sort();
@@ -143,11 +162,11 @@ function assertEsbuildDependentsReviewed(dependents) {
  * Packages this project declares only in `devDependencies` that a shipped runtime package also requires,
  * with a top-level copy satisfying both ranges. Each was checked against the requiring package's declared
  * range: `@earendil-works/pi-agent-core` requires `diff@8.0.4`, `@google/genai` and `openai` require
- * `ws@^8.18.0`, `@modelcontextprotocol/sdk` requires `cross-spawn@^7.0.5` and `ajv@^8.17.1`, `protobufjs` requires
- * `@types/node@>=13.7.0`, `@earendil-works/pi-agent-core` requires `yaml@2.9.0`. They ship because the runtime
- * loads them, not because the build tooling does.
+ * `ws@^8.18.0`, `@earendil-works/pi-mcp` requires `cross-spawn@7.0.6`,
+ * `protobufjs` requires `@types/node@>=13.7.0`, `@earendil-works/pi-agent-core` requires `yaml@2.9.0`. They
+ * ship because the runtime loads them, not because the build tooling does.
  */
-const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'ajv', 'cross-spawn', 'diff', 'ws', 'yaml']);
+const DEV_DEPS_SHARED_WITH_RUNTIME = new Set(['@types/node', 'cross-spawn', 'diff', 'ws', 'yaml']);
 
 /**
  * Fail loudly when a package this project declares only as a devDependency reaches the ship closure.
@@ -297,8 +316,12 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@earendil-works/pi-telemetry',
         '@earendil-works/pi-tui',
         '@earendil-works/chord',
+        '@earendil-works/pi-mcp',
+        // Nested under pi-coding-agent today, so its own globs cover them; listed for when npm hoists them.
+        '@earendil-works/pi-codemode',
+        'quickjs-wasi',
         // Not in the current closure. pi-coding-agent pulled pi-server (and pi-protocol under it) in
-        // 0.85.0 and declares neither at 0.87.0, so a later pi release can pull them back.
+        // 0.85.0 and declares neither at 0.99.2, so a later pi release can pull them back.
         '@earendil-works/pi-protocol',
         '@earendil-works/pi-server',
         'openai',
@@ -319,6 +342,7 @@ const RUNTIME_NARROW_PKGS = new Set(
 const RUNTIME_KEEP_EXTS = new Set([
   'js', 'mjs', 'cjs', 'json', // JS module formats + manifests/data
   'node', 'wasm', // native + wasm binaries (all platforms — keeps the cross-platform VSIX correct)
+  'so', // quickjs-wasi's extensions: wasm side modules (wasi-sdk shared libraries) it loads by path
   'css', 'html', 'png', 'svg', 'gif', 'jpg', 'proto', // static assets the harness reads at runtime
 ]);
 
@@ -326,12 +350,24 @@ const DROP_EXTS = new Set([
   'ts', 'mts', 'cts', 'map', 'tsbuildinfo', // TS source + declarations + sourcemaps + incremental cache
   'md', 'scss', 'rs', 'c', 'h', 'm', 'bnf', 'jsdoc', 'toml', 'sh', 'ps1', 'cmd', '1', 'yml', 'txt', // docs/source/scripts/man/CI/test-data
   'npmignore', 'keep', 'prettierrc', 'prettierignore', 'nvmrc', 'eslintrc', 'eslintignore', 'editorconfig', // tooling configs
-  // Patchright driver dead weight (Slice 1). `license` = esbuild `<name>.js.LICENSE` legal sidecars.
+  // Patchright driver dead weight (Slice 1).
   // `ttf`/`webmanifest` = codicon fonts + PWA manifest for the bundled trace-viewer/recorder/dashboard
   // web UIs (lib/vite/**) — served only by `show-trace`/`codegen`, which we never invoke; the
   // browser-launch driver (channel:'chrome' → open/navigate/screenshot) never loads them.
-  'license', 'ttf', 'webmanifest',
+  'ttf', 'webmanifest',
 ]);
+
+/**
+ * License, notice and copyright files a narrowed package keeps whatever their extension, because MIT and
+ * Apache-2.0 require the text to travel with every copy: a basename that names a license or notice
+ * (`LICENSE`, `LICENSE.md`, `ThirdPartyNotices.txt`, esbuild's `<name>.js.LICENSE` sidecars) or any file
+ * in a `LICENSES` directory (pi-mcp's only license text is `LICENSES/modelcontextprotocol-typescript-sdk.txt`).
+ */
+const LICENSE_FILE_NAME = /licen[cs]e|notice/i;
+
+function isLicenseFile(name, parentDirName) {
+  return parentDirName === 'LICENSES' || LICENSE_FILE_NAME.test(name);
+}
 
 /**
  * Per-package dead top-level directories to exclude even though they contain keep-extension files.
@@ -372,9 +408,9 @@ const EXCLUDED_NESTED_DEPS = new Set(['@esbuild', 'esbuild']);
  */
 const ESBUILD_DEPENDENTS_REVIEWED = new Set(['@earendil-works/chord']);
 
-/** Extensionless files that are safe to drop from a narrowed package (license/ownership/build/CLI-shim). */
+/** Extensionless files that are safe to drop from a narrowed package (ownership/build/CLI-shim). */
 const DROP_BASENAMES = new Set([
-  'LICENSE', 'license', 'License', 'LICENSE-MIT', 'CODEOWNERS', 'Makefile',
+  'CODEOWNERS', 'Makefile',
   '.keep', '.npmignore', '.prettierrc', '.prettierignore', '.nvmrc', '.eslintrc', '.eslintignore', '.editorconfig', '.gitignore', '.gitattributes', // dotfiles (no basename → treated as extensionless)
   'cli', 'node-which', 'marked', 'yaml', 'semver', 'pi-ai', 'openai', 'jiti', 'fxparser', 'anthropic-ai-sdk',
   // Patchright: Linux `xdg-open` shell shim (patchright-core/lib/xdg-open) — spawned only to open a URL
@@ -385,7 +421,7 @@ const DROP_BASENAMES = new Set([
   'esbuild',
 ]);
 
-/** Recursively list file basenames under a directory, skipping excluded nested deps (and traversal errors). */
+/** Recursively list `{ name, parent }` (basename and parent dir basename) under a directory, skipping excluded nested deps (and traversal errors). */
 function listFiles(dir, acc = [], inNodeModules = false) {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
@@ -395,7 +431,7 @@ function listFiles(dir, acc = [], inNodeModules = false) {
       // Excluded deps never ship, so their file types need no review and must not force a DROP_EXTS entry.
       if (inNodeModules && EXCLUDED_NESTED_DEPS.has(e.name)) continue;
       listFiles(full, acc, e.name === 'node_modules');
-    } else acc.push(e.name);
+    } else acc.push({ name: e.name, parent: basename(dir) });
   }
   return acc;
 }
@@ -407,7 +443,8 @@ function listFiles(dir, acc = [], inNodeModules = false) {
  */
 function assertReviewed(pkgName, dir) {
   const unknown = new Set();
-  for (const name of listFiles(dir)) {
+  for (const { name, parent } of listFiles(dir)) {
+    if (isLicenseFile(name, parent)) continue;
     const dot = name.lastIndexOf('.');
     if (dot <= 0) {
       // extensionless: allow only known license/ownership/build/shim files
@@ -449,11 +486,18 @@ function runtimeKeepPatterns(pkgName, dir) {
   // dirs can scope its globs to just the runtime dirs). `roots` keys: '' = package root files, else the
   // top-level dir name. Each maps to the set of keep-extensions present anywhere beneath it.
   const roots = new Map();
+  // Same keys as `roots`; each maps to the license file basenames present beneath it.
+  const licenses = new Map();
+  function addLicense(prefix, name) {
+    if (!licenses.has(prefix)) licenses.set(prefix, new Set());
+    licenses.get(prefix).add(name);
+  }
   function scan(base, prefix) {
     let entries;
     try { entries = readdirSync(base, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       if (e.isDirectory()) { scan(join(base, e.name), prefix); continue; }
+      if (isLicenseFile(e.name, basename(base))) { addLicense(prefix, e.name); continue; }
       const dot = e.name.lastIndexOf('.');
       if (dot <= 0) continue;
       const ext = e.name.slice(dot + 1).toLowerCase();
@@ -478,6 +522,7 @@ function runtimeKeepPatterns(pkgName, dir) {
         }
         scan(join(dir, top.name), top.name);
       } else {
+        if (isLicenseFile(top.name, basename(dir))) { addLicense('', top.name); continue; }
         const dot = top.name.lastIndexOf('.');
         if (dot <= 0) continue;
         const ext = top.name.slice(dot + 1).toLowerCase();
@@ -501,12 +546,20 @@ function runtimeKeepPatterns(pkgName, dir) {
       for (const ext of [...exts].sort()) globs.push(`${base}/**/*.${ext}`);
     }
   }
+  for (const [prefix, names] of licenses) {
+    if (prefix === '' && perDir) {
+      for (const name of [...names].sort()) globs.push(`${pkgName}/${name}`);
+    } else {
+      const base = prefixBase(pkgName, prefix);
+      for (const name of [...names].sort()) globs.push(`${base}/**/${name}`);
+    }
+  }
   globs.sort();
   return globs.length ? globs : [`${pkgName}/**`];
 }
 
 /** Allowlist patterns for a closure package: a narrow override, a native-binary family glob, else `pkg/**`. */
-function allowPatterns(pkgName) {
+export function allowPatterns(pkgName) {
   if (NARROW_ALLOWLIST[pkgName]) return NARROW_ALLOWLIST[pkgName];
   if (isPlatformBinary(pkgName)) {
     const family = platformFamilyGlob(pkgName);

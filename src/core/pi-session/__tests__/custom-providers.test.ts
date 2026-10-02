@@ -13,7 +13,7 @@ import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, exploreThinkingLevel } from 
 describe('CUSTOM_PROVIDER_DEFS — StepFun adaptive-thinking compat', () => {
   it('registers step-3.7-flash with compat.forceAdaptiveThinking', () => {
     const stepfun = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun');
-    expect(stepfun?.registerConfig?.models?.[0]?.compat).toEqual({ forceAdaptiveThinking: true });
+    expect(stepfun?.registerConfig?.models?.[0]).toHaveProperty('compat', { forceAdaptiveThinking: true });
   });
 });
 
@@ -113,7 +113,7 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     });
 
-    expect(result).toEqual({ wired: ['stepfun', 'deepseek'], aborted: false, notWired: [] });
+    expect(result).toEqual({ wired: ['stepfun', 'deepseek'], aborted: false, notWired: [], changed: ['stepfun', 'deepseek'] });
     expect(runtime.registerProvider).toHaveBeenCalledTimes(1); // only StepFun is mode:'register'
     expect(runtime.registerProvider.mock.calls[0]![0]).toBe('stepfun');
     expect(runtime.registerProvider.mock.calls[0]![1]).toMatchObject({ apiKey: 'sf-key' });
@@ -132,12 +132,14 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     };
 
-    expect((await syncCustomProviders(deps)).wired).toEqual(['deepseek']);
-    expect((await syncCustomProviders(deps)).wired).toEqual(['deepseek']); // still reported wired…
+    expect((await syncCustomProviders(deps)).changed).toEqual(['deepseek']);
+    const unchanged = await syncCustomProviders(deps);
+    expect(unchanged.wired).toEqual(['deepseek']); // still reported wired…
+    expect(unchanged.changed).toEqual([]);
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledTimes(1); // …but not re-applied
 
     const changed = { ...deps, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key-2' }) };
-    expect((await syncCustomProviders(changed)).wired).toEqual(['deepseek']);
+    expect(await syncCustomProviders(changed)).toMatchObject({ wired: ['deepseek'], changed: ['deepseek'] });
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledTimes(2);
     expect(runtime.setRuntimeApiKey).toHaveBeenLastCalledWith('deepseek', 'ds-key-2', { signal: controller.signal });
   });
@@ -157,7 +159,7 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     });
 
-    expect(result).toEqual({ wired: [], aborted: false, notWired: [] });
+    expect(result).toEqual({ wired: [], aborted: false, notWired: [], changed: ['stepfun', 'deepseek'] });
     expect(runtime.unregisterProvider).toHaveBeenCalledWith('stepfun'); // fresh-registered → dropped entirely
     expect(runtime.unregisterProvider).not.toHaveBeenCalledWith('deepseek'); // built-in → only deauthed
     // The deauth path is cancellable too — same signal-identity assertion.
@@ -195,7 +197,7 @@ describe('syncCustomProviders', () => {
 
     const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}) });
 
-    expect(result).toEqual({ wired: [], aborted: false, notWired: [] });
+    expect(result).toEqual({ wired: [], aborted: false, notWired: [], changed: [] });
     expect(runtime.logout).not.toHaveBeenCalled();
     expect(runtime.removeRuntimeApiKey).not.toHaveBeenCalled();
     expect(runtime.unregisterProvider).not.toHaveBeenCalled();
@@ -213,7 +215,7 @@ describe('syncCustomProviders', () => {
       signal: AbortSignal.abort(),
     });
 
-    expect(result).toEqual({ wired: [], aborted: true, notWired: ['google'] });
+    expect(result).toEqual({ wired: [], aborted: true, notWired: ['google'], changed: [] });
     expect(runtime.registerProvider).not.toHaveBeenCalled();
     expect(runtime.setRuntimeApiKey).not.toHaveBeenCalled();
   });
@@ -235,7 +237,7 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     });
 
-    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: [] });
+    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: [], changed: ['stepfun'] });
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledTimes(1);
   });
 
@@ -255,7 +257,7 @@ describe('syncCustomProviders', () => {
       signal: controller.signal,
     });
 
-    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: ['openrouter', 'google'] });
+    expect(result).toEqual({ wired: ['stepfun'], aborted: true, notWired: ['openrouter', 'google'], changed: ['stepfun'] });
   });
 
   it('reports a CredentialSynchronizationError provider as wired and caches its key (pi commits the key first)', async () => {
@@ -265,10 +267,22 @@ describe('syncCustomProviders', () => {
     });
     const deps = { modelRuntime: asModelRuntime, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }) };
 
-    expect(await syncCustomProviders(deps)).toEqual({ wired: ['deepseek'], aborted: false, notWired: [] });
+    expect(await syncCustomProviders(deps)).toEqual({ wired: ['deepseek'], aborted: false, notWired: [], changed: ['deepseek'] });
     // Cached despite the throw: the key IS live on the runtime, so re-applying it is pure cost.
     expect((await syncCustomProviders(deps)).wired).toEqual(['deepseek']);
     expect(runtime.setRuntimeApiKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a deauth that pi committed before a CredentialSynchronizationError as changed', async () => {
+    const { runtime, asModelRuntime } = makeRuntime();
+    await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }) });
+    runtime.removeRuntimeApiKey.mockImplementationOnce(async () => {
+      throw credentialSyncError();
+    });
+
+    const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({}) });
+
+    expect(result.changed).toEqual(['deepseek']);
   });
 
   it('classifies an abort ahead of CredentialSynchronizationError', async () => {
@@ -287,7 +301,7 @@ describe('syncCustomProviders', () => {
 
     // deepseek's secret WAS read this sync, so it is known-configured even though it never applied;
     // openrouter/google were never read and have no key, so they stay out of both lists.
-    expect(result).toEqual({ wired: [], aborted: true, notWired: ['deepseek'] });
+    expect(result).toEqual({ wired: [], aborted: true, notWired: ['deepseek'], changed: [] });
     // …and the key was NOT cached, so an un-aborted resync re-applies it.
     const retry = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret: secrets({ [DEEPSEEK_SECRET]: 'ds-key' }) });
     expect(retry.wired).toEqual(['deepseek']);
@@ -353,7 +367,7 @@ describe('syncCustomProviders — the secret read is bounded by the signal (A2)'
 
     const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret, signal: controller.signal });
 
-    expect(result).toEqual({ wired: [], aborted: true, notWired: [] });
+    expect(result).toEqual({ wired: [], aborted: true, notWired: [], changed: [] });
     // A lost race is an ABORT, never "secret absent" — collapsing the two is what deletes credentials.
     expect(runtime.logout).not.toHaveBeenCalled();
     expect(runtime.removeRuntimeApiKey).not.toHaveBeenCalled();
@@ -382,7 +396,7 @@ describe('syncCustomProviders — a failed secret read never deauthenticates (A3
 
     const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret });
 
-    expect(result).toEqual({ wired: [], aborted: false, notWired: ['deepseek'] });
+    expect(result).toEqual({ wired: [], aborted: false, notWired: ['deepseek'], changed: [] });
     expect(runtime.logout).not.toHaveBeenCalled();
     expect(runtime.removeRuntimeApiKey).not.toHaveBeenCalled();
     expect(runtime.unregisterProvider).not.toHaveBeenCalled();
@@ -404,7 +418,7 @@ describe('syncCustomProviders — a failed secret read never deauthenticates (A3
 
     const result = await syncCustomProviders({ modelRuntime: asModelRuntime, getSecret });
 
-    expect(result).toEqual({ wired: [], aborted: false, notWired: ['stepfun', 'deepseek'] });
+    expect(result).toEqual({ wired: [], aborted: false, notWired: ['stepfun', 'deepseek'], changed: ['google'] });
     const output = logLines.join('\n');
     expect(output).toContain('failed to wire stepfun');
     expect(output).toContain('could not read the stored secret for deepseek');

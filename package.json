@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -50,7 +50,9 @@
       "restrictedConfigurations": [
         "damocles.dangerouslySkipPermissions",
         "damocles.permissionMode",
-        "damocles.compass.enabled"
+        "damocles.compass.enabled",
+        "damocles.imageGeneration.enabled",
+        "damocles.imageGeneration.model"
       ]
     }
   },
@@ -428,7 +430,7 @@
         "damocles.memory.rerank.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Whether search_memories reranks BM25 candidates with an LLM."
+          "description": "Whether search_memories reranks BM25 candidates: on the Jev classifier when a TypeSafe or OpenRouter key is set, else (or when Jev fails) with the sub-call LLM."
         },
         "damocles.memory.rerank.candidatePool": {
           "type": "integer",
@@ -494,6 +496,22 @@
           "default": true,
           "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
         },
+        "damocles.mcp.toolExposure": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "off",
+                "deferred",
+                "direct"
+              ]
+            }
+          },
+          "description": "%configuration.mcp.toolExposure.description%"
+        },
         "damocles.team.enabled": {
           "type": "boolean",
           "default": false,
@@ -505,10 +523,10 @@
             "",
             "claude-fable-5-1",
             "claude-opus-5-5",
-            "claude-sonnet-5",
+            "claude-sonnet-5-5",
             "claude-haiku-4-5-20251001",
             "gpt-6-astra",
-            "gpt-6-sol",
+            "gpt-6.1-sol",
             "gpt-6-luna",
             "step-3.7-flash",
             "deepseek-v4-pro",
@@ -518,10 +536,10 @@
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
-            "Sonnet 5",
+            "Sonnet 5.5",
             "Haiku 4.5",
             "GPT-6 Astra",
-            "GPT-6 Sol",
+            "GPT-6.1 Sol",
             "GPT-6 Luna",
             "Step 3.7 Flash",
             "DeepSeek V4 Pro",
@@ -559,10 +577,10 @@
             "",
             "claude-fable-5-1",
             "claude-opus-5-5",
-            "claude-sonnet-5",
+            "claude-sonnet-5-5",
             "claude-haiku-4-5-20251001",
             "gpt-6-astra",
-            "gpt-6-sol",
+            "gpt-6.1-sol",
             "gpt-6-luna",
             "step-3.7-flash",
             "deepseek-v4-pro",
@@ -572,10 +590,10 @@
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
-            "Sonnet 5",
+            "Sonnet 5.5",
             "Haiku 4.5",
             "GPT-6 Astra",
-            "GPT-6 Sol",
+            "GPT-6.1 Sol",
             "GPT-6 Luna",
             "Step 3.7 Flash",
             "DeepSeek V4 Pro",
@@ -613,10 +631,10 @@
             "",
             "claude-fable-5-1",
             "claude-opus-5-5",
-            "claude-sonnet-5",
+            "claude-sonnet-5-5",
             "claude-haiku-4-5-20251001",
             "gpt-6-astra",
-            "gpt-6-sol",
+            "gpt-6.1-sol",
             "gpt-6-luna",
             "step-3.7-flash",
             "deepseek-v4-pro",
@@ -626,10 +644,10 @@
             "%configuration.team.modelDefault%",
             "Fable 5.1",
             "Opus 5.5",
-            "Sonnet 5",
+            "Sonnet 5.5",
             "Haiku 4.5",
             "GPT-6 Astra",
-            "GPT-6 Sol",
+            "GPT-6.1 Sol",
             "GPT-6 Luna",
             "Step 3.7 Flash",
             "DeepSeek V4 Pro",
@@ -877,6 +895,18 @@
           "default": false,
           "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
         },
+        "damocles.imageGeneration.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "%configuration.imageGeneration.enabled.description%"
+        },
+        "damocles.imageGeneration.model": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "%configuration.imageGeneration.model.description%"
+        },
         "damocles.assetSourcePrecedence": {
           "type": "string",
           "enum": [
@@ -984,14 +1014,15 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.87.1",
-    "@earendil-works/pi-ai": "^0.87.1",
-    "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.1",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@earendil-works/pi-agent-core": "^0.99.2",
+    "@earendil-works/pi-ai": "^0.99.2",
+    "@earendil-works/pi-coding-agent": "^0.99.2",
+    "@earendil-works/pi-mcp": "^0.99.2",
+    "@earendil-works/pi-tui": "^0.99.2",
     "@parcel/watcher": "^2.6.0",
     "@vscode/ripgrep": "^1.18.0",
     "electron-updater": "6.8.9",
+    "ignore": "^7.0.12",
     "jiti": "^2.7.0",
     "patchright": "^1.61.1",
     "picomatch": "^4.0.7",
@@ -1009,6 +1040,7 @@
     "@chenglou/pretext": "^0.0.5",
     "@electron/fuses": "2.1.3",
     "@internationalized/date": "^3.12.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "^4.0.0",

@@ -19,6 +19,7 @@ function stubFileOnDisk(platform: FakePlatform, content: string): void {
 function handlerWith(): { handler: PermissionHandler; messages: ExtensionToWebviewMessage[]; platform: FakePlatform } {
   const platform = createFakePlatform();
   const handler = new PermissionHandler(platform);
+  handler.setCwd(process.cwd());
   const messages: ExtensionToWebviewMessage[] = [];
   handler.setPostMessage((msg) => messages.push(msg));
   handler.setPlanContentResolver(async () => 'the plan');
@@ -195,5 +196,20 @@ describe('resolveApproval settles the tool call even when the diff view will not
     await handler.resolveApproval('t1', true);
 
     await expect(approval).resolves.toMatchObject({ behavior: 'allow' });
+  });
+});
+
+describe('auto-approving a subagent', () => {
+  it('approves its open prompt and tells the webview the outcome was approved', async () => {
+    const { handler, messages } = handlerWith();
+    const approval = handler.canUseTool('Bash', { command: 'rm -rf /tmp/x' }, { signal: new AbortController().signal, toolUseID: 't1', parentToolUseId: 'agent-1' });
+    await waitFor(() => handler.hasPendingPrompts());
+
+    handler.autoApproveSubagent('agent-1');
+
+    await expect(approval).resolves.toMatchObject({ behavior: 'allow' });
+    expect(messages.filter((m) => m.type === 'permissionAutoResolved')).toEqual([
+      { type: 'permissionAutoResolved', toolUseId: 't1', outcome: 'approved', parentToolUseId: 'agent-1' },
+    ]);
   });
 });

@@ -24,7 +24,7 @@ import type { ExtensionToWebviewMessage } from '../../../../shared/types/message
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import * as fsp from 'node:fs/promises';
 import { buildSubagentTools } from '../../tools/subagent-tools';
-import { backgroundResultsDetails } from '../background-results';
+import { backgroundResultsDetails, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../background-results';
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
@@ -37,6 +37,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 
 function invocationEntry(data: AgentInvocationData): SessionEntry {
   return { type: 'custom', customType: 'damocles-agent-invocation', data, id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString() } as SessionEntry;
+}
+
+/** Record on the parent branch that the keep-alive injected these records' results, as pi commits a settle's draft. */
+function injectOnBranch(records: Parameters<typeof backgroundResultsDetails>[0]): void {
+  branch.push({ type: 'custom_message', customType: SUBAGENT_RESULTS_CUSTOM_TYPE, content: '', display: false, details: backgroundResultsDetails(records), id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString() } as SessionEntry);
 }
 
 /** `defineTool` is the only `pi` member `buildMcpPiTool` touches; the definitions produced are real. */
@@ -335,7 +340,7 @@ describe('AgentManager concurrency', () => {
     mgr.dispose();
   });
 
-  it('abortAll marks the records it kills consumed, so the NEXT turn does not pay to synthesise "(no output)"', async () => {
+  it('abortAll discards the records it kills, so the NEXT turn does not pay to synthesise "(no output)"', async () => {
     const { engine } = makeEngine();
     const mgr = new AgentManager(engine, 1);
     const running = mgr.spawn(spec(0)); // background, starts immediately
@@ -344,13 +349,12 @@ describe('AgentManager concurrency', () => {
 
     mgr.abortAll('user');
 
-    // A killed agent has no result to incorporate. Leaving these unconsumed made the parent's
-    // keep-alive drain them at the next settle and continue the run for one more paid round-trip.
-    expect(mgr.getRecord(running)!.resultConsumed).toBe(true);
-    expect(mgr.getRecord(queued)!.resultConsumed).toBe(true);
-    expect(mgr.hasUnconsumedBackground()).toBe(false);
-    expect(mgr.takeCompletedBackgroundResults()).toHaveLength(0);
-    // Consumed gates keep-alive injection ONLY: the records stay readable for the UI and for
+    // A killed agent has no result to incorporate. Delivering these made the parent's keep-alive
+    // drain them at the next settle and continue the run for one more paid round-trip.
+    expect(mgr.getRecord(running)!.discarded).toBe(true);
+    expect(mgr.getRecord(queued)!.discarded).toBe(true);
+    expect(mgr.deliverableLive()).toHaveLength(0);
+    // Discarding gates the push paths ONLY: the records stay readable for the UI and for
     // GetSubagentResult, which is what makes fixing this at the root safe.
     expect(mgr.getRecord(running)!.status).toBe('stopped');
     expect(mgr.getRecord(queued)!.status).toBe('stopped');
@@ -413,18 +417,20 @@ describe('AgentManager background keep-alive', () => {
     mgr.dispose();
   });
 
-  it('takeCompletedBackgroundResults returns finished background records exactly once', async () => {
+  it('deliverableLive returns a finished background record until the branch records its delivery', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
     mgr.spawn(spec(0));
     await flush();
-    expect(mgr.takeCompletedBackgroundResults()).toHaveLength(0); // still running
+    expect(mgr.deliverableLive()).toHaveLength(0); // still running
     gateAt(gates, 0).resolve();
     await flush();
     await flush();
-    const first = mgr.takeCompletedBackgroundResults();
+    const first = mgr.deliverableLive();
     expect(first).toHaveLength(1);
-    expect(mgr.takeCompletedBackgroundResults()).toHaveLength(0); // consumed — never re-injected
+    expect(mgr.deliverableLive()).toHaveLength(1); // reading marks nothing
+    injectOnBranch(first);
+    expect(mgr.deliverableLive()).toHaveLength(0); // delivered on the branch, never re-injected
     mgr.dispose();
   });
 
@@ -473,13 +479,13 @@ describe('AgentManager background keep-alive', () => {
     void mgr.spawnAndWait({ ...spec(0), runInBackground: false });
     await flush();
     expect(mgr.hasPendingBackground()).toBe(false);
-    expect(mgr.hasUnconsumedBackground()).toBe(false);
     gates[0]?.resolve();
     await flush();
+    expect(mgr.deliverableLive()).toEqual([]);
     mgr.dispose();
   });
 
-  it('hasUnconsumedBackground stays true for an agent that finished mid-turn but was never fetched', async () => {
+  it('a background agent that finished mid-turn but was never fetched stays deliverable', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
     const id = mgr.spawn(spec(0)); // background
@@ -488,16 +494,13 @@ describe('AgentManager background keep-alive', () => {
     await flush();
     await flush();
     expect(mgr.getRecord(id)!.status).toBe('completed');
-    // The old gate (hasPendingBackground) is false here — this is exactly the dropped-result bug.
+    // Nothing is pending, which is exactly when a gate on hasPendingBackground dropped the result.
     expect(mgr.hasPendingBackground()).toBe(false);
-    // The keep-alive gate must still report work to incorporate.
-    expect(mgr.hasUnconsumedBackground()).toBe(true);
-    mgr.takeCompletedBackgroundResults(); // parent injects it once
-    expect(mgr.hasUnconsumedBackground()).toBe(false);
+    expect(mgr.deliverableLive().map((r) => r.id)).toEqual([id]);
     mgr.dispose();
   });
 
-  it('hasUnconsumedBackground is false once a result was already fetched via GetSubagentResult', async () => {
+  it('a result fetched with GetSubagentResult is not deliverable, because its marker is on the branch', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);
     const id = mgr.spawn(spec(0));
@@ -505,8 +508,12 @@ describe('AgentManager background keep-alive', () => {
     gateAt(gates, 0).resolve();
     await flush();
     await flush();
-    mgr.getRecord(id)!.resultConsumed = true; // GetSubagentResult marks this on read
-    expect(mgr.hasUnconsumedBackground()).toBe(false);
+    branch.push({
+      type: 'message',
+      message: { role: 'toolResult', toolCallId: 'tc-get', toolName: 'GetSubagentResult', content: [], details: { agentId: id, toolCallId: 'tc0', status: 'completed' } },
+      id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString(),
+    } as unknown as SessionEntry);
+    expect(mgr.deliverableLive()).toEqual([]);
     mgr.dispose();
   });
 });
@@ -1156,10 +1163,13 @@ function mcpDescriptor(over: Partial<McpToolDescriptor> & Pick<McpToolDescriptor
     serverName: 'git',
     serverId: `test/${over.serverName ?? 'git'}`,
     kind: 'tool',
-    originalName: over.piName.split('__').slice(2).join('__'),
+    rawToolName: over.piName.split('__').slice(2).join('__'),
     description: `desc of ${over.piName}`,
     inputSchema: { type: 'object', properties: {} },
     readOnly: false,
+    exposure: 'deferred',
+    exposureSource: 'config',
+    configExposure: 'deferred',
     ...over,
   };
 }
@@ -1346,7 +1356,7 @@ describe('AgentManager → nested MCP: names, definitions and execution (criteri
     expect(ctx.isMcpReadOnly).toBeDefined();
     expect(ctx.isMcpReadOnly!('mcp__git__status')).toBe(true);   // annotated
     expect(ctx.isMcpReadOnly!('mcp__git__commit')).toBe(false);  // not annotated
-    expect(ctx.mcpDescriptions?.get('mcp__git__status')).toBe('desc of mcp__git__status');
+    expect(ctx.mcpDescriptions?.get('mcp__git__status')).toMatchObject({ description: 'desc of mcp__git__status', group: 'git' });
     mgr.dispose();
   });
 });
@@ -1889,7 +1899,7 @@ describe('AgentManager resume', () => {
     gateAt(gates, 0).resolve();
     await record.promise;
     expect(record.status).toBe('completed');
-    expect(mgr.hasUnconsumedBackground()).toBe(false);
+    expect(mgr.deliverableLive()).toEqual([]);
     mgr.dispose();
   });
 
@@ -2003,11 +2013,11 @@ describe('AgentManager resume', () => {
     expect(prompts).toEqual([buildResumePrompt()]);
     // A background agent is not bound to the parent turn's signal, even an aborted one.
     expect(record.status).toBe('running');
-    expect(mgr.hasUnconsumedBackground()).toBe(true);
+    expect(mgr.hasPendingBackground()).toBe(true);
 
     gateAt(gates, 0).resolve();
     await mgr.waitForBackground();
-    const [done] = mgr.takeCompletedBackgroundResults();
+    const [done] = mgr.deliverableLive();
     expect(done).toMatchObject({ id: AGENT, toolCallId: 'tc-r', status: 'completed' });
     mgr.dispose();
   });
@@ -2371,7 +2381,7 @@ describe('AgentManager resume', () => {
     gateAt(gates, 0).resolve();
     await mgr.waitForBackground();
 
-    expect(backgroundResultsDetails(mgr.takeCompletedBackgroundResults())).toEqual({
+    expect(backgroundResultsDetails(mgr.deliverableLive())).toEqual({
       agents: [{ agentId: AGENT, toolCallId: 'tc-r', status: 'completed', result: '' }],
     });
     mgr.dispose();
@@ -2429,6 +2439,206 @@ describe('AgentManager resume', () => {
     await expect(execute('tc-r', { resume: id })).rejects.toMatchObject({
       message: `Subagent "${id}" was stopped by the budget limit and cannot be resumed.`,
     });
+    mgr.dispose();
+  });
+
+  it('readBranchAgent reads a branch agent the manager does not hold from its file', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'completed' } });
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    const mgr = new AgentManager(engine);
+
+    const agent = await mgr.readBranchAgent(AGENT);
+
+    expect(agent?.state).toMatchObject({ latest: { id: AGENT, toolCallId: 'tc-spawn' }, status: 'completed' });
+    expect(agent?.status).toEqual({ status: 'completed', result: 'partial' });
+    expect(agent?.file?.launch).toMatchObject({ agentId: AGENT, description: 'dig in' });
+    mgr.dispose();
+  });
+
+  it('readBranchAgent carries the result the branch holds for an agent with no file', async () => {
+    const { engine } = resumeEngine();
+    spawnOnBranch({ ...spawnArgs, run_in_background: true }, { agentId: AGENT, status: 'async_launched' });
+    branch.push({
+      type: 'custom_message', id: 'm3', parentId: null, timestamp: new Date().toISOString(), customType: SUBAGENT_RESULTS_CUSTOM_TYPE, content: '', display: false,
+      details: { agents: [{ agentId: AGENT, toolCallId: 'tc-spawn', status: 'completed', result: 'injected text' }] },
+    } as unknown as SessionEntry);
+    const mgr = new AgentManager(engine);
+
+    const agent = await mgr.readBranchAgent(AGENT);
+
+    expect(agent?.file).toBeNull();
+    expect(agent?.status).toBeUndefined();
+    expect(agent?.branchResult).toBe('injected text');
+    mgr.dispose();
+  });
+
+  it('readBranchAgent refuses an id another branch invoked, even when its file exists, and a malformed id before any file access', async () => {
+    const { engine, dir } = resumeEngine();
+    writeAgentFile(dir, { background: true, status: { status: 'completed' } });
+    const storeDir = vi.fn(engine.subagentStoreDir);
+    engine.subagentStoreDir = storeDir;
+    const mgr = new AgentManager(engine);
+
+    expect(await mgr.readBranchAgent(AGENT)).toBeNull();
+    expect(await mgr.readBranchAgent('../x')).toBeNull();
+    expect(storeDir).not.toHaveBeenCalled();
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager undelivered live results', () => {
+  async function finishedBackground(): Promise<{ mgr: AgentManager; id: string; gates: Gate[] }> {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    gateAt(gates, 0).resolve();
+    await mgr.waitForBackground();
+    return { mgr, id, gates };
+  }
+
+  it('deliverableLive marks nothing; only the branch records a delivery', async () => {
+    const { mgr, id } = await finishedBackground();
+
+    expect(mgr.deliverableLive().map((r) => r.id)).toEqual([id]);
+    expect(mgr.deliverableLive()).toHaveLength(1);
+    expect(mgr.getRecord(id)!.discarded).toBeUndefined();
+
+    injectOnBranch(mgr.deliverableLive());
+    expect(mgr.deliverableLive()).toEqual([]);
+    mgr.dispose();
+  });
+
+  it('a card-stopped background record is deliverable; one stopped by abortAll is discarded', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    const card = mgr.spawn(spec(0));
+    const killed = mgr.spawn(spec(1));
+    await flush();
+    mgr.abort(card, 'user');
+    mgr.abortAll('user');
+    gates.forEach((g) => g.resolve());
+    await mgr.whenRunsSettled();
+
+    expect(mgr.getRecord(card)!.discarded).toBeUndefined();
+    expect(mgr.getRecord(killed)!.discarded).toBe(true);
+    expect(mgr.deliverableLive().map((r) => r.id)).toEqual([card]);
+    mgr.dispose();
+  });
+
+  it('skips a record that is not the latest invocation on the branch, is still running, or ran in the foreground', async () => {
+    const { mgr, id } = await finishedBackground();
+    branch.push(invocationEntry({ kind: 'subagent', id, toolCallId: 'tc-later', resume: true }));
+    expect(mgr.deliverableLive()).toEqual([]);
+    mgr.dispose();
+
+    const { engine, gates } = makeEngine();
+    const other = new AgentManager(engine, 4);
+    other.spawn(spec(1));
+    void other.spawnAndWait({ ...spec(2), runInBackground: false });
+    await flush();
+    expect(other.deliverableLive()).toEqual([]);
+    gates.forEach((g) => g.resolve());
+    await other.whenRunsSettled();
+    expect(other.deliverableLive().map((r) => r.toolCallId)).toEqual(['tc1']);
+    other.dispose();
+  });
+
+  it("branchRecord answers only for the record of the branch's latest invocation of that id", async () => {
+    const { mgr, id } = await finishedBackground();
+    expect(mgr.branchRecord(id)?.toolCallId).toBe('tc0');
+
+    branch.push(invocationEntry({ kind: 'subagent', id, toolCallId: 'tc-other-branch', resume: true }));
+    expect(mgr.branchRecord(id)).toBeUndefined();
+    expect(mgr.getRecord(id)).toBeDefined();
+    branch.length = 0;
+    expect(mgr.branchRecord(id)).toBeUndefined();
+    mgr.dispose();
+  });
+
+  it('GetSubagentResult and SteerSubagent never answer from a record of an invocation this branch does not hold', async () => {
+    const { mgr, id } = await finishedBackground();
+    const running = mgr.spawn(spec(1));
+    await flush();
+    branch.length = 0;
+    type Run = (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: unknown }>;
+    const [, getResult, steer] = buildSubagentTools(piStub, mgr) as unknown as Array<{ execute: Run }>;
+
+    const fetched = await getResult!.execute('tc-get', { agent_id: id });
+    const steered = await steer!.execute('tc-steer', { agent_id: running, message: 'go left' });
+
+    expect(fetched.content[0]!.text).toBe(`No subagent with id "${id}" was launched in this conversation.`);
+    expect(fetched.details).toBeUndefined();
+    expect(steered.content[0]!.text).toBe(`No subagent found with id "${running}".`);
+    expect(steerCalls).toEqual([]);
+    mgr.dispose();
+  });
+
+  it('clear drops every record, running ones included', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    mgr.clear();
+    expect(mgr.getRecord(id)).toBeUndefined();
+    mgr.dispose();
+  });
+
+  it('a run that ends after clear posts nothing to the panel, which shows another conversation by then', async () => {
+    const { engine, gates } = makeEngine();
+    const posted: ExtensionToWebviewMessage[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    mgr.abortAll('shutdown');
+    const settled = mgr.whenRunsSettled();
+    mgr.clear();
+    posted.length = 0;
+
+    gateAt(gates, 0).resolve();
+    await settled;
+
+    expect(posted).toEqual([]);
+    expect(mgr.getRecord(id)).toBeUndefined();
+    mgr.dispose();
+  });
+
+  it('clear writes a retired run its stopped status at once, so a scan after a rebind never sees it unfinished', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    mgr.spawn(spec(0));
+    await flush();
+    mgr.abortAll('shutdown');
+    const settled = mgr.whenRunsSettled();
+    const statuses = () => customEntries.filter((e) => e.customType === DAMOCLES_AGENT_STATUS_ENTRY).map((e) => e.data);
+
+    mgr.clear();
+
+    expect(statuses()).toEqual([expect.objectContaining({ status: 'stopped', stopReason: 'shutdown' })]);
+    gateAt(gates, 0).resolve();
+    await settled;
+    expect(statuses()).toHaveLength(1);
+    mgr.dispose();
+  });
+
+  it('reads no branch while no finished background record exists', async () => {
+    const { engine, gates } = makeEngine();
+    const parentBranch = vi.fn(engine.parentBranch);
+    engine.parentBranch = parentBranch;
+    const mgr = new AgentManager(engine, 4);
+    mgr.spawn(spec(0));
+    await flush();
+
+    parentBranch.mockClear();
+    expect(mgr.deliverableLive()).toEqual([]);
+    expect(parentBranch).not.toHaveBeenCalled();
+
+    gateAt(gates, 0).resolve();
+    await mgr.waitForBackground();
+    expect(mgr.deliverableLive().map((r) => r.toolCallId)).toEqual(['tc0']);
+    expect(parentBranch).toHaveBeenCalled();
     mgr.dispose();
   });
 });

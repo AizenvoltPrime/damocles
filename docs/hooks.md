@@ -116,7 +116,7 @@ The runner writes one JSON object to the child's stdin. Common keys on **every**
 | `tool_result` | `tool_name`, `input`, `result` (`{ output, is_error, details? }`) |
 | `input` | `prompt` |
 | `agent_end` / `subagent_end` | `messages` (`{role, content}[]`); `subagent_end` adds `parent_tool_use_id` |
-| `permission_required` | `message`, `tool_name`, `input`, `file_path` \| `command`; `parent_tool_use_id` *(only when the wait is a subagent's tool)* |
+| `permission_required` | `message`, `tool_name`, `input`; `file_path` *(Edit, Write, GenerateImage)* or `command` *(Bash, PowerShell)*; `parent_tool_use_id` *(only when the wait is a subagent's tool)* |
 | `session_start` | `reason` |
 | `session_shutdown` | `reason` |
 | `session_before_compact` | `reason`, `will_retry` |
@@ -194,7 +194,7 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 
 | Config key | Notes |
 | --- | --- |
-| `permission_required` | the agent is **blocked waiting for your file/shell approval**. Observe-only; lazy (zero cost unless configured); debounced once per turn |
+| `permission_required` | the agent is **blocked waiting for your approval**: a file edit, a shell command, an image, or any tool an ask rule covers. Observe-only; lazy (zero cost unless configured); debounced once per turn |
 
 ### Tier 2: observe-only (cheap notify/logging; return value ignored)
 

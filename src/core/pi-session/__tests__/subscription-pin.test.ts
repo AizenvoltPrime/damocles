@@ -23,6 +23,10 @@ describe('classifySubscriptionSource', () => {
     expect(classifySubscriptionSource(`${repo}@15aef28a8a3090710b03a1435fe1385d3dd35f4e`)).toBe('stale');
   });
 
+  it('classifies the previous v3.3.2 pin as stale, so an allowance install reinstalls on startup', () => {
+    expect(classifySubscriptionSource(`${repo}@fc183fc54171c1fc511570733d8f86b9f66426f6`)).toBe('stale');
+  });
+
   it('classifies the `#<sha>` committish form as stale', () => {
     expect(classifySubscriptionSource(`${repo}#15aef28a8a3090710b03a1435fe1385d3dd35f4e`)).toBe('stale');
   });

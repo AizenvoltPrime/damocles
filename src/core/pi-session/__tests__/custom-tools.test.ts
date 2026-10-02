@@ -7,6 +7,9 @@ import { buildCustomTools, CUSTOM_TOOL_NAMES, OVERRIDE_TOOL_NAMES } from '../too
 import { ShellCancelStore } from '../tools/shell-cancel-registry';
 import { WEB_PI_TOOL_NAMES } from '../web-access';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
+import type { BranchAgent } from '../subagents/agent-manager';
+import type { AgentRecord } from '../subagents/types';
+import { emptyAgentUsage } from '../../../shared/usage-accounting';
 
 vi.mock('fs/promises', () => ({ readFile: vi.fn() }));
 
@@ -84,14 +87,15 @@ function build(permissionHandler = fakePermissionHandler()) {
 type SteerStatus = 'steered' | 'queued' | 'finished' | 'failed' | 'not-found';
 type SteerRecord = { type: string; description: string };
 
-function buildWithSteer(status: SteerStatus, record?: SteerRecord) {
+function buildWithSteer(status: SteerStatus, record?: SteerRecord, branchAgent: BranchAgent | null = null) {
   const subagentManager = {
     getSpawnableAgents: () => [],
-    steer: async () => status,
-    getRecord: () => record,
+    steer: vi.fn(async () => status),
+    branchRecord: () => record,
+    readBranchAgent: async () => branchAgent,
   } as unknown as SubagentManagerArg;
   const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', subagentManager, ...shellDeps() });
-  return { tool: lookup(tools) };
+  return { tool: lookup(tools), steer: (subagentManager as unknown as { steer: ReturnType<typeof vi.fn> }).steer };
 }
 
 function props(tool: BuiltTool): string[] {
@@ -307,6 +311,140 @@ describe('SteerSubagent — details + phrasings', () => {
     const { tool } = buildWithSteer('not-found', undefined);
     const result = await tool('SteerSubagent').execute('tc', { agent_id: 'a1', message: 'go left' }, undefined, undefined, {} as never);
     expect((result as { details: object }).details).toEqual({ steerStatus: 'not-found' });
+  });
+});
+
+describe('SteerSubagent on a branch agent the manager no longer holds', () => {
+  it('a finished one reports steerStatus "finished" with its launch type and description, and points at GetSubagentResult', async () => {
+    const { tool } = buildWithSteer('not-found', undefined, branchAgent('completed'));
+    const result = await tool('SteerSubagent').execute('tc', { agent_id: AGENT, message: 'go left' }, undefined, undefined, {} as never);
+    expect((result as { details: object }).details).toEqual({ steerStatus: 'finished', agentType: 'Explore', description: 'dig in' });
+    expect(parsedText(result)).toBe(`Subagent "${AGENT}" has already finished, so nothing was steered. Read its result with GetSubagentResult.`);
+  });
+
+  it('an interrupted one reports "finished" with the resume guidance', async () => {
+    const { tool } = buildWithSteer('not-found', undefined, branchAgent('interrupted'));
+    const result = await tool('SteerSubagent').execute('tc', { agent_id: AGENT, message: 'go left' }, undefined, undefined, {} as never);
+    expect((result as { details: { steerStatus: string } }).details.steerStatus).toBe('finished');
+    expect(parsedText(result)).toBe(
+      `Subagent "${AGENT}" is not running, so nothing was steered: it stopped before it finished. Resume it with Agent({resume:"${AGENT}"}) if the user asks to continue.`,
+    );
+  });
+
+  it('a record held for another branch or session is never steered', async () => {
+    const { tool, steer } = buildWithSteer('steered', undefined, null);
+    const result = await tool('SteerSubagent').execute('tc', { agent_id: AGENT, message: 'go left' }, undefined, undefined, {} as never);
+    expect(steer).not.toHaveBeenCalled();
+    expect(parsedText(result)).toBe(`No subagent found with id "${AGENT}".`);
+  });
+});
+
+const AGENT = '0a1b2c3d-4e5f-4a0';
+const TRANSCRIPT = '[User]: find the bug\n\n[Assistant]: it was the cache';
+
+/** A branch agent as `readBranchAgent` returns it, its latest invocation `tc-latest`. */
+function branchAgent(status: BranchAgent['state']['status'], opts: { stopReason?: 'user'; stored?: string; noFile?: boolean; branchResult?: string } = {}): BranchAgent {
+  const latest = { kind: 'subagent' as const, id: AGENT, toolCallId: 'tc-latest', resume: false };
+  return {
+    state: { spawn: latest, latest, status, ...(opts.stopReason ? { stopReason: opts.stopReason } : {}) },
+    file: opts.noFile ? null : {
+      path: '/store/a.jsonl',
+      launch: { agentId: AGENT, kind: 'subagent', agentType: 'Explore', description: 'dig in', prompt: 'find the bug', background: true },
+      segments: [],
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'find the bug' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'it was the cache' }] },
+      ],
+      entryIds: new Map(),
+    },
+    ...(opts.stored !== undefined ? { status: { status: status as 'completed', result: opts.stored } } : {}),
+    ...(opts.branchResult !== undefined ? { branchResult: opts.branchResult } : {}),
+  };
+}
+
+function liveRecord(over: Partial<AgentRecord>): AgentRecord {
+  return {
+    id: AGENT, type: 'Explore', description: 'dig in', status: 'completed', toolCallId: 'tc-live', background: true, result: 'live text',
+    toolUses: 0, startedAt: 0, lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 }, usage: emptyAgentUsage(), compactionCount: 0,
+    ...over,
+  };
+}
+
+function buildWithResult(record: AgentRecord | undefined, agent: BranchAgent | null) {
+  const readBranchAgent = vi.fn(async () => agent);
+  const subagentManager = { getSpawnableAgents: () => [], branchRecord: () => record, readBranchAgent } as unknown as SubagentManagerArg;
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', subagentManager, ...shellDeps() });
+  const run = (params: Record<string, unknown>) => lookup(tools)('GetSubagentResult').execute('tc-get', { agent_id: AGENT, ...params }, undefined, undefined, {} as never);
+  return { run, readBranchAgent };
+}
+
+describe('GetSubagentResult', () => {
+  it('a live finished record returns its result with the fetch marker, which is its only record of delivery', async () => {
+    const record = liveRecord({});
+    const { run } = buildWithResult(record, null);
+    const result = await run({});
+    expect(parsedText(result)).toBe('live text');
+    expect(result.details).toEqual({ agentId: AGENT, toolCallId: 'tc-live', status: 'completed' });
+    expect(record).toEqual(liveRecord({}));
+  });
+
+  it('a live running record answers still running, with no marker', async () => {
+    const { run } = buildWithResult(liveRecord({ status: 'running' }), null);
+    const result = await run({});
+    expect(parsedText(result)).toContain('is still running');
+    expect(result.details).toBeUndefined();
+  });
+
+  it('verbose on a live finished record returns the transcript from its file', async () => {
+    const { run } = buildWithResult(liveRecord({}), branchAgent('completed', { stored: 'stored text' }));
+    expect(parsedText(await run({ verbose: true }))).toBe(TRANSCRIPT);
+  });
+
+  it('an id this conversation never launched reads "No subagent", with no marker', async () => {
+    const { run } = buildWithResult(undefined, null);
+    const result = await run({});
+    expect(parsedText(result)).toBe(`No subagent with id "${AGENT}" was launched in this conversation.`);
+    expect(result.details).toBeUndefined();
+  });
+
+  it('a finished branch agent the manager no longer holds returns its stored result with the marker for its latest invocation', async () => {
+    const { run } = buildWithResult(undefined, branchAgent('completed', { stored: 'stored text' }));
+    const result = await run({});
+    expect(parsedText(result)).toBe('stored text');
+    expect(result.details).toEqual({ agentId: AGENT, toolCallId: 'tc-latest', status: 'completed' });
+  });
+
+  it('verbose on such an agent returns its transcript', async () => {
+    const { run } = buildWithResult(undefined, branchAgent('completed', { stored: 'stored text' }));
+    const result = await run({ verbose: true });
+    expect(parsedText(result)).toBe(TRANSCRIPT);
+    expect(result.details).toEqual({ agentId: AGENT, toolCallId: 'tc-latest', status: 'completed' });
+  });
+
+  it('a finished agent with no stored result returns the result the branch holds, with the marker', async () => {
+    const { run } = buildWithResult(undefined, branchAgent('completed', { noFile: true, branchResult: 'injected text' }));
+    const result = await run({});
+    expect(parsedText(result)).toBe('injected text');
+    expect(result.details).toEqual({ agentId: AGENT, toolCallId: 'tc-latest', status: 'completed' });
+  });
+
+  it('a finished agent with no file falls back to its status note, still with the marker', async () => {
+    const { run } = buildWithResult(undefined, branchAgent('aborted', { noFile: true }));
+    const result = await run({});
+    expect(parsedText(result)).toBe('(aborted — hit the turn limit before completion; output may be incomplete)');
+    expect(result.details).toEqual({ agentId: AGENT, toolCallId: 'tc-latest', status: 'aborted' });
+  });
+
+  it.each([
+    ['interrupted', branchAgent('interrupted'), 'interrupted'],
+    ['stopped by the user', branchAgent('stopped', { stopReason: 'user', stored: 'half' }), 'stopped'],
+  ])('an %s agent is not running: the resume call, and no marker', async (_label, agent, why) => {
+    const { run } = buildWithResult(undefined, agent);
+    const result = await run({});
+    expect(parsedText(result)).toBe(
+      `Subagent "${AGENT}" is not running: it was ${why} before it finished. Resume it with Agent({resume:"${AGENT}"}) if the user asks to continue.`,
+    );
+    expect(result.details).toBeUndefined();
   });
 });
 

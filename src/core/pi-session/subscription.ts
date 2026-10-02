@@ -9,7 +9,7 @@ const SUBSCRIPTION_REPO = 'https://github.com/gotgenes/pi-anthropic-auth';
 
 // `@<sha>`, not `#<sha>`: pi's parseGitUrl keeps a `#` fragment on the clone URL, which breaks `git clone`.
 // Before bumping, run the plugin's tests against Damocles' pi version; nothing in this repo's CI clones it.
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@fc183fc54171c1fc511570733d8f86b9f66426f6`;
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@cca87a7b21b5c490de657bc6ce419440c5db1a20`;
 
 // pi keys git packages by repo identity, so a replaced plugin's entry is invisible to checks on the current repo.
 export const LEGACY_SUBSCRIPTION_REPOS: readonly string[] = [

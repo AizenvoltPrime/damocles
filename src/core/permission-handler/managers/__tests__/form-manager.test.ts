@@ -158,6 +158,9 @@ describe('validateForm', () => {
   });
 });
 
+/** Nobody saw the form, so the deny is policy, never the user's cancel. */
+const UNASKED = { behavior: 'deny', message: 'Damocles could not show the input form to the user, so this tool call was denied', policy: true };
+
 function makeContext(signal: AbortSignal, toolUseID: string | null = 'tool-1'): CanUseToolContext {
   return { signal, toolUseID, parentToolUseId: null };
 }
@@ -176,6 +179,8 @@ describe('FormManager', () => {
     const r = await mgr.handleForm({ fields: [] }, makeContext(ac.signal));
     expect(r.behavior).toBe('deny');
     expect(r.message).toMatch(/^BrowserRequestInput input invalid:/);
+    // Nobody was asked, so the tool words it with the policy marker.
+    expect(r.policy).toBe(true);
   });
 
   it('posts requestForm (schema only) and stores a pending entry', () => {
@@ -214,7 +219,7 @@ describe('FormManager', () => {
     const ac = new AbortController();
     ac.abort();
     const r = await mgr.handleForm(validForm(), makeContext(ac.signal));
-    expect(r).toEqual({ behavior: 'deny', message: 'User cancelled the input form' });
+    expect(r).toEqual(UNASKED);
     expect(state.pendingForms.size).toBe(0);
   });
 
@@ -225,7 +230,7 @@ describe('FormManager', () => {
     expect(state.pendingForms.size).toBe(1);
     ac.abort();
     const r = await p;
-    expect(r).toEqual({ behavior: 'deny', message: 'User cancelled the input form' });
+    expect(r).toEqual(UNASKED);
     expect(state.pendingForms.size).toBe(0);
   });
 
@@ -245,6 +250,6 @@ describe('FormManager', () => {
     const mgr = new FormManager(state, () => null);
     const ac = new AbortController();
     const r = await mgr.handleForm(validForm(), makeContext(ac.signal));
-    expect(r).toEqual({ behavior: 'deny', message: 'User cancelled the input form' });
+    expect(r).toEqual(UNASKED);
   });
 });

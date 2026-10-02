@@ -8,7 +8,7 @@ import { BUILTIN_DEFERRED_GROUPS, deferredToolNames } from '../../tools/deferred
 // from, so this file asserts against the names that actually reach the active set.
 import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { mapPiToolName, toolCategory } from '../../tool-normalization';
-import { TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../../shared/tool-names';
+import { TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE } from '../../../../shared/tool-names';
 import type { AgentConfig } from '../types';
 
 function cfg(over: Partial<AgentConfig>): AgentConfig {
@@ -77,6 +77,15 @@ describe('resolveAgentToolset', () => {
 
     const explicit = resolveAgentToolset(cfg({ builtinToolNames: ['read', ...TEAM] }), [...PARENT, ...TEAM]);
     expect(explicit.names).toEqual(['read']);
+  });
+
+  it('strips GenerateImage whether inherited or named, and naming it never lifts the read-only shell restriction', () => {
+    const inherited = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, TOOL_GENERATE_IMAGE]);
+    expect(inherited.names).not.toContain(TOOL_GENERATE_IMAGE);
+
+    const explicit = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'grep', 'bash', TOOL_GENERATE_IMAGE] }), [...PARENT, TOOL_GENERATE_IMAGE]);
+    expect(explicit.names).toEqual(['read', 'grep', 'bash']);
+    expect(explicit.readOnly).toBe(true);
   });
 
   it('keeps mcp__ names OUT of `names` — MCP arrives via the frozen per-spawn snapshot, not this list', () => {
@@ -399,7 +408,7 @@ describe('resolveAgentToolset — readOnly is unaffected by ToolSearch (Slice 3 
     expect(all.names).toContain(TOOL_TOOL_SEARCH);
 
     const writers = all.names.filter((n) => toolCategory(mapPiToolName(n)) === 'write');
-    expect([...writers].sort()).toEqual([TOOL_EDIT, 'write'].sort()); // WRITE_TOOLS is exactly {Write, Edit}
+    expect([...writers].sort()).toEqual([TOOL_EDIT, 'write'].sort()); // the resolved writers are exactly {Write, Edit}; GenerateImage is stripped
 
     const withoutWriters = resolveAgentToolset(
       cfg({ builtinToolNames: undefined, disallowedTools: writers }),

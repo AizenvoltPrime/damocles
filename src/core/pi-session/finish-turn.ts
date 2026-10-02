@@ -47,7 +47,7 @@ export function installTurnDecider(agent: Agent, key: symbol, decide: TurnDecide
 
   agent.finishTurn = async (turn, signal) => {
     // pi's AgentSession owns this field and dispatches the extension `turn_end` boundary through it
-    // (`agent-session.ts:675-685`), so the captured hook runs on every turn and is never short-circuited:
+    // (`agent-session.ts:852-862` in pi 0.99.2), so the captured hook runs on every turn and is never short-circuited:
     // skipping it silently drops every extension `turn_end` handler (image pruning among them) with no
     // type error. It stays unguarded below: a throw from pi's own boundary hook is a real failure to surface.
     const decisions: Array<AgentTurnDecision | undefined> = [

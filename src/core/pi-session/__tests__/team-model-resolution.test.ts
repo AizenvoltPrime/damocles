@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Model, Api } from '@earendil-works/pi-ai';
 import { piSupportedModels, type ModelLookup } from '../pi-models';
 import type { OpenAIAuthStatus } from '../openai-auth';
+import { buildAccountInfo } from '../account-billing';
 import {
   resolveRoleModel,
   type TeamModelDeps,
@@ -71,27 +72,27 @@ describe('resolveRoleModel — configured slots', () => {
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
       openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
       activeModel: OPENAI_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'gpt-6-sol', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'gpt-6.1-sol', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
     expect(res.error).toBeUndefined();
-    expect(res.model?.id).toBe('gpt-6-sol');
+    expect(res.model?.id).toBe('gpt-6.1-sol');
     expect(res.model?.provider).toBe('openai-codex');
-    expect(res.modelLabel).toBe('GPT-6 Sol');
+    expect(res.modelLabel).toBe('GPT-6.1 Sol');
   });
 
   it('(b) blocks with an error naming the setting key + model when configured but its provider is unauthed', () => {
     const d = deps({
-      // openai does not resolve at all → gpt-6-sol is unavailable.
+      // openai does not resolve at all → gpt-6.1-sol is unavailable.
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'gpt-6-sol', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'gpt-6.1-sol', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
     expect(res.model).toBeUndefined();
     expect(res.error).toBeDefined();
     expect(res.error).toContain('damocles.team.reviewerModel');
-    expect(res.error).toContain('gpt-6-sol');
+    expect(res.error).toContain('gpt-6.1-sol');
     expect(res.error).toContain('reviewer');
   });
 
@@ -99,11 +100,11 @@ describe('resolveRoleModel — configured slots', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ lead: { model: 'claude-sonnet-5', effort: null } }),
+      roleSettings: roles({ lead: { model: 'claude-sonnet-5-5', effort: null } }),
     });
     const res = resolveRoleModel('lead', d);
     expect(res.error).toContain('damocles.team.leadModel');
-    expect(res.error).toContain('claude-sonnet-5');
+    expect(res.error).toContain('claude-sonnet-5-5');
   });
 });
 
@@ -138,10 +139,10 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'claude-sonnet-5', effort: 'ultracode' } }),
+      roleSettings: roles({ reviewer: { model: 'claude-sonnet-5-5', effort: 'ultracode' } }),
     });
     const res = resolveRoleModel('reviewer', d);
-    expect(res.model?.id).toBe('claude-sonnet-5');
+    expect(res.model?.id).toBe('claude-sonnet-5-5');
     expect(res.thinkingLevel).toBe('max');
   });
 
@@ -162,15 +163,15 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
       activeModel: ANTHROPIC_ACTIVE,
       roleSettings: roles({ implementor: { model: ANTHROPIC_ACTIVE, effort: null } }),
     });
-    // Opus 5.5 carries `defaultEffort: 'high'`; Sonnet 5 carries none, so its slot stays unset.
+    // Opus 5.5 carries `defaultEffort: 'high'`; DeepSeek V4 Pro carries none, so its slot stays unset.
     expect(resolveRoleModel('implementor', d).thinkingLevel).toBe('high');
 
-    const sonnet = deps({
-      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
+    const deepseek = deps({
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, deepseekResolves: true }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ implementor: { model: 'claude-sonnet-5', effort: null } }),
+      roleSettings: roles({ implementor: { model: 'deepseek-v4-pro', effort: null } }),
     });
-    expect(resolveRoleModel('implementor', sonnet).thinkingLevel).toBeUndefined();
+    expect(resolveRoleModel('implementor', deepseek).thinkingLevel).toBeUndefined();
   });
 
   // Matches the panel: an unsupported stored level falls back to the catalog default, not to pi's own.
@@ -200,22 +201,22 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
       openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
       activeModel: OPENAI_ACTIVE,
-      // gpt-6-sol supportedEffortLevels lacks 'none'.
-      roleSettings: roles({ implementor: { model: 'gpt-6-sol', effort: 'none' } }),
+      // gpt-6.1-sol supportedEffortLevels lacks 'none'.
+      roleSettings: roles({ implementor: { model: 'gpt-6.1-sol', effort: 'none' } }),
     });
     const res = resolveRoleModel('implementor', d);
-    expect(res.model?.id).toBe('gpt-6-sol');
+    expect(res.model?.id).toBe('gpt-6.1-sol');
     expect(res.thinkingLevel).toBeUndefined();
   });
 
-  it('(f) unset effort (null) → no thinkingLevel even on a configured model', () => {
+  it('(f) unset effort (null) → no thinkingLevel on a configured model with no catalog default', () => {
     const d = deps({
-      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
+      registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false, deepseekResolves: true }),
       activeModel: ANTHROPIC_ACTIVE,
-      roleSettings: roles({ reviewer: { model: 'claude-sonnet-5', effort: null } }),
+      roleSettings: roles({ reviewer: { model: 'deepseek-v4-pro', effort: null } }),
     });
     const res = resolveRoleModel('reviewer', d);
-    expect(res.model?.id).toBe('claude-sonnet-5');
+    expect(res.model?.id).toBe('deepseek-v4-pro');
     expect(res.thinkingLevel).toBeUndefined();
   });
 
@@ -301,11 +302,32 @@ describe('resolveRoleModel dollar billing', () => {
     expect(res.dollarBilled).toBe(false);
   });
 
+  it('(i6) a GPT model outside the Codex catalog bills the API key it resolves to, as the account chip does', () => {
+    const registry: ModelLookup = {
+      getModel: (provider, modelId) => (provider === 'anthropic' || provider === 'openai' ? fakeModel(provider, modelId) : undefined),
+      hasConfiguredAuth: (providerId) => providerId === 'anthropic',
+    };
+    const openai = { apiKey: true, chatgpt: false, codex: true } as OpenAIAuthStatus;
+    const d = deps({ registry, openai, preferApiKey: false, roleSettings: roles({ implementor: { model: OPENAI_ACTIVE, effort: null } }) });
+    const res = resolveRoleModel('implementor', d);
+    expect(res.model?.provider).toBe('openai');
+    expect(res.dollarBilled).toBe(true);
+    const chip = buildAccountInfo({
+      modelValue: OPENAI_ACTIVE,
+      modelInfo: d.supportedModels.find((m) => m.value === OPENAI_ACTIVE),
+      claudeAuthMode: d.claudeAuthMode,
+      openaiAuthStatus: openai,
+      preferApiKey: false,
+      resolvedProvider: res.model?.provider,
+    });
+    expect(chip).toMatchObject({ tokenSource: 'openai-api-key', dollarBilled: res.dollarBilled });
+  });
+
   it('(i5) the blocking error return still carries billing', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false }),
       claudeAuthMode: 'apikey',
-      roleSettings: roles({ lead: { model: 'claude-sonnet-5', effort: null } }),
+      roleSettings: roles({ lead: { model: 'claude-sonnet-5-5', effort: null } }),
     });
     const res = resolveRoleModel('lead', d);
     expect(res.error).toBeDefined();

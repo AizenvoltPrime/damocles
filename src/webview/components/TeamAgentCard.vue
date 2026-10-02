@@ -8,6 +8,7 @@ import { IconCheck, IconXCircle, IconBan, IconClock, IconEye } from '@/component
 import LoadingSpinner from './LoadingSpinner.vue';
 import { getAgentColor, formatElapsed, statusBadgeClass } from '@/composables/useTeamFormatting';
 import AgentUsageStats from './AgentUsageStats.vue';
+import EffortBadge from './EffortBadge.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useTeamStore } from '@/stores/useTeamStore';
@@ -24,15 +25,9 @@ function openAgentDetail(): void {
   teamStore.openAgentOverlay(props.agent.agentId);
 }
 
-const isAlive = () => {
-  const s = props.agent.status;
-  return s === 'running' || s === 'awaiting-review' || s === 'standby' || s === 'monitoring';
-};
-const { elapsedMs } = useElapsedTimer(
-  isAlive,
-  () => props.agent.startTime,
-  () => props.agent.endTime,
-);
+// The stopwatch, not the status, says the run is live: an approved member's run keeps counting until it settles.
+const { elapsedMs } = useElapsedTimer(() => props.agent.runningSince !== null, () => props.agent);
+const hasRun = computed(() => props.agent.activeMs > 0 || props.agent.runningSince !== null);
 
 const { postMessage } = usePlatformBridge();
 const color = computed(() => getAgentColor(props.index));
@@ -80,14 +75,15 @@ function cancelAgent(e: Event): void {
         {{ agent.specialization }}
       </p>
 
-      <div v-if="agent.model" class="flex items-center">
-        <Badge variant="secondary" class="text-[10px] px-1.5 py-0">{{ agent.model }}</Badge>
+      <div v-if="agent.model || agent.effort" class="flex items-center gap-1.5">
+        <Badge v-if="agent.model" variant="secondary" class="text-[10px] px-1.5 py-0">{{ agent.model }}</Badge>
+        <EffortBadge v-if="agent.effort" :effort="agent.effort" />
       </div>
 
       <div class="flex items-center gap-1.5 text-xs text-foreground/50 pt-1 border-t border-border/30">
         <span>{{ t('team.toolCount', { n: agent.toolCount }, agent.toolCount) }}</span>
-        <span v-if="agent.startTime" class="text-foreground/30">•</span>
-        <span v-if="agent.startTime">{{ formatElapsed(elapsedMs) }}</span>
+        <span v-if="hasRun" class="text-foreground/30">•</span>
+        <span v-if="hasRun">{{ formatElapsed(elapsedMs) }}</span>
         <AgentUsageStats :usage="agent" :dollar-billed="agent.dollarBilled" variant="card" separator-class="text-foreground/30" cost-class="text-foreground/60" />
         <span v-if="agent.lastToolName" class="text-foreground/30">•</span>
         <span v-if="agent.lastToolName" class="truncate">{{ agent.lastToolName }}</span>

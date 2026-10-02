@@ -26,9 +26,10 @@ import {
   DAMOCLES_AGENT_STATUS_ENTRY,
 } from './session-store/constants';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from './subagents/background-results';
-import { TOOL_AGENT } from '../../shared/tool-names';
+import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT } from '../../shared/tool-names';
 import type { AgentRecord } from './subagents/types';
 import { addAgentUsage, agentUsageOf, emptyAgentUsage, usageOfEntry, type AgentUsageTotals } from '../../shared/usage-accounting';
+import { isEffortBadgeLevel, type EffortBadgeLevel } from '../../shared/effort-badge';
 
 // ---- layout ----------------------------------------------------------------
 
@@ -144,6 +145,8 @@ export interface SubagentLaunchData {
   modelLabel?: string;
   /** Whether the model bills real dollars. Absent in records written before the flag existed. */
   dollarBilled?: boolean;
+  /** The session's effective thinking level; absent for a model that does not reason and in older records. */
+  effort?: EffortBadgeLevel;
 }
 
 export interface TeamMemberLaunchData {
@@ -163,6 +166,8 @@ export interface AgentSegmentData {
   message?: string;
   /** Whether the resumed run's model bills real dollars. Absent in records written before the flag existed. */
   dollarBilled?: boolean;
+  /** The resumed session's effective thinking level, which can differ from the launch's. */
+  effort?: EffortBadgeLevel;
 }
 
 export interface AgentStatusData {
@@ -191,6 +196,13 @@ export interface SubagentResultsDetails {
   agents: InjectedAgentResult[];
 }
 
+/** `details` of a `GetSubagentResult` result that handed the model a finished invocation's result. */
+export interface SubagentResultFetchDetails {
+  agentId: string;
+  toolCallId: string;
+  status: AgentTerminalStatus;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -217,7 +229,14 @@ export function isAgentInvocationData(value: unknown): value is AgentInvocationD
   );
 }
 
-export function isAgentLaunchData(value: unknown): value is AgentLaunchData {
+/** `effort` is display-only, so a level this build does not know, such as a newer build's, is dropped instead of failing the entry. */
+function withKnownEffort<T extends object>(data: T): T {
+  if (!('effort' in data) || data.effort === undefined || isEffortBadgeLevel(data.effort)) return data;
+  const { effort: _unknown, ...rest } = data;
+  return rest as T;
+}
+
+function isAgentLaunchShape(value: unknown): value is AgentLaunchData {
   if (!isRecord(value) || !isNonEmptyString(value['agentId'])) return false;
   if (value['kind'] === 'subagent') {
     return (
@@ -243,13 +262,23 @@ export function isAgentLaunchData(value: unknown): value is AgentLaunchData {
   return false;
 }
 
-export function isAgentSegmentData(value: unknown): value is AgentSegmentData {
+/** A launch entry read from disk, or null when it is malformed. */
+export function parseAgentLaunchData(value: unknown): AgentLaunchData | null {
+  return isAgentLaunchShape(value) ? withKnownEffort(value) : null;
+}
+
+function isAgentSegmentShape(value: unknown): value is AgentSegmentData {
   return (
     isRecord(value) &&
     isNonEmptyString(value['toolCallId']) &&
     isOptional(value['message'], isString) &&
     isOptional(value['dollarBilled'], (v) => typeof v === 'boolean')
   );
+}
+
+/** A resume segment entry read from disk, or null when it is malformed. */
+export function parseAgentSegmentData(value: unknown): AgentSegmentData | null {
+  return isAgentSegmentShape(value) ? withKnownEffort(value) : null;
 }
 
 export function isAgentStatusData(value: unknown): value is AgentStatusData {
@@ -281,6 +310,15 @@ function isInjectedAgentResult(value: unknown): value is InjectedAgentResult {
   );
 }
 
+export function isSubagentResultFetchDetails(value: unknown): value is SubagentResultFetchDetails {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value['agentId']) &&
+    isNonEmptyString(value['toolCallId']) &&
+    isAgentTerminalStatus(value['status'])
+  );
+}
+
 // ---- parent-branch readers -----------------------------------------------------
 
 /** The invocation entries on a parent branch, in branch order. */
@@ -304,6 +342,28 @@ export function agentToolDetailsOnBranch(branch: readonly SessionEntry[]): Map<s
     if (typeof toolCallId === 'string' && isAgentToolDetails(message['details'])) out.set(toolCallId, message['details']);
   }
   return out;
+}
+
+/** The response text of a finished `Agent` call `toolCallId` on the branch; undefined for a launch acknowledgement or none. */
+export function agentResultTextOnBranch(branch: readonly SessionEntry[], toolCallId: string): string | undefined {
+  for (const entry of branch) {
+    if (entry.type !== 'message') continue;
+    const message: unknown = entry.message;
+    if (!isRecord(message) || message['role'] !== 'toolResult' || message['toolName'] !== TOOL_AGENT || message['toolCallId'] !== toolCallId) continue;
+    const content = message['content'];
+    const block: unknown = Array.isArray(content) ? content.find((b) => isRecord(b) && b['type'] === 'text') : undefined;
+    if (!isRecord(block) || typeof block['text'] !== 'string') return undefined;
+    // `buildAgentResultJson` wraps the response; a thrown `Agent` call's result is plain text.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(block['text']);
+    } catch {
+      return undefined;
+    }
+    const inner: unknown = isRecord(parsed) && Array.isArray(parsed['content']) ? parsed['content'][0] : undefined;
+    return isRecord(inner) && typeof inner['text'] === 'string' ? inner['text'] : undefined;
+  }
+  return undefined;
 }
 
 /** The arguments the parent's assistant passed to tool call `toolCallId`, or undefined when absent. */
@@ -340,6 +400,19 @@ export function injectedAgentResultsOnBranch(branch: readonly SessionEntry[]): M
   return out;
 }
 
+/** `GetSubagentResult` fetch markers on a parent branch, keyed by the fetched invocation's tool call id. */
+export function fetchedAgentResultsOnBranch(branch: readonly SessionEntry[]): Map<string, SubagentResultFetchDetails> {
+  const out = new Map<string, SubagentResultFetchDetails>();
+  for (const entry of branch) {
+    if (entry.type !== 'message') continue;
+    const message: unknown = entry.message;
+    if (!isRecord(message) || message['role'] !== 'toolResult' || message['toolName'] !== TOOL_GET_SUBAGENT_RESULT) continue;
+    const details = message['details'];
+    if (isSubagentResultFetchDetails(details)) out.set(details.toolCallId, details);
+  }
+  return out;
+}
+
 // ---- agent-file readers ----------------------------------------------------------
 
 /** A persisted pi message; only `role` is checked, consumers read the rest defensively. */
@@ -351,6 +424,8 @@ export interface AgentFileSegment {
   message?: string;
   /** The resume segment's billing flag; the launch segment's is the launch entry's. */
   dollarBilled?: boolean;
+  /** The resume segment's effort; the launch segment's is the launch entry's. */
+  effort?: EffortBadgeLevel;
   messages: PersistedAgentMessage[];
   /** Every billed entry of the segment, compaction and cache warms included, by pi's session-total rule. */
   usage: AgentUsageTotals;
@@ -399,15 +474,18 @@ export function parseAgentEntries(path: string, entries: readonly unknown[]): Ag
     const ts = entryTimestamp(entry);
     if (entry['type'] === 'custom') {
       const data = entry['data'];
-      if (entry['customType'] === DAMOCLES_AGENT_LAUNCH_ENTRY && !launch && isAgentLaunchData(data)) {
-        launch = data;
+      const launchData = entry['customType'] === DAMOCLES_AGENT_LAUNCH_ENTRY && !launch ? parseAgentLaunchData(data) : null;
+      const segmentData = entry['customType'] === DAMOCLES_AGENT_SEGMENT_ENTRY && current ? parseAgentSegmentData(data) : null;
+      if (launchData) {
+        launch = launchData;
         current = { toolCallId: null, messages: [], usage: emptyAgentUsage() };
         segments.push(current);
-      } else if (entry['customType'] === DAMOCLES_AGENT_SEGMENT_ENTRY && current && isAgentSegmentData(data)) {
+      } else if (segmentData) {
         current = {
-          toolCallId: data.toolCallId,
-          ...(data.message !== undefined ? { message: data.message } : {}),
-          ...(data.dollarBilled !== undefined ? { dollarBilled: data.dollarBilled } : {}),
+          toolCallId: segmentData.toolCallId,
+          ...(segmentData.message !== undefined ? { message: segmentData.message } : {}),
+          ...(segmentData.dollarBilled !== undefined ? { dollarBilled: segmentData.dollarBilled } : {}),
+          ...(segmentData.effort !== undefined ? { effort: segmentData.effort } : {}),
           messages: [],
           usage: emptyAgentUsage(),
         };
@@ -451,7 +529,7 @@ export function segmentForInvocation(file: AgentFile, invocation: Pick<AgentInvo
   return invocation.resume ? file.segments.find((s) => s.toolCallId === invocation.toolCallId) : file.segments[0];
 }
 
-/** Read a file only up to its launch entry, which pi writes before the agent's first response. */
+/** Read a file only up to its launch entry, which pi writes ahead of the agent's task prompt. */
 async function readLaunchEntry(pi: PiCodingAgentModule, path: string): Promise<AgentLaunchData | null> {
   const stream = createReadStream(path, { encoding: 'utf8' });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
@@ -461,7 +539,7 @@ async function readLaunchEntry(pi: PiCodingAgentModule, path: string): Promise<A
         const e = entry as unknown;
         if (!isRecord(e)) continue;
         if (e['type'] === 'custom' && e['customType'] === DAMOCLES_AGENT_LAUNCH_ENTRY) {
-          return isAgentLaunchData(e['data']) ? e['data'] : null;
+          return parseAgentLaunchData(e['data']);
         }
         if (e['type'] === 'message' && isRecord(e['message']) && e['message']['role'] === 'assistant') return null;
       }
@@ -483,29 +561,42 @@ async function listJsonl(dir: string): Promise<string[]> {
 }
 
 /** A file that cannot be read or holds no valid launch entry is logged and reads as null, so one bad
- *  file never hides the others in its folder. */
-async function readLaunchEntryOrSkip(pi: PiCodingAgentModule, path: string): Promise<AgentLaunchData | null> {
+ *  file never hides the others in its folder. A read failure is also reported to `onUnreadable`. */
+async function readLaunchEntryOrSkip(
+  pi: PiCodingAgentModule,
+  path: string,
+  onUnreadable?: (path: string) => void,
+): Promise<AgentLaunchData | null> {
   let launch: AgentLaunchData | null;
   try {
     launch = await readLaunchEntry(pi, path);
   } catch (err) {
     log('[agent-records] skipping agent file %s: reading it failed: %O', path, err);
+    onUnreadable?.(path);
     return null;
   }
   if (!launch) log('[agent-records] skipping agent file %s: it holds no valid launch entry', path);
   return launch;
 }
 
+export interface AgentFileIndex {
+  /** Each agent's file, keyed by its launch `agentId`. */
+  paths: Map<string, string>;
+  /** Files whose read failed, so which agent each belongs to is unknown. */
+  unreadable: string[];
+}
+
 /** Map every agent file in `dir` to its launch `agentId`. A missing dir is empty. */
-export async function indexAgentFiles(dir: string): Promise<Map<string, string>> {
+export async function indexAgentFiles(dir: string): Promise<AgentFileIndex> {
   const pi = await requirePi();
-  const out = new Map<string, string>();
+  const paths = new Map<string, string>();
+  const unreadable: string[] = [];
   for (const name of await listJsonl(dir)) {
     const path = join(dir, name);
-    const launch = await readLaunchEntryOrSkip(pi, path);
-    if (launch && !out.has(launch.agentId)) out.set(launch.agentId, path);
+    const launch = await readLaunchEntryOrSkip(pi, path, (p) => unreadable.push(p));
+    if (launch && !paths.has(launch.agentId)) paths.set(launch.agentId, path);
   }
-  return out;
+  return { paths, unreadable };
 }
 
 export interface TeamMemberFile {
@@ -592,6 +683,7 @@ export interface SubagentBranchIndex {
   invocations: AgentInvocationData[];
   toolDetails: Map<string, AgentToolDetails>;
   injected: Map<string, InjectedAgentResult>;
+  fetched: Map<string, SubagentResultFetchDetails>;
 }
 
 export function subagentBranchIndex(branch: readonly SessionEntry[]): SubagentBranchIndex {
@@ -599,7 +691,20 @@ export function subagentBranchIndex(branch: readonly SessionEntry[]): SubagentBr
     invocations: agentInvocationsOnBranch(branch).filter((inv) => inv.kind === 'subagent'),
     toolDetails: agentToolDetailsOnBranch(branch),
     injected: injectedAgentResultsOnBranch(branch),
+    fetched: fetchedAgentResultsOnBranch(branch),
   };
+}
+
+/** D(branch): the invocations whose result reached the model, by a results injection or a fetch marker. */
+export function deliveredBackgroundResults(index: SubagentBranchIndex): Set<string> {
+  return new Set([...index.injected.keys(), ...index.fetched.keys()]);
+}
+
+/** Each subagent's latest invocation on the branch, keyed by agent id. */
+export function latestSubagentInvocations(index: SubagentBranchIndex): Map<string, AgentInvocationData> {
+  const out = new Map<string, AgentInvocationData>();
+  for (const inv of index.invocations) out.set(inv.id, inv);
+  return out;
 }
 
 export interface SubagentLatestState {

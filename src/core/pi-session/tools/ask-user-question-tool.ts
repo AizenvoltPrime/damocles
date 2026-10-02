@@ -3,7 +3,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import type { QuestionAnnotations } from '../../../shared/types/permissions';
-import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
+import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { TOOL_ASK_USER_QUESTION } from '../../../shared/tool-names';
 
 const optionSchema = Type.Object({
@@ -76,7 +76,7 @@ export function createAskUserQuestionTool(pi: PiCodingAgentModule, permissionHan
       if (result.behavior === 'deny') {
         // Mirror the SDK: a cancelled question is an error tool result (pi turns the throw into an
         // isError result), so the card renders the "denied" state instead of a green "completed".
-        throw new Error(formatDenyReason(result.message));
+        throw new Error(result.policy ? formatPolicyBlockReason(result.message) : formatDenyReason(result.message));
       }
       const updated = result.updatedInput as {
         questions?: unknown;

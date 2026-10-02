@@ -297,3 +297,49 @@ describe('SubagentStreamBridge usage', () => {
     expect(usageUpdates(sent)).toEqual([]);
   });
 });
+
+describe('SubagentStreamBridge model and effort', () => {
+  const modelUpdates = (sent: ExtensionToWebviewMessage[]) =>
+    sent.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'subagentModelUpdate' }> => m.type === 'subagentModelUpdate');
+
+  it('sends the model at start, then the same model with its effort once the session exists', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    bridge.start('Haiku 4.5');
+    bridge.attach(makeFakeSession() as never, true, 'medium');
+
+    expect(modelUpdates(sent)).toEqual([
+      { type: 'subagentModelUpdate', agentToolId: 'toolu_parent', model: 'Haiku 4.5' },
+      { type: 'subagentModelUpdate', agentToolId: 'toolu_parent', model: 'Haiku 4.5', effort: 'medium' },
+    ]);
+  });
+
+  it('guards on the (model, effort) pair, so a repeat of either pair sends nothing', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    bridge.start('Haiku 4.5');
+    bridge.emitModel('Haiku 4.5');
+    bridge.attach(makeFakeSession() as never, true, 'medium');
+    bridge.emitModel('Haiku 4.5', 'medium');
+
+    expect(modelUpdates(sent)).toHaveLength(2);
+  });
+
+  it('sends no second message when the session publishes no effort', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    bridge.start('Haiku 4.5');
+    bridge.attach(makeFakeSession() as never, true, undefined);
+
+    expect(modelUpdates(sent)).toEqual([{ type: 'subagentModelUpdate', agentToolId: 'toolu_parent', model: 'Haiku 4.5' }]);
+  });
+
+  it('sends the effort of a reopened agent whose launch recorded no model label, as its reloaded card shows it', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    bridge.start(undefined);
+    bridge.attach(makeFakeSession() as never, true, 'high');
+
+    expect(modelUpdates(sent)).toEqual([{ type: 'subagentModelUpdate', agentToolId: 'toolu_parent', effort: 'high' }]);
+  });
+});

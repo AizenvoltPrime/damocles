@@ -1,6 +1,7 @@
 import * as path from 'path';
 import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
+import type { McpToolIdentity } from '../permission-handler/types';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
@@ -25,8 +26,9 @@ export function buildCanUseToolContext(
   toolCallId: string,
   signal: AbortSignal | undefined,
   parentToolUseId: string | null = null,
+  mcpTool?: McpToolIdentity,
 ): CanUseToolContext {
-  return { signal: signal ?? NEVER_ABORT, toolUseID: toolCallId, parentToolUseId };
+  return { signal: signal ?? NEVER_ABORT, toolUseID: toolCallId, parentToolUseId, ...(mcpTool ? { mcpTool } : {}) };
 }
 
 /** Environment facts for `buildSystemPrompt` on the pi path (US-007), resolved per session. */
@@ -83,10 +85,21 @@ export interface PanelGateContext {
    * absent ⇒ every `mcp__*` call routes to `canUseTool`, which is the fail-closed direction.
    */
   isMcpReadOnly?: (piToolName: string) => boolean;
+  /**
+   * The server and raw tool name behind an `mcp__…` tool, from the same descriptors as `isMcpReadOnly`,
+   * which `mcp__` settings rules match. Absent, or undefined for a name with no descriptor, leaves only a
+   * rule spelling the exact pi name able to match it.
+   */
+  mcpToolIdentity?: (piToolName: string) => McpToolIdentity | undefined;
   /** This panel's deferrable universe for `ToolSearch`; absent for subagents (no deferral). */
   deferrableTools?: () => DeferrableSnapshot;
   /** Load deferred tools into this panel's active set — synchronous, called inside `ToolSearch.execute`. */
   activateDeferredTools?: (names: string[]) => void;
+  /**
+   * Called from `before_agent_start` with the dispatching session's id. Holds the session's first prompt,
+   * bounded, while a server with Always-loaded MCP tools is still connecting; every later call returns at once.
+   */
+  waitForAlwaysLoadedMcp?: (sessionId: string) => Promise<void>;
   /**
    * The panel's turn checkpoint. A nested agent passes its parent panel's, so its file changes never
    * land before the parent turn's baseline. Absent means no checkpoints to wait for.
@@ -136,7 +149,7 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'checkpointBaseline'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline'> & {
   /**
    * Hold this caller to read-only shell commands even outside plan mode. Set for a subagent whose
    * resolved toolset contains no write tool: denying `Edit`/`Write` while handing over an unrestricted
@@ -204,15 +217,12 @@ export interface PreToolUseHookGate {
 }
 
 /**
- * The fail-closed answer for a tool call the gate cannot decide.
- * An undecided call must NOT silently grant a state-mutating tool, so anything in the write/shell
- * category — and any unknown ('other') tool that would otherwise hit the full approval flow — is
- * blocked. Read-only tools are let through: they are auto-allowed on the normal path and cannot mutate
- * state, so blocking them would only break harmless reads.
+ * The fail-closed answer for a tool call the gate cannot decide: blocked, whatever the tool. A read is
+ * not exempt, because a settings deny or ask rule may name the file it reads, and an undecided check
+ * cannot show that none does. Never terminating, so the model can re-plan.
  */
-export function gateErrorFallback(piToolName: string): ToolCallEventResult | undefined {
-  if (toolCategory(mapPiToolName(piToolName)) === 'read') return undefined;
-  return { block: true, reason: 'This tool could not be approved, so it was blocked by default for safety.' };
+export function gateErrorFallback(): ToolCallEventResult {
+  return { block: true, reason: formatPolicyBlockReason('This tool could not be approved, so it was blocked by default for safety.') };
 }
 
 /**
@@ -239,6 +249,7 @@ export async function runPermissionGate(
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
   const isMcp = damoclesName.startsWith('mcp__');
   const mcpReadOnly = isMcp && (panel.isMcpReadOnly?.(damoclesName) ?? false);
+  const mcpTool = isMcp ? panel.mcpToolIdentity?.(damoclesName) : undefined;
 
   // PreToolUse hooks run INSIDE the single gate handler, before the gate decides (Section 3.3). `allow`
   // skips the gate entirely (force-allow); `deny`/exit-2 blocks; `updatedInput` mutates `event.input` in
@@ -280,7 +291,7 @@ export async function runPermissionGate(
       // read-only-shell classifier, settings deny rules). A surviving sibling's `allow` is not evidence
       // that the down hook would have agreed.
       if (result.anyFailed && (category === 'write' || category === 'shell')) {
-        return gateErrorFallback(event.toolName);
+        return gateErrorFallback();
       }
       if (result.additionalContext) pendingContext = result.additionalContext;
       if (result.decision === 'allow') {
@@ -292,16 +303,34 @@ export async function runPermissionGate(
 
   const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
 
+  // The full approval flow: the prompt for gating tools and unknown tools, and for any call an ask rule names.
+  const askUser = async (): Promise<ToolCallEventResult | undefined> => {
+    const result = await panel.permissionHandler.canUseTool(
+      damoclesName,
+      input,
+      buildCanUseToolContext(event.toolCallId, signal, parentToolUseId, mcpTool),
+    );
+    // `interrupt` becomes pi's `terminate`, and only `buildUserDenyResult`/`buildUserFileEditDenyResult`
+    // (permission-handler/utils.ts) ever set it: the user answered the prompt and left the feedback box
+    // empty. An unexplained "no" means stop; "no, do X instead" is instruction the model must keep. Every
+    // deny the user was NOT asked about goes through `buildUnaskedDenyResult`, which cannot set it and
+    // marks it `policy`, so the model is never told the user rejected it.
+    // See docs/invariants.md ("Permissions and plan mode") for pi's per-batch terminate semantics.
+    if (result.behavior !== 'deny') return proceed();
+    if (result.policy) return { block: true, reason: formatPolicyBlockReason(result.message) };
+    return { block: true, reason: formatDenyReason(result.message), ...(result.interrupt ? { terminate: true } : {}) };
+  };
+
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
   // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
-  // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4).
-  // Web tools are NOT here — they are in `READ_ONLY_TOOLS`, so they fall through to the read branch.
+  // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4)
+  // and an ask rule prompts. Web tools are NOT here — they are in `READ_ONLY_TOOLS`, so they fall
+  // through to the read branch.
   if (GATEABLE_MODULE_NAMES.has(damoclesName)) {
-    const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
-    return evaluation === 'deny'
-      ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
-      : proceed();
+    const rule = await panel.permissionHandler.matchRule(damoclesName, input);
+    if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
+    return rule === 'ask' ? askUser() : proceed();
   }
 
   // Plan-mode defense in depth: gate any Damocles-native write/shell the read-only active set somehow let
@@ -342,12 +371,11 @@ export async function runPermissionGate(
         ? classifyReadOnlyShellCommand(shell, command)
         : { readOnly: false as const, reason: 'this shell tool is not permitted in a read-only context' };
       if (verdict.readOnly) {
-        // Auto-allow-or-block ONLY: honor a settings deny rule, but NEVER fall through to canUseTool
-        // (which prompts) for a read-only shell verdict.
-        const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
-        return evaluation === 'deny'
-          ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
-          : proceed();
+        // Auto-allow unless a settings rule names the command: never fall through to canUseTool for the
+        // read-only verdict alone, since with no rule it would prompt for every shell command.
+        const rule = await panel.permissionHandler.matchRule(damoclesName, input);
+        if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
+        return rule === 'ask' ? askUser() : proceed();
       }
       return { block: true, reason: formatPolicyBlockReason(
         planMode
@@ -357,7 +385,7 @@ export async function runPermissionGate(
     const isPlanFileEdit =
       planMode &&
       (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
-      isPlanFilePath(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');
+      panel.permissionHandler.isPlanFile(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');
     if (!isPlanFileEdit) {
       return { block: true, reason: formatPolicyBlockReason(
         planMode
@@ -366,27 +394,17 @@ export async function runPermissionGate(
     }
   }
 
-  // Read tools (incl. known extension read tools + read-only MCP tools) auto-allow — still honoring
-  // settings deny rules — without hitting the permission handler's fallback modal (FR-6).
+  // Read tools (incl. known extension read tools + read-only MCP tools) auto-allow, still honoring
+  // settings deny rules. The evaluator answers ask for them only when an ask rule names the call, and
+  // that prompts below in every mode.
   if (category === 'read' || mcpReadOnly) {
-    const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
-    return evaluation === 'deny'
-      ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
-      : proceed();
+    const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input, mcpTool);
+    if (evaluation === 'deny') {
+      return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
+    }
+    if (evaluation !== 'ask') return proceed();
   }
 
   // Gating tools (Edit/Write/Bash/PowerShell) + unknown tools: full approval flow.
-  const result = await panel.permissionHandler.canUseTool(
-    damoclesName,
-    input,
-    buildCanUseToolContext(event.toolCallId, signal, parentToolUseId),
-  );
-  // `interrupt` becomes pi's `terminate`, and only `buildUserDenyResult`/`buildUserFileEditDenyResult`
-  // (permission-handler/utils.ts) ever set it: the user answered the prompt and left the feedback box
-  // empty. An unexplained "no" means stop; "no, do X instead" is instruction the model must keep. Every
-  // deny the user was NOT asked about goes through `buildUnaskedDenyResult`, which cannot set it.
-  // See docs/invariants.md ("Permissions and plan mode") for pi's per-batch terminate semantics.
-  return result.behavior === 'deny'
-    ? { block: true, reason: formatDenyReason(result.message), ...(result.interrupt ? { terminate: true } : {}) }
-    : proceed();
+  return askUser();
 }

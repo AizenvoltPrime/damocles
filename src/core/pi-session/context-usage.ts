@@ -90,7 +90,7 @@ export function buildContextUsage(
       : null;
   const systemTools = builtinToolSections?.system;
   const deferredBuiltinTools = builtinToolSections?.deferred;
-  const mcpTools = mcpToolsSection(deps.mcpEnabled, deps.mcpClientManager, activeNames, toolsByName);
+  const mcpTools = mcpToolsSection(deps.mcpEnabled, deps.mcpClientManager, new Set(deps.eligibleToolNames), activeNames, toolsByName);
 
   const messageTokens =
     breakdown.userMessageTokens +
@@ -333,13 +333,17 @@ function agentsSection(agentRegistry: AgentRegistry | null): ContextUsageData['a
 }
 
 /**
- * Enabled MCP tools as a context section, each row costed as description + schema. `activeNames` is
+ * Enabled MCP tools as a context section, each row costed as description + schema. A tool outside the
+ * panel's eligible set (Off, listed in `damocles.tools.disabled`, or MCP switched off) can never be
+ * loaded, so it has no row: listing it as deferred would promise a cost that never arrives. An
+ * Always-loaded tool is in the active set from the first turn, so it counts as loaded. `activeNames` is
  * null when the live active-set read failed; the row then carries no `isLoaded`, because badging a tool
  * Deferred on a failed read would invent a saving that may not exist.
  */
 function mcpToolsSection(
   mcpEnabled: boolean,
   manager: McpToolSource | null,
+  eligible: ReadonlySet<string>,
   activeNames: ReadonlySet<string> | null,
   toolsByName: ReadonlyMap<string, ToolInfo> | null,
 ): ContextUsageData['mcpTools'] {
@@ -351,7 +355,7 @@ function mcpToolsSection(
     // `missingMcpRegistryNames` reports). Those tokens are ABSENT, not deferred: counting them as a
     // realizable saving promises the user a reduction that loading the tool could never deliver. The
     // `toolsByName === null` path is the registry read failing, where every row is still reported.
-    .filter((d) => !toolsByName || toolsByName.has(d.piName))
+    .filter((d) => eligible.has(d.piName) && (!toolsByName || toolsByName.has(d.piName)))
     .map((d) => ({
       name: d.piName,
       serverName: d.serverName,
@@ -376,7 +380,7 @@ function activeToolNames(session: AgentSession): Set<string> | null {
 
 /**
  * Every REGISTERED tool by name, or null when the read throws. pi builds `_toolDefinitions` from the
- * whole registry, independently of the active set (`agent-session.ts:906`), so a deferred tool has a
+ * whole registry, independently of the active set (`agent-session.ts:3459` in pi 0.99.2), so a deferred tool has a
  * real `ToolInfo` and a real cost — these sections never have to fabricate one.
  */
 function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | null {

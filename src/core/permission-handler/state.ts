@@ -50,12 +50,15 @@ export class PermissionState {
   pendingPromptRequests: Map<string, ExtensionToWebviewMessage> = new Map();
   autoApprovedSkills: Set<string> = new Set();
   autoApprovedSubagents: Set<string> = new Set();
+  /** The image model each approved GenerateImage prompt showed, by tool use id, until the tool takes it. */
+  approvedImageModels: Map<string, string> = new Map();
   postMessageToWebview: PostMessageFn | null = null;
   permissionRequiredNotifier: PermissionRequiredNotifier | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;
   workspacePath: string | null = null;
-  sessionAborting = false;
+  /** The folder the session's tools resolve relative paths against; file rules match relative to it. */
+  cwd: string | null = null;
   /** Fired on every add and every remove so a listener re-derives from the maps, never from a count. */
   onPendingChanged: (() => void) | null = null;
 
@@ -192,6 +195,7 @@ export class PermissionState {
 
     this.autoApprovedSkills.clear();
     this.autoApprovedSubagents.clear();
+    this.approvedImageModels.clear();
     this.onPendingChanged?.();
   }
 }

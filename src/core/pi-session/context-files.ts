@@ -9,14 +9,14 @@ import { folderKey } from '../workspace-folders/folder-key';
  * per-directory candidate order and the linked-worktree shadow suppression stay pi's, so project
  * discovery is unchanged. An untrusted workspace contributes no context file at all.
  *
- * Tracks pi `@earendil-works/pi-coding-agent@^0.87.0`, cited against the shipped
- * `dist/core/resource-loader.js` because npm does not publish the TypeScript sources: `:33` candidate
- * names, `:62-81` the linked-worktree shadow suppression, `:82-109` `loadProjectContextFiles` (global
- * entry first, then ancestors root-first via `unshift`), `:372-379` where `agentsFilesOverride` is
+ * Tracks pi `@earendil-works/pi-coding-agent@^0.99.2`, cited against the shipped
+ * `dist/core/resource-loader.js` because npm does not publish the TypeScript sources: `:116` candidate
+ * names, `:136-164` the linked-worktree shadow suppression, `:165-192` `loadProjectContextFiles` (global
+ * entry first, then ancestors root-first via `unshift`), `:460-469` where `agentsFilesOverride` is
  * applied, after the `noContextFiles` check. Recheck these on a pi upgrade.
  */
 
-/** pi's per-directory context-file candidates, in pi's order (`dist/core/resource-loader.js:33`). */
+/** pi's per-directory context-file candidates, in pi's order (`dist/core/resource-loader.js:116`). */
 export const CONTEXT_FILE_CANDIDATES: readonly string[] = [
   'AGENTS.override.md',
   'AGENTS.md',

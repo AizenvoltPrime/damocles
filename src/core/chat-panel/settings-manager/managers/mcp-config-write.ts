@@ -1,13 +1,23 @@
-import type { McpServerConfig, McpServerSource, McpWriteErrorCode, McpWriteErrorInfo } from "../../../../shared/types/mcp";
+import { basename, dirname, resolve } from "path";
+import { existsSync, promises as fs } from "fs";
+import {
+  mcpServerNamespaceKey,
+  type McpServerConfig,
+  type McpServerSource,
+  type McpWriteErrorCode,
+  type McpWriteErrorInfo,
+} from "../../../../shared/types/mcp";
 import { DAMOCLES_MCP_CONFIG_PATH } from "./mcp-config-import";
 import { JsonConfigWriteError, writeJsonConfig } from "../../../config/json-config-write";
 import { assertValidMcpServerConfig, assertValidMcpServerName } from "./mcp-config-validate";
 import { log } from "../../../logger";
 
 /**
- * The write side of `~/.damocles/mcp.json` — the ONLY MCP file Damocles ever writes. The workspace
- * `.mcp.json` belongs to the project and `~/.claude*` / `~/.codex/config.toml` belong to other tools;
- * all three are read-only imports (`mcp-config-import.ts`) and nothing here may touch them.
+ * The write side of `~/.damocles/mcp.json`, the only MCP file the form writes, plus the one-time value
+ * migration of the two Damocles-owned MCP files (`migrateOwnedMcpFile`). The workspace `.mcp.json`
+ * belongs to the project, `.pi/mcp.json` and `~/.pi/agent/mcp.json` to pi, and `~/.claude*` /
+ * `~/.codex/config.toml` to other tools; all are read-only imports (`mcp-config-import.ts`) and nothing
+ * here may touch them.
  *
  * Deliberately a sibling of `mcp-config-import.ts` rather than part of it: that module is scoped by
  * name and header comment to read-only import, and coupling it to the settings write queue would make
@@ -132,24 +142,33 @@ const FILE_BY_SOURCE: Record<McpServerSource, string> = {
   claude: "~/.claude.json",
   "claude-local": "~/.claude.json",
   codex: "~/.codex/config.toml",
+  pi: "~/.pi/agent/mcp.json",
+  "pi-project": ".pi/mcp.json",
 };
 
 /**
  * Names defined by a source that outranks `~/.damocles/mcp.json` at merge time, so writing one of them
  * would succeed on disk and then be invisible in the panel. Rejecting is the honest outcome; silently
- * writing a server the user cannot see is not.
+ * writing a server the user cannot see is not. `shadowingNames` is keyed by `mcpServerNamespaceKey`,
+ * because names sharing a namespace key are one server.
  *
- * Names owned by `claude`/`claude-local`/`codex` are deliberately NOT in scope: `damocles` outranks all
- * three, so overriding an imported server is the intended path and the entry is visibly re-tagged
- * `damocles`.
+ * Names owned by lower-ranked sources (`claude`, `claude-local`, `codex`, `pi`, `pi-project`) are
+ * deliberately NOT in scope: `damocles` outranks them, so overriding an imported server is the intended
+ * path and the entry is visibly re-tagged `damocles`.
  */
 function assertNotShadowed(name: string, shadowingNames: ReadonlyMap<string, McpServerSource>): void {
-  const source = shadowingNames.get(name);
+  const source = shadowingNames.get(mcpServerNamespaceKey(name));
   if (source === undefined) return;
   const file = FILE_BY_SOURCE[source];
   // Names only. A config value, an `env` map or a `headers` map must never reach `params`; it is
   // translated into the panel and logged.
   throw new McpWriteError("nameShadowed", `"${name}" is already defined by ${file}, which takes precedence, so the server would never be used`, { name, file });
+}
+
+/** The key in `servers`, other than `except`, that shares `name`'s namespace key; such names are one server. */
+function namespaceTwin(servers: Record<string, McpServerConfig>, name: string, except?: string): string | undefined {
+  const key = mcpServerNamespaceKey(name);
+  return Object.keys(servers).find((existing) => existing !== except && mcpServerNamespaceKey(existing) === key);
 }
 
 export async function addDamoclesMcpServer(
@@ -161,7 +180,8 @@ export async function addDamoclesMcpServer(
   assertNotShadowed(name, shadowingNames);
 
   await writeDamoclesMcpServers(servers => {
-    if (Object.hasOwn(servers, name)) throw new McpWriteError("nameExists", `"${name}" already exists in ~/.damocles/mcp.json`, { name });
+    const existing = namespaceTwin(servers, name);
+    if (existing !== undefined) throw new McpWriteError("nameExists", `"${existing}" already exists in ~/.damocles/mcp.json`, { name: existing });
     servers[name] = config;
   });
 }
@@ -194,8 +214,9 @@ export async function updateDamoclesMcpServer(
     // The backstop behind the panel's `readonly` gate: Damocles can only mutate what it owns, so an
     // imported or workspace server can never be edited through this path even if the UI let it try.
     if (!Object.hasOwn(servers, name)) throw new McpWriteError("nameMissing", `"${name}" is not defined in ~/.damocles/mcp.json, so Damocles cannot edit it`, { name });
-    if (targetName !== name && Object.hasOwn(servers, targetName)) {
-      throw new McpWriteError("nameExists", `"${targetName}" already exists in ~/.damocles/mcp.json`, { name: targetName });
+    const existing = targetName === name ? undefined : namespaceTwin(servers, targetName, name);
+    if (existing !== undefined) {
+      throw new McpWriteError("nameExists", `"${existing}" already exists in ~/.damocles/mcp.json`, { name: existing });
     }
     // Only a rename removes a key. An in-place edit assigns over the existing one, which keeps the
     // server where the user put it in the file instead of migrating it to the bottom on every save.
@@ -214,4 +235,111 @@ export async function deleteDamoclesMcpServer(name: string): Promise<void> {
     if (!Object.hasOwn(servers, name)) throw new McpWriteError("nameMissing", `"${name}" is not defined in ~/.damocles/mcp.json, so Damocles cannot remove it`, { name });
     delete servers[name];
   });
+}
+
+/** The mutation found nothing to migrate, so the write is abandoned with the file untouched. */
+class NothingToMigrate extends Error {}
+
+/** The legacy environment reference `interpolateEnvVars` expands; pi's format reads `$env` as a variable named `env`. */
+const LEGACY_ENV_REFERENCE = /\$env:(\w+)/g;
+
+/** Rewrite `$env:NAME` to `${NAME}` in `owner[key]` when it is a string; returns whether it changed. */
+function migrateValueAt(owner: Record<string, unknown>, key: string): boolean {
+  const value = owner[key];
+  if (typeof value !== "string") return false;
+  const next = value.replace(LEGACY_ENV_REFERENCE, "${$1}");
+  if (next === value) return false;
+  owner[key] = next;
+  return true;
+}
+
+/** Rewrite every string value of a plain object; returns whether any changed. */
+function migrateValueRecord(record: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const key of Object.keys(record)) {
+    if (migrateValueAt(record, key)) changed = true;
+  }
+  return changed;
+}
+
+function migrateServerEntry(server: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const key of ["env", "headers"] as const) {
+    const record = server[key];
+    if (isPlainObject(record) && migrateValueRecord(record)) changed = true;
+  }
+  if (migrateValueAt(server, "bearerToken")) changed = true;
+  const oauth = server["oauth"];
+  if (!isPlainObject(oauth)) return changed;
+  if (migrateValueAt(oauth, "clientSecret")) changed = true;
+  if (!Object.hasOwn(oauth, "redirectUri")) return changed;
+  // The key keeps its position; a callbackUrl already present wins over the old field.
+  server["oauth"] = Object.hasOwn(oauth, "callbackUrl")
+    ? Object.fromEntries(Object.entries(oauth).filter(([key]) => key !== "redirectUri"))
+    : Object.fromEntries(Object.entries(oauth).map(([key, value]) => [key === "redirectUri" ? "callbackUrl" : key, value]));
+  return true;
+}
+
+/** The migrated file text, or undefined when the file is missing, unusable (the read path reports it) or already migrated. */
+function migratedText(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  let root: unknown;
+  try {
+    root = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!isPlainObject(root) || !isPlainObject(root["mcpServers"])) return undefined;
+  let changed = false;
+  for (const server of Object.values(root["mcpServers"])) {
+    if (isPlainObject(server) && migrateServerEntry(server)) changed = true;
+  }
+  return changed ? `${JSON.stringify(root, null, 2)}\n` : undefined;
+}
+
+/** The two files Damocles owns that hold MCP servers; the folder one is written only inside its `.damocles` dir. */
+function ownedMcpFile(path: string): { label: string; confineTo?: string } {
+  const resolved = resolve(path);
+  if (resolved === resolve(DAMOCLES_MCP_CONFIG_PATH)) return { label: "~/.damocles/mcp.json" };
+  if (basename(resolved) === "mcp.local.json" && basename(dirname(resolved)) === ".damocles") {
+    return { label: ".damocles/mcp.local.json", confineTo: dirname(resolved) };
+  }
+  throw new Error("migrateOwnedMcpFile only migrates ~/.damocles/mcp.json and <folder>/.damocles/mcp.local.json");
+}
+
+/**
+ * One-time move of a Damocles-owned MCP file to pi's value format: `$env:NAME` becomes `${NAME}` in
+ * `env`, `headers`, `bearerToken` and `oauth.clientSecret`, and `oauth.redirectUri` becomes
+ * `oauth.callbackUrl`. Idempotent, and run inside the file's write critical section. Returns whether
+ * the file was rewritten; a missing or unparseable file is left alone for the read path to report.
+ */
+export async function migrateOwnedMcpFile(path: string): Promise<boolean> {
+  const { label, confineTo } = ownedMcpFile(path);
+  if (!existsSync(path)) return false;
+  // A lock-free look first: taking the lock on every load would wait out a crashed writer's stale lock.
+  let text: string;
+  try {
+    text = await fs.readFile(path, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return false;
+    throw new McpWriteError("fileUnreadable", `${label} could not be read (${code ?? "unknown error"})`);
+  }
+  if (migratedText(text) === undefined) return false;
+  try {
+    await writeJsonConfig(path, (text) => {
+      const next = migratedText(text);
+      if (next === undefined) throw new NothingToMigrate();
+      return next;
+    }, { fileMode: 0o600, ...(confineTo !== undefined ? { confineTo } : {}) });
+  } catch (err) {
+    if (err instanceof NothingToMigrate) return false;
+    if (!(err instanceof JsonConfigWriteError)) throw err;
+    if (err.stage === "read") {
+      throw new McpWriteError("fileUnreadable", `${label} could not be read (${err.code ?? "unknown error"})`);
+    }
+    throw new McpWriteError("writeFailed", `${label} could not be written (${err.code ?? "unknown error"})`);
+  }
+  log("[McpConfigWrite] Migrated %s to pi's value format", label);
+  return true;
 }

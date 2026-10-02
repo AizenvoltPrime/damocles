@@ -1,10 +1,26 @@
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
-import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
 import { parseCacheWarmingMode } from "../../../../shared/types/constants";
 import { McpWriteError } from "../../settings-manager/managers/mcp-config-write";
+import { MCP_TOOL_EXPOSURE_SETTING, type McpToolExposureScope } from "../../../../shared/types/mcp";
+import { isToolExposureSetting, resolveToolExposure, toolExposureLayers, toolExposureMapForScope } from "../../../pi-session/mcp/exposure";
+import {
+  deleteOpenrouterApiKey,
+  deleteTypesafeApiKey,
+  openrouterAuthStatus,
+  storeOpenrouterApiKey,
+  storeTypesafeApiKey,
+  typesafeAuthStatus,
+} from "../../settings-manager/managers/explore-manager";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
+
+const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
+
+function exposureScopeLabel(scope: McpToolExposureScope): string {
+  return scope === "user" ? t("User") : scope === "project" ? t("Project") : t("Local");
+}
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, settingsManager, getPanels, platform } = deps;
@@ -26,6 +42,23 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     }
   }
 
+  /** The OpenRouter key is also the Explore key when Explore uses OpenRouter, and it decides image generation. */
+  async function broadcastOpenrouterStatus(): Promise<void> {
+    broadcast(await openrouterAuthStatus(platform));
+    if (settingsManager.selectedExploreProvider() === "openrouter") {
+      for (const [, instance] of getPanels()) await settingsManager.sendExploreKeyStatus(instance.host);
+    }
+    broadcastImageGenerationState();
+  }
+
+  /** The image settings and OpenRouter auth are process-wide, so every panel's section and Tools panel change together. */
+  function broadcastImageGenerationState(): void {
+    for (const [, instance] of getPanels()) {
+      settingsManager.sendImageGenerationSettings(instance.host);
+      postMessage(instance.host, { type: "toolStatus", data: instance.session.getToolStatus() });
+    }
+  }
+
   /**
    * Feed every panel its own folder's MCP scope. Every panel, not the acting one: a user-scope toggle,
    * a write or the master switch changes every folder's scope, and each folder has its own client.
@@ -33,6 +66,40 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
   function feedMcpScopes(): void {
     for (const [, instance] of getPanels()) {
       instance.session.setMcpServers(settingsManager.getEnabledMcpServers(instance.folder.key));
+    }
+  }
+
+  /** Each write reads its scope's map only after the previous write landed, so quick changes never overwrite each other. */
+  let toolExposureWrites: Promise<void> = Promise.resolve();
+
+  async function writeToolExposure(
+    msg: Extract<WebviewToExtensionMessage, { type: "mcpSetToolExposure" }>,
+    ctx: HandlerContext,
+  ): Promise<void> {
+    if (!isToolExposureSetting(msg.exposure) || !EXPOSURE_SCOPES.includes(msg.scope)) throw new Error(t("Invalid MCP tool setting."));
+    if (!settingsManager.getMcpToolExposureScopes(ctx.folder.key).includes(msg.scope)) {
+      throw new Error(t("This folder cannot save MCP tool settings at the {0} scope.", exposureScopeLabel(msg.scope)));
+    }
+    const server = (await ctx.session.getMcpServerStatus()).find((status) => status.name === msg.serverName);
+    const tool = server?.tools?.find((candidate) => candidate.name === msg.toolName);
+    if (!tool) throw new Error(t('MCP server "{0}" has no tool "{1}".', msg.serverName, msg.toolName));
+    const inspection = platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
+    const layers = toolExposureLayers(inspection, platform.trust.isTrusted(ctx.folder.fsPath));
+    const index = layers.findIndex((layer) => layer.scope === msg.scope);
+    const current = msg.scope === "user" ? inspection.userValue : msg.scope === "project" ? inspection.projectValue : inspection.localValue;
+    const next = toolExposureMapForScope(current, layers.slice(0, index), msg.serverName, msg.toolName, msg.exposure, tool.configExposure ?? "deferred");
+    await platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, next, msg.scope);
+    const above = resolveToolExposure(layers.slice(index + 1), msg.serverName, msg.toolName, msg.exposure);
+    if (above.source !== "config" && above.exposure !== msg.exposure) {
+      postMessage(ctx.host, {
+        type: "notification",
+        notificationType: "info",
+        message: t(
+          "Saved at the {0} scope, but this tool's {1} setting takes precedence, so it did not change. Save to {1} to change it.",
+          exposureScopeLabel(msg.scope),
+          exposureScopeLabel(above.source),
+        ),
+      });
     }
   }
 
@@ -472,6 +539,31 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    /**
+     * One tool's Off / On / Always loaded choice, saved at the chosen scope. Only that scope's map is
+     * read (from `inspect()`) and written back; a choice equal to what the scopes below and the config
+     * already give removes the entry instead. The runtime's listener on the setting re-applies every
+     * panel's tools, and the change is declared from each session's next turn.
+     */
+    mcpSetToolExposure: async (msg, ctx) => {
+      if (msg.type !== "mcpSetToolExposure") return;
+      const write = toolExposureWrites.then(() => writeToolExposure(msg, ctx));
+      // The chain only orders writes; this handler reports the failure.
+      toolExposureWrites = write.catch(() => undefined);
+      try {
+        await write;
+      } catch (err) {
+        log("[MessageRouter] Error setting MCP tool exposure:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: t("Failed to save MCP tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      // The setting listener updates every panel on a change; a failed or unchanged write fires none, so the requester gets the outcome here.
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
+    },
+
     requestSupportedCommands: async (_msg, ctx) => {
       await settingsManager.sendSupportedCommands(ctx.session, ctx.host);
     },
@@ -505,11 +597,46 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           notificationType: "error",
         });
       }
-      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      if (msg.group === "image") broadcastImageGenerationState();
+      else postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
 
     requestToolStatus: (_msg, ctx) => {
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+    },
+
+    setImageGenerationEnabled: async (msg, ctx) => {
+      if (msg.type !== "setImageGenerationEnabled") return;
+      try {
+        await settingsManager.setImageGenerationEnabled(msg.enabled);
+      } catch (err) {
+        log("[MessageRouter] Error setting image generation:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: t("Failed to save image generation setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      broadcastImageGenerationState();
+    },
+
+    setImageGenerationModel: async (msg, ctx) => {
+      if (msg.type !== "setImageGenerationModel") return;
+      try {
+        await settingsManager.setImageGenerationModel(msg.model);
+      } catch (err) {
+        log("[MessageRouter] Error setting image generation model:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: t("Failed to save image generation setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      broadcastImageGenerationState();
+    },
+
+    requestImageGenerationSettings: (_msg, ctx) => {
+      settingsManager.sendImageGenerationSettings(ctx.host);
     },
 
     setProjectTrusted: async (_msg, ctx) => {
@@ -533,15 +660,19 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (settingsManager.selectedExploreProvider() === "stepfun") {
         broadcast({ type: "stepfunAuthStatusChanged", configured: msg.apiKey.trim().length > 0 });
       }
+      if (settingsManager.selectedExploreProvider() === "openrouter") broadcast(await openrouterAuthStatus(platform));
+      broadcastImageGenerationState();
     },
 
     deleteExploreApiKey: async (_msg, ctx) => {
-      const wasStepfun = settingsManager.selectedExploreProvider() === "stepfun";
+      const deleted = settingsManager.selectedExploreProvider();
       await settingsManager.deleteExploreApiKey();
       await settingsManager.sendExploreKeyStatus(ctx.host);
-      if (wasStepfun) {
+      if (deleted === "stepfun") {
         broadcast({ type: "stepfunAuthStatusChanged", configured: false });
       }
+      if (deleted === "openrouter") broadcast(await openrouterAuthStatus(platform));
+      broadcastImageGenerationState();
     },
 
     requestExploreKeyStatus: async (_msg, ctx) => {
@@ -575,7 +706,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setStepfunApiKey") return;
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: "API key cannot be empty" });
+        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
         return;
       }
       try {
@@ -596,7 +727,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await broadcastStepfunStatus();
       } catch (err) {
         log("[SettingsHandlers] Failed to clear StepFun key:", err);
-        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to clear API key" });
+        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
       }
     },
 
@@ -608,7 +739,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setDeepseekApiKey") return;
       const key = msg.key.trim();
       if (!key) {
-        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: "API key cannot be empty" });
+        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
         return;
       }
       try {
@@ -629,12 +760,78 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         broadcast({ type: "deepseekAuthStatusChanged", configured: false });
       } catch (err) {
         log("[SettingsHandlers] Failed to clear DeepSeek key:", err);
-        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to clear API key" });
+        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
       }
     },
 
     getDeepseekAuthStatus: async (_msg, ctx) => {
       await settingsManager.sendDeepseekAuthStatus(ctx.host);
+    },
+
+    setTypesafeApiKey: async (msg, ctx) => {
+      if (msg.type !== "setTypesafeApiKey") return;
+      const key = msg.key.trim();
+      if (!key) {
+        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
+        return;
+      }
+      try {
+        await storeTypesafeApiKey(platform, key);
+        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: true });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to store TypeSafe key:", err);
+        postMessage(ctx.host, { type: "setTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
+      }
+    },
+
+    clearTypesafeApiKey: async (msg, ctx) => {
+      if (msg.type !== "clearTypesafeApiKey") return;
+      try {
+        await deleteTypesafeApiKey(platform);
+        postMessage(ctx.host, { type: "clearTypesafeApiKeyAck", requestId: msg.requestId, ok: true });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to clear TypeSafe key:", err);
+        postMessage(ctx.host, { type: "clearTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
+      }
+    },
+
+    getTypesafeAuthStatus: async (_msg, ctx) => {
+      postMessage(ctx.host, await typesafeAuthStatus(platform));
+    },
+
+    setOpenrouterApiKey: async (msg, ctx) => {
+      if (msg.type !== "setOpenrouterApiKey") return;
+      const key = msg.key.trim();
+      if (!key) {
+        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: t("API key cannot be empty") });
+        return;
+      }
+      try {
+        await storeOpenrouterApiKey(platform, key);
+        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: true });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to store OpenRouter key:", err);
+        postMessage(ctx.host, { type: "setOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
+        return;
+      }
+      await broadcastOpenrouterStatus();
+    },
+
+    clearOpenrouterApiKey: async (msg, ctx) => {
+      if (msg.type !== "clearOpenrouterApiKey") return;
+      try {
+        await deleteOpenrouterApiKey(platform);
+        postMessage(ctx.host, { type: "clearOpenrouterApiKeyAck", requestId: msg.requestId, ok: true });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to clear OpenRouter key:", err);
+        postMessage(ctx.host, { type: "clearOpenrouterApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
+        return;
+      }
+      await broadcastOpenrouterStatus();
+    },
+
+    getOpenrouterAuthStatus: async (_msg, ctx) => {
+      postMessage(ctx.host, await openrouterAuthStatus(platform));
     },
 
   };

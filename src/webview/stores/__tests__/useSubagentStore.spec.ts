@@ -143,6 +143,53 @@ describe('useSubagentStore.restoreSubagentFromHistory', () => {
   });
 });
 
+describe('useSubagentStore effort', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('shows the same model and effort live and after a reload', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('toolu_live', { subagent_type: 'Explore', description: 'find' });
+    // The bridge sends the model at spawn, then the pair once the session exists.
+    store.updateSubagentModel('toolu_live', 'Haiku 4.5');
+    expect(defined(store.subagents['toolu_live'], 'live').effort).toBeUndefined();
+    store.updateSubagentModel('toolu_live', 'Haiku 4.5', 'medium');
+
+    store.restoreSubagentFromHistory({
+      id: 'toolu_reload',
+      name: 'Agent',
+      input: { subagent_type: 'Explore', description: 'find', prompt: 'p' },
+      agentStatus: 'completed',
+      agentModel: 'Haiku 4.5',
+      agentEffort: 'medium',
+    });
+
+    const live = defined(store.subagents['toolu_live'], 'live');
+    const reloaded = defined(store.subagents['toolu_reload'], 'reloaded');
+    expect([live.model, live.effort]).toEqual(['Haiku 4.5', 'medium']);
+    expect([reloaded.model, reloaded.effort]).toEqual([live.model, live.effort]);
+  });
+
+  it('takes an effort that arrives with no model label and keeps the model the card already shows', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('toolu_bare', { subagent_type: 'Explore', description: 'find' });
+    store.updateSubagentModel('toolu_bare', undefined, 'high');
+    expect(defined(store.subagents['toolu_bare'], 'bare').effort).toBe('high');
+    expect(defined(store.subagents['toolu_bare'], 'bare').model).toBeUndefined();
+
+    store.registerAgentTool('toolu_named', { subagent_type: 'Explore', description: 'find' });
+    store.updateSubagentModel('toolu_named', 'Haiku 4.5');
+    store.updateSubagentModel('toolu_named', undefined, 'low');
+    const named = defined(store.subagents['toolu_named'], 'named');
+    expect([named.model, named.effort]).toEqual(['Haiku 4.5', 'low']);
+  });
+
+  it('restores no effort from a record that predates it', () => {
+    const store = useSubagentStore();
+    store.restoreSubagentFromHistory({ id: 'toolu_old', name: 'Agent', input: { subagent_type: 'Explore', description: 'd', prompt: 'p' }, agentModel: 'Haiku 4.5' });
+    expect(defined(store.subagents['toolu_old'], 'old')).not.toHaveProperty('effort');
+  });
+});
+
 describe('useSubagentStore nested tool status', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

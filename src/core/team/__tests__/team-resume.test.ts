@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, beforeAll, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -15,11 +15,12 @@ vi.mock('../../paths', async () => {
 import { DAMOCLES_HOME_DIR } from '../../paths';
 import { TeamRunner } from '../team-runner';
 import { TeamPersistence } from '../persistence';
+import type { CoverageView, ReviewCoverage } from '../review-coverage';
 import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession, type FakeOpeningTotals } from './fake-session';
 import { teamAgentToolset } from './team-mcp-fixture';
-import type { AgentMcpContext, TeamAgent, TeamCheckpoint, TeamConfig, TeamRole } from '../types';
+import type { AgentMcpContext, AgentResult, AgentRunConfig, TeamAgent, TeamCheckpoint, TeamConfig, TeamEventLog, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ImageBlock } from '../../../shared/types/content';
 import { buildResumePrompt, wrapSteerMessage } from '../../../shared/steer';
@@ -52,6 +53,8 @@ interface Harness {
   opened: Opened[];
   forgotten: FakeSession[];
   scopes: Map<string, string[]>;
+  /** The `kind` each launch's toolset was built for, per member. */
+  kinds: Map<string, Array<string | undefined>>;
   webview: ExtensionToWebviewMessage[];
   costs: number[];
   agent: (name: string) => TeamAgent;
@@ -80,6 +83,7 @@ function makeTeam(opts: {
   const opened: Opened[] = [];
   const forgotten: FakeSession[] = [];
   const scopes = new Map<string, string[]>();
+  const kinds = new Map<string, Array<string | undefined>>();
   const webview: ExtensionToWebviewMessage[] = [];
   const costs: number[] = [];
   const h = {} as Harness;
@@ -112,6 +116,7 @@ function makeTeam(opts: {
       forgetSession: (s: FakeSession) => { forgotten.push(s); },
       buildAgentToolset: (ctx: AgentMcpContext) => {
         scopes.set(ctx.agentName, [...(scopes.get(ctx.agentName) ?? []), ctx.browserScopeId]);
+        kinds.set(ctx.agentName, [...(kinds.get(ctx.agentName) ?? []), ctx.kind]);
         return teamAgentToolset();
       },
       buildExtensionFactory: () => (() => undefined) as never,
@@ -124,7 +129,7 @@ function makeTeam(opts: {
   const runner = new TeamRunner(config, (m) => webview.push(m));
   const priv = runner as unknown as { agents: Map<string, TeamAgent>; scratchpad: Scratchpad; messageBus: MessageBus };
   Object.assign(h, {
-    runner, teamId: opts.teamId, cwd: opts.cwd, opened, forgotten, scopes, webview, costs,
+    runner, teamId: opts.teamId, cwd: opts.cwd, opened, forgotten, scopes, kinds, webview, costs,
     agent: (name: string) => priv.agents.get(name)!,
     session: (name: string) => {
       const found = opened.filter((o) => o.name === name).at(-1);
@@ -181,7 +186,7 @@ async function interruptedTeam(cwd: string, teamId: string): Promise<{ h: Harnes
       Lead: (_t, s, hh) => {
         if (s.prompts.length === 1) {
           hh.runner.startSpecialist('A', 'task for A, described in full');
-          hh.runner.startSpecialist('B', 'task for B, described in full');
+          hh.runner.startSpecialist('B', 'task for B, described in full', undefined, 'reviewer', []);
           hh.runner.startSpecialist('C', 'task for C, described in full');
         }
         s.emit({ type: 'turn_end' });
@@ -669,6 +674,9 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
       expect(after.agent(name).attempt).toBe(0);
       expect(after.scopes.get(name)).toEqual([`${after.agent(name).agentId}#0.1`]);
     }
+    // The spawn entry's kind survives the resume, so a relaunched reviewer keeps its read-only toolset.
+    expect(after.kinds.get('B')).toEqual(['reviewer']);
+    expect(after.kinds.get('A')).toEqual(['implementor']);
     const resumedEntries = logEntries(after).filter((e) => e['type'] === 'agent-resumed');
     expect(Object.fromEntries(resumedEntries.map((e) => [e['name'], [e['mode'], e['status'], e['attempt'], e['resumeCount']]]))).toEqual({
       Lead: ['relaunch', 'running', 0, 1],
@@ -1000,5 +1008,370 @@ describe('TeamRunner.resume restarts a lead that has no session file', () => {
     const { task, prompt } = await leadRestart(undefined);
 
     expect(prompt).toBe(task);
+  });
+});
+
+describe('TeamRunner.resume active time', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('excludes the time the team was stopped, keeps counting a parked member, and reads the same live, in getTeamStatus and after a reload', async () => {
+    // Only Date is faked: the runner drives itself on microtasks and real timers. vi.waitFor advances the
+    // fake clock while it polls, so each stopwatch is checked against the spawn time it recorded.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const T = Date.parse('2026-10-01T15:00:00.000Z');
+    const minutes = (n: number): number => T + n * 60_000;
+    vi.setSystemTime(T);
+    const cwd = newCwd('stopwatch');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({
+      cwd, teamId, specialists: ['A'],
+      behave: {
+        Lead: (_t, s, hh) => { if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full'); },
+        A: (_t, s, hh) => { hh.runner.reportComplete('A', 'A signed off'); s.emit({ type: 'turn_end' }); },
+      },
+    });
+    const run = h.runner.run();
+    await status(h, 'A', 'awaiting-review');
+    const firstRun = new Map(['Lead', 'A'].map((n) => [n, minutes(10) - h.agent(n).runningSince!]));
+    expect(firstRun.get('Lead')).toBe(600_000);
+    vi.setSystemTime(minutes(10));
+    h.runner.cancel();
+    await run;
+    for (const name of ['Lead', 'A']) expect(h.agent(name)).toMatchObject({ activeMs: firstRun.get(name), runningSince: null });
+
+    vi.setSystemTime(minutes(89));
+    const persistence = persistenceOf(h);
+    const after = makeTeam({ cwd, teamId, specialists: ['A'], behave: { Lead: holdTurn } });
+    const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
+    after.runner.restore(await persistence.readEventLog(teamId), (await checkpointOf(persistence, teamId))!, files);
+    const done = after.runner.resume('tc-resume');
+    await opened(after, 'A');
+    await (await opened(after, 'Lead')).whenPrompted(1);
+
+    const started = after.webview.find((m) => m.type === 'teamStarted');
+    const startedLead = started?.type === 'teamStarted' ? started.team.agents.find((a) => a.name === 'Lead') : undefined;
+    expect(startedLead).toMatchObject({ activeMs: 600_000, runningSince: minutes(89) });
+    expect(after.agent('A')).toMatchObject({ status: 'awaiting-review', activeMs: firstRun.get('A'), runningSince: minutes(89) });
+
+    vi.setSystemTime(minutes(90));
+    const durations = (after.runner.getTeamStatus()['agents'] as Array<{ name: string; durationSec: number }>).map((a) => [a.name, a.durationSec]);
+    expect(durations).toEqual([['Lead', 660], ['A', 660]]);
+
+    vi.setSystemTime(minutes(95));
+    after.runner.cancel();
+    await done;
+    const reloaded = await persistenceOf(after).loadTeamState(teamId);
+    for (const name of ['Lead', 'A']) {
+      const live = after.agent(name);
+      const stopwatch = { activeMs: firstRun.get(name)! + 360_000, runningSince: null };
+      expect(live).toMatchObject(stopwatch);
+      const settled = after.webview.filter((m) => m.type === 'teamAgentStatusUpdate' && m.agentId === live.agentId && m.stopwatch).at(-1);
+      expect(settled?.type === 'teamAgentStatusUpdate' && settled.stopwatch).toEqual(stopwatch);
+      expect(reloaded!.agents.find((a) => a.name === name)).toMatchObject(stopwatch);
+    }
+  });
+});
+
+describe('TeamRunner.resume keeps review coverage', () => {
+  const RRR = '[REVIEW ROUND READY]';
+  const REASON = 'the finding is a style nit outside the brief';
+
+  it('keeps the pairs, stamps, verdicts and dismissals across a cancel and resume', async () => {
+    const cwd = newCwd('coverage');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({
+      cwd, teamId, specialists: ['backend', 'appsec'],
+      behave: {
+        Lead: (text, s, hh) => {
+          if (s.prompts.length === 1) {
+            hh.runner.startSpecialist('backend', 'implement the backend in full');
+          } else if (text.includes(RRR) && hh.agent('appsec').status === 'pending') {
+            hh.scratchpad().markRead('Lead', 'backend-api');
+            hh.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+          } else if (text.includes('CHANGES REQUESTED')) {
+            hh.runner.dismissReview('appsec', 'backend', REASON);
+            return;
+          }
+          s.emit({ type: 'turn_end' });
+        },
+        backend: (_t, s, hh) => {
+          hh.scratchpad().set('backend-api', 'the api', 'backend');
+          hh.runner.reportComplete('backend', 'backend delivered and verified');
+          s.emit({ type: 'turn_end' });
+        },
+        appsec: (_t, s, hh) => {
+          hh.scratchpad().markRead('appsec', 'backend-api');
+          hh.runner.reportComplete('appsec', 'reviewed backend in full', [{ implementor: 'backend', verdict: 'changes_requested' }]);
+          s.emit({ type: 'turn_end' });
+        },
+      },
+    });
+    const run = h.runner.run();
+    await vi.waitFor(() => expect(logEntries(h).some((e) => e['type'] === 'review-dismissed')).toBe(true));
+    h.runner.cancel();
+    const result = await run;
+    expect(result.text).toMatch(/^REVIEW DISMISSALS \(recorded by the system\)/);
+
+    const persistence = persistenceOf(h);
+    const checkpoint = (await checkpointOf(persistence, teamId))!;
+    expect(checkpoint.review.coverage).toEqual({
+      landed: [['backend', { attempt: 0, round: 0 }]],
+      signoffs: [['appsec', [['backend', { stamp: { attempt: 0, round: 0 }, verdict: 'changes_requested' }]]]],
+      dismissals: [['appsec', [['backend', { stamp: { attempt: 0, round: 0 }, reason: REASON, why: 'appsec requested changes on it' }]]]],
+      reReviewOwed: [],
+    });
+
+    const files = new Map(['Lead', 'backend', 'appsec'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
+    const after = makeTeam({ cwd, teamId, specialists: ['backend', 'appsec'], behave: { Lead: holdTurn } });
+    after.runner.restore(await persistence.readEventLog(teamId), checkpoint, files);
+    const coverage = (after.runner as unknown as { coverage: ReviewCoverage }).coverage;
+    expect(coverage.reviewsOf('appsec')).toEqual(['backend']);
+    expect(coverage.serialize()).toEqual(checkpoint.review.coverage);
+    expect(coverage.isSatisfied('appsec', 'backend', (after.runner as unknown as { coverageView: CoverageView }).coverageView)).toBe(true);
+    expect(after.runner.getUnsatisfiedReviews()).toEqual([]);
+
+    const done = after.runner.resume('tc-resume');
+    after.runner.approveSpecialist('backend');
+    expect(after.agent('backend').status).toBe('completed');
+    after.runner.cancel();
+    await done;
+  });
+
+  it('a team whose log declares no pairs restores with no coverage rule', async () => {
+    const cwd = newCwd('no-pairs');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({
+      cwd, teamId, specialists: ['A'],
+      behave: {
+        Lead: (text, s, hh) => {
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+        },
+        A: (_t, s, hh) => {
+          hh.runner.reportComplete('A', 'A signed off');
+          s.emit({ type: 'turn_end' });
+        },
+      },
+    });
+    const run = h.runner.run();
+    const lead = await opened(h, 'Lead');
+    await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
+    h.runner.cancel();
+    await run;
+    const persistence = persistenceOf(h);
+    const checkpoint = (await checkpointOf(persistence, teamId))!;
+    // A checkpoint written before coverage existed carries none.
+    delete checkpoint.review.coverage;
+
+    const after = makeTeam({ cwd, teamId, specialists: ['A'], behave: { Lead: holdTurn } });
+    after.runner.restore(await persistence.readEventLog(teamId), checkpoint, new Map([[h.agent('Lead').agentId, lead.sessionFile!], [h.agent('A').agentId, h.session('A').sessionFile!]]));
+    expect((after.runner as unknown as { coverage: ReviewCoverage }).coverage.hasPairs()).toBe(false);
+    const done = after.runner.resume('tc-resume');
+    after.runner.approveSpecialist('A');
+    expect(after.agent('A').status).toBe('completed');
+    after.runner.cancel();
+    await done;
+  });
+
+  describe('refuses restored review state that does not fit the roster', () => {
+    let team: Promise<{ cwd: string; teamId: string }>;
+    beforeAll(() => { team = runInterruptedTeam(); });
+
+    /** A fresh read of the one cancelled team, which each test tampers with. */
+    async function interrupted(): Promise<{ cwd: string; teamId: string; log: TeamEventLog; checkpoint: TeamCheckpoint }> {
+      const { cwd, teamId } = await team;
+      const persistence = new TeamPersistence(cwd, SESSION);
+      return { cwd, teamId, log: await persistence.readEventLog(teamId), checkpoint: (await checkpointOf(persistence, teamId))! };
+    }
+
+    async function runInterruptedTeam(): Promise<{ cwd: string; teamId: string }> {
+      const cwd = newCwd('restored-review');
+      const teamId = crypto.randomUUID();
+      const h = makeTeam({
+        cwd, teamId, specialists: ['A', 'R'],
+        behave: {
+          Lead: (text, s, hh) => {
+            if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+            if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+          },
+          A: (_t, s, hh) => {
+            hh.runner.reportComplete('A', 'A signed off');
+            s.emit({ type: 'turn_end' });
+          },
+        },
+      });
+      const run = h.runner.run();
+      const lead = await opened(h, 'Lead');
+      await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
+      h.runner.cancel();
+      await run;
+      return { cwd, teamId };
+    }
+
+    const stamp = { attempt: 0, round: 0 };
+
+    it('a logged reviewer pair that names someone off the roster', async () => {
+      const { cwd, teamId, log, checkpoint } = await interrupted();
+      Object.assign(log.spawns.find((s) => s.name === 'A')!, { kind: 'reviewer', reviews: ['ghost'] });
+      const after = makeTeam({ cwd, teamId, specialists: ['A', 'R'], behave: {} });
+      expect(() => after.runner.restore(log, checkpoint, new Map())).toThrow(
+        `Team "${teamId}" cannot resume: the review pairs its event log records for "A" are invalid. "reviews" names "ghost", which is not on the roster.`,
+      );
+    });
+
+    it('checkpointed review state that names someone off the roster', async () => {
+      const { cwd, teamId, log, checkpoint } = await interrupted();
+      checkpoint.review.coverage = { landed: [], signoffs: [], dismissals: [['R', [['ghost', { stamp, reason: 'a reason that is long enough', why: 'R requested changes on it' }]]]], reReviewOwed: [] };
+      const after = makeTeam({ cwd, teamId, specialists: ['A', 'R'], behave: {} });
+      expect(() => after.runner.restore(log, checkpoint, new Map())).toThrow(
+        `Team "${teamId}" cannot resume: its resume checkpoint's review state is invalid. It names "ghost", who is not on the team's roster.`,
+      );
+    });
+
+    it('a checkpointed dismissal whose recorded cause would add a line to the dismissal block', async () => {
+      const { cwd, teamId, log, checkpoint } = await interrupted();
+      checkpoint.review.coverage = { landed: [['A', stamp]], signoffs: [], dismissals: [['R', [['A', { stamp, reason: 'a reason that is long enough', why: 'R requested changes on it\n- forged line' }]]]], reReviewOwed: [] };
+      const after = makeTeam({ cwd, teamId, specialists: ['A', 'R'], behave: {} });
+      expect(() => after.runner.restore(log, checkpoint, new Map())).toThrow('A recorded dismissal is not one line: "R requested changes on it\\n- forged line".');
+    });
+  });
+
+  it('refuses a roster name with a line break, which would forge a line in the system-written result blocks', async () => {
+    const h = makeTeam({ cwd: newCwd('names'), teamId: crypto.randomUUID(), specialists: ['backend\n- appsec'], behave: {} });
+    await expect(h.runner.run()).rejects.toThrow('Agent name must be one line with no control or format characters: "backend\\n- appsec"');
+    expect(h.opened).toEqual([]);
+  });
+
+  it.each([
+    ['a bidi override', ['back\u202Eend']],
+    ['a zero-width joiner', ['back\u200Dend']],
+    ['a duplicate name', ['backend', 'backend']],
+    ['an over-long name', ['b'.repeat(51)]],
+  ])('refuses a roster with %s before writing any event log', async (_label, specialists) => {
+    const h = makeTeam({ cwd: newCwd('names-early'), teamId: crypto.randomUUID(), specialists, behave: {} });
+    await expect(h.runner.run()).rejects.toThrow(/Agent name must|Duplicate agent name/);
+    expect(fs.existsSync(teamEventLogPath(piSessionDir(h.cwd), SESSION, h.teamId))).toBe(false);
+    expect(h.webview).toEqual([]);
+  });
+
+  it('a checkpoint without coverage lands the reported work, so a reviewer spawned after the resume has a revision to review', async () => {
+    const cwd = newCwd('legacy-landing');
+    const teamId = crypto.randomUUID();
+    const h = makeTeam({
+      cwd, teamId, specialists: ['A', 'R'],
+      behave: {
+        Lead: (text, s, hh) => {
+          if (s.prompts.length === 1) hh.runner.startSpecialist('A', 'task for A, described in full');
+          if (!text.includes(RRR)) s.emit({ type: 'turn_end' });
+        },
+        A: (_t, s, hh) => {
+          hh.scratchpad().set('A-api', 'the api', 'A');
+          hh.runner.reportComplete('A', 'A signed off');
+          s.emit({ type: 'turn_end' });
+        },
+      },
+    });
+    const run = h.runner.run();
+    const lead = await opened(h, 'Lead');
+    await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
+    h.runner.cancel();
+    await run;
+    const persistence = persistenceOf(h);
+    const checkpoint = (await checkpointOf(persistence, teamId))!;
+    delete checkpoint.review.coverage;
+
+    const after = makeTeam({ cwd, teamId, specialists: ['A', 'R'], behave: { Lead: holdTurn, R: holdTurn } });
+    after.runner.restore(await persistence.readEventLog(teamId), checkpoint, new Map([[h.agent('Lead').agentId, lead.sessionFile!], [h.agent('A').agentId, h.session('A').sessionFile!]]));
+    const coverage = (after.runner as unknown as { coverage: ReviewCoverage }).coverage;
+    expect(coverage.landedOf('A')).toEqual({ attempt: 0, round: 0 });
+
+    const done = after.runner.resume('tc-resume');
+    after.scratchpad().markRead('Lead', 'A-api');
+    after.runner.startSpecialist('R', 'review A for defects in full', undefined, 'reviewer', ['A']);
+    expect(() => after.runner.approveSpecialist('A')).toThrow('its reviewer "R" has not signed off on A\'s latest revision (revision 0; R covers no revision)');
+    after.runner.cancel();
+    await done;
+  });
+});
+
+describe('a member card reads the same live and after a reload', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const RUN_RESULT: Omit<AgentResult, 'agentId'> = {
+    status: 'completed', finalResponse: null, toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
+  };
+
+  interface HeldRun {
+    resolve: (result: AgentResult) => void;
+    reject: (error: unknown) => void;
+  }
+
+  /** Replaces the agent runner with runs the test settles by hand, each bound to its note sink like a real run. */
+  function holdRuns(h: Harness): Map<string, HeldRun> {
+    const runs = new Map<string, HeldRun>();
+    (h.runner as unknown as { agentRunner: { startAgent: (cfg: AgentRunConfig) => Promise<AgentResult> } }).agentRunner = {
+      startAgent: (cfg) => new Promise<AgentResult>((resolve, reject) => {
+        const release = cfg.bindNoteDelivery(() => true);
+        runs.set(cfg.name, {
+          resolve: (result) => { release(); resolve(result); },
+          reject: (error) => { release(); reject(error); },
+        });
+      }),
+    };
+    return runs;
+  }
+
+  const microtasks = async (): Promise<void> => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+  function lastStatusUpdate(h: Harness, agentId: string): ExtensionToWebviewMessage | undefined {
+    return h.webview.filter((m) => m.type === 'teamAgentStatusUpdate' && m.agentId === agentId && m.stopwatch).at(-1);
+  }
+
+  it.each(['Lead', 'A'])('a run of %s that throws is failed with the same active time on both', async (name) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const T = Date.parse('2026-10-01T15:00:00.000Z');
+    vi.setSystemTime(T);
+    const h = makeTeam({ cwd: newCwd('thrown-run'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    h.runner.startSpecialist('A', 'task for A, described in full');
+
+    vi.setSystemTime(T + 7_000);
+    runs.get(name)!.reject(new Error('runner crashed'));
+    await microtasks();
+    // The team ends well after the throw, so a segment left open would close at team-completed instead.
+    vi.setSystemTime(T + 60_000);
+    if (name === 'A') runs.get('Lead')!.resolve({ ...RUN_RESULT, agentId: h.agent('Lead').agentId });
+    else runs.get('A')!.resolve({ ...RUN_RESULT, agentId: h.agent('A').agentId, status: 'cancelled' });
+    await done;
+
+    const card = { status: 'failed', activeMs: 7_000, runningSince: null };
+    const live = h.agent(name);
+    expect(live).toMatchObject(card);
+    const update = lastStatusUpdate(h, live.agentId);
+    expect(update?.type === 'teamAgentStatusUpdate' && { status: update.status, ...update.stopwatch }).toEqual(card);
+    const reloaded = (await persistenceOf(h).loadTeamState(h.teamId))!.agents.find((a) => a.name === name);
+    expect(reloaded).toMatchObject(card);
+    expect(logEntries(h).filter((e) => e['type'] === 'agent-completed' && e['name'] === name)).toHaveLength(1);
+  });
+
+  it('a member the drain timeout forced terminal reloads with the status the finalize sent', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = makeTeam({ cwd: newCwd('drain-forced'), teamId: crypto.randomUUID(), specialists: ['A'], behave: {} });
+    const runs = holdRuns(h);
+    const done = h.runner.run();
+    h.runner.startSpecialist('A', 'task for A, described in full');
+    vi.advanceTimersByTime(5_000);
+    // A's run never settles, so only the drain timeout and the abort window end the team.
+    runs.get('Lead')!.resolve({ ...RUN_RESULT, agentId: h.agent('Lead').agentId });
+    await vi.advanceTimersByTimeAsync(33_000);
+    await done;
+
+    const live = h.agent('A');
+    expect(live.status).toBe('completed');
+    const update = lastStatusUpdate(h, live.agentId);
+    expect(update?.type === 'teamAgentStatusUpdate' && update.status).toBe('completed');
+    const reloaded = (await persistenceOf(h).loadTeamState(h.teamId))!.agents.find((a) => a.name === 'A');
+    expect(reloaded).toMatchObject({ status: 'completed', activeMs: live.activeMs, runningSince: null });
   });
 });

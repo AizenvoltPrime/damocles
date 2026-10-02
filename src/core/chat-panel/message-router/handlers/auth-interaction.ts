@@ -52,10 +52,8 @@ export function buildAuthInteraction(opts: AuthInteractionOptions): AuthInteract
     },
     prompt: async (p) => {
       if (p.type === "select") {
-        // The Damocles flows are not expected to reach here with a select prompt (Codex's
-        // login-method select is answered inside PiRuntime). Throwing would abort an otherwise-
-        // answerable flow, so defensively return the first option id — pi orders options
-        // default-first. Documented defensive default, not an error swallow.
+        // No Damocles login flow sends a select prompt. Throwing would abort an otherwise-answerable
+        // flow, so return the first option id: pi orders options default-first.
         const first = p.options[0];
         if (first === undefined) throw new Error("Auth select prompt had no options");
         return first.id;

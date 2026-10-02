@@ -9,6 +9,7 @@ function handlerFor(panelId: string): { handler: PermissionHandler; platform: Fa
   const platform = createFakePlatform();
   vi.spyOn(platform.editor, 'readText').mockResolvedValue('alpha\nbeta\n');
   const handler = new PermissionHandler(platform, panelId);
+  handler.setCwd(process.cwd());
   handler.setPostMessage(() => undefined);
   return { handler, platform };
 }

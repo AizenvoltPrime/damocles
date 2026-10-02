@@ -5,10 +5,14 @@ import type {
   McpServerConfig,
   McpServerSource,
   McpServerStatusInfo,
+  McpToolExposureScope,
+  McpToolExposureSetting,
+  McpToolInfo,
   McpWriteErrorInfo,
 } from '@shared/types/mcp';
+import type { AcceptableValue } from 'reka-ui';
 import type { Component } from 'vue';
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, useId, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -27,6 +31,7 @@ import {
   AlertDialogDescription,
 } from '@/components/ui/alert-dialog';
 import { Switch } from '@/components/ui/switch';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   IconCheckCircle,
   IconXCircle,
@@ -51,6 +56,8 @@ const props = defineProps<{
   mcpEnabled: boolean;
   /** True when `<ws>/.damocles/mcp.local.json` exists and git does not ignore it. */
   localMcpUnignored: boolean;
+  /** Scopes a tool's exposure can be saved to here, lowest first; absent means User only. */
+  toolExposureScopes?: McpToolExposureScope[];
   /** Counts applied `mcpConfigUpdate` payloads, so the panel can see a reload land. */
   configRevision: number;
   visible: boolean;
@@ -70,9 +77,43 @@ const emit = defineEmits<{
   (e: 'updateServer', serverName: string, newServerName: string | undefined, config: McpServerConfig): void;
   (e: 'deleteServer', serverName: string): void;
   (e: 'reloadConfig'): void;
+  (e: 'setToolExposure', serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope): void;
 }>();
 
+const TOOL_EXPOSURES: readonly { value: McpToolExposureSetting; labelKey: string }[] = [
+  { value: 'off', labelKey: 'mcp.toolExposureOff' },
+  { value: 'deferred', labelKey: 'mcp.toolExposureOn' },
+  { value: 'direct', labelKey: 'mcp.toolExposureDirect' },
+];
+
+const exposureScopes = computed<McpToolExposureScope[]>(() => props.toolExposureScopes ?? ['user']);
+
+/** The scope the next exposure change is written to; User until the user picks another the host offers. */
+const chosenSaveScope = ref<McpToolExposureScope>('user');
+const saveScope = computed<McpToolExposureScope>(() =>
+  exposureScopes.value.includes(chosenSaveScope.value) ? chosenSaveScope.value : 'user',
+);
+
+function isExposureScope(value: AcceptableValue): value is McpToolExposureScope {
+  return typeof value === 'string' && (exposureScopes.value as readonly string[]).includes(value);
+}
+
+function isToolExposure(value: AcceptableValue): value is McpToolExposureSetting {
+  return TOOL_EXPOSURES.some((option) => option.value === value);
+}
+
+function handleSaveScope(value: AcceptableValue): void {
+  if (isExposureScope(value)) chosenSaveScope.value = value;
+}
+
+/** A single-select group emits an empty value when its active item is pressed again; that keeps the current state. */
+function handleToolExposure(server: McpServerStatusInfo, tool: McpToolInfo, value: AcceptableValue): void {
+  if (!isToolExposure(value) || value === (tool.exposure ?? 'deferred')) return;
+  emit('setToolExposure', server.name, tool.name, value, saveScope.value);
+}
+
 const hasUntrustedServers = computed(() => props.servers.some((s) => s.untrusted === true));
+const hasToolRows = computed(() => props.servers.some((s) => (s.tools?.length ?? 0) > 0));
 
 /**
  * How long Reload config stays disabled with no answer. `mcpReloadConfig` carries no requestId, so a
@@ -312,6 +353,8 @@ const SOURCE_LABEL_KEYS: Record<McpServerSource, string> = {
   codex: 'mcp.fromCodex',
   'claude-local': 'mcp.fromClaudeLocal',
   'damocles-local': 'mcp.fromDamoclesLocal',
+  pi: 'mcp.fromPi',
+  'pi-project': 'mcp.fromPiProject',
 };
 
 /** `source` is optional on the wire, and a server that arrived without one carries no badge. */
@@ -319,6 +362,39 @@ function getSourceLabel(source: McpServerStatusInfo['source']): string | null {
   if (source === undefined) return null;
   return t(SOURCE_LABEL_KEYS[source]);
 }
+
+function isServerSource(value: string): value is McpServerSource {
+  return Object.hasOwn(SOURCE_LABEL_KEYS, value);
+}
+
+/**
+ * The row's error, translated by code. `error` is the host's English fallback for a row without a
+ * code. `insufficientScope` arrives on a needs-auth row, so a coded needs-auth row shows it too.
+ */
+function getServerErrorText(server: McpServerStatusInfo): string | null {
+  const info = server.errorInfo;
+  if (info && (server.status === 'failed' || server.status === 'needs-auth')) {
+    const params = { ...info.params };
+    if (params.keptSource !== undefined && isServerSource(params.keptSource)) {
+      params.keptSource = t(SOURCE_LABEL_KEYS[params.keptSource]);
+    }
+    return t(`mcp.serverErrors.${info.code}`, params);
+  }
+  if (server.status === 'failed' && server.error) return server.error;
+  return null;
+}
+
+/** Rows whose stderr tail is expanded. The tail is host-sanitized text and renders only as text. */
+const expandedStderr = ref<Set<string>>(new Set());
+
+function toggleStderr(serverName: string): void {
+  const next = new Set(expandedStderr.value);
+  if (next.has(serverName)) next.delete(serverName);
+  else next.add(serverName);
+  expandedStderr.value = next;
+}
+
+const panelId = useId();
 
 /** A contextual button on a server row. */
 interface ServerRowAction {
@@ -535,8 +611,34 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
         </div>
 
         <div v-else class="space-y-2" :class="{ 'opacity-50 pointer-events-none': !mcpEnabled }">
+          <!-- One choice for the whole panel: it applies to every tool's next exposure change. -->
+          <div
+            v-if="hasToolRows"
+            class="flex items-center gap-1.5 text-xs text-muted-foreground"
+          >
+            <span :id="`${panelId}-save-to`">{{ t('mcp.toolExposureSaveTo') }}</span>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              data-testid="mcp-tool-exposure-scope"
+              :model-value="saveScope"
+              :aria-labelledby="`${panelId}-save-to`"
+              @update:model-value="handleSaveScope"
+            >
+              <ToggleGroupItem
+                v-for="scope in exposureScopes"
+                :key="scope"
+                :value="scope"
+                class="h-6 px-2 text-xs"
+                :data-scope="scope"
+              >
+                {{ t(`mcp.toolExposureSource.${scope}`) }}
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
           <Card
-            v-for="{ server, actions } in rows"
+            v-for="({ server, actions }, rowIndex) in rows"
             :key="server.name"
             class="bg-background border-border hover:bg-background/80 transition-colors"
           >
@@ -562,10 +664,19 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                   </span>
                   <Switch
                     :checked="server.enabled"
+                    :aria-label="t('mcp.toggleServer', { name: server.displayName ?? server.name })"
                     @update:checked="(checked: boolean) => emit('toggle', server.name, checked)"
                   />
                 </div>
               </div>
+
+              <p
+                v-if="server.description"
+                data-testid="mcp-server-description"
+                class="mt-1 text-xs text-muted-foreground pl-6 break-words"
+              >
+                {{ server.description }}
+              </p>
 
               <div v-if="actions.length > 0" class="mt-2 flex flex-wrap items-center justify-end gap-1">
                 <Button
@@ -593,8 +704,34 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                 {{ server.serverInfo.name }} v{{ server.serverInfo.version }}
               </div>
 
-              <div v-if="server.error && server.status === 'failed'" class="mt-2 text-xs text-error pl-6 break-words">
-                {{ server.error }}
+              <div
+                v-if="getServerErrorText(server)"
+                data-testid="mcp-server-error"
+                class="mt-2 text-xs pl-6 break-words"
+                :class="server.status === 'needs-auth' ? 'text-warning' : 'text-error'"
+              >
+                {{ getServerErrorText(server) }}
+              </div>
+
+              <div v-if="server.status === 'failed' && server.stderrTail" class="mt-1 pl-6">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  class="h-6 px-2 -ml-2 text-xs text-muted-foreground hover:text-foreground"
+                  data-testid="mcp-server-stderr-toggle"
+                  :aria-expanded="expandedStderr.has(server.name)"
+                  :aria-controls="`${panelId}-stderr-${rowIndex}`"
+                  @click="toggleStderr(server.name)"
+                >
+                  <span class="mr-1" aria-hidden="true">{{ expandedStderr.has(server.name) ? '▾' : '▸' }}</span>
+                  {{ t('mcp.serverOutput') }}
+                </Button>
+                <pre
+                  v-show="expandedStderr.has(server.name)"
+                  :id="`${panelId}-stderr-${rowIndex}`"
+                  data-testid="mcp-server-stderr"
+                  class="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground"
+                >{{ server.stderrTail }}</pre>
               </div>
 
               <div v-if="server.tools && server.tools.length > 0" class="mt-2 pl-6">
@@ -611,6 +748,7 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                     v-for="tool in server.tools"
                     :key="tool.name"
                     class="text-xs"
+                    data-testid="mcp-tool-row"
                   >
                     <div class="flex items-center gap-1.5 flex-wrap">
                       <span class="font-mono text-foreground">{{ tool.name }}</span>
@@ -631,6 +769,35 @@ const collisionServers = computed<McpCollisionServer[]>(() =>
                         class="px-1.5 py-0 rounded-full bg-primary/15 text-primary border border-primary/30 text-xs leading-4"
                       >
                         {{ t('mcp.toolNetwork') }}
+                      </span>
+                    </div>
+                    <div class="mt-1 flex items-center gap-1.5">
+                      <ToggleGroup
+                        type="single"
+                        variant="outline"
+                        size="sm"
+                        data-testid="mcp-tool-exposure"
+                        :model-value="tool.exposure ?? 'deferred'"
+                        :aria-label="t('mcp.toolExposureLabel', { name: tool.name })"
+                        :title="t('mcp.toolExposureTooltip')"
+                        @update:model-value="(value: AcceptableValue) => handleToolExposure(server, tool, value)"
+                      >
+                        <ToggleGroupItem
+                          v-for="option in TOOL_EXPOSURES"
+                          :key="option.value"
+                          :value="option.value"
+                          class="h-6 px-2 text-xs"
+                          :data-exposure="option.value"
+                        >
+                          {{ t(option.labelKey) }}
+                        </ToggleGroupItem>
+                      </ToggleGroup>
+                      <span
+                        data-testid="mcp-tool-exposure-source"
+                        class="px-1.5 py-0 rounded-full bg-muted text-muted-foreground border border-border text-xs leading-4"
+                        :title="t('mcp.toolExposureSourceTitle', { source: t(`mcp.toolExposureSource.${tool.exposureSource ?? 'config'}`) })"
+                      >
+                        {{ t(`mcp.toolExposureSource.${tool.exposureSource ?? 'config'}`) }}
                       </span>
                     </div>
                     <p v-if="tool.description" class="text-muted-foreground mt-0.5 pl-0">

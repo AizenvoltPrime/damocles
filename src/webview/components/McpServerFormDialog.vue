@@ -103,7 +103,7 @@ const errors = computed<McpFormErrors>(() =>
  */
 const shownErrors = computed<McpFormErrors>(() => (submitAttempted.value ? errors.value : {}));
 
-/** Legal, but its tool prefix collides with another server's — a note, not a blocker. */
+/** Legal, but a lower-precedence server shares its namespace key and will not load: a note, not a blocker. */
 const prefixCollision = computed(() =>
   mcpToolPrefixCollision(state.value.name, props.editingName, props.servers),
 );
@@ -147,7 +147,18 @@ function toggleReveal(row: McpKeyValueRow): void {
 }
 
 /** The first field carrying an error, so an invalid submit moves focus rather than only colouring. */
-const FOCUS_ORDER: McpFormField[] = ['name', 'command', 'url', 'env', 'headers', 'bearerTokenEnv'];
+const FOCUS_ORDER: McpFormField[] = [
+  'name',
+  'command',
+  'env',
+  'url',
+  'headers',
+  'bearerTokenEnv',
+  'oauthAuthServerMetadataUrl',
+  'oauthCallbackUrl',
+  'oauthCallbackPort',
+  'timeout',
+];
 
 async function focusFirstError(): Promise<void> {
   await nextTick();
@@ -229,7 +240,22 @@ function handleOpenChange(open: boolean): void {
               {{ errorText(shownErrors.name) }}
             </p>
             <p v-else-if="prefixCollision" class="text-xs text-muted-foreground">
-              {{ t('mcp.form.prefixCollision', { other: prefixCollision }) }}
+              {{ t('mcp.form.prefixCollision', { other: prefixCollision.name }) }}
+            </p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label :for="`${ids}-description`">{{ t('mcp.form.descriptionLabel') }}</Label>
+            <Input
+              :id="`${ids}-description`"
+              v-model="state.description"
+              data-field="description"
+              :placeholder="t('mcp.form.descriptionPlaceholder')"
+              :aria-describedby="`${ids}-description-help`"
+              class="h-8 text-sm"
+            />
+            <p :id="`${ids}-description-help`" class="text-xs text-muted-foreground">
+              {{ t('mcp.form.descriptionHelp') }}
             </p>
           </div>
 
@@ -337,6 +363,7 @@ function handleOpenChange(open: boolean): void {
                 {{ t('mcp.form.addEnv') }}
               </Button>
               <p class="text-xs text-muted-foreground">{{ t('mcp.form.secretValueHint') }}</p>
+              <p class="text-xs text-muted-foreground">{{ t('mcp.form.valueSyntaxHint') }}</p>
               <p v-if="shownErrors.env" :id="`${ids}-env-error`" role="alert" class="text-xs text-error">
                 {{ errorText(shownErrors.env) }}
               </p>
@@ -365,20 +392,6 @@ function handleOpenChange(open: boolean): void {
                 {{ errorText(shownErrors.url) }}
               </p>
             </div>
-
-            <fieldset class="space-y-1.5">
-              <legend class="text-sm font-medium leading-none">{{ t('mcp.form.remoteTypeLabel') }}</legend>
-              <div class="flex items-center gap-4 pt-1">
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input v-model="state.remoteType" type="radio" value="http" :name="`${ids}-remote-type`" class="accent-primary" />
-                  {{ t('mcp.form.remoteTypeHttp') }}
-                </label>
-                <label class="flex items-center gap-1.5 text-sm cursor-pointer">
-                  <input v-model="state.remoteType" type="radio" value="sse" :name="`${ids}-remote-type`" class="accent-primary" />
-                  {{ t('mcp.form.remoteTypeSse') }}
-                </label>
-              </div>
-            </fieldset>
 
             <fieldset class="space-y-1.5">
               <legend class="text-sm font-medium leading-none">{{ t('mcp.form.headersLabel') }}</legend>
@@ -425,6 +438,7 @@ function handleOpenChange(open: boolean): void {
                 {{ t('mcp.form.addHeader') }}
               </Button>
               <p class="text-xs text-muted-foreground">{{ t('mcp.form.secretValueHint') }}</p>
+              <p class="text-xs text-muted-foreground">{{ t('mcp.form.valueSyntaxHint') }}</p>
               <p v-if="shownErrors.headers" :id="`${ids}-headers-error`" role="alert" class="text-xs text-error">
                 {{ errorText(shownErrors.headers) }}
               </p>
@@ -457,7 +471,116 @@ function handleOpenChange(open: boolean): void {
                 {{ errorText(shownErrors.bearerTokenEnv) }}
               </p>
             </div>
+
+            <fieldset class="space-y-3" :aria-describedby="`${ids}-oauth-help`">
+              <legend class="text-sm font-medium leading-none">{{ t('mcp.form.oauthLabel') }}</legend>
+              <p :id="`${ids}-oauth-help`" class="text-xs text-muted-foreground">{{ t('mcp.form.oauthHelp') }}</p>
+
+              <div class="space-y-1.5">
+                <Label :for="`${ids}-oauth-client-name`">{{ t('mcp.form.oauthClientNameLabel') }}</Label>
+                <Input
+                  :id="`${ids}-oauth-client-name`"
+                  v-model="state.oauthClientName"
+                  data-field="oauthClientName"
+                  :placeholder="t('mcp.form.oauthClientNamePlaceholder')"
+                  class="h-8 text-sm"
+                />
+              </div>
+
+              <div class="space-y-1.5">
+                <Label :for="`${ids}-oauth-metadata-url`">{{ t('mcp.form.oauthAuthServerMetadataUrlLabel') }}</Label>
+                <Input
+                  :id="`${ids}-oauth-metadata-url`"
+                  v-model="state.oauthAuthServerMetadataUrl"
+                  data-field="oauthAuthServerMetadataUrl"
+                  :placeholder="t('mcp.form.oauthAuthServerMetadataUrlPlaceholder')"
+                  :aria-invalid="shownErrors.oauthAuthServerMetadataUrl ? 'true' : undefined"
+                  :aria-describedby="
+                    shownErrors.oauthAuthServerMetadataUrl ? `${ids}-oauth-metadata-url-error` : undefined
+                  "
+                  class="h-8 text-sm font-mono"
+                />
+                <p
+                  v-if="shownErrors.oauthAuthServerMetadataUrl"
+                  :id="`${ids}-oauth-metadata-url-error`"
+                  role="alert"
+                  class="text-xs text-error"
+                >
+                  {{ errorText(shownErrors.oauthAuthServerMetadataUrl) }}
+                </p>
+              </div>
+
+              <div class="space-y-1.5">
+                <Label :for="`${ids}-oauth-callback-url`">{{ t('mcp.form.oauthCallbackUrlLabel') }}</Label>
+                <Input
+                  :id="`${ids}-oauth-callback-url`"
+                  v-model="state.oauthCallbackUrl"
+                  data-field="oauthCallbackUrl"
+                  :placeholder="t('mcp.form.oauthCallbackUrlPlaceholder')"
+                  :aria-invalid="shownErrors.oauthCallbackUrl ? 'true' : undefined"
+                  :aria-describedby="shownErrors.oauthCallbackUrl ? `${ids}-oauth-callback-url-error` : undefined"
+                  class="h-8 text-sm font-mono"
+                />
+                <p
+                  v-if="shownErrors.oauthCallbackUrl"
+                  :id="`${ids}-oauth-callback-url-error`"
+                  role="alert"
+                  class="text-xs text-error"
+                >
+                  {{ errorText(shownErrors.oauthCallbackUrl) }}
+                </p>
+              </div>
+
+              <div class="space-y-1.5">
+                <Label :for="`${ids}-oauth-callback-port`">{{ t('mcp.form.oauthCallbackPortLabel') }}</Label>
+                <Input
+                  :id="`${ids}-oauth-callback-port`"
+                  v-model="state.oauthCallbackPort"
+                  data-field="oauthCallbackPort"
+                  inputmode="numeric"
+                  :placeholder="t('mcp.form.oauthCallbackPortPlaceholder')"
+                  :aria-invalid="shownErrors.oauthCallbackPort ? 'true' : undefined"
+                  :aria-describedby="
+                    shownErrors.oauthCallbackPort
+                      ? `${ids}-oauth-callback-help ${ids}-oauth-callback-port-error`
+                      : `${ids}-oauth-callback-help`
+                  "
+                  class="h-8 text-sm font-mono"
+                />
+                <p :id="`${ids}-oauth-callback-help`" class="text-xs text-muted-foreground">
+                  {{ t('mcp.form.oauthCallbackHelp') }}
+                </p>
+                <p
+                  v-if="shownErrors.oauthCallbackPort"
+                  :id="`${ids}-oauth-callback-port-error`"
+                  role="alert"
+                  class="text-xs text-error"
+                >
+                  {{ errorText(shownErrors.oauthCallbackPort) }}
+                </p>
+              </div>
+            </fieldset>
           </template>
+
+          <div class="space-y-1.5">
+            <Label :for="`${ids}-timeout`">{{ t('mcp.form.timeoutLabel') }}</Label>
+            <Input
+              :id="`${ids}-timeout`"
+              v-model="state.timeout"
+              data-field="timeout"
+              inputmode="decimal"
+              :placeholder="t('mcp.form.timeoutPlaceholder')"
+              :aria-invalid="shownErrors.timeout ? 'true' : undefined"
+              :aria-describedby="
+                shownErrors.timeout ? `${ids}-timeout-help ${ids}-timeout-error` : `${ids}-timeout-help`
+              "
+              class="h-8 text-sm font-mono"
+            />
+            <p :id="`${ids}-timeout-help`" class="text-xs text-muted-foreground">{{ t('mcp.form.timeoutHelp') }}</p>
+            <p v-if="shownErrors.timeout" :id="`${ids}-timeout-error`" role="alert" class="text-xs text-error">
+              {{ errorText(shownErrors.timeout) }}
+            </p>
+          </div>
         </fieldset>
 
         <p v-if="confirmingDiscard" role="alert" class="text-xs text-error">

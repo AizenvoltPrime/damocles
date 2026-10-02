@@ -1,15 +1,19 @@
-import { describe, it, expect, vi, type Mock } from 'vitest';
+import { describe, it, expect, vi, afterAll, onTestFinished, type Mock } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { runPermissionGate, gateErrorFallback, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
 import { buildNestedMcpToolset } from '../tools/mcp-tools';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../pi-loader';
-import { DAMOCLES_PLANS_DIR } from '../../paths';
+import { DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
-import type { PermissionHandler, PermissionResult } from '../../permission-handler';
+import { PermissionHandler, type PermissionResult } from '../../permission-handler';
 import { buildUserFileEditDenyResult, buildUnaskedDenyResult } from '../../permission-handler/utils';
+import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
@@ -21,11 +25,13 @@ function makePanel(opts: {
   readOnlyShell?: boolean;
   canUse?: () => Promise<PermissionResult>;
   evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
+  rule?: () => Promise<'allow' | 'deny' | 'ask' | null>;
   mcpReadOnly?: (name: string) => boolean;
 }) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
   const evaluatePermission = vi.fn<PermissionHandler['evaluatePermission']>(opts.evaluate ?? (async () => 'allow' as const));
-  const permissionHandler = { canUseTool, evaluatePermission } as unknown as PanelGateContext['permissionHandler'];
+  const matchRule = vi.fn<PermissionHandler['matchRule']>(opts.rule ?? (async () => null));
+  const permissionHandler = { canUseTool, evaluatePermission, matchRule, isPlanFile: isPlanFilePath } as unknown as PanelGateContext['permissionHandler'];
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
@@ -46,7 +52,7 @@ function makePanel(opts: {
     getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,
   };
-  return { panel, canUseTool, evaluatePermission };
+  return { panel, canUseTool, evaluatePermission, matchRule };
 }
 
 describe('runPermissionGate', () => {
@@ -56,7 +62,7 @@ describe('runPermissionGate', () => {
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
     // The evaluator sees the Damocles shape (file_path), not pi's raw `path`.
-    expect(evaluatePermission).toHaveBeenCalledWith('Read', { file_path: '/a.ts' });
+    expect(evaluatePermission).toHaveBeenCalledWith('Read', { file_path: '/a.ts' }, undefined);
   });
 
   it('blocks a read tool denied by a settings rule, rendering as denied (marker present)', async () => {
@@ -117,15 +123,22 @@ describe('runPermissionGate', () => {
   });
 
   it('auto-allows a provably read-only shell command in plan mode without prompting', async () => {
-    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+    const { panel, canUseTool, matchRule } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
     expect(result).toBeUndefined();
-    expect(evaluatePermission).toHaveBeenCalledWith('Bash', { command: 'git status' });
+    expect(matchRule).toHaveBeenCalledWith('Bash', { command: 'git status' });
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
+  it('prompts for a provably read-only shell command in plan mode when an ask rule names it', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true, rule: async () => 'ask' });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+
   it('blocks a read-only shell command in plan mode when a settings rule denies it (marker present)', async () => {
-    const { panel, canUseTool } = makePanel({ plan: true, evaluate: async () => 'deny' });
+    const { panel, canUseTool } = makePanel({ plan: true, rule: async () => 'deny' });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
@@ -142,10 +155,10 @@ describe('runPermissionGate', () => {
   });
 
   it('auto-allows a provably read-only PowerShell command in plan mode without prompting', async () => {
-    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+    const { panel, canUseTool, matchRule } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Get-Content a.txt' }), panel, undefined);
     expect(result).toBeUndefined();
-    expect(evaluatePermission).toHaveBeenCalledWith('PowerShell', { command: 'Get-Content a.txt' });
+    expect(matchRule).toHaveBeenCalledWith('PowerShell', { command: 'Get-Content a.txt' });
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
@@ -186,28 +199,35 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('auto-allows module tools via the settings evaluator without prompting (FR-4)', async () => {
-    const { panel, canUseTool, evaluatePermission } = makePanel({ evaluate: async () => 'allow' });
+  it('auto-allows module tools via the settings rules without prompting (FR-4)', async () => {
+    const { panel, canUseTool, matchRule } = makePanel({});
     const result = await runPermissionGate(ev('SaveObservation', 'm1', { title: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(evaluatePermission).toHaveBeenCalledWith('SaveObservation', { title: 'x' });
+    expect(matchRule).toHaveBeenCalledWith('SaveObservation', { title: 'x' });
   });
 
   it('blocks a module tool denied by a settings rule (denied marker present)', async () => {
-    const { panel, canUseTool } = makePanel({ evaluate: async () => 'deny' });
+    const { panel, canUseTool } = makePanel({ rule: async () => 'deny' });
     const result = await runPermissionGate(ev('BrowserOpen', 'm1'), panel, undefined);
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('routes module tools through the evaluator even in plan mode (read-only compass stays usable)', async () => {
-    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+  it('prompts for a module tool an ask rule names, even in plan mode', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true, rule: async () => 'ask' });
+    const result = await runPermissionGate(ev('BrowserOpen', 'm1'), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes module tools through the settings rules even in plan mode (read-only compass stays usable)', async () => {
+    const { panel, canUseTool, matchRule } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('CompassSearch', 'm1', { query: 'x' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(evaluatePermission).toHaveBeenCalledWith('CompassSearch', { query: 'x' });
+    expect(matchRule).toHaveBeenCalledWith('CompassSearch', { query: 'x' });
   });
 
   it('correlates parallel write approvals by distinct toolCallId', async () => {
@@ -230,7 +250,7 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('mcp__git__status', 'm1', { a: 1 }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 });
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, undefined);
   });
 
   it('blocks a read-only MCP tool denied by a settings rule (marker present)', async () => {
@@ -365,7 +385,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     const result = await runPermissionGate(event, panel, undefined, null, gate);
     expect(result).toBeUndefined();
     expect((event.input as Record<string, unknown>).path).toBe('/new');
-    expect(evaluatePermission).toHaveBeenCalledWith('Read', { file_path: '/new' });
+    expect(evaluatePermission).toHaveBeenCalledWith('Read', { file_path: '/new' }, undefined);
   });
 
   it('ask falls through to the normal approval flow', async () => {
@@ -589,6 +609,111 @@ describe('block attribution — an automatic block must never claim the user ref
   });
 });
 
+describe('block attribution through the real PermissionHandler — every unasked deny is policy', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-policy-'));
+  afterAll(() => fs.rmSync(workspace, { recursive: true, force: true }));
+
+  function realPanel(post: ((msg: ExtensionToWebviewMessage) => void) | null): { panel: PanelGateContext; handler: PermissionHandler } {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    if (post) handler.setPostMessage(post);
+    const { panel } = makePanel({});
+    panel.permissionHandler = handler;
+    return { panel, handler };
+  }
+
+  function expectPolicyBlock(result: Awaited<ReturnType<typeof runPermissionGate>>): void {
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result?.reason).not.toContain(FEEDBACK_MARKER);
+    expect(result).not.toHaveProperty('terminate');
+  }
+
+  it('a settings deny rule of GenerateImage, Edit or Bash', async () => {
+    fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'),
+      JSON.stringify({ permissions: { deny: ['GenerateImage', 'Edit', 'Bash'] } }));
+    try {
+      const { panel } = realPanel(() => undefined);
+      expectPolicyBlock(await runPermissionGate(ev('GenerateImage', 'g1', { prompt: 'a fox', file_path: 'fox.png' }), panel, undefined));
+      expectPolicyBlock(await runPermissionGate(ev('Edit', 'e1', { file_path: 'a.ts', old_string: 'a', new_string: 'b' }), panel, undefined));
+      expectPolicyBlock(await runPermissionGate(ev('bash', 'b1', { command: 'ls' }), panel, undefined));
+    } finally {
+      fs.rmSync(path.join(workspace, '.damocles'), { recursive: true, force: true });
+    }
+  });
+
+  it('a settings deny rule of an MCP tool, and an ask rule makes it prompt', async () => {
+    fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: {
+      deny: ['mcp__context7__resolve-library-id'], ask: ['mcp__context7__get_library_docs', 'mcp__context7__search'] } }));
+    try {
+      const handler = new PermissionHandler(createFakePlatform());
+      handler.setWorkspacePath(workspace);
+      handler.setCwd(workspace);
+      const prompted: string[] = [];
+      handler.setPostMessage((msg) => {
+        if (msg.type !== 'requestPermission') return;
+        prompted.push(msg.toolName);
+        void handler.resolveApproval(msg.toolUseId, true);
+      });
+      const { panel } = makePanel({ mcpReadOnly: (name) => name === 'mcp__context7__search' || name === 'mcp__other__read' });
+      const raw: Record<string, { server: string; tool: string }> = {
+        mcp__context7__resolve_library_id: { server: 'context7', tool: 'resolve-library-id' },
+        mcp__context7__get_library_docs: { server: 'context7', tool: 'get_library_docs' },
+        mcp__context7__search: { server: 'context7', tool: 'search' },
+        mcp__other__tool: { server: 'other', tool: 'tool' },
+        mcp__other__read: { server: 'other', tool: 'read' },
+      };
+      panel.mcpToolIdentity = (name) => raw[name];
+      panel.permissionHandler = handler;
+
+      expectPolicyBlock(await runPermissionGate(ev('mcp__context7__resolve_library_id', 'm1'), panel, undefined));
+      expect(prompted).toEqual([]);
+
+      expect(await runPermissionGate(ev('mcp__context7__get_library_docs', 'm2'), panel, undefined)).toBeUndefined();
+      expect(await runPermissionGate(ev('mcp__context7__search', 'm3'), panel, undefined)).toBeUndefined();
+      expect(prompted).toEqual(['mcp__context7__get_library_docs', 'mcp__context7__search']);
+
+      expect(await runPermissionGate(ev('mcp__other__tool', 'm4'), panel, undefined)).toBeUndefined();
+      expect(await runPermissionGate(ev('mcp__other__read', 'm5'), panel, undefined)).toBeUndefined();
+      expect(prompted).toHaveLength(2);
+    } finally {
+      fs.rmSync(path.join(workspace, '.damocles'), { recursive: true, force: true });
+    }
+  });
+
+  it('no webview to ask in', async () => {
+    const { panel } = realPanel(null);
+    expectPolicyBlock(await runPermissionGate(ev('GenerateImage', 'g1', { prompt: 'a fox', file_path: 'fox.png' }), panel, undefined));
+  });
+
+  it('no tool use id to correlate the answer with', async () => {
+    const { panel } = realPanel(() => undefined);
+    expectPolicyBlock(await runPermissionGate(ev('Edit', '', { file_path: 'a.ts', old_string: 'a', new_string: 'b' }), panel, undefined));
+  });
+
+  it('the session was aborted before the prompt was answered', async () => {
+    const { panel } = realPanel(() => undefined);
+    const controller = new AbortController();
+    const pending = runPermissionGate(ev('bash', 'b1', { command: 'ls' }), panel, controller.signal);
+    controller.abort();
+    const result = await pending;
+    expectPolicyBlock(result);
+    expect(result?.reason).toContain('aborted before this approval was answered');
+  });
+
+  it('a real user rejection still uses the feedback wording', async () => {
+    const { panel, handler } = realPanel((msg) => {
+      if (msg.type === 'requestPermission') void handler.resolveApproval(msg.toolUseId, false, { customMessage: 'use another file' });
+    });
+    const result = await runPermissionGate(ev('GenerateImage', 'g1', { prompt: 'a fox', file_path: 'fox.png' }), panel, undefined);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).not.toContain(POLICY_BLOCK_MARKER);
+  });
+});
+
 /**
  * An unexplained "no" is the user saying STOP: the model has no information to act on and would burn the
  * rest of the turn guessing, so the deny is forwarded to pi as `terminate`. A "no, do X instead" is
@@ -640,9 +765,8 @@ describe('terminate — an unexplained Deny ends the turn, an explained one does
   });
 
   it('does not terminate a settings-rule deny — it is policy, not a user decision', async () => {
-    // The shape `PermissionHandler.canUseTool` returns for a settings deny (permission-handler/index.ts):
-    // it comes back through the same deny path as a user Deny but deliberately carries no `interrupt`.
-    const { panel } = makePanel({ canUse: async () => ({ behavior: 'deny', message: 'Permission denied by settings rule' }) });
+    // What `PermissionHandler.canUseTool` returns for a settings deny (permission-handler/index.ts).
+    const { panel } = makePanel({ canUse: async () => buildUnaskedDenyResult(undefined, 'Permission denied by settings rule') });
     const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(result).not.toHaveProperty('terminate');
@@ -650,23 +774,18 @@ describe('terminate — an unexplained Deny ends the turn, an explained one does
 });
 
 describe('gateErrorFallback (fail-closed on gate exception)', () => {
-  it('blocks write/shell/unknown tools by default', () => {
-    expect(gateErrorFallback('write')?.block).toBe(true);
-    expect(gateErrorFallback('bash')?.block).toBe(true);
-    expect(gateErrorFallback('Edit')?.block).toBe(true);
-    expect(gateErrorFallback('PowerShell')?.block).toBe(true);
-    expect(gateErrorFallback('SaveObservation')?.block).toBe(true); // 'other' category → blocked
+  it('blocks the call', () => {
+    expect(gateErrorFallback().block).toBe(true);
   });
 
   it('does not terminate — a Damocles bug must not kill the user\'s turn', () => {
-    expect(gateErrorFallback('write')).not.toHaveProperty('terminate');
-    expect(gateErrorFallback('bash')).not.toHaveProperty('terminate');
+    expect(gateErrorFallback()).not.toHaveProperty('terminate');
   });
 
-  it('lets read-only tools through (harmless, auto-allowed on the normal path)', () => {
-    expect(gateErrorFallback('read')).toBeUndefined();
-    expect(gateErrorFallback('grep')).toBeUndefined();
-    expect(gateErrorFallback('ls')).toBeUndefined();
+  it('words the block as policy, since nobody asked the user', () => {
+    const reason = gateErrorFallback().reason;
+    expect(reason).toContain(POLICY_BLOCK_MARKER);
+    expect(reason).not.toContain(FEEDBACK_MARKER);
   });
 });
 
@@ -688,10 +807,13 @@ function nestedDescriptor(piName: string, readOnly: boolean): McpToolDescriptor 
     serverName: piName.split('__')[1] ?? 'git',
     serverId: `test/${piName.split('__')[1] ?? 'git'}`,
     kind: 'tool',
-    originalName: piName.split('__').slice(2).join('__'),
+    rawToolName: piName.split('__').slice(2).join('__'),
     description: `desc of ${piName}`,
     inputSchema: { type: 'object', properties: {} },
     readOnly,
+    exposure: 'deferred',
+    exposureSource: 'config',
+    configExposure: 'deferred',
   };
 }
 
@@ -719,7 +841,7 @@ function nestedGate(opts: {
     eligible: new Set(descriptors.map((d) => d.piName)),
   });
   const ctx: GatePermissionContext = {
-    permissionHandler: { canUseTool, evaluatePermission } as unknown as GatePermissionContext['permissionHandler'],
+    permissionHandler: { canUseTool, evaluatePermission, matchRule: async () => null, isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => Boolean(opts.plan),
     isMcpReadOnly: mcp.isReadOnly,
     ...(opts.readOnlyShell ? { readOnlyShell: true } : {}),
@@ -739,7 +861,7 @@ describe('nested gate — MCP auto-allow vs. approval (criterion 10)', () => {
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
     // Still routed through the settings evaluator, so a user deny rule is honored.
-    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 });
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 }, undefined);
   });
 
   it('a NON-annotated MCP tool DOES reach canUseTool, with parentToolUseId = the spawning tool-call id', async () => {
@@ -850,7 +972,7 @@ describe('nested gate — a read-only agent MAY call a non-annotated MCP tool: D
 
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
-    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', {});
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', {}, undefined);
   });
 
   it('DECIDED: a read-only agent in PLAN MODE behaves the same — both exemptions compose', async () => {
@@ -988,5 +1110,131 @@ describe('runPermissionGate — checkpoint baseline wait', () => {
     const result = await runPermissionGate(ev('write', 'd1', { path: inFolder('a.ts'), content: 'x' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(waited).toEqual([]);
+  });
+});
+
+describe('runPermissionGate — GenerateImage takes the write gate', () => {
+  const input = { prompt: 'a fox', file_path: 'assets/fox.png' };
+
+  it('plan mode blocks it with a policy reason, without prompting', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('GenerateImage', 'g1', input), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result?.reason).not.toContain(FEEDBACK_MARKER);
+    expect(result).not.toHaveProperty('terminate');
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('a read-only agent cannot call it', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true });
+    const result = await runPermissionGate(ev('GenerateImage', 'g1', input), panel, undefined);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('outside plan mode it goes to canUseTool with the raw input, never the module auto-allow', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({});
+    expect(await runPermissionGate(ev('GenerateImage', 'g1', input), panel, undefined)).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledWith('GenerateImage', input, expect.objectContaining({ toolUseID: 'g1' }));
+    expect(evaluatePermission).not.toHaveBeenCalled();
+  });
+
+  it('waits for the checkpoint baseline after approval, so a rewind sees the new file as created this turn', async () => {
+    const { panel } = makePanel({});
+    const wait = vi.fn(async () => undefined);
+    panel.checkpointBaseline = { folder: path.resolve('/work/project'), wait };
+    await runPermissionGate(ev('GenerateImage', 'g1', input), panel, undefined);
+    expect(wait).toHaveBeenCalledWith(expect.anything(), 'GenerateImage');
+  });
+});
+
+describe('ask rules through the real PermissionHandler — the prompt runs wherever the mode would auto-approve', () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'dam-gate-ask-'));
+  afterAll(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(workspace, '.damocles'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.damocles', 'settings.local.json'), JSON.stringify({ permissions: { ask: ['Read(notes/**)', 'Edit(src/**)'] } }));
+  const sourceFile = path.join(workspace, 'src', 'a.ts');
+  fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+  fs.writeFileSync(sourceFile, 'a');
+
+  /** A handler whose webview records each prompt and leaves it pending until the test answers it. */
+  function askingPanel(mode: 'default' | 'acceptEdits' | 'plan', yolo = false) {
+    const handler = new PermissionHandler(createFakePlatform());
+    handler.setWorkspacePath(workspace);
+    handler.setCwd(workspace);
+    handler.setPermissionMode(mode);
+    handler.setDangerouslySkipPermissions(yolo);
+    const prompts: Array<Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>> = [];
+    handler.setPostMessage((msg) => { if (msg.type === 'requestPermission') prompts.push(msg); });
+    const { panel } = makePanel({ plan: mode === 'plan' });
+    panel.permissionHandler = handler;
+    return { panel, handler, prompts };
+  }
+
+  for (const mode of ['default', 'acceptEdits', 'plan'] as const) {
+    it(`Read in ${mode} mode prompts, registered as a pending prompt, and runs once approved`, async () => {
+      const { panel, handler, prompts } = askingPanel(mode);
+      const pending = runPermissionGate(ev('read', 'r1', { path: 'notes/a.txt' }), panel, undefined);
+      await expect.poll(() => prompts.length).toBe(1);
+      expect(prompts[0]).toMatchObject({ toolUseId: 'r1', toolName: 'Read', toolInput: { file_path: 'notes/a.txt' } });
+      expect(handler.hasPendingPrompts()).toBe(true);
+      await handler.resolveApproval('r1', true);
+      expect(await pending).toBeUndefined();
+      expect(handler.hasPendingPrompts()).toBe(false);
+      expect(await runPermissionGate(ev('read', 'r2', { path: 'other/a.txt' }), panel, undefined)).toBeUndefined();
+      expect(prompts).toHaveLength(1);
+    });
+  }
+
+  it('Read under YOLO runs without a prompt', async () => {
+    const { panel, prompts } = askingPanel('default', true);
+    expect(await runPermissionGate(ev('read', 'r1', { path: 'notes/a.txt' }), panel, undefined)).toBeUndefined();
+    expect(prompts).toEqual([]);
+  });
+
+  it('a rejected Read prompt is the user\'s answer', async () => {
+    const { panel, handler, prompts } = askingPanel('default');
+    const pending = runPermissionGate(ev('read', 'r1', { path: 'notes/a.txt' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    await handler.resolveApproval('r1', false, { customMessage: 'not that file' });
+    const result = await pending;
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain('not that file');
+  });
+
+  it('Edit in acceptEdits mode prompts with its diff', async () => {
+    const { panel, handler, prompts } = askingPanel('acceptEdits');
+    const pending = runPermissionGate(ev('Edit', 'e1', { file_path: sourceFile, old_string: 'a', new_string: 'b' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    expect(prompts[0]).toMatchObject({ toolName: 'Edit', filePath: sourceFile, proposedContent: 'b' });
+    await handler.resolveApproval('e1', true);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('Edit by a subagent whose edits the user accepted still prompts when an ask rule names it', async () => {
+    const { panel, handler, prompts } = askingPanel('default');
+    handler.autoApproveSubagent('agent-1');
+    const pending = runPermissionGate(ev('Edit', 'e1', { file_path: sourceFile, old_string: 'a', new_string: 'b' }), panel, undefined, 'agent-1');
+    await expect.poll(() => prompts.length).toBe(1);
+    await handler.resolveApproval('e1', true);
+    expect(await pending).toBeUndefined();
+    expect(await runPermissionGate(ev('Edit', 'e2', { file_path: 'lib/b.ts', old_string: 'a', new_string: 'b' }), panel, undefined, 'agent-1')).toBeUndefined();
+    expect(prompts).toHaveLength(1);
+  });
+
+  it('plan mode resolves the plan file against the session cwd, not the process cwd', async () => {
+    const { panel, prompts } = askingPanel('plan');
+    // One level below the session cwd: from the session cwd the path climbs one level too far. With the
+    // real process cwd, a shallower session cwd clamps the extra `..` at the root and reaches the plan file.
+    const processCwd = vi.spyOn(process, 'cwd').mockReturnValue(path.join(workspace, 'nested'));
+    onTestFinished(() => processCwd.mockRestore());
+    const planPath = path.join(DAMOCLES_PLANS_DIR, 'plan-abc12345.md');
+    const fromProcessCwd = path.relative(process.cwd(), planPath);
+    expect(path.resolve(fromProcessCwd)).toBe(planPath);
+    const result = await runPermissionGate(ev('write', 'w1', { path: fromProcessCwd, content: '# plan' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain('Plan mode is active');
+    expect(prompts).toEqual([]);
   });
 });

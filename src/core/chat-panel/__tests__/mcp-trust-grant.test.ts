@@ -163,8 +163,10 @@ describe("granting trust to an open workspace", () => {
     platform.trust.grantTrust();
     await vi.waitFor(() => expect(fedToClient.length).toBeGreaterThan(0));
 
-    expect(fedToClient[0]!.folder["github"]).toEqual({ command: "repo-github" });
-    expect(fedToClient[0]!.folder["repoOnly"]).toEqual({ command: "repo-only" });
+    expect(fedToClient[0]!.folder["github"]?.config).toEqual({ command: "repo-github", cwd: fakeWorkspace });
+    expect(fedToClient[0]!.folder["repoOnly"]?.config).toEqual({ command: "repo-only", cwd: fakeWorkspace });
+    // The repo's .mcp.json keeps its own value rules, and the client is told the folder is now trusted.
+    expect(fedToClient[0]!.folder["github"]).toMatchObject({ valueFormat: "legacy", folderScoped: true, trusted: true });
     // The repo's `github` now shadows the user one in this folder only.
     expect(fedToClient[0]!.userVisible).not.toContain("github");
   });
@@ -179,7 +181,7 @@ describe("granting trust to an open workspace", () => {
     expect(Object.keys(fedToClientB[0]!.folder)).toEqual(["betaOnly"]);
     // B defines no `github`, so the user one stays visible there and is shared through the union.
     expect(fedToClientB[0]!.userVisible).toEqual(["github"]);
-    expect(fedToClientB[0]!.userUnion["github"]).toEqual({ command: "user-github" });
+    expect(fedToClientB[0]!.userUnion["github"]?.config).toEqual({ command: "user-github", cwd: fakeHome });
 
     const namesIn = (messages: Posted[]) => configUpdates(messages)[0]!.servers.map(server => server.name).sort();
     expect(namesIn(posted)).toEqual(["github", "repoOnly"]);
@@ -192,7 +194,7 @@ describe("granting trust to an open workspace", () => {
     const scope = settings.settingsManager.getEnabledMcpServers(KEY_A);
 
     expect(scope.userVisible).toContain("github");
-    expect(scope.userUnion["github"]).toEqual({ command: "user-github" });
+    expect(scope.userUnion["github"]?.config).toEqual({ command: "user-github", cwd: fakeHome });
     expect(scope.folder).toEqual({});
     expect(settings.settingsManager.getEnabledMcpServers(KEY_B).folder).toEqual({});
   });

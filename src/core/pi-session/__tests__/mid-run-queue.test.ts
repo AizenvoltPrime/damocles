@@ -191,6 +191,88 @@ describe('the mid-run queue against pi', () => {
     expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1', returnToInput: true });
   });
 
+  it('a batch another extension\'s input handler consumes loses its chip and leaves nothing held for a later re-steer', async () => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    // Screening runs the handlers as interactive input; the re-steer reaches them as input from an extension.
+    const consumer = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => (event.source === 'extension' && event.text === QUEUED ? { action: 'handled' } : undefined));
+    };
+    const { tool, store } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Done.')], consumer);
+    bindPanel(panel, session);
+
+    const run = session.prompt(PROMPT);
+    await shell.started;
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect(emitted).toContainEqual({ type: 'queueCancelled', messageId: 'q1' }));
+    store.cancel('call-1');
+    shell.release();
+    await run;
+
+    expect((panel as unknown as { queuedInputs: unknown[] }).queuedInputs).toEqual([]);
+    expect(session.pendingMessageCount).toBe(0);
+    expect(contexts.flat()).not.toContain(`user: ${QUEUED}`);
+  });
+
+  it('a batch that opens a run of its own opens a turn, so the session reads as working while it streams', async () => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const inputGate: Array<() => void> = [];
+    const slowInputHook = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => {
+        if (event.source === 'extension') await new Promise<void>((resolve) => inputGate.push(resolve));
+        return undefined;
+      });
+    };
+    const { tool, store } = wire(shell, () => undefined, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('First.'), fauxAssistantMessage('Second.')], slowInputHook);
+    bindPanel(panel, session);
+
+    const run = session.prompt(PROMPT);
+    await shell.started;
+    expect(panel.queueInput(QUEUED, 'q1')).toBe('queued');
+    await vi.waitFor(() => expect(inputGate).toHaveLength(1));
+    store.cancel('call-1');
+    shell.release();
+    await run;
+    const opened = emitted.length;
+    inputGate.shift()!();
+    await vi.waitFor(() => expect((panel as unknown as { resteerRunning: boolean }).resteerRunning).toBe(false));
+
+    expect(contexts.at(-1)?.at(-1)).toBe(`user: ${QUEUED}`);
+    expect(emitted.slice(opened)).toContainEqual({ type: 'processing', isProcessing: true });
+  });
+
+  it('a cancel note another extension\'s input handler consumes is never echoed, so a later stop reports no discarded note', async () => {
+    const shell = blockingShell();
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const panel = panelSession(emitted);
+    const bound: { session?: AgentSession } = {};
+    const consumer = (pi: ExtensionAPI): void => {
+      pi.on('input', async (event) => (event.text === NOTE ? { action: 'handled' } : undefined));
+    };
+    const { tool, store } = wire(shell, () => bound.session, panel);
+    const { session, contexts } = await boot(tool, [callPowerShell, fauxAssistantMessage('Done.')], consumer);
+    bound.session = session;
+    bindPanel(panel, session);
+
+    const run = session.prompt(PROMPT).catch(() => undefined);
+    await shell.started;
+    expect(store.cancel('call-1', NOTE)).toBe(true);
+    await vi.waitFor(() => expect((panel as unknown as { injectedNotes: unknown[] }).injectedNotes).toEqual([]));
+    const stopped = panel.interrupt();
+    shell.release();
+    await stopped;
+    await run;
+
+    expect(emitted.filter((m) => m.type === 'userMessage')).toEqual([]);
+    expect(notices(emitted).some((text) => text.includes('discarded your cancel note'))).toBe(false);
+    expect(contexts.flat()).not.toContain(`user: ${NOTE}`);
+  });
+
   it('returns queued messages to the input on a budget stop, as ESC does, and none reaches the model', async () => {
     const shell = blockingShell();
     const emitted: ExtensionToWebviewMessage[] = [];

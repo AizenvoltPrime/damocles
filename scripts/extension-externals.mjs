@@ -27,10 +27,10 @@ export const EXTENSION_EXTERNALS = [
   '@earendil-works/pi-tui',
   'jiti',
   'typebox',
-  // MCP SDK — pure ESM ("type": "module") with deep subpath imports; kept external and loaded only via
-  // dynamic import() from CJS, mirroring the pi harness (US-014.0).
-  '@modelcontextprotocol/sdk',
-  '@modelcontextprotocol/sdk/*',
+  // pi's MCP client — pure ESM with subpath exports (`/oauth`); kept external and loaded only via
+  // dynamic import() from CJS, mirroring the pi harness.
+  '@earendil-works/pi-mcp',
+  '@earendil-works/pi-mcp/*',
   // Patchright (patched Playwright, Apache-2.0) — the browser automation engine (Slice 1). CJS
   // `require('patchright')` from src/core/browser; must stay external and ship as real
   // node_modules (it spawns a Node driver subprocess from patchright-core via process.execPath —

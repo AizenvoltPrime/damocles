@@ -1,58 +1,90 @@
 /*
  * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
- * Connection pool for MCP servers: transport selection (stdio / streamable-HTTP w/ SSE fallback),
- * connect dedup, tool/resource discovery, list_changed handling, and cancellable tool calls.
- * SDK value classes are obtained from the dynamically-imported bundle (the SDK is esbuild-external).
+ * Connection pool for MCP servers on `@earendil-works/pi-mcp`: transport selection (stdio /
+ * streamable HTTP), connect dedup, tool/resource discovery, list_changed handling, and cancellable
+ * tool calls. pi-mcp's value classes come from the dynamically imported bundle (it is esbuild-external).
  */
-import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
-import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
-import type { McpSdkBundle } from './mcp-sdk-loader';
-import type { McpTool, McpResource, McpServerDefinition, McpElicitationHandler } from './types';
+import type { AuthProvider, CallToolResult, McpClient, McpTransport, ReadResourceResult } from '@earendil-works/pi-mcp';
+import type { McpServerErrorInfo } from '../../../shared/types/mcp';
+import { MCP_STDERR_TAIL_CHARS } from '../../../shared/types/mcp';
+import type { McpClientBundle } from './mcp-client-loader';
+import {
+  normalizeServerConfig,
+  type McpTool,
+  type McpResource,
+  type McpServerDefinition,
+  type McpServerSpec,
+  type McpElicitationHandler,
+} from './types';
+import { resolveMcpServerValues } from './config-value';
+import { hasScopeChallenge } from './mcp-auth-flow';
+import { failureForLog, McpServerConnectError } from './connect-failure';
 import { resolveNpxBinary } from './npx-resolver';
-import { interpolateEnvRecord, killProcessTree, resolveBearerToken, resolveConfigPath } from './utils';
+import { stdioEnvironment } from './stdio-env';
+import { stripBidiControls, stripControlChars } from '../untrusted-text';
 import { log } from '../../logger';
 
 export type ConnectionStatus = 'connected' | 'closed' | 'needs-auth';
 
+/** Per-request timeout when the config sets no `timeout`. */
+export const DEFAULT_MCP_TIMEOUT_MS = 120_000;
+/** Health checks ping servers one after another, so one hung server delays the rest by at most this. */
+export const HEALTH_PING_TIMEOUT_MS = 10_000;
+
 export interface ServerConnection {
-  client: Client;
-  transport: Transport;
+  client: McpClient;
+  transport: McpTransport;
+  /** The definition with its values resolved for this connect. */
   definition: McpServerDefinition;
   tools: McpTool[];
   resources: McpResource[];
   serverInfo?: { name: string; version: string };
+  /** The server's `initialize` instructions, trimmed. */
+  instructions?: string;
   lastUsedAt: number;
   inFlight: number;
   status: ConnectionStatus;
+  /** Whether the transport carries an auth provider, so an authorization failure means sign-in is needed. */
+  authenticates: boolean;
+  /** Set on a needs-auth connection that asks for more scope than was granted. */
+  errorInfo?: McpServerErrorInfo;
   /** True when the client/transport were already torn down (a needs-auth result), so `close()` must not re-tear them. */
   transportClosed?: boolean;
 }
 
-/** Produces an OAuth provider for a remote server, or undefined for unauthenticated servers (US-014.5). */
-export type AuthProviderFactory = (
-  serverName: string,
-  url: string,
-  definition: McpServerDefinition,
-) => OAuthClientProvider | undefined;
+/** Produces the auth provider for a remote server from its resolved definition, or undefined for none. */
+export type AuthProviderFactory = (serverName: string, url: string, definition: McpServerDefinition) => AuthProvider | undefined;
 
 export interface McpServerManagerOptions {
-  sdk: McpSdkBundle;
+  client: McpClientBundle;
+  /** Damocles' version, sent as `clientInfo.version`. */
+  clientVersion: string;
   authProviderFactory?: AuthProviderFactory;
+  /** The shell `!command` values run in on Windows, read on every connect. */
+  shellPath?: () => string | undefined;
   /** Fired after a server's tool/resource list changes (list_changed notification → refetch done). */
   onListChanged?: (serverName: string) => void;
-  /** Fired when a live connection drops on its own (process crash / transport loss) — NOT via close().
-   *  Lets the orchestrator reconnect a server meant to stay connected. */
+  /** Fired when a live connection drops on its own (process crash / transport loss), never via close(). */
   onConnectionLost?: (serverName: string) => void;
+  /** Builds the transport from the resolved definition instead of stdio / streamable HTTP. */
+  transportFactory?: (serverName: string, definition: McpServerDefinition) => McpTransport | Promise<McpTransport>;
+}
+
+/** Keeps line breaks, flattens every other control character, and keeps the tail. */
+function sanitizeStderrTail(stderr: string): string | undefined {
+  const lines = stderr.split(/\r?\n/).map((line) => stripBidiControls(stripControlChars(line)));
+  const text = lines.join('\n').trim();
+  return text ? Array.from(text).slice(-MCP_STDERR_TAIL_CHARS).join('') : undefined;
 }
 
 export class McpServerManager {
-  private readonly sdk: McpSdkBundle;
-  private readonly authProviderFactory?: AuthProviderFactory;
-  private readonly onListChanged?: (serverName: string) => void;
-  private readonly onConnectionLost?: (serverName: string) => void;
+  private readonly bundle: McpClientBundle;
+  private readonly clientVersion: string;
+  private readonly authProviderFactory: AuthProviderFactory | undefined;
+  private readonly shellPath: (() => string | undefined) | undefined;
+  private readonly onListChanged: ((serverName: string) => void) | undefined;
+  private readonly onConnectionLost: ((serverName: string) => void) | undefined;
+  private readonly transportFactory: McpServerManagerOptions['transportFactory'];
   private elicitationHandler: McpElicitationHandler | undefined;
 
   private connections = new Map<string, ServerConnection>();
@@ -64,10 +96,13 @@ export class McpServerManager {
   private refetchChains = new Map<string, Promise<void>>();
 
   constructor(options: McpServerManagerOptions) {
-    this.sdk = options.sdk;
-    if (options.authProviderFactory) this.authProviderFactory = options.authProviderFactory;
-    if (options.onListChanged) this.onListChanged = options.onListChanged;
-    if (options.onConnectionLost) this.onConnectionLost = options.onConnectionLost;
+    this.bundle = options.client;
+    this.clientVersion = options.clientVersion;
+    this.authProviderFactory = options.authProviderFactory;
+    this.shellPath = options.shellPath;
+    this.onListChanged = options.onListChanged;
+    this.onConnectionLost = options.onConnectionLost;
+    this.transportFactory = options.transportFactory;
   }
 
   /** Enable elicitation (form) capability + register the request handler on every client (US-014.7). */
@@ -75,7 +110,7 @@ export class McpServerManager {
     this.elicitationHandler = handler;
   }
 
-  async connect(name: string, definition: McpServerDefinition): Promise<ServerConnection> {
+  async connect(name: string, spec: McpServerSpec): Promise<ServerConnection> {
     const inflight = this.connectPromises.get(name);
     if (inflight) return inflight;
 
@@ -85,17 +120,15 @@ export class McpServerManager {
       return existing;
     }
 
-    const promise = this.createConnection(name, definition);
+    const promise = this.createConnection(name, spec);
     this.connectPromises.set(name, promise);
     try {
       const connection = await promise;
       if (this.closeRequested.has(name)) {
         // close() ran while this connect was in flight. Tear the fresh connection down instead of
         // registering it, so a just-removed server doesn't leak a live child (M2).
-        if (!connection.transportClosed) {
-          await this.tearDownTransport(connection.client, connection.transport);
-        }
         connection.status = 'closed';
+        if (!connection.transportClosed) await this.tearDown(connection.client);
         throw new Error(`MCP server "${name}" was closed during connect`);
       }
       this.connections.set(name, connection);
@@ -106,84 +139,93 @@ export class McpServerManager {
     }
   }
 
-  private buildClientCapabilities(): Record<string, unknown> {
+  /** Resolve the spec's values for this connect (rotated tokens apply), then connect over the matching transport. */
+  private async createConnection(name: string, spec: McpServerSpec): Promise<ServerConnection> {
+    const shellPath = this.shellPath?.();
+    const resolution = await resolveMcpServerValues(spec.config, {
+      format: spec.valueFormat,
+      trusted: spec.trusted,
+      folderScoped: spec.folderScoped,
+      ...(shellPath !== undefined ? { shellPath } : {}),
+    });
+    if (!resolution.ok) throw new McpServerConnectError(resolution.error, { errorInfo: resolution.errorInfo });
+    const definition = normalizeServerConfig(resolution.config);
+    const authProvider = definition.url ? this.authProviderFactory?.(name, definition.url, definition) : undefined;
+
+    let transport: McpTransport;
+    if (this.transportFactory) transport = await this.transportFactory(name, definition);
+    else if (definition.command) transport = await this.createStdioTransport(name, definition);
+    else if (definition.url) transport = this.createHttpTransport(name, definition, authProvider);
+    else throw new Error(`MCP server "${name}" has no command or url`);
+    return this.establish(name, definition, transport, authProvider !== undefined);
+  }
+
+  private createClient(serverName: string, definition: McpServerDefinition): McpClient {
     // Advertise elicitation (form only) when wired; never advertise sampling (US-014.1).
-    if (!this.elicitationHandler) return {};
-    return { elicitation: { form: {} } };
-  }
-
-  private createClient(serverName: string): Client {
-    const capabilities = this.buildClientCapabilities();
-    const client = new this.sdk.client.Client(
-      { name: `damocles-mcp-${serverName}`, version: '1.0.0' },
-      Object.keys(capabilities).length > 0 ? { capabilities } : undefined,
-    );
-    if (this.elicitationHandler) {
-      const handler = this.elicitationHandler;
-      client.setRequestHandler(this.sdk.types.ElicitRequestSchema, async (request) =>
-        handler(request.params, serverName),
-      );
-    }
+    const client = new this.bundle.mcp.McpClient({
+      name: 'Damocles',
+      version: this.clientVersion,
+      requestTimeoutMs: timeoutMsOf(definition),
+      ...(this.elicitationHandler ? { capabilities: { elicitation: { form: {} } } } : {}),
+    });
+    const handler = this.elicitationHandler;
+    if (handler) client.setRequestHandler('elicitation/create', (params) => handler(params, serverName));
+    // The client forwards its transport's errors here too.
+    client.onError((error) => log('[McpServerManager] %s reported an error: %s', serverName, failureForLog(error)));
     return client;
-  }
-
-  private async createConnection(name: string, definition: McpServerDefinition): Promise<ServerConnection> {
-    if (definition.command) {
-      return this.establish(name, definition, await this.createStdioTransport(name, definition));
-    }
-    if (definition.url) {
-      return this.createHttpConnection(name, definition);
-    }
-    throw new Error(`MCP server "${name}" has no command or url`);
   }
 
   /**
    * Connect a fresh client over `transport`, discover tools/resources, and build the live connection.
-   * `UnauthorizedError` resolves to a `needs-auth` connection (the transport is torn down); any other
-   * failure tears down and rethrows so the caller (e.g. HTTP→SSE fallback) can react.
+   * With an auth provider, an authorization failure resolves to a `needs-auth` connection (already torn
+   * down); any other failure tears down and throws, carrying a stdio server's stderr tail.
    */
   private async establish(
     name: string,
     definition: McpServerDefinition,
-    transport: Transport,
+    transport: McpTransport,
+    authenticates: boolean,
   ): Promise<ServerConnection> {
-    const client = this.createClient(name);
+    const client = this.createClient(name, definition);
     try {
       await client.connect(transport);
       this.attachListChangedHandlers(name, client);
 
+      // Servers without a capability do not answer its list method.
       const [tools, resources] = await Promise.all([
-        this.fetchAllTools(client),
-        this.fetchAllResources(client),
+        client.serverCapabilities?.tools ? client.listTools() : Promise.resolve([]),
+        client.serverCapabilities?.resources ? this.fetchResources(name, client) : Promise.resolve([]),
       ]);
 
-      const version = client.getServerVersion();
       const connection: ServerConnection = {
         client,
         transport,
         definition,
-        tools,
+        tools: tools as McpTool[],
         resources,
         lastUsedAt: Date.now(),
         inFlight: 0,
         status: 'connected',
+        authenticates,
       };
-      if (version) connection.serverInfo = { name: version.name, version: version.version };
-      // Detect a spontaneous drop (process crash / transport loss). A deliberate close() deletes the
-      // connection from the map first, so the identity guard fires the lost-callback ONLY for an
-      // unsolicited drop — never for our own teardown (which would otherwise spawn a reconnect race).
-      client.onclose = () => {
-        if (this.connections.get(name) !== connection) return;
+      const serverInfo = client.serverInfo;
+      if (serverInfo) connection.serverInfo = { name: serverInfo.name, version: serverInfo.version };
+      const instructions = client.instructions?.trim();
+      if (instructions) connection.instructions = instructions;
+      // A deliberate close() deletes the connection from the map (or marks it needs-auth) first, so the
+      // guard fires the lost-callback only for an unsolicited drop, never for our own teardown.
+      client.onClose(() => {
+        if (this.connections.get(name) !== connection || connection.status !== 'connected') return;
         connection.status = 'closed';
         this.connections.delete(name);
         this.refetchChains.delete(name);
         this.onConnectionLost?.(name);
-      };
+      });
       return connection;
     } catch (error) {
-      await this.tearDownTransport(client, transport);
-      if (error instanceof this.sdk.auth.UnauthorizedError) {
-        return {
+      await this.tearDown(client);
+      if (authenticates && this.isAuthRequired(error)) {
+        const connection: ServerConnection = {
           client,
           transport,
           definition,
@@ -192,34 +234,37 @@ export class McpServerManager {
           lastUsedAt: Date.now(),
           inFlight: 0,
           status: 'needs-auth',
+          authenticates,
           transportClosed: true,
         };
+        const errorInfo = this.scopeChallengeInfo(name, definition);
+        if (errorInfo) connection.errorInfo = errorInfo;
+        return connection;
       }
-      throw error;
+      const stderrTail = transport instanceof this.bundle.mcp.StdioTransport ? sanitizeStderrTail(transport.stderr) : undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new McpServerConnectError(message, { ...(stderrTail ? { stderrTail } : {}), logText: failureForLog(error) });
     }
   }
 
-  /**
-   * Close a client + transport, killing the whole stdio child tree first on Windows. `Client.close()`
-   * closes its transport, whose `close()` only SIGTERM/kill()s the direct child — any workers it spawned
-   * leak. Tree-killing the live process up front (before the graceful closes) terminates the descendants
-   * the SDK would orphan. HTTP/SSE transports own no child, so this is a plain close for them.
-   */
-  private async tearDownTransport(client: Client, transport: Transport): Promise<void> {
-    await this.killStdioTree(transport);
-    await client.close().catch(() => {});
-    await transport.close().catch(() => {});
+  private isAuthRequired(error: unknown): boolean {
+    return error instanceof this.bundle.mcp.McpAuthRequiredError || error instanceof this.bundle.oauth.McpOAuthAuthorizationRequiredError;
   }
 
-  /** Tree-kill a stdio transport's child process on Windows; no-op for non-stdio transports / POSIX. */
-  private async killStdioTree(transport: Transport): Promise<void> {
-    if (process.platform !== 'win32') return;
-    if (!(transport instanceof this.sdk.stdio.StdioClientTransport)) return;
-    const pid = transport.pid;
-    if (typeof pid === 'number') await killProcessTree(pid);
+  private scopeChallengeInfo(name: string, definition: McpServerDefinition): McpServerErrorInfo | undefined {
+    return definition.url && hasScopeChallenge(name, definition.url) ? { code: 'insufficientScope' } : undefined;
   }
 
-  private async createStdioTransport(name: string, definition: McpServerDefinition): Promise<Transport> {
+  /** `client.close()` closes the transport, which for stdio terminates the whole process tree. */
+  private async tearDown(client: McpClient): Promise<void> {
+    try {
+      await client.close();
+    } catch (error) {
+      log('[McpServerManager] closing an MCP client failed: %O', error);
+    }
+  }
+
+  private async createStdioTransport(name: string, definition: McpServerDefinition): Promise<McpTransport> {
     let command = definition.command as string;
     let args = definition.args ?? [];
 
@@ -232,93 +277,61 @@ export class McpServerManager {
       }
     }
 
-    const cwd = resolveConfigPath(definition.cwd);
-    const stdioOptions: StdioServerParameters = {
+    // The host resolved `cwd` to an absolute directory when it read the config (`McpManager` `serverSpec`).
+    const cwd = definition.cwd;
+    return new this.bundle.mcp.StdioTransport({
       command,
       args,
-      env: this.resolveStdioEnv(definition.env),
-      stderr: definition.debug ? 'inherit' : 'ignore',
-    };
-    if (cwd !== undefined) stdioOptions.cwd = cwd;
-    return new this.sdk.stdio.StdioClientTransport(stdioOptions);
+      // Only the allowlisted host variables plus the server's own env: never the host's provider keys.
+      env: stdioEnvironment(definition.env),
+      inheritEnv: false,
+      stderr: definition.debug ? 'inherit' : 'pipe',
+      ...(cwd !== undefined ? { cwd } : {}),
+    });
   }
 
-  private resolveStdioEnv(env?: Record<string, string>): Record<string, string> {
-    const base = this.sdk.stdio.getDefaultEnvironment();
-    const overrides = interpolateEnvRecord(env);
-    return overrides ? { ...base, ...overrides } : base;
-  }
-
-  /**
-   * Connect a remote server with the real client directly: try streamable HTTP first, falling back to
-   * SSE only on a non-auth failure. The earlier throwaway "probe" client doubled every handshake (and
-   * defeated its own purpose by reconnecting regardless); a genuine auth failure surfaces as needs-auth
-   * via `establish` and is never retried over SSE (US-014.5).
-   */
-  private async createHttpConnection(serverName: string, definition: McpServerDefinition): Promise<ServerConnection> {
-    const url = new URL(definition.url as string);
-    const transportOptions = this.buildHttpTransportOptions(serverName, definition);
-
-    try {
-      const streamable = new this.sdk.http.StreamableHTTPClientTransport(url, transportOptions) as Transport;
-      return await this.establish(serverName, definition, streamable);
-    } catch {
-      // `establish` resolves auth failures to needs-auth (never throws them), so a throw here is a
-      // genuine streamable-transport failure: retry once over SSE.
-      const sse = new this.sdk.sse.SSEClientTransport(url, transportOptions) as Transport;
-      return this.establish(serverName, definition, sse);
-    }
-  }
-
-  private buildHttpTransportOptions(
-    serverName: string,
-    definition: McpServerDefinition,
-  ): { requestInit?: { headers: Record<string, string> }; authProvider?: OAuthClientProvider } {
-    const headers = interpolateEnvRecord(definition.headers) ?? {};
+  private createHttpTransport(serverName: string, definition: McpServerDefinition, authProvider: AuthProvider | undefined): McpTransport {
+    const headers: Record<string, string> = { ...definition.headers };
     if (definition.auth === 'bearer') {
-      const token = resolveBearerToken(definition);
+      const token = this.bearerToken(serverName, definition);
       if (token) headers['Authorization'] = `Bearer ${token}`;
     }
-    const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
-    const authProvider = this.authProviderFactory?.(serverName, definition.url as string, definition);
-
-    const transportOptions: { requestInit?: { headers: Record<string, string> }; authProvider?: OAuthClientProvider } = {};
-    if (requestInit) transportOptions.requestInit = requestInit;
-    if (authProvider) transportOptions.authProvider = authProvider;
-    return transportOptions;
+    return new this.bundle.mcp.StreamableHttpTransport({
+      url: definition.url as string,
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(authProvider ? { authProvider } : {}),
+    });
   }
 
-  private async fetchAllTools(client: Client): Promise<McpTool[]> {
-    const all: McpTool[] = [];
-    let cursor: string | undefined;
-    do {
-      const result = await client.listTools(cursor ? { cursor } : undefined);
-      all.push(...((result.tools ?? []) as McpTool[]));
-      cursor = result.nextCursor;
-    } while (cursor);
-    return all;
+  /** The resolved inline token, else the variable `bearerTokenEnv` names; an unset variable fails closed. */
+  private bearerToken(serverName: string, definition: McpServerDefinition): string | undefined {
+    if (definition.bearerToken !== undefined) return definition.bearerToken;
+    const variable = definition.bearerTokenEnv;
+    if (!variable) return undefined;
+    const value = process.env[variable];
+    if (!value) {
+      throw new McpServerConnectError(`MCP server "${serverName}": environment variable ${variable} is not set (bearerTokenEnv)`, {
+        errorInfo: { code: 'missingVariable', params: { variable, field: 'bearerTokenEnv' } },
+      });
+    }
+    return value;
   }
 
-  private async fetchAllResources(client: Client): Promise<McpResource[]> {
+  /** A server whose resource list fails still connects; its resources are simply not offered. */
+  private async fetchResources(serverName: string, client: McpClient): Promise<McpResource[]> {
     try {
-      const all: McpResource[] = [];
-      let cursor: string | undefined;
-      do {
-        const result = await client.listResources(cursor ? { cursor } : undefined);
-        all.push(...((result.resources ?? []) as McpResource[]));
-        cursor = result.nextCursor;
-      } while (cursor);
-      return all;
-    } catch {
+      return (await client.listResources()) as McpResource[];
+    } catch (error) {
+      log('[McpServerManager] resources/list failed for %s: %s', serverName, failureForLog(error));
       return [];
     }
   }
 
-  private attachListChangedHandlers(serverName: string, client: Client): void {
-    client.setNotificationHandler(this.sdk.types.ToolListChangedNotificationSchema, () => {
+  private attachListChangedHandlers(serverName: string, client: McpClient): void {
+    client.onNotification('notifications/tools/list_changed', () => {
       this.queueRefetch(serverName, () => this.refetchTools(serverName));
     });
-    client.setNotificationHandler(this.sdk.types.ResourceListChangedNotificationSchema, () => {
+    client.onNotification('notifications/resources/list_changed', () => {
       this.queueRefetch(serverName, () => this.refetchResources(serverName));
     });
   }
@@ -326,18 +339,17 @@ export class McpServerManager {
   /** Append a refetch to the server's serialized chain so paginated fetches can't interleave (L7). */
   private queueRefetch(serverName: string, task: () => Promise<void>): void {
     const prev = this.refetchChains.get(serverName) ?? Promise.resolve();
-    const next = prev.then(task, task).catch(() => {});
-    this.refetchChains.set(serverName, next);
+    this.refetchChains.set(serverName, prev.then(task, task));
   }
 
   private async refetchTools(serverName: string): Promise<void> {
     const connection = this.connections.get(serverName);
     if (!connection || connection.status !== 'connected') return;
     try {
-      connection.tools = await this.fetchAllTools(connection.client);
+      connection.tools = (await connection.client.listTools()) as McpTool[];
       this.onListChanged?.(serverName);
     } catch (error) {
-      log('[McpServerManager] refetch tools failed for %s: %O', serverName, error);
+      log('[McpServerManager] refetch tools failed for %s: %s', serverName, failureForLog(error));
     }
   }
 
@@ -345,10 +357,10 @@ export class McpServerManager {
     const connection = this.connections.get(serverName);
     if (!connection || connection.status !== 'connected') return;
     try {
-      connection.resources = await this.fetchAllResources(connection.client);
+      connection.resources = (await connection.client.listResources()) as McpResource[];
       this.onListChanged?.(serverName);
     } catch (error) {
-      log('[McpServerManager] refetch resources failed for %s: %O', serverName, error);
+      log('[McpServerManager] refetch resources failed for %s: %s', serverName, failureForLog(error));
     }
   }
 
@@ -358,23 +370,15 @@ export class McpServerManager {
     args: Record<string, unknown>,
     opts: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<CallToolResult> {
-    const connection = this.connections.get(serverName);
-    if (!connection || connection.status !== 'connected') {
-      throw new Error(`MCP server "${serverName}" is not connected`);
-    }
-    const options = this.buildRequestOptions(opts);
-    try {
-      this.touch(serverName);
-      this.incrementInFlight(serverName);
-      return (await connection.client.callTool(
-        { name: toolName, arguments: args },
-        undefined,
-        options,
-      )) as CallToolResult;
-    } finally {
-      this.decrementInFlight(serverName);
-      this.touch(serverName);
-    }
+    const connection = this.requireConnected(serverName);
+    return this.run(serverName, connection, () =>
+      connection.client.callTool(toolName, args, {
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        // Passing a progress listener is what lets the server's progress notifications reset the timeout.
+        onProgress: () => {},
+      }),
+    );
   }
 
   async readResource(
@@ -382,29 +386,73 @@ export class McpServerManager {
     uri: string,
     opts: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<ReadResourceResult> {
+    const connection = this.requireConnected(serverName);
+    return this.run(serverName, connection, () =>
+      connection.client.readResource(uri, {
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+        onProgress: () => {},
+      }),
+    );
+  }
+
+  /**
+   * Whether the server answers a ping within `HEALTH_PING_TIMEOUT_MS`. Any JSON-RPC reply proves it
+   * alive, an error reply included (a server without `ping` answers -32601); no reply means it is not.
+   */
+  async answersPing(serverName: string): Promise<boolean> {
+    const connection = this.requireConnected(serverName);
+    try {
+      await connection.client.ping({ timeoutMs: HEALTH_PING_TIMEOUT_MS });
+      return true;
+    } catch (error) {
+      if (error instanceof this.bundle.mcp.McpError) return true;
+
+      log('[McpServerManager] %s did not answer ping: %s', serverName, failureForLog(error));
+      return false;
+    }
+  }
+
+  private requireConnected(serverName: string): ServerConnection {
     const connection = this.connections.get(serverName);
     if (!connection || connection.status !== 'connected') {
       throw new Error(`MCP server "${serverName}" is not connected`);
     }
-    const options = this.buildRequestOptions(opts);
+    return connection;
+  }
+
+  /**
+   * Track one request against the connection. An expired HTTP session closes the connection so the next
+   * call reconnects; an authorization failure leaves it at needs-auth.
+   */
+  private async run<T>(serverName: string, connection: ServerConnection, request: () => Promise<T>): Promise<T> {
     try {
       this.touch(serverName);
       this.incrementInFlight(serverName);
-      return await connection.client.readResource({ uri }, options);
+      return await request();
+    } catch (error) {
+      const current = this.connections.get(serverName) === connection;
+      if (current && error instanceof this.bundle.mcp.McpSessionExpiredError) {
+        await this.close(serverName);
+      } else if (current && connection.authenticates && this.isAuthRequired(error)) {
+        await this.markNeedsAuth(serverName, connection);
+      }
+      throw error;
     } finally {
       this.decrementInFlight(serverName);
       this.touch(serverName);
     }
   }
 
-  private buildRequestOptions(opts: { signal?: AbortSignal; timeoutMs?: number }): {
-    signal?: AbortSignal;
-    timeout?: number;
-  } {
-    const options: { signal?: AbortSignal; timeout?: number } = {};
-    if (opts.signal) options.signal = opts.signal;
-    if (opts.timeoutMs !== undefined) options.timeout = opts.timeoutMs;
-    return options;
+  private async markNeedsAuth(serverName: string, connection: ServerConnection): Promise<void> {
+    connection.status = 'needs-auth';
+    connection.tools = [];
+    connection.resources = [];
+    connection.transportClosed = true;
+    const errorInfo = this.scopeChallengeInfo(serverName, connection.definition);
+    if (errorInfo) connection.errorInfo = errorInfo;
+    this.refetchChains.delete(serverName);
+    await this.tearDown(connection.client);
   }
 
   async close(name: string): Promise<void> {
@@ -419,14 +467,15 @@ export class McpServerManager {
     connection.status = 'closed';
     this.connections.delete(name);
     this.refetchChains.delete(name);
-    // A needs-auth connection's client/transport were already torn down in establish — don't re-tear them.
+    // A needs-auth connection's client/transport were already torn down — don't re-tear them.
     if (connection.transportClosed) return;
-    await this.tearDownTransport(connection.client, connection.transport);
+    await this.tearDown(connection.client);
   }
 
+  /** Also closes connects still in flight, which are not in `connections` yet. */
   async closeAll(): Promise<void> {
-    const names = [...this.connections.keys()];
-    await Promise.all(names.map((name) => this.close(name)));
+    const names = new Set([...this.connections.keys(), ...this.connectPromises.keys()]);
+    await Promise.all([...names].map((name) => this.close(name)));
   }
 
   getConnection(name: string): ServerConnection | undefined {
@@ -458,4 +507,9 @@ export class McpServerManager {
     if (connection.inFlight > 0) return false;
     return Date.now() - connection.lastUsedAt > timeoutMs;
   }
+}
+
+/** The server's `timeout` in milliseconds, else the default. */
+export function timeoutMsOf(definition: Pick<McpServerDefinition, 'timeout'>): number {
+  return definition.timeout !== undefined ? definition.timeout * 1000 : DEFAULT_MCP_TIMEOUT_MS;
 }

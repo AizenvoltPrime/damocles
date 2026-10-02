@@ -28,12 +28,17 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setMcpEnabled(msg.mcpEnabled);
       ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
       ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
+      ctx.stores.settingsStore.setMcpToolExposureScopes(msg.toolExposureScopes);
     },
 
     mcpConfigUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.reconcileMcpServers(msg.servers);
       ctx.stores.settingsStore.setMcpConfigErrors(msg.configErrors);
       ctx.stores.settingsStore.setMcpLocalUnignored(msg.localMcpUnignored);
+    },
+
+    mcpRenamedToolRules: (msg, ctx) => {
+      ctx.stores.settingsStore.addMcpRenamedToolRules(msg.notices);
     },
 
     mcpWriteResult: (msg, ctx) => {
@@ -103,23 +108,19 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setOpenAIAuthStatus(msg.status, msg.preferApiKey);
     },
 
-    openaiCodexAuthStarted: (_msg, ctx) => {
-      ctx.stores.settingsStore.setCodexAuthInFlight(true);
+    openaiChatGPTAuthStarted: (_msg, ctx) => {
+      ctx.stores.settingsStore.setChatGPTAuthInFlight(true);
     },
 
-    openaiCodexAuthCompleted: (msg, ctx) => {
-      ctx.stores.settingsStore.setCodexAuthInFlight(false);
-      ctx.stores.settingsStore.setCodexAuthError(null);
-      if (msg.accountId) {
-        toast.success(t('openai.toast.signedInAs', { account: msg.accountId }));
-      } else {
-        toast.success(t('openai.toast.signedIn'));
-      }
+    openaiChatGPTAuthCompleted: (_msg, ctx) => {
+      ctx.stores.settingsStore.setChatGPTAuthInFlight(false);
+      ctx.stores.settingsStore.setChatGPTAuthError(null);
+      toast.success(t('openai.toast.signedIn'));
     },
 
-    openaiCodexAuthFailed: (msg, ctx) => {
-      ctx.stores.settingsStore.setCodexAuthInFlight(false);
-      ctx.stores.settingsStore.setCodexAuthError(msg.error);
+    openaiChatGPTAuthFailed: (msg, ctx) => {
+      ctx.stores.settingsStore.setChatGPTAuthInFlight(false);
+      ctx.stores.settingsStore.setChatGPTAuthError(msg.error);
       toast.error(t('openai.toast.signInFailed', { error: msg.error }));
     },
 
@@ -127,6 +128,11 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setPendingOpenAIModel(msg.modelValue);
       ctx.stores.uiStore.openSettingsPanel();
       toast.warning(t('openai.authRequiredToast'));
+    },
+
+    openOpenAIAuthPanel: (_msg, ctx) => {
+      ctx.stores.settingsStore.setOpenAIAuthPanelRequested(true);
+      ctx.stores.uiStore.openSettingsPanel();
     },
 
     openSettingsPanel: (_msg, ctx) => {
@@ -158,6 +164,18 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
 
     deepseekAuthStatusChanged: (msg, ctx) => {
       ctx.stores.settingsStore.setDeepseekConfigured(msg.configured);
+    },
+
+    typesafeAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setTypesafeStatus(msg.configured, msg.memoryJudge);
+    },
+
+    openrouterAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setOpenrouterConfigured(msg.configured);
+    },
+
+    imageGenerationSettings: (msg, ctx) => {
+      ctx.stores.settingsStore.setImageGeneration(msg.settings);
     },
 
     configChange: (msg) => {

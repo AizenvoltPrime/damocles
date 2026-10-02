@@ -5,7 +5,7 @@ import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
-import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
+import { TOOL_WRITE, TOOL_EDIT, TOOL_GENERATE_IMAGE, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
 
 /**
@@ -52,9 +52,10 @@ export class ApprovalManager {
   async handleFilePermission(
     toolName: string,
     input: Record<string, unknown>,
-    context: CanUseToolContext
+    context: CanUseToolContext,
+    askRule = false
   ): Promise<PermissionResult> {
-    if (context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
+    if (!askRule && context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
       return buildAllowResult(input);
     }
 
@@ -76,13 +77,22 @@ export class ApprovalManager {
   async handleShellPermission(
     toolName: ShellToolName,
     input: Record<string, unknown>,
-    context: CanUseToolContext
+    context: CanUseToolContext,
+    askRule = false
   ): Promise<PermissionResult> {
-    if (context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
+    if (!askRule && context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
       return buildAllowResult(input);
     }
 
-    const result = await this.requestShellPermissionFromWebview(toolName, input, context);
+    const command = typeof input['command'] === 'string' ? input['command'] : JSON.stringify(input);
+    const suggestions = generatePatternSuggestions(toolName, input);
+    const result = await this.requestPermissionFromWebview(
+      toolName,
+      input,
+      context,
+      { command, ...(suggestions.length ? { suggestions } : {}) },
+      { message: `Damocles is waiting for your approval to run: ${command}`, command },
+    );
 
     if (!result.approved) {
       return result.userAnswered
@@ -94,6 +104,123 @@ export class ApprovalManager {
       ...buildAllowResult(input),
       ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
     };
+  }
+
+  /** The prompt for any other tool, such as a read an ask rule names: the tool and its input, no diff. */
+  async handleToolPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    context: CanUseToolContext
+  ): Promise<PermissionResult> {
+    const result = await this.requestPermissionFromWebview(toolName, input, context, {}, {
+      message: `Damocles is waiting for your approval to use ${toolName}`,
+    });
+
+    if (!result.approved) {
+      return result.userAnswered
+        ? buildUserDenyResult(result.customMessage, `User denied permission for ${toolName}`)
+        : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
+    }
+
+    return buildAllowResult(input);
+  }
+
+  /**
+   * GenerateImage's prompt: the path, the image prompt and the billed model, no diff (the image does not
+   * exist until it is paid for). The request shows the raw `file_path` the model sent.
+   */
+  async handleImagePermission(
+    input: Record<string, unknown>,
+    context: CanUseToolContext,
+    imageModel: string
+  ): Promise<PermissionResult> {
+    const result = await this.requestImagePermissionFromWebview(input, context, imageModel);
+
+    if (!result.approved) {
+      return result.userAnswered
+        ? buildUserDenyResult(result.customMessage, 'User rejected the image generation')
+        : buildUnaskedDenyResult(result.customMessage, UNASKED_DENY_DEFAULT);
+    }
+
+    // The tool runs with the model this prompt showed, even if the setting changes before it starts.
+    this.state.approvedImageModels.set(context.toolUseID!, imageModel);
+    return buildAllowResult(input);
+  }
+
+  private requestImagePermissionFromWebview(
+    input: Record<string, unknown>,
+    context: CanUseToolContext,
+    imageModel: string
+  ): Promise<ApprovalResult> {
+    const postMessage = this.getPostMessage();
+    if (!postMessage) {
+      return Promise.resolve({ approved: false, customMessage: 'Cannot request permission: webview not available' });
+    }
+
+    const toolUseId = context.toolUseID;
+    if (!toolUseId) {
+      return Promise.resolve({ approved: false, customMessage: 'Cannot request permission: no tool use ID' });
+    }
+
+    const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
+    const prompt = typeof input['prompt'] === 'string' ? input['prompt'] : '';
+
+    return new Promise<ApprovalResult>((resolve) => {
+      const abortHandler = () => {
+        log('[ApprovalManager] Abort signal on image approval: toolUseId=%s', toolUseId);
+        this.state.removePendingApproval(toolUseId);
+        this.getPostMessage()?.({
+          type: 'permissionAutoResolved',
+          toolUseId,
+          outcome: 'withdrawn',
+          ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        });
+        resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
+      };
+
+      const cleanup = () => {
+        context.signal.removeEventListener('abort', abortHandler);
+      };
+
+      const request: ExtensionToWebviewMessage = {
+        type: 'requestPermission',
+        toolUseId,
+        toolName: TOOL_GENERATE_IMAGE,
+        toolInput: input,
+        filePath,
+        prompt,
+        imageModel,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
+        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
+      };
+
+      registerAbortablePrompt({
+        signal: context.signal,
+        toolUseId,
+        register: () => {
+          this.state.addPendingApproval(toolUseId, {
+            resolve,
+            reject: () => resolve({ approved: false }),
+            cleanup,
+            request,
+            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+            workspacePath: this.state.workspacePath,
+          });
+
+          this.getNotifier()?.({
+            toolName: TOOL_GENERATE_IMAGE,
+            toolInput: input,
+            message: `Damocles is waiting for your approval to generate an image at ${filePath}`,
+            filePath,
+            ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
+          });
+
+          postMessage(request);
+        },
+        onAborted: abortHandler,
+      });
+    });
   }
 
   private async requestFilePermissionFromWebview(
@@ -128,16 +255,16 @@ export class ApprovalManager {
 
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
-        const approved = !this.state.sessionAborting;
-        log('[ApprovalManager] Abort signal on file approval: toolUseId=%s, approved=%s', toolUseId, approved);
+        log('[ApprovalManager] Abort signal on file approval: toolUseId=%s', toolUseId);
         this.diffManager.closeDiffView(toolUseId);
         this.state.removePendingApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
+          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve(approved ? { approved } : { approved, customMessage: ABORTED_BEFORE_ANSWER });
+        resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
@@ -189,12 +316,13 @@ export class ApprovalManager {
     });
   }
 
-  private async requestShellPermissionFromWebview(
-    toolName: ShellToolName,
+  private async requestPermissionFromWebview(
+    toolName: string,
     input: Record<string, unknown>,
-    context: CanUseToolContext
+    context: CanUseToolContext,
+    fields: { command?: string; suggestions?: PermissionUpdate[] },
+    notice: { message: string; command?: string }
   ): Promise<ApprovalResult> {
-    const command = typeof input['command'] === 'string' ? input['command'] : JSON.stringify(input);
     const postMessage = this.getPostMessage();
 
     if (!postMessage) {
@@ -208,30 +336,28 @@ export class ApprovalManager {
 
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
-        const approved = !this.state.sessionAborting;
-        log('[ApprovalManager] Abort signal on shell approval: toolUseId=%s, approved=%s', toolUseId, approved);
+        log('[ApprovalManager] Abort signal on %s approval: toolUseId=%s', toolName, toolUseId);
         this.state.removePendingApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
+          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve(approved ? { approved } : { approved, customMessage: ABORTED_BEFORE_ANSWER });
+        resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
         context.signal.removeEventListener('abort', abortHandler);
       };
 
-      const suggestions = generatePatternSuggestions(toolName, input);
       const request: ExtensionToWebviewMessage = {
         type: 'requestPermission',
         toolUseId,
         toolName,
         toolInput: input,
-        command,
+        ...fields,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-        ...(suggestions.length ? { suggestions } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       };
@@ -252,8 +378,7 @@ export class ApprovalManager {
           this.getNotifier()?.({
             toolName,
             toolInput: input,
-            message: `Damocles is waiting for your approval to run: ${command}`,
-            command,
+            ...notice,
             ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
           });
 

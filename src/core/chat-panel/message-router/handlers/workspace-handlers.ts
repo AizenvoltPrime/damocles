@@ -51,7 +51,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         const filePath = await findAgentFile(subagentsDir(ensurePiSessionDir(ctx.folder.fsPath), sessionId), msg.agentId);
         if (!filePath) {
           void platform.notifications.info(
-            t("This agent has no log file. A log is written only after the agent's first reply."),
+            t("This agent has no log file. A log is written once the agent receives its task."),
           );
           return;
         }
@@ -170,7 +170,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openSystemPrompt: async (_msg, ctx) => {
       const prompt = await ctx.session.getSystemPromptText();
       if (!prompt) {
-        void platform.notifications.info(t("The system prompt isn't available yet — send a message first."));
+        void platform.notifications.info(t("The system prompt isn't available yet. Send a message first."));
         return;
       }
       await openMarkdownPreview(platform, "system-prompt", prompt);

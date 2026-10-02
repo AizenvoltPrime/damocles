@@ -268,3 +268,57 @@ describe('useVirtualizedMessages team management calls', () => {
     expect(items.map((i) => i.toolCall?.id)).toEqual(['tc-resume']);
   });
 });
+
+describe('useVirtualizedMessages effort badge placement', () => {
+  let clock = 0;
+  const user = (id: string, over: Partial<ChatMessage> = {}): ChatMessage => ({ id, role: 'user', content: id, timestamp: ++clock, ...over });
+  const reply = (id: string, effort: ChatMessage['effort'], over: Partial<ChatMessage> = {}): ChatMessage => ({
+    id,
+    role: 'assistant',
+    content: id,
+    contentBlocks: [{ type: 'text', text: id }],
+    timestamp: ++clock,
+    ...(effort ? { effort } : {}),
+    ...over,
+  });
+  /** Each badge as `<item id>:<effort>`, in transcript order. */
+  const badges = (messages: ChatMessage[]): string[] =>
+    build(messages).items.value.filter((i) => i.effort).map((i) => `${i.id}:${i.effort}`);
+
+  it("shows the effort once per turn, on the turn's first reply", () => {
+    expect(badges([user('u1'), reply('a1', 'high'), reply('a2', 'high'), reply('a3', 'high')])).toEqual(['text-a1-0:high']);
+  });
+
+  it('shows a second badge where the level changes within a turn, and again after the change reverts', () => {
+    expect(badges([user('u1'), reply('a1', 'high'), reply('a2', 'high'), reply('a3', 'low'), reply('a4', 'high')]))
+      .toEqual(['text-a1-0:high', 'text-a3-0:low', 'text-a4-0:high']);
+  });
+
+  it('shows the effort again on the next turn, at its new level', () => {
+    expect(badges([user('u1'), reply('a1', 'high'), user('u2'), reply('a2', 'high'), user('u3'), reply('a3', 'max')]))
+      .toEqual(['text-a1-0:high', 'text-a2-0:high', 'text-a3-0:max']);
+  });
+
+  it('puts the badge on the thinking header when the reply has one, else before its first text block', () => {
+    const thought = reply('a1', 'medium', { thinking: 'pondering', thinkingDuration: 2 });
+    expect(badges([user('u1'), thought])).toEqual(['thinking-a1:medium']);
+  });
+
+  it('carries the badge to the next reply when a reply has neither thinking nor text to hold it', () => {
+    const toolsOnly = reply('a1', 'high', {
+      content: '',
+      contentBlocks: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }],
+      toolCalls: [{ id: 't1', name: 'Read', input: {}, status: 'completed' }],
+    });
+    expect(badges([user('u1'), toolsOnly, reply('a2', 'high')])).toEqual(['text-a2-0:high']);
+  });
+
+  it('a steer chip addressed to a subagent does not start a new turn', () => {
+    const chip = user('chip', { isInjected: true, steerTarget: { agentId: 'agent-1' } });
+    expect(badges([user('u1'), reply('a1', 'high'), chip, reply('a2', 'high')])).toEqual(['text-a1-0:high']);
+  });
+
+  it('shows no badge for replies without an effort', () => {
+    expect(badges([user('u1'), reply('a1', undefined), reply('a2', undefined)])).toEqual([]);
+  });
+});

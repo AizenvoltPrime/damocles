@@ -22,7 +22,8 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: () => home };
 });
 
-import { loadPermissionsByPriority } from '../permission-settings';
+import ignore from 'ignore';
+import { loadPermissionsByPriority, usableGitignorePattern } from '../permission-settings';
 import { PermissionHandler } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 
@@ -85,6 +86,19 @@ describe('loadPermissionsByPriority', () => {
     ]);
   });
 
+  it('carries the folder a /path rule in each file is relative to: the project, or the home file\'s own folder', async () => {
+    ORDERED_FILES.forEach((segments, index) => {
+      writeSettings(segments, { allow: [ruleFor(index)] });
+    });
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result.map((perms) => perms.root)).toEqual([
+      workspace, workspace, workspace, workspace,
+      path.join(home, '.damocles'), path.join(home, '.claude'), path.join(home, '.damocles'), path.join(home, '.claude'),
+    ]);
+  });
+
   it('does not let a file with no rules occupy a precedence slot and shadow a lower one', async () => {
     writeSettings(ORDERED_FILES[0], { allow: [], deny: [], ask: [] });
     writeSettings(ORDERED_FILES[2], { deny: ['Bash(git push:*)'] });
@@ -142,6 +156,32 @@ describe('loadPermissionsByPriority — unusable files', () => {
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
   });
 
+  it('reads a file that starts with a byte order mark, as the settings store does', async () => {
+    writeRaw(ORDERED_FILES[0], `\uFEFF${JSON.stringify({ permissions: { deny: ['Read(secret.txt)'] } })}`);
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
+    expect(logMock).not.toHaveBeenCalled();
+  });
+
+  it('drops a rule that is not a string and logs its file and index, never its value', async () => {
+    writeRaw(ORDERED_FILES[0], JSON.stringify({ permissions: { deny: [987654321, 'Read(secret.txt)', { tool: 'Bash-SECRET' }], ask: 'Read(SECRET-STRING)' } }));
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.deny).toEqual(['Read(secret.txt)']);
+    expect(result[0]?.ask).toEqual([]);
+    const logged = logMock.mock.calls.flat().join('\n');
+    const file = path.join(...ORDERED_FILES[0]);
+    expect(logged).toContain(`${file} permissions.deny[0] is not a string`);
+    expect(logged).toContain(`${file} permissions.deny[2] is not a string`);
+    expect(logged).toContain(`${file} permissions.ask is not a list`);
+    expect(logged).not.toContain('987654321');
+    expect(logged).not.toContain('SECRET');
+  });
+
   it('ignores a permissions block that is not an object, and non-array rule lists', async () => {
     writeRaw(ORDERED_FILES[0], JSON.stringify({ permissions: 'all' }));
     writeRaw(ORDERED_FILES[1], JSON.stringify({ permissions: { allow: 'Bash(ls:*)' } }));
@@ -152,6 +192,36 @@ describe('loadPermissionsByPriority — unusable files', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0]?.allow).toEqual(['Bash(ls:*)']);
+  });
+
+  it('reads a pattern as unusable exactly when node-ignore compiles no rule that can match', () => {
+    for (const pattern of ['', '   ', '#x', 'x\\', 'x\\\\\\', 'x\\/', 'a[', 'a[]', 'a[\\]', '[[:nosuch:]]', '[[:alpha:]', 'a[b-'])
+      expect(usableGitignorePattern(pattern), JSON.stringify(pattern)).toBe(false);
+    for (const pattern of ['x', '\\#x', 'x\\\\', 'a[]]', '[!a]', '[^a]', '[a-\\]]', '[[:alpha:]]', '[[:x]', '[c-a]', '/', 'a]'])
+      expect(usableGitignorePattern(pattern), JSON.stringify(pattern)).toBe(true);
+    for (const pattern of ['a[', '[[:nosuch:]]', '#x', 'a[]]', '[[:x]', 'x']) {
+      const compiled = (ignore().add([pattern]) as unknown as { _rules: { _rules: Array<{ regex: RegExp }> } })._rules._rules;
+      expect(compiled.length > 0 && !compiled[0]!.regex.source.includes('[]'), JSON.stringify(pattern)).toBe(usableGitignorePattern(pattern));
+    }
+  });
+
+  it('drops an allow rule that can approve nothing and logs its file and index, never its value', async () => {
+    const inert = ['*', 'B*', 'mcp__*', 'mcp__git*__get_x', 'Edit(!secret-a/**)', 'Read(#secret-b)', 'Write(secret-c/**)'];
+    writeSettings(ORDERED_FILES[0], { allow: [...inert, 'mcp__github__get_*', 'Edit(src/**)', 'Write'], deny: inert, ask: inert });
+
+    const result = await loadPermissionsByPriority(workspace);
+
+    expect(result[0]?.allow).toEqual(['mcp__github__get_*', 'Edit(src/**)', 'Write']);
+    expect(result[0]?.deny).toEqual(inert);
+    expect(result[0]?.ask).toEqual(inert);
+    const logged = logMock.mock.calls.flat().join('\n');
+    const file = path.join(...ORDERED_FILES[0]);
+    for (const index of [0, 1, 2, 3]) expect(logged).toContain(`${file} permissions.allow[${index}] has a tool-name wildcard`);
+    expect(logged).toContain(`${file} permissions.allow[4] is a ! carve-out`);
+    expect(logged).toContain(`${file} permissions.allow[5] has a path that is not a usable gitignore pattern`);
+    expect(logged).toContain(`${file} permissions.allow[6] is a Write path rule`);
+    expect(logged).not.toContain('secret');
+    expect(logMock).toHaveBeenCalledTimes(7);
   });
 });
 

@@ -19,6 +19,14 @@ export type ResolveRgPath = () => Promise<string>;
 /** pi's definitions carry their own schema and render types; only the erased shape is assignable both ways. */
 type AnyToolDefinition = ToolDefinition<any, any, any>;
 
+/**
+ * Per call, whether a `Read` deny or ask rule covers a file (`PermissionHandler.readRuleFilter`). The gate
+ * blocks or asks for a search rooted at a covered path; a search rooted above one leaves its files out.
+ */
+export type ReadRuleFilter = () => Promise<(filePath: string) => boolean>;
+
+const LEFT_OUT_NOTICE = 'Some files were left out because a Read rule in the user\'s permission settings covers them';
+
 /** Every parameter `runGrep` handles; a pi schema with any other fails `search-tools.test.ts`. */
 export const GREP_PARAMETER_NAMES = ['pattern', 'path', 'glob', 'ignoreCase', 'literal', 'context', 'limit'] as const;
 
@@ -91,9 +99,20 @@ async function runGrep(
   cwd: string,
   params: GrepParams,
   signal: AbortSignal | undefined,
+  covered: (filePath: string) => boolean,
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; details: GrepToolDetails | undefined }> {
   const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = params;
   const searchPath = resolveToCwd(searchDir || '.', cwd);
+  const coveredFiles = new Map<string, boolean>();
+  let leftOut = false;
+  const isCovered = (filePath: string): boolean => {
+    let value = coveredFiles.get(filePath);
+    if (value === undefined) {
+      value = covered(filePath);
+      coveredFiles.set(filePath, value);
+    }
+    return value;
+  };
   let isDirectory: boolean;
   try {
     isDirectory = (await stat(searchPath)).isDirectory();
@@ -140,7 +159,12 @@ async function runGrep(
       // pi also counts a match whose path is not UTF-8 (`path.bytes`) and then prints nothing for it; only printable matches count here.
       const filePath = event.data?.path?.text;
       const lineNumber = event.data?.line_number;
-      if (filePath && typeof lineNumber === 'number') matches.push({ filePath, lineNumber, lineText: event.data?.lines?.text });
+      if (!filePath || typeof lineNumber !== 'number') return;
+      if (isCovered(filePath)) {
+        leftOut = true;
+        return;
+      }
+      matches.push({ filePath, lineNumber, lineText: event.data?.lines?.text });
       if (matches.length >= effectiveLimit) {
         matchLimitReached = true;
         killedDueToLimit = true;
@@ -161,7 +185,7 @@ async function runGrep(
     });
   });
 
-  if (matches.length === 0) return { content: [{ type: 'text', text: 'No matches found' }], details: undefined };
+  if (matches.length === 0) return { content: [{ type: 'text', text: leftOut ? `No matches found\n\n[${LEFT_OUT_NOTICE}]` : 'No matches found' }], details: undefined };
 
   let linesTruncated = false;
   const truncate = (text: string): string => {
@@ -216,6 +240,7 @@ async function runGrep(
     notices.push(`${pi.formatSize(pi.DEFAULT_MAX_BYTES)} limit reached`);
     details.truncation = truncation;
   }
+  if (leftOut) notices.push(LEFT_OUT_NOTICE);
   if (linesTruncated) {
     notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
     details.linesTruncated = true;
@@ -225,13 +250,13 @@ async function runGrep(
 }
 
 /** pi's `grep` (name, schema, description, renderers) with an `execute` that runs the bundled rg exactly as pi runs its own. */
-export function createGrepTool(pi: PiCodingAgentModule, cwd: string, resolveRgPath: ResolveRgPath): ToolDefinition {
+export function createGrepTool(pi: PiCodingAgentModule, cwd: string, resolveRgPath: ResolveRgPath, readRuleFilter: ReadRuleFilter): ToolDefinition {
   const metadata: AnyToolDefinition = pi.createGrepToolDefinition(cwd);
   return {
     ...metadata,
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
       if (signal?.aborted) throw aborted();
-      return runGrep(pi, await resolveRgPath(), ctx?.cwd || cwd, params as GrepParams, signal);
+      return runGrep(pi, await resolveRgPath(), ctx?.cwd || cwd, params as GrepParams, signal, await readRuleFilter());
     },
   };
 }
@@ -285,6 +310,8 @@ async function listMatchingPaths(
   searchPath: string,
   options: { ignore: string[]; limit: number },
   signal: AbortSignal | undefined,
+  covered: (filePath: string) => boolean,
+  onLeftOut: () => void,
 ): Promise<string[]> {
   if (!(await stat(searchPath)).isDirectory()) throw new Error(`Search path is not a directory: ${searchPath}`);
   if (options.limit <= 0) return [];
@@ -328,7 +355,9 @@ async function listMatchingPaths(
           if (matches(directory)) add(directory + path.sep);
         }
       }
-      if (matches(file)) add(file);
+      if (!matches(file)) return;
+      if (covered(file)) onLeftOut();
+      else add(file);
     };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -350,10 +379,15 @@ async function listMatchingPaths(
   });
 }
 
-function rgFindOperations(resolveRgPath: ResolveRgPath, signal: AbortSignal | undefined): FindOperations {
+function rgFindOperations(
+  resolveRgPath: ResolveRgPath,
+  signal: AbortSignal | undefined,
+  covered: (filePath: string) => boolean,
+  onLeftOut: () => void,
+): FindOperations {
   return {
     exists,
-    glob: async (pattern, searchPath, options) => listMatchingPaths(await resolveRgPath(), pattern, searchPath, options, signal),
+    glob: async (pattern, searchPath, options) => listMatchingPaths(await resolveRgPath(), pattern, searchPath, options, signal, covered, onLeftOut),
   };
 }
 
@@ -370,13 +404,17 @@ function withLimitHint(result: AgentToolResult<FindToolDetails | undefined>): Ag
 }
 
 /** pi's `find` driven through its `operations.glob` hook, built per call so the listing sees the call's abort signal. */
-export function createFindTool(pi: PiCodingAgentModule, cwd: string, resolveRgPath: ResolveRgPath): ToolDefinition {
+export function createFindTool(pi: PiCodingAgentModule, cwd: string, resolveRgPath: ResolveRgPath, readRuleFilter: ReadRuleFilter): ToolDefinition {
   const metadata: AnyToolDefinition = pi.createFindToolDefinition(cwd);
   return {
     ...metadata,
     execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-      const find: AnyToolDefinition = pi.createFindToolDefinition(cwd, { operations: rgFindOperations(resolveRgPath, signal) });
-      return withLimitHint(await find.execute(toolCallId, params, signal, onUpdate, ctx));
+      let leftOut = false;
+      const operations = rgFindOperations(resolveRgPath, signal, await readRuleFilter(), () => { leftOut = true; });
+      const find: AnyToolDefinition = pi.createFindToolDefinition(cwd, { operations });
+      const result = withLimitHint(await find.execute(toolCallId, params, signal, onUpdate, ctx));
+      if (!leftOut) return result;
+      return { ...result, content: [...result.content, { type: 'text', text: `\n\n[${LEFT_OUT_NOTICE}]` }] };
     },
   };
 }

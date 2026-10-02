@@ -7,8 +7,9 @@ import { TEAM_MAIN_PI_TOOL_NAMES } from '../tools/team-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
-import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
+import { TOOL_TOOL_SEARCH, TOOL_GENERATE_IMAGE } from '../../../shared/tool-names';
 import { fullActiveToolNames, activeToolNamesWithDeferral, buildToolStatus, type ToolStatusDeps } from '../tool-status';
+import { deferredToolNames } from '../tools/deferred-tools';
 
 /** The n-th entry of a name list, failing loudly rather than widening to `undefined`. */
 function nth(names: readonly string[], i: number): string {
@@ -40,8 +41,11 @@ function deps(overrides: Partial<ToolStatusDeps>): ToolStatusDeps {
     teamAvailable: false,
     browserAvailable: false,
     browserEnabled: false,
+    imageEnabled: false,
+    imageAvailability: { available: false, reason: 'noModel' },
     mcpEnabled: false,
     mcpToolNames: [],
+    mcpDeferrableToolNames: [],
     disabled: new Set<string>(),
     ...overrides,
   };
@@ -112,6 +116,7 @@ describe('activeToolNamesWithDeferral', () => {
     browserEnabled: true,
     mcpEnabled: true,
     mcpToolNames: MCP_NAMES,
+    mcpDeferrableToolNames: MCP_NAMES,
   };
   const DEFERRABLE = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_TOOLS, ...MCP_NAMES];
   const none = new Set<string>();
@@ -198,6 +203,26 @@ describe('activeToolNamesWithDeferral', () => {
     for (const n of BROWSER_PI_TOOL_NAMES.slice(1)) expect(active, n).toContain(n);
   });
 
+  it('makes GenerateImage eligible only when enabled AND available, and then defers it until ToolSearch loads it', () => {
+    const ready = { imageEnabled: true, imageAvailability: { available: true } } as const;
+    for (const variant of [
+      { imageEnabled: false, imageAvailability: { available: true } },
+      { imageEnabled: true, imageAvailability: { available: false, reason: 'noModel' } },
+      { imageEnabled: true, imageAvailability: { available: false, reason: 'unknownModel' } },
+      { imageEnabled: true, imageAvailability: { available: false, reason: 'noOpenRouterKey' } },
+    ] as const) {
+      const d = deps({ ...everything, ...variant });
+      expect(fullActiveToolNames(d), JSON.stringify(variant)).not.toContain(TOOL_GENERATE_IMAGE);
+      expect(activeToolNamesWithDeferral(d, new Set([TOOL_GENERATE_IMAGE])), JSON.stringify(variant)).not.toContain(TOOL_GENERATE_IMAGE);
+    }
+    const d = deps({ ...everything, ...ready });
+    expect(fullActiveToolNames(d)).toContain(TOOL_GENERATE_IMAGE);
+    // The ToolSearch menu is `deferredToolNames(eligible, …)`, so it lists the tool exactly when it is eligible.
+    expect(deferredToolNames(fullActiveToolNames(d), [])).toContain(TOOL_GENERATE_IMAGE);
+    expect(activeToolNamesWithDeferral(d, none)).not.toContain(TOOL_GENERATE_IMAGE);
+    expect(activeToolNamesWithDeferral(d, new Set([TOOL_GENERATE_IMAGE]))).toContain(TOOL_GENERATE_IMAGE);
+  });
+
   it('defers MCP names too, and activates one by exact name without pulling in its siblings', () => {
     const d = deps(everything);
     expect(activeToolNamesWithDeferral(d, none)).not.toContain(nth(MCP_NAMES, 0));
@@ -208,13 +233,20 @@ describe('activeToolNamesWithDeferral', () => {
 });
 
 describe('buildToolStatus', () => {
-  it('emits exactly the 7 expected groups (guards against a group silently dropping)', () => {
+  it('emits exactly the 8 expected groups (guards against a group silently dropping)', () => {
     // The webview GROUP_ORDER has historically dropped the team group; this is the cheap structural
     // guard so a future extraction can't quietly omit a subsystem and still pass every other test.
     const snap = buildToolStatus(deps({}));
     const groups = snap.groups.map((g) => g.group).sort();
-    expect(groups).toEqual(['browser', 'compass', 'core', 'memory', 'subagents', 'team', 'web']);
-    expect(snap.groups).toHaveLength(7);
+    expect(groups).toEqual(['browser', 'compass', 'core', 'image', 'memory', 'subagents', 'team', 'web']);
+    expect(snap.groups).toHaveLength(8);
+  });
+
+  it('reports the image group like the browser group: the master switch, availability and the reason it is unavailable', () => {
+    expect(group(buildToolStatus(deps({ imageEnabled: true, imageAvailability: { available: false, reason: 'noOpenRouterKey' } })), 'image'))
+      .toEqual({ group: 'image', enabled: true, available: false, unavailableReason: 'noOpenRouterKey' });
+    expect(group(buildToolStatus(deps({ imageEnabled: false, imageAvailability: { available: true } })), 'image'))
+      .toEqual({ group: 'image', enabled: false, available: true });
   });
 
   it('marks group masters from the deps flags', () => {
@@ -257,5 +289,24 @@ describe('buildToolStatus', () => {
     const memTool = snap.tools.find((t) => t.name === memName);
     expect(memTool).toBeDefined();
     expect(memTool!.enabled).toBe(false);
+  });
+});
+
+describe('activeToolNamesWithDeferral — per-tool MCP exposure', () => {
+  const RESOLVE = 'mcp__context7__resolve_library_id';
+  const DOCS = 'mcp__context7__query_docs';
+
+  it('an Always-loaded MCP tool is active from the first turn; a deferred one waits for ToolSearch', () => {
+    const d = deps({ mcpEnabled: true, mcpToolNames: [RESOLVE, DOCS], mcpDeferrableToolNames: [DOCS] });
+    const active = activeToolNamesWithDeferral(d, new Set());
+    expect(active).toContain(RESOLVE);
+    expect(active).not.toContain(DOCS);
+    expect(activeToolNamesWithDeferral(d, new Set([DOCS]))).toContain(DOCS);
+  });
+
+  it('an Off tool is in neither set: `disabled` removes it from eligibility, so no activation brings it back', () => {
+    const d = deps({ mcpEnabled: true, mcpToolNames: [RESOLVE, DOCS], mcpDeferrableToolNames: [DOCS], disabled: new Set([RESOLVE]) });
+    expect(fullActiveToolNames(d)).not.toContain(RESOLVE);
+    expect(activeToolNamesWithDeferral(d, new Set([RESOLVE]))).not.toContain(RESOLVE);
   });
 });

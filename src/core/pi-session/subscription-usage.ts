@@ -1,8 +1,16 @@
-import type { UsageWindowBar, UsageSpend, SubscriptionUsageData, ProviderUsage } from '../../shared/types/usage';
+import type {
+  UsageWindowBar,
+  UsageSpend,
+  SubscriptionUsageData,
+  ProviderUsage,
+  ClaudeAccountProfile,
+} from '../../shared/types/usage';
 import type { PiRuntime } from './pi-runtime';
 
 const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const CLAUDE_PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile';
 const FETCH_TIMEOUT_MS = 10_000;
+const PROFILE_TIMEOUT_MS = 5_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -216,10 +224,63 @@ function parseCodexSpend(credits: unknown): UsageSpend | undefined {
   return { kind: 'balance', amount };
 }
 
+function recordAt(source: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = source[key];
+  return isObject(value) && !Array.isArray(value) ? value : {};
+}
+
+function stringAt(source: Record<string, unknown>, key: string): string | null {
+  const value = source[key];
+  return typeof value === 'string' ? value : null;
+}
+
+/** Ported from pi-anthropic-auth `src/account-profile.ts` (`parseProfile`); the endpoint is undocumented. */
+export function parseClaudeProfile(json: unknown): ClaudeAccountProfile | undefined {
+  if (!isObject(json) || Array.isArray(json)) return undefined;
+  const account = recordAt(json, 'account');
+  const organization = recordAt(json, 'organization');
+  const extra = organization['has_extra_usage_enabled'];
+  return {
+    organizationType: stringAt(organization, 'organization_type'),
+    rateLimitTier: stringAt(organization, 'rate_limit_tier'),
+    seatTier: stringAt(organization, 'seat_tier'),
+    subscriptionStatus: stringAt(organization, 'subscription_status'),
+    hasExtraUsageEnabled: typeof extra === 'boolean' ? extra : null,
+    email: stringAt(account, 'email'),
+    organizationName: stringAt(organization, 'name'),
+  };
+}
+
+/** Never throws. The profile holds the account email, so no branch here may log the body. */
+export async function fetchClaudeProfile(
+  token: string,
+): Promise<{ profile: ClaudeAccountProfile } | { profileError: string }> {
+  try {
+    const res = await fetch(CLAUDE_PROFILE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+    });
+    if (!res.ok) return { profileError: `HTTP ${res.status}` };
+    const profile = parseClaudeProfile(await res.json().catch(() => undefined));
+    return profile ? { profile } : { profileError: 'Unexpected response' };
+  } catch {
+    return { profileError: 'Network error' };
+  }
+}
+
 async function fetchClaudeUsage(runtime: PiRuntime): Promise<ProviderUsage> {
   const token = await runtime.getClaudeAccessToken();
   if (token === undefined) return { status: 'not-connected', bars: [] };
 
+  const [usage, profile] = await Promise.all([fetchClaudeWindows(token), fetchClaudeProfile(token)]);
+  return { ...usage, ...profile };
+}
+
+async function fetchClaudeWindows(token: string): Promise<ProviderUsage> {
   try {
     const res = await fetch(CLAUDE_USAGE_URL, {
       headers: {
@@ -239,10 +300,23 @@ async function fetchClaudeUsage(runtime: PiRuntime): Promise<ProviderUsage> {
   }
 }
 
-async function fetchCodexUsage(runtime: PiRuntime): Promise<ProviderUsage> {
-  const token = await runtime.getCodexAccessToken();
-  if (token === undefined) return { status: 'not-connected', bars: [] };
+/** Where a ChatGPT subscriber reads usage when wham/usage rejects the ChatGPT token. */
+export const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage';
 
+/** GPT usage from the active credential's token: ChatGPT, else the legacy Codex grant. */
+async function fetchGptUsage(runtime: PiRuntime): Promise<ProviderUsage> {
+  const chatgpt = await runtime.getChatGPTAccessToken();
+  if (chatgpt !== undefined) return fetchWhamUsage(chatgpt, true);
+  // Signed in with ChatGPT but the preferred key overrides the grant, so no token may be sent; the page needs none.
+  if (runtime.getOpenAIAuthStatus().chatgpt) return { status: 'ok', bars: [], usageUrl: CHATGPT_USAGE_URL };
+  const codex = await runtime.getCodexAccessToken();
+  if (codex !== undefined) return fetchWhamUsage(codex, false);
+  return { status: 'not-connected', bars: [] };
+}
+
+/** `chatgpt`: the token is a Sign in with ChatGPT grant, which wham/usage may refuse; the overlay then links to the usage page. */
+async function fetchWhamUsage(token: string, chatgpt: boolean): Promise<ProviderUsage> {
+  const usagePage: ProviderUsage = { status: 'ok', bars: [], usageUrl: CHATGPT_USAGE_URL };
   try {
     // chatgpt.com is Cloudflare-fronted; this exact browser-like header set is required to avoid a challenge.
     const res = await fetch('https://chatgpt.com/backend-api/wham/usage', {
@@ -257,11 +331,12 @@ async function fetchCodexUsage(runtime: PiRuntime): Promise<ProviderUsage> {
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
+    if (chatgpt && (res.status === 401 || res.status === 403)) return usagePage;
     if (!res.ok) return { status: 'error', bars: [], error: `HTTP ${res.status}` };
 
     // A Cloudflare HTML challenge page carries no JSON content-type; bail before res.json() would throw on it.
     if (!res.headers.get('content-type')?.includes('application/json')) {
-      return { status: 'error', bars: [], error: 'Unexpected response' };
+      return chatgpt ? usagePage : { status: 'error', bars: [], error: 'Unexpected response' };
     }
 
     const json = await res.json();
@@ -275,7 +350,7 @@ async function fetchCodexUsage(runtime: PiRuntime): Promise<ProviderUsage> {
 export async function fetchSubscriptionUsage(runtime: PiRuntime): Promise<SubscriptionUsageData> {
   const [claudeResult, gptResult] = await Promise.allSettled([
     fetchClaudeUsage(runtime),
-    fetchCodexUsage(runtime),
+    fetchGptUsage(runtime),
   ]);
   const claude = claudeResult.status === 'fulfilled'
     ? claudeResult.value

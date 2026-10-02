@@ -314,6 +314,15 @@
       "effortMedium": "Medium",
       "effortHigh": "High"
     },
+    "imageGeneration": {
+      "title": "Image Generation",
+      "needsOpenRouterKey": "Needs an OpenRouter API key. Add one under OpenRouter Authentication below.",
+      "enabledLabel": "Let the agent generate images",
+      "model": "Model",
+      "modelPlaceholder": "Choose an image model",
+      "unknownModel": "{model} is not available for image generation. Choose another model.",
+      "description": "The GenerateImage tool creates an image with an OpenRouter model and saves it as a new file at the path you approve. Each image is billed to your OpenRouter key."
+    },
     "language": "Language",
     "openVsCodeSettings": "Open VS Code Settings",
     "settingsInfo": "Changes apply to the current session and persist in workspace settings.",
@@ -444,6 +453,12 @@
     "createFileAgent": "{agent} wants to create this file",
     "editFile": "Make this edit to",
     "editFileAgent": "{agent} wants to edit",
+    "generateImage": "Generate an image and save it as this new file?",
+    "useTool": "Allow {tool} with this input?",
+    "useToolAgent": "{agent} wants to use {tool} with this input:",
+    "imagePrompt": "Image prompt",
+    "imageModel": "Model:",
+    "imageBilled": "Billed to your OpenRouter key.",
     "queuePosition": "{position} of {total} pending",
     "options": {
       "yes": "Yes",
@@ -561,9 +576,43 @@
     "toolReadOnly": "Read-only",
     "toolDestructive": "Destructive",
     "toolNetwork": "Network",
+    "toolExposureLabel": "{name} exposure",
+    "toolExposureOff": "Off",
+    "toolExposureOn": "On",
+    "toolExposureDirect": "Always loaded",
+    "toolExposureTooltip": "Off: the agent cannot use this tool. On: the agent loads it with ToolSearch when it needs it. Always loaded: declared from the first turn, which costs context on every turn.",
+    "toolExposureSource": {
+      "config": "Config",
+      "user": "User",
+      "project": "Project",
+      "local": "Local"
+    },
+    "toolExposureSourceTitle": "Set by: {source}",
+    "toolExposureSaveTo": "Save to",
     "fromWorkspace": "From workspace",
     "fromDamoclesLocal": "From project .damocles",
     "fromClaudeLocal": "From Claude Code (local)",
+    "fromPi": "From pi",
+    "fromPiProject": "From project .pi",
+    "toggleServer": "Enable {name}",
+    "serverOutput": "Server output",
+    "serverErrors": {
+      "sseUnsupported": "Legacy SSE transport is not supported. Use the server's streamable HTTP URL.",
+      "invalidConfig": "Invalid configuration: {detail}",
+      "missingVariable": "The environment variable {variable} is not set (used in {field}).",
+      "commandFailed": "The command for {field} failed or timed out.",
+      "commandUntrusted": "{field} runs a command, which is allowed only in a trusted folder.",
+      "authProviderUnsupported": "auth.provider is not supported in Damocles. Use OAuth or a bearer token instead.",
+      "nameCollision": "Not loaded: its tool names would clash with \"{kept}\" ({keptSource}).",
+      "insufficientScope": "The server needs more permission. Authenticate again to grant it."
+    },
+    "renamedRules": {
+      "title": "Rules name MCP tools that were renamed",
+      "description": "These rules still use old tool names, so they no longer match. Damocles does not edit these files; update each rule to its new name.",
+      "openFile": "Open",
+      "openFileAria": "Open {file}",
+      "becomes": "becomes"
+    },
     "addServer": "Add server",
     "reloadConfig": "Reload config",
     "reloadConfigTitle": "Re-read every MCP config file from disk, including ~/.claude.json, which Damocles does not watch.",
@@ -599,9 +648,23 @@
       "cwdPlaceholder": "Optional",
       "urlLabel": "URL",
       "urlPlaceholder": "https://example.com/mcp",
-      "remoteTypeLabel": "Protocol",
-      "remoteTypeHttp": "HTTP",
-      "remoteTypeSse": "SSE",
+      "descriptionLabel": "Description",
+      "descriptionPlaceholder": "Optional",
+      "descriptionHelp": "What the server offers. The agent sees it when it searches for tools. Without one, the server's own instructions are used.",
+      "timeoutLabel": "Timeout (seconds)",
+      "timeoutPlaceholder": "120",
+      "timeoutHelp": "How long one tool call may wait for the server. Progress from the server restarts the wait. Default: 120.",
+      "oauthLabel": "OAuth",
+      "oauthHelp": "Optional. Only for a server whose sign-in needs these settings; leave them blank otherwise.",
+      "oauthClientNameLabel": "OAuth client name",
+      "oauthClientNamePlaceholder": "Damocles",
+      "oauthAuthServerMetadataUrlLabel": "Authorization server metadata URL",
+      "oauthAuthServerMetadataUrlPlaceholder": "https://auth.example.com/.well-known/oauth-authorization-server",
+      "oauthCallbackUrlLabel": "Callback URL",
+      "oauthCallbackUrlPlaceholder": "http://localhost:8080/callback",
+      "oauthCallbackPortLabel": "Callback port",
+      "oauthCallbackPortPlaceholder": "8080",
+      "oauthCallbackHelp": "For a client registered with a fixed redirect URI. Without a port or URL, Damocles picks a free local port.",
       "headersLabel": "Headers",
       "headerKeyPlaceholder": "Header-Name",
       "headerKeyAriaLabel": "Header name",
@@ -617,6 +680,8 @@
         "nameInvalid": "A name may only contain letters, digits, dots, underscores and hyphens.",
         "nameExists": "A server with this name already exists in ~/.damocles/mcp.json.",
         "nameShadowedByProject": "A project config file already defines this name and takes precedence, so the server would never be used.",
+        "namespaceShadowedByProject": "\"{other}\" in a project config file gets the same tool names and takes precedence, so this server would never be used. Names that differ only in punctuation count as one server.",
+        "namespaceExists": "\"{other}\" in ~/.damocles/mcp.json gets the same tool names. Names that differ only in punctuation count as one server.",
         "commandRequired": "A command is required.",
         "envKeyRequired": "Every environment variable needs a name.",
         "envDuplicateKey": "The environment variable “{name}” is listed twice.",
@@ -627,16 +692,22 @@
         "headerDuplicateKey": "The header “{name}” is listed twice.",
         "bearerTokenEnvInvalid": "This must be a variable name: letters, digits and underscores, not starting with a digit.",
         "envKeyInvalid": "A variable name may only contain letters, digits and \"_\", and cannot start with a digit.",
-        "headerKeyInvalid": "\"{name}\" is not a valid header name."
+        "headerKeyInvalid": "\"{name}\" is not a valid header name.",
+        "timeoutInvalid": "The timeout must be a positive number of seconds.",
+        "authServerMetadataUrlInvalid": "This must be an https URL, or http on localhost, 127.0.0.1 or [::1].",
+        "callbackUrlInvalid": "This must be an http URL on localhost, 127.0.0.1 or [::1], without a query or fragment.",
+        "callbackPortInvalid": "This must be a port number from 1 to 65535.",
+        "callbackPortMismatch": "The callback URL names a different port."
       },
       "saving": "Saving…",
       "secretValueHint": "Values are stored in plain text in ~/.damocles/mcp.json. Use the eye button to reveal one.",
+      "valueSyntaxHint": "$NAME and ${'{'}NAME{'}'} insert an environment variable, and $$ is a literal $. A value starting with ! runs as a shell command and uses its output. Prefer either over pasting a secret.",
       "revealValue": "Reveal value",
       "hideValue": "Hide value",
       "discardConfirm": "Discard your changes? Press Discard again to confirm.",
       "discardConfirmAction": "Discard",
       "modeSwitchHint": "Switching transport keeps what you typed, but only the shown fields are saved.",
-      "prefixCollision": "Tools will be named mcp__…_2__ because \"{other}\" already uses this prefix.",
+      "prefixCollision": "\"{other}\" gets the same tool names as this name, so \"{other}\" will not load.",
       "writeErrors": {
         "nameExists": "\"{name}\" already exists in ~/.damocles/mcp.json. It may have been added by hand.",
         "nameMissing": "\"{name}\" is no longer in ~/.damocles/mcp.json. It may have been removed elsewhere.",
@@ -663,14 +734,21 @@
     "description": "Enable or disable agent tools and tool groups.",
     "projectAgentsUntrusted": "Project agents disabled. Workspace untrusted.",
     "trustWorkspace": "Trust",
+    "groupSwitch": "Enable {group} tools",
     "group": {
       "memory": "Memory",
       "compass": "Compass",
       "browser": "Browser",
       "web": "Web",
+      "image": "Image",
       "subagents": "Subagents",
       "team": "Team",
       "core": "Core"
+    },
+    "unavailable": {
+      "noModel": "Unavailable: no image model chosen. Choose one in Settings.",
+      "unknownModel": "Unavailable: the chosen image model is not available. Choose another in Settings.",
+      "noOpenRouterKey": "Unavailable: no OpenRouter API key."
     }
   },
   "toolsIndicator": {
@@ -694,9 +772,26 @@
     "extraUsage": "Extra usage: {amount}",
     "credits": "Credits: {amount}",
     "claudeNotConnected": "Sign in with your Claude subscription in Settings to see usage",
-    "gptNotConnected": "Sign in with your ChatGPT/Codex subscription in Settings to see usage",
+    "gptNotConnected": "Sign in with ChatGPT in Settings to see usage",
+    "gptUsageElsewhere": "ChatGPT shows this plan's usage on its own site.",
+    "gptUsageLink": "View usage on chatgpt.com",
+    "openChatGPTUsage": "Opens ChatGPT usage settings in your browser",
     "fetchError": "Couldn't load usage",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "account": {
+      "title": "Account",
+      "plan": "Plan",
+      "seatTier": "Seat tier",
+      "rateLimitTier": "Rate limit tier",
+      "subscriptionStatus": "Subscription",
+      "extraUsage": "Extra usage",
+      "on": "On",
+      "off": "Off",
+      "email": "Email",
+      "organizationName": "Organization",
+      "reveal": "Show {field}",
+      "unavailable": "Couldn't load account details"
+    }
   },
   "usageStats": {
     "title": "Usage statistics",
@@ -1128,6 +1223,12 @@
     },
     "reranked": "Reranked",
     "rerankedHint": "A model reranked the matched memories for this prompt, so their order and tiers can differ from the scores shown.",
+    "rerankClassifier": "Classifier: {verdict} ({score})",
+    "rerankVerdict": {
+      "high": "directly relevant",
+      "medium": "partially relevant",
+      "low": "unrelated"
+    },
     "compass": {
       "label": "Compass status",
       "unchanged": "Unchanged since an earlier prompt, so not sent again",
@@ -1294,6 +1395,18 @@
   "thinking": {
     "thinking": "Thinking",
     "thought": "Thought"
+  },
+  "effortBadge": {
+    "ariaLabel": "Effort: {level}",
+    "level": {
+      "off": "Off",
+      "minimal": "Minimal",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra High",
+      "max": "Max"
+    }
   },
   "atMention": {
     "indexing": "Indexing workspace...",
@@ -1524,7 +1637,7 @@
     },
     "overlay": {
       "noResult": "No result available",
-      "subtitle": "{agents} agents | {tools} tools | {elapsed}"
+      "subtitle": "{agents} agents {'|'} {tools} tools {'|'} {elapsed}"
     },
     "agentOverlay": {
       "waitingForActivity": "Waiting for agent activity...",
@@ -1615,29 +1728,36 @@
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key"
     },
-    "codexSection": {
-      "label": "ChatGPT Subscription (Codex OAuth)",
+    "chatgpt": {
+      "label": "ChatGPT subscription",
       "signedIn": "Signed in",
-      "signedInAs": "Signed in as {account}",
-      "notSignedIn": "Not signed in"
-    },
-    "codexSignIn": {
+      "notSignedIn": "Not signed in",
+      "signIn": "Sign in with ChatGPT",
       "waiting": "Waiting for browser...",
-      "signedIn": "Signed in",
-      "signInButton": "Sign In to ChatGPT",
       "signOut": "Sign out",
-      "browserHint": "Opens your browser for OAuth (PKCE). Tokens are stored in ~/.damocles/pi/agent/auth.json."
+      "signOutLabel": "Sign out of ChatGPT",
+      "browserHint": "Opens your browser to sign in. GPT models then use your ChatGPT plan's limits instead of per-token billing.",
+      "manualHint": "Finish signing in in your browser. If the browser can't return to Damocles, copy the final redirect URL from its address bar and paste it into the prompt."
+    },
+    "legacyCodex": {
+      "label": "Codex sign-in (legacy)",
+      "signOutLabel": "Sign out of Codex (legacy)",
+      "hint": "Signing in with ChatGPT replaces this sign-in."
     },
     "preferApiKey": {
-      "label": "Prefer API key over Codex",
-      "tooltip": "When both API key and Codex OAuth are configured, prefer the API key for outgoing requests. Codex wins by default.",
-      "descriptionEnabled": "Workspace setting. Inverts the default Codex-first resolution.",
-      "descriptionDisabled": "Configure both auth paths to enable this toggle."
+      "label": "Prefer API key over ChatGPT sign-in",
+      "tooltip": "When both an API key and a ChatGPT sign-in are set up, send GPT requests with the API key, billed per token. The sign-in wins by default.",
+      "descriptionEnabled": "Workspace setting. Inverts the default sign-in-first order.",
+      "descriptionDisabled": "Add an API key and sign in with ChatGPT to enable this toggle."
     },
     "toast": {
       "signedIn": "Signed in to ChatGPT",
-      "signedInAs": "Signed in to ChatGPT as {account}",
       "signInFailed": "ChatGPT sign-in failed: {error}"
+    },
+    "chip": {
+      "chatgpt": "ChatGPT",
+      "codex": "Codex",
+      "apiKey": "OpenAI API key"
     }
   },
   "stepfun": {
@@ -1674,6 +1794,56 @@
       "cleared": "API key cleared",
       "clearFailed": "Failed to clear key",
       "hint": "Pay-per-token API key, stored encrypted by your operating system's credential store; enables DeepSeek V4 Pro and Flash."
+    }
+  },
+  "typesafe": {
+    "sectionTitle": "TypeSafe Authentication",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "TypeSafe API key",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Stored encrypted by your operating system's credential store. Runs the memory contradiction judge and reranking on TypeSafe's Jev classifier. Without it, an OpenRouter key runs Jev through OpenRouter."
+    },
+    "memoryJudge": {
+      "label": "Memory judge: {judge}",
+      "jevTypesafe": "Jev via TypeSafe",
+      "jevOpenrouter": "Jev via OpenRouter",
+      "model": "{model} (sub-call model)",
+      "none": "none (no model configured)",
+      "unknown": "the sub-call model, shown once a chat has started",
+      "rejected": "{provider} skipped: {reason}. Damocles tries it again in 5 minutes, or at once when you save its key.",
+      "rejection": {
+        "unauthorized": "the key was not accepted",
+        "payment-required": "the account has no credit",
+        "forbidden": "the key has no access to Jev"
+      }
+    }
+  },
+  "openrouter": {
+    "sectionTitle": "OpenRouter Authentication",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "sk-or-...",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Stored encrypted by your operating system's credential store. Used for image generation, for Jev when no TypeSafe key is set, and by the Explore agent when its provider is OpenRouter. Saving it does not turn on the Explore agent."
     }
   },
   "claudeAuth": {

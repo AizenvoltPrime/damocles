@@ -41,7 +41,7 @@ function harness(): {
   const session = {
     publishAccountInfo: () => posted.push({
       type: 'accountInfo',
-      data: { model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+      data: { model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true },
     }),
   } as unknown as ChatSession;
   const manager = new HistoryManager({
@@ -65,7 +65,7 @@ describe('HistoryManager.loadSessionHistory', () => {
     expect(account).toHaveLength(1);
     expect(account[0]).toEqual({
       type: 'accountInfo',
-      data: { model: 'gpt-6-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+      data: { model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true },
     });
   });
 

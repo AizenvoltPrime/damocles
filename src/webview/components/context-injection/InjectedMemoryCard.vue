@@ -48,6 +48,15 @@ const tokenCount = computed(() =>
   t('contextInjection.memoryTokenCount', { count: integerFormat.value.format(props.memory.tokens) }, props.memory.tokens),
 );
 
+const rerankTooltip = computed(() => {
+  const { rerankRelevance, rerankClassifierScore, rerankReason } = props.memory;
+  if (rerankRelevance === undefined || rerankClassifierScore === undefined) return rerankReason;
+  return t('contextInjection.rerankClassifier', {
+    verdict: t(`contextInjection.rerankVerdict.${rerankRelevance}`),
+    score: fmt(rerankClassifierScore),
+  });
+});
+
 const breakdown = computed(() => props.memory.scoreBreakdown);
 const terms = computed(() => (breakdown.value ? scoreTerms(breakdown.value) : []));
 const computedScore = computed(() => (breakdown.value ? scoreFromBreakdown(breakdown.value) : null));
@@ -99,7 +108,7 @@ const notRankedText = computed(() => {
           v-if="memory.rerankRelevance"
           variant="outline"
           class="px-1.5 py-0 text-[10px] text-muted-foreground"
-          :title="memory.rerankReason"
+          :title="rerankTooltip"
           data-badge="rerank"
         >
           {{ t(`contextInjection.badge.rerank.${memory.rerankRelevance}`) }}

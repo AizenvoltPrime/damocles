@@ -1,10 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TeamRunner } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
-import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult } from '../types';
+import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult, TeamCheckpoint } from '../types';
+import type { ReviewCoverage } from '../review-coverage';
 import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
 import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
+import type { Stopwatch } from '../../../shared/team-stopwatch';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 /**
  * Lightweight harness for the stranded-standby recovery path (the team-deadlock fix). It injects the
@@ -20,8 +23,8 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     status: 'running',
     model: 'test',
     profileId: null,
-    startTime: null,
-    endTime: null,
+    activeMs: 0,
+    runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -30,6 +33,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
     dollarBilled: true,
+    effort: null,
     finalResponse: null,
     error: null,
     logFilePath: null,
@@ -503,6 +507,23 @@ interface CapturedRun {
   resolve: (result: unknown) => void;
   /** Reject the run the way a THROWN agent failure does — the runner's `.catch` teardown branch. */
   reject: (error: unknown) => void;
+  /** End the run's subscriptions without settling it: the gap between its loop exiting and its promise settling. */
+  release: () => void;
+}
+
+/** The agent runner stub: each run binds its note sink as a real run does, and drops it when the run ends. */
+function capturingAgentRunner(runs: Map<string, CapturedRun>): { startAgent: (cfg: AgentRunConfig) => Promise<unknown> } {
+  return {
+    startAgent: (cfg) => new Promise((resolve, reject) => {
+      const release = cfg.bindNoteDelivery(() => true);
+      runs.set(cfg.name, {
+        config: cfg,
+        release,
+        resolve: (result) => { release(); resolve(result); },
+        reject: (error) => { release(); reject(error); },
+      });
+    }),
+  };
 }
 
 /** The part of a pi session the runner touches before handing it to the agent runner. */
@@ -510,7 +531,7 @@ function stubMemberSession(): never {
   return { sessionManager: { appendCustomEntry: () => 'entry', getSessionFile: () => undefined } } as never;
 }
 
-function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; cancelledDialogs: string[]; boundScopes: string[]; mcpContexts: AgentMcpContext[]; factoryMcpSnapshots: NestedMcpToolset[]; toolsetSnapshots: NestedMcpToolset[]; sessionOpts: Array<Record<string, unknown>> } {
+function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; cancelledDialogs: string[]; boundScopes: string[]; mcpContexts: AgentMcpContext[]; factoryMcpSnapshots: NestedMcpToolset[]; factoryReadOnly: boolean[]; toolsetSnapshots: NestedMcpToolset[]; sessionOpts: Array<Record<string, unknown>>; webview: ExtensionToWebviewMessage[] } {
   const runs = new Map<string, CapturedRun>();
   const sentToLead: string[] = [];
   const disposedScopes: Array<[string, boolean]> = [];
@@ -521,6 +542,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
   /** The `mcp` snapshot each spawn threaded into `buildExtensionFactory`, so the runner can be held
    *  to ONE `buildAgentToolset` call per spawn whose result reaches BOTH consumers (brief §3.2). */
   const factoryMcpSnapshots: NestedMcpToolset[] = [];
+  const factoryReadOnly: boolean[] = [];
   const sessionOpts: Array<Record<string, unknown>> = [];
   const toolsetSnapshots: NestedMcpToolset[] = [];
 
@@ -547,10 +569,11 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
         mcpContexts.push(ctx);
         const { toolNames, customTools, mcp } = teamAgentToolset();
         toolsetSnapshots.push(mcp);
-        return { toolNames, customTools, mcp };
+        return { toolNames, customTools, mcp, readOnly: ctx.kind === 'reviewer' };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset) => {
+      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset, readOnly: boolean) => {
         factoryMcpSnapshots.push(mcp);
+        factoryReadOnly.push(readOnly);
         return (() => undefined) as never;
       },
       onAgentCost: () => undefined,
@@ -561,7 +584,8 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     },
   } as unknown as TeamConfig;
 
-  const runner = new TeamRunner(config, () => undefined);
+  const webview: ExtensionToWebviewMessage[] = [];
+  const runner = new TeamRunner(config, (m) => webview.push(m));
 
   // Inject the collaborators run() would build, plus a stub agentRunner that captures each config.
   const target = runner as unknown as Record<string, unknown>;
@@ -570,22 +594,20 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
   target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
-  target['agentRunner'] = {
-    startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
-  };
+  target['agentRunner'] = capturingAgentRunner(runs);
 
   const agentMap = target['agents'] as Map<string, TeamAgent>;
   for (const spec of config.agents) {
     agentMap.set(spec.name, makeAgent({ name: spec.name, role: spec.role, status: 'pending' }));
   }
 
-  return { runner, runs, sentToLead, messageBus, disposedScopes, cancelledDialogs, boundScopes, mcpContexts, factoryMcpSnapshots, toolsetSnapshots, sessionOpts };
+  return { runner, runs, sentToLead, messageBus, disposedScopes, cancelledDialogs, boundScopes, mcpContexts, factoryMcpSnapshots, factoryReadOnly, toolsetSnapshots, sessionOpts, webview };
 }
 
 describe('TeamRunner — per-agent browser scope disposal (success-only auto-close)', () => {
   const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
   const result = (status: 'completed' | 'failed' | 'cancelled', agentId = 'A'): AgentResult => ({
-    agentId, status, finalResponse: status === 'completed' ? 'ok' : null, toolCallCount: 0, durationMs: 0,
+    agentId, status, finalResponse: status === 'completed' ? 'ok' : null, toolCallCount: 0,
     totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
   });
   const agentOf = (runner: TeamRunner, name: string): TeamAgent =>
@@ -619,6 +641,61 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
 
     runs.get('A')!.resolve(result('completed'));
     await settle();
+  });
+
+  it('the drain-timeout finalize sends each member it forces terminal the status and stopwatch team-completed records', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const { runner, webview } = makeWiringRunner(['A']);
+      const entries: Array<Record<string, unknown>> = [];
+      (runner as unknown as { persistence: { appendTeamEntry: (e: Record<string, unknown>) => void } }).persistence.appendTeamEntry = (e) => { entries.push(e); };
+      runner.startSpecialist('A', 'task for A that is descriptive enough');
+      await settle();
+      vi.advanceTimersByTime(5_000);
+      // A's run never settles, so only the drain timeout and the 2 s abort window end the team.
+      const finalize = (runner as unknown as { awaitCompletionAndFinalize: (p: Promise<string>) => Promise<unknown> })
+        .awaitCompletionAndFinalize(Promise.resolve('the synthesized result'));
+      await vi.advanceTimersByTimeAsync(33_000);
+      await finalize;
+
+      const completed = entries.find((e) => e['type'] === 'team-completed')!;
+      const completedAt = Date.parse(String(completed['timestamp']));
+      const a = agentOf(runner, 'A');
+      expect(a).toMatchObject({ status: 'completed', runningSince: null });
+      expect(a.activeMs).toBe(completedAt - Date.parse(String(entries.find((e) => e['type'] === 'agent-spawned')!['timestamp'])));
+
+      const updates = webview.filter((m) => m.type === 'teamAgentStatusUpdate');
+      const forcedA = updates.filter((m) => m.type === 'teamAgentStatusUpdate' && m.agentId === a.agentId).at(-1);
+      expect(forcedA).toMatchObject({ status: 'completed', stopwatch: { activeMs: a.activeMs, runningSince: null } });
+      // The never-launched lead is forced cancelled and gets its update too.
+      const lead = agentOf(runner, 'Lead');
+      expect(updates.filter((m) => m.type === 'teamAgentStatusUpdate' && m.agentId === lead.agentId).at(-1)).toMatchObject({ status: 'cancelled' });
+      // Every card reaches its final state before the team reads as complete.
+      expect(webview.findIndex((m) => m === forcedA)).toBeLessThan(webview.findIndex((m) => m.type === 'teamCompleted'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands each spawn's kind to the toolset and that toolset's readOnly to the gate factory", async () => {
+    const { runner, runs, mcpContexts, factoryReadOnly } = makeWiringRunner(['R', 'I']);
+    runner.startSpecialist('R', 'review the implementation for defects', undefined, 'reviewer', []);
+    runner.startSpecialist('I', 'implement the change described in the brief', undefined, 'implementor');
+    await settle();
+    await runs.get('R')!.config.createSession();
+    await runs.get('I')!.config.createSession();
+
+    expect(mcpContexts.map((c) => [c.agentName, c.kind])).toEqual([['R', 'reviewer'], ['I', 'implementor']]);
+    expect(factoryReadOnly).toEqual([true, false]);
+
+    // A redispatch re-declares the kind, and the new attempt's toolset reads it.
+    runs.get('R')!.resolve(result('failed', agentOf(runner, 'R').agentId));
+    await settle();
+    runner.redispatchSpecialist('R', 'review the implementation for defects again', undefined, 'reviewer', []);
+    await settle();
+    await runs.get('R')!.config.createSession();
+    expect(mcpContexts.at(-1)!.kind).toBe('reviewer');
+    expect(factoryReadOnly.at(-1)).toBe(true);
   });
 
   it('closes a specialist\'s tab(s) on successful completion (closeTabs=true)', async () => {
@@ -805,7 +882,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
     expect(agents.get('A')!.status).toBe('awaiting-review');
     expect(sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(true);
     // settle the captured runner promises so no dangling handles remain
-    const done = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
+    const done = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
     a.resolve(done);
     b.resolve(done);
   });
@@ -860,7 +937,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
     expect(completion!).toContain('Scout: brief mandates async pipeline; contract is a sync toy');
 
     // settle the captured specialist promise so no dangling handle remains
-    scout.resolve({ status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
+    scout.resolve({ status: 'completed' as const, finalResponse: null, toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
   });
 });
 
@@ -873,7 +950,7 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
  * `completed`. Each test replays the agent-runner loop by hand: at a bare turn-end keepAlive() is false,
  * so the runner calls onReconcileBeforeEnd then re-checks keepAlive to decide park-vs-break.
  */
-const DONE_RESULT = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
+const DONE_RESULT = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
 
 describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
   function agentsOf(runner: TeamRunner): Map<string, TeamAgent> {
@@ -1145,12 +1222,13 @@ function makeModelWiringRunner(
   target['messageBus'] = messageBus;
   target['scratchpad'] = new Scratchpad();
   target['persistence'] = { appendTeamEntry: () => undefined, flush: async () => undefined, writeCheckpoint: () => true };
+  const capturing = capturingAgentRunner(runs);
   target['agentRunner'] = {
     startAgent: (cfg: AgentRunConfig) => {
       // Invoke the real createSession closure TeamRunner built so its resolved opts are captured.
       currentName = cfg.name;
       void cfg.createSession();
-      return new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); });
+      return capturing.startAgent(cfg);
     },
   };
 
@@ -1164,14 +1242,14 @@ function makeModelWiringRunner(
 
 describe('TeamRunner role-model resolution wiring', () => {
   it('resolves the reviewer slot on a kind:reviewer spawn — session opts carry the reviewer model + thinkingLevel', async () => {
-    const reviewerModel = { id: 'gpt-6-sol' };
+    const reviewerModel = { id: 'gpt-6.1-sol' };
     const { runner, sessionOpts } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { model: reviewerModel, modelLabel: 'GPT-6 Sol', thinkingLevel: 'max' }
+        ? { model: reviewerModel, modelLabel: 'GPT-6.1 Sol', thinkingLevel: 'max' }
         : { modelLabel: role === 'lead' ? 'lead-model' : 'impl-model' },
     );
 
-    runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer');
+    runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', []);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1181,34 +1259,34 @@ describe('TeamRunner role-model resolution wiring', () => {
     expect(opts!.thinkingLevel).toBe('max');
     // The agent card label reflects the reviewer slot.
     const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
-    expect(agents.get('Rev')!.model).toBe('GPT-6 Sol');
+    expect(agents.get('Rev')!.model).toBe('GPT-6.1 Sol');
   });
 
   it('throws at spawn time when the resolved role slot returns a blocking .error', () => {
     const { runner } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { error: 'Team role "reviewer" is configured to model "gpt-6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        ? { error: 'Team role "reviewer" is configured to model "gpt-6.1-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
         : { modelLabel: 'ok' },
     );
 
-    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer'))
+    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', []))
       .toThrow('damocles.team.reviewerModel');
   });
 
   it('leaves the agent pending (no ghost running agent) when the role slot resolution throws', () => {
     const { runner } = makeModelWiringRunner((role) =>
       role === 'reviewer'
-        ? { error: 'Team role "reviewer" is configured to model "gpt-6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        ? { error: 'Team role "reviewer" is configured to model "gpt-6.1-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
         : { modelLabel: 'ok' },
     );
 
-    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer')).toThrow();
+    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer', [])).toThrow();
 
     // Resolution runs BEFORE any state mutation, so the failed spawn must not strand a running agent:
     // status stays 'pending', it is not counted active, and re-spawn is not blocked by 'already spawned'.
     const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
     expect(agents.get('Rev')!.status).toBe('pending');
-    expect(agents.get('Rev')!.startTime).toBeNull();
+    expect(agents.get('Rev')!.runningSince).toBeNull();
     expect(runner.getActiveSpecialistNames()).not.toContain('Rev');
   });
 });
@@ -1226,7 +1304,7 @@ interface RedispatchHarness {
   /** The `store` each member session was created with, in creation order. */
   sessionStores: unknown[];
   teamEntries: Array<Record<string, unknown>>;
-  statusUpdates: Array<{ agentId: string; status: string }>;
+  statusUpdates: Array<{ agentId: string; status: string; progressSummary?: string; stopwatch?: Stopwatch }>;
   sentToLead: string[];
   messageBus: MessageBus;
   set: (name: string, key: string) => Set<string>;
@@ -1239,7 +1317,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
   const runs = new Map<string, CapturedRun>();
   const sessionStores: unknown[] = [];
   const teamEntries: Array<Record<string, unknown>> = [];
-  const statusUpdates: Array<{ agentId: string; status: string }> = [];
+  const statusUpdates: RedispatchHarness['statusUpdates'] = [];
   const sentToLead: string[] = [];
 
   const config = {
@@ -1276,7 +1354,11 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
   } as unknown as TeamConfig;
 
   const runner = new TeamRunner(config, (m) => {
-    if (m.type === 'teamAgentStatusUpdate') statusUpdates.push({ agentId: m.agentId, status: m.status });
+    if (m.type !== 'teamAgentStatusUpdate') return;
+    statusUpdates.push({
+      agentId: m.agentId, status: m.status,
+      ...(m.progressSummary ? { progressSummary: m.progressSummary } : {}), ...(m.stopwatch ? { stopwatch: m.stopwatch } : {}),
+    });
   });
 
   const target = runner as unknown as Record<string, unknown>;
@@ -1289,9 +1371,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
     flush: async () => undefined,
     writeCheckpoint: () => true,
   };
-  target['agentRunner'] = {
-    startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
-  };
+  target['agentRunner'] = capturingAgentRunner(runs);
 
   const agents = target['agents'] as Map<string, TeamAgent>;
   for (const spec of config.agents) {
@@ -1317,7 +1397,7 @@ async function driveToFailed(h: RedispatchHarness, name: string): Promise<void> 
   await Promise.resolve();
   const agent = h.agents.get(name)!;
   agent.status = 'failed';
-  agent.endTime = Date.now();
+  agent.runningSince = null;
   agent.error = 'boom';
   await Promise.resolve();
 }
@@ -1345,7 +1425,7 @@ describe('TeamRunner.redispatchSpecialist — guards (exact engine-contract stri
     const h = makeRedispatchHarness(['A']);
     h.agents.get('A')!.status = 'completed';
     expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
-      .toThrow('Agent "A" is completed — approved work is final; cover the gap with team_request_revision or a new task assignment, not a redispatch');
+      .toThrow('Agent "A" is completed: its work is final, its session has ended and no tool reopens it. Give follow-up work to a pending roster specialist or record it as remaining work, not a redispatch');
   });
 
   it.each(['running', 'awaiting-review', 'standby'] as Array<TeamAgent['status']>)(
@@ -1400,7 +1480,7 @@ describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and ca
       const agent = h.agents.get('A')!;
       const originalId = agent.agentId;
       agent.status = status;
-      agent.endTime = 123;
+      agent.activeMs = 123;
       agent.error = 'prior failure';
       agent.finalResponse = 'stale';
       agent.toolCallCount = 9;
@@ -1411,7 +1491,8 @@ describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and ca
       expect(agent.agentId).toBe(originalId);
       expect(agent.status).toBe('running');
       expect(agent.specialization).toBe('the new redispatch task, described');
-      expect(agent.endTime).toBeNull();
+      expect(agent.activeMs).toBe(0);
+      expect(agent.runningSince).toEqual(expect.any(Number));
       expect(agent.error).toBeNull();
       expect(agent.finalResponse).toBeNull();
       expect(agent.toolCallCount).toBe(0);
@@ -2006,8 +2087,8 @@ describe('TeamRunner — completionResolved guards spawn/redispatch (no post-com
 describe('TeamRunner.redispatchSpecialist — cancelled-from-pending is a first launch', () => {
   it('pending→cancelled→redispatch launches attempt 1 into its own file and appends the reattempt marker', async () => {
     const h = makeRedispatchHarness(['A']);
-    h.runner.cancelSpecialist('A'); // never launched: startTime null, no session file exists
-    expect(h.agents.get('A')!.startTime).toBeNull();
+    h.runner.cancelSpecialist('A'); // never launched: no stopwatch, no session file exists
+    expect(h.agents.get('A')!).toMatchObject({ activeMs: 0, runningSince: null });
 
     h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
     await h.runs.get('A')!.config.createSession();
@@ -2063,7 +2144,21 @@ describe('TeamRunner.checkMessageDeliverable — REAL helper, role-aware guidanc
     );
   });
 
-  it.each([['C', 'completed'], ['F', 'failed'], ['X', 'cancelled']])(
+  it('completed recipient, lead sender → says the session is over and where follow-up work goes (verbatim)', () => {
+    const check = realCheck(statusHarness());
+    expect(check('C', 'lead').error).toBe(
+      "Cannot message 'C': they are completed, their session is over and no tool reopens it. Read their scratchpad section with team_read_scratchpad, and give any follow-up work to a pending roster specialist or record it as remaining work.",
+    );
+  });
+
+  it('completed recipient, specialist sender → routes follow-up through the lead (verbatim)', () => {
+    const check = realCheck(statusHarness());
+    expect(check('C', 'specialist').error).toBe(
+      "Cannot message 'C': they are completed, their session is over and no tool reopens it. Read their scratchpad section with team_read_scratchpad, and tell the lead if their finished work needs follow-up.",
+    );
+  });
+
+  it.each([['F', 'failed'], ['X', 'cancelled']])(
     'terminal recipient %s, lead sender → names the status + team_redispatch_specialist (verbatim)',
     (name, status) => {
       const check = realCheck(statusHarness());
@@ -2073,7 +2168,7 @@ describe('TeamRunner.checkMessageDeliverable — REAL helper, role-aware guidanc
     },
   );
 
-  it.each([['C', 'completed'], ['F', 'failed'], ['X', 'cancelled']])(
+  it.each([['F', 'failed'], ['X', 'cancelled']])(
     'terminal recipient %s, specialist sender → routes through the lead (never a lead-only tool)',
     (name, status) => {
       const check = realCheck(statusHarness());
@@ -2309,5 +2404,966 @@ describe('TeamRunner member session opening', () => {
 
     await expect(createMemberSession(makeAgent({ name: 'A', role: 'specialist' }), 0, 'task', launch, async () => session)).rejects.toThrow('disk full');
     expect(forgotten).toEqual([session]);
+  });
+});
+
+describe('TeamRunner agent stopwatch', () => {
+  afterEach(() => vi.useRealTimers());
+  const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
+  const entryOf = (h: RedispatchHarness, type: string): Record<string, unknown> => h.teamEntries.filter((e) => e['type'] === type && e['name'] === 'A').at(-1)!;
+
+  it('stamps one time into the spawn entry and the stopwatch, and the one settle update carries it closed at the agent-completed time', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_000_000);
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const agentId = h.agents.get('A')!.agentId;
+
+    expect(Date.parse(entryOf(h, 'agent-spawned')['timestamp'] as string)).toBe(1_000_000);
+    expect(h.statusUpdates.at(-1)).toMatchObject({ agentId, status: 'running', stopwatch: { activeMs: 0, runningSince: 1_000_000 } });
+
+    // A resumed attempt reports its tool calls since the resume on top of the earlier ones.
+    h.agents.get('A')!.carriedToolCallCount = 2;
+    vi.setSystemTime(1_042_400);
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId, toolCallCount: 3 });
+    await settle();
+
+    const completed = entryOf(h, 'agent-completed');
+    expect(Date.parse(completed['timestamp'] as string)).toBe(1_042_400);
+    expect(completed).not.toHaveProperty('durationMs');
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId && u.status !== 'running')).toEqual([
+      { agentId, status: 'completed', progressSummary: 'Completed (5 tools, 42s)', stopwatch: { activeMs: 42_400, runningSince: null } },
+    ]);
+    expect(h.sentToLead).toContain('Specialist "A" completed (5 tools, 42s). Read their scratchpad section for findings.');
+  });
+
+  it('getTeamStatus reports the active time, never the time since the spawn', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(10_000_000);
+    const h = makeRedispatchHarness(['A', 'B']);
+    // Ten minutes before a cancel, then resumed a minute ago after a long stop.
+    Object.assign(h.agents.get('A')!, { status: 'running', activeMs: 600_000, runningSince: 10_000_000 - 60_000 });
+
+    const durations = (h.runner.getTeamStatus()['agents'] as Array<{ name: string; durationSec: number }>).map((a) => [a.name, a.durationSec]);
+    expect(durations).toEqual([['Lead', 0], ['A', 660], ['B', 0]]);
+  });
+
+  it('stamps agent-completed with the toolUseId of the run it settled in', async () => {
+    const h = makeRedispatchHarness(['A']);
+    (h.runner as unknown as { beginRun: (toolUseId: string, at: string) => void }).beginRun('tc-run-2', new Date().toISOString());
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    h.runs.get('A')!.resolve(DONE_RESULT);
+    await settle();
+    expect(entryOf(h, 'agent-completed')['toolUseId']).toBe('tc-run-2');
+  });
+
+  it.each(['Lead', 'A'])('a run of %s that throws settles failed, and its card gets the closed stopwatch', async (name) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(2_000_000);
+    const h = makeRedispatchHarness(['A']);
+    if (name === 'Lead') {
+      const lead = Object.assign(h.agents.get('Lead')!, { status: 'running', activeMs: 0, runningSince: 2_000_000 });
+      (h.runner as unknown as { launchLead: (agent: TeamAgent, launch: unknown) => void })
+        .launchLead(lead, { kind: 'fresh', resolution: { modelLabel: 'lead-model' }, prompt: 'begin', redeliver: [] });
+    } else {
+      h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    }
+    const agentId = h.agents.get(name)!.agentId;
+    vi.setSystemTime(2_007_000);
+    h.runs.get(name)!.reject(new Error('runner crashed'));
+    await settle();
+
+    expect(h.agents.get(name)).toMatchObject({ status: 'failed', activeMs: 7_000, runningSince: null });
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toEqual({ agentId, status: 'failed', stopwatch: { activeMs: 7_000, runningSince: null } });
+  });
+
+  it('a settle that throws after writing agent-completed keeps the status that entry recorded and writes no second one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(3_000_000);
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const agentId = h.agents.get('A')!.agentId;
+    const send = h.messageBus.send.bind(h.messageBus);
+    h.messageBus.send = (from, to, content) => {
+      if (content.startsWith('Specialist "A" completed')) throw new Error('bus down');
+      return send(from, to, content);
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      vi.setSystemTime(3_005_000);
+      h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId });
+      await settle();
+      await settle();
+
+      expect(h.teamEntries.filter((e) => e['type'] === 'agent-completed' && e['name'] === 'A').map((e) => e['status'])).toEqual(['completed']);
+      expect(h.agents.get('A')).toMatchObject({ status: 'completed', activeMs: 5_000, runningSince: null, error: 'bus down' });
+      expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toMatchObject({ status: 'completed', stopwatch: { activeMs: 5_000, runningSince: null } });
+      expect(logged).toHaveBeenCalledWith('[TeamRunner] Settling specialist "A" threw after it settled completed:', expect.any(Error));
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('the finalize sends the status team-completed recorded, even when the member settles during the flush', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const agentId = h.agents.get('A')!.agentId;
+    privateField<{ flush: () => Promise<void> }>(h.runner, 'persistence').flush = async () => {
+      h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId, status: 'failed' });
+      await settle();
+    };
+    const finalize = (h.runner as unknown as { awaitCompletionAndFinalize: (p: Promise<string>) => Promise<unknown> })
+      .awaitCompletionAndFinalize(Promise.resolve('the synthesized result'));
+    await vi.advanceTimersByTimeAsync(33_000);
+    await finalize;
+
+    const recorded = (h.teamEntries.find((e) => e['type'] === 'team-completed')!['agentResults'] as Array<{ agentId: string; status: string }>)
+      .find((r) => r.agentId === agentId)!.status;
+    expect(recorded).toBe('completed');
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toMatchObject({ status: recorded });
+  });
+
+  it('a member that settles after team-completed sends no update and appends nothing, since a resumed run may own its card and log', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = makeRedispatchHarness(['A']);
+    h.runner.startSpecialist('A', 'task for A that is descriptive enough');
+    const agentId = h.agents.get('A')!.agentId;
+    vi.advanceTimersByTime(5_000);
+    // A's run never settles, so only the drain timeout and the 2 s abort window end the team.
+    const finalize = (h.runner as unknown as { awaitCompletionAndFinalize: (p: Promise<string>) => Promise<unknown> })
+      .awaitCompletionAndFinalize(Promise.resolve('the synthesized result'));
+    await vi.advanceTimersByTimeAsync(33_000);
+    await finalize;
+    const completedAt = Date.parse(String(h.teamEntries.find((e) => e['type'] === 'team-completed')!['timestamp']));
+    const fixed = { activeMs: completedAt - Date.parse(String(entryOf(h, 'agent-spawned')['timestamp'])), runningSince: null };
+    expect(h.statusUpdates.filter((u) => u.agentId === agentId).at(-1)).toMatchObject({ status: 'completed', stopwatch: fixed });
+    const [entries, updates] = [h.teamEntries.length, h.statusUpdates.length];
+
+    vi.advanceTimersByTime(60_000);
+    h.runs.get('A')!.resolve({ ...DONE_RESULT, agentId, status: 'cancelled' });
+    await settle();
+    expect(h.teamEntries.slice(entries)).toEqual([]);
+    expect(h.statusUpdates.slice(updates)).toEqual([]);
+    expect(h.agents.get('A')).toMatchObject(fixed);
+  });
+});
+
+/**
+ * Revision-bound reviewer sign-offs. A reviewer declares the implementors it reviews; its verdict is
+ * recorded against the implementor's landed revision ({ attempt, round }), and approval follows rules B
+ * (an implementor needs every reviewer's current approve, or a dismissal) and C (a reviewer waits for its
+ * implementors to be final). Driven through the real runner methods and the captured run configs.
+ */
+describe('TeamRunner review coverage (revision-bound reviewer sign-offs)', () => {
+  const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
+  const pad = (h: RedispatchHarness): Scratchpad => privateField<Scratchpad>(h.runner, 'scratchpad');
+  const coverageOf = (h: RedispatchHarness): ReviewCoverage => privateField<ReviewCoverage>(h.runner, 'coverage');
+  const statusOf = (h: RedispatchHarness) => (name: string): TeamAgent['status'] => h.agents.get(name)!.status;
+
+  interface ReviewTeam extends RedispatchHarness {
+    completion: () => string | null;
+  }
+
+  /** backend (and frontend when asked) as implementors, appsec reviewing them, every one spawned and running. */
+  function reviewTeam(implementors: string[] = ['backend']): ReviewTeam {
+    const h = makeRedispatchHarness([...implementors, 'appsec']);
+    let completion: string | null = null;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+    for (const name of implementors) h.runner.startSpecialist(name, `implement the ${name} work in full`);
+    h.runner.startSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer', implementors);
+    return Object.assign(h, { completion: () => completion });
+  }
+
+  /** The implementor writes a new version of its section, reports complete and ends the turn: a landing. */
+  function land(h: RedispatchHarness, name: string): void {
+    pad(h).set(`${name}-api`, `${name} work, ${pad(h).get(`${name}-api`)?.version ?? 0} prior`, name);
+    h.runner.reportComplete(name, `${name} delivered and verified`);
+    h.runs.get(name)!.config.onTurnEnd!();
+  }
+
+  /** appsec reads every implementor section and reports the verdicts. */
+  function review(h: RedispatchHarness, verdicts: Record<string, 'approve' | 'changes_requested'>): void {
+    for (const implementor of Object.keys(verdicts)) pad(h).markRead('appsec', `${implementor}-api`);
+    h.runner.reportComplete('appsec', 'reviewed every implementor in full', Object.entries(verdicts).map(([implementor, verdict]) => ({ implementor, verdict })));
+    h.runs.get('appsec')!.config.onTurnEnd!();
+  }
+
+  const leadReads = (h: RedispatchHarness, name: string): void => pad(h).markRead('Lead', `${name}-api`);
+
+  /** The lead revises `name`, and its run wakes on the revision message. */
+  function revise(h: RedispatchHarness, name: string): void {
+    h.runner.requestRevision(name, `apply the findings to ${name}`);
+    h.runs.get(name)!.config.onKeepAliveResume!();
+  }
+
+  it('INCIDENT: a reviewer cannot be approved while its implementor is mid-revision (rule C)', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    leadReads(h, 'backend');
+
+    h.runner.requestRevision('backend', 'tighten the session checks');
+    expect(() => h.runner.approveSpecialist('appsec')).toThrow(
+      'Cannot approve reviewer "appsec" yet: it reviews "backend", which is still awaiting-review. Approve or revise backend first; approve appsec once backend is final and its review is satisfied.',
+    );
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+    expect(() => h.runner.approveSpecialist('appsec')).toThrow('which is still running');
+    expect(h.agents.get('appsec')!.status).toBe('awaiting-review');
+  });
+
+  it('approves the implementor on a current approve verdict, then the reviewer', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    leadReads(h, 'backend');
+
+    h.runner.approveSpecialist('backend');
+    h.runner.approveSpecialist('appsec');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+  });
+
+  it('rejects a reviewer report while an implementor section is unread or stale (report gate)', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    pad(h).markRead('appsec', 'backend-api');
+    pad(h).set('backend-api', 'backend reworked after a peer question', 'backend');
+
+    expect(() => h.runner.reportComplete('appsec', 'reviewed every implementor in full', [{ implementor: 'backend', verdict: 'approve' }])).toThrow(
+      'Cannot report complete: your review is out of date. "backend-api" is v2 by backend (you last read v1). Read each listed section with team_read_scratchpad, update your review, then report again.',
+    );
+    // Rejected before any state change: no sign-off, not confirmed complete.
+    expect(coverageOf(h).signoffOf('appsec', 'backend')).toBeUndefined();
+    expect(h.set('appsec', 'confirmedComplete').has('appsec')).toBe(false);
+  });
+
+  it('rejects a reviewer report whose verdicts do not cover exactly its implementors', () => {
+    const h = reviewTeam(['backend', 'frontend']);
+    land(h, 'backend');
+    land(h, 'frontend');
+    pad(h).markRead('appsec', 'backend-api');
+    pad(h).markRead('appsec', 'frontend-api');
+
+    expect(() => h.runner.reportComplete('appsec', 'reviewed every implementor in full', [{ implementor: 'backend', verdict: 'approve' }])).toThrow(
+      'Cannot report complete: pass one verdict for each implementor you review (backend, frontend), except one that has landed no work yet. Missing: frontend.',
+    );
+    expect(() => h.runner.reportComplete('appsec', 'reviewed every implementor in full')).toThrow('Missing: backend, frontend.');
+    expect(h.set('appsec', 'confirmedComplete').has('appsec')).toBe(false);
+  });
+
+  it('rejects verdicts from a specialist that reviews nobody', () => {
+    const h = reviewTeam();
+    pad(h).set('backend-api', 'backend work', 'backend');
+    expect(() => h.runner.reportComplete('backend', 'backend delivered and verified', [{ implementor: 'appsec', verdict: 'approve' }]))
+      .toThrow('Cannot report complete: you review no implementor, so pass no verdicts.');
+  });
+
+  it('CHANGES REQUESTED then revise: blocked until a revision lands and the reviewer re-approves it', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    leadReads(h, 'backend');
+
+    expect(() => h.runner.approveSpecialist('backend')).toThrow(
+      'Cannot approve "backend": its reviewer "appsec" requested changes on backend\'s revision 0. Send backend a revision with team_request_revision that addresses appsec\'s findings, or dismiss appsec\'s review with team_dismiss_review and a written reason.',
+    );
+    expect(h.agents.get('backend')!.status).toBe('awaiting-review');
+
+    revise(h, 'backend');
+    land(h, 'backend');
+    leadReads(h, 'backend');
+    expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 1 });
+    expect(coverageOf(h).isCurrent('appsec', 'backend')).toBe(false);
+
+    // appsec re-reviews the landed revision and approves it.
+    if (h.agents.get('appsec')!.status === 'awaiting-review') revise(h, 'appsec');
+    review(h, { backend: 'approve' });
+    h.runner.approveSpecialist('backend');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+  });
+
+  it('CHANGES REQUESTED then dismiss: the implementor is approved and the result starts with the dismissal block', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    leadReads(h, 'backend');
+
+    h.runner.dismissReview('appsec', 'backend', 'the finding is a style nit outside the brief');
+    h.runner.approveSpecialist('backend');
+    h.runner.approveSpecialist('appsec');
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('the team result');
+
+    expect(h.completion()).toBe(
+      'REVIEW DISMISSALS (recorded by the system): the lead dismissed these required reviews:\n' +
+      "- appsec's review of backend, revision 0: appsec requested changes on it. Lead's reason: \"the finding is a style nit outside the brief\"" +
+      '\n\n---\n\nthe team result',
+    );
+    expect(h.teamEntries.find((e) => e['type'] === 'review-dismissed')).toMatchObject({
+      reviewer: 'appsec', implementor: 'backend', stamp: { attempt: 0, round: 0 }, reason: 'the finding is a style nit outside the brief',
+    });
+  });
+
+  it('FINAL REVIEWER: a cancelled reviewer blocks approval until redispatched or dismissed with a 10-character reason', async () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    leadReads(h, 'backend');
+    h.runner.cancelSpecialist('appsec');
+    h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('cancelled');
+
+    expect(() => h.runner.approveSpecialist('backend')).toThrow(
+      'Cannot approve "backend": its reviewer "appsec" is cancelled and never reviewed backend\'s revision 0. Redispatch appsec with team_redispatch_specialist, or dismiss this review with team_dismiss_review and a written reason.',
+    );
+    expect(() => h.runner.dismissReview('appsec', 'backend', 'too short')).toThrow('Cannot dismiss: give a written reason of at least 10 characters.');
+    expect(() => h.runner.dismissReview('appsec', 'backend', '          ')).toThrow('at least 10 characters');
+    expect(h.teamEntries.some((e) => e['type'] === 'review-dismissed')).toBe(false);
+
+    h.runner.dismissReview('appsec', 'backend', 'appsec crashed twice; the suite covers the auth paths');
+    h.runner.approveSpecialist('backend');
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('the team result');
+    expect(h.completion()).toMatch(/^REVIEW DISMISSALS \(recorded by the system\)/);
+    expect(h.completion()).toContain("- appsec's review of backend, revision 0: appsec is cancelled and never reviewed it. Lead's reason: \"appsec crashed twice; the suite covers the auth paths\"");
+  });
+
+  it('a reviewer completed at its cap offers only dismissal, since a completed member cannot be redispatched', async () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    leadReads(h, 'backend');
+    (h.map('specialistReviewRounds') as Map<string, number>).set('appsec', 2);
+    h.runs.get('appsec')!.resolve(DONE_RESULT);
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+
+    expect(() => h.runner.approveSpecialist('backend')).toThrow(
+      'Cannot approve "backend": its reviewer "appsec" is completed and never reviewed backend\'s revision 0. Its session has ended and no tool reopens it, so dismiss this review with team_dismiss_review and a written reason.',
+    );
+    expect(() => h.runner.redispatchSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer')).toThrow('is completed');
+    h.runner.dismissReview('appsec', 'backend', 'appsec ran out of rounds; backend is verified by the suite');
+    h.runner.approveSpecialist('backend');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+  });
+
+  it('refuses to dismiss a live reviewer whose sign-off is stale: it must re-review instead', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    revise(h, 'backend');
+    land(h, 'backend');
+
+    expect(() => h.runner.dismissReview('appsec', 'backend', 'a reason that is long enough')).toThrow(
+      'Cannot dismiss: "appsec" can still review backend\'s revision 1. Send it back with team_request_revision instead.',
+    );
+    expect(() => h.runner.dismissReview('appsec', 'nobody', 'a reason that is long enough')).toThrow('Cannot dismiss: "appsec" does not review "nobody".');
+  });
+
+  it('names the stale sign-off and the move when a live reviewer has not re-reviewed the latest revision', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    coverageOf(h).land('backend', { attempt: 0, round: 2 });
+    leadReads(h, 'backend');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow(
+      'Cannot approve "backend": its reviewer "appsec" has not signed off on backend\'s latest revision (revision 2; appsec covers revision 0). Send appsec back with team_request_revision asking it to review backend\'s current sections, then approve backend before appsec.',
+    );
+  });
+
+  it('a reviewer of a completed implementor whose verdict requests changes needs a dismissal before approval (rule C variant)', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    h.agents.get('backend')!.status = 'completed';
+    expect(() => h.runner.approveSpecialist('appsec')).toThrow(
+      'Cannot approve reviewer "appsec" yet: it requested changes on "backend"\'s revision 0, and backend is completed, so no revision can follow. Dismiss the review with team_dismiss_review and a written reason, then approve appsec.',
+    );
+    h.runner.dismissReview('appsec', 'backend', 'accepted as remaining work in the result');
+    h.runner.approveSpecialist('appsec');
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+  });
+
+  it('lists every unsatisfied review of a completed implementor, and prepends them to any synthesis', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    h.agents.get('backend')!.status = 'completed';
+
+    expect(h.runner.getUnsatisfiedReviews()).toEqual([
+      'backend, revision 0, reviewed by appsec: appsec requested changes (dismiss with team_dismiss_review and a written reason)',
+    ]);
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('partial');
+    expect(h.completion()).toMatch(/^UNSATISFIED REQUIRED REVIEWS \(recorded by the system\): the team ended with these required reviews unsatisfied:\n/);
+    // The result's reader can no longer act on the team, so no lead move rides along.
+    expect(h.completion()).toContain('- backend, revision 0, reviewed by appsec: appsec requested changes\n');
+    expect(h.completion()).not.toContain('team_dismiss_review');
+  });
+
+  it('lists a standby implementor whose landed work is unreviewed, since synthesis releases it as completed', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    revise(h, 'backend');
+    h.runner.enterStandby('backend');
+    h.agents.get('backend')!.status = 'standby';
+
+    expect(h.runner.getUnsatisfiedReviews()).toEqual([
+      'backend, revision 0, reviewed by appsec: appsec requested changes (dismiss with team_dismiss_review and a written reason)',
+    ]);
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('partial');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+    expect(h.completion()).toMatch(/^UNSATISFIED REQUIRED REVIEWS \(recorded by the system\)/);
+  });
+
+  it('rule C names spawn or cancel for a never-spawned implementor, and a cancel of it clears the rule', () => {
+    const h = makeRedispatchHarness(['backend', 'frontend', 'appsec']);
+    h.runner.startSpecialist('backend', 'implement the backend work in full');
+    h.runner.startSpecialist('appsec', 'review the implementors for security defects', undefined, 'reviewer', ['backend', 'frontend']);
+    land(h, 'backend');
+    pad(h).markRead('appsec', 'backend-api');
+    h.runner.reportComplete('appsec', 'reviewed every implementor in full', [{ implementor: 'backend', verdict: 'approve' }, { implementor: 'frontend', verdict: 'approve' }]);
+    h.runs.get('appsec')!.config.onTurnEnd!();
+    leadReads(h, 'backend');
+    h.runner.approveSpecialist('backend');
+
+    const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).at(-1)!;
+    expect(rrr).toContain('reviews frontend: never spawned [approval blocked: spawn it with team_spawn_specialist or cancel it with team_cancel_specialist]');
+    expect(() => h.runner.approveSpecialist('appsec')).toThrow(
+      'Cannot approve reviewer "appsec" yet: it reviews "frontend", which was never spawned. Spawn frontend with team_spawn_specialist or cancel it with team_cancel_specialist; approve appsec once frontend is final and its review is satisfied.',
+    );
+    h.runner.cancelSpecialist('frontend');
+    h.runner.approveSpecialist('appsec');
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+  });
+
+  it('a section the implementor changes after the reviewer approved blocks its approval until the reviewer reads it, with no automatic wake', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    // A peer wakes backend, which edits its section and reports again in the same round: same stamp, new text.
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+    land(h, 'backend');
+    leadReads(h, 'backend');
+    expect(coverageOf(h).isCurrent('appsec', 'backend')).toBe(true);
+    expect(h.messageBus.getAllMessages().some((m) => m.to === 'appsec' && m.content.startsWith('[RE-REVIEW REQUESTED]'))).toBe(false);
+
+    const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).at(-1)!;
+    expect(rrr).toContain('reviewed by appsec: APPROVED revision 0 but has not read "backend-api" v2 [NOT CURRENT, approval blocked]');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow(
+      'Cannot approve "backend": its reviewer "appsec" has not signed off on backend\'s latest revision (revision 0; appsec signed off on it but has not read "backend-api" v2). ' +
+      'Send appsec back with team_request_revision asking it to review backend\'s current sections, then approve backend before appsec.',
+    );
+
+    // The move it names succeeds.
+    revise(h, 'appsec');
+    review(h, { backend: 'approve' });
+    h.runner.approveSpecialist('backend');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+  });
+
+  it('a stale reviewer sent back into its last revision round still records its verdict, so an approve it withdrew stops counting', async () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'approve' });
+    // appsec has already used one of its two revision rounds.
+    revise(h, 'appsec');
+    review(h, { backend: 'approve' });
+    expect((h.map('specialistReviewRounds') as Map<string, number>).get('appsec')).toBe(1);
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+    land(h, 'backend');
+    leadReads(h, 'backend');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow('Send appsec back with team_request_revision');
+
+    revise(h, 'appsec');
+    pad(h).markRead('appsec', 'backend-api');
+    expect(() => h.runner.reportComplete('appsec', 'reviewed every implementor in full', [{ implementor: 'backend', verdict: 'changes_requested' }])).toThrow(
+      'Maximum review rounds reached. Your verdicts are recorded against each implementor\'s current revision. Your session will end when this turn completes.',
+    );
+    expect(coverageOf(h).signoffOf('appsec', 'backend')).toEqual({ stamp: { attempt: 0, round: 0 }, verdict: 'changes_requested' });
+    // The cap still ends the reviewer: it settles completed instead of returning to review.
+    expect(h.runs.get('appsec')!.config.keepAlive!()).toBe(false);
+    h.runs.get('appsec')!.resolve(DONE_RESULT);
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+
+    expect(() => h.runner.approveSpecialist('backend')).toThrow('its reviewer "appsec" requested changes on backend\'s revision 0');
+  });
+
+  it('refuses a redispatch that drops an unsatisfied review of landed work, before changing anything', async () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    h.runner.cancelSpecialist('appsec');
+    h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+    await settle();
+    const before = { entries: h.teamEntries.length, attempt: h.agents.get('appsec')!.attempt };
+    const refusal = 'Cannot drop "backend" from the reviews of "appsec": backend\'s revision 0 has landed and appsec\'s review of it is unsatisfied. ' +
+      'Keep "backend" in "reviews", or first dismiss that review with team_dismiss_review and a written reason.';
+
+    expect(() => h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor')).toThrow(refusal);
+    expect(() => h.runner.redispatchSpecialist('appsec', 'review nothing at all, just advise', undefined, 'reviewer', [])).toThrow(refusal);
+    expect(h.agents.get('appsec')).toMatchObject({ status: 'cancelled', attempt: before.attempt });
+    expect(h.teamEntries).toHaveLength(before.entries);
+    expect(coverageOf(h).reviewsOf('appsec')).toEqual(['backend']);
+
+    h.runner.dismissReview('appsec', 'backend', 'appsec is better used implementing the fixes');
+    h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor');
+    expect(coverageOf(h).reviewersOf('backend')).toEqual([]);
+  });
+
+  describe('declaring pairs on spawn', () => {
+    it('requires reviews with kind reviewer and leaves the agent pending when it is missing', () => {
+      const h = makeRedispatchHarness(['backend', 'appsec']);
+      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer')).toThrow(
+        '"reviews" is required with kind \'reviewer\'',
+      );
+      expect(h.agents.get('appsec')!.status).toBe('pending');
+      expect(h.teamEntries.some((e) => e['type'] === 'agent-spawned')).toBe(false);
+    });
+
+    it('rejects reviews on an implementor', () => {
+      const h = makeRedispatchHarness(['backend', 'appsec']);
+      expect(() => h.runner.startSpecialist('backend', 'implement the backend in full', undefined, 'implementor', ['appsec'])).toThrow('"reviews" is only for a reviewer');
+      expect(h.agents.get('backend')!.status).toBe('pending');
+    });
+
+    it.each([
+      [['ghost'], 'not on the roster'],
+      [['appsec'], 'cannot review itself'],
+      [['Lead'], 'the lead'],
+      [['backend', 'backend'], 'twice'],
+    ])('rejects reviews %j (%s)', (reviews, message) => {
+      const h = makeRedispatchHarness(['backend', 'appsec']);
+      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', reviews)).toThrow(message);
+      expect(h.agents.get('appsec')!.status).toBe('pending');
+    });
+
+    it('rejects a reviewer reviewing a reviewer, and a reviewed name spawned as a reviewer, in either order', () => {
+      const h = makeRedispatchHarness(['backend', 'appsec', 'qa']);
+      h.runner.startSpecialist('qa', 'review the qa plan for gaps', undefined, 'reviewer', []);
+      expect(() => h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['qa'])).toThrow('a reviewer');
+
+      h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+      expect(() => h.runner.startSpecialist('backend', 'review something else entirely', undefined, 'reviewer', [])).toThrow('"appsec" already reviews it');
+    });
+
+    it('persists the pairs on agent-spawned, [] included, and none for an implementor', () => {
+      const h = makeRedispatchHarness(['backend', 'appsec', 'qa']);
+      h.runner.startSpecialist('backend', 'implement the backend in full');
+      h.runner.startSpecialist('appsec', 'review the backend for defects', undefined, 'reviewer', ['backend']);
+      h.runner.startSpecialist('qa', 'review the qa plan for gaps', undefined, 'reviewer', []);
+      const spawned = (name: string): Record<string, unknown> => h.teamEntries.find((e) => e['type'] === 'agent-spawned' && e['name'] === name)!;
+      expect(spawned('backend')).not.toHaveProperty('reviews');
+      expect(spawned('appsec')['reviews']).toEqual(['backend']);
+      expect(spawned('qa')['reviews']).toEqual([]);
+    });
+  });
+
+  describe('redispatch resets coverage', () => {
+    it('a reviewer redispatched without reviews keeps and persists its pairs, and its old sign-offs are dropped', async () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      review(h, { backend: 'approve' });
+      h.runner.cancelSpecialist('appsec');
+      h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+      await settle();
+
+      h.runner.redispatchSpecialist('appsec', 'review the backend for defects again', undefined, 'reviewer');
+      expect(coverageOf(h).reviewsOf('appsec')).toEqual(['backend']);
+      expect(coverageOf(h).signoffOf('appsec', 'backend')).toBeUndefined();
+      const reattempt = h.teamEntries.filter((e) => e['type'] === 'agent-spawned' && e['name'] === 'appsec').at(-1)!;
+      expect(reattempt['reattempt']).toBe(true);
+      expect(reattempt['reviews']).toEqual(['backend']);
+    });
+
+    it('a reviewer redispatched as an implementor drops its pairs', async () => {
+      const h = reviewTeam();
+      h.runner.cancelSpecialist('appsec');
+      h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+      await settle();
+      h.runner.redispatchSpecialist('appsec', 'implement the security fixes in full', undefined, 'implementor');
+      expect(coverageOf(h).declared('appsec')).toBeUndefined();
+      expect(coverageOf(h).reviewersOf('backend')).toEqual([]);
+    });
+
+    it('an implementor redispatched as a reviewer must declare reviews, and a redispatched implementor has not landed', async () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      h.runner.cancelSpecialist('backend');
+      h.runs.get('backend')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+      await settle();
+      expect(() => h.runner.redispatchSpecialist('backend', 'review the backend in full instead', undefined, 'reviewer')).toThrow('"reviews" is required');
+      expect(h.agents.get('backend')!.status).toBe('cancelled');
+      h.runner.redispatchSpecialist('backend', 'implement the backend in full again', undefined, 'implementor');
+      expect(coverageOf(h).landedOf('backend')).toBeUndefined();
+      expect(coverageOf(h).reviewersOf('backend')).toEqual(['appsec']);
+    });
+  });
+
+  describe('every landing point stamps the implementor', () => {
+    it('reportComplete lands at the current attempt and round; a same-round re-report keeps the stamp', () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 0 });
+      revise(h, 'backend');
+      land(h, 'backend');
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 1 });
+    });
+
+    it('a converted stranded standby lands', () => {
+      const h = reviewTeam();
+      h.runner.enterStandby('backend');
+      h.agents.get('backend')!.status = 'standby';
+      (h.runner as unknown as { convertStrandedStandby: (n: string) => void }).convertStrandedStandby('backend');
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 0 });
+    });
+
+    it('a converted owed terminal action lands', () => {
+      const h = reviewTeam();
+      (h.runner as unknown as { convertOwedTerminalToReview: (n: string) => void }).convertOwedTerminalToReview('backend');
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 0 });
+    });
+
+    it('a run that settles completed at the cap lands', async () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      (h.map('specialistReviewRounds') as Map<string, number>).set('backend', 2);
+      h.agents.get('backend')!.status = 'running';
+      h.runs.get('backend')!.resolve(DONE_RESULT);
+      await settle();
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 2 });
+    });
+
+    // Each settles with the raw status `completed` and a round count that differs from the landed stamp,
+    // so only its own guard keeps the settle from landing a new revision.
+    it('an approved run that settles completed does not land again', async () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      review(h, { backend: 'approve' });
+      leadReads(h, 'backend');
+      h.runner.approveSpecialist('backend');
+      (h.map('specialistReviewRounds') as Map<string, number>).set('backend', 2);
+      h.runs.get('backend')!.resolve(DONE_RESULT);
+      await settle();
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 0 });
+    });
+
+    it('a run released by synthesis that settles completed does not land again', async () => {
+      const h = reviewTeam();
+      land(h, 'backend');
+      revise(h, 'backend');
+      land(h, 'backend');
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 1 });
+      // Synthesis releases awaiting-review members and clears the round counts.
+      (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('the team result');
+      h.runs.get('backend')!.resolve(DONE_RESULT);
+      await settle();
+      expect(coverageOf(h).landedOf('backend')).toEqual({ attempt: 0, round: 1 });
+    });
+  });
+
+  it('the review-round notification carries the coverage lines and the ordering rule', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).at(-1)!;
+    expect(rrr).toContain('  - backend: "backend-api" v1 [UNREAD]\n    reviewed by appsec: CHANGES REQUESTED on revision 0 [approval blocked: revise or dismiss]');
+    expect(rrr).toContain('  - appsec: no scratchpad section authored\n    reviews backend: awaiting review [approval blocked: approve or revise backend first]');
+    expect(rrr).toMatch(/for each\. Approve implementors before their reviewers\.$/);
+  });
+
+  it('a team with no declared pairs gets no coverage lines and no ordering rule', () => {
+    const h = makeRedispatchHarness(['backend']);
+    h.runner.startSpecialist('backend', 'implement the backend in full');
+    land(h, 'backend');
+    const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).at(-1)!;
+    expect(rrr).not.toContain('reviewed by');
+    expect(rrr).not.toContain('Approve implementors before their reviewers');
+    expect(h.runner.getUnsatisfiedReviews()).toEqual([]);
+  });
+
+  it('checkpoints the coverage it holds', () => {
+    const h = reviewTeam();
+    land(h, 'backend');
+    review(h, { backend: 'changes_requested' });
+    h.runner.dismissReview('appsec', 'backend', 'the finding is a style nit outside the brief');
+    const checkpoint = (h.runner as unknown as { buildCheckpoint: (at: number) => TeamCheckpoint }).buildCheckpoint(1);
+    expect(checkpoint.review.coverage).toEqual({
+      landed: [['backend', { attempt: 0, round: 0 }]],
+      signoffs: [['appsec', [['backend', { stamp: { attempt: 0, round: 0 }, verdict: 'changes_requested' }]]]],
+      dismissals: [['appsec', [['backend', { stamp: { attempt: 0, round: 0 }, reason: 'the finding is a style nit outside the brief', why: 'appsec requested changes on it' }]]]],
+      reReviewOwed: [],
+    });
+    expect(statusOf(h)('backend')).toBe('awaiting-review');
+  });
+});
+
+/** Rule A: a landed revision invalidates older sign-offs and sends each live reviewer back, once per landing. */
+describe('TeamRunner re-review on landing (rule A)', () => {
+  const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
+  const pad = (h: RedispatchHarness): Scratchpad => privateField<Scratchpad>(h.runner, 'scratchpad');
+  const coverageOf = (h: RedispatchHarness): ReviewCoverage => privateField<ReviewCoverage>(h.runner, 'coverage');
+  const reReviews = (h: RedispatchHarness): string[] =>
+    h.messageBus.getAllMessages().filter((m) => m.to === 'appsec' && m.content.startsWith('[RE-REVIEW REQUESTED]')).map((m) => m.content);
+  const rrr = (h: RedispatchHarness): string[] => h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]'));
+
+  function team(): RedispatchHarness {
+    const h = makeRedispatchHarness(['backend', 'appsec']);
+    h.runner.startSpecialist('backend', 'implement the backend work in full');
+    h.runner.startSpecialist('appsec', 'review the backend for security defects', undefined, 'reviewer', ['backend']);
+    return h;
+  }
+
+  function land(h: RedispatchHarness): void {
+    pad(h).set('backend-api', `backend work ${pad(h).get('backend-api')?.version ?? 0}`, 'backend');
+    h.runner.reportComplete('backend', 'backend delivered and verified');
+    h.runs.get('backend')!.config.onTurnEnd!();
+  }
+
+  function review(h: RedispatchHarness, verdict: 'approve' | 'changes_requested'): void {
+    pad(h).markRead('appsec', 'backend-api');
+    h.runner.reportComplete('appsec', 'reviewed backend in full', [{ implementor: 'backend', verdict }]);
+    h.runs.get('appsec')!.config.onTurnEnd!();
+  }
+
+  function revise(h: RedispatchHarness): void {
+    h.runner.requestRevision('backend', 'apply the findings appsec raised');
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+  }
+
+  const MESSAGE_REV_1 =
+    '[RE-REVIEW REQUESTED] "backend" landed revision 1 after your review, so your sign-off no longer covers it. ' +
+    'Read backend\'s current sections with team_read_scratchpad, update your review, then call team_report_complete again with fresh verdicts.';
+
+  it('wakes an awaiting-review reviewer exactly once, and it cannot be approved until it re-reports', () => {
+    const h = team();
+    land(h);
+    review(h, 'changes_requested');
+    expect(h.agents.get('appsec')!.status).toBe('awaiting-review');
+
+    revise(h);
+    land(h);
+
+    expect(reReviews(h)).toEqual([MESSAGE_REV_1]);
+    expect(h.agents.get('appsec')!.status).toBe('running');
+    expect(h.set('appsec', 'confirmedComplete').has('appsec')).toBe(false);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(true);
+    expect((h.runner as unknown as { isReviewRoundReady: () => boolean }).isReviewRoundReady()).toBe(false);
+    expect(() => h.runner.approveSpecialist('appsec')).toThrow('is not awaiting review (current: running)');
+  });
+
+  it('re-opens the round with the new verdict current once the reviewer re-reports', () => {
+    const h = team();
+    land(h);
+    review(h, 'changes_requested');
+    revise(h);
+    land(h);
+    const roundsBefore = rrr(h).length;
+
+    h.runs.get('appsec')!.config.onKeepAliveResume!();
+    review(h, 'approve');
+
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+    expect(coverageOf(h).isCurrent('appsec', 'backend')).toBe(true);
+    expect(h.agents.get('appsec')!.status).toBe('awaiting-review');
+    expect(rrr(h)).toHaveLength(roundsBefore + 1);
+    expect(rrr(h).at(-1)).toContain('reviewed by appsec: APPROVED revision 1 [current]');
+    pad(h).markRead('Lead', 'backend-api');
+    h.runner.approveSpecialist('backend');
+    h.runner.approveSpecialist('appsec');
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+  });
+
+  it('wakes a reviewer that reported before the implementor first landed (null stamp)', () => {
+    const h = team();
+    review(h, 'approve');
+    expect(coverageOf(h).signoffOf('appsec', 'backend')).toEqual({ stamp: null, verdict: 'approve' });
+    land(h);
+    expect(reReviews(h)).toHaveLength(1);
+    expect(reReviews(h)[0]).toContain('"backend" landed revision 0 after your review');
+    expect(h.agents.get('appsec')!.status).toBe('running');
+  });
+
+  it('sends nothing when the implementor re-reports in the same round, before or after the reviewer re-reports', () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    revise(h);
+    land(h);
+    expect(reReviews(h)).toHaveLength(1);
+
+    // backend answers a peer and reports again in the same round.
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+    land(h);
+    expect(reReviews(h)).toHaveLength(1);
+
+    h.runs.get('appsec')!.config.onKeepAliveResume!();
+    review(h, 'approve');
+    h.runs.get('backend')!.config.onKeepAliveResume!();
+    land(h);
+    expect(reReviews(h)).toHaveLength(1);
+    expect(coverageOf(h).isCurrent('appsec', 'backend')).toBe(true);
+  });
+
+  it('does not raise a [REVIEW ROUND READY] for a reviewer it just woke', () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    revise(h);
+    h.runner.enterStandby('backend');
+    h.agents.get('backend')!.status = 'standby';
+    const before = rrr(h).length;
+    (h.runner as unknown as { convertStrandedStandby: (n: string) => void }).convertStrandedStandby('backend');
+    expect(reReviews(h)).toHaveLength(1);
+    expect(rrr(h)).toHaveLength(before);
+  });
+
+  it('wakes a standby reviewer and drops it from the standby set, so stranded recovery cannot re-park it', () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    h.runs.get('appsec')!.config.onKeepAliveResume!();
+    h.runner.enterStandby('appsec');
+    h.agents.get('appsec')!.status = 'standby';
+    revise(h);
+    land(h);
+    expect(reReviews(h)).toHaveLength(1);
+    expect(h.set('appsec', 'pendingStandby').has('appsec')).toBe(false);
+    expect(h.agents.get('appsec')!.status).toBe('running');
+  });
+
+  it('sends nothing to a final reviewer; rule B offers its moves instead', async () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    h.runner.cancelSpecialist('appsec');
+    h.runs.get('appsec')!.resolve({ ...DONE_RESULT, status: 'cancelled' });
+    await settle();
+    revise(h);
+    land(h);
+    expect(reReviews(h)).toEqual([]);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+    pad(h).markRead('Lead', 'backend-api');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow('its reviewer "appsec" is cancelled and never reviewed backend\'s revision 1');
+  });
+
+  it('sends nothing to a reviewer the lead is cancelling, and a cancel clears an owed re-review', () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    revise(h);
+    land(h);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(true);
+    h.runner.cancelSpecialist('appsec');
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+  });
+
+  it('CAP: an owed reviewer may report past the revision cap, then settles completed with a current sign-off', async () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    (h.map('specialistReviewRounds') as Map<string, number>).set('appsec', 2);
+    revise(h);
+    land(h);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(true);
+
+    h.runs.get('appsec')!.config.onKeepAliveResume!();
+    pad(h).markRead('appsec', 'backend-api');
+    h.runner.reportComplete('appsec', 'reviewed backend in full', [{ implementor: 'backend', verdict: 'approve' }]);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+    // At the cap keepAlive is false, so the run ends and settles completed.
+    expect(h.runs.get('appsec')!.config.keepAlive!()).toBe(false);
+    h.runs.get('appsec')!.resolve(DONE_RESULT);
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+    expect(coverageOf(h).isCurrent('appsec', 'backend')).toBe(true);
+    pad(h).markRead('Lead', 'backend-api');
+    h.runner.approveSpecialist('backend');
+    expect(h.agents.get('backend')!.status).toBe('completed');
+  });
+
+  it('CAP: a reviewer that owes no re-review still cannot report past the cap', () => {
+    const h = team();
+    (h.map('specialistReviewRounds') as Map<string, number>).set('appsec', 2);
+    expect(() => h.runner.reportComplete('appsec', 'reviewed backend in full', [{ implementor: 'backend', verdict: 'approve' }]))
+      .toThrow('Maximum review rounds reached');
+  });
+
+  it('CAP: an owed reviewer that ends its re-review turn bare is nudged rather than settled', () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    (h.map('specialistReviewRounds') as Map<string, number>).set('appsec', 2);
+    revise(h);
+    land(h);
+    h.runs.get('appsec')!.config.onKeepAliveResume!();
+    h.runs.get('appsec')!.config.onReconcileBeforeEnd!();
+    expect(h.set('appsec', 'owedTerminalAction').has('appsec')).toBe(true);
+  });
+
+  it('CAP: an owed reviewer that ends bare again after its nudge settles completed, with no round-ready notice for a review it never gave', async () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    (h.map('specialistReviewRounds') as Map<string, number>).set('appsec', 2);
+    revise(h);
+    land(h);
+    const run = h.runs.get('appsec')!.config;
+    run.onKeepAliveResume!();
+    run.onReconcileBeforeEnd!();
+    await settle();
+    run.onKeepAliveResume!();
+    const roundsBefore = rrr(h).length;
+
+    // The second bare end: the runner re-checks keepAlive, which must stay false so the run ends here.
+    run.onReconcileBeforeEnd!();
+    expect(run.keepAlive!()).toBe(false);
+    expect(h.agents.get('appsec')!.status).toBe('running');
+    expect(rrr(h)).toHaveLength(roundsBefore);
+
+    h.runs.get('appsec')!.resolve(DONE_RESULT);
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('completed');
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+    expect(rrr(h)).toHaveLength(roundsBefore + 1);
+    expect(rrr(h).at(-1)).not.toContain('  - appsec:');
+    pad(h).markRead('Lead', 'backend-api');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow('its reviewer "appsec" is completed and never reviewed backend\'s revision 1');
+  });
+
+  it('sends nothing to a reviewer whose run has ended but not yet settled, and owes nothing for it', async () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    revise(h);
+    // appsec's loop exits: its subscriptions are gone while its status still reads awaiting-review.
+    h.runs.get('appsec')!.release();
+    land(h);
+
+    expect(reReviews(h)).toEqual([]);
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
+    expect(h.agents.get('appsec')!.status).toBe('awaiting-review');
+    h.runs.get('appsec')!.resolve(DONE_RESULT);
+    await settle();
+    pad(h).markRead('Lead', 'backend-api');
+    expect(() => h.runner.approveSpecialist('backend')).toThrow('its reviewer "appsec" is completed and never reviewed backend\'s revision 1');
+  });
+
+  it('checkpoints an owed re-review, and a redispatch of the reviewer clears it', async () => {
+    const h = team();
+    land(h);
+    review(h, 'approve');
+    revise(h);
+    land(h);
+    const checkpoint = (h.runner as unknown as { buildCheckpoint: (at: number) => TeamCheckpoint }).buildCheckpoint(1);
+    expect(checkpoint.review.coverage!.reReviewOwed).toEqual(['appsec']);
+
+    const restored = makeRedispatchHarness(['backend', 'appsec']);
+    coverageOf(restored).restore(checkpoint.review.coverage!);
+    expect(coverageOf(restored).owesReReview('appsec')).toBe(true);
+
+    h.runs.get('appsec')!.reject(new Error('crashed'));
+    await settle();
+    expect(h.agents.get('appsec')!.status).toBe('failed');
+    h.runner.redispatchSpecialist('appsec', 'review the backend for security defects again', undefined, 'reviewer');
+    expect(coverageOf(h).owesReReview('appsec')).toBe(false);
   });
 });

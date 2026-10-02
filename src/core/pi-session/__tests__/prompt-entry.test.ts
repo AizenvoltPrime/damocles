@@ -45,7 +45,7 @@ describe('watchPromptEntry', () => {
 
     // pi accepts the prompt with no run in progress, then the run it starts commits the prompt and,
     // at the next tool boundary, a cancel note.
-    watch.preflightResult(true);
+    watch.preflightResult('started');
     fake.isStreaming = true;
     fake.commit('u-prompt', user('Run Start-Sleep -Seconds 60; echo done in PowerShell.'));
     fake.commit('u-note', user('skip it'));
@@ -60,7 +60,7 @@ describe('watchPromptEntry', () => {
     fake.isStreaming = true;
     const watch = watchPromptEntry(fake.asSession());
 
-    watch.preflightResult(true);
+    watch.preflightResult('queued');
     fake.commit('u-other', user('a steer the running run delivered'));
 
     expect(watch.entry()).toBeNull();
@@ -72,7 +72,7 @@ describe('watchPromptEntry', () => {
     fake.commit('u-prior', user('earlier prompt'));
     const watch = watchPromptEntry(fake.asSession());
 
-    watch.preflightResult(true);
+    watch.preflightResult('handled');
 
     expect(watch.entry()).toBeNull();
     watch.dispose();
@@ -82,7 +82,7 @@ describe('watchPromptEntry', () => {
     const fake = fakeSession();
     const watch = watchPromptEntry(fake.asSession());
 
-    watch.preflightResult(false);
+    // pi throws from prompt() and never calls preflightResult for a refused prompt.
     fake.commit('u-later', user('a later prompt'));
 
     expect(watch.entry()).toBeNull();
@@ -103,7 +103,7 @@ describe('watchPromptEntry onCommitted', () => {
     const fake = fakeSession();
     const committed: Array<{ id: string; text: string }> = [];
     const watch = watchPromptEntry(fake.asSession(), (entry) => committed.push(entry));
-    watch.preflightResult(true);
+    watch.preflightResult('started');
     fake.isStreaming = true;
     fake.commit('u-prompt', user('build it'));
     // pi appends synchronously after notifying listeners, so nothing is reported inside the notification.
@@ -121,7 +121,7 @@ describe('watchPromptEntry onCommitted', () => {
     fake.isStreaming = true;
     const committed: unknown[] = [];
     const watch = watchPromptEntry(fake.asSession(), (entry) => committed.push(entry));
-    watch.preflightResult(true);
+    watch.preflightResult('queued');
     fake.commit('u-other', user('someone else'));
     await Promise.resolve();
     expect(committed).toEqual([]);

@@ -5,8 +5,8 @@
 //        the installed node_modules, including the `@earendil-works/pi-ai/oauth` subpath.
 //   B3 — a Damocles-owned agent dir seeded with `compaction.enabled=false` must yield a session
 //        whose auto-compaction is OFF, both from the seed and after the runtime toggle. B3 also pins
-//        the three live-session surfaces the extension installs onto or reads off, since a rename in
-//        pi clears the typecheck and surfaces nowhere else.
+//        the live-session surfaces and pi internals Damocles installs onto, reads off or calls, since
+//        a rename in pi clears the typecheck and surfaces nowhere else.
 //
 // Exits non-zero on any failure.
 
@@ -40,6 +40,8 @@ const SUBPATHS = [
   '@earendil-works/pi-ai',
   '@earendil-works/pi-ai/oauth',
   '@earendil-works/pi-tui',
+  '@earendil-works/pi-mcp',
+  '@earendil-works/pi-mcp/oauth',
   'jiti',
   'typebox',
 ];
@@ -75,6 +77,11 @@ try {
   // method exists on the prototype — this fails loudly the moment a future pi release renames or
   // removes it, the tripwire to re-map structured completions.
   assert(typeof pi.ModelRuntime?.prototype?.completeSimple === 'function', 'ModelRuntime.prototype.completeSimple (function)');
+  // Classifier, image generation and the ChatGPT sign-in device id are reached the same way.
+  for (const method of ['classify', 'generateImages', 'getModelsOfType']) {
+    assert(typeof pi.ModelRuntime?.prototype?.[method] === 'function', `ModelRuntime.prototype.${method} (function)`);
+  }
+  assert(typeof pi.SettingsManager?.prototype?.getOrCreateDeviceId === 'function', 'SettingsManager.prototype.getOrCreateDeviceId (function)');
   console.log(`  info  pi-coding-agent VERSION = ${pi.VERSION}`);
 } catch (err) {
   bad(`import @earendil-works/pi-coding-agent — ${err?.stack ?? err}`);
@@ -114,13 +121,24 @@ if (pi) {
     session.setAutoCompactionEnabled(false);
     assert(session.autoCompactionEnabled === false, 'session.autoCompactionEnabled === false (after toggle)');
 
-    // The three runtime surfaces the extension installs onto or reads off a live session. A rename in
-    // pi passes the typecheck (the Agent field is optional) and shows up only here.
+    // The runtime surfaces the extension installs onto, reads off or calls on a live session. A rename in
+    // pi passes the typecheck (the Agent field is optional, the underscored members are private) and
+    // shows up only here.
     // Must be callable, not merely present: `installTurnDecider` captures it as the prior hook, so pi
     // dropping its constructor-time install would silently unhook checkpointing.
     assert(typeof session.agent.finishTurn === 'function', 'session.agent.finishTurn is a function');
     assert(typeof session.agent.peekQueuedMessages === 'function', 'session.agent.peekQueuedMessages is a function');
     assert(typeof sessionManager.appendContextEdit === 'function', 'sessionManager.appendContextEdit is a function');
+    // A lost session lease replaces it with a no-op, so it must stay the manager's only file writer.
+    assert(typeof sessionManager._persist === 'function', 'sessionManager._persist is a function');
+    assert(typeof session._runBeforeSettleBoundary === 'function', 'session._runBeforeSettleBoundary is a function');
+    assert(typeof session.extensionRunner?.hasHandlers === 'function', 'session.extensionRunner.hasHandlers is a function');
+    assert(typeof session.setActiveToolsByName === 'function', 'session.setActiveToolsByName is a function');
+    assert(typeof session.sendUserMessage === 'function', 'session.sendUserMessage is a function');
+    // `steer()` reports how it took the input; with no input handler loaded it queues.
+    const steered = await session.steer('pi-smoke steer');
+    assert(steered === 'queued', `session.steer resolves 'queued' (got ${String(steered)})`);
+    session.clearQueue();
     session.dispose();
   } catch (err) {
     bad(`B3 integration — ${err?.stack ?? err}`);

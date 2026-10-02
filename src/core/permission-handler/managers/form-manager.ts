@@ -2,6 +2,7 @@ import type { FormSchema, FormFieldType, FormValues } from '../../../shared/type
 import { registerAbortablePrompt, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, FormResolveResult, PostMessageFn } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import { buildUnaskedDenyResult } from '../utils';
 
 export type FormValidationResult =
   | { ok: true; form: FormSchema }
@@ -152,14 +153,16 @@ export class FormManager {
   async handleForm(input: Record<string, unknown>, context: CanUseToolContext): Promise<PermissionResult> {
     const validated = validateForm(input);
     if (!validated.ok) {
-      return { behavior: 'deny', message: `BrowserRequestInput input invalid: ${validated.reason}` };
+      return buildUnaskedDenyResult(undefined, `BrowserRequestInput input invalid: ${validated.reason}`);
     }
     const form = validated.form;
 
     const result = await this.requestFormFromWebview(form, context);
 
     if (!result.approved || !result.values) {
-      return { behavior: 'deny', message: 'User cancelled the input form' };
+      return result.userAnswered
+        ? { behavior: 'deny', message: 'User cancelled the input form' }
+        : buildUnaskedDenyResult(undefined, 'Damocles could not show the input form to the user, so this tool call was denied');
     }
 
     return {
@@ -222,6 +225,7 @@ export class FormManager {
     pending.cleanup();
     pending.resolve({
       approved: values !== null,
+      userAnswered: true,
       ...(values !== null ? { values } : {}),
     });
   }

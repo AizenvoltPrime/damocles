@@ -6,7 +6,10 @@
  */
 
 /** Subsystem a tool belongs to. `core` tools are always on; the rest gate on a subsystem flag. */
-export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'subagents' | 'team';
+export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'subagents' | 'team';
+
+/** Why the image group cannot run: no model chosen, a model pi's image catalog does not have, or no OpenRouter credential. */
+export type ToolGroupUnavailableReason = 'noModel' | 'unknownModel' | 'noOpenRouterKey';
 
 /** A tool's static identity: its active-set name, panel label, blurb, group, and whether it toggles. */
 export interface ToolCatalogEntry {
@@ -33,6 +36,8 @@ export interface ToolGroupStatus {
   enabled: boolean;
   /** Whether the subsystem is wired into this session (always true for core). */
   available: boolean;
+  /** Set only on the image group, and only when `available` is false. */
+  unavailableReason?: ToolGroupUnavailableReason;
 }
 
 /** The full Tools-panel snapshot: per-group master state + every tool's live state. */

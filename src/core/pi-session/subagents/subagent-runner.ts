@@ -151,10 +151,10 @@ export async function steerSubagent(session: AgentSession, message: string): Pro
   await session.steer(message);
 }
 
-/** Format the subagent's conversation messages as readable text (for GetSubagentResult verbose mode). */
-export function getAgentConversation(session: AgentSession): string {
+/** Format a subagent's conversation messages as readable text (for GetSubagentResult verbose mode). */
+export function formatAgentConversation(messages: readonly unknown[]): string {
   const parts: string[] = [];
-  for (const raw of session.messages) {
+  for (const raw of messages) {
     const msg = raw as { role?: string; content?: unknown; toolName?: string };
     if (msg.role === 'user') {
       const text = extractText(msg.content);

@@ -331,6 +331,61 @@ describe('createElicitationHandler — unsupported modes', () => {
     await expect(handler({ message: 'no schema' }, 'demo')).resolves.toEqual({ action: 'decline' });
     expect(ui.select).not.toHaveBeenCalled();
   });
+
+  it('declines a field whose label is not a string instead of failing on it', async () => {
+    const ui = mockUI();
+    const handler = createElicitationHandler(ui);
+    const form = (property: Record<string, unknown>) => ({
+      message: 'm',
+      requestedSchema: { type: 'object', properties: { field: property } },
+    });
+
+    for (const property of [
+      { type: 'string', title: 42 },
+      { type: 'boolean', description: { text: 'x' } },
+      { type: 'string', enum: ['a'], enumNames: [7] },
+      { type: 'string', oneOf: [{ const: 'a', title: 1 }] },
+      { type: 'array', items: { anyOf: [{ const: 'a', title: null }] } },
+    ]) {
+      await expect(handler(form(property), 'demo')).resolves.toEqual({ action: 'decline' });
+    }
+    expect(ui.select).not.toHaveBeenCalled();
+  });
+
+  it('offers a oneOf string field as a choice and returns the chosen const', async () => {
+    const ui = mockUI({
+      select: selectSpy()
+        .mockResolvedValueOnce('Continue')
+        .mockResolvedValueOnce('Large (l)')
+        .mockResolvedValueOnce('Submit'),
+    });
+    const handler = createElicitationHandler(ui);
+
+    const result = await handler(
+      {
+        message: 'Pick a size',
+        requestedSchema: {
+          type: 'object',
+          properties: { size: { type: 'string', oneOf: [{ const: 's', title: 'Small' }, { const: 'l', title: 'Large' }] } },
+          required: ['size'],
+        },
+      },
+      'shop',
+    );
+
+    expect(ui.select.mock.calls[1]?.[1]).toEqual(['Small (s)', 'Large (l)']);
+    expect(ui.input).not.toHaveBeenCalled();
+    expect(result).toEqual({ action: 'accept', content: { size: 'l' } });
+  });
+
+  it('strips bidi overrides and C0 controls from the server message', async () => {
+    const ui = mockUI({ select: selectSpy().mockResolvedValueOnce('Decline') });
+    const handler = createElicitationHandler(ui);
+
+    await handler({ message: 'Approve\u202Edaolnwod\u0007 now\u001b[2J', requestedSchema: { type: 'object', properties: {} } }, 'demo');
+
+    expect(ui.select.mock.calls[0]?.[0]).toBe('MCP Input Request\nServer: demo\n\nApprovedaolnwod now [2J');
+  });
 });
 
 describe('coerceAndValidate', () => {
@@ -357,6 +412,15 @@ describe('coerceAndValidate', () => {
         {},
       ),
     ).toThrow(/Missing required elicitation field: name/);
+  });
+
+  it('rejects a value outside a oneOf field\u2019s consts', () => {
+    expect(() =>
+      coerceAndValidate(
+        { type: 'object', properties: { size: { type: 'string', oneOf: [{ const: 's', title: 'Small' }] } }, required: ['size'] },
+        { size: 'xl' },
+      ),
+    ).toThrow(/not an allowed value/);
   });
 
   it('throws when a value is below minimum', () => {

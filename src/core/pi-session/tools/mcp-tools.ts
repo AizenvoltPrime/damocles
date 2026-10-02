@@ -5,12 +5,17 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { McpToolSource } from '../mcp/tool-source';
 import type { McpToolDescriptor } from '../mcp/types';
 import type { ElicitationUI } from '../mcp/elicitation-handler';
-import { transformMcpContent } from '../mcp/content';
-import { abortableTool } from './browser-tools';
+import type { McpToolIdentity } from '../../permission-handler/types';
+import { limitMcpContent, transformMcpContent } from '../mcp/content';
+import { failureForLog } from '../mcp/connect-failure';
+import { abortableTool } from './abortable-tool';
+import { mcpToolSearchGroup, type McpToolMenuEntry } from './tool-search-tool';
 import { log } from '../../logger';
 
 interface McpToolDetails {
   isError: boolean;
+  /** The file holding the full text of a result cut to fit the model's context. */
+  fullOutputPath?: string;
 }
 
 function isSchemaObject(value: unknown): value is Record<string, unknown> {
@@ -43,8 +48,8 @@ export function buildMcpPiTool(
 
   const tool = pi.defineTool<typeof parameters, McpToolDetails | undefined>({
     name: descriptor.piName,
-    label: descriptor.originalName,
-    description: descriptor.description || `MCP tool ${descriptor.originalName}`,
+    label: descriptor.rawToolName,
+    description: descriptor.description || `MCP tool ${descriptor.rawToolName}`,
     parameters,
     execute: async (_toolCallId, params, signal, _onUpdate, ctx): Promise<AgentToolResult<McpToolDetails | undefined>> => {
       // `ctx.ui` is TRUTHY EVEN WHEN THERE IS NO UI: pi's runner returns a getter that falls back to
@@ -68,14 +73,18 @@ export function buildMcpPiTool(
             ...(opts?.frozen ? { expectedServerId: descriptor.serverId } : {}),
           },
         );
-        const content = transformMcpContent(result.content);
+        const { content, fullOutputPath } = await limitMcpContent(transformMcpContent(result.content));
+        const details: McpToolDetails | undefined =
+          result.isError || fullOutputPath
+            ? { isError: result.isError, ...(fullOutputPath ? { fullOutputPath } : {}) }
+            : undefined;
         return {
           content: content.length > 0 ? content : [{ type: 'text', text: '(no content)' }],
-          details: result.isError ? { isError: true } : undefined,
+          details,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        log('[McpTools] %s failed: %O', descriptor.piName, err);
+        log('[McpTools] %s failed: %s', descriptor.piName, failureForLog(err));
         // `callTool` throws when the tool is gone: its descriptor is absent, or (for a frozen snapshot)
         // now belongs to another server. Both are detected by asking the manager for the descriptor
         // rather than by matching the message text: one check, no coupling to wording.
@@ -122,6 +131,12 @@ export interface NestedMcpToolset {
   readonly names: readonly string[];
   /** One definition per name, SAME ORDER. Set-equal to `names` by construction. */
   readonly tools: readonly ToolDefinition[];
+  /** The `names` whose exposure is `deferred`, same order: what the agent's ToolSearch may offer. */
+  readonly deferrable: readonly string[];
+  /** The other `names`, Always loaded: active from the agent's first request. */
+  readonly direct: readonly string[];
+  /** The ToolSearch groups of the `direct` tools, so asking for such a server is answered as already active. */
+  readonly directGroups: ReadonlySet<string>;
   /**
    * Gate parity (brief §3.5) — a CLASSIFIER (auto-allow vs `canUseTool`), NOT a grant filter.
    *
@@ -130,8 +145,10 @@ export interface NestedMcpToolset {
    * type-checking an implementation that would break the moment one used `this`.
    */
   readonly isReadOnly: (piName: string) => boolean;
-  /** Blurb source for the nested ToolSearch inventory (never read back off pi's registry). */
-  readonly descriptions: ReadonlyMap<string, string>;
+  /** The server and raw tool name behind each of `names`, for the gate's `mcp__` rules; a closure for the same reason. */
+  readonly identity: (piName: string) => McpToolIdentity | undefined;
+  /** Blurb and group source for the nested ToolSearch inventory (never read back off pi's registry); deferrable names only. */
+  readonly descriptions: ReadonlyMap<string, McpToolMenuEntry>;
 }
 
 export interface NestedMcpToolsetOptions {
@@ -164,15 +181,19 @@ export interface NestedMcpToolsetOptions {
 export const EMPTY_NESTED_MCP_TOOLSET: NestedMcpToolset = Object.freeze({
   names: Object.freeze([]) as readonly string[],
   tools: Object.freeze([]) as readonly ToolDefinition[],
+  deferrable: Object.freeze([]) as readonly string[],
+  direct: Object.freeze([]) as readonly string[],
+  directGroups: new Set<string>() as ReadonlySet<string>,
   isReadOnly: () => false,
-  descriptions: new Map<string, string>() as ReadonlyMap<string, string>,
+  identity: () => undefined,
+  descriptions: new Map<string, McpToolMenuEntry>() as ReadonlyMap<string, McpToolMenuEntry>,
 });
 
 /**
  * Build the frozen per-spawn MCP snapshot for one nested session.
  *
  * THREE properties this function exists to guarantee:
- *  - **One read.** `getAllToolDescriptors()` is called exactly ONCE and all four fields are derived
+ *  - **One read.** `getAllToolDescriptors()` is called exactly ONCE and every field is derived
  *    from that single array in one pass. Three separate live reads inside one spawn is precisely the
  *    divergence that let team agents pass `mcp__*` names into a registry with no matching definitions,
  *    where pi dropped them silently. What ToolSearch advertises is what the session can load, by
@@ -195,14 +216,19 @@ export function buildNestedMcpToolset(
 
   const names: string[] = [];
   const tools: ToolDefinition[] = [];
-  const descriptions = new Map<string, string>();
+  const deferrable: string[] = [];
+  const direct: string[] = [];
+  const directGroups = new Set<string>();
+  const descriptions = new Map<string, McpToolMenuEntry>();
   // Closure-private, never exposed: that is what makes the classification frozen. Built from the
   // snapshot below, never re-read from the manager.
   const readOnlyNames = new Set<string>();
+  const identities = new Map<string, McpToolIdentity>();
 
   for (const descriptor of manager.getAllToolDescriptors()) {
     if (!opts.eligible.has(descriptor.piName)) continue;
     if (opts.disallowed?.has(descriptor.piName)) continue;
+    if (descriptor.exposure === 'off') continue;
     names.push(descriptor.piName);
     // Already `abortableTool`-wrapped inside `buildMcpPiTool` — do not wrap again. `frozen: true` is
     // what earns these tools the permanent-failure wording: this set never refreshes.
@@ -212,14 +238,29 @@ export function buildNestedMcpToolset(
         ...(opts.elicitationUi ? { elicitationUi: opts.elicitationUi } : {}),
       }),
     );
-    descriptions.set(descriptor.piName, descriptor.description);
+    if (descriptor.exposure === 'deferred') {
+      deferrable.push(descriptor.piName);
+      descriptions.set(descriptor.piName, {
+        description: descriptor.description,
+        group: mcpToolSearchGroup(descriptor.serverName),
+        ...(descriptor.serverDescription ? { serverDescription: descriptor.serverDescription } : {}),
+      });
+    } else if (descriptor.exposure === 'direct') {
+      direct.push(descriptor.piName);
+      directGroups.add(mcpToolSearchGroup(descriptor.serverName));
+    }
     if (descriptor.readOnly === true) readOnlyNames.add(descriptor.piName);
+    identities.set(descriptor.piName, { server: descriptor.serverName, tool: descriptor.rawToolName });
   }
 
   return {
     names,
     tools,
+    deferrable,
+    direct,
+    directGroups,
     isReadOnly: (piName: string) => readOnlyNames.has(piName),
+    identity: (piName: string) => identities.get(piName),
     descriptions,
   };
 }

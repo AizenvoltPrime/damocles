@@ -8,7 +8,13 @@ import * as path from 'path';
 const H = vi.hoisted(() => {
   const createServicesSpy = vi.fn();
   const settingsCreateSpy = vi.fn((_cwd: string, _agentDir: string, options?: { projectTrusted: boolean }) => ({ options }));
-  const modelRuntime = { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) };
+  const modelRuntime = {
+    getAvailableSnapshot: () => [],
+    refresh: vi.fn(async () => undefined),
+    setRuntimeApiKey: vi.fn(async () => undefined),
+    removeRuntimeApiKey: vi.fn(async () => undefined),
+    getProviderAuthStatus: () => ({ configured: false }),
+  };
   const fakePi = {
     createAgentSessionServices: createServicesSpy,
     SettingsManager: { create: settingsCreateSpy },
@@ -196,6 +202,53 @@ describe('PiRuntime.init lifecycle', () => {
     expect(H.createServicesSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('re-applies every folder’s tools when damocles.mcp.toolExposure changes, whoever wrote it, until disposed', async () => {
+    const runtime = PiRuntime.get('/agent');
+    const a = await runtime.folder('/a');
+    const b = await runtime.folder('/b');
+    const refreshA = vi.spyOn(a, 'refreshActiveTools');
+    const refreshB = vi.spyOn(b, 'refreshActiveTools');
+
+    await fake.settings.update('damocles.mcp.toolExposure', { ctx: { query: 'direct' } }, 'user');
+    expect(refreshA).toHaveBeenCalledTimes(1);
+    expect(refreshB).toHaveBeenCalledTimes(1);
+
+    await fake.settings.update('damocles.mcp.enabled', false, 'user');
+    expect(refreshA).toHaveBeenCalledTimes(1);
+
+    await runtime.dispose();
+    await fake.settings.update('damocles.mcp.toolExposure', { ctx: { query: 'off' } }, 'project');
+    expect(refreshA).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-applies the custom-provider keys when any of their secrets changes, as another window does', async () => {
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    H.modelRuntime.setRuntimeApiKey.mockClear();
+
+    await fake.secrets.store('damocles.typesafe.apiKey', 'ts-from-another-window');
+    await vi.waitFor(() => expect(H.modelRuntime.setRuntimeApiKey).toHaveBeenCalledWith('typesafe', 'ts-from-another-window', expect.anything()));
+  });
+
+  it('tells memory-judge listeners when a folder starts, a provider sync ends, the account republishes or an Explore setting changes', async () => {
+    const changes = vi.fn();
+    const stop = PiRuntime.onMemoryJudgeChange(changes);
+    const runtime = PiRuntime.get('/agent');
+    await runtime.init();
+    expect(runtime.memoryJudgeKnown).toBe(false);
+
+    await runtime.folder('/cwd');
+    expect(changes).toHaveBeenCalledTimes(1);
+    await runtime.syncCustomProviders(async () => undefined);
+    expect(changes).toHaveBeenCalledTimes(2);
+    expect(runtime.memoryJudgeKnown).toBe(true);
+    await fake.settings.update('damocles.explore.provider', 'gemini', 'user');
+    expect(changes).toHaveBeenCalledTimes(3);
+    PiRuntime.notifyMemoryJudgeChange();
+    expect(changes).toHaveBeenCalledTimes(4);
+    stop();
+  });
+
   it('builds every folder on the one shared model runtime', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.folder('/cwd');
@@ -222,6 +275,31 @@ describe('PiRuntime.init lifecycle', () => {
     H.ctrl.loadable = true;
     await expect(runtime.init()).resolves.toBeUndefined();
     expect(runtime.modelRuntime).not.toBeNull();
+  });
+
+  it('hands out the model registry once init built it, while the credential sync behind pi\'s auth lock still runs', async () => {
+    const runtime = PiRuntime.get('/agent');
+    let releaseSync!: () => void;
+    const sync = new Promise<void>((resolve) => { releaseSync = resolve; });
+    vi.spyOn(runtime as unknown as { _syncOpenAIRuntimeKeyNow: () => Promise<void> }, '_syncOpenAIRuntimeKeyNow').mockReturnValue(sync);
+    let initDone = false;
+    const init = runtime.init().then(() => { initDone = true; });
+
+    await expect(runtime.modelRuntimeReady()).resolves.toBe(H.modelRuntime);
+    expect(initDone).toBe(false);
+
+    releaseSync();
+    await init;
+    await expect(runtime.modelRuntimeReady()).resolves.toBe(H.modelRuntime);
+  });
+
+  it('answers null for the model registry when init fails or the runtime is disposed', async () => {
+    H.ctrl.loadable = false;
+    const runtime = PiRuntime.get('/agent');
+    await expect(runtime.modelRuntimeReady()).resolves.toBeNull();
+    H.ctrl.loadable = true;
+    await runtime.dispose();
+    await expect(runtime.modelRuntimeReady()).resolves.toBeNull();
   });
 
   it('rejects init() after dispose (no resurrection of a disposed runtime)', async () => {
@@ -506,7 +584,7 @@ describe('PiRuntime.init lifecycle', () => {
   });
 
   // A login, logout or token refresh in another process lands only in auth.json.
-  it('republishes each live session account chip once per burst of auth.json events', async () => {
+  it('republishes each live session account chip before and after the key sync, once per burst of auth.json events', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
     const first = { publishAccountInfo: vi.fn() };
@@ -522,13 +600,14 @@ describe('PiRuntime.init lifecycle', () => {
       watcher.fireChange(path.join('/agent', 'auth.json'));
       watcher.fireCreate(path.join('/agent', 'auth.json'));
       expect(first.publishAccountInfo).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(150);
-      expect(first.publishAccountInfo).toHaveBeenCalledTimes(1);
-      expect(second.publishAccountInfo).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(first.publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(second.publishAccountInfo).toHaveBeenCalledTimes(2);
+      expect(H.modelRuntime.removeRuntimeApiKey).toHaveBeenCalledWith('openai');
 
       watcher.fireDelete(path.join('/agent', 'auth.json'));
-      vi.advanceTimersByTime(150);
-      expect(first.publishAccountInfo).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(first.publishAccountInfo).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }

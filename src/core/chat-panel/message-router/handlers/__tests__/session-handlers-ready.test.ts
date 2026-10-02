@@ -40,6 +40,7 @@ describe('ready handler — releases dialogs the restarted webview can no longer
       settingsManager: {
         sendCurrentSettings: async () => calls.push('sendCurrentSettings'),
         sendAvailableModels: () => undefined,
+        sendImageGenerationSettings: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,
@@ -144,6 +145,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       settingsManager: {
         sendCurrentSettings: async () => undefined,
         sendAvailableModels: () => undefined,
+        sendImageGenerationSettings: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,
@@ -278,6 +280,7 @@ describe('ready handler: paints the conversation before the session-wide lists',
       settingsManager: {
         sendCurrentSettings: async () => { order.push('sendCurrentSettings'); },
         sendAvailableModels: (session: { name?: string }) => { order.push(`sendAvailableModels:${session.name ?? 'own'}`); },
+        sendImageGenerationSettings: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,
@@ -316,10 +319,21 @@ describe('ready handler: paints the conversation before the session-wide lists',
     await settle();
     expect(h.order).toEqual(['sendCurrentSettings', 'getStoredSessions', 'getPromptHistory', 'initializeEarly', 'sendAvailableModels:own']);
   });
+
+  it('logs a failure to post the models instead of leaving the rejection unhandled', async () => {
+    const h = harness();
+    const deps = h.deps as unknown as { settingsManager: { sendAvailableModels: () => Promise<void> } };
+    deps.settingsManager.sendAvailableModels = async () => { throw new Error('no runtime'); };
+    const { log } = await import('../../../../logger');
+    vi.mocked(log).mockClear();
+    await createSessionHandlers(h.deps).ready!({ type: 'ready' } as never, h.ctx);
+    await settle();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('posting the models'), expect.any(Error));
+  });
 });
 
 /**
- * pi writes a conversation's file with its first reply, so the webview persists a conversation's id for
+ * pi writes a conversation's file with its first prompt, so the webview persists a conversation's id for
  * restore only once the host says it is stored. A reload of a panel whose conversation is still unwritten
  * therefore sends no saved id, and the host tells the new page which live conversation it is showing.
  */
@@ -352,6 +366,7 @@ describe('ready handler: a conversation pi has not written yet', () => {
       settingsManager: {
         sendCurrentSettings: async () => undefined,
         sendAvailableModels: () => undefined,
+        sendImageGenerationSettings: () => undefined,
         sendMcpConfig: () => undefined,
         sendModelForPanel: () => undefined,
         sendThinkingForPanel: () => undefined,

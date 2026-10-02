@@ -22,7 +22,13 @@ export type PermissionUpdate =
 export interface PendingPermissionInfo {
   toolUseId: string;
   toolName: string;
+  /** What the generic prompt shows for a tool with no dedicated view. */
+  toolInput?: Record<string, unknown>;
   filePath?: string;
+  /** GenerateImage only: the text sent to the image model. */
+  prompt?: string;
+  /** GenerateImage only: the OpenRouter image model the call is billed for. */
+  imageModel?: string;
   originalContent?: string;
   proposedContent?: string;
   command?: string;

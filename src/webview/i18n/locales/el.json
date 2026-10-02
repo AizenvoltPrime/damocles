@@ -314,6 +314,15 @@
       "effortMedium": "Μεσαίο",
       "effortHigh": "Υψηλό"
     },
+    "imageGeneration": {
+      "title": "Δημιουργία εικόνων",
+      "needsOpenRouterKey": "Χρειάζεται κλειδί API του OpenRouter. Προσθέστε ένα στον Έλεγχο ταυτότητας OpenRouter παρακάτω.",
+      "enabledLabel": "Ο πράκτορας μπορεί να δημιουργεί εικόνες",
+      "model": "Μοντέλο",
+      "modelPlaceholder": "Επιλέξτε μοντέλο εικόνας",
+      "unknownModel": "Το {model} δεν είναι διαθέσιμο για δημιουργία εικόνων. Επιλέξτε άλλο μοντέλο.",
+      "description": "Το εργαλείο GenerateImage δημιουργεί μια εικόνα με ένα μοντέλο του OpenRouter και την αποθηκεύει ως νέο αρχείο στη διαδρομή που εγκρίνετε. Κάθε εικόνα χρεώνεται στο κλειδί σας του OpenRouter."
+    },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",
     "settingsInfo": "Οι αλλαγές εφαρμόζονται στην τρέχουσα συνεδρία και αποθηκεύονται στις ρυθμίσεις workspace.",
@@ -444,6 +453,12 @@
     "createFileAgent": "Ο {agent} θέλει να δημιουργήσει αυτό το αρχείο",
     "editFile": "Επεξεργασία αυτού του αρχείου",
     "editFileAgent": "Ο {agent} θέλει να επεξεργαστεί",
+    "generateImage": "Δημιουργία εικόνας και αποθήκευσή της σε αυτό το νέο αρχείο;",
+    "useTool": "Να επιτραπεί το {tool} με αυτά τα δεδομένα;",
+    "useToolAgent": "Ο {agent} θέλει να χρησιμοποιήσει το {tool} με αυτά τα δεδομένα:",
+    "imagePrompt": "Περιγραφή εικόνας",
+    "imageModel": "Μοντέλο:",
+    "imageBilled": "Χρεώνεται στο κλειδί σας OpenRouter.",
     "queuePosition": "{position} από {total} σε αναμονή",
     "options": {
       "yes": "Ναι",
@@ -535,13 +550,13 @@
   },
   "mcp": {
     "title": "Διακομιστές MCP",
-    "description": "Προβολή και διαχείριση συνδέσεων MCP server",
+    "description": "Προβολή και διαχείριση συνδέσεων διακομιστών MCP",
     "masterToggle": "Ενεργοποίηση MCP",
-    "disabledNotice": "Οι MCP servers είναι απενεργοποιημένοι.",
-    "untrustedNotice": "Οι servers του .mcp.json είναι απενεργοποιημένοι μέχρι να εμπιστευτείτε αυτόν τον χώρο εργασίας.",
+    "disabledNotice": "Οι διακομιστές MCP είναι απενεργοποιημένοι.",
+    "untrustedNotice": "Οι διακομιστές του .mcp.json είναι απενεργοποιημένοι μέχρι να εμπιστευτείτε αυτόν τον χώρο εργασίας.",
     "trustWorkspace": "Εμπιστοσύνη",
-    "noServers": "Δεν έχουν διαμορφωθεί MCP servers",
-    "addServers": "Προσθέστε servers στο .mcp.json στη ρίζα του workspace",
+    "noServers": "Δεν έχουν διαμορφωθεί διακομιστές MCP",
+    "addServers": "Προσθέστε διακομιστές στο .mcp.json στη ρίζα του workspace",
     "connected": "Συνδεδεμένο",
     "failed": "Αποτυχία",
     "pending": "Σύνδεση...",
@@ -561,21 +576,55 @@
     "toolReadOnly": "Μόνο ανάγνωση",
     "toolDestructive": "Καταστρεπτικό",
     "toolNetwork": "Δίκτυο",
+    "toolExposureLabel": "Έκθεση του {name}",
+    "toolExposureOff": "Ανενεργό",
+    "toolExposureOn": "Ενεργό",
+    "toolExposureDirect": "Πάντα φορτωμένο",
+    "toolExposureTooltip": "Ανενεργό: ο πράκτορας δεν μπορεί να χρησιμοποιήσει αυτό το εργαλείο. Ενεργό: ο πράκτορας το φορτώνει με το ToolSearch όταν το χρειάζεται. Πάντα φορτωμένο: δηλώνεται από τον πρώτο γύρο, κάτι που κοστίζει context σε κάθε γύρο.",
+    "toolExposureSource": {
+      "config": "Ρύθμιση διακομιστή",
+      "user": "Χρήστης",
+      "project": "Έργο",
+      "local": "Τοπικό"
+    },
+    "toolExposureSourceTitle": "Ορίστηκε από: {source}",
+    "toolExposureSaveTo": "Αποθήκευση σε",
     "fromWorkspace": "Από τον χώρο εργασίας",
     "fromDamoclesLocal": "Από το .damocles του έργου",
     "fromClaudeLocal": "Από το Claude Code (τοπικό)",
-    "addServer": "Προσθήκη server",
+    "fromPi": "Από το pi",
+    "fromPiProject": "Από το .pi του έργου",
+    "toggleServer": "Ενεργοποίηση του {name}",
+    "serverOutput": "Έξοδος του διακομιστή",
+    "serverErrors": {
+      "sseUnsupported": "Η παλαιά μεταφορά SSE δεν υποστηρίζεται. Χρησιμοποιήστε το streamable HTTP URL του διακομιστή.",
+      "invalidConfig": "Μη έγκυρη ρύθμιση: {detail}",
+      "missingVariable": "Η μεταβλητή περιβάλλοντος {variable} δεν έχει οριστεί (χρησιμοποιείται στο {field}).",
+      "commandFailed": "Η εντολή για το {field} απέτυχε ή ξεπέρασε το χρονικό όριο.",
+      "commandUntrusted": "Το {field} εκτελεί εντολή, κάτι που επιτρέπεται μόνο σε έμπιστο φάκελο.",
+      "authProviderUnsupported": "Το auth.provider δεν υποστηρίζεται στο Damocles. Χρησιμοποιήστε OAuth ή bearer token.",
+      "nameCollision": "Δεν φορτώθηκε: τα ονόματα των εργαλείων του θα συγκρούονταν με το \"{kept}\" ({keptSource}).",
+      "insufficientScope": "Ο διακομιστής χρειάζεται περισσότερα δικαιώματα. Κάντε ξανά πιστοποίηση για να τα παραχωρήσετε."
+    },
+    "renamedRules": {
+      "title": "Κανόνες αναφέρουν εργαλεία MCP που μετονομάστηκαν",
+      "description": "Αυτοί οι κανόνες χρησιμοποιούν ακόμη τα παλιά ονόματα εργαλείων, οπότε δεν ταιριάζουν πλέον. Το Damocles δεν επεξεργάζεται αυτά τα αρχεία· ενημερώστε κάθε κανόνα με το νέο όνομα.",
+      "openFile": "Άνοιγμα",
+      "openFileAria": "Άνοιγμα του {file}",
+      "becomes": "γίνεται"
+    },
+    "addServer": "Προσθήκη διακομιστή",
     "reloadConfig": "Επαναφόρτωση ρυθμίσεων",
     "reloadConfigTitle": "Διαβάζει ξανά από τον δίσκο όλα τα αρχεία ρυθμίσεων MCP, μαζί με το ~/.claude.json, το οποίο το Damocles δεν παρακολουθεί.",
     "editServer": "Επεξεργασία",
     "deleteServer": "Διαγραφή",
-    "notFormEditable": "Αυτός ο server χρησιμοποιεί επιλογές που δεν μπορεί να εμφανίσει αυτή η φόρμα. Επεξεργαστείτε τον απευθείας στο ~/.damocles/mcp.json.",
-    "deleteConfirmTitle": "Αφαίρεση MCP server;",
-    "deleteConfirmWarning": "Ο server «{name}» θα αφαιρεθεί από το ~/.damocles/mcp.json. Οι servers από άλλες πηγές δεν επηρεάζονται.",
+    "notFormEditable": "Αυτός ο διακομιστής χρησιμοποιεί επιλογές που δεν μπορεί να εμφανίσει αυτή η φόρμα. Επεξεργαστείτε τον απευθείας στο ~/.damocles/mcp.json.",
+    "deleteConfirmTitle": "Αφαίρεση διακομιστή MCP;",
+    "deleteConfirmWarning": "Ο διακομιστής «{name}» θα αφαιρεθεί από το ~/.damocles/mcp.json. Οι διακομιστές από άλλες πηγές δεν επηρεάζονται.",
     "form": {
-      "addTitle": "Προσθήκη MCP server",
-      "editTitle": "Επεξεργασία MCP server",
-      "description": "Αποθηκεύεται στο ~/.damocles/mcp.json, οπότε ο server είναι διαθέσιμος σε κάθε χώρο εργασίας.",
+      "addTitle": "Προσθήκη διακομιστή MCP",
+      "editTitle": "Επεξεργασία διακομιστή MCP",
+      "description": "Αποθηκεύεται στο ~/.damocles/mcp.json, οπότε ο διακομιστής είναι διαθέσιμος σε κάθε χώρο εργασίας.",
       "nameLabel": "Όνομα",
       "namePlaceholder": "my-server",
       "modeLabel": "Τύπος σύνδεσης",
@@ -599,9 +648,23 @@
       "cwdPlaceholder": "Προαιρετικό",
       "urlLabel": "URL",
       "urlPlaceholder": "https://example.com/mcp",
-      "remoteTypeLabel": "Πρωτόκολλο",
-      "remoteTypeHttp": "HTTP",
-      "remoteTypeSse": "SSE",
+      "descriptionLabel": "Περιγραφή",
+      "descriptionPlaceholder": "Προαιρετικό",
+      "descriptionHelp": "Τι προσφέρει ο διακομιστής. Ο πράκτορας τη βλέπει όταν αναζητά εργαλεία. Χωρίς περιγραφή χρησιμοποιούνται οι οδηγίες του ίδιου του διακομιστή.",
+      "timeoutLabel": "Χρονικό όριο (δευτερόλεπτα)",
+      "timeoutPlaceholder": "120",
+      "timeoutHelp": "Πόσο μπορεί να περιμένει μία κλήση εργαλείου τον διακομιστή. Η πρόοδος από τον διακομιστή ξεκινά ξανά την αναμονή. Προεπιλογή: 120.",
+      "oauthLabel": "OAuth",
+      "oauthHelp": "Προαιρετικό. Μόνο για διακομιστή του οποίου η σύνδεση χρειάζεται αυτές τις ρυθμίσεις· αλλιώς αφήστε τα κενά.",
+      "oauthClientNameLabel": "Όνομα πελάτη OAuth",
+      "oauthClientNamePlaceholder": "Damocles",
+      "oauthAuthServerMetadataUrlLabel": "URL μεταδεδομένων διακομιστή εξουσιοδότησης",
+      "oauthAuthServerMetadataUrlPlaceholder": "https://auth.example.com/.well-known/oauth-authorization-server",
+      "oauthCallbackUrlLabel": "URL επιστροφής",
+      "oauthCallbackUrlPlaceholder": "http://localhost:8080/callback",
+      "oauthCallbackPortLabel": "Θύρα επιστροφής",
+      "oauthCallbackPortPlaceholder": "8080",
+      "oauthCallbackHelp": "Για πελάτη καταχωρημένο με σταθερό redirect URI. Χωρίς θύρα ή URL, το Damocles επιλέγει μια ελεύθερη τοπική θύρα.",
       "headersLabel": "Κεφαλίδες",
       "headerKeyPlaceholder": "Header-Name",
       "headerKeyAriaLabel": "Όνομα κεφαλίδας",
@@ -615,8 +678,10 @@
         "nameRequired": "Απαιτείται όνομα.",
         "nameTooLong": "Το όνομα μπορεί να έχει το πολύ {max} χαρακτήρες.",
         "nameInvalid": "Το όνομα μπορεί να περιέχει μόνο λατινικά γράμματα, ψηφία, τελείες, κάτω παύλες και παύλες.",
-        "nameExists": "Υπάρχει ήδη server με αυτό το όνομα στο ~/.damocles/mcp.json.",
+        "nameExists": "Υπάρχει ήδη διακομιστής με αυτό το όνομα στο ~/.damocles/mcp.json.",
         "nameShadowedByProject": "Ένα αρχείο ρυθμίσεων του έργου ορίζει ήδη αυτό το όνομα και υπερισχύει, οπότε ο διακομιστής δεν θα χρησιμοποιηθεί ποτέ.",
+        "namespaceShadowedByProject": "Το \"{other}\" σε ένα αρχείο ρυθμίσεων του έργου παίρνει τα ίδια ονόματα εργαλείων και υπερισχύει, οπότε αυτός ο διακομιστής δεν θα χρησιμοποιηθεί ποτέ. Ονόματα που διαφέρουν μόνο σε σημεία στίξης μετρούν ως ένας διακομιστής.",
+        "namespaceExists": "Το \"{other}\" στο ~/.damocles/mcp.json παίρνει τα ίδια ονόματα εργαλείων. Ονόματα που διαφέρουν μόνο σε σημεία στίξης μετρούν ως ένας διακομιστής.",
         "commandRequired": "Απαιτείται εντολή.",
         "envKeyRequired": "Κάθε μεταβλητή περιβάλλοντος χρειάζεται όνομα.",
         "envDuplicateKey": "Η μεταβλητή περιβάλλοντος «{name}» αναφέρεται δύο φορές.",
@@ -627,16 +692,22 @@
         "headerDuplicateKey": "Η κεφαλίδα «{name}» αναφέρεται δύο φορές.",
         "bearerTokenEnvInvalid": "Πρέπει να είναι όνομα μεταβλητής: λατινικά γράμματα, ψηφία και κάτω παύλες, χωρίς να ξεκινά με ψηφίο.",
         "envKeyInvalid": "Ένα όνομα μεταβλητής επιτρέπεται να περιέχει μόνο γράμματα, ψηφία και \"_\", και δεν μπορεί να αρχίζει με ψηφίο.",
-        "headerKeyInvalid": "Το \"{name}\" δεν είναι έγκυρο όνομα κεφαλίδας."
+        "headerKeyInvalid": "Το \"{name}\" δεν είναι έγκυρο όνομα κεφαλίδας.",
+        "timeoutInvalid": "Το χρονικό όριο πρέπει να είναι θετικός αριθμός δευτερολέπτων.",
+        "authServerMetadataUrlInvalid": "Πρέπει να είναι URL https, ή http σε localhost, 127.0.0.1 ή [::1].",
+        "callbackUrlInvalid": "Πρέπει να είναι URL http σε localhost, 127.0.0.1 ή [::1], χωρίς query ή fragment.",
+        "callbackPortInvalid": "Πρέπει να είναι αριθμός θύρας από 1 έως 65535.",
+        "callbackPortMismatch": "Το URL επιστροφής ορίζει διαφορετική θύρα."
       },
       "saving": "Αποθήκευση…",
       "secretValueHint": "Οι τιμές αποθηκεύονται σε απλό κείμενο στο ~/.damocles/mcp.json. Χρησιμοποιήστε το κουμπί ματιού για εμφάνιση.",
+      "valueSyntaxHint": "Τα $NAME και ${'{'}NAME{'}'} εισάγουν μια μεταβλητή περιβάλλοντος, και το $$ είναι ένα κυριολεκτικό $. Μια τιμή που ξεκινά με ! εκτελείται ως εντολή κελύφους και χρησιμοποιείται η έξοδός της. Προτιμήστε ένα από τα δύο αντί να επικολλήσετε ένα μυστικό.",
       "revealValue": "Εμφάνιση τιμής",
       "hideValue": "Απόκρυψη τιμής",
       "discardConfirm": "Απόρριψη των αλλαγών σας; Πατήστε ξανά Απόρριψη για επιβεβαίωση.",
       "discardConfirmAction": "Απόρριψη",
       "modeSwitchHint": "Η αλλαγή μεταφοράς διατηρεί ό,τι πληκτρολογήσατε, αλλά αποθηκεύονται μόνο τα πεδία που φαίνονται.",
-      "prefixCollision": "Τα εργαλεία θα ονομαστούν mcp__…_2__ επειδή το \"{other}\" χρησιμοποιεί ήδη αυτό το πρόθεμα.",
+      "prefixCollision": "Το \"{other}\" παίρνει τα ίδια ονόματα εργαλείων με αυτό το όνομα, οπότε το \"{other}\" δεν θα φορτωθεί.",
       "writeErrors": {
         "nameExists": "Το \"{name}\" υπάρχει ήδη στο ~/.damocles/mcp.json. Ίσως προστέθηκε χειροκίνητα.",
         "nameMissing": "Το \"{name}\" δεν υπάρχει πλέον στο ~/.damocles/mcp.json. Ίσως αφαιρέθηκε αλλού.",
@@ -663,14 +734,21 @@
     "description": "Ενεργοποίηση ή απενεργοποίηση εργαλείων και ομάδων εργαλείων.",
     "projectAgentsUntrusted": "Οι πράκτορες έργου είναι απενεργοποιημένοι. Μη έμπιστος χώρος εργασίας.",
     "trustWorkspace": "Έγκριση",
+    "groupSwitch": "Ενεργοποίηση εργαλείων: {group}",
     "group": {
       "memory": "Μνήμη",
       "compass": "Compass",
       "browser": "Πρόγραμμα περιήγησης",
       "web": "Ιστός",
+      "image": "Εικόνα",
       "subagents": "Υποπράκτορες",
       "team": "Ομάδα",
       "core": "Βασικά"
+    },
+    "unavailable": {
+      "noModel": "Μη διαθέσιμο: δεν έχει επιλεγεί μοντέλο εικόνας. Επιλέξτε ένα στις Ρυθμίσεις.",
+      "unknownModel": "Μη διαθέσιμο: το επιλεγμένο μοντέλο εικόνας δεν είναι διαθέσιμο. Επιλέξτε άλλο στις Ρυθμίσεις.",
+      "noOpenRouterKey": "Μη διαθέσιμο: δεν υπάρχει κλειδί API του OpenRouter."
     }
   },
   "toolsIndicator": {
@@ -694,9 +772,26 @@
     "extraUsage": "Επιπλέον χρήση: {amount}",
     "credits": "Πιστώσεις: {amount}",
     "claudeNotConnected": "Συνδεθείτε με τη συνδρομή σας Claude στις Ρυθμίσεις για να δείτε τη χρήση",
-    "gptNotConnected": "Συνδεθείτε με τη συνδρομή σας ChatGPT/Codex στις Ρυθμίσεις για να δείτε τη χρήση",
+    "gptNotConnected": "Συνδεθείτε με ChatGPT στις Ρυθμίσεις για να δείτε τη χρήση",
+    "gptUsageElsewhere": "Το ChatGPT εμφανίζει τη χρήση αυτού του πλάνου στον δικό του ιστότοπο.",
+    "gptUsageLink": "Προβολή χρήσης στο chatgpt.com",
+    "openChatGPTUsage": "Ανοίγει τις ρυθμίσεις χρήσης του ChatGPT στον browser",
     "fetchError": "Δεν ήταν δυνατή η φόρτωση της χρήσης",
-    "refresh": "Ανανέωση"
+    "refresh": "Ανανέωση",
+    "account": {
+      "title": "Λογαριασμός",
+      "plan": "Πλάνο",
+      "seatTier": "Βαθμίδα θέσης",
+      "rateLimitTier": "Βαθμίδα ορίου ρυθμού",
+      "subscriptionStatus": "Συνδρομή",
+      "extraUsage": "Επιπλέον χρήση",
+      "on": "Ενεργή",
+      "off": "Ανενεργή",
+      "email": "Email",
+      "organizationName": "Οργανισμός",
+      "reveal": "Εμφάνιση: {field}",
+      "unavailable": "Δεν ήταν δυνατή η φόρτωση των στοιχείων λογαριασμού"
+    }
   },
   "usageStats": {
     "title": "Στατιστικά χρήσης",
@@ -1128,6 +1223,12 @@
     },
     "reranked": "Νέα κατάταξη",
     "rerankedHint": "Ένα μοντέλο κατέταξε ξανά τις μνήμες που ταίριαξαν σε αυτό το ερώτημα, οπότε η σειρά και οι βαθμίδες τους μπορεί να διαφέρουν από τις βαθμολογίες που φαίνονται.",
+    "rerankClassifier": "Ταξινομητής: {verdict} ({score})",
+    "rerankVerdict": {
+      "high": "άμεσα σχετική",
+      "medium": "εν μέρει σχετική",
+      "low": "άσχετη"
+    },
     "compass": {
       "label": "Κατάσταση Compass",
       "unchanged": "Αμετάβλητη από προηγούμενο ερώτημα, οπότε δεν στάλθηκε ξανά",
@@ -1294,6 +1395,18 @@
   "thinking": {
     "thinking": "Σκέψη",
     "thought": "Σκέφτηκε"
+  },
+  "effortBadge": {
+    "ariaLabel": "Επίπεδο συλλογισμού: {level}",
+    "level": {
+      "off": "Ανενεργό",
+      "minimal": "Ελάχιστο",
+      "low": "Χαμηλό",
+      "medium": "Μεσαίο",
+      "high": "Υψηλό",
+      "xhigh": "Πολύ Υψηλό",
+      "max": "Μέγιστο"
+    }
   },
   "atMention": {
     "indexing": "Ευρετηρίαση χώρου εργασίας...",
@@ -1524,7 +1637,7 @@
     },
     "overlay": {
       "noResult": "Δεν υπάρχει διαθέσιμο αποτέλεσμα",
-      "subtitle": "{agents} πράκτορες | {tools} εργαλεία | {elapsed}"
+      "subtitle": "{agents} πράκτορες {'|'} {tools} εργαλεία {'|'} {elapsed}"
     },
     "agentOverlay": {
       "waitingForActivity": "Αναμονή για δραστηριότητα πράκτορα...",
@@ -1615,29 +1728,36 @@
       "cleared": "Το API key διαγράφηκε",
       "clearFailed": "Αποτυχία διαγραφής κλειδιού"
     },
-    "codexSection": {
-      "label": "Συνδρομή ChatGPT (Codex OAuth)",
+    "chatgpt": {
+      "label": "Συνδρομή ChatGPT",
       "signedIn": "Συνδεδεμένος",
-      "signedInAs": "Συνδεδεμένος ως {account}",
-      "notSignedIn": "Μη συνδεδεμένος"
-    },
-    "codexSignIn": {
-      "waiting": "Αναμονή για browser...",
-      "signedIn": "Συνδεδεμένος",
-      "signInButton": "Σύνδεση στο ChatGPT",
+      "notSignedIn": "Μη συνδεδεμένος",
+      "signIn": "Σύνδεση με ChatGPT",
+      "waiting": "Αναμονή για τον browser...",
       "signOut": "Αποσύνδεση",
-      "browserHint": "Ανοίγει τον browser για OAuth (PKCE). Τα tokens αποθηκεύονται στο ~/.damocles/pi/agent/auth.json."
+      "signOutLabel": "Αποσύνδεση από το ChatGPT",
+      "browserHint": "Ανοίγει τον browser για σύνδεση. Τα μοντέλα GPT χρησιμοποιούν τότε τα όρια του πλάνου ChatGPT σας αντί για χρέωση ανά token.",
+      "manualHint": "Ολοκληρώστε τη σύνδεση στον browser. Αν ο browser δεν μπορεί να επιστρέψει στο Damocles, αντιγράψτε την τελική διεύθυνση ανακατεύθυνσης από τη γραμμή διευθύνσεων και επικολλήστε τη στο παράθυρο που άνοιξε."
+    },
+    "legacyCodex": {
+      "label": "Σύνδεση Codex (παλαιά)",
+      "signOutLabel": "Αποσύνδεση από το Codex (παλαιά)",
+      "hint": "Η σύνδεση με ChatGPT αντικαθιστά αυτή τη σύνδεση."
     },
     "preferApiKey": {
-      "label": "Προτίμηση API key έναντι Codex",
-      "tooltip": "Όταν έχουν ρυθμιστεί και API key και Codex OAuth, να προτιμάται το API key. Το Codex είναι η προεπιλογή.",
-      "descriptionEnabled": "Ρύθμιση χώρου εργασίας. Αντιστρέφει την προεπιλεγμένη επίλυση Codex-first.",
-      "descriptionDisabled": "Ρυθμίστε και τις δύο διαδρομές ταυτοποίησης για να ενεργοποιηθεί."
+      "label": "Προτίμηση API key έναντι σύνδεσης ChatGPT",
+      "tooltip": "Όταν έχουν ρυθμιστεί και API key και σύνδεση ChatGPT, τα αιτήματα GPT στέλνονται με το API key, με χρέωση ανά token. Η σύνδεση είναι η προεπιλογή.",
+      "descriptionEnabled": "Ρύθμιση χώρου εργασίας. Αντιστρέφει την προεπιλεγμένη σειρά, όπου προηγείται η σύνδεση.",
+      "descriptionDisabled": "Προσθέστε API key και συνδεθείτε με ChatGPT για να ενεργοποιηθεί."
     },
     "toast": {
       "signedIn": "Συνδεθήκατε στο ChatGPT",
-      "signedInAs": "Συνδεθήκατε στο ChatGPT ως {account}",
       "signInFailed": "Αποτυχία σύνδεσης στο ChatGPT: {error}"
+    },
+    "chip": {
+      "chatgpt": "ChatGPT",
+      "codex": "Codex",
+      "apiKey": "Κλειδί API OpenAI"
     }
   },
   "stepfun": {
@@ -1674,6 +1794,56 @@
       "cleared": "Το κλειδί API διαγράφηκε",
       "clearFailed": "Αποτυχία διαγραφής κλειδιού",
       "hint": "Κλειδί API με χρέωση ανά token, αποθηκευμένο κρυπτογραφημένα μέσω του χώρου διαπιστευτηρίων του λειτουργικού σας· ενεργοποιεί τα DeepSeek V4 Pro και Flash."
+    }
+  },
+  "typesafe": {
+    "sectionTitle": "Έλεγχος ταυτότητας TypeSafe",
+    "apiKey": {
+      "label": "Κλειδί API",
+      "configured": "Διαμορφωμένο",
+      "notConfigured": "Μη διαμορφωμένο",
+      "show": "Εμφάνιση κλειδιού",
+      "hide": "Απόκρυψη κλειδιού",
+      "saving": "Αποθήκευση...",
+      "clear": "Διαγραφή κλειδιού API",
+      "placeholder": "Κλειδί API του TypeSafe",
+      "saved": "Το κλειδί API αποθηκεύτηκε",
+      "saveFailed": "Αποτυχία αποθήκευσης κλειδιού",
+      "cleared": "Το κλειδί API διαγράφηκε",
+      "clearFailed": "Αποτυχία διαγραφής κλειδιού",
+      "hint": "Αποθηκεύεται κρυπτογραφημένα μέσω του χώρου διαπιστευτηρίων του λειτουργικού σας. Εκτελεί τον έλεγχο αντιφάσεων και την ανακατάταξη της μνήμης στον ταξινομητή Jev του TypeSafe. Χωρίς αυτό, ένα κλειδί OpenRouter εκτελεί το Jev μέσω του OpenRouter."
+    },
+    "memoryJudge": {
+      "label": "Κριτής μνήμης: {judge}",
+      "jevTypesafe": "Jev μέσω TypeSafe",
+      "jevOpenrouter": "Jev μέσω OpenRouter",
+      "model": "{model} (μοντέλο δευτερευουσών κλήσεων)",
+      "none": "κανένας (δεν έχει ρυθμιστεί μοντέλο)",
+      "unknown": "το μοντέλο δευτερευουσών κλήσεων, που εμφανίζεται μόλις ξεκινήσει μια συνομιλία",
+      "rejected": "{provider}: παραλείπεται, γιατί {reason}. Το Damocles το δοκιμάζει ξανά σε 5 λεπτά, ή αμέσως όταν αποθηκεύσετε το κλειδί του.",
+      "rejection": {
+        "unauthorized": "το κλειδί δεν έγινε δεκτό",
+        "payment-required": "ο λογαριασμός δεν έχει πίστωση",
+        "forbidden": "το κλειδί δεν έχει πρόσβαση στο Jev"
+      }
+    }
+  },
+  "openrouter": {
+    "sectionTitle": "Έλεγχος ταυτότητας OpenRouter",
+    "apiKey": {
+      "label": "Κλειδί API",
+      "configured": "Διαμορφωμένο",
+      "notConfigured": "Μη διαμορφωμένο",
+      "show": "Εμφάνιση κλειδιού",
+      "hide": "Απόκρυψη κλειδιού",
+      "saving": "Αποθήκευση...",
+      "clear": "Διαγραφή κλειδιού API",
+      "placeholder": "sk-or-...",
+      "saved": "Το κλειδί API αποθηκεύτηκε",
+      "saveFailed": "Αποτυχία αποθήκευσης κλειδιού",
+      "cleared": "Το κλειδί API διαγράφηκε",
+      "clearFailed": "Αποτυχία διαγραφής κλειδιού",
+      "hint": "Αποθηκεύεται κρυπτογραφημένα μέσω του χώρου διαπιστευτηρίων του λειτουργικού σας. Χρησιμοποιείται για τη δημιουργία εικόνων, για το Jev όταν δεν έχει οριστεί κλειδί TypeSafe, και από τον πράκτορα Explore όταν πάροχός του είναι το OpenRouter. Η αποθήκευσή του δεν ενεργοποιεί τον πράκτορα Explore."
     }
   },
   "claudeAuth": {

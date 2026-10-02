@@ -4,6 +4,7 @@ import {
   TEAM_AGENT_PI_TOOL_NAMES,
   TEAM_MAIN_PI_TOOL_NAMES,
   TEAM_TOOL_CATALOG,
+  teamAgentPiToolNamesForRole,
 } from '../team-tools';
 
 /**
@@ -19,6 +20,7 @@ const EXPECTED_MAIN_NAMES: readonly string[] = ['cancel_team', 'create_team', 'g
 const EXPECTED_AGENT_NAMES: readonly string[] = [
   'team_approve_specialist',
   'team_cancel_specialist',
+  'team_dismiss_review',
   'team_flag_brief_conflict',
   'team_get_status',
   'team_read_messages',
@@ -39,7 +41,7 @@ const registeredNames: readonly string[] = [...TEAM_MAIN_PI_TOOL_NAMES, ...TEAM_
 
 describe('registered team tools and the shared presentation table', () => {
   it('holds a label and both card summaries for every team tool name the extension registers', () => {
-    expect(registeredNames).toHaveLength(20);
+    expect(registeredNames).toHaveLength(21);
     const unlabelled = registeredNames.filter((name) => TEAM_TOOL_LABELS[name] === undefined);
     expect(unlabelled).toEqual([]);
     const unsummarized = registeredNames.filter((name) => {
@@ -61,8 +63,17 @@ describe('registered team tools and the shared presentation table', () => {
     expect(Object.keys(TEAM_TOOL_LABELS)).toEqual(Object.keys(TEAM_TOOL_PRESENTATION));
   });
 
+  it('registers team_dismiss_review for the lead only, labelled as such in the catalog', () => {
+    expect(teamAgentPiToolNamesForRole('lead')).toContain('team_dismiss_review');
+    expect(teamAgentPiToolNamesForRole('specialist')).not.toContain('team_dismiss_review');
+    expect(TEAM_TOOL_CATALOG.find((e) => e.name === 'team_dismiss_review')).toMatchObject({
+      label: 'Dismiss review',
+      description: expect.stringMatching(/^Lead-only: /),
+    });
+  });
+
   it('is the one table: the Tools panel catalog reads its labels from here', () => {
-    expect(TEAM_TOOL_CATALOG).toHaveLength(20);
+    expect(TEAM_TOOL_CATALOG).toHaveLength(21);
     for (const entry of TEAM_TOOL_CATALOG) {
       expect(entry.label, `catalog label for ${entry.name}`).toBe(TEAM_TOOL_LABELS[entry.name]);
     }

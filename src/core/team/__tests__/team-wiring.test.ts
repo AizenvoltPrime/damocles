@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { TeamRunner, VERIFICATION_SECTION, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage } from '../team-runner';
+import { TeamRunner, STRANDED_STANDBY_NUDGE, leadShouldDeliverMessage } from '../team-runner';
 import { STEER_INSTRUCTION_PREFIX, wrapSteerMessage } from '../../../shared/steer';
 import { AgentRunner } from '../agent-runner';
-import { Scratchpad } from '../scratchpad';
+import { Scratchpad, VERIFICATION_SECTION } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession } from './fake-session';
 import type { TeamAgent, TeamConfig, TeamRole } from '../types';
@@ -31,11 +31,11 @@ import { DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/cons
 function makeAgent(name: string, role: TeamAgent['role']): TeamAgent {
   return {
     agentId: `id-${name}`, teamId: 'team-1', name, role, attempt: 0, specialization: '',
-    status: 'pending', model: 'test', profileId: null, startTime: null, endTime: null,
+    status: 'pending', model: 'test', profileId: null, activeMs: 0, runningSince: null,
     toolCallCount: 0, carriedToolCallCount: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0,
     cacheCreationTokens: 0, costUsd: 0,
     carriedUsage: { totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 },
-    dollarBilled: true, finalResponse: null, error: null, logFilePath: null,
+    dollarBilled: true, effort: null, finalResponse: null, error: null, logFilePath: null,
   };
 }
 

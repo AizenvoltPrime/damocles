@@ -42,7 +42,7 @@ import {
 } from "../mcp-manager";
 import type { FolderTarget } from "../../../../workspace-folders/folder-registry";
 import type { McpServerConfig } from "../../../../../shared/types/mcp";
-import { connectedIn, folderTarget } from "./mcp-folder-fixtures";
+import { connectedIn, enabledConfigs, folderTarget } from "./mcp-folder-fixtures";
 
 const A = folderTarget(folderA);
 const B = folderTarget(folderB);
@@ -93,12 +93,12 @@ describe("each folder lists its own servers plus the user ones", () => {
   it("gives A alpha+shared and B beta+shared, in the scope and in the UI list", async () => {
     const manager = await loaded(memento());
 
-    expect(manager.getEnabledServers(A.key)).toEqual({
+    expect(enabledConfigs(manager, A.key)).toEqual({
       userUnion: { shared: { command: "user-shared" } },
       userVisible: ["shared"],
       folder: { alpha: { command: "a-alpha" } },
     });
-    expect(manager.getEnabledServers(B.key)).toEqual({
+    expect(enabledConfigs(manager, B.key)).toEqual({
       userUnion: { shared: { command: "user-shared" } },
       userVisible: ["shared"],
       folder: { beta: { command: "b-beta" } },
@@ -117,8 +117,8 @@ describe("each folder lists its own servers plus the user ones", () => {
 
     const manager = await loaded(memento());
 
-    expect(Object.keys(manager.getEnabledServers(A.key).folder).sort()).toEqual(["alpha", "claudeA"]);
-    expect(Object.keys(manager.getEnabledServers(B.key).folder).sort()).toEqual(["beta", "claudeB"]);
+    expect(Object.keys(enabledConfigs(manager, A.key).folder).sort()).toEqual(["alpha", "claudeA"]);
+    expect(Object.keys(enabledConfigs(manager, B.key).folder).sort()).toEqual(["beta", "claudeB"]);
     expect(manager.getServersForUI(A.key).find(s => s.name === "claudeA")?.source).toBe("claude-local");
   });
 
@@ -137,8 +137,8 @@ describe("a folder redefining a user server", () => {
 
   it("uses B's definition in B, keeps the user one in A, and still connects the user one once", async () => {
     const manager = await loaded(memento());
-    const scopeA = manager.getEnabledServers(A.key);
-    const scopeB = manager.getEnabledServers(B.key);
+    const scopeA = enabledConfigs(manager, A.key);
+    const scopeB = enabledConfigs(manager, B.key);
 
     expect(scopeB.folder["shared"]).toEqual({ command: "b-shared" });
     expect(scopeB.userVisible).not.toContain("shared");
@@ -158,10 +158,10 @@ describe("a folder redefining a user server", () => {
 
     await manager.setServerEnabled(B.key, "shared", false);
 
-    const scopeB = manager.getEnabledServers(B.key);
+    const scopeB = enabledConfigs(manager, B.key);
     expect(scopeB.folder).not.toHaveProperty("shared");
     expect(scopeB.userVisible).not.toContain("shared");
-    expect(manager.getEnabledServers(A.key).userVisible).toContain("shared");
+    expect(enabledConfigs(manager, A.key).userVisible).toContain("shared");
   });
 
   it("refuses the name from the folder whose file wins it, and accepts it from the other folder", async () => {
@@ -191,13 +191,13 @@ describe("a folder redefining a user server", () => {
     const manager = await loaded(memento(), () => folders);
     writeMcpJson(folderB, { beta: { command: "b-beta" } });
     await manager.loadConfig();
-    expect(manager.getEnabledServers(A.key).userUnion).toHaveProperty("shared");
+    expect(enabledConfigs(manager, A.key).userUnion).toHaveProperty("shared");
 
     folders = [A];
     await manager.handleFoldersChanged();
 
-    expect(manager.getEnabledServers(A.key).userUnion).toEqual({});
-    expect(manager.getEnabledServers(B.key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
+    expect(enabledConfigs(manager, A.key).userUnion).toEqual({});
+    expect(enabledConfigs(manager, B.key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
   });
 });
 
@@ -207,7 +207,7 @@ describe("editing one folder's file", () => {
     const before = platform.fileWatchers.watchers.length;
     manager.setupWatcher();
     const created = platform.fileWatchers.watchers.slice(before);
-    const scopeA = manager.getEnabledServers(A.key);
+    const scopeA = enabledConfigs(manager, A.key);
     const listA = manager.getServersForUI(A.key);
 
     const watcherFor = (folder: string, file: string) => created.find(w => w.base === folder && w.glob === file);
@@ -221,9 +221,9 @@ describe("editing one folder's file", () => {
     watcherFor(folderB, ".mcp.json")!.fireChange(path.join(folderB, ".mcp.json"));
     await vi.waitFor(() => expect(reloaded).toBe(true));
 
-    expect(manager.getEnabledServers(A.key)).toEqual(scopeA);
+    expect(enabledConfigs(manager, A.key)).toEqual(scopeA);
     expect(manager.getServersForUI(A.key)).toEqual(listA);
-    expect(manager.getEnabledServers(B.key).folder).toEqual({ beta: { command: "b-beta-v2" }, gamma: { command: "b-gamma" } });
+    expect(enabledConfigs(manager, B.key).folder).toEqual({ beta: { command: "b-beta-v2" }, gamma: { command: "b-gamma" } });
     manager.dispose();
   });
 
@@ -238,8 +238,9 @@ describe("editing one folder's file", () => {
     folders = [A];
     await manager.handleFoldersChanged();
 
-    expect(inFolder(folderB).map(w => w.disposed)).toEqual([true, true, true]);
-    expect(inFolder(folderA).map(w => w.disposed)).toEqual([false, false, false]);
+    // Four files per folder: .mcp.json, .pi/mcp.json, .damocles/mcp.local.json and its .gitignore.
+    expect(inFolder(folderB).map(w => w.disposed)).toEqual([true, true, true, true]);
+    expect(inFolder(folderA).map(w => w.disposed)).toEqual([false, false, false, false]);
     manager.dispose();
   });
 });
@@ -253,8 +254,8 @@ describe("disabling is per folder for project servers and window-wide for user s
 
     await manager.setServerEnabled(A.key, "alpha", false);
 
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
-    expect(manager.getEnabledServers(B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
     expect(state.store.get(MCP_DISABLED_PROJECT_SERVERS_KEY)).toEqual({ [A.key]: ["alpha"] });
     expect(state.store.get(MCP_DISABLED_SERVERS_KEY)).toBeUndefined();
 
@@ -270,7 +271,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     await manager.setServerEnabled(A.key, "shared", false);
 
     for (const key of [A.key, B.key]) {
-      const scope = manager.getEnabledServers(key);
+      const scope = enabledConfigs(manager, key);
       expect(scope.userUnion).not.toHaveProperty("shared");
       expect(scope.userVisible).not.toContain("shared");
       expect(manager.getServersForUI(key).find(s => s.name === "shared")?.enabled).toBe(false);
@@ -287,20 +288,20 @@ describe("disabling is per folder for project servers and window-wide for user s
     expect(state.store.get(MCP_DISABLED_SERVERS_KEY)).toEqual(["alpha", "shared"]);
     expect(state.store.get(MCP_DISABLED_PROJECT_SERVERS_KEY)).toEqual({ [A.key]: ["alpha"] });
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBe(true);
-    expect(manager.getEnabledServers(A.key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
-    expect(manager.getEnabledServers(B.key)).toEqual({ userUnion: {}, userVisible: [], folder: { beta: { command: "b-beta" } } });
+    expect(enabledConfigs(manager, A.key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
+    expect(enabledConfigs(manager, B.key)).toEqual({ userUnion: {}, userVisible: [], folder: { beta: { command: "b-beta" } } });
   });
 
   it("runs the migration once, so a later re-enable in one folder is not undone", async () => {
     const state = memento({ [MCP_DISABLED_SERVERS_KEY]: ["alpha"] });
     const manager = await loaded(state);
-    expect(manager.getEnabledServers(B.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, B.key).folder).not.toHaveProperty("alpha");
 
     await manager.setServerEnabled(B.key, "alpha", true);
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers(B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
   });
 
   it("copies from the raw folder files, so an untrusted fold cannot hide a name from the migration", async () => {
@@ -315,7 +316,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     await manager.loadConfig();
 
     expect(state.store.get(MCP_DISABLED_PROJECT_SERVERS_KEY)).toEqual({ [B.key]: ["shared"] });
-    expect(manager.getEnabledServers(B.key).folder).not.toHaveProperty("shared");
+    expect(enabledConfigs(manager, B.key).folder).not.toHaveProperty("shared");
     expect(manager.getServersForUI(B.key).find(s => s.name === "shared")).toMatchObject({ source: "workspace", enabled: false });
   });
 
@@ -328,7 +329,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     await manager.setServerEnabled(B.key, "onlyA", true);
 
     expect([...state.store]).toEqual(before);
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("onlyA");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("onlyA");
   });
 
   it("retries the migration for a folder whose file could not be read, so a pre-upgrade disable holds", async () => {
@@ -340,7 +341,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     writeMcpJson(folderA, { alpha: { command: "a-alpha" } });
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBe(true);
     expect(state.store.get(MCP_DISABLED_SPLIT_PENDING_KEY)).toBeUndefined();
   });
@@ -354,7 +355,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     writeJson(path.join(fakeHome, ".claude.json"), { projects: { [folderA]: { mcpServers: { claudeA: { command: "claude-a" } } } } });
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("claudeA");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("claudeA");
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBe(true);
   });
 
@@ -366,7 +367,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     const manager = await loaded(state);
 
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBeUndefined();
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
     expect(manager.getServersForUI(A.key).find(s => s.name === "alpha")?.enabled).toBe(false);
   });
 
@@ -377,7 +378,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     const manager = await loaded(state);
 
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBeUndefined();
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
   });
 
   it("finishes a retried migration with the pre-upgrade names, never undoing later choices", async () => {
@@ -386,16 +387,16 @@ describe("disabling is per folder for project servers and window-wide for user s
     fs.writeFileSync(path.join(folderA, ".mcp.json"), '{ "mcpServers": { "alpha": ', "utf-8");
     const state = memento({ [MCP_DISABLED_SERVERS_KEY]: ["alpha"] });
     const manager = await loaded(state);
-    expect(manager.getEnabledServers(B.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, B.key).folder).not.toHaveProperty("alpha");
 
     await manager.setServerEnabled(B.key, "alpha", true);
     await manager.setServerEnabled(B.key, "shared", false);
     writeMcpJson(folderA, { alpha: { command: "a-alpha" }, shared: { command: "a-shared" } });
     await manager.loadConfig();
 
-    expect(manager.getEnabledServers(B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
-    expect(manager.getEnabledServers(A.key).folder["shared"]).toEqual({ command: "a-shared" });
+    expect(enabledConfigs(manager, B.key).folder["alpha"]).toEqual({ command: "b-alpha" });
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder["shared"]).toEqual({ command: "a-shared" });
     expect(state.store.get(MCP_DISABLED_PROJECT_SERVERS_KEY)).toEqual({ [A.key]: ["alpha"] });
   });
 
@@ -414,7 +415,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     release();
     await Promise.all([first, second]);
 
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
     expect(manager.getServersForUI(A.key).find(s => s.name === "alpha")?.enabled).toBe(false);
   });
 
@@ -422,19 +423,19 @@ describe("disabling is per folder for project servers and window-wide for user s
     fs.writeFileSync(path.join(fakeHome, ".claude.json"), "{ torn", "utf-8");
     const state = memento({ [MCP_DISABLED_SERVERS_KEY]: ["alpha"] });
     const manager = await loaded(state);
-    expect(manager.getEnabledServers(A.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).not.toHaveProperty("alpha");
 
     await manager.setServerEnabled(A.key, "alpha", true);
     await manager.loadConfig();
-    expect(manager.getEnabledServers(A.key).folder["alpha"]).toEqual({ command: "a-alpha" });
-    expect(manager.getEnabledServers(B.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder["alpha"]).toEqual({ command: "a-alpha" });
+    expect(enabledConfigs(manager, B.key).folder).not.toHaveProperty("alpha");
 
     writeJson(path.join(fakeHome, ".claude.json"), {});
     await manager.loadConfig();
 
     expect(state.store.get(MCP_DISABLED_SPLIT_MIGRATED_KEY)).toBe(true);
-    expect(manager.getEnabledServers(A.key).folder["alpha"]).toEqual({ command: "a-alpha" });
-    expect(manager.getEnabledServers(B.key).folder).not.toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder["alpha"]).toEqual({ command: "a-alpha" });
+    expect(enabledConfigs(manager, B.key).folder).not.toHaveProperty("alpha");
     expect(state.store.get(MCP_DISABLED_PROJECT_SERVERS_KEY)).toEqual({ [B.key]: ["alpha"] });
   });
 
@@ -446,7 +447,7 @@ describe("disabling is per folder for project servers and window-wide for user s
     await manager.setServerEnabled("/not/open", "alpha", false);
 
     expect([...state.store]).toEqual(before);
-    expect(manager.getEnabledServers(A.key).folder).toHaveProperty("alpha");
+    expect(enabledConfigs(manager, A.key).folder).toHaveProperty("alpha");
   });
 });
 
@@ -456,7 +457,7 @@ describe("an untrusted window", () => {
     const manager = await loaded(memento());
 
     for (const [key, name] of [[A.key, "alpha"], [B.key, "beta"]] as const) {
-      const scope = manager.getEnabledServers(key);
+      const scope = enabledConfigs(manager, key);
       expect(scope.folder).toEqual({});
       expect(scope.userVisible).toEqual(["shared"]);
       expect(scope.userUnion).toEqual({ shared: { command: "user-shared" } });
@@ -473,17 +474,16 @@ describe("a single-folder window", () => {
 
     expect(connectedIn(manager, A.key)).toEqual({ shared: { command: "user-shared" }, alpha: { command: "a-alpha" } });
     expect(manager.getServersForUI(A.key).map(s => [s.name, s.source])).toEqual([["shared", "damocles"], ["alpha", "workspace"]]);
-    expect(manager.getUserServerNames()).toEqual(["shared"]);
   });
 });
 
-describe("the user server names a rename remaps over", () => {
-  it("include a disabled user server, whose disabled tools still carry its prefix", async () => {
+describe("a disabled user server", () => {
+  it("is left out of the union every folder connects", async () => {
     const state = memento({ [MCP_DISABLED_SPLIT_MIGRATED_KEY]: true, [MCP_DISABLED_SERVERS_KEY]: ["shared"] });
     const manager = await loaded(state);
 
-    expect(manager.getEnabledServers(A.key).userUnion).toEqual({});
-    expect(manager.getUserServerNames()).toEqual(["shared"]);
+    expect(enabledConfigs(manager, A.key).userUnion).toEqual({});
+    expect(manager.getServersForUI(A.key).find(s => s.name === "shared")?.status).toBe("disabled");
   });
 });
 
@@ -491,7 +491,7 @@ describe("keys and edge cases", () => {
   it("gives an unknown folder key nothing of any folder, but keeps the user union", async () => {
     const manager = await loaded(memento());
 
-    expect(manager.getEnabledServers("/not/open")).toEqual({
+    expect(enabledConfigs(manager, "/not/open")).toEqual({
       userUnion: { shared: { command: "user-shared" } },
       userVisible: [],
       folder: {},
@@ -508,7 +508,7 @@ describe("keys and edge cases", () => {
     const home = folderTarget(fakeHome, false);
     const manager = await loaded(memento(), () => [home]);
 
-    expect(manager.getEnabledServers(home.key)).toEqual({
+    expect(enabledConfigs(manager, home.key)).toEqual({
       userUnion: { shared: { command: "user-shared" } },
       userVisible: ["shared"],
       folder: {},
@@ -520,7 +520,7 @@ describe("keys and edge cases", () => {
     const manager = await loaded(memento());
     await platform.settings.update("damocles.mcp.enabled", false, "user");
     for (const key of [A.key, B.key]) {
-      expect(manager.getEnabledServers(key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
+      expect(enabledConfigs(manager, key)).toEqual({ userUnion: {}, userVisible: [], folder: {} });
     }
   });
 });

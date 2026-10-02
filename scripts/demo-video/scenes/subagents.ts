@@ -3,11 +3,11 @@ import { steer, subagent, type SubagentSpec } from '../lib/agents.ts';
 import { agentCard, overlayClose, stopButton, type Scene } from '../lib/scene.ts';
 
 const MAP: SubagentSpec = {
-  toolUseId: 'toolu_agent_map', agentId: '3f9c2a71-5b8e-4d2', agentType: 'Explore', model: 'claude-sonnet-5',
+  toolUseId: 'toolu_agent_map', agentId: '3f9c2a71-5b8e-4d2', agentType: 'Explore', model: 'claude-sonnet-5-5',
   description: 'Map session cookie reads', prompt: 'Find every place the API reads the sid cookie and note how each one validates it.',
 };
 const MW: SubagentSpec = {
-  toolUseId: 'toolu_agent_mw', agentId: '8e21b0c4-1a2f-4c9', agentType: 'Explore', model: 'claude-sonnet-5',
+  toolUseId: 'toolu_agent_mw', agentId: '8e21b0c4-1a2f-4c9', agentType: 'Explore', model: 'claude-sonnet-5-5',
   description: 'Audit session middleware', prompt: 'Review the session middleware for missing expiry or signature checks.',
 };
 

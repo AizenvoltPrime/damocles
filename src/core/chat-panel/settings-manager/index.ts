@@ -3,15 +3,16 @@ import type { SettingsStore } from "../../../platform/settings-store";
 import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PanelHost } from "../../../platform/window-service";
-import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
+import type { McpServerConfig, McpServerStatusInfo, McpToolExposureScope } from "../../../shared/types/mcp";
 import type { McpScope } from "../../session-types";
 import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "./utils";
-import { remapMcpToolNamesForRename } from "../../pi-session/mcp/naming";
+import { MCP_TOOL_EXPOSURE_SETTING } from "../../../shared/types/mcp";
 import { McpManager } from "./managers/mcp-manager";
+import { log } from "../../logger";
 import {
   addDamoclesMcpServer,
   updateDamoclesMcpServer,
@@ -25,6 +26,8 @@ import { VoiceManager } from "./managers/voice-manager";
 import { ExploreManager } from "./managers/explore-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
 import type { TeamRole } from "../../pi-session/team-model-resolution";
+import { PiRuntime } from "../../pi-session/pi-runtime";
+import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING, IMAGE_PROVIDER, isOfferedImageModel } from "../../pi-session/tools/image-tool-specs";
 
 export type { SettingsManagerConfig };
 
@@ -115,23 +118,34 @@ export class SettingsManager {
   /**
    * A rename also moves the two stores keyed by server name, which the config file knows nothing
    * about. Without this, renaming a server the user had switched OFF brings it back on — for stdio,
-   * spawning a process they deliberately stopped — and every tool they disabled individually silently
-   * re-enables, because `damocles.tools.disabled` holds `mcp__<prefix>__<tool>` names.
+   * spawning a process they deliberately stopped — and every tool they turned off individually silently
+   * comes back, because `damocles.mcp.toolExposure` is keyed by server name.
    *
    * Both run after the write, so a rejected write moves nothing, and before the caller reloads the
-   * config, so the reload sees the updated disabled set.
+   * config, so the reload sees the updated state. The per-tool setting moves at every scope it is set
+   * at, project included, where the panel itself writes it, so an Off chosen there stays Off. The
+   * rename has landed by then, so a failure in either step is logged and the save still succeeds.
    */
   async updateMcpServer(folderKey: string, serverName: string, newServerName: string | undefined, config: McpServerConfig): Promise<void> {
-    const previousNames = this.mcpManager.getUserServerNames();
     await updateDamoclesMcpServer(serverName, newServerName, config, this.mcpManager.getShadowingServerNames(folderKey));
 
     if (newServerName === undefined || newServerName === serverName) return;
-    await this.mcpManager.carryDisabledServerThroughRename(serverName, newServerName);
+    try {
+      await this.mcpManager.carryDisabledServerThroughRename(serverName, newServerName);
+    } catch (err) {
+      log("[SettingsManager] the enabled state of MCP server %s did not follow its rename: %s", serverName, err instanceof Error ? err.message : String(err));
+    }
 
-    const disabledTools = this.platform.settings.get<string[]>("damocles.tools.disabled", []) ?? [];
-    const remapped = remapMcpToolNamesForRename(disabledTools, previousNames, serverName, newServerName);
-    if (remapped.some((name, index) => name !== disabledTools[index])) {
-      await updateConfigAtEffectiveScope(this.platform, "damocles", "tools.disabled", remapped);
+    const inspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
+    const scopes = [["user", inspection.userValue], ["project", inspection.projectValue], ["local", inspection.localValue]] as const;
+    for (const [scope, value] of scopes) {
+      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, serverName)) continue;
+      const { [serverName]: tools, ...rest } = value as Record<string, unknown>;
+      try {
+        await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, { ...rest, [newServerName]: tools }, scope);
+      } catch (err) {
+        log("[SettingsManager] the %s-scope tool exposure of MCP server %s did not follow its rename: %s", scope, serverName, err instanceof Error ? err.message : String(err));
+      }
     }
   }
 
@@ -151,8 +165,13 @@ export class SettingsManager {
       servers: mcpEntries,
       mcpEnabled,
       configErrors: this.mcpManager.getConfigErrors(folderKey),
+      toolExposureScopes: this.mcpManager.toolExposureScopes(folderKey),
       localMcpUnignored: this.mcpManager.getLocalMcpUnignored(folderKey),
     });
+  }
+
+  getMcpToolExposureScopes(folderKey: string): McpToolExposureScope[] {
+    return this.mcpManager.toolExposureScopes(folderKey);
   }
 
   /**
@@ -212,9 +231,37 @@ export class SettingsManager {
       case "team":
         await updateConfigAtEffectiveScope(this.platform, "damocles", "team.enabled", enabled);
         break;
+      case "image":
+        await this.setImageGenerationEnabled(enabled);
+        break;
       case "core":
         break;
     }
+  }
+
+  /** Always the user scope: a repository must never turn on generation billed to the user's key. */
+  async setImageGenerationEnabled(enabled: boolean): Promise<void> {
+    await this.platform.settings.update(IMAGE_ENABLED_SETTING, enabled, "user");
+  }
+
+  /** Always the user scope: the model decides what each image costs on the user's key. */
+  async setImageGenerationModel(model: string): Promise<void> {
+    await this.platform.settings.update(IMAGE_MODEL_SETTING, model, "user");
+  }
+
+  /** Posts nothing until pi's runtime is up: the model list and the OpenRouter check both come from it. */
+  sendImageGenerationSettings(host: PanelHost): void {
+    const runtime = PiRuntime.exists ? PiRuntime.get().modelRuntime : null;
+    if (!runtime) return;
+    this.postMessage(host, {
+      type: "imageGenerationSettings",
+      settings: {
+        enabled: this.platform.settings.get<boolean>(IMAGE_ENABLED_SETTING, false),
+        model: this.platform.settings.get<string>(IMAGE_MODEL_SETTING, ""),
+        imageModels: runtime.getModelsOfType("image", IMAGE_PROVIDER).filter(isOfferedImageModel).map((model) => ({ id: model.id, name: model.name })),
+        openRouterConfigured: runtime.hasConfiguredAuth(IMAGE_PROVIDER),
+      },
+    });
   }
 
   async sendCurrentSettings(host: PanelHost, permissionHandler: PermissionHandler): Promise<void> {

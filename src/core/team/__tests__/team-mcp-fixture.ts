@@ -35,7 +35,7 @@ const teamMcpManager = {
       serverName: 'srv',
       serverId: 'test/srv',
       kind: 'tool',
-      originalName: 'read',
+      rawToolName: 'read',
       description: 'read a thing',
       inputSchema: { type: 'object', properties: {} },
       readOnly: true,
@@ -45,7 +45,7 @@ const teamMcpManager = {
       serverName: 'srv',
       serverId: 'test/srv',
       kind: 'tool',
-      originalName: 'write',
+      rawToolName: 'write',
       description: 'write a thing',
       inputSchema: { type: 'object', properties: {} },
       readOnly: false,
@@ -62,7 +62,7 @@ export function teamMcpSnapshot(): NestedMcpToolset {
 }
 
 /** What a `TeamEngine.buildAgentToolset` fake returns: the real shape, over a real snapshot. */
-export function teamAgentToolset(): { toolNames: string[]; customTools: NestedMcpToolset['tools']; mcp: NestedMcpToolset } {
+export function teamAgentToolset(): { toolNames: string[]; customTools: NestedMcpToolset['tools']; mcp: NestedMcpToolset; readOnly: boolean } {
   const mcp = teamMcpSnapshot();
-  return { toolNames: [...TEAM_BASE_TOOL_NAMES], customTools: [...mcp.tools], mcp };
+  return { toolNames: [...TEAM_BASE_TOOL_NAMES], customTools: [...mcp.tools], mcp, readOnly: false };
 }

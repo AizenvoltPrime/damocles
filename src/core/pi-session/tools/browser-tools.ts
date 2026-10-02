@@ -11,6 +11,7 @@ import type { BrowserAgentScope } from '../../browser';
 import type { InterceptRule } from '../../browser/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
+import { abortableTool } from './abortable-tool';
 
 /**
  * Native pi tools backing the integrated CDP browser. Tools are exposed under PascalCase active-set
@@ -118,7 +119,7 @@ const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
 
 /**
  * Finite upper bound (ms) passed to every Playwright locator action so a single action can never block
- * the agent loop unbounded. The turn-abort boundary is handled separately by `raceAbort` (which resolves
+ * the agent loop unbounded. The turn-abort boundary is handled separately by `abortableTool` (which resolves
  * the instant `signal` fires); this timeout is the belt-and-suspenders ceiling for a hung/unactionable
  * element. Locator auto-wait means the happy path resolves well under this.
  */
@@ -516,39 +517,6 @@ const browserInterceptSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-
-/**
- * Resolve to `onAbort()` the instant `signal` fires, instead of waiting for `work`. CDP calls (launch,
- * connect, screenshot, evaluate) have no per-request cancellation, so a slow/hung one would otherwise
- * block the agent loop — which `await`s the tool's `execute` — and thus pi's `abort()`/`waitForIdle()`.
- * Racing at the tool boundary honors pi's abort contract: the agent unblocks immediately and the
- * orphaned CDP op settles harmlessly in the background (the browser session is reused or closed later).
- */
-function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, onAbort: () => T): Promise<T> {
-  if (!signal) return work;
-  if (signal.aborted) return Promise.resolve(onAbort());
-  return new Promise<T>((resolve, reject) => {
-    const onAbortEvent = (): void => resolve(onAbort());
-    signal.addEventListener('abort', onAbortEvent, { once: true });
-    void work.then(
-      (value) => { signal.removeEventListener('abort', onAbortEvent); resolve(value); },
-      (err) => { signal.removeEventListener('abort', onAbortEvent); reject(err); },
-    );
-  });
-}
-
-/** Wrap a tool so its `execute` returns the instant the turn is aborted (see `raceAbort`). */
-export function abortableTool(tool: ToolDefinition): ToolDefinition {
-  return {
-    ...tool,
-    execute: (toolCallId, params, signal, onUpdate, ctx) =>
-      raceAbort(
-        tool.execute(toolCallId, params, signal, onUpdate, ctx),
-        signal,
-        () => wrap(textResult(`${tool.name} aborted`)) as AgentToolResult<unknown>,
-      ),
-  };
-}
 
 /** Phrasing Playwright uses when the target/context went away mid-call. */
 const CLOSED_TARGET_MESSAGE = /Target closed|Target page, context or browser has been closed|Execution context was destroyed/;

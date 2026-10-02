@@ -1,9 +1,17 @@
 import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage, ImageBlock } from './content';
-import type { McpConfigError, McpServerConfig, McpServerStatusInfo, McpWriteErrorInfo } from './mcp';
+import type {
+  McpConfigError,
+  McpRenamedToolRuleNotice,
+  McpServerConfig,
+  McpServerStatusInfo,
+  McpToolExposureScope,
+  McpToolExposureSetting,
+  McpWriteErrorInfo,
+} from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
 import type { FormSchema, FormValues } from './forms';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ImageGenerationSettings } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -120,6 +128,8 @@ export type WebviewToExtensionMessage =
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
   | { type: "setMcpEnabled"; enabled: boolean }
+  /** `toolName` is the server's own tool name; sets or removes that one entry of `damocles.mcp.toolExposure` at `scope`. */
+  | { type: "mcpSetToolExposure"; serverName: string; toolName: string; exposure: McpToolExposureSetting; scope: McpToolExposureScope }
   | { type: "reconnectMcpServer"; serverName: string }
   // Re-read every MCP source and re-feed the live client. `~/.claude.json` is deliberately unwatched,
   // so a server added there needs an explicit prompt to be picked up without a window reload.
@@ -137,6 +147,9 @@ export type WebviewToExtensionMessage =
   | { type: "toggleTool"; toolName: string; enabled: boolean }
   | { type: "toggleToolGroup"; group: ToolGroup; enabled: boolean }
   | { type: "requestToolStatus" }
+  | { type: "setImageGenerationEnabled"; enabled: boolean }
+  | { type: "setImageGenerationModel"; model: string }
+  | { type: "requestImageGenerationSettings" }
   | { type: "setProjectTrusted" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | { type: "answerForm"; toolUseId: string; values: FormValues | null }
@@ -255,7 +268,14 @@ export type WebviewToExtensionMessage =
   | { type: "setDeepseekApiKey"; key: string; requestId: string }
   | { type: "clearDeepseekApiKey"; requestId: string }
   | { type: "getDeepseekAuthStatus" }
-  | { type: "startCodexOAuth" }
+  | { type: "setTypesafeApiKey"; key: string; requestId: string }
+  | { type: "clearTypesafeApiKey"; requestId: string }
+  | { type: "getTypesafeAuthStatus" }
+  | { type: "setOpenrouterApiKey"; key: string; requestId: string }
+  | { type: "clearOpenrouterApiKey"; requestId: string }
+  | { type: "getOpenrouterAuthStatus" }
+  | { type: "startChatGPTOAuth" }
+  | { type: "signOutChatGPT" }
   | { type: "signOutCodex" }
   | { type: "getClaudeAuthStatus" }
   | { type: "claudeSignIn"; useAllowance: boolean }
@@ -382,7 +402,7 @@ export type ExtensionToWebviewMessage =
   | { type: "error"; message: string }
   | { type: "authFailure"; message: string }
   | { type: "authFailureCleared" }
-  /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first reply. */
+  /** `stored`: the conversation has a session file, so it is what a restart restores. pi writes none before the first prompt. */
   | { type: "sessionStarted"; sessionId: string; stored?: boolean }
   /** The host bound this panel to a stored session from `resumeSession`; its history replay follows. */
   | { type: "resumeAccepted"; sessionId: string }
@@ -415,7 +435,8 @@ export type ExtensionToWebviewMessage =
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
-  | ({ type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
+  /** `toolExposureScopes` lists the settings scopes a per-tool exposure can be saved to in this panel's folder, lowest first. */
+  | ({ type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean; configErrors: McpConfigError[]; toolExposureScopes: McpToolExposureScope[] } & McpLocalUnignoredFlag)
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
@@ -437,7 +458,7 @@ export type ExtensionToWebviewMessage =
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean; description?: string; resumedFrom?: string }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
-  | { type: "subagentModelUpdate"; agentToolId: string; model: string }
+  | { type: "subagentModelUpdate"; agentToolId: string; model?: string; effort?: import('../effort-badge').EffortBadgeLevel }
   | { type: "subagentTemplateUpdate"; agentToolId: string; templatePath: string }
   | { type: "subagentUsageUpdate"; agentToolId: string; usage: AgentUsageTotals; dollarBilled?: boolean }
   | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
@@ -461,7 +482,7 @@ export type ExtensionToWebviewMessage =
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; restorePoints: RestorePoint[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex?: number }
-  | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
+  | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[]; effort?: import('../effort-badge').EffortBadgeLevel }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
@@ -470,19 +491,25 @@ export type ExtensionToWebviewMessage =
   | {
       type: "requestPermission";
       toolUseId: string;
-      toolName: "Write" | "Edit" | "Bash" | "PowerShell";
+      /** Any other tool gets the generic prompt, which shows `toolInput`. */
+      toolName: string;
       toolInput: Record<string, unknown>;
       filePath?: string;
       originalContent?: string;
       proposedContent?: string;
       command?: string;
+      /** GenerateImage only: the text sent to the image model. A GenerateImage request carries no diff. */
+      prompt?: string;
+      /** GenerateImage only: the OpenRouter image model the call is billed for. */
+      imageModel?: string;
       parentToolUseId?: string | null;
       editLineNumber?: number;
       suggestions?: PermissionUpdate[];
       blockedPath?: string;
       decisionReason?: string;
     }
-  | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
+  /** `withdrawn`: an abort ended the prompt unanswered; the tool's own lifecycle sets the card's status. */
+  | { type: "permissionAutoResolved"; toolUseId: string; outcome: "approved" | "withdrawn"; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
   | { type: "steerTargets"; agents: SteerTargetInfo[] }
   | { type: "customAgents"; agents: CustomAgentInfo[] }
@@ -493,6 +520,8 @@ export type ExtensionToWebviewMessage =
   | { type: "queueCancelled"; messageId: string; returnToInput?: boolean }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | ({ type: "mcpConfigUpdate"; servers: McpServerStatusInfo[]; configErrors: McpConfigError[] } & McpLocalUnignoredFlag)
+  /** Rules naming renamed MCP tools in files Damocles does not rewrite; each file and rule is sent once. */
+  | { type: "mcpRenamedToolRules"; notices: McpRenamedToolRuleNotice[] }
   /**
    * The outcome of one `mcpAddServer`/`mcpUpdateServer`/`mcpDeleteServer`. Sent for every attempt,
    * success or failure, so the form can stay open holding the user's typed definition until the write
@@ -502,6 +531,7 @@ export type ExtensionToWebviewMessage =
   | { type: "mcpWriteResult"; requestId: string; ok: true }
   | { type: "mcpWriteResult"; requestId: string; ok: false; error: McpWriteErrorInfo }
   | { type: "toolStatus"; data: ToolsSnapshot }
+  | { type: "imageGenerationSettings"; settings: ImageGenerationSettings }
   | { type: "projectTrust"; trusted: boolean }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }
   | { type: "requestForm"; toolUseId: string; form: FormSchema; parentToolUseId?: string | null }
@@ -624,7 +654,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamPhaseUpdate"; teamId: string; phase: import('./team').TeamPhase }
   // A partial delta. An absent field means the sender has nothing new to say about it, not a reset.
   // `attempt` rides only on a launch, and an advance is what tells the card its work fields start over.
-  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number }
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string; dollarBilled?: boolean; attempt?: number; effort?: import('../effort-badge').EffortBadgeLevel | null; stopwatch?: import('../team-stopwatch').Stopwatch }
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }
@@ -655,7 +685,7 @@ export type ExtensionToWebviewMessage =
   | { type: "exploreToolResult"; toolUseId: string; innerToolUseId: string; result: string; isError: boolean }
   | { type: "exploreCompleted"; toolUseId: string; status: 'completed' | 'failed'; result: string | null; elapsed: number; toolCount: number; model: string }
   | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] }
-  | { type: "openaiAuthStatusChanged"; status: { codex: { signedIn: boolean; accountId?: string; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
+  | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
   | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
   | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
@@ -665,15 +695,22 @@ export type ExtensionToWebviewMessage =
   | { type: "setDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "clearDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "deepseekAuthStatusChanged"; configured: boolean }
-  | { type: "openaiCodexAuthStarted" }
-  | { type: "openaiCodexAuthCompleted"; accountId: string | null }
-  | { type: "openaiCodexAuthFailed"; error: string }
+  | { type: "setTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "clearTypesafeApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "typesafeAuthStatusChanged"; configured: boolean; memoryJudge: MemoryJudge }
+  | { type: "setOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "clearOpenrouterApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "openrouterAuthStatusChanged"; configured: boolean }
+  | { type: "openaiChatGPTAuthStarted" }
+  | { type: "openaiChatGPTAuthCompleted" }
+  | { type: "openaiChatGPTAuthFailed"; error: string }
   | { type: "openaiAuthRequired"; modelValue: string }
   | { type: "claudeAuthStatusChanged"; mode: "none" | "apikey" | "allowance" | "extra" }
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
   | { type: "claudeAuthError"; error: string }
   | { type: "openSettingsPanel" }
+  | { type: "openOpenAIAuthPanel" }
   | {
       type: "extensionUiRequest";
       requestId: string;

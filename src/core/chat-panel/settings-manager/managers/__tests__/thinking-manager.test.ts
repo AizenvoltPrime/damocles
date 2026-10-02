@@ -17,10 +17,11 @@ function makeConfig(overrides: {
   };
 }
 
-const SONNET = "claude-sonnet-5";
-// Opus 5.5 is the catalog's `thinkingAlwaysOn` + `defaultEffort: high` entry; Sonnet 5 has neither.
+const SONNET = "claude-sonnet-5-5";
+// Opus 5.5 is a catalog `thinkingAlwaysOn` + `defaultEffort: high` entry; Step 3.7 Flash has neither.
 const OPUS = "claude-opus-5-5";
-const GPT = "gpt-6-sol";
+const TOGGLE = "step-3.7-flash";
+const GPT = "gpt-6.1-sol";
 
 describe("ThinkingManager", () => {
   let manager: ThinkingManager;
@@ -34,18 +35,18 @@ describe("ThinkingManager", () => {
   describe("resolveDisabled", () => {
     it("returns workspace default when no per-panel override", () => {
       const config = makeConfig({ thinkingDisabled: true });
-      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(true);
+      expect(manager.resolveDisabled("panel-A", TOGGLE, config as never)).toBe(true);
     });
 
     it("returns false default when nothing configured", () => {
       const config = makeConfig({});
-      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
+      expect(manager.resolveDisabled("panel-A", TOGGLE, config as never)).toBe(false);
     });
 
     it("per-panel override beats workspace default", () => {
       const config = makeConfig({ thinkingDisabled: true });
       manager.setPanelDisabled("panel-A", false);
-      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
+      expect(manager.resolveDisabled("panel-A", TOGGLE, config as never)).toBe(false);
     });
 
     it("stays false on a model that always thinks, whatever is stored", () => {
@@ -65,7 +66,7 @@ describe("ThinkingManager", () => {
   describe("resolveEffort", () => {
     it("returns null when neither panel nor workspace has a value and the model has no catalog default", () => {
       const config = makeConfig({});
-      expect(manager.resolveEffort("panel-A", SONNET, config as never)).toBeNull();
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never)).toBeNull();
     });
 
     it("falls back to the model's catalog defaultEffort when nothing is stored", () => {
@@ -100,8 +101,8 @@ describe("ThinkingManager", () => {
     });
 
     it("returns null when stored value is no longer in supportedEffortLevels (capability regression)", () => {
-      const config = makeConfig({ effortByModel: { [SONNET]: "fake-level" as EffortLevel } });
-      expect(manager.resolveEffort("panel-A", SONNET, config as never)).toBeNull();
+      const config = makeConfig({ effortByModel: { [TOGGLE]: "fake-level" as EffortLevel } });
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never)).toBeNull();
     });
 
     it("returns null for unknown models", () => {
@@ -164,7 +165,7 @@ describe("ThinkingManager", () => {
 
       manager.copyPanelStateTo("panel-A", "panel-B");
 
-      expect(manager.resolveDisabled("panel-B", SONNET, config as never)).toBe(true);
+      expect(manager.resolveDisabled("panel-B", TOGGLE, config as never)).toBe(true);
       expect(manager.resolveEffort("panel-B", SONNET, config as never)).toBe("max");
       expect(manager.resolveEffort("panel-B", OPUS, config as never)).toBe("high");
       expect(manager.resolveMaxTokens("panel-B", SONNET, config as never)).toBe(24000);
@@ -183,14 +184,14 @@ describe("ThinkingManager", () => {
     it("removes all per-panel state", () => {
       const config = makeConfig({ thinkingDisabled: false });
       manager.setPanelDisabled("panel-A", true);
-      manager.setPanelEffort("panel-A", SONNET, "max");
-      manager.setPanelMaxTokens("panel-A", SONNET, 16000);
+      manager.setPanelEffort("panel-A", TOGGLE, "high");
+      manager.setPanelMaxTokens("panel-A", TOGGLE, 16000);
 
       manager.cleanupPanelThinking("panel-A");
 
-      expect(manager.resolveDisabled("panel-A", SONNET, config as never)).toBe(false);
-      expect(manager.resolveEffort("panel-A", SONNET, config as never)).toBeNull();
-      expect(manager.resolveMaxTokens("panel-A", SONNET, config as never)).toBeNull();
+      expect(manager.resolveDisabled("panel-A", TOGGLE, config as never)).toBe(false);
+      expect(manager.resolveEffort("panel-A", TOGGLE, config as never)).toBeNull();
+      expect(manager.resolveMaxTokens("panel-A", TOGGLE, config as never)).toBeNull();
     });
   });
 
@@ -224,7 +225,7 @@ describe("ThinkingManager", () => {
         defaults: { thinkingDisabled: false, effort: "high", maxThinkingTokens: null },
       }));
 
-      manager.sendThinkingForPanel(host, "panel-A", OPUS, SONNET, config as never);
+      manager.sendThinkingForPanel(host, "panel-A", OPUS, TOGGLE, config as never);
       expect(postMessage).toHaveBeenLastCalledWith(host, expect.objectContaining({
         defaults: { thinkingDisabled: true, effort: null, maxThinkingTokens: null },
       }));

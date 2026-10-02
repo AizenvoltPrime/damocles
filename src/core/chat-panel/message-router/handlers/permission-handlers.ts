@@ -17,7 +17,7 @@ async function writePlanFile(planFilePath: string, planContent: string): Promise
 /** Shown to the user and fed back to the model when a clear-context approval finds no plan file to hand
  *  off (a should-be-unreachable state, since ExitPlanMode is blocked when no plan file exists). Single
  *  source so the user toast and the model feedback can't drift. */
-const PLAN_FILE_UNAVAILABLE_MESSAGE = "Plan file no longer available — please re-run the plan.";
+const PLAN_FILE_UNAVAILABLE_MESSAGE = "The plan file is no longer available. Run the plan again.";
 
 export function createPermissionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, settingsManager, platform } = deps;

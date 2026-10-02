@@ -6,6 +6,9 @@ import type { ScratchpadCursors, ScratchpadEntry, ScratchpadUpdateEvent } from '
  */
 export const MAX_APPEND_ONLY_ENTRIES = 200;
 
+/** The shared, append-only verification ledger seeded at team start. */
+export const VERIFICATION_SECTION = 'verification';
+
 export interface StaleSectionInfo {
   section: string;
   currentVersion: number;

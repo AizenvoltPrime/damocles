@@ -5,7 +5,7 @@ export type SettingsObject = Record<string, unknown>;
 /**
  * The one parser for ~/.damocles/settings.json and <folder>/.damocles/settings(.local).json: strict JSON holding an
  * object, where empty text is an empty object and a leading BOM is ignored. The desktop settings store, the settings
- * file editor and the permission rule writer all use it.
+ * file editor, the permission rule writer and the permission rule reader all use it.
  */
 export function parseSettingsText(text: string, filePath: string): SettingsObject {
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;

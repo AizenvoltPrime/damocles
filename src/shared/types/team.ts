@@ -1,5 +1,6 @@
 import type { ImageBlock } from './content';
 import type { AgentUsageTotals } from '../usage-accounting';
+import type { EffortBadgeLevel } from '../effort-badge';
 
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
 export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
@@ -15,8 +16,10 @@ export interface TeamAgent {
    *  advance is the only signal that the counters start over while usage keeps every attempt's spend. */
   attempt: number;
   status: TeamAgentStatus;
-  startTime: number | null;
-  endTime: number | null;
+  /** The attempt's closed active segments (`team-stopwatch.ts`). */
+  activeMs: number;
+  /** The open segment's start, null while the stopwatch is stopped. */
+  runningSince: number | null;
   toolCount: number;
   lastToolName: string | null;
   totalInputTokens: number;
@@ -27,6 +30,8 @@ export interface TeamAgent {
   /** Whether this agent's model bills real dollars. Its role model can differ from the panel model, so
    *  the panel-level billing flag cannot label this agent's cost. */
   dollarBilled: boolean;
+  /** A work field of the current attempt: its session's published effort, from the `agent-session-started` log entry. */
+  effort: EffortBadgeLevel | null;
   progressSummary: string | null;
   result: string | null;
   logFilePath: string | null;

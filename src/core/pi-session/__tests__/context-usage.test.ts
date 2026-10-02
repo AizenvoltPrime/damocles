@@ -201,7 +201,7 @@ describe('buildContextUsage: auto-compact badge fields', () => {
       undefined,
       deps({
         modelValue: 'claude-opus-4-8',
-        autoCompact: { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-sonnet-5': { triggerPercent: 55 } } },
+        autoCompact: { enabled: true, triggerPercent: 80, modelOverrides: { 'claude-sonnet-5-5': { triggerPercent: 55 } } },
       }),
     );
     expect(data.autoCompactThreshold).toBe(80);
@@ -285,7 +285,7 @@ describe('buildContextUsage — independent section degradation', () => {
     // ADAPTATION: the tool is now also listed in `allTools`, because an ACTIVE tool is by definition a
     // registered one; the previous fixture described a state pi cannot produce.
     const session = fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['mcp__s__a'], allTools: [tool('mcp__s__a', 'dddd')] });
-    const data = buildContextUsage(session, undefined, deps({ mcpEnabled: true, mcpClientManager: manager }));
+    const data = buildContextUsage(session, undefined, deps({ mcpEnabled: true, mcpClientManager: manager, eligibleToolNames: ['mcp__s__a'] }));
     expect(data.mcpTools).toEqual([{ name: 'mcp__s__a', serverName: 's', tokens: 2, isLoaded: true }]);
   });
 
@@ -497,6 +497,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
       { piName: 'mcp__s__deferred', serverName: 's', description: 'Beta', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
     ],
   } as unknown as McpClientManager;
+  const mcpEligible = ['mcp__s__loaded', 'mcp__s__deferred'];
 
   // ADAPTATION: `allTools` now carries both MCP tools. A descriptor absent from pi's registry was never
   // registered, and its tokens are ABSENT rather than deferred — so an empty registry here would (now
@@ -510,7 +511,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         allTools: [tool('mcp__s__loaded', 'Alpha'), tool('mcp__s__deferred', 'Beta')],
       }),
       undefined,
-      deps({ mcpEnabled: true, mcpClientManager: manager }),
+      deps({ mcpEnabled: true, mcpClientManager: manager, eligibleToolNames: mcpEligible }),
     );
 
   it('costs an MCP row by description PLUS input schema, strictly more than description alone', () => {
@@ -541,7 +542,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         allTools: [tool('mcp__s__loaded', 'Alpha')],
       }),
       undefined,
-      deps({ mcpEnabled: true, mcpClientManager: manager }),
+      deps({ mcpEnabled: true, mcpClientManager: manager, eligibleToolNames: mcpEligible }),
     );
 
     // `mcp__s__deferred` has a descriptor but no registry entry, so it is gone rather than deferred.
@@ -559,7 +560,7 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
         allTools: () => { throw new Error('registry unavailable'); },
       }),
       undefined,
-      deps({ mcpEnabled: true, mcpClientManager: manager }),
+      deps({ mcpEnabled: true, mcpClientManager: manager, eligibleToolNames: mcpEligible }),
     );
 
     expect(data.mcpTools.map((t) => t.name)).toEqual(['mcp__s__loaded', 'mcp__s__deferred']);
@@ -570,6 +571,47 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
     const deferred = data.mcpTools.find((t) => t.name === 'mcp__s__deferred')!;
     expect(categoryTokens(data, 'Tools (deferred)')).toBe(deferred.tokens);
     expect(deferred.tokens).toBeGreaterThan(0);
+  });
+
+  it('counts an Always-loaded tool as active MCP cost and gives an Off tool no row at all', () => {
+    // A direct tool is in the active set from the first turn; an Off one can never be loaded, so
+    // listing it as deferred would promise a cost that never arrives.
+    const exposed = {
+      getAllToolDescriptors: () => [
+        { piName: 'mcp__s__direct', serverName: 's', description: 'Alpha', exposure: 'direct' },
+        { piName: 'mcp__s__off', serverName: 's', description: 'Beta', exposure: 'off' },
+        { piName: 'mcp__s__deferred', serverName: 's', description: 'Gamma', exposure: 'deferred' },
+      ],
+    } as unknown as McpClientManager;
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['mcp__s__direct'],
+        allTools: [tool('mcp__s__direct', 'Alpha'), tool('mcp__s__off', 'Beta'), tool('mcp__s__deferred', 'Gamma')],
+      }),
+      undefined,
+      // The panel's eligible set never holds an Off tool (`offToolNames` joins the disabled set).
+      deps({ mcpEnabled: true, mcpClientManager: exposed, eligibleToolNames: ['mcp__s__direct', 'mcp__s__deferred'] }),
+    );
+
+    expect(data.mcpTools.map((t) => [t.name, t.isLoaded])).toEqual([['mcp__s__direct', true], ['mcp__s__deferred', false]]);
+    expect(categoryTokens(data, 'MCP tools')).toBe(data.mcpTools[0]!.tokens);
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(data.mcpTools[1]!.tokens);
+  });
+
+  it('gives a deferred tool the panel cannot load, such as one in damocles.tools.disabled, no row', () => {
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['mcp__s__loaded'],
+        allTools: [tool('mcp__s__loaded', 'Alpha'), tool('mcp__s__deferred', 'Beta')],
+      }),
+      undefined,
+      deps({ mcpEnabled: true, mcpClientManager: manager, eligibleToolNames: ['mcp__s__loaded'] }),
+    );
+
+    expect(data.mcpTools.map((t) => t.name)).toEqual(['mcp__s__loaded']);
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(0);
   });
 });
 
@@ -603,7 +645,7 @@ describe('buildContextUsage — the no-double-count invariant (§D)', () => {
       }),
       undefined,
       deps({
-        eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A, WEB_A],
+        eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A, WEB_A, 'mcp__s__on', 'mcp__s__off'],
         mcpEnabled: true,
         mcpClientManager: {
           getAllToolDescriptors: () => [
@@ -695,7 +737,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: ['mcp__s__on'] }),
       undefined,
-      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
+      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A, 'mcp__s__on', 'mcp__s__off'] }),
     );
     const on = data.mcpTools.find((t) => t.name === 'mcp__s__on')!;
     const off = data.mcpTools.find((t) => t.name === 'mcp__s__off')!;
@@ -711,7 +753,7 @@ describe('buildContextUsage — omission, not fabrication, when the tool read fa
     const data = buildContextUsage(
       fakeSession({ contextUsage: { tokens: 0 }, allTools: [], activeTools: throwing }),
       undefined,
-      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
+      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A, 'mcp__s__on', 'mcp__s__off'] }),
     );
     expect(data.mcpTools.every((t) => t.isLoaded === undefined)).toBe(true);
     expect(categoryTokens(data, 'MCP tools')).toBe(data.mcpTools.reduce((s, t) => s + t.tokens, 0));

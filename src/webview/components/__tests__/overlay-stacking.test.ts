@@ -69,9 +69,9 @@ function openToolOverlay(tool: ToolCall = TOOL_CALL, owner?: ToolResultOwner): V
 function teamAgent(): TeamAgent {
   return {
     agentId: 'agent-1', name: 'worker', role: 'specialist', specialization: 'do it', model: 'sonnet',
-    profileId: null, attempt: 0, status: 'running', startTime: 1, endTime: null, toolCount: 1, lastToolName: 'Bash',
+    profileId: null, attempt: 0, status: 'running', activeMs: 0, runningSince: 1, toolCount: 1, lastToolName: 'Bash',
     totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
-    dollarBilled: true, progressSummary: null, result: null, logFilePath: null,
+    dollarBilled: true, effort: null, progressSummary: null, result: null, logFilePath: null,
   };
 }
 

@@ -5,6 +5,7 @@ import { runPermissionGate, buildCanUseToolContext, type GatePermissionContext }
 import { POLICY_BLOCK_MARKER } from '../../../../shared/types/constants';
 import type { PermissionHandler, PermissionResult } from '../../../permission-handler';
 import { createSubagentExtensionFactory } from '../subagent-extension-factory';
+import { isPlanFilePath } from '../../../paths';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: 'tool_call', toolName, toolCallId, input } as unknown as ToolCallEvent;
@@ -13,7 +14,7 @@ function ev(toolName: string, toolCallId: string, input: Record<string, unknown>
 function makeGate(plan: boolean) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} }));
   const ctx: GatePermissionContext = {
-    permissionHandler: { canUseTool, evaluatePermission: vi.fn(async () => 'allow' as const) } as unknown as GatePermissionContext['permissionHandler'],
+    permissionHandler: { canUseTool, evaluatePermission: vi.fn(async () => 'allow' as const), matchRule: vi.fn(async () => null), isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => plan,
   };
   return { ctx, canUseTool };

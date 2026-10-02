@@ -11,8 +11,8 @@ import type {
 /** Per-million-token USD rates: input, output, cache read, cache write. */
 const MODELS = [
   { key: 'anthropic/claude-opus-5-5', label: 'Opus 5.5', share: 0.58, rates: [5, 25, 0.5, 6.25] },
-  { key: 'anthropic/claude-sonnet-5', label: 'Sonnet 5', share: 0.27, rates: [3, 15, 0.3, 3.75] },
-  { key: 'openai-codex/gpt-6-sol', label: 'GPT-6 Sol', share: 0.15, rates: [2.5, 15, 0.25, 0] },
+  { key: 'anthropic/claude-sonnet-5-5', label: 'Sonnet 5.5', share: 0.27, rates: [3, 15, 0.3, 3.75] },
+  { key: 'openai-codex/gpt-6.1-sol', label: 'GPT-6.1 Sol', share: 0.15, rates: [2.5, 15, 0.25, 0] },
 ] as const;
 
 const PROJECTS = [

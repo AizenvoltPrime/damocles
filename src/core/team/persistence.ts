@@ -200,8 +200,8 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 profileId: null,
                 attempt: 0,
                 status: 'pending',
-                startTime: null,
-                endTime: null,
+                activeMs: 0,
+                runningSince: null,
                 toolCount: 0,
                 lastToolName: null,
                 totalInputTokens: 0,
@@ -212,6 +212,7 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 // Until the agent-spawned entry names the resolved model, bill as a charge, since
                 // understating a real cost is the worse error.
                 dollarBilled: true,
+                effort: null,
                 progressSummary: null,
                 result: null,
                 logFilePath: null,
@@ -230,13 +231,11 @@ export class TeamPersistence implements TeamPersistenceWriter {
               agent.attempt = typeof entry['attempt'] === 'number' ? entry['attempt'] : 0;
               // A launch restarts the work fields, so a dead attempt's count and result never outlive it.
               agent.status = 'running';
-              agent.startTime = new Date(entry['timestamp'] as string).getTime();
-              agent.endTime = null;
               agent.toolCount = 0;
               agent.lastToolName = null;
               agent.result = null;
               agent.progressSummary = null;
-              // The spawned attempt's own file; it does not exist until the attempt's first response.
+              // The spawned attempt's own file; it does not exist until pi commits the attempt's task prompt.
               agent.logFilePath = memberFiles.get(agent.agentId)?.find((f) => f.attempt === agent.attempt)?.path ?? null;
             }
           } else if (entryType === 'agent-message') {
@@ -267,7 +266,6 @@ export class TeamPersistence implements TeamPersistenceWriter {
               ?? agents.find(a => a.agentId === entry['agentId']);
             if (agent) {
               agent.status = entry['status'] as WebviewTeamAgent['status'];
-              agent.endTime = new Date(entry['timestamp'] as string).getTime();
               agent.result = (entry['result'] as string) ?? null;
               if (typeof entry['toolCallCount'] === 'number') {
                 agent.toolCount = entry['toolCallCount'];
@@ -285,6 +283,13 @@ export class TeamPersistence implements TeamPersistenceWriter {
             status = entry['status'] as typeof status;
             result = (entry['synthesizedResult'] as string) ?? null;
             endTime = new Date(entry['timestamp'] as string).getTime();
+            // The finalize forces a member it gave up on terminal and records that only here, not in an agent-completed.
+            const agentResults = entry['agentResults'];
+            for (const recorded of Array.isArray(agentResults) ? agentResults : []) {
+              if (!isRecord(recorded) || !isString(recorded['status']) || !AGENT_STATUSES.has(recorded['status'])) continue;
+              const agent = agents.find(a => a.agentId !== '' && a.agentId === recorded['agentId']) ?? agents.find(a => a.name === recorded['name']);
+              if (agent && !TERMINAL_STATUSES.has(agent.status)) agent.status = recorded['status'] as WebviewTeamAgent['status'];
+            }
           } else if (entryType === 'team-resumed') {
             runOpen = true;
             status = 'running';
@@ -294,7 +299,6 @@ export class TeamPersistence implements TeamPersistenceWriter {
             const agent = agents.find(a => a.name === entry['name']);
             if (agent) {
               agent.status = entry['status'] as WebviewTeamAgent['status'];
-              agent.endTime = null;
               agent.progressSummary = null;
               if (typeof entry['attempt'] === 'number') agent.attempt = entry['attempt'];
               agent.logFilePath = memberFiles.get(agent.agentId)?.find((f) => f.attempt === agent.attempt)?.path ?? null;
@@ -313,10 +317,13 @@ export class TeamPersistence implements TeamPersistenceWriter {
         for (const agent of agents) {
           if (agent.status !== 'running' && agent.status !== 'standby' && agent.status !== 'awaiting-review' && agent.status !== 'monitoring') continue;
           agent.status = 'cancelled';
-          agent.endTime = lastTime;
         }
       }
 
+      for (const agent of agents) {
+        agent.effort = runLog.memberEffort(agent.agentId);
+        agent.activeMs = runLog.memberActiveMs(agent.agentId);
+      }
       const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);
 
       return {
@@ -363,6 +370,8 @@ const AGENT_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>([
   'pending', 'running', 'completed', 'failed', 'cancelled', 'awaiting-review', 'standby', 'monitoring',
 ]);
 
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>(['completed', 'failed', 'cancelled']);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -395,6 +404,22 @@ function isCheckpointMember(v: unknown): boolean {
     && isCount(v['toolCallCount']);
 }
 
+const isStamp = (v: unknown): boolean => isRecord(v) && isCount(v['attempt']) && isCount(v['round']);
+
+const isSignoff = (v: unknown): boolean => isRecord(v)
+  && (v['stamp'] === null || isStamp(v['stamp']))
+  && (v['verdict'] === 'approve' || v['verdict'] === 'changes_requested');
+
+const isDismissal = (v: unknown): boolean => isRecord(v) && isStamp(v['stamp']) && isString(v['reason']) && isString(v['why']);
+
+function isCoverage(v: unknown): boolean {
+  return isRecord(v)
+    && isPairArray(v['landed'], isStamp)
+    && isPairArray(v['signoffs'], (s) => isPairArray(s, isSignoff))
+    && isPairArray(v['dismissals'], (d) => isPairArray(d, isDismissal))
+    && isStringArray(v['reReviewOwed']);
+}
+
 export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
   if (!isRecord(value) || value['version'] !== 1 || !isString(value['teamId']) || !isCount(value['cancelledAt'])) return false;
   if (!Array.isArray(value['members']) || !value['members'].every(isCheckpointMember)) return false;
@@ -412,7 +437,8 @@ export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
     && isPairArray(review['briefConflicts'], isString)
     && isCount(review['conflictNudges'])
     && isCount(review['leadReviewStalls'])
-    && (review['lastReviewRoundNotification'] === null || isString(review['lastReviewRoundNotification']));
+    && (review['lastReviewRoundNotification'] === null || isString(review['lastReviewRoundNotification']))
+    && (review['coverage'] === undefined || isCoverage(review['coverage']));
   if (!reviewOk) return false;
   const steers = value['operatorSteers'];
   return Array.isArray(steers) && steers.every((s) => isRecord(s) && isString(s['memberName']) && isString(s['message'])
@@ -487,6 +513,10 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
         if (role !== 'lead' && role !== 'specialist') throw new TeamLogError(teamId, lineNo, '"role" is invalid');
         const kind = e['kind'];
         if (kind !== undefined && kind !== 'implementor' && kind !== 'reviewer') throw new TeamLogError(teamId, lineNo, '"kind" is invalid');
+        const reviews = e['reviews'];
+        if (reviews !== undefined && !(kind === 'reviewer' && isStringArray(reviews))) {
+          throw new TeamLogError(teamId, lineNo, '"reviews" is invalid');
+        }
         const profileId = e['profileId'];
         const name = str('name');
         lastResults.delete(name);
@@ -501,6 +531,8 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
           attempt: num('attempt'),
           timestamp: time('timestamp'),
           ...(kind ? { kind } : {}),
+          // `[]` is a declared reviewer of nobody, distinct from an absent list.
+          ...(isStringArray(reviews) ? { reviews: [...reviews] } : {}),
         });
         break;
       }
@@ -557,5 +589,5 @@ export function parseTeamEventLog(teamId: string, content: string): TeamEventLog
     }
   }
   if (!created) throw new TeamLogError(teamId, 1, 'no team-created entry');
-  return { teamId, ...created, spawns, messages, scratchpad, lastResults, finalStatus, resumedCheckpoints, runs: runLog.runs() };
+  return { teamId, ...created, spawns, messages, scratchpad, lastResults, finalStatus, resumedCheckpoints, runs: runLog.runs(), efforts: runLog.memberEfforts(), activeMs: runLog.memberActiveTimes() };
 }

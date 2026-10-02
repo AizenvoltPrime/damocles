@@ -18,8 +18,8 @@ const settingsStore = useSettingsStore();
 const {
   openaiAuthStatus,
   openaiPreferApiKey,
-  openaiCodexAuthInFlight,
-  openaiCodexAuthError,
+  openaiChatGPTAuthInFlight,
+  openaiChatGPTAuthError,
 } = storeToRefs(settingsStore);
 const { postMessage, onMessage } = usePlatformBridge();
 
@@ -30,11 +30,13 @@ const inlineMessage = ref<{ kind: "success" | "warning" | "error"; text: string 
 const pendingRequestId = ref<string | null>(null);
 
 const apiKeyConfigured = computed(() => openaiAuthStatus.value.apikey.configured);
+const chatgptSignedIn = computed(() => openaiAuthStatus.value.chatgpt.signedIn);
 const codexSignedIn = computed(() => openaiAuthStatus.value.codex.signedIn);
-const codexAccountId = computed(() => openaiAuthStatus.value.codex.accountId ?? null);
-const canTogglePreference = computed(() => apiKeyConfigured.value && codexSignedIn.value);
-const canStartCodexSignIn = computed(
-  () => !openaiCodexAuthInFlight.value && !codexSignedIn.value
+const canTogglePreference = computed(
+  () => apiKeyConfigured.value && (chatgptSignedIn.value || codexSignedIn.value)
+);
+const canStartChatGPTSignIn = computed(
+  () => !openaiChatGPTAuthInFlight.value && !chatgptSignedIn.value
 );
 
 function makeRequestId(): string {
@@ -67,13 +69,20 @@ function handlePreferenceChange(value: boolean) {
   postMessage({ type: "setOpenAIPreferApiKey", preferApiKey: value, requestId });
 }
 
-function handleCodexSignIn() {
-  if (!canStartCodexSignIn.value) return;
-  postMessage({ type: "startCodexOAuth" });
+function handleChatGPTSignIn() {
+  if (!canStartChatGPTSignIn.value) return;
+  // Set here, not only on the host's reply, so a second click before that reply sends nothing.
+  settingsStore.setChatGPTAuthInFlight(true);
+  postMessage({ type: "startChatGPTOAuth" });
+}
+
+function handleChatGPTSignOut() {
+  if (!chatgptSignedIn.value) return;
+  postMessage({ type: "signOutChatGPT" });
 }
 
 function handleCodexSignOut() {
-  if (!codexSignedIn.value) return;
+  if (!codexSignedIn.value || openaiChatGPTAuthInFlight.value) return;
   postMessage({ type: "signOutCodex" });
 }
 
@@ -138,12 +147,6 @@ const messageClass = computed(() => {
 });
 
 const preferenceTooltip = computed(() => t('openai.preferApiKey.tooltip'));
-
-const codexSignInLabel = computed(() => {
-  if (openaiCodexAuthInFlight.value) return t('openai.codexSignIn.waiting');
-  if (codexSignedIn.value) return t('openai.codexSignIn.signedIn');
-  return t('openai.codexSignIn.signInButton');
-});
 </script>
 
 <template>
@@ -151,6 +154,99 @@ const codexSignInLabel = computed(() => {
     <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
       {{ t('openai.sectionTitle') }}
     </h3>
+
+    <div class="mb-4">
+      <div class="flex items-center gap-1.5 mb-1">
+        <Label class="text-xs text-muted-foreground">{{ t('openai.chatgpt.label') }}</Label>
+        <span class="flex items-center gap-1 text-xs">
+          <IconCircleGreen
+            v-if="chatgptSignedIn"
+            :size="8"
+          />
+          <IconCircleRed
+            v-else
+            :size="8"
+          />
+          <span class="text-muted-foreground">
+            {{ chatgptSignedIn ? t('openai.chatgpt.signedIn') : t('openai.chatgpt.notSignedIn') }}
+          </span>
+        </span>
+      </div>
+
+      <div class="flex gap-2">
+        <Button
+          v-if="!chatgptSignedIn"
+          size="sm"
+          :disabled="!canStartChatGPTSignIn"
+          @click="handleChatGPTSignIn"
+        >
+          {{ openaiChatGPTAuthInFlight ? t('openai.chatgpt.waiting') : t('openai.chatgpt.signIn') }}
+        </Button>
+        <Button
+          v-else
+          variant="outline"
+          size="sm"
+          class="text-destructive border-destructive/40 hover:bg-destructive/10"
+          :aria-label="t('openai.chatgpt.signOutLabel')"
+          @click="handleChatGPTSignOut"
+        >
+          <LogOut class="h-3.5 w-3.5 mr-1.5" />
+          {{ t('openai.chatgpt.signOut') }}
+        </Button>
+      </div>
+
+      <p
+        v-if="openaiChatGPTAuthInFlight"
+        class="text-xs text-muted-foreground mt-2"
+        role="status"
+        data-testid="chatgpt-manual-hint"
+      >
+        {{ t('openai.chatgpt.manualHint') }}
+      </p>
+      <p
+        v-else-if="openaiChatGPTAuthError"
+        class="text-xs text-destructive mt-2"
+        role="alert"
+      >
+        {{ openaiChatGPTAuthError }}
+      </p>
+      <p
+        v-else-if="!chatgptSignedIn"
+        class="text-xs text-muted-foreground mt-2"
+      >
+        {{ t('openai.chatgpt.browserHint') }}
+      </p>
+    </div>
+
+    <div
+      v-if="codexSignedIn"
+      class="mb-4"
+      data-testid="legacy-codex-row"
+    >
+      <div class="flex items-center gap-1.5 mb-1">
+        <Label class="text-xs text-muted-foreground">{{ t('openai.legacyCodex.label') }}</Label>
+        <span class="flex items-center gap-1 text-xs">
+          <IconCircleGreen :size="8" />
+          <span class="text-muted-foreground">{{ t('openai.chatgpt.signedIn') }}</span>
+        </span>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        class="text-destructive border-destructive/40 hover:bg-destructive/10"
+        :aria-label="t('openai.legacyCodex.signOutLabel')"
+        :disabled="openaiChatGPTAuthInFlight"
+        @click="handleCodexSignOut"
+      >
+        <LogOut class="h-3.5 w-3.5 mr-1.5" />
+        {{ t('openai.chatgpt.signOut') }}
+      </Button>
+      <p class="text-xs text-muted-foreground mt-2">
+        {{ t('openai.legacyCodex.hint') }}
+      </p>
+    </div>
+
+    <Separator class="my-3 bg-border" />
 
     <div class="mb-4">
       <div class="flex items-center gap-1.5 mb-1">
@@ -228,63 +324,6 @@ const codexSignInLabel = computed(() => {
         class="text-xs text-muted-foreground mt-2"
       >
         {{ t('openai.apiKey.validationHint') }}
-      </p>
-    </div>
-
-    <Separator class="my-3 bg-border" />
-
-    <div class="mb-4">
-      <div class="flex items-center gap-1.5 mb-1">
-        <Label class="text-xs text-muted-foreground">{{ t('openai.codexSection.label') }}</Label>
-        <span class="flex items-center gap-1 text-xs">
-          <IconCircleGreen
-            v-if="codexSignedIn"
-            :size="8"
-          />
-          <IconCircleRed
-            v-else
-            :size="8"
-          />
-          <span class="text-muted-foreground">
-            {{ codexSignedIn
-              ? (codexAccountId ? t('openai.codexSection.signedInAs', { account: codexAccountId }) : t('openai.codexSection.signedIn'))
-              : t('openai.codexSection.notSignedIn') }}
-          </span>
-        </span>
-      </div>
-
-      <div class="flex gap-2">
-        <Button
-          v-if="!codexSignedIn"
-          size="sm"
-          :disabled="!canStartCodexSignIn"
-          @click="handleCodexSignIn"
-        >
-          {{ codexSignInLabel }}
-        </Button>
-        <Button
-          v-else
-          variant="outline"
-          size="sm"
-          class="text-destructive border-destructive/40 hover:bg-destructive/10"
-          @click="handleCodexSignOut"
-        >
-          <LogOut class="h-3.5 w-3.5 mr-1.5" />
-          {{ t('openai.codexSignIn.signOut') }}
-        </Button>
-      </div>
-
-      <p
-        v-if="openaiCodexAuthError"
-        class="text-xs text-destructive mt-2"
-      >
-        {{ openaiCodexAuthError }}
-      </p>
-      <p
-        v-else-if="!codexSignedIn"
-        class="text-xs text-muted-foreground mt-2"
-      >
-        {{ t('openai.codexSignIn.browserHint') }}
       </p>
     </div>
 

@@ -113,8 +113,9 @@ export interface AgentRecord {
   session?: AgentSession | undefined;
   abortController?: AbortController | undefined;
   promise?: Promise<string> | undefined;
-  /** Set when the result was already consumed via GetSubagentResult — suppresses re-notification. */
-  resultConsumed?: boolean | undefined;
+  /** Set by `abortAll`/`dispose`, whose kill leaves no result to deliver. Delivery itself is recorded
+   *  only on the parent branch (D in `deliveredBackgroundResults`). */
+  discarded?: boolean | undefined;
   /** Steering messages queued before the session was ready. */
   pendingSteers?: PendingSteer[] | undefined;
   /** Steering messages issued by the USER via `/steer` (not the model's SteerSubagent tool). Surfaced to
@@ -124,7 +125,7 @@ export interface AgentRecord {
   toolCallId: string;
   /** Why a `stopped` agent was stopped. */
   stopReason?: AgentStopReason | undefined;
-  /** Path of the agent's pi session file. pi creates it at the first assistant message. */
+  /** Path of the agent's pi session file. pi creates it at the first user or assistant message. */
   outputFile?: string | undefined;
   /** Set once the `damocles-agent-status` entry has been appended to the agent's session. */
   statusRecorded?: boolean | undefined;

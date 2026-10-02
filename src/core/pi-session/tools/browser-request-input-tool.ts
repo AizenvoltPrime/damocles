@@ -5,7 +5,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { BrowserAgentScope } from '../../browser';
 import type { PermissionHandler } from '../../permission-handler';
 import type { FormSchema, FormFieldSchema, FormFieldType, FormResult, FormValues } from '../../../shared/types/forms';
-import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
+import { buildCanUseToolContext, formatDenyReason, formatPolicyBlockReason } from '../permission-gate';
 import { validateForm } from '../../permission-handler/managers/form-manager';
 import { TOOL_BROWSER_REQUEST_INPUT } from '../../../shared/tool-names';
 import { log } from '../../logger';
@@ -214,7 +214,7 @@ export function createBrowserRequestInputTool(
       );
       if (result.behavior === 'deny') {
         // Mirror AskUserQuestion: a cancelled form is an error tool result so the card renders "denied".
-        throw new Error(formatDenyReason(result.message));
+        throw new Error(result.policy ? formatPolicyBlockReason(result.message) : formatDenyReason(result.message));
       }
 
       // The ONLY place user-entered values enter the tool. Read into a local const; injected below and

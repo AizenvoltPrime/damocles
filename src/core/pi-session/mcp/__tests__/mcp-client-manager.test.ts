@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { McpClientManager, isSupervised } from '../mcp-client-manager';
 import type { McpServerManager, ServerConnection, McpServerManagerOptions } from '../server-manager';
-import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition } from '../types';
+import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition, McpServerSpec } from '../types';
+import type { McpServerConfig } from '../../../../shared/types/mcp';
+import { McpServerConnectError } from '../connect-failure';
 import { authenticateMcpServer, revokeAndRemoveAuth, shutdownOAuth } from '../mcp-auth-flow';
+import { installLogSink } from '../../../logger';
+import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 
 // The reauthenticate/signOut methods call module-level fns that touch real OAuth/SecretStorage.
 // Stub those; PRESERVE the real `supportsOAuth` (pure config logic the methods branch on).
@@ -13,6 +17,13 @@ vi.mock('../mcp-auth-flow', async (orig) => ({
   authenticateMcpServer: vi.fn(async () => ({ ok: true })),
   shutdownOAuth: vi.fn(async () => {}),
 }));
+
+/** Every config as a trusted user-scope pi-format spec, the shape the host feeds a manager. */
+function specs(configs: Record<string, McpServerConfig>): Record<string, McpServerSpec> {
+  return Object.fromEntries(
+    Object.entries(configs).map(([name, config]) => [name, { config, valueFormat: 'pi', folderScoped: false, trusted: true }]),
+  );
+}
 
 /** Let the serialized op chain drain (a couple of microtask + macrotask turns settle enqueued reconnects). */
 async function flush(): Promise<void> {
@@ -97,8 +108,8 @@ describe('McpClientManager', () => {
     const { factory } = buildFake({
       git: { tools: [{ name: 'status', annotations: { readOnlyHint: true } }, { name: 'commit' }] },
     });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     const names = manager.allToolNames().sort();
@@ -122,8 +133,8 @@ describe('McpClientManager', () => {
         ],
       },
     });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ evil: { command: 'evil-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ evil: { command: 'evil-mcp' } }));
     await manager.whenReady();
 
     expect(manager.isMcpReadOnly('mcp__evil__safe')).toBe(true);
@@ -135,8 +146,8 @@ describe('McpClientManager', () => {
     const { factory } = buildFake({
       docs: { resources: [{ uri: 'file://readme', name: 'Read Me' }] },
     });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ docs: { command: 'docs-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ docs: { command: 'docs-mcp' } }));
     await manager.whenReady();
 
     expect(manager.allToolNames()).toContain('mcp__docs__get_read_me');
@@ -145,8 +156,8 @@ describe('McpClientManager', () => {
 
   it('routes a tool call to the server and forwards the abort signal + timeout', async () => {
     const { factory, fake } = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory, callTimeoutMs: 5000 });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory, callTimeoutMs: 5000 });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     const controller = new AbortController();
@@ -160,8 +171,8 @@ describe('McpClientManager', () => {
 
   it('reads a resource via resources/read and converts contents to text', async () => {
     const { factory, fake } = buildFake({ docs: { resources: [{ uri: 'file://a', name: 'A' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ docs: { command: 'docs-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ docs: { command: 'docs-mcp' } }));
     await manager.whenReady();
 
     const result = await manager.callTool('mcp__docs__get_a', {}, {});
@@ -172,10 +183,10 @@ describe('McpClientManager', () => {
 
   it('re-registers tools on a list_changed notification', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
     const changed = vi.fn();
     manager.onToolsChanged(changed);
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     const before = changed.mock.calls.length;
@@ -189,30 +200,64 @@ describe('McpClientManager', () => {
 
   it('marks a failed server failed and backs off repeat connects', async () => {
     const { factory, fake } = buildFake({ broken: { fail: true } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ broken: { command: 'nope' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ broken: { command: 'nope' } }));
     await manager.whenReady();
 
     expect(manager.getServerStatus('broken')?.status).toBe('failed');
     expect(fake.connect).toHaveBeenCalledTimes(1);
 
     // A reconcile within the 60s backoff window must not retry the failing server.
-    await manager.reconcile({ broken: { command: 'nope' } });
+    await manager.reconcile(specs({ broken: { command: 'nope' } }));
     expect(fake.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('replaces the connection of a server whose spec was edited under the same name', async () => {
+    const { factory, fake } = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
+    await manager.whenReady();
+
+    await manager.reconcile(specs({ git: { command: 'git-mcp', args: ['--repo', 'other'] } }));
+
+    expect(fake.close).toHaveBeenCalledWith('git');
+    expect(fake.connect).toHaveBeenCalledTimes(2);
+    expect((fake.connect.mock.calls[1] as unknown[] | undefined)?.[1]).toMatchObject({ config: { args: ['--repo', 'other'] } });
+    expect(manager.getServerStatus('git')?.status).toBe('connected');
+  });
+
+  it('connects a server right after its folder is trusted, inside the failure backoff', async () => {
+    const { factory, fake } = buildFake({ local: { tools: [{ name: 'go' }] } });
+    fake.connect.mockRejectedValueOnce(
+      new McpServerConnectError('MCP config env.T: commands do not run from an untrusted folder', {
+        errorInfo: { code: 'commandUntrusted', params: { field: 'env.T' } },
+      }),
+    );
+    const untrusted: McpServerSpec = { config: { command: 'local-mcp', env: { T: '!pass show t' } }, valueFormat: 'pi', folderScoped: true, trusted: false };
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize({ local: untrusted });
+    await manager.whenReady();
+    expect(manager.getServerStatus('local')).toMatchObject({ status: 'failed', errorInfo: { code: 'commandUntrusted' } });
+
+    await manager.reconcile({ local: { ...untrusted, trusted: true } });
+
+    expect(fake.connect).toHaveBeenCalledTimes(2);
+    expect(manager.getServerStatus('local')?.status).toBe('connected');
+    expect(manager.getServerStatus('local')?.errorInfo).toBeUndefined();
   });
 
   it('reports needs-auth for a server that returns the needs-auth status', async () => {
     const { factory } = buildFake({ remote: { needsAuth: true } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ remote: { url: 'https://x', type: 'http' } }));
     await manager.whenReady();
     expect(manager.getServerStatus('remote')?.status).toBe('needs-auth');
   });
 
   it('does not connect lazy servers eagerly but still lists cached-less tools as empty', async () => {
     const { factory, fake } = buildFake({ lazy: { tools: [{ name: 'x' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } }));
     await manager.whenReady();
     expect(fake.connect).not.toHaveBeenCalled();
     expect(manager.getServerStatus('lazy')?.status).toBe('idle');
@@ -226,8 +271,8 @@ describe('McpClientManager', () => {
       await fakes.getElicitation()?.({ message: 'hi', requestedSchema: { properties: {} } }, 'git');
       return { content: [{ type: 'text', text: 'ok' }], isError: false };
     });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     await manager.callTool('mcp__git__status', {}, { elicitationUi: ui });
@@ -236,8 +281,8 @@ describe('McpClientManager', () => {
 
   it('declines an elicitation that arrives outside any active tool call (H2)', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     const result = await fakes.getElicitation()?.({ message: 'hi', requestedSchema: { properties: {} } }, 'git');
@@ -246,25 +291,25 @@ describe('McpClientManager', () => {
 
   it('skips a redundant reconcile when the enabled set is unchanged (M8)', async () => {
     const { factory, fake } = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     expect(fake.connect).toHaveBeenCalledTimes(1);
 
     // Same set fed again (e.g. a second panel's feed) must not re-run doReconcile.
-    await manager.reconcile({ git: { command: 'git-mcp' } });
+    await manager.reconcile(specs({ git: { command: 'git-mcp' } }));
     expect(fake.connect).toHaveBeenCalledTimes(1);
     expect(fake.close).not.toHaveBeenCalled();
 
     // A genuinely changed set still reconciles.
-    await manager.reconcile({ git: { command: 'git-mcp' }, docs: { command: 'docs-mcp' } });
+    await manager.reconcile(specs({ git: { command: 'git-mcp' }, docs: { command: 'docs-mcp' } }));
     expect(fake.connect.mock.calls.length).toBeGreaterThan(1);
   });
 
   it('auto-reconnects a default/eager server that dropped its connection (self-heal)', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     expect(fakes.fake.connect).toHaveBeenCalledTimes(1);
     expect(manager.getServerStatus('git')?.status).toBe('connected');
@@ -281,8 +326,8 @@ describe('McpClientManager', () => {
 
   it('does not auto-reconnect a lazy server that dropped (it reconnects on next use)', async () => {
     const fakes = buildFake({ lazy: { tools: [{ name: 'x' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } }));
     await manager.whenReady();
     // Lazy never eager-connects, so force a live connection first (as a tool call would).
     fakes.connections.set('lazy', { status: 'connected', tools: [], resources: [] } as unknown as ServerConnection);
@@ -297,8 +342,8 @@ describe('McpClientManager', () => {
 
   it('throttles a crash loop: a re-drop within the backoff window is not immediately respawned (H1)', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     expect(fakes.fake.connect).toHaveBeenCalledTimes(1); // initial eager connect
 
@@ -318,8 +363,8 @@ describe('McpClientManager', () => {
 
   it('does not resurrect a server removed by a reconcile before the queued reconnect runs (H2)', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     const connectsBefore = fakes.fake.connect.mock.calls.length;
 
@@ -327,7 +372,7 @@ describe('McpClientManager', () => {
     // still contains git), THEN fire the drop so the reconnect enqueues behind the removal. The op chain
     // runs [doReconcile, reconnect]: removal closes+drops git, then the reconnect re-reads `servers`,
     // finds git gone, and skips — proving the inside-closure re-validation prevents an orphan child.
-    const reconcilePromise = manager.reconcile({});
+    const reconcilePromise = manager.reconcile(specs({}));
     fakes.fireConnectionLost('git');
     await reconcilePromise;
     await flush();
@@ -341,11 +386,11 @@ describe('McpClientManager', () => {
       remote: { tools: [{ name: 'ping' }] },
       git: { tools: [{ name: 'status' }] },
     });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({
       remote: { url: 'https://x', type: 'http' },
       git: { command: 'git-mcp' },
-    });
+    }));
     await manager.whenReady();
 
     // getServerStatuses stays synchronous — assert the array directly (no Promise).
@@ -361,8 +406,8 @@ describe('McpClientManager', () => {
     vi.mocked(revokeAndRemoveAuth).mockClear();
     vi.mocked(authenticateMcpServer).mockClear();
     const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ remote: { url: 'https://x', type: 'http' } }));
     await manager.whenReady();
     expect(manager.getServerStatus('remote')?.status).toBe('connected');
     expect(manager.allToolNames()).toContain('mcp__remote__ping');
@@ -381,8 +426,8 @@ describe('McpClientManager', () => {
     vi.mocked(revokeAndRemoveAuth).mockClear();
     vi.mocked(authenticateMcpServer).mockClear();
     const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ remote: { url: 'https://x', type: 'http' } }));
     await manager.whenReady();
     expect(manager.getServerStatus('remote')?.status).toBe('connected');
 
@@ -401,8 +446,8 @@ describe('McpClientManager', () => {
     vi.mocked(revokeAndRemoveAuth).mockClear();
     vi.mocked(authenticateMcpServer).mockClear();
     const { factory } = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
 
     const result = await manager.reauthenticate('git');
@@ -414,8 +459,8 @@ describe('McpClientManager', () => {
 
   it('signOut on a non-OAuth server no-ops without revoking creds and stays connected (N1)', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     expect(manager.getServerStatus('git')?.status).toBe('connected');
     vi.mocked(revokeAndRemoveAuth).mockClear();
@@ -432,8 +477,8 @@ describe('McpClientManager', () => {
     vi.mocked(authenticateMcpServer).mockClear();
     vi.mocked(authenticateMcpServer).mockResolvedValueOnce({ ok: false, error: 'denied' });
     const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ remote: { url: 'https://x', type: 'http' } }));
     await manager.whenReady();
     expect(manager.getServerStatus('remote')?.status).toBe('connected');
 
@@ -446,10 +491,51 @@ describe('McpClientManager', () => {
     expect(manager.getServerStatus('remote')?.status).not.toBe('connected');
   });
 
+  it('logs a failed reconnect by message only, never the stderr tail', async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => lines.push(line), show: () => {}, dispose: () => {} });
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
+    await manager.whenReady();
+    const failure = () => new McpServerConnectError('git-mcp exited with code 3', { stderrTail: 'token=SECRET-TAIL' });
+
+    fakes.fake.connect.mockRejectedValueOnce(failure());
+    await manager.reconnectLive('git');
+    fakes.fake.connect.mockRejectedValueOnce(failure());
+    fakes.fireConnectionLost('git');
+    await flush();
+
+    expect(lines.filter((line) => line.includes('git-mcp exited with code 3'))).toHaveLength(2);
+    expect(lines.join('\n')).not.toContain('SECRET-TAIL');
+  });
+
+  it('logs an HTTP connect failure by its status on every path, never the response body', async () => {
+    const lines: string[] = [];
+    installLogSink({ appendLine: (line) => lines.push(line), show: () => {}, dispose: () => {} });
+    const fakes = buildFake({ remote: { tools: [{ name: 'q' }] } });
+    // As McpServerManager builds it from pi-mcp's McpHttpError, whose message quotes the response body.
+    const failure = () =>
+      new McpServerConnectError('MCP HTTP request failed with status 502: upstream said api_key=BODY-SECRET', { logText: 'McpHttpError: HTTP status 502' });
+    fakes.fake.connect.mockRejectedValueOnce(failure());
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    await manager.reconcile(specs({ remote: { type: 'http', url: 'https://x.test/mcp' } }));
+    fakes.fake.connect.mockRejectedValueOnce(failure());
+    await manager.reconnectLive('remote');
+    await manager.reconnectLive('remote');
+    fakes.fake.connect.mockRejectedValueOnce(failure());
+    fakes.fireConnectionLost('remote');
+    await flush();
+
+    expect(lines.filter((line) => line.includes('McpHttpError: HTTP status 502'))).toHaveLength(3);
+    expect(lines.join('\n')).not.toContain('BODY-SECRET');
+    expect(manager.getServerStatus('remote')?.error).toContain('BODY-SECRET');
+  });
+
   it('does not reconnect after dispose() even if a drop was already queued', async () => {
     const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
-    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
-    manager.initialize({ git: { command: 'git-mcp' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    manager.initialize(specs({ git: { command: 'git-mcp' } }));
     await manager.whenReady();
     const connectsBefore = fakes.fake.connect.mock.calls.length;
 
@@ -462,41 +548,215 @@ describe('McpClientManager', () => {
   });
 });
 
-describe('McpClientManager reserved prefixes', () => {
-  it('names its tools around the prefixes the provider reserves', async () => {
-    const { factory } = buildFake({ 'my-server': { tools: [{ name: 'go' }] } });
-    manager = new McpClientManager({ serverManagerFactory: factory, reservedPrefixes: () => new Set(['my_server']) });
-    await manager.reconcile({ 'my-server': { command: 'x' } });
+describe('McpClientManager tool names (pi createMcpToolName)', () => {
+  it('gives tools with characters outside [A-Za-z0-9_] pi-style names and keeps the raw name on the descriptor', async () => {
+    const { factory, fake } = buildFake({ context7: { tools: [{ name: 'resolve-library-id' }, { name: 'get_docs' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ context7: { command: 'x' } }));
 
-    expect(manager.allToolNames()).toEqual(['mcp__my_server_2__go']);
-    expect(manager.serverPrefix('my-server')).toBe('my_server_2');
-    expect(manager.serverPrefix('absent')).toBeUndefined();
+    expect(manager.allToolNames().sort()).toEqual(['mcp__context7__get_docs', 'mcp__context7__resolve_library_id']);
+    expect(manager.getToolDescriptor('mcp__context7__resolve_library_id')).toMatchObject({
+      serverName: 'context7',
+      rawToolName: 'resolve-library-id',
+      kind: 'tool',
+    });
+    await manager.callTool('mcp__context7__resolve_library_id', {}, {});
+    expect(fake.callTool).toHaveBeenCalledWith('context7', 'resolve-library-id', {}, expect.anything());
   });
 
-  it('refreshReservedPrefixes renames and emits only when a prefix moves', async () => {
+  it('suffixes both tools of a server whose names collide after sanitizing', async () => {
+    const { factory } = buildFake({ docs: { tools: [{ name: 'a-b' }, { name: 'a_b' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ docs: { command: 'x' } }));
+    expect(manager.allToolNames().sort()).toEqual(['mcp__docs__a_b_4f33a9a2', 'mcp__docs__a_b_63617bb9']);
+  });
+
+  it('names resource tools with the same rule and the server name as written', async () => {
+    const { factory } = buildFake({ 'my-docs': { resources: [{ uri: 'file://readme', name: 'Read Me' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ 'my-docs': { command: 'x' } }));
+    expect(manager.getToolDescriptor('mcp__my_docs__get_read_me')).toMatchObject({ serverName: 'my-docs', kind: 'resource' });
+  });
+
+  it('suffixes a name another manager already holds', async () => {
+    const { factory } = buildFake({ 'my-server': { tools: [{ name: 'go' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory, reservedToolNames: () => new Set(['mcp__my_server__go']) });
+    await manager.reconcile(specs({ 'my-server': { command: 'x' } }));
+    expect(manager.allToolNames()).toEqual([expect.stringMatching(/^mcp__my_server__go_[0-9a-f]{8}$/)]);
+  });
+
+  it('refreshReservedToolNames renames and emits only when a name moves, keeping the connection', async () => {
     const { factory, fake } = buildFake({ 'my-server': { tools: [{ name: 'go' }] } });
     let reserved = new Set<string>();
-    manager = new McpClientManager({ serverManagerFactory: factory, reservedPrefixes: () => reserved });
-    await manager.reconcile({ 'my-server': { command: 'x' } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory, reservedToolNames: () => reserved });
+    await manager.reconcile(specs({ 'my-server': { command: 'x' } }));
     const changed = vi.fn();
     manager.onToolsChanged(changed);
 
-    manager.refreshReservedPrefixes();
+    expect(manager.refreshReservedToolNames()).toBe(false);
     expect(changed).not.toHaveBeenCalled();
 
-    reserved = new Set(['my_server']);
-    manager.refreshReservedPrefixes();
+    reserved = new Set(['mcp__my_server__go']);
+    expect(manager.refreshReservedToolNames()).toBe(true);
     expect(changed).toHaveBeenCalledTimes(1);
-    expect(manager.allToolNames()).toEqual(['mcp__my_server_2__go']);
-    // A rename is a naming change only; the live connection stays.
+    expect(manager.allToolNames()).not.toContain('mcp__my_server__go');
     expect(fake.connect).toHaveBeenCalledTimes(1);
     expect(fake.close).not.toHaveBeenCalled();
   });
 
+  it('lists every known tool under both names for the rule migration', async () => {
+    const { factory } = buildFake({ context7: { tools: [{ name: 'resolve-library-id' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ context7: { command: 'x' } }));
+    expect(manager.toolNameEntries()).toEqual([
+      { serverName: 'context7', rawToolName: 'resolve-library-id', piName: 'mcp__context7__resolve_library_id' },
+    ]);
+  });
+});
+
+describe('McpClientManager status rows', () => {
+  it('uses the config description as the server line, sanitized and capped at 120 characters', async () => {
+    const { factory } = buildFake({ docs: { tools: [{ name: 'q' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ docs: { command: 'x', description: `Docs\u0007 ${'d'.repeat(200)}` } }));
+
+    const description = manager.getServerStatus('docs')?.description ?? '';
+    expect(description.length).toBeLessThanOrEqual(120);
+    expect([...description].every((char) => char.charCodeAt(0) >= 0x20)).toBe(true);
+    expect(manager.getToolDescriptor('mcp__docs__q')?.serverDescription).toBe(description);
+  });
+
+  it('cuts a long description on a character boundary and drops bidi controls', async () => {
+    const { factory } = buildFake({ astral: { tools: [] }, bidi: { tools: [] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(
+      specs({
+        astral: { command: 'x', description: `${'a'.repeat(116)}\u{1F600}${'b'.repeat(20)}` },
+        bidi: { command: 'y', description: 'report\u202Efdp.exe' },
+      }),
+    );
+
+    expect(manager.getServerStatus('astral')?.description).toBe(`${'a'.repeat(116)}\u{1F600}...`);
+    expect(manager.getServerStatus('bidi')?.description).toBe('reportfdp.exe');
+  });
+
+  it('falls back to the first non-blank line of the server instructions', async () => {
+    const fakes = buildFake({ docs: { tools: [{ name: 'q' }] } });
+    fakes.fake.connect.mockImplementationOnce(async (name: string) => {
+      const conn = { tools: [{ name: 'q' }], resources: [], status: 'connected', instructions: '\n  Search the handbook.\nMore.', inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      fakes.connections.set(name, conn);
+      return conn;
+    });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    await manager.reconcile(specs({ docs: { command: 'x' } }));
+    expect(manager.getServerStatus('docs')?.description).toBe('Search the handbook.');
+  });
+
+  it('carries a connect failure’s errorInfo and stderr tail to the failed row', async () => {
+    const fakes = buildFake({});
+    fakes.fake.connect.mockRejectedValueOnce(
+      new McpServerConnectError('MCP config env.KEY: environment variable KEY is not set', {
+        errorInfo: { code: 'missingVariable', params: { variable: 'KEY', field: 'env.KEY' } },
+        stderrTail: 'boom',
+      }),
+    );
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    await manager.reconcile(specs({ broken: { command: 'x' } }));
+
+    expect(manager.getServerStatus('broken')).toMatchObject({
+      status: 'failed',
+      error: 'MCP config env.KEY: environment variable KEY is not set',
+      errorInfo: { code: 'missingVariable', params: { variable: 'KEY', field: 'env.KEY' } },
+      stderrTail: 'boom',
+    });
+  });
+
+  it('shows a step-up challenge as needs-auth with insufficientScope', async () => {
+    const fakes = buildFake({});
+    fakes.fake.connect.mockImplementationOnce(async (name: string) => {
+      const conn = { tools: [], resources: [], status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      fakes.connections.set(name, conn);
+      return conn;
+    });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    await manager.reconcile(specs({ remote: { type: 'http', url: 'https://x.test/mcp' } }));
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'needs-auth', errorInfo: { code: 'insufficientScope' } });
+  });
+
+  it('shows the step-up hint of a needs-auth result even after an earlier failure', async () => {
+    const fakes = buildFake({ remote: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory });
+    await manager.reconcile(specs({ remote: { type: 'http', url: 'https://x.test/mcp' } }));
+    fakes.fake.connect.mockRejectedValueOnce(new McpServerConnectError('fetch failed'));
+    fakes.fireConnectionLost('remote');
+    await flush();
+    expect(manager.getServerStatus('remote')).toMatchObject({ status: 'failed', error: 'fetch failed' });
+    fakes.fake.connect.mockImplementationOnce(async (name: string) => {
+      const conn = { tools: [], resources: [], status: 'needs-auth', errorInfo: { code: 'insufficientScope' }, inFlight: 0, lastUsedAt: 0 } as unknown as ServerConnection;
+      fakes.connections.set(name, conn);
+      return conn;
+    });
+
+    await manager.callTool('mcp__remote__status', {}, {});
+
+    const status = manager.getServerStatus('remote');
+    expect(status).toMatchObject({ status: 'needs-auth', errorInfo: { code: 'insufficientScope' } });
+    expect(status?.error).toBeUndefined();
+  });
+
+  it('applies the configured timeout in seconds to calls', async () => {
+    const { factory, fake } = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({ git: { command: 'x', timeout: 7 } }));
+    await manager.callTool('mcp__git__status', {}, {});
+    expect(fake.callTool).toHaveBeenCalledWith('git', 'status', {}, { timeoutMs: 7000 });
+  });
+});
+
+describe('McpClientManager connecting state', () => {
+  it('shows every server failed, not connecting, when pi-mcp cannot load', async () => {
+    vi.resetModules();
+    vi.doMock('../mcp-client-loader', () => ({ loadMcpClient: async () => null }));
+    try {
+      (await import('../../../platform-host')).installPlatform(createFakePlatform());
+      const { McpClientManager: Isolated } = await import('../mcp-client-manager');
+      const isolated = new Isolated({ clientVersion: 'test' });
+      isolated.initialize(specs({ ctx: { command: 'ctx-mcp', exposure: 'direct' } }));
+      await isolated.whenReady();
+
+      expect(isolated.getServerStatus('ctx')).toMatchObject({
+        status: 'failed',
+        error: 'The MCP client library failed to load, so no MCP server can connect.',
+      });
+      expect(isolated.connectingServerNames()).toEqual([]);
+      expect(isolated.pendingDirectServers()).toEqual([]);
+      await isolated.dispose();
+    } finally {
+      vi.doUnmock('../mcp-client-loader');
+      vi.resetModules();
+    }
+  });
+
+  it('shows a server shut down for idleness as idle, not connecting', async () => {
+    const fakes = buildFake({ docs: { tools: [{ name: 'q' }] } });
+    fakes.fake.isIdle = () => true;
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: fakes.factory, healthCheckMs: 10 });
+    await manager.reconcile(specs({ docs: { command: 'x', idleTimeout: 1, exposure: 'direct' } }));
+    expect(manager.getServerStatus('docs')?.status).toBe('connected');
+
+    await vi.waitFor(() => expect(fakes.fake.close).toHaveBeenCalledWith('docs'));
+
+    expect(manager.getServerStatus('docs')?.status).toBe('idle');
+    expect(manager.connectingServerNames()).toEqual([]);
+    expect(manager.pendingDirectServers()).toEqual([]);
+  });
+});
+
+describe('McpClientManager lifetime', () => {
   it('dispose leaves process-global OAuth state to its owner, since other managers may still use it', async () => {
     const { factory } = buildFake({});
-    manager = new McpClientManager({ serverManagerFactory: factory });
-    await manager.reconcile({});
+    manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: factory });
+    await manager.reconcile(specs({}));
     await manager.dispose();
     manager = undefined;
 

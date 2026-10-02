@@ -1,8 +1,10 @@
-// Ported from pi-coding-agent `dist/core/cache-stats.js` @0.87.0 — not exported upstream; keep in sync
-// on pi upgrades. Damocles ports ONLY the live-notice detection path (detectCacheMiss + its helpers).
-// One intentional divergence a re-sync must preserve: the `context_edit` baseline reset below, which
-// upstream has no counterpart for (`dist/core/cache-stats.js:59` resets on compaction/branch_summary
-// only). Without it every prune raises a false "unexplained cache miss" notice.
+// Ported from pi-coding-agent `dist/core/cache-stats.js` @0.99.2, which does not export it; keep in sync
+// on pi upgrades. Damocles ports only the live-notice path: `detectMiss`, `asPreviousRequest` and the
+// baseline walk of `scan` (compaction/branch_summary reset, `cache_warm` usage entry as the new
+// baseline, assistant message as the new baseline). Two intentional divergences a re-sync must keep:
+// a `context_edit` entry also resets the baseline (upstream resets on compaction/branch_summary only;
+// without it every prune raises a false "unexplained cache miss" notice), and `reportedCache` stays
+// sticky across that reset, because whether a provider reports caching is not a prefix fact.
 // pi's collectCacheMisses/computeCacheWaste (resume re-derivation, cumulative-waste totals) are
 // deliberately NOT ported: Damocles cache-miss notices are ephemeral (live-run only), so there is no
 // resume rebuild or /waste consumer to serve. Re-port them from pi if that changes.
@@ -112,7 +114,8 @@ function asPreviousRequest(message: AssistantMessage, reportedCache: boolean): P
  * baseline the next turn's prompt should have been cached against. Baseline resets on
  * compaction/branch_summary (the following prompt is new content, not re-billed content) and on
  * context_edit, which rewrites the prefix from the edited entry onward; a model switch is NOT exempt
- * (it re-bills the full prompt and should be counted).
+ * (it re-bills the full prompt and should be counted). A `cache_warm` usage entry refreshed the cache,
+ * so it becomes the baseline the way an assistant message does.
  */
 function lastRequestBefore(entries: SessionEntry[]): PreviousRequest | undefined {
 	let prev: PreviousRequest | undefined;
@@ -128,6 +131,19 @@ function lastRequestBefore(entries: SessionEntry[]): PreviousRequest | undefined
 		}
 		if (entry.type === 'context_edit') {
 			prev = undefined;
+			continue;
+		}
+		if (entry.type === 'usage' && entry.kind === 'cache_warm') {
+			const promptTokens = entry.usage.input + entry.usage.cacheRead + entry.usage.cacheWrite;
+			if (promptTokens > 0) {
+				prev = {
+					promptTokens,
+					modelKey: `${entry.provider}/${entry.model}`,
+					timestamp: Date.parse(entry.timestamp),
+					reportedCache: true,
+				};
+				reportedCache = true;
+			}
 			continue;
 		}
 		if (entry.type === 'message' && entry.message.role === 'assistant') {

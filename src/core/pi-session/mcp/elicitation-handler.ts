@@ -3,9 +3,9 @@
  * See THIRD-PARTY-NOTICES.md.
  */
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { ElicitRequestFormParams } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "../../logger";
 import type { McpElicitationHandler } from "./types";
+import { flattenServerText } from "./utils";
 
 /** The narrow UI surface the form renderer needs from the webview-bridged `ExtensionUIContext`. */
 export type ElicitationUI = Pick<ExtensionUIContext, "select" | "input" | "notify"> & {
@@ -18,8 +18,31 @@ export type ElicitationUI = Pick<ExtensionUIContext, "select" | "input" | "notif
   unattributed?: () => ElicitationUI;
 };
 
-type FormSchema = ElicitRequestFormParams["requestedSchema"];
-type FormProperty = FormSchema["properties"][string];
+interface FieldText {
+  title?: string;
+  description?: string;
+}
+
+/** The MCP elicitation form field shapes (a restricted subset of JSON Schema, top-level only). */
+type FormProperty =
+  | (FieldText & { type: "boolean"; default?: boolean })
+  | (FieldText & { type: "string"; minLength?: number; maxLength?: number; format?: "email" | "uri" | "date" | "date-time"; default?: string })
+  | (FieldText & { type: "number" | "integer"; minimum?: number; maximum?: number; default?: number })
+  | (FieldText & { type: "string"; enum: string[]; enumNames?: string[]; default?: string })
+  | (FieldText & { type: "string"; oneOf: Array<{ const: string; title?: string }>; default?: string })
+  | (FieldText & {
+      type: "array";
+      minItems?: number;
+      maxItems?: number;
+      items: { type: "string"; enum: string[] } | { anyOf: Array<{ const: string; title?: string }> };
+      default?: string[];
+    });
+
+interface FormSchema {
+  type: "object";
+  properties: Record<string, FormProperty>;
+  required?: string[];
+}
 type FieldValue = string | number | boolean | string[] | undefined;
 type ElicitationContent = Record<string, string | number | boolean | string[]>;
 type ElicitationResult = { action: "accept" | "decline" | "cancel"; content?: ElicitationContent };
@@ -60,13 +83,62 @@ function parseFormRequest(params: unknown): ParsedFormRequest | null {
   if (typeof requestedSchema !== "object" || requestedSchema === null) return null;
   const schemaRecord = requestedSchema as Record<string, unknown>;
   const properties = schemaRecord["properties"];
-  if (typeof properties !== "object" || properties === null) return null;
+  if (typeof properties !== "object" || properties === null || Array.isArray(properties)) return null;
+  if (!Object.values(properties).every(isFormProperty)) return null;
+  const required = schemaRecord["required"];
+  if (required !== undefined && !isStringArray(required)) return null;
 
   return { message: record["message"], schema: requestedSchema as FormSchema };
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isTitledOptions(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((option) => {
+      if (typeof option !== "object" || option === null) return false;
+      const record = option as Record<string, unknown>;
+      return typeof record["const"] === "string" && isOptionalString(record["title"]);
+    })
+  );
+}
+
+/** A field this form renderer understands: the wire input is a server's, so its shape is checked before use. */
+function isFormProperty(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const property = value as Record<string, unknown>;
+  if (!isOptionalString(property["title"]) || !isOptionalString(property["description"])) return false;
+  switch (property["type"]) {
+    case "boolean":
+    case "number":
+    case "integer":
+      return true;
+    case "string":
+      if ("enum" in property) {
+        return isStringArray(property["enum"]) && (property["enumNames"] === undefined || isStringArray(property["enumNames"]));
+      }
+      if ("oneOf" in property) return isTitledOptions(property["oneOf"]);
+      return true;
+    case "array": {
+      const items = property["items"];
+      if (typeof items !== "object" || items === null) return false;
+      const itemRecord = items as Record<string, unknown>;
+      return "enum" in itemRecord ? isStringArray(itemRecord["enum"]) : isTitledOptions(itemRecord["anyOf"]);
+    }
+    default:
+      return false;
+  }
+}
+
 async function runForm(ui: ElicitationUI, serverName: string, request: ParsedFormRequest): Promise<ElicitationResult> {
-  const decision = await ui.select(`MCP Input Request\nServer: ${serverName}\n\n${sanitizeServerText(request.message)}`, ["Continue", "Decline"]);
+  const decision = await ui.select(`MCP Input Request\nServer: ${serverName}\n\n${flattenServerText(request.message, MAX_SERVER_MESSAGE_LENGTH)}`, ["Continue", "Decline"]);
   if (decision === undefined) return { action: "cancel" };
   if (decision === "Decline") return { action: "decline" };
 
@@ -163,6 +235,12 @@ async function collectField(ui: ElicitationUI, property: FormProperty, name: str
     return collectEnum(ui, property.enum, names, defaultOf(property), title, required, hasDefault);
   }
 
+  if (property.type === "string" && "oneOf" in property) {
+    const values = property.oneOf.map((option) => option.const);
+    const names = property.oneOf.map((option) => option.title);
+    return collectEnum(ui, values, names, defaultOf(property), title, required, hasDefault);
+  }
+
   if (property.type === "boolean") {
     const actions = ["Yes", "No"];
     if (hasDefault) actions.push("Use default");
@@ -192,7 +270,7 @@ async function collectField(ui: ElicitationUI, property: FormProperty, name: str
 async function collectEnum(
   ui: ElicitationUI,
   values: string[],
-  names: string[] | undefined,
+  names: Array<string | undefined> | undefined,
   defaultValue: FieldValue,
   title: string,
   required: boolean,
@@ -353,6 +431,9 @@ function coerceString(property: Extract<FormProperty, { type: "string" }>, name:
   if ("enum" in property && !property.enum.includes(stringValue)) {
     throw new Error(`Elicitation field ${name} is not an allowed value`);
   }
+  if ("oneOf" in property && !property.oneOf.some((option) => option.const === stringValue)) {
+    throw new Error(`Elicitation field ${name} is not an allowed value`);
+  }
   return stringValue;
 }
 
@@ -437,17 +518,6 @@ function messageOf(error: unknown): string {
 
 const MAX_SERVER_MESSAGE_LENGTH = 500;
 
-/**
- * Flatten a server-supplied string to a single capped line before it is shown next to the trusted
- * "Server:" attribution. The whitespace class collapses every newline/separator (LF, CR, and the
- * Unicode line/paragraph separators) so a malicious server cannot inject a forged attribution line,
- * and the length cap bounds UI-flooding (L11).
- */
-function sanitizeServerText(text: string, maxLength = MAX_SERVER_MESSAGE_LENGTH): string {
-  const flattened = text.replace(/\s+/g, " ").trim();
-  return flattened.length > maxLength ? `${flattened.slice(0, maxLength)}...` : flattened;
-}
-
 const MAX_FIELD_LABEL_LENGTH = 200;
 
 /**
@@ -456,5 +526,5 @@ const MAX_FIELD_LABEL_LENGTH = 200;
  * dialog must pass through here so a malicious server cannot inject a newline to forge attribution (L1).
  */
 function labelText(text: string): string {
-  return sanitizeServerText(text, MAX_FIELD_LABEL_LENGTH);
+  return flattenServerText(text, MAX_FIELD_LABEL_LENGTH);
 }

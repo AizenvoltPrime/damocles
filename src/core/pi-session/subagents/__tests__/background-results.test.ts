@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { backgroundResultsDetails, formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../background-results';
+import { backgroundResultsDetails, formatBackgroundResults, formatUndeliveredResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../background-results';
 import type { AgentRecord } from '../types';
 import { emptyAgentUsage } from '../../../../shared/usage-accounting';
 
@@ -59,6 +59,27 @@ describe('formatBackgroundResults', () => {
 
   it('exports a stable custom-message type', () => {
     expect(SUBAGENT_RESULTS_CUSTOM_TYPE).toBe('damocles-subagent-results');
+  });
+});
+
+describe('formatUndeliveredResults', () => {
+  it('tells the model the results come from an earlier turn, in the keep-alive block format', () => {
+    const out = formatUndeliveredResults([
+      { type: 'Explore', description: 'vehicles', result: 'found A, B\n' },
+      { type: 'Plan', description: 'personnel', result: '' },
+    ]);
+    expect(out).toBe(
+      'These background subagents finished during an earlier turn that ended before their results reached you. ' +
+        'Take them into account for the user message that follows.\n\n' +
+        '## Explore — vehicles\nfound A, B\n\n## Plan — personnel\n(no output)',
+    );
+  });
+
+  it('uses singular phrasing for one agent', () => {
+    expect(formatUndeliveredResults([{ type: 'Explore', description: 'd', result: 'r' }])).toBe(
+      'This background subagent finished during an earlier turn that ended before its result reached you. ' +
+        'Take it into account for the user message that follows.\n\n## Explore — d\nr',
+    );
   });
 });
 

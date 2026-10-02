@@ -202,7 +202,7 @@ export function createDamoclesExtensionFactory(
       // kind dispatches here, so a missing entry is an absent approval authority, not an ungated kind.
       if (!panel) {
         log('[DamoclesExtension] no panel registered for session %s; %s takes the fail-closed fallback', sessionId, event.toolName);
-        return gateErrorFallback(event.toolName);
+        return gateErrorFallback();
       }
       const preToolUse =
         hookDispatch && hookDispatch.config.hasEntries('tool_call')
@@ -212,7 +212,7 @@ export function createDamoclesExtensionFactory(
         return await runPermissionGate(event, panel, ctx.signal, null, preToolUse);
       } catch (err) {
         log('[DamoclesExtension] permission gate threw for %s: %O', event.toolName, err);
-        return gateErrorFallback(event.toolName);
+        return gateErrorFallback();
       }
     });
 
@@ -220,6 +220,12 @@ export function createDamoclesExtensionFactory(
       const sessionId = ctx.sessionManager.getSessionId();
       const panel = registry.get(sessionId);
       if (!panel) return undefined;
+      // Before the prompt is built, so Always-loaded MCP tools that connect in time are in its first request.
+      try {
+        await panel.waitForAlwaysLoadedMcp?.(sessionId);
+      } catch (err) {
+        log('[DamoclesExtension] Always-loaded MCP wait failed; building the prompt without it: %O', err);
+      }
       try {
         // Every holder of a deleted session unregisters before the delete.
         return await buildAgentStartResult(event, panel, sessionId, ctx.sessionManager, () => registry.get(sessionId) !== undefined);

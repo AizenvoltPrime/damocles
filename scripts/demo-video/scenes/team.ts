@@ -8,8 +8,8 @@ const RESUME = 'toolu_resume_team';
 const TITLE = 'Redis session store';
 const MEMBERS: MemberSpec[] = [
   { agentId: 'c1d2e3f4-0a1b-4c2d-9e3f-5a6b7c8d9e0f', name: 'Lead', role: 'lead', model: 'claude-opus-5-5' },
-  { agentId: 'd2e3f4a5-1b2c-4d3e-8f4a-6b7c8d9e0f1a', name: 'Implementor', role: 'specialist', model: 'claude-sonnet-5' },
-  { agentId: 'e3f4a5b6-2c3d-4e4f-9a5b-7c8d9e0f1a2b', name: 'Reviewer', role: 'specialist', model: 'gpt-6-sol' },
+  { agentId: 'd2e3f4a5-1b2c-4d3e-8f4a-6b7c8d9e0f1a', name: 'Implementor', role: 'specialist', model: 'claude-sonnet-5-5' },
+  { agentId: 'e3f4a5b6-2c3d-4e4f-9a5b-7c8d9e0f1a2b', name: 'Reviewer', role: 'specialist', model: 'gpt-6.1-sol' },
 ];
 const INPUT = {
   title: TITLE,

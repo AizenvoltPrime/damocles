@@ -9,6 +9,7 @@ import {
   createKeyValueRow,
   formStateFromConfig,
   isMcpFormValid,
+  mcpToolPrefixCollision,
   submittedServerName,
   validateMcpServerForm,
   type McpServerFormState,
@@ -386,8 +387,8 @@ describe('buildMcpServerConfig — contract §2 key set', () => {
       type: 'http',
       url: 'https://example.com/mcp',
     });
-    expect(buildMcpServerConfig(remote({ remoteType: 'sse' }))).toEqual({
-      type: 'sse',
+    expect(buildMcpServerConfig(remote({ remoteType: 'streamable-http' }))).toEqual({
+      type: 'streamable-http',
       url: 'https://example.com/mcp',
     });
   });
@@ -441,12 +442,26 @@ describe('formStateFromConfig — round trip', () => {
 
   it('round-trips a remote config through the form unchanged', () => {
     const config = {
-      type: 'sse' as const,
-      url: 'https://example.com/sse',
+      type: 'streamable-http' as const,
+      url: 'https://example.com/mcp',
       headers: { 'X-A': 'b' },
       bearerTokenEnv: 'TOKEN',
+      description: 'Docs',
+      timeout: 30,
+      enabled: false,
+      oauth: {
+        clientName: 'Acme',
+        authServerMetadataUrl: 'https://auth.example.com/meta',
+        callbackUrl: 'http://localhost:8080/cb',
+        callbackPort: 8080,
+      },
     };
     expect(buildMcpServerConfig(formStateFromConfig('s', config))).toEqual(config);
+  });
+
+  it('round-trips a pi-style remote config with no type without adding one', () => {
+    const config = { url: 'https://example.com/mcp', headers: { 'X-A': 'b' } };
+    expect(buildMcpServerConfig(formStateFromConfig('s', config))).toStrictEqual(config);
   });
 
   it('selects the mode from the config shape and carries the name in', () => {
@@ -534,5 +549,151 @@ describe('affordance gates (contract §7.1) — fail closed', () => {
     const info: McpServerStatusInfo = { ...damocles, readonly: false };
     expect(canDeleteMcpServer(info)).toBe(false);
     expect(canEditMcpServer(info)).toBe(false);
+  });
+});
+
+describe('validateMcpServerForm — description and timeout', () => {
+  it('accepts a blank timeout and a positive number of seconds', () => {
+    for (const timeout of ['', '  ', '30', '1.5', ' 120 ']) {
+      expect(validateMcpServerForm(stdio({ timeout }), null, noServers).timeout).toBeUndefined();
+    }
+  });
+
+  it.each(['0', '-1', 'abc', 'Infinity', '1e999'])('rejects timeout %s', (timeout) => {
+    expect(validateMcpServerForm(stdio({ timeout }), null, noServers).timeout).toEqual({
+      key: 'mcp.form.errors.timeoutInvalid',
+    });
+  });
+
+  it('builds timeout as a number and description verbatim, in both modes, omitting blanks', () => {
+    expect(buildMcpServerConfig(stdio({ timeout: ' 1.5 ', description: ' Weather ' }))).toEqual({
+      command: 'npx',
+      timeout: 1.5,
+      description: ' Weather ',
+    });
+    expect(buildMcpServerConfig(remote({ timeout: '', description: '   ' }))).toEqual({
+      type: 'http',
+      url: 'https://example.com/mcp',
+    });
+  });
+
+  it('carries a stored enabled flag through an edit and adds none when it was absent', () => {
+    expect(buildMcpServerConfig(formStateFromConfig('s', { command: 'x', enabled: false }))).toEqual({ command: 'x', enabled: false });
+    expect(buildMcpServerConfig(formStateFromConfig('s', { command: 'x' }))).toEqual({ command: 'x' });
+  });
+});
+
+describe('validateMcpServerForm — OAuth fields (pi validateOAuth rules)', () => {
+  const errorsFor = (overrides: Partial<McpServerFormState>) => validateMcpServerForm(remote(overrides), null, noServers);
+
+  it.each([
+    'https://auth.example.com/meta',
+    'http://localhost:9000/meta',
+    'http://127.0.0.1/meta',
+    'http://[::1]:9000/meta',
+  ])('accepts authServerMetadataUrl %s', (url) => {
+    expect(errorsFor({ oauthAuthServerMetadataUrl: url }).oauthAuthServerMetadataUrl).toBeUndefined();
+  });
+
+  it.each(['http://auth.example.com/meta', 'ftp://localhost/meta', 'not a url'])('rejects authServerMetadataUrl %s', (url) => {
+    expect(errorsFor({ oauthAuthServerMetadataUrl: url }).oauthAuthServerMetadataUrl).toEqual({
+      key: 'mcp.form.errors.authServerMetadataUrlInvalid',
+    });
+  });
+
+  it.each(['http://localhost:8080/cb', 'http://127.0.0.1/cb', 'http://[::1]:1/x'])('accepts callbackUrl %s', (url) => {
+    expect(errorsFor({ oauthCallbackUrl: url }).oauthCallbackUrl).toBeUndefined();
+  });
+
+  it.each(['https://localhost/cb', 'http://localhost/cb?x=1', 'http://localhost/cb#frag', 'http://example.com/cb', 'nope'])(
+    'rejects callbackUrl %s',
+    (url) => {
+      expect(errorsFor({ oauthCallbackUrl: url }).oauthCallbackUrl).toEqual({ key: 'mcp.form.errors.callbackUrlInvalid' });
+    },
+  );
+
+  it.each(['1', '8080', '65535'])('accepts callbackPort %s', (port) => {
+    expect(errorsFor({ oauthCallbackPort: port }).oauthCallbackPort).toBeUndefined();
+  });
+
+  it.each(['0', '65536', '80a', '-1', '1.5'])('rejects callbackPort %s', (port) => {
+    expect(errorsFor({ oauthCallbackPort: port }).oauthCallbackPort).toEqual({ key: 'mcp.form.errors.callbackPortInvalid' });
+  });
+
+  it('rejects a callback port that differs from the callback URL’s explicit port', () => {
+    expect(errorsFor({ oauthCallbackUrl: 'http://localhost:8080/cb', oauthCallbackPort: '9090' }).oauthCallbackPort).toEqual({
+      key: 'mcp.form.errors.callbackPortMismatch',
+    });
+    expect(errorsFor({ oauthCallbackUrl: 'http://localhost:8080/cb', oauthCallbackPort: '8080' }).oauthCallbackPort).toBeUndefined();
+    expect(errorsFor({ oauthCallbackUrl: 'http://localhost/cb', oauthCallbackPort: '9090' }).oauthCallbackPort).toBeUndefined();
+  });
+
+  it('ignores the OAuth fields in stdio mode', () => {
+    expect(validateMcpServerForm(stdio({ oauthCallbackPort: '0' }), null, noServers)).toEqual({});
+  });
+
+  it('builds oauth only when a field is filled: client name verbatim, URLs trimmed, port a number', () => {
+    expect(buildMcpServerConfig(remote())).not.toHaveProperty('oauth');
+    expect(
+      buildMcpServerConfig(
+        remote({
+          oauthClientName: ' Acme ',
+          oauthAuthServerMetadataUrl: ' https://auth.example.com/meta ',
+          oauthCallbackUrl: ' http://localhost:8080/cb ',
+          oauthCallbackPort: ' 8080 ',
+        }),
+      ),
+    ).toEqual({
+      type: 'http',
+      url: 'https://example.com/mcp',
+      oauth: {
+        clientName: ' Acme ',
+        authServerMetadataUrl: 'https://auth.example.com/meta',
+        callbackUrl: 'http://localhost:8080/cb',
+        callbackPort: 8080,
+      },
+    });
+  });
+});
+
+describe('name collisions by namespace (names equal after [^A-Za-z0-9_] becomes _)', () => {
+  it('rejects a different spelling of a server in ~/.damocles/mcp.json', () => {
+    expect(validateMcpServerForm(stdio({ name: 'my.server' }), null, [server('my-server', 'damocles')]).name).toEqual({
+      key: 'mcp.form.errors.namespaceExists',
+      params: { other: 'my-server' },
+    });
+  });
+
+  it.each(['workspace', 'damocles-local'] as const)('rejects a different spelling of a %s server, which takes precedence', (source) => {
+    expect(validateMcpServerForm(stdio({ name: 'my.server' }), null, [server('my-server', source)]).name).toEqual({
+      key: 'mcp.form.errors.namespaceShadowedByProject',
+      params: { other: 'my-server' },
+    });
+  });
+
+  it('lets an untrusted folder server’s spelling through, since it does not load', () => {
+    const untrusted = { ...server('my-server', 'workspace'), untrusted: true };
+    expect(validateMcpServerForm(stdio({ name: 'my.server' }), null, [untrusted]).name).toBeUndefined();
+  });
+
+  it.each(['claude', 'codex', 'pi', 'pi-project', 'claude-local'] as const)(
+    'accepts a clash with a lower-precedence %s server and notes it instead',
+    (source) => {
+      const servers = [server('my-server', source)];
+      expect(validateMcpServerForm(stdio({ name: 'my.server' }), null, servers).name).toBeUndefined();
+      expect(mcpToolPrefixCollision('my.server', null, servers)?.name).toBe('my-server');
+    },
+  );
+
+  it('does not count the server being renamed as a clash with itself', () => {
+    const servers = [server('a.b', 'damocles')];
+    expect(validateMcpServerForm(stdio({ name: 'a-b' }), 'a.b', servers).name).toBeUndefined();
+    expect(mcpToolPrefixCollision('a-b', 'a.b', servers)).toBeNull();
+  });
+
+  it('reports no note for an exact name or an unrelated name', () => {
+    const servers = [server('docs', 'claude')];
+    expect(mcpToolPrefixCollision('docs', null, servers)).toBeNull();
+    expect(mcpToolPrefixCollision('weather', null, servers)).toBeNull();
   });
 });

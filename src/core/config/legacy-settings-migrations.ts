@@ -59,7 +59,7 @@ export async function migrateLegacyModelSetting(settings: SettingsStore): Promis
       mapChanged = true;
       // Non-clobber: keep an existing entry for the mapped id — whether it was present in the stored
       // map OR already written by an earlier legacy id this pass. Two legacy ids can map to the same
-      // successor (gpt-5.5 + gpt-5.3-codex → gpt-6-sol); testing nextMap makes that first-wins and
+      // successor (gpt-5.5 + gpt-5.3-codex → gpt-6.1-sol); testing nextMap makes that first-wins and
       // deterministic (testing currentMap would let the later id clobber the earlier, last-wins).
       if (Object.hasOwn(nextMap, mappedId)) continue;
       nextMap[mappedId] = clampEffortToModel(carried, mappedId);

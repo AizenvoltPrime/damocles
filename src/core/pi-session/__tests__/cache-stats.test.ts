@@ -11,7 +11,7 @@ import {
 } from '../cache-stats';
 
 /**
- * Unit tests for the port of pi's `dist/core/cache-stats.js` @0.87.0. They pin the exact
+ * Unit tests for the port of pi's `dist/core/cache-stats.js` @0.99.2. They pin the exact
  * detection thresholds and reset semantics: TTL-scale idle gaps, the 1024-token noise floor,
  * compaction/branch_summary/context_edit baseline resets, the sticky `reportedCache` behaviour on providers
  * that never report cache activity, cache-read-only total misses, the missed-cost math (paid rate
@@ -328,10 +328,8 @@ describe('detectCacheMiss — multi-turn baseline behaviour', () => {
 });
 
 describe('cache_warm usage entries', () => {
-  // A warm refresh never runs the agent loop: pi calls `models.streamSimple` and records the spend with
-  // `sessionManager.appendUsage("cache_warm", ...)`, so it lands as a `usage` entry, never as an
-  // assistant message. The scan only inspects `message`, `compaction` and `branch_summary`, which is
-  // what keeps a refresh from reading as a turn that paid for a miss.
+  // pi records a warm refresh with `sessionManager.appendUsage("cache_warm", ...)`, so it lands as a
+  // `usage` entry, never as an assistant message, and like pi's own scan it becomes the new baseline.
   it('produce no cache-miss notice of their own', () => {
     const warm = makeMessage({
       timestamp: 0,
@@ -340,24 +338,38 @@ describe('cache_warm usage entries', () => {
     expect(detectCacheMiss([cacheWarmEntry(warm)], warm, noPrice)).toBeUndefined();
   });
 
-  it('do not disturb the baseline the next real turn is measured against', () => {
+  it('become the baseline the next real turn is measured against', () => {
     const prev = makeMessage({
       timestamp: 0,
-      usage: { input: 100, cacheRead: 0, cacheWrite: 50_000 },
+      usage: { input: 60_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.18 } },
     });
     const warm = makeMessage({
-      timestamp: 1_000,
-      usage: { input: 0, cacheRead: 50_100, cacheWrite: 0, cost: { cacheRead: 0.025 } },
+      timestamp: 10 * 60_000,
+      usage: { input: 0, cacheRead: 50_000, cacheWrite: 0, cost: { cacheRead: 0.025 } },
     });
     const message = makeMessage({
-      timestamp: 2_000,
-      usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },
+      timestamp: 10 * 60_000 + 1_000,
+      usage: { input: 70_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.21 } },
     });
 
-    const withWarm = detectCacheMiss([msgEntry(prev), cacheWarmEntry(warm)], message, noPrice);
-    const withoutWarm = detectCacheMiss([msgEntry(prev)], message, noPrice);
-    expect(withWarm).toEqual(withoutWarm);
-    expect(withWarm!.missedTokens).toBe(50_000);
+    const miss = detectCacheMiss([msgEntry(prev), cacheWarmEntry(warm)], message, noPrice);
+    // idleMs from the warm, promptTokens from the warm, and reportedCache from the warm (prev reported none).
+    expect(miss).toBeDefined();
+    expect(miss!.idleMs).toBe(1_000);
+    expect(miss!.missedTokens).toBe(50_000);
+    expect(detectCacheMiss([msgEntry(prev)], message, noPrice)).toBeUndefined();
+  });
+
+  it('still lose the baseline to a later context_edit', () => {
+    const warm = makeMessage({
+      timestamp: 0,
+      usage: { input: 0, cacheRead: 50_000, cacheWrite: 0, cost: { cacheRead: 0.025 } },
+    });
+    const message = makeMessage({
+      timestamp: 1_000,
+      usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },
+    });
+    expect(detectCacheMiss([cacheWarmEntry(warm), contextEditEntry()], message, noPrice)).toBeUndefined();
   });
 });
 

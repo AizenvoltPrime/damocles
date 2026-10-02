@@ -29,6 +29,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
 import SteerImageChips from './SteerImageChips.vue';
 import AgentUsageStats from './AgentUsageStats.vue';
+import EffortBadge from './EffortBadge.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { stripSteerPrefix } from '@shared/steer';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
@@ -275,6 +276,7 @@ function userMessageText(message: ChatMessage): string {
           <span v-else>{{ displayAgentType }}</span>
         </template>
         <span v-if="metadataTail.length"><template v-if="displayAgentType !== null">&nbsp;•&nbsp;</template>{{ metadataTail.join(' • ') }}</span>
+        <EffortBadge v-if="subagent.effort" :effort="subagent.effort" class="ml-1.5" />
         <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="subtitle" />
       </span>
     </template>

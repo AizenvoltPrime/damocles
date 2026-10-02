@@ -28,7 +28,7 @@ const BYTE_CEILING_FRACTION = 0.9;
 // holds the projected history byte-stable between prune events, so Anthropic's prompt-cache prefix
 // survives instead of being invalidated on every turn.
 const PLACEHOLDER =
-  '[Image removed: an older screenshot was pruned to keep the request within provider size limits. Capture a fresh screenshot (BrowserScreenshot) or re-read the file if this content is still needed.]';
+  '[Image removed: an older image was pruned to keep the request within provider size limits. Capture a fresh screenshot (BrowserScreenshot) or re-read the file if this content is still needed.]';
 
 /** The part of `ProjectedSessionEntry` the planner reads. */
 export interface ProjectedEntryView {

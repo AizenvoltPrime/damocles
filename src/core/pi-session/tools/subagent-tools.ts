@@ -12,12 +12,19 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT } from '../../../shared/tool-names';
-import { recordResultText } from '../subagents/status-note';
+import { getStatusNote, recordResultText, resumeSentence } from '../subagents/status-note';
 import { getLifetimeTotal } from '../subagents/usage';
 import { buildAgentResultJson } from '../subagents/subagent-stream-bridge';
-import type { AgentManager, SpawnRequest } from '../subagents/agent-manager';
+import { formatAgentConversation } from '../subagents/subagent-runner';
+import type { AgentManager, BranchAgent, SpawnRequest } from '../subagents/agent-manager';
 import { THINKING_OVERRIDES, type AgentRecord } from '../subagents/types';
-import { terminalAgentStatus, type AgentToolDetails } from '../agent-records';
+import {
+  isAgentTerminalStatus,
+  isResumableSubagentStatus,
+  terminalAgentStatus,
+  type AgentToolDetails,
+  type SubagentResultFetchDetails,
+} from '../agent-records';
 
 /**
  * Build the `Agent` parameter schema, advertising the currently-available `subagent_type` values.
@@ -89,6 +96,22 @@ function textResult(text: string): { content: { type: 'text'; text: string }[]; 
   return { content: [{ type: 'text', text }], details: undefined };
 }
 
+/** A result that hands the model an invocation's result; the marker keeps every later path from delivering it again. */
+function fetchResult(text: string, details: SubagentResultFetchDetails): { content: { type: 'text'; text: string }[]; details: SubagentResultFetchDetails } {
+  return { content: [{ type: 'text', text }], details };
+}
+
+/** The full transcript from the agent's file, or `fallback` when the file holds none. */
+function transcriptOr(agent: BranchAgent | null, fallback: string): string {
+  return (agent?.file ? formatAgentConversation(agent.file.messages) : '') || fallback;
+}
+
+/** Why a resumable branch agent gives no result, and how to continue it. */
+function notRunningText(id: string, agent: BranchAgent): string {
+  const why = agent.state.status === 'interrupted' ? 'interrupted' : 'stopped';
+  return `Subagent "${id}" is not running: it was ${why} before it finished. ${resumeSentence(id)}`;
+}
+
 function agentResult(text: string, details: AgentToolDetails): { content: { type: 'text'; text: string }[]; details: AgentToolDetails } {
   return { content: [{ type: 'text', text }], details };
 }
@@ -107,6 +130,16 @@ type SteerDetails = {
 
 function steerResult(text: string, details: SteerDetails): { content: { type: 'text'; text: string }[]; details: SteerDetails } {
   return { content: [{ type: 'text', text }], details };
+}
+
+/** A steer of a branch agent this manager no longer holds: it is not running, so nothing is delivered. */
+function steerBranchAgentResult(id: string, agent: BranchAgent): ReturnType<typeof steerResult> {
+  const launch = agent.file?.launch.kind === 'subagent' ? agent.file.launch : undefined;
+  const details: SteerDetails = { steerStatus: 'finished', ...(launch ? { agentType: launch.agentType, description: launch.description } : {}) };
+  const text = isResumableSubagentStatus(agent.state)
+    ? `Subagent "${id}" is not running, so nothing was steered: it stopped before it finished. ${resumeSentence(id)}`
+    : `Subagent "${id}" has already finished, so nothing was steered. Read its result with GetSubagentResult.`;
+  return steerResult(text, details);
 }
 
 /** Build the three subagent tools for a session whose subagents are run by `manager`. */
@@ -161,26 +194,32 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     },
   });
 
-  const getResultTool = pi.defineTool<typeof getResultSchema, undefined>({
+  const getResultTool = pi.defineTool<typeof getResultSchema, SubagentResultFetchDetails | undefined>({
     name: TOOL_GET_SUBAGENT_RESULT,
     label: 'Get subagent result',
     description: 'Read (and optionally wait for) the result of a background agent spawned with Agent(run_in_background:true).',
     parameters: getResultSchema,
     execute: async (_toolCallId, params) => {
-      const record = manager.getRecord(params.agent_id);
-      if (!record) return textResult(`No subagent found with id "${params.agent_id}".`);
-      if (params.wait && (record.status === 'running' || record.status === 'queued')) {
-        await record.promise;
+      const id = params.agent_id;
+      const record = manager.branchRecord(id);
+      if (record) {
+        if (params.wait && (record.status === 'running' || record.status === 'queued')) {
+          await record.promise;
+        }
+        if (record.status === 'running' || record.status === 'queued') {
+          return textResult(`Subagent "${id}" is still ${record.status}. Call again with wait:true to block until it finishes.`);
+        }
+        const result = recordResultText(record);
+        const text = params.verbose ? transcriptOr(await manager.readBranchAgent(id), result) : result;
+        return fetchResult(text, { agentId: id, toolCallId: record.toolCallId, status: terminalAgentStatus(record.status) });
       }
-      if (record.status === 'running' || record.status === 'queued') {
-        return textResult(`Subagent "${params.agent_id}" is still ${record.status}. Call again with wait:true to block until it finishes.`);
-      }
-      record.resultConsumed = true;
-      if (params.verbose) {
-        const convo = manager.getConversation(params.agent_id);
-        return textResult(convo || recordResultText(record));
-      }
-      return textResult(recordResultText(record));
+      const agent = await manager.readBranchAgent(id);
+      if (!agent) return textResult(`No subagent with id "${id}" was launched in this conversation.`);
+      const { state } = agent;
+      if (isResumableSubagentStatus(state) || !isAgentTerminalStatus(state.status)) return textResult(notRunningText(id, agent));
+      const result = agent.status?.result ?? agent.branchResult ?? getStatusNote(state.status, state.stopReason, id).trim();
+      const text = (params.verbose ? transcriptOr(agent, result) : result) || '(no output)';
+      return fetchResult(text, { agentId: id, toolCallId: state.latest.toolCallId, status: state.status });
     },
   });
 
@@ -190,8 +229,12 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     description: 'Inject a message into a running background agent to redirect it mid-task.',
     parameters: steerSchema,
     execute: async (_toolCallId, params) => {
-      const status = await manager.steer(params.agent_id, params.message);
-      const record = manager.getRecord(params.agent_id);
+      const record = manager.branchRecord(params.agent_id);
+      const status = record ? await manager.steer(params.agent_id, params.message) : 'not-found';
+      if (status === 'not-found') {
+        const agent = await manager.readBranchAgent(params.agent_id);
+        if (agent) return steerBranchAgentResult(params.agent_id, agent);
+      }
       const details: SteerDetails = { steerStatus: status, ...(record ? { agentType: record.type, description: record.description } : {}) };
       switch (status) {
         case 'steered':

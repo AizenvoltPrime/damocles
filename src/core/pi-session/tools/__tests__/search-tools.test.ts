@@ -6,6 +6,8 @@ import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { rgPath } from '@vscode/ripgrep';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { createFindTool, createGrepTool, fdGlobMatcher, GREP_PARAMETER_NAMES, resolveToCwd } from '../search-tools';
+import { PermissionHandler } from '../../../permission-handler';
+import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 
 // pi fixes its tool directory when it loads and looks there before PATH, so a developer's downloaded
 // `~/.pi/agent/bin/rg` would otherwise replace the bundled rg the oracle is meant to share.
@@ -19,6 +21,7 @@ const pi = (await import('@earendil-works/pi-coding-agent')) as unknown as PiCod
 delete process.env['PI_CODING_AGENT_DIR'];
 
 const resolveRg = (): Promise<string> => Promise.resolve(rgPath);
+const noReadRules = (): Promise<(filePath: string) => boolean> => Promise.resolve(() => false);
 
 type AnyResult = AgentToolResult<unknown>;
 type SearchTool = ReturnType<typeof createGrepTool>;
@@ -92,7 +95,7 @@ describe('grep', () => {
 
   it.each(cases)('matches pi grep for %s', async (_label, params) => {
     const expected = await execute(piGrep(), params);
-    const actual = await execute(createGrepTool(pi, root, resolveRg), params);
+    const actual = await execute(createGrepTool(pi, root, resolveRg, noReadRules), params);
     expect(sortedText(actual)).toEqual(sortedText(expected));
     expect(actual.details).toEqual(expected.details);
   });
@@ -103,31 +106,31 @@ describe('grep', () => {
       (error: Error) => error.message,
     );
     expect(expected).toMatch(/regex parse error/);
-    await expect(execute(createGrepTool(pi, root, resolveRg), { pattern: '(' })).rejects.toThrow(expected);
+    await expect(execute(createGrepTool(pi, root, resolveRg, noReadRules), { pattern: '(' })).rejects.toThrow(expected);
   });
 
   it('runs the bundled ripgrep when rg is on no PATH and pi may not download', async () => {
     vi.stubEnv('PI_OFFLINE', '1');
     vi.stubEnv('PATH', '');
     await expect(run(pi.createGrepToolDefinition(root) as never, { pattern: 'needle' })).rejects.toThrow(/not available/);
-    expect(await run(createGrepTool(pi, root, resolveRg), { pattern: 'answer' })).toBe('src/app.ts:1: export const answer = 42;');
+    expect(await run(createGrepTool(pi, root, resolveRg, noReadRules), { pattern: 'answer' })).toBe('src/app.ts:1: export const answer = 42;');
   });
 
   it('handles every parameter of pi grep schema', () => {
     const properties = (pi.createGrepToolDefinition(root).parameters as { properties: Record<string, unknown> }).properties;
     expect(Object.keys(properties).sort()).toEqual([...GREP_PARAMETER_NAMES].sort());
-    expect(createGrepTool(pi, root, resolveRg).name).toBe('grep');
+    expect(createGrepTool(pi, root, resolveRg, noReadRules).name).toBe('grep');
   });
 
   it('rejects a missing path and an aborted call', async () => {
-    const tool = createGrepTool(pi, root, resolveRg);
+    const tool = createGrepTool(pi, root, resolveRg, noReadRules);
     await expect(run(tool, { pattern: 'x', path: 'nope' })).rejects.toThrow(`Path not found: ${join(root, 'nope')}`);
     await expect(run(tool, { pattern: 'x' }, AbortSignal.abort())).rejects.toThrow('Operation aborted');
   });
 });
 
 describe('find', () => {
-  const find = (params: Record<string, unknown>, signal?: AbortSignal): Promise<string> => run(createFindTool(pi, root, resolveRg), params, signal);
+  const find = (params: Record<string, unknown>, signal?: AbortSignal): Promise<string> => run(createFindTool(pi, root, resolveRg, noReadRules), params, signal);
   const lines = async (params: Record<string, unknown>): Promise<string[]> => (await find(params)).split('\n').sort();
 
   it('matches a name pattern anywhere, honoring .gitignore and skipping node_modules', async () => {
@@ -183,7 +186,7 @@ describe('find', () => {
   });
 
   it('keeps pi find name and schema', () => {
-    const ours = createFindTool(pi, root, resolveRg);
+    const ours = createFindTool(pi, root, resolveRg, noReadRules);
     expect(ours.name).toBe('find');
     expect(ours.parameters).toEqual(pi.createFindToolDefinition(root).parameters);
   });
@@ -194,6 +197,36 @@ describe('fdGlobMatcher', () => {
     expect(fdGlobMatcher('src/*.ts')('/work/repo/src/a.ts')).toBe(true);
     expect(fdGlobMatcher('/work/*/src/*.ts')('/work/repo/src/a.ts')).toBe(true);
     expect(fdGlobMatcher('/src/*.ts')('/work/repo/src/a.ts')).toBe(false);
+  });
+});
+
+describe('Read rules over a search rooted above what they cover', () => {
+  it('grep and find leave the covered files out, and say so', async () => {
+    write('vault/key.txt', 'needle vaulted\n');
+    const settingsDir = join(homedir(), '.damocles');
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(vault/**)'] } }));
+    try {
+      const handler = new PermissionHandler(createFakePlatform());
+      handler.setCwd(root);
+      handler.setWorkspacePath(root);
+      const readRuleFilter = (): Promise<(filePath: string) => boolean> => handler.readRuleFilter();
+      const all = (result: AnyResult): string => result.content.map((block) => (block.type === 'text' ? block.text : '')).join('');
+
+      const grepped = await run(createGrepTool(pi, root, resolveRg, readRuleFilter), { pattern: 'needle' });
+      expect(grepped).toContain('src/app.ts');
+      expect(grepped).not.toContain('vaulted');
+      expect(grepped).toContain('a Read rule');
+      expect(await run(createGrepTool(pi, root, resolveRg, readRuleFilter), { pattern: 'vaulted' })).toMatch(/^No matches found\n\n\[.*a Read rule/);
+
+      const found = all(await execute(createFindTool(pi, root, resolveRg, readRuleFilter), { pattern: '*.txt' }));
+      expect(found).toContain('long.txt');
+      expect(found).not.toContain('key.txt');
+      expect(found).toContain('a Read rule');
+    } finally {
+      rmSync(join(settingsDir, 'settings.json'), { force: true });
+      rmSync(join(root, 'vault'), { recursive: true, force: true });
+    }
   });
 });
 

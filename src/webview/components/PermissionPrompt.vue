@@ -5,7 +5,7 @@ import { ListboxRoot, ListboxItem, ListboxContent } from 'reka-ui';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
-import { isShellTool } from '@shared/tool-names';
+import { isShellTool, TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE } from '@shared/tool-names';
 import type { PermissionUpdate, PermissionUpdateDestination } from '@shared/types/permissions';
 
 const { t } = useI18n();
@@ -14,7 +14,10 @@ const props = defineProps<{
   visible: boolean;
   toolUseId: string;
   toolName?: string | undefined;
+  toolInput?: Record<string, unknown> | undefined;
   filePath?: string | undefined;
+  prompt?: string | undefined;
+  imageModel?: string | undefined;
   originalContent?: string | undefined;
   proposedContent?: string | undefined;
   command?: string | undefined;
@@ -41,8 +44,17 @@ const pendingBehavior = ref<'allow' | 'deny'>('allow');
 
 const isShell = computed(() => isShellTool(props.toolName ?? ''));
 const isNewFile = computed(() => !props.originalContent);
+const isGenerateImage = computed(() => props.toolName === TOOL_GENERATE_IMAGE);
+// Any tool without its own view, such as a Read an ask rule names, shows its name and input.
+const isGeneric = computed(() => !isShell.value && !isGenerateImage.value && props.toolName !== TOOL_EDIT && props.toolName !== TOOL_WRITE);
 
 const actionLabel = computed(() => {
+  if (isGenerateImage.value) return t('permission.generateImage');
+  if (isGeneric.value) {
+    return props.agentDescription
+      ? t('permission.useToolAgent', { agent: props.agentDescription, tool: props.toolName })
+      : t('permission.useTool', { tool: props.toolName });
+  }
   if (props.agentDescription) {
     if (isShell.value) return t('permission.runCommandAgent', { agent: props.agentDescription });
     if (isNewFile.value) return t('permission.createFileAgent', { agent: props.agentDescription });
@@ -224,6 +236,41 @@ watch(() => props.visible, (visible) => {
       <template v-if="isShell">
         <div>{{ actionLabel }}</div>
         <div class="mt-2 p-2 bg-card rounded font-mono text-xs text-primary break-all whitespace-pre-wrap">{{ command }}</div>
+      </template>
+      <template v-else-if="isGeneric">
+        <div>{{ actionLabel }}</div>
+        <div
+          class="mt-2 p-2 bg-card rounded font-mono text-xs text-primary break-all whitespace-pre-wrap max-h-40 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          role="region"
+          tabindex="0"
+          :aria-label="actionLabel"
+          data-testid="tool-permission-input"
+          v-text="JSON.stringify(toolInput ?? {}, null, 2)"
+        />
+      </template>
+      <template v-else-if="isGenerateImage">
+        <div>{{ actionLabel }}</div>
+        <div class="mt-2 p-2 bg-card rounded font-mono text-xs text-primary break-all whitespace-pre-wrap" data-testid="image-permission-path">{{ filePath }}</div>
+        <div class="mt-2 text-xs text-muted-foreground">{{ t('permission.imagePrompt') }}</div>
+        <div
+          class="mt-1 p-2 bg-card rounded text-xs text-foreground break-words whitespace-pre-wrap max-h-40 overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          role="region"
+          tabindex="0"
+          :aria-label="t('permission.imagePrompt')"
+          data-testid="image-permission-prompt"
+        >{{ prompt }}</div>
+        <div
+          class="mt-2 text-xs text-muted-foreground"
+          data-testid="image-permission-model"
+        >
+          {{ t('permission.imageModel') }} <span class="font-mono text-foreground break-all">{{ imageModel }}</span>
+        </div>
+        <div
+          class="mt-1 text-xs text-muted-foreground"
+          data-testid="image-permission-billing"
+        >
+          {{ t('permission.imageBilled') }}
+        </div>
       </template>
       <template v-else>
         <div class="flex items-baseline gap-1 flex-wrap">

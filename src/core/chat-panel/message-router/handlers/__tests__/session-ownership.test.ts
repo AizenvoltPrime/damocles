@@ -98,6 +98,7 @@ function harness(...panels: Panel[]) {
     settingsManager: {
       sendCurrentSettings: async () => undefined,
       sendAvailableModels: () => undefined,
+      sendImageGenerationSettings: () => undefined,
       sendMcpConfig: () => undefined,
       sendModelForPanel: () => undefined,
       sendThinkingForPanel: () => undefined,

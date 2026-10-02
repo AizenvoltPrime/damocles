@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 // @ts-expect-error -- plain .mjs helper, no types
-import { platformFamilyGlob, desktopOnlyIn, DESKTOP_ONLY_PACKAGES, DESKTOP_EXCLUDE_RULES, vsixExclusionProblems, forbiddenVsixEntries } from '../sync-vscodeignore.mjs';
+import { allowPatterns, platformFamilyGlob, desktopOnlyIn, DESKTOP_ONLY_PACKAGES, DESKTOP_EXCLUDE_RULES, vsixExclusionProblems, forbiddenVsixEntries } from '../sync-vscodeignore.mjs';
 
 /**
  * `.github/workflows/release.yml` runs `sync-vscodeignore.mjs --check` on `ubuntu-latest` while every
@@ -57,6 +57,15 @@ describe('the generated .vscodeignore allowlist', () => {
       line.split('/').some((segment) => segment.split('-').some((token) => PLATFORM_TOKENS.includes(token.toLowerCase()))),
     );
     expect(named).toEqual([]);
+  });
+
+  // A narrowed package keeps only runtime extensions, so its license texts need their own re-include.
+  it('keeps the license and notice files of narrowed packages', () => {
+    const piMcpLicense = '@earendil-works/pi-mcp/**/modelcontextprotocol-typescript-sdk.txt';
+    expect(allowPatterns('@earendil-works/pi-mcp')).toContain(piMcpLicense);
+    expect(allowPatterns('@anthropic-ai/sdk')).toContain('@anthropic-ai/sdk/**/LICENSE');
+    expect(allowPatterns('patchright-core')).toContain('patchright-core/**/ThirdPartyNotices.txt');
+    expect(block).toContain(`!node_modules/${piMcpLicense}`);
   });
 
   // The desktop app's runtime and its editor, test and packaging tooling never ship in the VSIX.

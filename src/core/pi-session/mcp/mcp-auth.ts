@@ -5,7 +5,9 @@
  * injected via `setMcpSecretStorage`; before injection (and in unit tests) an in-process map stands
  * in. Credentials are keyed by server identity (name + URL), because two workspace folders can each
  * define a same-named server at a different URL. Read-modify-write per identity is serialized.
+ * `createOAuthStateStore` exposes an entry to pi-mcp as its `McpOAuthStateStore`.
  */
+import type { McpOAuthState, McpOAuthStateStore, OAuthClientInformationMixed, OAuthDiscoveryState } from "@earendil-works/pi-mcp/oauth";
 import type { SecretsStore } from "../../../platform/secrets-store";
 import { createHash } from "crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "fs";
@@ -29,6 +31,8 @@ export interface StoredClientInfo {
   clientIdIssuedAt?: number;
   clientSecretExpiresAt?: number;
   redirectUris?: string[];
+  /** The registration's `token_endpoint_auth_method`, which pi-mcp prefers when it picks how to authenticate. */
+  tokenEndpointAuthMethod?: string;
 }
 
 /** Complete auth entry for a server. */
@@ -103,8 +107,9 @@ async function migrateNameKeyedEntries(store: SecretsStore): Promise<void> {
     let entry: AuthEntry;
     try {
       entry = JSON.parse(raw) as AuthEntry;
-    } catch (error) {
-      log("[McpAuth] Dropping an unparseable stored MCP sign-in: %O", error);
+    } catch {
+      // V8 quotes the blob around the parse error, and the blob holds tokens, so the error is not logged.
+      log("[McpAuth] Dropping an unparseable stored MCP sign-in");
       return;
     }
     if (typeof entry.serverUrl !== "string") return;
@@ -187,10 +192,11 @@ async function readEntry(id: McpAuthIdentity): Promise<AuthEntry | undefined> {
   if (raw === undefined) return undefined;
   try {
     return JSON.parse(raw) as AuthEntry;
-  } catch (error) {
+  } catch {
     // A corrupt blob is unrecoverable and indistinguishable from "never authenticated". Clear it so it
     // can't wedge every future read, and surface it as a warning — the server then re-authenticates.
-    log("[McpAuth] Corrupt auth entry for %s; clearing it to force re-authentication: %O", id.serverName, error);
+    // V8 quotes the blob around the parse error, and the blob holds tokens, so the error is not logged.
+    log("[McpAuth] Corrupt auth entry for %s; clearing it to force re-authentication", id.serverName);
     await deleteRaw(key);
     return undefined;
   }
@@ -231,6 +237,7 @@ export function saveAuthEntry(id: McpAuthIdentity, entry: AuthEntry): Promise<vo
 
 /** Remove all credentials for a server identity. */
 export function removeAuthEntry(id: McpAuthIdentity): Promise<void> {
+  discoveryByKey.delete(storageKey(id));
   return withKeyLock(id, () => deleteRaw(storageKey(id)));
 }
 
@@ -242,31 +249,25 @@ export function updateClientInfo(id: McpAuthIdentity, clientInfo: StoredClientIn
   return updateEntry(id, (entry) => { entry.clientInfo = clientInfo; });
 }
 
-export function updateCodeVerifier(id: McpAuthIdentity, codeVerifier: string): Promise<void> {
-  return updateEntry(id, (entry) => { entry.codeVerifier = codeVerifier; });
-}
-
-export function clearCodeVerifier(id: McpAuthIdentity): Promise<void> {
-  return clearFields(id, ["codeVerifier"]);
-}
-
-/** Store the CSRF state of the flow in progress. */
-export function updateOAuthState(id: McpAuthIdentity, state: string): Promise<void> {
-  return updateEntry(id, (entry) => { entry.oauthState = state; });
-}
-
-/** The stored CSRF state of the flow in progress, if any. */
+/** The stored CSRF state of the sign-in in progress, if any. */
 export async function getOAuthState(id: McpAuthIdentity): Promise<string | undefined> {
   const entry = await readEntry(id);
   return entry?.oauthState;
 }
 
-export function clearOAuthState(id: McpAuthIdentity): Promise<void> {
-  return clearFields(id, ["oauthState"]);
+/** Drop the CSRF state and PKCE verifier of a finished sign-in, unless a newer sign-in has replaced them. */
+export function clearSignInState(id: McpAuthIdentity, oauthState: string): Promise<void> {
+  return withKeyLock(id, async () => {
+    const entry = await readEntry(id);
+    if (entry?.oauthState !== oauthState) return;
+    delete entry.oauthState;
+    delete entry.codeVerifier;
+    await writeEntry(id, entry);
+  });
 }
 
 /** Treat a token as expired this many seconds early so one expiring mid-request doesn't yield a 401 (L6). */
-const TOKEN_EXPIRY_SKEW_SECONDS = 30;
+export const TOKEN_EXPIRY_SKEW_SECONDS = 30;
 
 /**
  * Whether stored tokens are expired. null when no tokens exist, false when no expiry or not
@@ -298,4 +299,119 @@ export function clearClientInfo(id: McpAuthIdentity): Promise<void> {
 /** Clear only the tokens for a server identity. */
 export function clearTokens(id: McpAuthIdentity): Promise<void> {
   return clearFields(id, ["tokens"]);
+}
+
+/** pi-mcp's `McpOAuthStateStore`, narrowed: a load always yields a state, empty when nothing is stored. */
+export interface KeychainOAuthStateStore extends McpOAuthStateStore {
+  load(): Promise<McpOAuthState>;
+  save(state: McpOAuthState): Promise<void>;
+}
+
+/** Discovery results per identity, in memory only: public metadata that would only bloat the keychain entry. */
+const discoveryByKey = new Map<string, OAuthDiscoveryState>();
+
+/** A dynamically registered client whose secret has expired loads as absent, so pi-mcp registers again. */
+function toClientInformation(info: StoredClientInfo): OAuthClientInformationMixed | undefined {
+  if (info.clientSecretExpiresAt && info.clientSecretExpiresAt < Date.now() / 1000) return undefined;
+  const client: OAuthClientInformationMixed = { client_id: info.clientId };
+  if (info.clientSecret !== undefined) client.client_secret = info.clientSecret;
+  if (info.clientIdIssuedAt !== undefined) client.client_id_issued_at = info.clientIdIssuedAt;
+  if (info.clientSecretExpiresAt !== undefined) client.client_secret_expires_at = info.clientSecretExpiresAt;
+  if (info.redirectUris === undefined) return client;
+  return {
+    ...client,
+    redirect_uris: info.redirectUris,
+    ...(info.tokenEndpointAuthMethod !== undefined ? { token_endpoint_auth_method: info.tokenEndpointAuthMethod } : {}),
+  };
+}
+
+function fromClientInformation(client: OAuthClientInformationMixed): StoredClientInfo {
+  const info: StoredClientInfo = { clientId: client.client_id };
+  if (client.client_secret !== undefined) info.clientSecret = client.client_secret;
+  if (client.client_id_issued_at !== undefined) info.clientIdIssuedAt = client.client_id_issued_at;
+  if (client.client_secret_expires_at !== undefined) info.clientSecretExpiresAt = client.client_secret_expires_at;
+  if ("redirect_uris" in client) info.redirectUris = client.redirect_uris;
+  if ("token_endpoint_auth_method" in client && client.token_endpoint_auth_method !== undefined) {
+    info.tokenEndpointAuthMethod = client.token_endpoint_auth_method;
+  }
+  return info;
+}
+
+function toOAuthState(serverUrl: string, entry: AuthEntry | undefined, discovery: OAuthDiscoveryState | undefined): McpOAuthState {
+  const state: McpOAuthState = { serverUrl };
+  const client = entry?.clientInfo ? toClientInformation(entry.clientInfo) : undefined;
+  if (client) state.clientInformation = client;
+  if (entry?.tokens) {
+    state.tokens = {
+      access_token: entry.tokens.accessToken,
+      token_type: "Bearer",
+      ...(entry.tokens.refreshToken !== undefined ? { refresh_token: entry.tokens.refreshToken } : {}),
+      ...(entry.tokens.scope !== undefined ? { scope: entry.tokens.scope } : {}),
+    };
+    if (entry.tokens.expiresAt !== undefined) state.tokensExpireAt = entry.tokens.expiresAt * 1000;
+  }
+  if (entry?.codeVerifier !== undefined) state.codeVerifier = entry.codeVerifier;
+  if (entry?.oauthState !== undefined) state.oauthState = entry.oauthState;
+  if (discovery) state.discovery = discovery;
+  return state;
+}
+
+function tokensSnapshot(state: McpOAuthState): string {
+  return JSON.stringify([state.tokens ?? null, state.tokensExpireAt ?? null]);
+}
+
+function clientSnapshot(state: McpOAuthState): string {
+  return JSON.stringify(state.clientInformation ?? null);
+}
+
+/**
+ * pi-mcp's state store over the keychain entry of one server identity, mapping the stored `AuthEntry`
+ * to `McpOAuthState` and back, so sign-ins stored before pi-mcp keep working. A store that is not
+ * `interactive` (a connection's refresh) never changes the stored PKCE verifier or CSRF state, so a
+ * background refresh cannot clobber a sign-in in progress.
+ */
+export function createOAuthStateStore(id: McpAuthIdentity, options: { interactive: boolean }): KeychainOAuthStateStore {
+  const key = storageKey(id);
+  // pi-mcp's provider ignores state whose `serverUrl` differs from its normalized server URL.
+  const serverUrl = String(new URL(id.serverUrl));
+  // pi-mcp's provider saves what it loaded outside the identity lock, so a save that repeats this store's
+  // last load keeps what is stored now: another connection's newer grant or client is never overwritten.
+  let loadedTokens: string | undefined;
+  let loadedClient: string | undefined;
+  return {
+    load: async () => {
+      const state = toOAuthState(serverUrl, await readEntry(id), discoveryByKey.get(key));
+      loadedTokens = tokensSnapshot(state);
+      loadedClient = clientSnapshot(state);
+      return state;
+    },
+    save: (state) =>
+      withKeyLock(id, async () => {
+        const next: AuthEntry = { ...((await readEntry(id)) ?? {}) };
+        if (tokensSnapshot(state) !== loadedTokens) {
+          if (state.tokens) {
+            const tokens: StoredTokens = { accessToken: state.tokens.access_token };
+            if (state.tokens.refresh_token !== undefined) tokens.refreshToken = state.tokens.refresh_token;
+            if (state.tokens.scope !== undefined) tokens.scope = state.tokens.scope;
+            if (state.tokensExpireAt !== undefined) tokens.expiresAt = state.tokensExpireAt / 1000;
+            next.tokens = tokens;
+          } else {
+            delete next.tokens;
+          }
+        }
+        if (clientSnapshot(state) !== loadedClient) {
+          if (state.clientInformation) next.clientInfo = fromClientInformation(state.clientInformation);
+          else delete next.clientInfo;
+        }
+        if (options.interactive) {
+          if (state.codeVerifier !== undefined) next.codeVerifier = state.codeVerifier;
+          else delete next.codeVerifier;
+          if (state.oauthState !== undefined) next.oauthState = state.oauthState;
+          else delete next.oauthState;
+        }
+        if (state.discovery) discoveryByKey.set(key, state.discovery);
+        else discoveryByKey.delete(key);
+        await writeEntry(id, next);
+      }),
+  };
 }

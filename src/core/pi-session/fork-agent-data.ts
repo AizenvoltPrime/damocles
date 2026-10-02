@@ -38,8 +38,8 @@ function isNotFound(err: unknown): boolean {
 
 /**
  * Copy an agent pi session up to its last entry at or before `forkPointMs` into `targetDir`, under a new
- * pi session id. Writes nothing when that prefix holds no assistant message, the same as pi's own
- * deferred first write, so the copy then reads as an agent stopped before its first response.
+ * pi session id. Writes nothing when that prefix holds no user or assistant message, the same as pi's own
+ * deferred first write, so the copy then reads as an agent stopped before its task was committed.
  */
 function cutAgentSession(SessionManager: ForkAgentDataInput['SessionManager'], sourceFile: string, targetDir: string, forkPointMs: number): void {
   const sm = SessionManager.open(sourceFile, targetDir);
@@ -117,7 +117,7 @@ export async function copyForkAgentData(input: ForkAgentDataInput): Promise<Erro
   let subagentFiles = new Map<string, string>();
   if (subagentIds.size > 0) {
     await attempt('subagent files', async () => {
-      subagentFiles = await indexAgentFiles(sourceSubagents);
+      subagentFiles = (await indexAgentFiles(sourceSubagents)).paths;
     });
   }
   for (const id of subagentIds) {

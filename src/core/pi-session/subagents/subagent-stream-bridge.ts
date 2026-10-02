@@ -4,7 +4,7 @@
  * New for the Damocles port (US-018.4). The webview already renders subagent cards from the
  * `subagent*` messages + the `parentToolUseId` field on tool messages (no contract change). This bridge
  * subscribes to a nested `AgentSession` and emits, all via the PARENT panel's `postMessage`:
- *   - `subagentStart` + `subagentModelUpdate` once at spawn,
+ *   - `subagentStart` + `subagentModelUpdate` at spawn, and `subagentModelUpdate` with the effort at attach,
  *   - per nested tool: `toolPending` → `toolProgress` → `toolCompleted`/`toolFailed`, stamped with
  *     `parentToolUseId = <Agent tool-call id>` so they land on the subagent card,
  *   - at completion: a final (sealing) `subagentMessagesUpdate` built by `piMessagesToHistoryAgentMessages`,
@@ -30,6 +30,7 @@ import { ToolOutputCoalescer } from '../tool-output-coalescer';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
 import { runUsageMeter, sameAgentUsage } from '../session-usage';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
+import type { EffortBadgeLevel } from '../../../shared/effort-badge';
 
 export interface SubagentStreamBridgeDeps {
   /** The spawning `Agent` tool-call id — the webview key for this subagent card. */
@@ -76,7 +77,7 @@ export class SubagentStreamBridge {
   private readonly toolStarts = new Map<string, number>();
   /** Live shell output frames only. Elapsed-only progress stays uncoalesced so its cadence is unchanged. */
   private readonly outputCoalescer = new ToolOutputCoalescer<ExtensionToWebviewMessage>((m) => this.emit(m));
-  private modelEmitted = false;
+  private emittedModel: { model: string | undefined; effort: EffortBadgeLevel | undefined } | undefined;
   private templateEmitted = false;
   /** Per-assistant-message streaming state — mirrors PiStreamAdapter so the card streams text/thinking. */
   private assistantSeq = 0;
@@ -114,11 +115,12 @@ export class SubagentStreamBridge {
     if (templatePath) this.emitTemplate(templatePath);
   }
 
-  /** Emit `subagentModelUpdate` once for the resolved model. */
-  emitModel(model: string): void {
-    if (this.modelEmitted || !model) return;
-    this.modelEmitted = true;
-    this.emit({ type: 'subagentModelUpdate', agentToolId: this.deps.parentToolUseId, model });
+  /** Emit `subagentModelUpdate` once per (model, effort) pair: the model at start, then its effort once the session exists. */
+  emitModel(model: string | undefined, effort?: EffortBadgeLevel): void {
+    if (!model && !effort) return;
+    if (this.emittedModel && this.emittedModel.model === model && this.emittedModel.effort === effort) return;
+    this.emittedModel = { model, effort };
+    this.emit({ type: 'subagentModelUpdate', agentToolId: this.deps.parentToolUseId, ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
   }
 
   /** Emit `subagentTemplateUpdate` once for the agent's markdown template file path. */
@@ -130,10 +132,12 @@ export class SubagentStreamBridge {
 
   /**
    * Subscribe to the nested session and stream per-tool events to the card. `dollarBilled` labels the
-   * run's cost; unset means unknown, and the card falls back to the panel's flag. Returns unsubscribe.
+   * run's cost; unset means unknown, and the card falls back to the panel's flag. `effort` is the
+   * session's published effort, sent beside the model the card already shows. Returns unsubscribe.
    */
-  attach(session: AgentSession, dollarBilled?: boolean): () => void {
+  attach(session: AgentSession, dollarBilled?: boolean, effort?: EffortBadgeLevel): () => void {
     this.dollarBilled = dollarBilled;
+    if (effort) this.emitModel(this.emittedModel?.model, effort);
     this.firstMessageIndex = session.messages.length;
     this.runUsage = runUsageMeter(session);
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => this.handle(event));

@@ -5,14 +5,14 @@ import { chatInput } from './support/ui';
 
 test('a login written by another process updates the desktop account display without a reload', async ({ home, launch }) => {
   // An Anthropic model with no credential: the account chip shows the Claude auth mode, "none".
-  writeUserSettings(home, { 'damocles.model': 'claude-sonnet-5' });
+  writeUserSettings(home, { 'damocles.model': 'claude-sonnet-5-5' });
   const { app } = await launch();
   const tab = await chatTab(app);
   await expect(chatInput(tab)).toBeVisible();
   await expect(tab.getByRole('button', { name: 'none', exact: true })).toBeVisible();
   const loadsBefore = await tab.evaluate(() => performance.getEntriesByType('navigation').length + performance.timeOrigin);
 
-  const other = new SecondProcess('-', hermeticEnv(home), { 'damocles.model': 'claude-sonnet-5' });
+  const other = new SecondProcess('-', hermeticEnv(home), { 'damocles.model': 'claude-sonnet-5-5' });
   try {
     await other.ready;
     // pi's FileAuthStorageBackend.withLock: the same locked read-modify-write pi's /login performs.

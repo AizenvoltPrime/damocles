@@ -3,6 +3,7 @@ import { defineStore } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState, SubagentResult } from '@shared/types/subagents';
 import type { AgentUsageTotals } from '@shared/usage-accounting';
+import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
@@ -677,6 +678,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         toolCalls: [],
         ...(result !== undefined && { result }),
         ...(tool.agentModel !== undefined && { model: tool.agentModel }),
+        ...(tool.agentEffort !== undefined && { effort: tool.agentEffort }),
         ...(tool.agentTemplatePath !== undefined && { templatePath: tool.agentTemplatePath }),
         ...(tool.agentUsage !== undefined && { usage: tool.agentUsage }),
         ...(tool.agentDollarBilled !== undefined && { dollarBilled: tool.agentDollarBilled }),
@@ -701,14 +703,15 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function updateSubagentModel(agentToolId: string, model: string): void {
+  function updateSubagentModel(agentToolId: string, model: string | undefined, effort?: EffortBadgeLevel): void {
     const subagent = subagents.value[agentToolId];
     if (subagent) {
       subagents.value = {
         ...subagents.value,
         [agentToolId]: {
           ...subagent,
-          model,
+          ...(model !== undefined && { model }),
+          ...(effort !== undefined && { effort }),
         },
       };
     }

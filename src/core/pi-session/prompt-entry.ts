@@ -1,5 +1,8 @@
-import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, PromptOptions } from '@earendil-works/pi-coding-agent';
 import { piMessageText } from './branch-text';
+
+/** How pi dispatched an accepted `prompt()`: `started` opens a run, `queued` joined the running one, `handled` ran nothing. */
+export type PromptDisposition = Parameters<NonNullable<PromptOptions['preflightResult']>>[0];
 
 /** The user entry one `prompt()` call committed. */
 export interface PromptEntry {
@@ -9,7 +12,7 @@ export interface PromptEntry {
 
 export interface PromptEntryWatch {
   /** Pass as `prompt()`'s `preflightResult`. */
-  preflightResult: (accepted: boolean) => void;
+  preflightResult: (disposition: PromptDisposition) => void;
   /** Null when the call committed no user entry of its own: pi queued it into a running run, or ran it as a command. */
   entry: () => PromptEntry | null;
   dispose: () => void;
@@ -17,7 +20,7 @@ export interface PromptEntryWatch {
 
 /**
  * Finds the user entry a `prompt()` call commits by message identity, since a batch or cancel note
- * steered into the same run commits after it. Relies on pi calling `preflightResult(true)` right before
+ * steered into the same run commits after it. Relies on pi calling `preflightResult('started')` right before
  * starting the run for an unqueued prompt, that run emitting the prompt as its first user message, and
  * pi persisting that same object as the entry's `message`.
  *
@@ -43,8 +46,8 @@ export function watchPromptEntry(session: AgentSession, onCommitted?: (entry: Pr
     });
   });
   return {
-    preflightResult: (accepted) => {
-      armed = accepted && !session.isStreaming;
+    preflightResult: (disposition) => {
+      armed = disposition === 'started';
     },
     entry,
     dispose: unsubscribe,

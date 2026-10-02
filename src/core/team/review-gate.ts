@@ -1,5 +1,6 @@
 import type { Scratchpad, StaleSectionInfo } from './scratchpad';
 import type { OperatorSteer, TeamAgent } from './types';
+import type { CoverageView, ReviewCoverage } from './review-coverage';
 import { describeUserSteer } from '../../shared/steer';
 
 export interface ReadGateDecision {
@@ -108,6 +109,31 @@ export function isSpecialistSettled(status: TeamAgent['status']): boolean {
     || status === 'failed';
 }
 
+/** Final for review: no run is left to change the work. Unlike isSpecialistSettled, awaiting-review is not final. */
+export function isSpecialistFinal(status: TeamAgent['status']): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'failed';
+}
+
+/**
+ * A reviewer reports only once it has read the current version of every section its implementors
+ * authored, so its verdicts cannot cover text it never saw (mirrors checkApprovalReadGate).
+ */
+export function checkReviewerReportGate(
+  reviewer: string,
+  implementors: readonly string[],
+  scratchpad: Scratchpad,
+): ReadGateDecision {
+  const stale = implementors.flatMap((implementor) => scratchpad.getStaleSectionsFor(reviewer, implementor));
+  if (stale.length === 0) return { ok: true, stale: [] };
+  return {
+    ok: false,
+    stale,
+    error:
+      `Cannot report complete: your review is out of date. ${formatStaleList(stale)}. ` +
+      `Read each listed section with team_read_scratchpad, update your review, then report again.`,
+  };
+}
+
 /** Whether a message sent now can actually reach the agent: true only for statuses whose runner is alive
  *  and subscribed to the bus (`running`/`awaiting-review`/`standby`/`monitoring`). `pending` runners
  *  aren't spawned yet and terminal ones have unsubscribed, so a send to either is silently dropped. */
@@ -180,6 +206,7 @@ export function formatReviewRoundReadyNotification(
   leadName: string,
   pendingNames: string[],
   operatorSteers: ReadonlyArray<OperatorSteer>,
+  coverage?: { model: ReviewCoverage; view: CoverageView },
 ): string | null {
   if (unreviewed.length === 0) return null;
   const currentAttempt = new Map(unreviewed.map(agent => [agent.name, agent.attempt]));
@@ -193,9 +220,11 @@ export function formatReviewRoundReadyNotification(
       .filter(s => s.memberName === agent.name)
       .map(s => `\n    ${isCurrent(s) ? 'user steer' : 'earlier attempt steer (not delivered to this attempt)'}: ` +
         describeUserSteer(s, JSON.stringify));
+    const coverageLines = coverage ? coverage.model.noticeLines(agent.name, coverage.view) : [];
+    const tail = steerLines.join('') + coverageLines.map((line) => `\n    ${line}`).join('');
     const authored = scratchpad.getSectionsAuthoredBy(agent.name);
     if (authored.length === 0) {
-      return `  - ${agent.name}: no scratchpad section authored${steerLines.join('')}`;
+      return `  - ${agent.name}: no scratchpad section authored${tail}`;
     }
     const fragments = authored.map(entry => {
       const readVersion = scratchpad.getReadVersion(leadName, entry.section);
@@ -205,7 +234,7 @@ export function formatReviewRoundReadyNotification(
       else status = 'up to date';
       return `"${entry.section}" v${entry.version} [${status}]`;
     });
-    return `  - ${agent.name}: ${fragments.join(', ')}${steerLines.join('')}`;
+    return `  - ${agent.name}: ${fragments.join(', ')}${tail}`;
   });
   const steerParagraph = current.length > 0
     ? `\n\nUser steers are the user's authoritative changes to the steered specialist's task. Review against the ` +
@@ -235,7 +264,8 @@ export function formatReviewRoundReadyNotification(
     steerParagraph +
     earlierParagraph +
     pendingParagraph +
-    `\n\nAfter reading, call team_approve_specialist (satisfactory) or team_request_revision (changes needed) for each.`
+    `\n\nAfter reading, call team_approve_specialist (satisfactory) or team_request_revision (changes needed) for each.` +
+    (coverage?.model.hasPairs() ? ' Approve implementors before their reviewers.' : '')
   );
 }
 

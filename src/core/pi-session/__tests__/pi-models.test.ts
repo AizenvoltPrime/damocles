@@ -16,6 +16,17 @@ import {
 } from '../pi-models';
 import { DEFAULT_MODELS, MODEL_SUBSTITUTES } from '../../../shared/types/constants';
 
+/** A shipped catalog file keyed by api, then by model id, with only its chat models: pi keys each entry `<type>:<id>`. */
+function readChatCatalog<T>(file: string): Record<string, Record<string, T>> {
+  const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, Record<string, T>>;
+  return Object.fromEntries(
+    Object.entries(raw).map(([api, models]) => [
+      api,
+      Object.fromEntries(Object.entries(models).flatMap(([key, entry]) => (key.startsWith('chat:') ? [[key.slice('chat:'.length), entry]] : []))),
+    ]),
+  );
+}
+
 function model(provider: string, id: string, api: Api = 'openai-responses'): Model<Api> {
   return { id, name: id, api, provider, contextWindow: 200_000 } as unknown as Model<Api>;
 }
@@ -64,8 +75,8 @@ describe('piModelToModelInfo', () => {
   });
 
   it('reconciles a codex model id back to its Damocles value', () => {
-    const info = piModelToModelInfo(model('openai-codex', 'gpt-6-sol'));
-    expect(info.value).toBe('gpt-6-sol');
+    const info = piModelToModelInfo(model('openai-codex', 'gpt-6.1-sol'));
+    expect(info.value).toBe('gpt-6.1-sol');
     expect(info.backend).toBe('openai');
   });
 
@@ -96,44 +107,60 @@ describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
     // Only sol is registered on the codex namespace here; luna is a real catalog id that the
     // subscription hasn't provisioned. With codex auth and no api key, that gap must surface as
     // authRequired (the bare {authRequired:true} branch), NOT a soft {} — preserving auth-gate coverage.
-    const reg = registry([['openai-codex', 'gpt-6-sol']]);
-    const status = { apiKey: false, codex: true };
+    const reg = registry([['openai-codex', 'gpt-6.1-sol']]);
+    const status = { apiKey: false, chatgpt: false, codex: true };
 
-    expect(resolvePiModel('gpt-6-sol', reg, status).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-6.1-sol', reg, status).model?.provider).toBe('openai-codex');
     expect(resolvePiModel('gpt-6-luna', reg, status)).toEqual({ authRequired: true });
   });
 
   it('api-key: every GPT value resolves to the openai provider', () => {
     const reg = registry([
       ['openai', 'gpt-6-astra'],
-      ['openai', 'gpt-6-sol'],
+      ['openai', 'gpt-6.1-sol'],
       ['openai', 'gpt-6-luna'],
     ]);
-    const status = { apiKey: true, codex: false };
+    const status = { apiKey: true, chatgpt: false, codex: false };
 
-    for (const value of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+    for (const value of ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna']) {
       expect(resolvePiModel(value, reg, status).model?.provider).toBe('openai');
     }
   });
 
   it('prefers codex over api-key when both are configured and the id exists in codex', () => {
     const reg = registry([
-      ['openai', 'gpt-6-sol'],
-      ['openai-codex', 'gpt-6-sol'],
+      ['openai', 'gpt-6.1-sol'],
+      ['openai-codex', 'gpt-6.1-sol'],
     ]);
-    expect(resolvePiModel('gpt-6-sol', reg, { apiKey: true, codex: true }).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-6.1-sol', reg, { apiKey: true, chatgpt: false, codex: true }).model?.provider).toBe('openai-codex');
+  });
+
+  it('orders GPT credentials: preferred key, ChatGPT, Codex, key, then authRequired on openai', () => {
+    const reg = registry([
+      ['openai', 'gpt-6.1-sol'],
+      ['openai-codex', 'gpt-6.1-sol'],
+    ]);
+    const provider = (status: { apiKey: boolean; chatgpt: boolean; codex: boolean }, prefer: boolean) =>
+      resolvePiModel('gpt-6.1-sol', reg, status, prefer);
+
+    expect(provider({ apiKey: true, chatgpt: true, codex: true }, true)).toEqual({ model: expect.objectContaining({ provider: 'openai' }), authed: true });
+    expect(provider({ apiKey: true, chatgpt: true, codex: true }, false).model?.provider).toBe('openai');
+    expect(provider({ apiKey: false, chatgpt: true, codex: false }, true).model?.provider).toBe('openai');
+    expect(provider({ apiKey: true, chatgpt: false, codex: true }, false).model?.provider).toBe('openai-codex');
+    expect(provider({ apiKey: true, chatgpt: false, codex: false }, false)).toEqual({ model: expect.objectContaining({ provider: 'openai' }), authed: true });
+    expect(provider({ apiKey: false, chatgpt: false, codex: false }, true)).toEqual({ model: expect.objectContaining({ provider: 'openai' }), authRequired: true });
   });
 
   it('resolves an anthropic value by model id', () => {
     const reg = registry([['anthropic', 'claude-opus-5-5', 'anthropic-messages']]);
-    expect(resolvePiModel('claude-opus-5-5', reg, { apiKey: false, codex: false }).model?.id).toBe('claude-opus-5-5');
+    expect(resolvePiModel('claude-opus-5-5', reg, { apiKey: false, chatgpt: false, codex: false }).model?.id).toBe('claude-opus-5-5');
   });
 });
 
 describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
   it('routes step-3.7-flash to the stepfun provider, authed per hasConfiguredAuth', () => {
     const reg = registry([['stepfun', 'step-3.7-flash', 'anthropic-messages']]);
-    const res = resolvePiModel('step-3.7-flash', reg, { apiKey: false, codex: false });
+    const res = resolvePiModel('step-3.7-flash', reg, { apiKey: false, chatgpt: false, codex: false });
     expect(res.model?.provider).toBe('stepfun');
     expect(res.authed).toBe(true);
     expect(res.authRequired).toBeUndefined();
@@ -145,7 +172,7 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
       getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
       hasConfiguredAuth: () => false,
     };
-    const res = resolvePiModel('deepseek-v4-pro', reg, { apiKey: false, codex: false });
+    const res = resolvePiModel('deepseek-v4-pro', reg, { apiKey: false, chatgpt: false, codex: false });
     expect(res.model?.provider).toBe('deepseek');
     expect(res.authed).toBe(false);
     expect(res.authRequired).toBeUndefined();
@@ -153,7 +180,7 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
 
   it('returns {} for a piProvider value missing from the registry (StepFun pre-key)', () => {
     const reg = registry([]);
-    expect(resolvePiModel('step-3.7-flash', reg, { apiKey: false, codex: false })).toEqual({});
+    expect(resolvePiModel('step-3.7-flash', reg, { apiKey: false, chatgpt: false, codex: false })).toEqual({});
   });
 });
 
@@ -172,10 +199,7 @@ describe('DEFAULT_MODELS: claude-fable-5-1 effort catalog agrees with the instal
     '../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/anthropic.json',
     import.meta.url,
   );
-  const catalog = JSON.parse(readFileSync(fileURLToPath(anthropicJsonUrl), 'utf8')) as Record<
-    string,
-    Record<string, unknown>
-  >;
+  const catalog = readChatCatalog<unknown>(fileURLToPath(anthropicJsonUrl));
   const fable51 = catalog['anthropic-messages']?.['claude-fable-5-1'] as Model<'anthropic-messages'> | undefined;
 
   it('declares exactly what pi reports, modulo the minimal and ultracode mappings Damocles owns', () => {
@@ -200,9 +224,9 @@ describe('MODEL_SUBSTITUTES', () => {
     }
   });
 
-  it('sends an unresolvable Opus 5.5 to Sonnet 5, never to the costlier catalog head', () => {
+  it('sends an unresolvable Opus 5.5 to Sonnet 5.5, never to the costlier catalog head', () => {
     // Without this the generic walk starts at DEFAULT_MODELS[0], which is Fable 5.1 at $10/$50.
-    expect(MODEL_SUBSTITUTES['claude-opus-5-5']).toEqual(['claude-sonnet-5']);
+    expect(MODEL_SUBSTITUTES['claude-opus-5-5']).toEqual(['claude-sonnet-5-5']);
     expect(DEFAULT_MODELS[0]!.value).toBe('claude-fable-5-1');
   });
 });
@@ -218,7 +242,7 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
     import.meta.url,
   );
   const entries = (
-    JSON.parse(readFileSync(fileURLToPath(anthropicJsonUrl), 'utf8')) as Record<string, Record<string, ThinkingEntry>>
+    readChatCatalog<ThinkingEntry>(fileURLToPath(anthropicJsonUrl))
   )['anthropic-messages'] ?? {};
 
   /**
@@ -236,7 +260,7 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
   it('is not vacuous: it covers several shipped entries and the predicate separates them', () => {
     expect(covered.length).toBeGreaterThan(2);
     expect(forcesThinking(entries['claude-fable-5-1']!)).toBe(true);
-    expect(forcesThinking(entries['claude-sonnet-5']!)).toBe(false);
+    expect(forcesThinking(entries['claude-sonnet-5-5']!)).toBe(true);
     expect(forcesThinking(entries['claude-haiku-4-5-20251001']!)).toBe(false);
   });
 
@@ -248,21 +272,20 @@ describe('DEFAULT_MODELS: thinkingAlwaysOn agrees with the installed pi metadata
   // `defaultEffort` is a Damocles decision, not pi metadata, so the loop above cannot check it: pi
   // ships no default and Anthropic documents `medium`. High is deliberate (see CHANGELOG), and the
   // levels either side of it must exist for the settings picker to offer a way back.
-  it('runs Opus 5.5 at high effort by default, on a level pi supports', () => {
-    const opus = DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5');
-    expect(opus?.defaultEffort).toBe('high');
-    expect(getSupportedThinkingLevels(entries['claude-opus-5-5'] as unknown as Model<Api>)).toContain('high');
+  it.each(['claude-opus-5-5', 'claude-sonnet-5-5'])('runs %s at high effort by default, on a level pi supports', (value) => {
+    expect(DEFAULT_MODELS.find((m) => m.value === value)?.defaultEffort).toBe('high');
+    expect(getSupportedThinkingLevels(entries[value] as unknown as Model<Api>)).toContain('high');
   });
 });
 
 // `minimal` has no EffortLevel name, and pi's `off` (sent as `none`) is deliberately not offered on any
 // GPT model: the team effort enums exclude it, and a stored `none` clamps up to `low` on migration.
-describe.each(['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
+describe.each(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-luna'])('DEFAULT_MODELS: %s agrees with both installed OpenAI catalogs', (id) => {
   const info = DEFAULT_MODELS.find((m) => m.value === id);
 
   function catalogEntry(file: string, api: string): Model<Api> | undefined {
     const url = new URL(`../../../../node_modules/@earendil-works/pi-ai/dist/providers/data/${file}`, import.meta.url);
-    const catalog = JSON.parse(readFileSync(fileURLToPath(url), 'utf8')) as Record<string, Record<string, unknown>>;
+    const catalog = readChatCatalog<unknown>(fileURLToPath(url));
     return catalog[api]?.[id] as Model<Api> | undefined;
   }
 
@@ -310,7 +333,7 @@ function loadShippedCatalogs(): Record<string, ProviderCatalog> {
   const catalogs: Record<string, ProviderCatalog> = {};
   // `.manifest.json` records how the catalogs were generated; it is not itself a catalog.
   for (const file of readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.'))) {
-    catalogs[file] = JSON.parse(readFileSync(join(dir, file), 'utf8')) as ProviderCatalog;
+    catalogs[file] = readChatCatalog(join(dir, file)) as ProviderCatalog;
   }
   return catalogs;
 }
@@ -396,7 +419,7 @@ describe('no model Damocles offers carries a server-side fallback list', () => {
 
 describe('providerDisplayName', () => {
   it('maps each backend/piProvider to its display name', () => {
-    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-6-sol'))).toBe('OpenAI');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-6.1-sol'))).toBe('OpenAI');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash'))).toBe('StepFun');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-5-5'))).toBe('Anthropic');
@@ -421,7 +444,7 @@ describe('isDollarBilled', () => {
     expect(isDollarBilled(find('claude-opus-5-5'), 'apikey')).toBe(true);
     expect(isDollarBilled(find('claude-opus-5-5'), 'extra')).toBe(true);
     expect(isDollarBilled(find('claude-opus-5-5'), 'allowance')).toBe(false);
-    expect(isDollarBilled(find('gpt-6-sol'), 'openai-api-key')).toBe(true);
-    expect(isDollarBilled(find('gpt-6-sol'), 'codex-oauth')).toBe(false);
+    expect(isDollarBilled(find('gpt-6.1-sol'), 'openai-api-key')).toBe(true);
+    expect(isDollarBilled(find('gpt-6.1-sol'), 'codex-oauth')).toBe(false);
   });
 });

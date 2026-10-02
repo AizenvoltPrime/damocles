@@ -10,6 +10,7 @@ import AgentUsageStats from './AgentUsageStats.vue';
 import { formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
+import { runStopwatch } from '@shared/team-stopwatch';
 
 const { t, locale } = useI18n();
 const { teamDollarBilled } = useCostLabel();
@@ -28,11 +29,7 @@ const isRunning = computed(() => props.run.status === 'running');
 // Every run but the one its create_team call started is a resume_team call.
 const isResume = computed(() => props.run.toolUseId !== props.team.toolUseId);
 
-const { elapsedMs } = useElapsedTimer(
-  () => isRunning.value,
-  () => props.run.startTime,
-  () => props.run.endTime,
-);
+const { elapsedMs } = useElapsedTimer(() => isRunning.value, () => runStopwatch(props.run));
 
 const activeAgentCount = computed(() =>
   props.team.agents.filter(a => a.status === 'running' || a.status === 'awaiting-review' || a.status === 'standby' || a.status === 'monitoring').length

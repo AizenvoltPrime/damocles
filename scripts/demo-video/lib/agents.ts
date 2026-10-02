@@ -3,6 +3,7 @@ import type { HistoryAgentMessage } from '../../../src/shared/types/content.ts';
 import type { SteerTargetInfo } from '../../../src/shared/types/subagents.ts';
 import type { TeamAgent, TeamAgentStatus, TeamRunSummary, TeamState } from '../../../src/shared/types/team.ts';
 import type { AgentUsageTotals } from '../../../src/shared/usage-accounting.ts';
+import { stopStopwatch, type Stopwatch } from '../../../src/shared/team-stopwatch.ts';
 import { SID } from './script.ts';
 import type { Stage } from './stage.ts';
 
@@ -142,11 +143,13 @@ export interface MemberSpec {
 
 const zeroUsage = (): AgentUsageTotals => ({ totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
 
-function teamAgent(m: MemberSpec, status: TeamAgentStatus): TeamAgent {
+const TERMINAL: ReadonlySet<TeamAgentStatus> = new Set(['completed', 'failed', 'cancelled']);
+
+function teamAgent(m: MemberSpec, status: TeamAgentStatus, stopwatch: Stopwatch): TeamAgent {
   return {
     agentId: m.agentId, name: m.name, role: m.role, specialization: '', model: m.model, profileId: null, attempt: 0, status,
-    startTime: null, endTime: null, toolCount: 0, lastToolName: null, totalInputTokens: 0, totalOutputTokens: 0,
-    cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: false, progressSummary: null, result: null, logFilePath: null,
+    ...stopwatch, toolCount: 0, lastToolName: null, totalInputTokens: 0, totalOutputTokens: 0,
+    cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, dollarBilled: false, effort: null, progressSummary: null, result: null, logFilePath: null,
   };
 }
 
@@ -155,6 +158,16 @@ export function team(stage: Stage, opts: { teamId: string; toolUseId: string; ti
   const { teamId } = opts;
   const startTime = Date.now();
   const usage = new Map<string, AgentUsageTotals>(opts.members.map((m) => [m.agentId, zeroUsage()]));
+  const stopwatches = new Map<string, Stopwatch>(opts.members.map((m) => [m.agentId, { activeMs: 0, runningSince: null }]));
+  // A launch or resume opens a member's stopwatch and its settle closes it, as the team runner's entries do.
+  const tick = (m: MemberSpec, status: TeamAgentStatus): Stopwatch => {
+    const current = stopwatches.get(m.agentId)!;
+    const next = TERMINAL.has(status) ? stopStopwatch(current, Date.now())
+      : status !== 'pending' && current.runningSince === null ? { ...current, runningSince: Date.now() }
+      : current;
+    stopwatches.set(m.agentId, next);
+    return next;
+  };
   let toolCount = 0;
   let toolSeq = 0;
   let messageSeq = 0;
@@ -175,7 +188,7 @@ export function team(stage: Stage, opts: { teamId: string; toolUseId: string; ti
     state(runs: TeamRunSummary[], status: TeamState['status'], agentStatus: (m: MemberSpec) => TeamAgentStatus): TeamState {
       return {
         teamId, toolUseId: opts.toolUseId, title: opts.title, status, phase: status === 'running' ? 'working' : 'initializing',
-        agents: opts.members.map((m) => teamAgent(m, agentStatus(m))), messages: [], scratchpad: [], result: null,
+        agents: opts.members.map((m) => teamAgent(m, agentStatus(m), tick(m, agentStatus(m)))), messages: [], scratchpad: [], result: null,
         startTime, endTime: null, totalToolCount: 0, runs,
       };
     },
@@ -186,7 +199,7 @@ export function team(stage: Stage, opts: { teamId: string; toolUseId: string; ti
 
     async status(name: string, status: TeamAgentStatus, progressSummary?: string): Promise<void> {
       const m = member(name);
-      await stage.send({ type: 'teamAgentStatusUpdate', teamId, agentId: m.agentId, status, model: m.model, ...(progressSummary ? { progressSummary } : {}) });
+      await stage.send({ type: 'teamAgentStatusUpdate', teamId, agentId: m.agentId, status, model: m.model, ...(progressSummary ? { progressSummary } : {}), stopwatch: tick(m, status) });
     },
 
     async phase(phase: TeamState['phase']): Promise<void> {

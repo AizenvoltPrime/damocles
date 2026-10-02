@@ -29,7 +29,7 @@ const FIXTURE: { readonly defaults: Layer; readonly user: Layer; readonly projec
     'damocles.effortByModel': { 'gpt-6-luna': 'high' },
     'damocles.autoCompact': { enabled: true },
   },
-  project: { 'damocles.model': 'project-model', 'damocles.sandbox': { enabled: true }, 'damocles.effortByModel': { 'gpt-6-sol': 'low' } },
+  project: { 'damocles.model': 'project-model', 'damocles.sandbox': { enabled: true }, 'damocles.effortByModel': { 'gpt-6.1-sol': 'low' } },
 };
 
 const KEYS = [...new Set(Object.values(FIXTURE).flatMap((layer) => Object.keys(layer))), 'damocles.absent'];
@@ -92,9 +92,9 @@ describe('SettingsStore scope parity: VS Code vs desktop', () => {
   it('merge object values with disjoint keys across layers and keep a stored null', () => {
     const desktop = desktopStore();
     for (const store of [desktop, vsCodeStore()]) {
-      expect(store.get('damocles.effortByModel')).toStrictEqual({ 'gpt-6-luna': 'high', 'gpt-6-sol': 'low' });
+      expect(store.get('damocles.effortByModel')).toStrictEqual({ 'gpt-6-luna': 'high', 'gpt-6.1-sol': 'low' });
       expect(store.get('damocles.autoCompact')).toStrictEqual({ enabled: true, triggerPercent: 80 });
-      expect(store.inspect('damocles.effortByModel')).toStrictEqual({ userValue: { 'gpt-6-luna': 'high' }, projectValue: { 'gpt-6-sol': 'low' } });
+      expect(store.inspect('damocles.effortByModel')).toStrictEqual({ userValue: { 'gpt-6-luna': 'high' }, projectValue: { 'gpt-6.1-sol': 'low' } });
       expect(store.get('damocles.maxBudgetUsd', 'caller-default')).toBeNull();
     }
     desktop.dispose();

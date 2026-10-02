@@ -3,16 +3,26 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
-import { readOpenAIAuthFromDisk, OPENAI_PREFER_API_KEY_STATE, type OpenAIAuthStatus } from "../../../pi-session/openai-auth";
+import {
+  OPENAI_API_KEY_SECRET,
+  OPENAI_PREFER_API_KEY_STATE,
+  openaiAuthStatus,
+  readOpenAIAuthFromDisk,
+  type OpenAIAuthStatus,
+} from "../../../pi-session/openai-auth";
+import { describeAuthError } from "../../../pi-session/describe-error";
 import { buildAuthInteraction } from "./auth-interaction";
 import { republishAccountInfo } from "./account-info";
 import { log } from "../../../logger";
+import { t } from "../../../l10n";
 
 /** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
-const CODEX_SIGN_IN_CANCELLED = "__codex_signin_cancelled__";
+const CHATGPT_SIGN_IN_CANCELLED = "__chatgpt_signin_cancelled__";
 
 const OPENAI_MODELS_PROBE_URL = "https://api.openai.com/v1/models";
 const OPENAI_PROBE_TIMEOUT_MS = 8_000;
+
+type OpenAIAuthSnapshot = Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>["status"];
 
 interface ProbeResult {
   status: "ok" | "rejected" | "forbidden" | "network-error";
@@ -53,15 +63,13 @@ async function probeOpenAIKey(key: string): Promise<ProbeResult> {
   }
 }
 
-/**
- * Map pi's flat OpenAI auth state to the nested snapshot the settings panel renders. pi does not
- * surface a Codex account id, so `accountId` is always omitted.
- */
-function toSnapshot(status: OpenAIAuthStatus): {
-  codex: { signedIn: boolean; expiresAt?: number };
-  apikey: { configured: boolean };
-} {
+/** The settings panel's view of OpenAI auth: presence and expiry only, never a key or token. */
+function toSnapshot(status: OpenAIAuthStatus): OpenAIAuthSnapshot {
   return {
+    chatgpt: {
+      signedIn: status.chatgpt,
+      ...(typeof status.chatgptExpires === "number" ? { expiresAt: status.chatgptExpires } : {}),
+    },
     codex: {
       signedIn: status.codex,
       ...(typeof status.codexExpires === "number" ? { expiresAt: status.codexExpires } : {}),
@@ -71,14 +79,14 @@ function toSnapshot(status: OpenAIAuthStatus): {
 }
 
 /**
- * Webview-driven OpenAI auth (API key + Codex OAuth) backed by `PiRuntime`. pi owns the OpenAI/Codex
- * credential storage, the loopback OAuth callback server, PKCE, and token refresh; Damocles only
- * relays UI intent and broadcasts state. The prefer-api-key precedence stays a workspaceState flag.
+ * Webview-driven OpenAI auth (API key secret, Sign in with ChatGPT, legacy Codex sign-out) backed by
+ * `PiRuntime`. pi owns the grants in auth.json, the loopback OAuth callback server, PKCE and token
+ * refresh; the key lives in the host secret store. The prefer-api-key precedence is a workspaceState flag.
  */
 export function createOpenAIHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, getPanels, platform } = deps;
-  let codexBusy = false;
-  let codexAbort: AbortController | null = null;
+  let signInBusy = false;
+  let signInAbort: AbortController | null = null;
 
   const runtime = (): PiRuntime => PiRuntime.get();
 
@@ -88,40 +96,34 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     }
   }
 
-  /**
-   * Live status once pi's model runtime exists, otherwise the disk mirror. `PiRuntime.exists` flips
-   * true as soon as the singleton is constructed — before `init()` resolves — so we additionally gate
-   * on the model runtime being live to avoid reporting a spurious "not configured" during the init window.
-   */
-  function readStatus(): OpenAIAuthStatus {
-    return PiRuntime.exists && runtime().modelRuntime
-      ? runtime().getOpenAIAuthStatus()
-      : readOpenAIAuthFromDisk(PI_AGENT_DIR);
+  /** Live status once init's first key sync has run. Before that, the disk part plus a direct secret read. */
+  async function readStatus(): Promise<OpenAIAuthStatus> {
+    if (PiRuntime.exists && runtime().openaiStatusReady) return runtime().getOpenAIAuthStatus();
+    const secret = await platform.secrets.get(OPENAI_API_KEY_SECRET);
+    return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
   }
 
-  function authStatusMessage(): ExtensionToWebviewMessage {
+  async function authStatusMessage(): Promise<ExtensionToWebviewMessage> {
     return {
       type: "openaiAuthStatusChanged",
-      status: toSnapshot(readStatus()),
+      status: toSnapshot(await readStatus()),
       preferApiKey: platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
     };
   }
 
   /** Called on the mutation paths only. The read-only status query posts `authStatusMessage()` direct,
    *  because a read changes nothing the account chip is derived from. */
-  function broadcastAuthStatus(): void {
-    broadcast(authStatusMessage());
+  async function broadcastAuthStatus(): Promise<void> {
+    broadcast(await authStatusMessage());
     republishAccountInfo(getPanels);
   }
 
   /**
-   * The codex login races a `manual_code` paste-the-code prompt against pi's local OAuth callback
-   * server; when the callback wins, the prompt is auto-dismissed via its abort signal (see
-   * `buildAuthInteraction`). The login-method select prompt never reaches this interaction —
-   * PiRuntime's internal wrapper answers it with 'browser'.
+   * pi races the `manual_code` paste-the-redirect-URL prompt against its local OAuth callback server;
+   * when the callback wins, the prompt is dismissed through its abort signal (see `buildAuthInteraction`).
    */
-  function buildCodexInteraction(signal: AbortSignal): AuthInteraction {
-    return buildAuthInteraction({ signal, cancelSentinel: CODEX_SIGN_IN_CANCELLED, logPrefix: "[OpenAIHandlers]", platform });
+  function buildChatGPTInteraction(signal: AbortSignal): AuthInteraction {
+    return buildAuthInteraction({ signal, cancelSentinel: CHATGPT_SIGN_IN_CANCELLED, logPrefix: "[OpenAIHandlers]", platform });
   }
 
   return {
@@ -133,7 +135,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: "API key cannot be empty",
+          error: t("API key cannot be empty"),
         });
         return;
       }
@@ -145,7 +147,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: "Key rejected — verify it on platform.openai.com",
+          error: t("Key rejected. Verify it on platform.openai.com."),
         });
         return;
       }
@@ -155,25 +157,28 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: "Key returned 403 — likely rate-limited, IP-restricted, or region-blocked. Verify on platform.openai.com.",
+          error: t("Key returned 403. It is likely rate-limited, IP-restricted or region-blocked. Verify it on platform.openai.com."),
         });
         return;
       }
 
+      // A pending sign-in holds the credential chain, so this save would wait for it to end.
+      signInAbort?.abort();
       try {
         await runtime().setOpenAIApiKey(key);
       } catch (err) {
-        log("[OpenAIHandlers] Failed to persist API key:", err);
+        log("[OpenAIHandlers] Failed to persist API key: %s", describeAuthError(err));
+        await broadcastAuthStatus();
         postMessage(ctx.host, {
           type: "setOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: err instanceof Error ? err.message : "Failed to persist API key",
+          error: t("Failed to persist API key"),
         });
         return;
       }
 
-      broadcastAuthStatus();
+      await broadcastAuthStatus();
 
       if (probe.status === "ok") {
         postMessage(ctx.host, {
@@ -189,47 +194,52 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
           requestId: msg.requestId,
           ok: true,
           validated: false,
-          warning: "Couldn't validate key — network error",
+          warning: t("Couldn't validate the key because of a network error."),
         });
       }
     },
 
     clearOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "clearOpenAIApiKey") return;
+      signInAbort?.abort();
       try {
         await runtime().clearOpenAIApiKey();
-        broadcastAuthStatus();
+        await broadcastAuthStatus();
         postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
       } catch (err) {
-        log("[OpenAIHandlers] Failed to clear API key:", err);
+        log("[OpenAIHandlers] Failed to clear API key: %s", describeAuthError(err));
+        await broadcastAuthStatus();
         postMessage(ctx.host, {
           type: "clearOpenAIApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: err instanceof Error ? err.message : "Failed to clear API key",
+          error: t("Failed to clear API key"),
         });
       }
     },
 
-    getOpenAIAuthStatus: (_msg, ctx) => {
-      postMessage(ctx.host, authStatusMessage());
+    getOpenAIAuthStatus: async (_msg, ctx) => {
+      postMessage(ctx.host, await authStatusMessage());
     },
 
     setOpenAIPreferApiKey: async (msg, ctx) => {
       if (msg.type !== "setOpenAIPreferApiKey") return;
+      signInAbort?.abort();
       try {
         await platform.state.workspace.update(OPENAI_PREFER_API_KEY_STATE, msg.preferApiKey);
+        await runtime().syncOpenAIRuntimeKey();
       } catch (err) {
-        log("[OpenAIHandlers] Failed to persist preference:", err);
+        log("[OpenAIHandlers] Failed to apply the API key preference: %s", describeAuthError(err));
+        await broadcastAuthStatus();
         postMessage(ctx.host, {
           type: "setOpenAIPreferApiKeyAck",
           requestId: msg.requestId,
           ok: false,
-          error: err instanceof Error ? err.message : "Failed to persist preference",
+          error: t("Failed to apply the preference"),
         });
         return;
       }
-      broadcastAuthStatus();
+      await broadcastAuthStatus();
       postMessage(ctx.host, {
         type: "setOpenAIPreferApiKeyAck",
         requestId: msg.requestId,
@@ -237,46 +247,61 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       });
     },
 
-    startCodexOAuth: async (msg) => {
-      if (msg.type !== "startCodexOAuth") return;
+    startChatGPTOAuth: async (msg, ctx) => {
+      if (msg.type !== "startChatGPTOAuth") return;
 
-      if (codexBusy) {
-        broadcast({ type: "openaiCodexAuthFailed", error: "A sign-in flow is already in progress." });
+      // The flow in progress is still running, so the requester is told so rather than every panel told it failed.
+      if (signInBusy) {
+        postMessage(ctx.host, { type: "openaiChatGPTAuthStarted" });
         return;
       }
 
-      codexBusy = true;
-      codexAbort = new AbortController();
-      broadcast({ type: "openaiCodexAuthStarted" });
+      signInBusy = true;
+      const abort = new AbortController();
+      signInAbort = abort;
+      broadcast({ type: "openaiChatGPTAuthStarted" });
 
       try {
-        await runtime().signInCodex(buildCodexInteraction(codexAbort.signal));
-        broadcast({ type: "openaiCodexAuthCompleted", accountId: null });
-        broadcastAuthStatus();
+        await runtime().signInChatGPT(buildChatGPTInteraction(abort.signal));
+        broadcast({ type: "openaiChatGPTAuthCompleted" });
       } catch (err) {
-        if (err instanceof Error && err.message === CODEX_SIGN_IN_CANCELLED) {
-          broadcast({ type: "openaiCodexAuthFailed", error: "Sign-in cancelled." });
+        // pi rethrows a flow abort as its own "Login cancelled", so the signal is checked as well as the sentinel.
+        if (abort.signal.aborted || (err instanceof Error && err.message === CHATGPT_SIGN_IN_CANCELLED)) {
+          broadcast({ type: "openaiChatGPTAuthFailed", error: t("Sign-in cancelled.") });
         } else {
-          const error = err instanceof Error ? err.message : String(err);
-          log("[OpenAIHandlers] Codex sign-in failed: %O", err);
-          broadcast({ type: "openaiCodexAuthFailed", error });
+          log("[OpenAIHandlers] ChatGPT sign-in failed: %s", describeAuthError(err));
+          broadcast({ type: "openaiChatGPTAuthFailed", error: err instanceof Error ? err.message : String(err) });
         }
       } finally {
-        codexBusy = false;
-        codexAbort = null;
+        signInBusy = false;
+        signInAbort = null;
+        // A failed sign-in may still have changed auth.json, so the status is restated either way.
+        await broadcastAuthStatus();
       }
+    },
+
+    signOutChatGPT: async (msg) => {
+      if (msg.type !== "signOutChatGPT") return;
+      // Abort an in-flight sign-in so a stalled OAuth flow cannot land after the sign-out.
+      signInAbort?.abort();
+      try {
+        await runtime().signOutChatGPT();
+      } catch (err) {
+        log("[OpenAIHandlers] ChatGPT sign-out failed: %s", describeAuthError(err));
+      }
+      await broadcastAuthStatus();
     },
 
     signOutCodex: async (msg) => {
       if (msg.type !== "signOutCodex") return;
+      // The panel disables this sign-out during a ChatGPT sign-in; one arriving anyway must not queue behind the flow.
+      signInAbort?.abort();
       try {
-        // Abort an in-flight sign-in (if any) so a stalled OAuth flow can't leave codexBusy latched.
-        codexAbort?.abort();
         await runtime().signOutCodex();
-        broadcastAuthStatus();
       } catch (err) {
-        log("[OpenAIHandlers] Codex sign-out failed:", err);
+        log("[OpenAIHandlers] Codex sign-out failed: %s", describeAuthError(err));
       }
+      await broadcastAuthStatus();
     },
   };
 }

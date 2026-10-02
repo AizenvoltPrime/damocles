@@ -2,6 +2,7 @@ import { computed, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice, ToolCall } from '@shared/types/session';
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_RESUME_TOOL, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
+import type { EffortBadgeLevel } from '@shared/effort-badge';
 
 export type VirtualItemType =
   | 'user-message'
@@ -33,6 +34,8 @@ export interface VirtualItem {
   block?: ContentBlock;
   imageBlocks?: ImageBlock[];
   isStreaming?: boolean;
+  /** Set on the one row of a reply that shows its effort badge. */
+  effort?: EffortBadgeLevel;
 }
 
 function isTextBlock(block: ContentBlock): block is { type: 'text'; text: string } {
@@ -88,6 +91,8 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
 
     // A processed queue bubble keeps its older timestamp at the end of the array, so each cut runs from the highest timestamp seen so far.
     let maxSeenTimestamp = 0;
+    // The effort badge shown last in the current turn; a user message starts a new turn.
+    let shownEffort: EffortBadgeLevel | undefined;
 
     for (const [i, msg] of msgs.entries()) {
       const isStreaming = !!streamingId && msg.id === streamingId;
@@ -96,6 +101,8 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
       maxSeenTimestamp = Math.max(maxSeenTimestamp, msg.timestamp);
 
       if (msg.role === 'user') {
+        // A steer chip addresses a subagent, not this conversation's model, so the turn goes on.
+        if (!msg.steerTarget) shownEffort = undefined;
         const imageBlocks = msg.contentBlocks?.filter(isImageBlock);
         result.push({
           id: `user-${msg.id}`,
@@ -136,6 +143,8 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
         continue;
       }
 
+      const firstOwnItem = result.length;
+
       if (msg.isBackgroundResult) {
         result.push({
           id: `bg-${msg.id}`,
@@ -165,6 +174,14 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
       } else {
         flattenFallback(result, msg, i, isStreaming);
       }
+
+      if (msg.effort && msg.effort !== shownEffort) {
+        const anchor = effortAnchor(result, firstOwnItem, msg);
+        if (anchor) {
+          anchor.effort = msg.effort;
+          shownEffort = msg.effort;
+        }
+      }
     }
 
     // Trailing annotations outlive the messages they were cut from, so when the list is empty they still
@@ -184,6 +201,14 @@ export function useVirtualizedMessages(sources: VirtualizedMessageSources) {
   });
 
   return { items };
+}
+
+/** A reply's badge row: its thinking header when `ThinkingIndicator` renders one, else its first text row. */
+function effortAnchor(items: VirtualItem[], from: number, msg: ChatMessage): VirtualItem | undefined {
+  const own = items.slice(from);
+  const thinkingShown = Boolean((msg.thinking || msg.thinkingContent)?.trim() || msg.thinkingDuration || msg.isThinkingPhase);
+  return (thinkingShown ? own.find(item => item.type === 'thinking-block') : undefined)
+    ?? own.find(item => item.type === 'text-block' || item.type === 'streaming-text');
 }
 
 function flattenContentBlocks(

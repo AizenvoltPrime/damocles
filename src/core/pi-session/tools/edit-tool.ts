@@ -46,7 +46,7 @@ async function buildPiEditInput(
   cwd: string,
 ): Promise<EditToolInput> {
   // pi's edit rejects an empty `oldText`, and CC's empty-old_string "create file" idiom does not apply
-  // here — Write is the sole creation path. Fail with an actionable message instead of leaking pi's
+  // here — Write is the only text-file creation path. Fail with an actionable message instead of leaking pi's
   // internal error.
   if (params.old_string === '') {
     throw new Error('Edit cannot create a file: old_string is empty. Use the Write tool to create a new file.');

@@ -4,8 +4,8 @@ import { resolveCheapModelFor } from '../subagents/cheap-model';
 import { cheapModelValueForProvider } from '../custom-providers';
 import { PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from '../pi-models';
 
-const ANTHROPIC_OK = { codex: false, apiKey: false } as const;
-const OPENAI_OK = { codex: true, apiKey: false } as const;
+const ANTHROPIC_OK = { codex: false, chatgpt: false, apiKey: false } as const;
+const OPENAI_OK = { codex: true, chatgpt: false, apiKey: false } as const;
 
 const CUSTOM = new Set(['stepfun', 'deepseek', 'openrouter', 'google']);
 
@@ -27,7 +27,7 @@ describe('resolveCheapModelFor (§4.9)', () => {
   });
 
   it('an OpenAI main model resolves to the OpenAI cheap model (gpt-6-luna)', () => {
-    const res = resolveCheapModelFor('gpt-6-sol', makeRegistry(), OPENAI_OK, false);
+    const res = resolveCheapModelFor('gpt-6.1-sol', makeRegistry(), OPENAI_OK, false);
     expect(res.value).toBe(PI_SMALL_FAST_OPENAI);
   });
 });

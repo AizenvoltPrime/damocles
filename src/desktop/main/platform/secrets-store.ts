@@ -5,6 +5,7 @@ import type { LocalizationService } from '../../../platform/localization-service
 import type { NotificationService } from '../../../platform/notification-service';
 import type { SecretsStore } from '../../../platform/secrets-store';
 import { writeJsonConfig } from '../../../core/config/json-config-write';
+import { Emitter } from './emitter';
 
 const SCHEMA_VERSION = 1;
 export const SECRETS_FILE = 'secrets.json';
@@ -74,6 +75,7 @@ export function createDesktopSecretsStore(
     void notifications.warn(t('Damocles could not decrypt {0} saved secret(s) ({1}); sign in or enter those keys again.', lost.length, lost.join(', ')));
   }
   if (!isPersistent) log('[secrets] no usable OS encryption; secrets stay in memory for this session');
+  const changed = new Emitter<[string]>('secrets', log);
 
   // Memory changes only after the file has it, so a failed write leaves both as they were.
   const change = async (key: string, value: string | undefined): Promise<void> => {
@@ -89,6 +91,7 @@ export function createDesktopSecretsStore(
     stored.undecryptable.delete(key);
     if (value === undefined) stored.values.delete(key);
     else stored.values.set(key, value);
+    changed.fire(key);
   };
 
   return {
@@ -100,5 +103,6 @@ export function createDesktopSecretsStore(
       await change(key, undefined);
     },
     keys: async () => [...stored.values.keys()],
+    onDidChange: (listener) => changed.add(listener),
   };
 }

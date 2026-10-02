@@ -13,11 +13,11 @@ import type { ElicitationRequest, ElicitationResult } from '../../shared/types/e
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import type { PermissionResult, CanUseToolContext, SettledApproval } from './types';
-import { buildUserDenyResult, buildUnaskedDenyResult } from './utils';
-import { t } from '../l10n';
+import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity } from './types';
+import { buildUnaskedDenyResult } from './utils';
+import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
 import type { FormValues } from '../../shared/types/forms';
-import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
+import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
 export type { PermissionResult, CanUseToolContext };
 
@@ -79,10 +79,6 @@ export class PermissionHandler {
 
   getPermissionMode(): PermissionMode {
     return this.state.permissionMode;
-  }
-
-  setSessionAborting(value: boolean): void {
-    this.state.sessionAborting = value;
   }
 
   setDangerouslySkipPermissions(enabled: boolean): void {
@@ -169,6 +165,11 @@ export class PermissionHandler {
     this.state.workspacePath = workspacePath;
   }
 
+  /** The panel session's cwd, which file rules resolve `file_path` against exactly as the tools do. */
+  setCwd(cwd: string): void {
+    this.state.cwd = cwd;
+  }
+
   /**
    * Lightweight evaluation for PreToolUse hook.
    * Only returns allow/deny for definitive pattern matches.
@@ -176,9 +177,25 @@ export class PermissionHandler {
    */
   async evaluatePermission(
     toolName: string,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    mcpTool?: McpToolIdentity,
   ): Promise<'allow' | 'deny' | 'ask'> {
-    return this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath);
+    return this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath, mcpTool);
+  }
+
+  /** The behavior of the settings rule the call matches, or null when none does or YOLO is on. */
+  async matchRule(toolName: string, input: Record<string, unknown>, mcpTool?: McpToolIdentity): Promise<'allow' | 'deny' | 'ask' | null> {
+    return this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, mcpTool);
+  }
+
+  /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
+  async readRuleFilter(): Promise<(filePath: string) => boolean> {
+    return this.evaluatorManager.readRuleFilter(this.state.workspacePath);
+  }
+
+  /** Whether an Edit or Write of `filePath` targets a plan file, resolved against the session cwd. */
+  isPlanFile(filePath: string): boolean {
+    return this.evaluatorManager.isPlanFile(filePath);
   }
 
   async canUseTool(
@@ -198,7 +215,7 @@ export class PermissionHandler {
       return this.formManager.handleForm(input, context);
     }
 
-    const evaluation = await this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath);
+    const evaluation = await this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath, context.mcpTool);
 
     if (evaluation === 'allow') {
       return { behavior: 'allow', updatedInput: input };
@@ -208,32 +225,33 @@ export class PermissionHandler {
       return buildUnaskedDenyResult(undefined, 'Permission denied by settings rule');
     }
 
+    // An ask rule prompts even for a subagent whose edits the user accepted.
+    const askRule = (await this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, context.mcpTool)) === 'ask';
+
     if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
-      return this.approvalManager.handleFilePermission(toolName, input, context);
+      return this.approvalManager.handleFilePermission(toolName, input, context, askRule);
+    }
+
+    if (toolName === TOOL_GENERATE_IMAGE) {
+      return this.approvalManager.handleImagePermission(input, context, this.platform.settings.get<string>(IMAGE_MODEL_SETTING, ''));
     }
 
     if (isShellTool(toolName)) {
-      return this.approvalManager.handleShellPermission(toolName, input, context);
+      return this.approvalManager.handleShellPermission(toolName, input, context, askRule);
     }
 
     if (toolName === TOOL_SKILL) {
       return this.skillManager.handleSkillApproval(input, context);
     }
 
-    const allowLabel = t("Allow");
-    const denyLabel = t("Deny");
-    const result = await this.platform.notifications.info(
-      t("Damocles wants to use the \"{0}\" tool. Allow?", toolName),
-      { modal: true },
-      allowLabel,
-      denyLabel
-    );
+    return this.approvalManager.handleToolPermission(toolName, input, context);
+  }
 
-    if (result === allowLabel) {
-      return { behavior: 'allow', updatedInput: input };
-    }
-
-    return buildUserDenyResult(undefined, `User denied permission for ${toolName}`);
+  /** The image model the user approved for this GenerateImage call, removed as it is read; undefined when no prompt ran. */
+  takeApprovedImageModel(toolUseId: string): string | undefined {
+    const model = this.state.approvedImageModels.get(toolUseId);
+    this.state.approvedImageModels.delete(toolUseId);
+    return model;
   }
 
   async resolveApproval(

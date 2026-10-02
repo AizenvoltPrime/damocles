@@ -9,6 +9,8 @@ import {
 import { IconBrain, IconChevronDown } from '@/components/icons';
 import { useTextStreaming } from '@/composables/useTextStreaming';
 import MarkdownRenderer from './MarkdownRenderer.vue';
+import EffortBadge from './EffortBadge.vue';
+import type { EffortBadgeLevel } from '@shared/effort-badge';
 
 const { t } = useI18n();
 
@@ -19,6 +21,7 @@ const props = defineProps<{
   /** Start expanded (and stay open). Used where the indicator can't persist its expanded state across
    * a re-mount — e.g. a sealed subagent thought replacing the live streaming one. */
   defaultExpanded?: boolean | undefined;
+  effort?: EffortBadgeLevel | undefined;
 }>();
 
 const thinkingRef = computed(() => props.thinking ?? '');
@@ -92,47 +95,50 @@ onUnmounted(() => {
     v-model:open="isExpanded"
     class="thinking-indicator"
   >
-    <CollapsibleTrigger
-      :class="[
-        'group flex items-center gap-2 py-1 px-2 -mx-2 rounded-md transition-colors',
-        hasContent ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default'
-      ]"
-      :disabled="!hasContent"
-    >
-      <!-- Brain icon with subtle animation -->
-      <div class="relative flex items-center justify-center">
-        <IconBrain
+    <div class="flex items-center gap-2">
+      <CollapsibleTrigger
+        :class="[
+          'group flex items-center gap-2 py-1 px-2 -mx-2 rounded-md transition-colors',
+          hasContent ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default'
+        ]"
+        :disabled="!hasContent"
+      >
+        <!-- Brain icon with subtle animation -->
+        <div class="relative flex items-center justify-center">
+          <IconBrain
+            :size="14"
+            :class="[
+              'text-muted-foreground transition-all',
+              isStreaming && 'animate-pulse'
+            ]"
+          />
+        </div>
+
+        <!-- Label and duration -->
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-muted-foreground">
+            {{ isStreaming ? t('thinking.thinking') : t('thinking.thought') }}
+          </span>
+          <span
+            v-if="isStreaming || displaySeconds > 0"
+            class="text-xs text-muted-foreground/70 tabular-nums"
+          >
+            {{ displaySeconds }}s
+          </span>
+        </div>
+
+        <!-- Chevron indicator -->
+        <IconChevronDown
+          v-if="hasContent"
           :size="14"
           :class="[
-            'text-muted-foreground transition-all',
-            isStreaming && 'animate-pulse'
+            'text-muted-foreground/60 transition-transform duration-200',
+            isExpanded && '-rotate-180'
           ]"
         />
-      </div>
-
-      <!-- Label and duration -->
-      <div class="flex items-center gap-2">
-        <span class="text-sm text-muted-foreground">
-          {{ isStreaming ? t('thinking.thinking') : t('thinking.thought') }}
-        </span>
-        <span
-          v-if="isStreaming || displaySeconds > 0"
-          class="text-xs text-muted-foreground/70 tabular-nums"
-        >
-          {{ displaySeconds }}s
-        </span>
-      </div>
-
-      <!-- Chevron indicator -->
-      <IconChevronDown
-        v-if="hasContent"
-        :size="14"
-        :class="[
-          'text-muted-foreground/60 transition-transform duration-200',
-          isExpanded && '-rotate-180'
-        ]"
-      />
-    </CollapsibleTrigger>
+      </CollapsibleTrigger>
+      <EffortBadge v-if="effort" :effort="effort" />
+    </div>
 
     <CollapsibleContent>
       <div

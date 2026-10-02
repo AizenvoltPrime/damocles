@@ -47,7 +47,7 @@ describe('MCP OAuth callback server lifetime', () => {
     const ok = await fetch(`http://127.0.0.1:${port}/callback?code=c1&state=first`);
     expect(ok.status).toBe(200);
     expect(ok.headers.get('cache-control')).toMatch(/no-store/);
-    expect(await code).toBe('c1');
+    expect(await code).toEqual({ code: 'c1' });
     expect(isCallbackServerRunning()).toBe(true);
 
     releaseCallbackServer('second');
@@ -56,6 +56,14 @@ describe('MCP OAuth callback server lifetime', () => {
     // The settled flow's token exchange still names the redirect URI it was authorized with.
     expect(getOAuthCallbackPort()).toBe(port);
     expect(getOAuthCallbackPath()).toBe('/callback');
+  });
+
+  it('hands the redirect\u2019s iss to the flow untouched, so the flow can check it (RFC 9207)', async () => {
+    await ensureCallbackServer({ oauthState: 'iss', reserveState: true });
+    const result = waitForCallback('iss');
+    const iss = 'https://as.example.com/tenant';
+    await fetch(`http://127.0.0.1:${getOAuthCallbackPort()}/callback?code=c2&state=iss&iss=${encodeURIComponent(iss)}`);
+    expect(await result).toEqual({ code: 'c2', iss });
   });
 
   it('closes after an error redirect, a cancel, and the callback timeout', async () => {
@@ -135,6 +143,38 @@ describe('MCP OAuth callback port of non-strict flows', () => {
     await ensureCallbackServer({ oauthState: 'third', reserveState: true });
     expect(redirectUri()).toBe(first);
     releaseCallbackServer('third');
+  });
+
+  /** Send one raw request line and Host header, and return the response's status line. */
+  function rawRequest(port: number, target: string, host: string): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`);
+      });
+      let received = '';
+      socket.on('data', (chunk) => (received += chunk.toString('latin1')));
+      socket.on('end', () => resolve(received.split('\r\n', 1)[0] ?? ''));
+      socket.on('error', reject);
+    });
+  }
+
+  it('answers a request with a malformed Host header and still completes the flow', async () => {
+    await ensureCallbackServer({ oauthState: 'host', reserveState: true });
+    const code = waitForCallback('host');
+
+    expect(await rawRequest(getOAuthCallbackPort(), '/callback?code=c&state=host', '[not a host')).toBe('HTTP/1.1 200 OK');
+    await expect(code).resolves.toEqual({ code: 'c' });
+  });
+
+  it('refuses a request target that is not a URL and still completes a later callback', async () => {
+    await ensureCallbackServer({ oauthState: 'target', reserveState: true });
+    const code = waitForCallback('target');
+    const port = getOAuthCallbackPort();
+
+    expect(await rawRequest(port, '//[bad/callback', '127.0.0.1')).toBe('HTTP/1.1 400 Bad Request');
+    expect(await rawRequest(port, 'http://[bad/callback', '127.0.0.1')).toBe('HTTP/1.1 400 Bad Request');
+    expect(await rawRequest(port, '/callback?code=c&state=target', '127.0.0.1')).toBe('HTTP/1.1 200 OK');
+    await expect(code).resolves.toEqual({ code: 'c' });
   });
 
   it('binds another port when the previous one is taken', async () => {

@@ -84,7 +84,10 @@ function usageLine(entry: Json): UsageLine | typeof SKIP | typeof ERROR {
   if (!usage) return SKIP;
   const tsMs = timestampMs(entry['timestamp']);
   if (!nonEmptyString(entry['id']) || tsMs === undefined) return ERROR;
-  const source = entry['type'] === 'message' && isRecord(entry['message']) ? entry['message'] : entry;
+  const message = entry['type'] === 'message' && isRecord(entry['message']) ? entry['message'] : undefined;
+  const details = message?.['role'] === 'toolResult' && isRecord(message['details']) ? message['details'] : undefined;
+  // A tool result that bills its own model (GenerateImage) names the provider and model in `details`.
+  const source = details && nonEmptyString(details['provider']) && nonEmptyString(details['model']) ? details : message ?? entry;
   return {
     kind: 'usage',
     id: entry['id'],

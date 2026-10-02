@@ -1,6 +1,6 @@
 import type { AccountInfo, ModelInfo } from '../../shared/types/settings';
-import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
-import { isDollarBilled } from './pi-models';
+import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, openaiRuntimeKeyWanted, type OpenAIAuthStatus } from './openai-auth';
+import { isDollarBilled, resolvePiModel, type ModelLookup } from './pi-models';
 
 /**
  * Account/billing credential resolution for the adapter callbacks (US-008/account chip). Pure over a
@@ -17,14 +17,24 @@ export interface AccountBillingDeps {
   claudeAuthMode: string;
   /** The OpenAI auth state (`PiRuntime.getOpenAIAuthStatus()`). */
   openaiAuthStatus: OpenAIAuthStatus;
-  /** Whether the user prefers the OpenAI API key over Codex OAuth (`PiSession.preferOpenAIApiKey()`). */
+  /** Whether the user prefers the OpenAI API key over a ChatGPT or Codex sign-in (`PiSession.preferOpenAIApiKey()`). */
   preferApiKey: boolean;
+  /** The pi provider the active model resolved to; undefined when it resolved to none. */
+  resolvedProvider?: string | undefined;
 }
 
-/** The active OpenAI credential path, honoring the prefer-API-key toggle when a key is configured. */
-export function openaiTokenSource(deps: AccountBillingDeps): 'codex-oauth' | 'openai-api-key' {
+/**
+ * The active OpenAI credential. A resolved provider names it: `openai-codex` is the Codex grant, and `openai`
+ * is the key while the runtime key rule wants it, else ChatGPT. Unresolved, it follows `resolvePiModel`'s order.
+ */
+export function openaiTokenSource(deps: AccountBillingDeps): 'chatgpt-oauth' | 'codex-oauth' | 'openai-api-key' {
   const status = deps.openaiAuthStatus;
+  if (deps.resolvedProvider === OPENAI_CODEX_PROVIDER) return 'codex-oauth';
+  if (deps.resolvedProvider === OPENAI_API_PROVIDER) {
+    return status.chatgpt && !openaiRuntimeKeyWanted(status, deps.preferApiKey) ? 'chatgpt-oauth' : 'openai-api-key';
+  }
   if (deps.preferApiKey && status.apiKey) return 'openai-api-key';
+  if (status.chatgpt) return 'chatgpt-oauth';
   return status.codex ? 'codex-oauth' : 'openai-api-key';
 }
 
@@ -61,9 +71,11 @@ export interface ModelBillingDeps {
   claudeAuthMode: string;
   openai: OpenAIAuthStatus;
   preferApiKey: boolean;
+  /** Decides which OpenAI provider a GPT model resolves to; undefined before pi's model runtime exists. */
+  registry: ModelLookup | undefined;
 }
 
-/** Whether a catalog model value bills dollars, by the same credential rule as the account chip. */
+/** Whether a catalog model value bills dollars, by the account chip's rule: the provider `resolvePiModel` picks names the credential. */
 export function modelDollarBilled(value: string, deps: ModelBillingDeps): boolean {
   return dollarBilled({
     modelValue: value,
@@ -71,17 +83,29 @@ export function modelDollarBilled(value: string, deps: ModelBillingDeps): boolea
     claudeAuthMode: deps.claudeAuthMode,
     openaiAuthStatus: deps.openai,
     preferApiKey: deps.preferApiKey,
+    resolvedProvider: resolvedProviderOf(value, deps.registry, deps.openai, deps.preferApiKey),
   });
 }
 
+/** The pi provider `resolvePiModel` picks for a model value, which names the OpenAI credential it bills. */
+export function resolvedProviderOf(
+  value: string,
+  registry: ModelLookup | undefined,
+  openai: OpenAIAuthStatus,
+  preferApiKey: boolean,
+): string | undefined {
+  return registry ? resolvePiModel(value, registry, openai, preferApiKey).model?.provider : undefined;
+}
+
 /**
- * Whether a resolved pi model bills dollars. Its provider names the credential it will use, which a
- * direct `provider/modelId` pin can choose against the panel's preference, so the provider decides first.
- * A provider outside the catalog has unknown billing, which reads as a charge.
+ * Whether a resolved pi model bills dollars. A direct `provider/modelId` pin can choose a provider against
+ * the panel's preference, so the provider decides first. `openai` bills the subscription only while ChatGPT
+ * is its credential and the runtime key does not override it. A provider outside the catalog, or `openai`
+ * with neither credential, has unknown billing, which reads as a charge.
  */
 export function piModelDollarBilled(model: { provider: string; id: string }, deps: ModelBillingDeps): boolean {
   if (model.provider === OPENAI_CODEX_PROVIDER) return false;
-  if (model.provider === OPENAI_API_PROVIDER) return true;
+  if (model.provider === OPENAI_API_PROVIDER) return !deps.openai.chatgpt || openaiRuntimeKeyWanted(deps.openai, deps.preferApiKey);
   if (model.provider === 'anthropic') return isDollarBilled(undefined, deps.claudeAuthMode);
   const info = deps.supportedModels.find((m) => m.piProvider === model.provider && m.value === model.id);
   return info ? modelDollarBilled(info.value, deps) : true;

@@ -26,6 +26,7 @@ import { rewindableUserIdsOnBranch } from './rewind';
 import { promptTest } from './prompt-index';
 import { extractOriginalInputs } from './original-input';
 import { extractMidStreamEntryIds } from './mid-stream';
+import { stoppedOnBranch } from './turn-stopped';
 import { isSteerData } from './steer';
 import { DAMOCLES_STEER_ENTRY } from './constants';
 import { stripIdeContext } from './ide-context';
@@ -33,6 +34,10 @@ import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
 import { sessionUsageMessage, type SessionUsageMessage } from '../session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from '../context-snapshot';
+import { publishedEffort, type EffortBadgeLevel } from '../../../shared/effort-badge';
+
+/** Whether the registry's model of that provider and id reasons; undefined when it is not in the registry. */
+export type ModelReasonsLookup = (provider: string, modelId: string) => boolean | undefined;
 
 interface PiToolResult {
   text: string;
@@ -56,6 +61,7 @@ interface ReplayAssistant {
   thinking: string;
   tools: HistoryToolCall[];
   contentBlocks: ContentBlock[];
+  effort?: EffortBadgeLevel;
 }
 interface ReplayError {
   kind: 'error';
@@ -117,9 +123,13 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
  * compaction hid still count). The `damocles-steer` custom entry is NOT skipped — it is mapped in
  * position to a replayed amber injected "You steered" chip.
  */
-export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: ContextSnapshot } {
+export function reconstructMessages(
+  branch: readonly SessionEntry[],
+  modelReasons: ModelReasonsLookup = () => undefined,
+): { messages: ReplayMessage[]; usage: ContextSnapshot } {
   const originalInputs = extractOriginalInputs(branch);
   const midStreamIds = extractMidStreamEntryIds(branch);
+  const stopped = stoppedOnBranch(branch);
   const isPrompt = promptTest(branch);
   let promptCount = 0;
   const toolResults = new Map<string, PiToolResult>();
@@ -181,6 +191,9 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number };
         stopReason?: string;
         errorMessage?: string;
+        provider?: unknown;
+        model?: unknown;
+        thinkingLevel?: unknown;
       };
     }).message;
     const role = message?.role;
@@ -211,7 +224,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     const snapshot = message ? contextSnapshotOf(message) : undefined;
     if (snapshot) usage = snapshot;
 
-    if (message?.stopReason === 'error' && message.errorMessage) {
+    if (message?.stopReason === 'error' && message.errorMessage && !stopped.entryIds.has(entry.id)) {
       messages.push({ kind: 'error', content: message.errorMessage });
       continue;
     }
@@ -232,7 +245,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         const toolName = mapPiToolName(b.name);
         const input = normalizeToolInput(b.name, b.arguments ?? {});
         const result = toolResults.get(b.id);
-        const tool: HistoryToolCall = { id: b.id, name: toolName, input };
+        const tool: HistoryToolCall = { id: b.id, name: toolName, input, ...(stopped.toolCallIds.has(b.id) ? { stopped: true as const } : {}) };
         if (result) {
           tool.result = result.text;
           tool.isError = result.isError;
@@ -245,7 +258,10 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     }
 
     if (!text && !thinking && tools.length === 0) continue;
-    messages.push({ kind: 'assistant', content: text, thinking, tools, contentBlocks });
+    const effort = message && typeof message.provider === 'string' && typeof message.model === 'string'
+      ? publishedEffort(message.thinkingLevel, modelReasons(message.provider, message.model))
+      : undefined;
+    messages.push({ kind: 'assistant', content: text, thinking, tools, contentBlocks, ...(effort ? { effort } : {}) });
   }
 
   return { messages, usage };
@@ -302,7 +318,7 @@ async function hydrateSubagentCards(
 
   let files: Map<string, string>;
   try {
-    files = await indexAgentFiles(subagentsDir(ensurePiSessionDir(cwd), sessionId));
+    files = (await indexAgentFiles(subagentsDir(ensurePiSessionDir(cwd), sessionId))).paths;
   } catch (err) {
     log('[session-store] indexing subagent files failed for %s: %O', sessionId, err);
     files = new Map();
@@ -337,6 +353,9 @@ async function hydrateSubagentCards(
         // A resume segment records the billing of the model it ran on, which a launch written earlier may lack.
         const dollarBilled = segment?.dollarBilled ?? file.launch.dollarBilled;
         if (dollarBilled !== undefined) tool.agentDollarBilled = dollarBilled;
+        // The launch's effort describes the launch run only; a resume card shows only what its own segment recorded.
+        const effort = inv.resume ? segment?.effort : file.launch.effort;
+        if (effort !== undefined) tool.agentEffort = effort;
       }
       if (segment) {
         const agentMessages = piMessagesToHistoryAgentMessages(segment.messages);
@@ -371,6 +390,7 @@ export async function loadPiSessionHistory(
   sessionId: string,
   post: (m: ExtensionToWebviewMessage) => void,
   signal?: AbortSignal,
+  modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>,
 ): Promise<string[] | null> {
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
   if (signal?.aborted) return null;
@@ -400,6 +420,7 @@ export async function loadPiSessionHistory(
     fail(t("This conversation's file could not be found. It may have been deleted."));
     return null;
   }
+  const reasons = await modelReasons;
 
   let messages: ReplayMessage[];
   let usage: ContextSnapshot;
@@ -413,7 +434,7 @@ export async function loadPiSessionHistory(
     const reconstructSpan = perfSpan('replay.reconstruct');
     const leafId = sm.getLeafId();
     branch = sm.getBranch(leafId ?? undefined);
-    ({ messages, usage } = reconstructMessages(branch));
+    ({ messages, usage } = reconstructMessages(branch, reasons));
     reconstructSpan.end({ entries: branch.length, items: messages.length });
     const usageSpan = perfSpan('replay.usage');
     sessionUsage = sessionUsageMessage(sm);
@@ -480,6 +501,7 @@ export async function loadPiSessionHistory(
         ...(msg.thinking ? { thinking: msg.thinking } : {}),
         ...(msg.tools.length > 0 ? { tools: msg.tools } : {}),
         ...(msg.contentBlocks.length > 0 ? { contentBlocks: msg.contentBlocks } : {}),
+        ...(msg.effort ? { effort: msg.effort } : {}),
       });
     }
   }

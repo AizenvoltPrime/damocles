@@ -1,6 +1,6 @@
 import type { HandlerRegistry } from "../types";
 import type { ToolCall } from "@shared/types/session";
-import { TOOL_EDIT, TOOL_WRITE } from "@shared/tool-names";
+import { TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from "@shared/tool-names";
 
 export function createPermissionHandlers(): Partial<HandlerRegistry> {
   return {
@@ -17,7 +17,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         ...(msg.editLineNumber ? { metadata: { editLineNumber: msg.editLineNumber } } : {}),
       };
 
-      if (msg.toolName === TOOL_EDIT || msg.toolName === TOOL_WRITE) {
+      if (msg.toolName === TOOL_EDIT || msg.toolName === TOOL_WRITE || msg.toolName === TOOL_GENERATE_IMAGE) {
         sessionStore.trackFileAccess(msg.toolName, msg.toolInput);
       }
 
@@ -39,7 +39,10 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       // absent key rather than an explicit undefined that a later spread could use to clobber.
       permissionStore.addPermission(msg.toolUseId, {
         toolName: msg.toolName,
+        toolInput: msg.toolInput,
         ...(msg.filePath !== undefined && { filePath: msg.filePath }),
+        ...(msg.prompt !== undefined && { prompt: msg.prompt }),
+        ...(msg.imageModel !== undefined && { imageModel: msg.imageModel }),
         ...(msg.originalContent !== undefined && { originalContent: msg.originalContent }),
         ...(msg.proposedContent !== undefined && { proposedContent: msg.proposedContent }),
         ...(msg.command !== undefined && { command: msg.command }),
@@ -59,6 +62,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         permissionStore.clearPendingPlanApproval();
       }
 
+      if (msg.outcome !== "approved") return;
       const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "approved");
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, "approved");

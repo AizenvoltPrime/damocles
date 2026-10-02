@@ -52,7 +52,17 @@ function requestClose(): void {
 
 const { zIndex, root, titleId } = useOverlayDialog(requestClose);
 
-const { t, te } = useI18n();
+const { t, te, locale } = useI18n();
+
+const scoreFormat = computed(() => new Intl.NumberFormat(locale.value, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+/** A Jev grade renders as a localized verdict; `reason` is model-facing English. */
+function searchReason(result: SearchResult): string | undefined {
+  if (result.rerankRelevance === undefined || result.rerankClassifierScore === undefined) return result.reason;
+  return t('contextInjection.rerankClassifier', {
+    verdict: t(`contextInjection.rerankVerdict.${result.rerankRelevance}`),
+    score: scoreFormat.value.format(result.rerankClassifierScore),
+  });
+}
 
 // Stored kind, scope and tier values render through the memory.kind / memory.scope labels; an unknown value shows as stored.
 function kindLabel(kind: string): string {
@@ -1094,7 +1104,7 @@ onUnmounted(() => {
           v-for="result in searchResults"
           :key="result.id"
           class="mb-2 p-2 rounded-md border border-border/50 bg-card"
-          :title="result.reason ?? undefined"
+          :title="searchReason(result)"
         >
           <div class="flex items-center gap-1.5 mb-1">
             <Badge
@@ -1106,9 +1116,9 @@ onUnmounted(() => {
             <Badge
               v-if="result.rerankRelevance"
               variant="outline"
-              class="text-xs h-4 px-1.5 capitalize"
+              class="text-xs h-4 px-1.5"
             >
-              {{ result.rerankRelevance }}
+              {{ t(`contextInjection.badge.rerank.${result.rerankRelevance}`) }}
             </Badge>
             <span
               v-if="result.title"
@@ -1126,10 +1136,11 @@ onUnmounted(() => {
             />
           </div>
           <p
-            v-if="result.reason"
+            v-if="searchReason(result)"
             class="text-xs text-violet-400/80 italic mt-1"
+            data-testid="search-result-reason"
           >
-            {{ result.reason }}
+            {{ searchReason(result) }}
           </p>
           <span class="text-xs text-muted-foreground">{{ formatTimestamp(result.timestamp) }}</span>
         </div>

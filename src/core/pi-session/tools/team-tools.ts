@@ -9,6 +9,7 @@ import type { AgentMcpContext } from '../../team/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../team/review-gate';
+import { VERIFICATION_SECTION } from '../../team/scratchpad';
 import { execSafe } from '../checkpoints/exec';
 
 /**
@@ -77,6 +78,7 @@ const TEAM_AGENT_ENTRIES: ReadonlyArray<{ name: string; access: ToolAccess; desc
   { name: 'team_report_complete', access: 'specialist', description: 'Signal work is done, enter awaiting-review.' },
   { name: 'team_flag_brief_conflict', access: 'specialist', description: 'Flag a hard conflict with the mission-brief.' },
   { name: 'team_resolve_brief_conflict', access: 'lead', description: 'Reconcile or dismiss a brief-conflict flag.' },
+  { name: 'team_dismiss_review', access: 'lead', description: 'Dismiss an unsatisfied required review with a written reason.' },
   { name: 'team_record_verification', access: 'both', description: 'Record a verification run (full-suite or scoped) against the current tree fingerprint.' },
   { name: 'team_synthesize_result', access: 'lead', description: 'Submit the final team result.' },
 ];
@@ -97,6 +99,15 @@ const NAMES_BY_ROLE: Readonly<Record<'lead' | 'specialist', readonly string[]>> 
 
 export function teamAgentPiToolNamesForRole(role: 'lead' | 'specialist'): readonly string[] {
   return NAMES_BY_ROLE[role];
+}
+
+/** A reviewer's shell cannot run a suite, so any ledger entry it recorded would vouch for a run that never happened. */
+const REVIEWER_WITHHELD_TOOLS: ReadonlySet<string> = new Set(['team_record_verification']);
+
+/** The `team_*` tools one agent may call. Both its active-set names and its definitions read this. */
+export function teamAgentPiToolNames(agent: Pick<AgentMcpContext, 'role' | 'kind'>): readonly string[] {
+  const names = teamAgentPiToolNamesForRole(agent.role);
+  return agent.kind === 'reviewer' ? names.filter((name) => !REVIEWER_WITHHELD_TOOLS.has(name)) : names;
 }
 
 /** The Tools panel shows role, and `access` is where registration already states it. */
@@ -328,6 +339,11 @@ const teamWriteScratchpadSchema = Type.Object(
 
 const teamGetStatusSchema = Type.Object({}, { additionalProperties: false });
 
+// Required with kind 'reviewer' and rejected otherwise; the runner enforces both, since the schema cannot tie a field to `kind`.
+const reviewsParam = Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
+  description: "Reviewer only, and required for one: the roster implementors whose work this reviewer reviews and signs off. Its verdicts gate their approval. Pass [] for a reviewer of no implementor's code. Omit it for an implementor.",
+}));
+
 const teamSpawnSpecialistSchema = Type.Object(
   {
     name: Type.String({ description: 'Specialist name from the team roster' }),
@@ -340,6 +356,7 @@ const teamSpawnSpecialistSchema = Type.Object(
       { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
     ),
     profile: Type.Optional(Type.String({ description: 'Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.' })),
+    reviews: reviewsParam,
   },
   { additionalProperties: false },
 );
@@ -355,6 +372,7 @@ const teamRedispatchSpecialistSchema = Type.Object(
       { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
     ),
     profile: Type.Optional(Type.String({ description: 'Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.' })),
+    reviews: reviewsParam,
   },
   { additionalProperties: false },
 );
@@ -386,6 +404,19 @@ const teamReportCompleteSchema = Type.Object(
       maxLength: MAX_MESSAGE_CONTENT_LENGTH,
       description: 'Your sign-off: what you delivered, what you verified, and what you are leaving open. This is the last thing you say, not a restatement of your scratchpad section, which the lead reads on its own.',
     }),
+    verdicts: Type.Optional(Type.Array(
+      Type.Object(
+        {
+          implementor: Type.String({ minLength: 1, description: 'An implementor you review' }),
+          verdict: Type.Union(
+            [Type.Literal('approve'), Type.Literal('changes_requested')],
+            { description: 'approve, or changes_requested backed by findings in your scratchpad section' },
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      { description: 'Reviewers with declared implementors only: one verdict for each implementor you review. Leave out an implementor that has landed no work yet (it has never reported complete or entered review), since there is nothing to judge.' },
+    )),
   },
   { additionalProperties: false },
 );
@@ -401,6 +432,15 @@ const teamResolveBriefConflictSchema = Type.Object(
   {
     name: Type.String({ description: 'Specialist whose brief-conflict flag you are resolving' }),
     resolution: Type.String({ minLength: 10, maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Written rationale: how the conflict is reconciled, or why it is dismissed' }),
+  },
+  { additionalProperties: false },
+);
+
+const teamDismissReviewSchema = Type.Object(
+  {
+    reviewer: Type.String({ description: 'The reviewer whose review you are dismissing' }),
+    implementor: Type.String({ description: 'The implementor the review covers' }),
+    reason: Type.String({ minLength: 10, maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Written reason for approving this work without the review. The system puts it at the top of the team result' }),
   },
   { additionalProperties: false },
 );
@@ -585,7 +625,9 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         `its \`content\` field replaced by a marker beginning "${UNCHANGED_MARKER_PREFIX} N)". That marker means the ` +
         'section exists, is current and is not empty: the full text is already earlier in your context, so scroll back to it. ' +
         'Re-reading a marked section returns the same marker and gains you nothing. A section that is genuinely absent returns ' +
-        '"Section \'name\' not found." instead, and an untouched scratchpad returns "Scratchpad is empty.".',
+        '"Section \'name\' not found." instead, and an untouched scratchpad returns "Scratchpad is empty.". ' +
+        `The \`${VERIFICATION_SECTION}\` section also carries \`currentFingerprint\`, the working tree's fingerprint now: only a ` +
+        'ledger entry stamped with that fingerprint vouches for the current tree.',
       parameters: teamReadScratchpadSchema,
       execute: async (_id, input) => {
         if (input.section) {
@@ -596,7 +638,8 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
           ctx.scratchpad.markRead(ctx.agentName, input.section);
           ctx.scratchpad.recordReadOutcome(ctx.agentName, known ? 'marker' : 'full');
           const content = known ? unchangedMarker(entry.version) : entry.content;
-          return textResult(JSON.stringify({ section: entry.section, content, author: entry.author, version: entry.version }));
+          const read = { section: entry.section, content, author: entry.author, version: entry.version };
+          return textResult(JSON.stringify(entry.section === VERIFICATION_SECTION ? { ...read, currentFingerprint: await computeTreeFingerprint(cwd) } : read));
         }
         const all = ctx.scratchpad.getAll();
         if (all.length === 0) return textResult('Scratchpad is empty.');
@@ -604,11 +647,13 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         const known = all.map((e) => ctx.scratchpad.hasCurrentRead(ctx.agentName, e.section));
         ctx.scratchpad.markAllRead(ctx.agentName);
         for (const wasKnown of known) ctx.scratchpad.recordReadOutcome(ctx.agentName, wasKnown ? 'marker' : 'full');
+        const currentFingerprint = all.some((e) => e.section === VERIFICATION_SECTION) ? await computeTreeFingerprint(cwd) : undefined;
         const payload = all.map((e, i) => ({
           section: e.section,
           content: known[i] ? unchangedMarker(e.version) : e.content,
           author: e.author,
           version: e.version,
+          ...(e.section === VERIFICATION_SECTION ? { currentFingerprint } : {}),
         }));
         return textResult(JSON.stringify(payload));
       },
@@ -639,7 +684,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamSpawnSpecialistSchema, undefined>({
       name: 'team_spawn_specialist',
       label: 'team_spawn_specialist',
-      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria. Specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you. Each roster name can only be spawned once. To re-run a specialist that failed or was cancelled, use team_redispatch_specialist instead.`,
+      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria. Specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you. A reviewer must declare \`reviews\`, the implementors whose work it reviews and signs off ([] for a reviewer of no implementor's code): it then reports an approve or changes_requested verdict per implementor, which gates their approval. Omit \`reviews\` for an implementor; implementor to implementor cross-review stays advisory. Each roster name can only be spawned once. To re-run a specialist that failed or was cancelled, use team_redispatch_specialist instead.`,
       parameters: teamSpawnSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -649,7 +694,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (!briefGate.ok) {
           throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
-        const agentId = ctx.startSpecialist(input.name, input.task, input.profile, input.kind);
+        const agentId = ctx.startSpecialist(input.name, input.task, input.profile, input.kind, input.reviews);
         return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),
@@ -657,7 +702,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamRedispatchSpecialistSchema, undefined>({
       name: 'team_redispatch_specialist',
       label: 'team_redispatch_specialist',
-      description: `Re-run a \`failed\` or \`cancelled\` specialist as a fresh attempt. Lead-only. Reuses the same agentId and preserves the prior transcript, while per-attempt bookkeeping (review rounds, standby/nudge state) is reset so a full fresh review round can complete. Provide a self-contained task (it can differ from the original) and set \`kind\` as on team_spawn_specialist. A \`completed\` specialist is terminal. Cover any gap with team_request_revision or a new task assignment, not a redispatch. The MAX_AGENTS concurrent-agent cap applies.`,
+      description: `Re-run a \`failed\` or \`cancelled\` specialist as a fresh attempt. Lead-only. Reuses the same agentId and preserves the prior transcript, while per-attempt bookkeeping (review rounds, standby/nudge state) is reset so a full fresh review round can complete. Provide a self-contained task (it can differ from the original) and set \`kind\` and \`reviews\` as on team_spawn_specialist; a reviewer redispatched without \`reviews\` keeps its previous pairs, and a redispatch may not drop a pair whose review of landed work is unsatisfied (dismiss that review with team_dismiss_review first). A \`completed\` specialist is terminal: its session has ended and no tool reopens it, so give follow-up work to a pending roster specialist or record it as remaining work. The MAX_AGENTS concurrent-agent cap applies.`,
       parameters: teamRedispatchSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -667,7 +712,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         if (!briefGate.ok) {
           throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
-        const agentId = ctx.redispatchSpecialist(input.name, input.task, input.profile, input.kind);
+        const agentId = ctx.redispatchSpecialist(input.name, input.task, input.profile, input.kind, input.reviews);
         return textResult(`Specialist '${input.name}' re-dispatched (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),
@@ -716,7 +761,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamApproveSpecialistSchema, undefined>({
       name: 'team_approve_specialist',
       label: 'team_approve_specialist',
-      description: 'Approve a specialist\'s work after reviewing their scratchpad section. Lead-only. Moves the specialist to completed status. You MUST call this or team_request_revision for every specialist in awaiting-review before you can synthesize.',
+      description: 'Approve a specialist\'s work after reviewing their scratchpad section. Lead-only. Moves the specialist to completed status. You MUST call this or team_request_revision for every specialist in awaiting-review before you can synthesize. Approve implementors before their reviewers: an implementor needs each reviewer\'s current approve verdict or a dismissed review, and a reviewer is approved only once every implementor it reviews is final.',
       parameters: teamApproveSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') throw new TeamToolError('Only the lead agent can use this tool');
@@ -752,11 +797,11 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamReportCompleteSchema, undefined>({
       name: 'team_report_complete',
       label: 'team_report_complete',
-      description: 'Signal that your work is done and enter awaiting-review state, passing your closing summary in `summary`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call, never team_standby. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request.',
+      description: 'Signal that your work is done and enter awaiting-review state, passing your closing summary in `summary`. This is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call, never team_standby. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request. A reviewer with declared implementors must first read the current version of every section they authored, and must pass `verdicts`: one approve or changes_requested per implementor it reviews that has landed work (reported complete or entered review), each changes_requested backed by findings in its scratchpad section.',
       parameters: teamReportCompleteSchema,
       execute: async (_id, input) => {
         if (ctx.role === 'lead') throw new TeamToolError('Lead agents do not report complete');
-        ctx.reportComplete(ctx.agentName, input.summary);
+        ctx.reportComplete(ctx.agentName, input.summary, input.verdicts);
         return textResult('Entering awaiting-review. The lead will review your work.');
       },
     }),
@@ -786,6 +831,20 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
         }
         ctx.resolveBriefConflict(input.name, input.resolution);
         return textResult(`Brief conflict flagged by "${input.name}" resolved.`);
+      },
+    }),
+
+    pi.defineTool<typeof teamDismissReviewSchema, undefined>({
+      name: 'team_dismiss_review',
+      label: 'team_dismiss_review',
+      description: 'Lead-only: approve past an unsatisfied required review by dismissing it with a written reason (at least 10 characters). Allowed only when the reviewer is final (cancelled, failed or completed) and its review is unsatisfied (it never reviewed the implementor\'s current revision, or approved it but has not read sections the implementor changed since), or when its current verdict is changes_requested. A live reviewer with an out-of-date sign-off must re-review instead. The dismissal is bound to the implementor\'s current revision, and the system puts it, with your reason, at the top of the team result.',
+      parameters: teamDismissReviewSchema,
+      execute: async (_id, input) => {
+        if (ctx.role !== 'lead') {
+          throw new TeamToolError('Only the lead agent can use this tool');
+        }
+        ctx.dismissReview(input.reviewer, input.implementor, input.reason);
+        return textResult(`Review of "${input.implementor}" by "${input.reviewer}" dismissed. The dismissal and your reason head the team result.`);
       },
     }),
 
@@ -819,7 +878,7 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
     pi.defineTool<typeof teamSynthesizeResultSchema, undefined>({
       name: 'team_synthesize_result',
       label: 'team_synthesize_result',
-      description: 'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis. Spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis. Wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis. Approve or revise them first. Standby specialists are auto-released. Failed specialists (runner crash) pass through. Read their scratchpad section if any and document the failure in your result. Include: summary, files changed, decisions made, test results, remaining work.',
+      description: 'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis. Spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis. Wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis. Approve or revise them first. Standby specialists are auto-released. Failed specialists (runner crash) pass through. Read their scratchpad section if any and document the failure in your result. An implementor whose landed work has an unsatisfied required review blocks synthesis, a standby one included: send its reviewer back or dismiss the review with team_dismiss_review and a written reason, and every dismissal heads the result. Include: summary, files changed, decisions made, test results, remaining work.',
       parameters: teamSynthesizeResultSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -875,6 +934,12 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
               `team_resolve_brief_conflict (dismiss with a written rationale) first.`,
           );
         }
+        const unsatisfied = ctx.getUnsatisfiedReviews();
+        if (unsatisfied.length > 0) {
+          throw new TeamToolError(
+            `Cannot synthesize. These implementors have unsatisfied required reviews: ${unsatisfied.join('; ')}.`,
+          );
+        }
         const synthesisGate = checkSynthesisReadGate(
           specialists.map((a) => a.name),
           ctx.scratchpad,
@@ -901,6 +966,6 @@ export function buildAllTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpC
  * in depth, for any path that reaches a tool the builder did not hand out.
  */
 export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext, cwd: string): ToolDefinition[] {
-  const allowed = new Set(teamAgentPiToolNamesForRole(ctx.role));
+  const allowed = new Set(teamAgentPiToolNames(ctx));
   return buildAllTeamAgentPiTools(pi, ctx, cwd).filter((tool) => allowed.has(tool.name));
 }

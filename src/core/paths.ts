@@ -1,8 +1,10 @@
 import * as crypto from "crypto";
+import { statSync } from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { slugify } from "@shared/utils";
+import { canonicalPath, spelledPath } from "./canonical-path";
 
 export const DAMOCLES_HOME_DIR: string = path.join(os.homedir(), ".damocles");
 
@@ -17,6 +19,9 @@ export const USAGE_INDEX_DB_PATH: string = path.join(DAMOCLES_USAGE_DIR, "usage.
 
 /** Persistent session-list metadata, one JSON file per pi session dir; a pure cache of the session files. */
 export const SESSION_META_CACHE_DIR: string = path.join(DAMOCLES_HOME_DIR, "cache", "session-meta");
+
+/** `{ movedAt, by }`: which host moved auth.json's OpenAI API key into its own secret store. Never holds the key. */
+export const OPENAI_KEY_MOVED_MARKER_PATH: string = path.join(DAMOCLES_HOME_DIR, "openai-api-key-moved.json");
 
 /** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
 export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
@@ -82,12 +87,25 @@ export async function findSessionPlanFiles(sessionId: string): Promise<string[]>
  * Whether `filePath` is a Damocles plan markdown file (a `.md` inside `~/.damocles/plans`). This is the
  * single carve-out used to auto-allow `Edit`/`Write` to the plan file in every permission mode — including
  * plan mode, where all other writes are blocked — so the model can maintain its plan as it designs.
+ * Pass the absolute path the tool writes: a relative one resolves against this process's cwd, not the session's.
+ * Both the path as written and the file it resolves to through links must sit below the plans folder,
+ * compared as the file system spells them and, on win32, ignoring case, and an existing file must have
+ * no other hard link.
  */
 export function isPlanFilePath(filePath: string): boolean {
   if (!filePath) return false;
-  const resolved = path.resolve(filePath);
-  const plansDir = path.resolve(DAMOCLES_PLANS_DIR);
-  return resolved.startsWith(plansDir + path.sep) && resolved.endsWith(".md");
+  const requested = path.resolve(filePath);
+  const fold = (value: string): string => (process.platform === "win32" ? value.toLowerCase() : value);
+  const below = (dir: string, target: string): boolean => {
+    const relative = path.relative(dir, target);
+    return relative !== "" && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+  };
+  const canonical = canonicalPath(requested);
+  return below(spelledPath(DAMOCLES_PLANS_DIR), spelledPath(requested))
+    && below(canonicalPath(DAMOCLES_PLANS_DIR), canonical)
+    && fold(canonical).endsWith(".md")
+    // A hard link shares its content with a name outside the plans folder, which no path comparison sees.
+    && (statSync(canonical, { throwIfNoEntry: false })?.nlink ?? 1) === 1;
 }
 
 export function workspaceHash(workspacePath: string): string {

@@ -249,6 +249,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       // undefined, which exactOptionalPropertyTypes rejects.
       const { liveOutput: _clearedOutput, liveOutputTruncated: _clearedTruncated, cancelRequested: _clearedCancel, ...withoutLiveOutput } = target;
       const resolvedStatus = resolveCancelledStatus(status, target.metadata);
+      if (TERMINAL_TOOL_STATUSES.has(target.status) && !TERMINAL_TOOL_STATUSES.has(resolvedStatus)) return;
       const base = TERMINAL_TOOL_STATUSES.has(resolvedStatus) ? withoutLiveOutput : target;
 
       const updatedToolCalls = [...msg.toolCalls];
@@ -268,7 +269,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
     // Only a status with no call to write it to is cached, so an entry holding a whole tool result is
     // never left behind once the call exists in the transcript.
-    toolStatusCache.value.set(toolUseId, { status: resolveCancelledStatus(status, toolMetadataCache.value.get(toolUseId)), ...options });
+    const cachedStatus = toolStatusCache.value.get(toolUseId)?.status;
+    const resolvedStatus = resolveCancelledStatus(status, toolMetadataCache.value.get(toolUseId));
+    if (cachedStatus && TERMINAL_TOOL_STATUSES.has(cachedStatus) && !TERMINAL_TOOL_STATUSES.has(resolvedStatus)) return;
+    toolStatusCache.value.set(toolUseId, { status: resolvedStatus, ...options });
   }
 
   function updateToolMetadata(toolUseId: string, metadata: Record<string, unknown>): void {

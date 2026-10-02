@@ -6,6 +6,8 @@ import { isImageBlock, type ImageBlock } from '@shared/types/content';
 import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 import { ownEntry } from '@/utils/ownEntry';
 import { addAgentUsage, emptyAgentUsage, subtractAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting';
+import type { EffortBadgeLevel } from '@shared/effort-badge';
+import type { Stopwatch } from '@shared/team-stopwatch';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -144,8 +146,8 @@ export const useTeamStore = defineStore('team', () => {
       profileId: null,
       attempt: 0,
       status: (historical ? 'completed' : 'pending') as TeamAgentStatus,
-      startTime: null,
-      endTime: null,
+      activeMs: 0,
+      runningSince: null,
       toolCount: 0,
       lastToolName: null,
       totalInputTokens: 0,
@@ -156,6 +158,7 @@ export const useTeamStore = defineStore('team', () => {
       // A team registered from a tool call has no model resolution yet, and unknown billing renders as
       // a charge because understating a real cost is the worse error.
       dollarBilled: true,
+      effort: null,
       progressSummary: null,
       result: null,
       logFilePath: null,
@@ -204,15 +207,17 @@ export const useTeamStore = defineStore('team', () => {
 
   // A specialist's billing flag is only known once its role model resolves at spawn, which is after the
   // team list was sent, so an absent field here keeps the agent's current value rather than resetting it.
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number): void {
+  // Agent times come only from the extension's stopwatch, never from this clock.
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch): void {
     const team = teams.value[teamId];
     if (!team) return;
     const agents = team.agents.map(a => {
       if (a.agentId !== agentId) return a;
       // A redispatch reuses the agentId, so the fields describing the current run start over while the
-      // usage totals keep every attempt's spend. Applied last: this reset outranks the deltas above it.
+      // usage totals keep every attempt's spend. This reset outranks the deltas above it, and the update's own stopwatch outranks the reset.
+      // The new attempt's effort arrives once its session exists, in a later update.
       const relaunched = attempt !== undefined && attempt > a.attempt
-        ? { attempt, toolCount: 0, lastToolName: null, startTime: Date.now(), endTime: null, result: null, progressSummary: null }
+        ? { attempt, toolCount: 0, lastToolName: null, activeMs: 0, runningSince: null, result: null, progressSummary: null, effort: effort ?? null }
         : {};
       return {
         ...a,
@@ -221,9 +226,9 @@ export const useTeamStore = defineStore('team', () => {
         ...(logFilePath !== undefined ? { logFilePath } : {}),
         ...(model ? { model } : {}),
         ...(dollarBilled !== undefined ? { dollarBilled } : {}),
-        ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}),
-        ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}),
+        ...(effort !== undefined ? { effort } : {}),
         ...relaunched,
+        ...(stopwatch ? { activeMs: stopwatch.activeMs, runningSince: stopwatch.runningSince } : {}),
       };
     });
     const totalToolCount = agents.reduce((sum, a) => sum + a.toolCount, 0);

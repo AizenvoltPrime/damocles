@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync, rmSync } from 'node:fs';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import type { McpToolSource } from '../../mcp/tool-source';
 import { FolderMcpView } from '../../mcp/folder-mcp-view';
-import { managerWithFake } from '../../mcp/__tests__/fake-server-manager';
+import { managerWithFake, specOf } from '../../mcp/__tests__/fake-server-manager';
 import type { McpToolDescriptor } from '../../mcp/types';
 import { buildNestedMcpToolset, EMPTY_NESTED_MCP_TOOLSET } from '../mcp-tools';
 
@@ -29,17 +30,20 @@ function descriptor(overrides: Partial<McpToolDescriptor> = {}): McpToolDescript
     serverName: 'git',
     serverId: `test/${overrides.serverName ?? 'git'}`,
     kind: 'tool',
-    originalName: 'status',
+    rawToolName: 'status',
     description: 'Show the working tree status',
     inputSchema: { type: 'object', properties: {} },
     readOnly: true,
+    exposure: 'deferred',
+    exposureSource: 'config',
+    configExposure: 'deferred',
     ...overrides,
   };
 }
 
 const GIT_STATUS = descriptor();
-const GIT_COMMIT = descriptor({ piName: 'mcp__git__commit', originalName: 'commit', description: 'Create a commit', readOnly: false });
-const CTX_QUERY = descriptor({ piName: 'mcp__ctx7__query_docs', serverName: 'ctx7', originalName: 'query_docs', description: 'Query library docs', readOnly: false });
+const GIT_COMMIT = descriptor({ piName: 'mcp__git__commit', rawToolName: 'commit', description: 'Create a commit', readOnly: false });
+const CTX_QUERY = descriptor({ piName: 'mcp__ctx7__query_docs', serverName: 'ctx7', rawToolName: 'query_docs', description: 'Query library docs', readOnly: false });
 
 /** A manager stub whose descriptor list is MUTABLE, so "frozen at spawn" can be tested by changing it. */
 function fakeManager(initial: McpToolDescriptor[]) {
@@ -117,8 +121,62 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     expect(toolset).toBe(EMPTY_NESTED_MCP_TOOLSET);
     expect(toolset.names).toEqual([]);
     expect(toolset.tools).toEqual([]);
+    expect(toolset.deferrable).toEqual([]);
+    expect(toolset.direct).toEqual([]);
     expect(toolset.descriptions.size).toBe(0);
     expect(toolset.isReadOnly('mcp__git__status')).toBe(false);
+  });
+
+  it('splits `names` by exposure from the same read: `deferrable` and `direct` partition it, in order', () => {
+    // `deferrable ⊆ names` is what keeps the nested menu equal to the loadable set: a deferrable name
+    // with no grant would be advertised and then refused, and a direct one in it would be held back.
+    const direct = descriptor({ piName: 'mcp__git__log', rawToolName: 'log', exposure: 'direct' });
+    const { manager, getAllToolDescriptors } = fakeManager([GIT_STATUS, direct, GIT_COMMIT, CTX_QUERY]);
+
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS, direct, GIT_COMMIT) });
+
+    expect(toolset.names).toEqual(['mcp__git__status', 'mcp__git__log', 'mcp__git__commit']);
+    expect(toolset.deferrable).toEqual(['mcp__git__status', 'mcp__git__commit']);
+    expect(toolset.direct).toEqual(['mcp__git__log']);
+    const names = new Set(toolset.names);
+    for (const name of [...toolset.deferrable, ...toolset.direct]) expect(names.has(name), name).toBe(true);
+    expect(new Set([...toolset.deferrable, ...toolset.direct])).toEqual(names);
+    // The direct tool is granted (a definition in `tools`) but never on the nested menu.
+    expect(toolset.tools.map((t) => t.name)).toContain('mcp__git__log');
+    expect([...toolset.descriptions.keys()]).toEqual(toolset.deferrable);
+    expect(getAllToolDescriptors).toHaveBeenCalledTimes(1);
+  });
+
+  it("an Off tool reaches no nested agent: the panel's eligibility already dropped it", () => {
+    const off = descriptor({ piName: 'mcp__git__push', rawToolName: 'push', exposure: 'off' });
+    const { manager } = fakeManager([GIT_STATUS, off]);
+
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS) });
+
+    expect(toolset.names).toEqual(['mcp__git__status']);
+    expect(toolset.deferrable).toEqual(['mcp__git__status']);
+    expect(toolset.direct).toEqual([]);
+  });
+
+  it('an Off tool is never granted, even when the eligible set it is handed names it', () => {
+    const off = descriptor({ piName: 'mcp__git__push', rawToolName: 'push', exposure: 'off' });
+    const { manager } = fakeManager([GIT_STATUS, off]);
+
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS, off) });
+
+    expect(toolset.names).toEqual(['mcp__git__status']);
+    expect(toolset.tools.map((t) => t.name)).toEqual(['mcp__git__status']);
+    expect(toolset.direct).toEqual([]);
+    expect(toolset.directGroups.size).toBe(0);
+  });
+
+  it('records the ToolSearch group of every Always-loaded tool', () => {
+    const direct = descriptor({ piName: 'mcp__ctx7__resolve', serverName: 'ctx7', rawToolName: 'resolve', exposure: 'direct' });
+    const { manager } = fakeManager([GIT_STATUS, direct]);
+
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS, direct) });
+
+    expect([...toolset.directGroups]).toEqual(['ctx7']);
   });
 
   it('carries each surviving descriptor\'s description, for the nested ToolSearch inventory', () => {
@@ -126,9 +184,22 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
 
     const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS, GIT_COMMIT) });
 
-    expect(toolset.descriptions.get('mcp__git__status')).toBe('Show the working tree status');
-    expect(toolset.descriptions.get('mcp__git__commit')).toBe('Create a commit');
+    expect(toolset.descriptions.get('mcp__git__status')).toEqual({ description: 'Show the working tree status', group: 'git' });
+    expect(toolset.descriptions.get('mcp__git__commit')).toEqual({ description: 'Create a commit', group: 'git' });
     expect([...toolset.descriptions.keys()].sort()).toEqual([...toolset.names].sort());
+  });
+
+  it('takes the ToolSearch group and server line from the descriptor, not from the tool name', () => {
+    const hashed = descriptor({ piName: 'mcp__my_server__a_b_4f33a9a2', serverName: 'my-server', rawToolName: 'a-b', serverDescription: 'Team tools' });
+    const { manager } = fakeManager([hashed]);
+
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(hashed) });
+
+    expect(toolset.descriptions.get(hashed.piName)).toEqual({
+      description: 'Show the working tree status',
+      group: 'my_server',
+      serverDescription: 'Team tools',
+    });
   });
 
   it('calls `getAllToolDescriptors()` EXACTLY ONCE — the structural guard for §3.2', () => {
@@ -144,6 +215,8 @@ describe('buildNestedMcpToolset — the frozen per-spawn snapshot', () => {
     void toolset.names.length;
     void toolset.tools.length;
     void toolset.descriptions.size;
+    void toolset.deferrable.length;
+    void toolset.direct.length;
     void toolset.isReadOnly('mcp__git__status');
 
     expect(getAllToolDescriptors).toHaveBeenCalledTimes(1);
@@ -199,7 +272,7 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
     const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS, GIT_COMMIT, CTX_QUERY) });
 
     // The server re-advertises `commit` as read-only, drops `status`, and adds a whole new server.
-    replace([descriptor({ piName: 'mcp__git__commit', originalName: 'commit', readOnly: true }), CTX_QUERY]);
+    replace([descriptor({ piName: 'mcp__git__commit', rawToolName: 'commit', readOnly: true }), CTX_QUERY]);
 
     expect(toolset.isReadOnly('mcp__git__commit')).toBe(false); // still the snapshot's answer
     expect(toolset.isReadOnly('mcp__git__status')).toBe(true);  // still known, still read-only
@@ -211,9 +284,9 @@ describe('buildNestedMcpToolset — `isReadOnly` is a FROZEN gate classifier, no
   });
 
   it('a resource descriptor (hardcoded readOnly) classifies read-only like the panel does', () => {
-    // `mcp-client-manager.ts:494` hardcodes `readOnly: true` for `kind: 'resource'`. A nested agent
+    // `McpClientManager.rebuildDescriptors` hardcodes `readOnly: true` for `kind: 'resource'`. A nested agent
     // inherits that trust decision rather than re-deriving one, which is why this reads the field.
-    const resource = descriptor({ piName: 'mcp__git__get_readme', kind: 'resource', originalName: 'get_readme', resourceUri: 'file:///README.md', readOnly: true });
+    const resource = descriptor({ piName: 'mcp__git__get_readme', kind: 'resource', rawToolName: 'get_readme', resourceUri: 'file:///README.md', readOnly: true });
     const { manager } = fakeManager([resource]);
 
     const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(resource) });
@@ -239,6 +312,31 @@ describe('buildNestedMcpToolset — the definitions are the REAL callable tools'
     expect(callTool.mock.calls[0]![0]).toBe('mcp__git__commit');
     expect(callTool.mock.calls[0]![1]).toEqual({ message: 'x' });
     expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+  });
+
+  it('cuts a long result in the middle and points to the full text, which Read can open', async () => {
+    const { manager, callTool } = fakeManager([GIT_STATUS]);
+    const full = `FIRST LINE\n${'log line\n'.repeat(5000)}LAST LINE`;
+    callTool.mockResolvedValueOnce({ content: [{ type: 'text' as const, text: full }], isError: false });
+    const toolset = buildNestedMcpToolset(piStub, manager, { eligible: eligibleOf(GIT_STATUS) });
+
+    const result = await (toolset.tools[0]!.execute as unknown as (
+      id: string, params: unknown, signal: undefined, onUpdate: undefined, ctx: unknown,
+    ) => Promise<{ content: Array<{ type: string; text?: string }>; details?: { isError: boolean; fullOutputPath?: string } }>)('tc-1', {}, undefined, undefined, {});
+
+    const path = result.details?.fullOutputPath;
+    expect(path).toBeDefined();
+    try {
+      const text = result.content[0]!.text!;
+      expect(Buffer.byteLength(text)).toBeLessThan(21 * 1024);
+      expect(text).toContain('FIRST LINE');
+      expect(text).toContain('LAST LINE');
+      expect(text).toContain(`[Full output: ${path} (read it with offset/limit)]`);
+      expect(readFileSync(path!, 'utf-8')).toBe(full);
+      expect(result.details?.isError).toBe(false);
+    } finally {
+      rmSync(path!, { force: true });
+    }
   });
 });
 
@@ -309,11 +407,11 @@ describe('buildNestedMcpToolset — a nested agent sees only its own folder', ()
     const viewA = new FolderMcpView(user.manager, folderA.manager);
     const viewB = new FolderMcpView(user.manager, folderB.manager);
     try {
-      await user.manager.reconcile({ shared: { command: 'shared' } });
+      await user.manager.reconcile({ shared: specOf({ command: 'shared' }) });
       viewA.setUserVisible(['shared']);
       viewB.setUserVisible(['shared']);
-      await folderA.manager.reconcile({ alpha: { command: 'alpha' } });
-      await folderB.manager.reconcile({ beta: { command: 'beta' } });
+      await folderA.manager.reconcile({ alpha: specOf({ command: 'alpha' }) });
+      await folderB.manager.reconcile({ beta: specOf({ command: 'beta' }) });
       const everything = new Set([...viewA.allToolNames(), ...viewB.allToolNames()]);
 
       const toolset = buildNestedMcpToolset(piStub, viewB, { eligible: everything });
@@ -328,25 +426,25 @@ describe('buildNestedMcpToolset — a nested agent sees only its own folder', ()
   });
 
   it('a frozen tool whose name passed to a user server fails as gone instead of calling that server', async () => {
-    // The user server takes its prefix back from the folder one, so the live `mcp__my_server__t` is the
+    // The user server takes its tool name back from the folder one, so the live `mcp__my_server__t` is the
     // user server's tool while the snapshot still classifies the name read-only for the folder server.
     const user = managerWithFake({ 'my-server': [{ name: 't' }] });
     const holder: { view?: FolderMcpView } = {};
     const folder = managerWithFake(
       { 'my.server': [{ name: 't', annotations: { readOnlyHint: true } }] },
-      () => holder.view!.reservedPrefixes(),
+      () => holder.view!.reservedToolNames(),
     );
     const view = new FolderMcpView(user.manager, folder.manager);
     holder.view = view;
     try {
       await user.manager.reconcile({});
-      await folder.manager.reconcile({ 'my.server': { command: 'folder' } });
+      await folder.manager.reconcile({ 'my.server': specOf({ command: 'folder' }) });
       const toolset = buildNestedMcpToolset(piStub, view, { eligible: new Set(view.allToolNames()) });
       expect(toolset.names).toEqual(['mcp__my_server__t']);
       expect(toolset.isReadOnly('mcp__my_server__t')).toBe(true);
 
       view.setUserVisible(['my-server']);
-      await user.manager.reconcile({ 'my-server': { command: 'user' } });
+      await user.manager.reconcile({ 'my-server': specOf({ command: 'user' }) });
       expect(view.getToolDescriptor('mcp__my_server__t')?.serverName).toBe('my-server');
 
       const result = await (toolset.tools[0]!.execute as unknown as (

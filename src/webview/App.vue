@@ -18,6 +18,7 @@ import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
 import AuthFailureBanner from "./components/AuthFailureBanner.vue";
+import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import SessionPicker from "./components/SessionPicker.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
@@ -29,6 +30,7 @@ import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import PromptNavigatorChip from "./components/PromptNavigatorChip.vue";
+import AccountChip from "./components/AccountChip.vue";
 import WorkspaceFolderChip from "./components/WorkspaceFolderChip.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
@@ -122,7 +124,7 @@ import type { UserContentBlock } from "@shared/types/content";
 import type { SteerRequest } from "@/utils/steer-command";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
-import type { McpServerConfig } from "@shared/types/mcp";
+import type { McpServerConfig, McpToolExposureScope, McpToolExposureSetting } from "@shared/types/mcp";
 import type { WebviewToExtensionMessage } from "@shared/types/messages";
 
 const { postMessage } = usePlatformBridge();
@@ -157,10 +159,11 @@ const extensionUiStore = useExtensionUiStore();
 const {
   currentSettings,
   availableModels,
-  accountInfo,
   mcpServers,
   mcpConfigErrors,
   mcpLocalUnignored,
+  mcpToolExposureScopes,
+  mcpRenamedToolRules,
   mcpConfigRevision,
   mcpWriteRequestId,
   mcpWriteError,
@@ -729,6 +732,10 @@ function handleSetMcpEnabled(enabled: boolean) {
   postMessage({ type: "setMcpEnabled", enabled });
 }
 
+function handleSetMcpToolExposure(serverName: string, toolName: string, exposure: McpToolExposureSetting, scope: McpToolExposureScope) {
+  postMessage({ type: "mcpSetToolExposure", serverName, toolName, exposure, scope });
+}
+
 function handleReconnectMcpServer(serverName: string) {
   postMessage({ type: "reconnectMcpServer", serverName });
 }
@@ -1055,16 +1062,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
   <div class="flex flex-col flex-1 min-h-0 bg-background text-foreground">
     <!-- Header bar with account info and controls -->
     <div class="px-3 py-1.5 text-xs border-b border-border/50 flex items-center gap-2 bg-card">
-      <Popover v-if="accountInfo?.subscriptionType">
-        <PopoverTrigger as-child>
-          <Button variant="ghost" size="sm" class="h-auto px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 hover:text-primary">
-            {{ accountInfo.subscriptionType }}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent v-if="accountInfo.email" side="right" :side-offset="8" class="w-auto p-2 text-xs">
-          {{ accountInfo.email }}
-        </PopoverContent>
-      </Popover>
+      <AccountChip />
 
       <WorkspaceFolderChip />
 
@@ -1216,6 +1214,13 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @dismiss="uiStore.dismissAuthFailure"
     />
 
+    <McpRenamedRulesBanner
+      v-if="mcpRenamedToolRules.length > 0"
+      :notices="mcpRenamedToolRules"
+      @open-file="(path: string) => handleOpenMcpConfigFile(path, null)"
+      @dismiss="settingsStore.dismissMcpRenamedToolRules()"
+    />
+
     <!-- Message area wrapper (relative positioning for scroll-to-bottom button) -->
     <div class="relative flex-1 min-h-0">
       <!-- Toast notifications (positioned in top-right of chat area) -->
@@ -1269,7 +1274,10 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :visible="true"
       :tool-use-id="currentPermission.toolUseId"
       :tool-name="currentPermission.toolName"
+      :tool-input="currentPermission.toolInput"
       :file-path="currentPermission.filePath"
+      :prompt="currentPermission.prompt"
+      :image-model="currentPermission.imageModel"
       :original-content="currentPermission.originalContent"
       :proposed-content="currentPermission.proposedContent"
       :command="currentPermission.command"
@@ -1393,11 +1401,13 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :servers="mcpServers"
       :config-errors="mcpConfigErrors"
       :local-mcp-unignored="mcpLocalUnignored"
+      :tool-exposure-scopes="mcpToolExposureScopes"
       :config-revision="mcpConfigRevision"
       :mcp-enabled="mcpEnabled"
       @close="uiStore.closeMcpPanel()"
       @toggle="handleToggleMcpServer"
       @toggle-enabled="handleSetMcpEnabled"
+      @set-tool-exposure="handleSetMcpToolExposure"
       @reconnect="handleReconnectMcpServer"
       @authenticate="handleAuthenticateMcpServer"
       @reauthenticate="handleReauthenticateMcpServer"

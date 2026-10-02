@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ToolCall } from '@shared/types/session';
 import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
@@ -573,10 +573,10 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
       phase: 'working',
       agents: [{
         agentId: AGENT, name: 'alpha', role: 'specialist', specialization: '', model: 'opus',
-        profileId: null, attempt: 0, status: 'running', startTime: 1000, endTime: 4000,
+        profileId: null, attempt: 0, status: 'running', activeMs: 3000, runningSince: 4000,
         toolCount: 5, lastToolName: 'Bash',
         totalInputTokens: 8, totalOutputTokens: 665, cacheReadTokens: 56_118, cacheCreationTokens: 19_628,
-        costUsd: 0.15659350000000002, dollarBilled: false, progressSummary: 'parked', result: 'ALPHA-READ-1: FULL',
+        costUsd: 0.15659350000000002, dollarBilled: false, effort: null, progressSummary: 'parked', result: 'ALPHA-READ-1: FULL',
         logFilePath: null,
       }],
       messages: [],
@@ -599,10 +599,10 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
     expect(agent?.attempt).toBe(1);
     expect(agent?.toolCount).toBe(0);
     expect(agent?.lastToolName).toBeNull();
-    expect(agent?.endTime).toBeNull();
     expect(agent?.result).toBeNull();
     expect(agent?.progressSummary).toBeNull();
-    expect(agent?.startTime).not.toBe(1000);
+    // An update with no stopwatch leaves the new attempt stopped at zero until the extension sends one.
+    expect(agent).toMatchObject({ activeMs: 0, runningSince: null });
     // The team total follows the agent counters down, or it keeps charging for a dead attempt.
     expect(store.teams[TEAM]?.totalToolCount).toBe(0);
   });
@@ -629,5 +629,41 @@ describe('useTeamStore.handleAgentStatusUpdate across attempts', () => {
     expect(agent?.toolCount).toBe(5);
     expect(agent?.result).toBe('ALPHA-READ-1: FULL');
     expect(agent?.attempt).toBe(0);
+  });
+
+  it("takes the effort of the attempt's session, resets it when the attempt advances, and keeps it across updates without one", () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+    const effort = () => store.teams[TEAM]?.agents[0]?.effort;
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, '/log/a0.jsonl', undefined, undefined, undefined, 'high');
+    expect(effort()).toBe('high');
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'standby', 'waiting');
+    expect(effort()).toBe('high');
+
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, undefined, 'opus', false, 1);
+    expect(effort()).toBeNull();
+    store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, '/log/a1.jsonl', undefined, undefined, undefined, 'medium');
+    expect(effort()).toBe('medium');
+  });
+
+  it('applies the extension stopwatch after the attempt reset, and never stamps a time of its own', () => {
+    const store = useTeamStore();
+    seedRunningAgent(store);
+    const now = vi.spyOn(Date, 'now');
+    try {
+      const timing = () => { const a = store.teams[TEAM]?.agents[0]; return { activeMs: a?.activeMs, runningSince: a?.runningSince }; };
+
+      store.handleAgentStatusUpdate(TEAM, AGENT, 'running', undefined, undefined, 'opus', false, 1, undefined, { activeMs: 0, runningSince: 9_000 });
+      expect(timing()).toEqual({ activeMs: 0, runningSince: 9_000 });
+      store.handleAgentStatusUpdate(TEAM, AGENT, 'awaiting-review', 'parked');
+      expect(timing()).toEqual({ activeMs: 0, runningSince: 9_000 });
+      store.handleAgentStatusUpdate(TEAM, AGENT, 'completed', 'Completed (0 tools, 12s)', undefined, undefined, undefined, undefined, undefined, { activeMs: 12_000, runningSince: null });
+      expect(timing()).toEqual({ activeMs: 12_000, runningSince: null });
+
+      expect(now).not.toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
   });
 });

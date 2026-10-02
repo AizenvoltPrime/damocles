@@ -30,7 +30,7 @@ const H = vi.hoisted(() => {
 type AuthInteractionLike = Parameters<typeof H.runtime.signInSubscription>[2];
 
 vi.mock("../../../../pi-session/pi-runtime", () => ({
-  PiRuntime: { get: () => H.runtime, exists: true },
+  PiRuntime: { get: () => H.runtime, exists: true, notifyMemoryJudgeChange: () => {} },
 }));
 
 vi.mock("../../../../pi-session/agent-dir", () => ({

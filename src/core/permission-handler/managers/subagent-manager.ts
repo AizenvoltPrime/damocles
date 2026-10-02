@@ -32,6 +32,7 @@ export class SubagentManager {
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
+          outcome: 'approved',
           parentToolUseId,
         });
       }

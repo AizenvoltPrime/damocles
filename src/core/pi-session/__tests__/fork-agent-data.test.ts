@@ -180,7 +180,7 @@ describe('copyForkAgentData — subagents', () => {
     expect(snapshot(subagentsDir(sessionDir, SOURCE))).toEqual(before);
   });
 
-  it('writes no copy when the cut holds no assistant message, as with an agent stopped before its first response', async () => {
+  it('copies the launch and task when the cut holds no assistant message, as with an agent stopped before its first response', async () => {
     const parent = SessionManager.inMemory(sessionDir);
     const leaf = at(1000, () => {
       parent.appendMessage(user('go'));
@@ -190,7 +190,24 @@ describe('copyForkAgentData — subagents', () => {
 
     expect(await fork(parent, leaf, 1150)).toEqual([]);
 
-    expect(await findAgentFile(subagentsDir(sessionDir, TARGET), 'sub-early')).toBeNull();
+    const copy = await findAgentFile(subagentsDir(sessionDir, TARGET), 'sub-early');
+    expect(copy).not.toBeNull();
+    const read = (await readAgentFile(copy!))!;
+    expect(read.launch.agentId).toBe('sub-early');
+    expect(read.messages.map((m) => m['role'])).toEqual(['user']);
+  });
+
+  it('writes no copy when the cut precedes the agent\'s task', async () => {
+    const parent = SessionManager.inMemory(sessionDir);
+    const leaf = at(1000, () => {
+      parent.appendMessage(user('go'));
+      return invoke(parent, { kind: 'subagent', id: 'sub-unstarted', toolCallId: 'tc1', resume: false });
+    });
+    writeSubagent('sub-unstarted');
+
+    expect(await fork(parent, leaf, 1099)).toEqual([]);
+
+    expect(await findAgentFile(subagentsDir(sessionDir, TARGET), 'sub-unstarted')).toBeNull();
   });
 });
 

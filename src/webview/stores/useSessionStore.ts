@@ -2,7 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, SessionStats } from '@shared/types/session';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
+import { TOOL_READ, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 import { emptyAgentUsage } from '@shared/usage-accounting';
 
@@ -116,6 +116,9 @@ export const useSessionStore = defineStore('session', () => {
         break;
       case TOOL_WRITE:
         operation = filePath in accessedFiles.value ? 'write' : 'create';
+        break;
+      case TOOL_GENERATE_IMAGE:
+        operation = 'create';
         break;
       default:
         return;

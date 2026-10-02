@@ -788,15 +788,36 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
     });
   });
 
-  describe('with GPT-6 Sol or Luna selected', () => {
+  describe('with GPT-6.1 Sol or GPT-6 Luna selected', () => {
     it.each([
-      ['gpt-6-sol', 'GPT-6 Sol', 'April 2026'],
+      ['gpt-6.1-sol', 'GPT-6.1 Sol', 'April 2026'],
       ['gpt-6-luna', 'GPT-6 Luna', 'May 2026'],
     ])('reports the %s identity and its own cutoff', (model, displayName, cutoff) => {
       const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
       expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
       expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
       expect(prompt).not.toContain('GPT-5.6');
+    });
+  });
+
+  describe('with Sonnet 5.5 selected', () => {
+    it('reports the Sonnet 5.5 identity and its June 2026 cutoff, not the retired Sonnet 5 ones', () => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-sonnet-5-5', compassEnabled: false });
+      expect(prompt).toContain('You are powered by the model named Sonnet 5.5. The exact model ID is claude-sonnet-5-5.');
+      expect(prompt).toContain('Assistant knowledge cutoff is June 2026.');
+      expect(prompt).not.toContain('January 2026');
+    });
+  });
+
+  // Same reason as the retired Opus ids: these only migrate where `migrateLegacyModelValue` runs.
+  describe('with a retired Sonnet 5 or GPT-6 Sol id', () => {
+    it.each([
+      ['claude-sonnet-5', 'Sonnet 5', 'January 2026'],
+      ['gpt-6-sol', 'GPT-6 Sol', 'April 2026'],
+    ])('still reports the %s identity and its own cutoff', (model, displayName, cutoff) => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
+      expect(prompt).toContain(`Assistant knowledge cutoff is ${cutoff}.`);
     });
   });
 

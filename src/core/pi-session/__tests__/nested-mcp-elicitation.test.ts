@@ -12,6 +12,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { createExtensionUiHandlers } from '@/composables/message-handler/handlers/extension-ui-handlers';
 import type { HandlerContext } from '@/composables/message-handler/types';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
+import { specOf } from '../mcp/__tests__/fake-server-manager';
 
 /**
  * Slice 2 — nested MCP elicitation, end to end, with NOTHING faked between the tool definition and the
@@ -153,8 +154,8 @@ function piContext(bound?: ElicitationUI): unknown {
 let manager: McpClientManager | undefined;
 
 async function startManager(transport: ReturnType<typeof fakeTransport>, servers: string[]): Promise<McpClientManager> {
-  manager = new McpClientManager({ serverManagerFactory: transport.factory });
-  manager.initialize(Object.fromEntries(servers.map((name) => [name, { command: `${name}-mcp` }])));
+  manager = new McpClientManager({ clientVersion: 'test', serverManagerFactory: transport.factory });
+  manager.initialize(Object.fromEntries(servers.map((name) => [name, specOf({ command: `${name}-mcp` })])));
   await manager.whenReady();
   return manager;
 }

@@ -73,9 +73,9 @@ describe.each(IMPLS)('SettingsStore.inspect over the migration inputs: %s', (_na
 
   it('merges an object value with disjoint keys across the default, user and project scopes', async () => {
     const store = make({ 'damocles.effortByModel': { 'gpt-6-luna': 'low' } });
-    await store.update('damocles.effortByModel', { 'gpt-6-sol': 'high' }, 'user');
+    await store.update('damocles.effortByModel', { 'gpt-6.1-sol': 'high' }, 'user');
     await store.update('damocles.effortByModel', { 'gpt-6-nova': 'max' }, 'project');
-    expect(store.get('damocles.effortByModel')).toStrictEqual({ 'gpt-6-luna': 'low', 'gpt-6-sol': 'high', 'gpt-6-nova': 'max' });
+    expect(store.get('damocles.effortByModel')).toStrictEqual({ 'gpt-6-luna': 'low', 'gpt-6.1-sol': 'high', 'gpt-6-nova': 'max' });
   });
 
   it.each(MIGRATION_INPUTS)('%s: a registered default appears only as defaultValue', (key) => {
@@ -116,6 +116,6 @@ describe('migrations produce the same scopes on both SettingsStore implementatio
     expect(fake!['damocles.effort']).toStrictEqual({});
     expect(fake!['damocles.team.reviewerModel']).toStrictEqual({});
     expect(fake!['damocles.team.leadModel']).toStrictEqual({ userValue: 'gpt-6-luna' });
-    expect(fake!['damocles.model']).toStrictEqual({ projectValue: 'gpt-6-sol' });
+    expect(fake!['damocles.model']).toStrictEqual({ projectValue: 'gpt-6.1-sol' });
   });
 });

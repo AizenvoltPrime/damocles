@@ -16,6 +16,7 @@ import {
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import AgentUsageStats from './AgentUsageStats.vue';
+import EffortBadge from './EffortBadge.vue';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
@@ -196,6 +197,7 @@ const metadataItems = computed(() => [
           <span v-if="index > 0" class="text-foreground/40">•</span>
           <span>{{ item }}</span>
         </template>
+        <EffortBadge v-if="subagent.effort" :effort="subagent.effort" />
         <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="card" />
       </div>
 

@@ -1,39 +1,51 @@
 /*
- * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
- * High-level OAuth flow management on top of the MCP SDK's built-in `auth()`. Drives the
- * interactive authorization_code (PKCE + localhost callback + browser) and non-interactive
- * client_credentials grants, persists tokens, and refreshes expired access tokens. SDK value
- * classes come from the dynamically-imported bundle (the SDK is esbuild-external).
+ * OAuth sign-in and connection auth for remote MCP servers on pi-mcp (`@earendil-works/pi-mcp/oauth`).
+ * Connections never open a browser: they send the stored token, refresh it after a 401, and otherwise
+ * fail with pi-mcp's `McpOAuthAuthorizationRequiredError` (needs-auth). The panel's Authenticate action
+ * runs `authenticateMcpServer`: `authorizeMcp` with PKCE, dynamic client registration and the RFC 9207
+ * `iss` check, against Damocles' own loopback callback server (`mcp-callback-server.ts`).
  */
-import type { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
-import type { AuthorizationServerMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { AuthProvider } from '@earendil-works/pi-mcp';
+import type { McpOAuthProvider, OAuthChallenge, OAuthClientProvider, OAuthDiscoveryState, OAuthFlowOptions } from '@earendil-works/pi-mcp/oauth';
 import type { McpOAuthConfig } from '../../../shared/types/mcp';
 import type { McpServerDefinition } from './types';
-import type { McpSdkBundle } from './mcp-sdk-loader';
-import { McpOAuthProvider } from './mcp-oauth-provider';
+import type { McpOAuthModule } from './mcp-client-loader';
+import {
+  applyClientAuthentication,
+  createAuthorizationCodeProvider,
+  createClientCredentialsAuthProvider,
+  createOAuthFetch,
+  discoverAuthorizationServer,
+  isSecureEndpoint,
+  knownClient,
+  mergeScopes,
+  requestClientCredentialsToken,
+  stepUpScope,
+} from './mcp-oauth-provider';
+import { flattenServerText } from './utils';
+import { failureForLog } from './connect-failure';
 import {
   ensureCallbackServer,
   waitForCallback,
   cancelPendingCallback,
   stopCallbackServer,
-  releaseCallbackServer,
+  getConfiguredOAuthCallbackPort,
+  getOAuthCallbackPort,
 } from './mcp-callback-server';
 import {
+  createOAuthStateStore,
   getAuthEntry,
   isTokenExpired,
   hasStoredTokens,
   clearAllCredentials,
-  clearClientInfo,
-  clearTokens,
-  clearCodeVerifier,
-  updateOAuthState,
+  clearSignInState,
   getOAuthState,
-  clearOAuthState,
   type McpAuthIdentity,
 } from './mcp-auth';
 import { log } from '../../logger';
 import { platform } from '../../platform-host';
+
+export type { McpOAuthModule } from './mcp-client-loader';
 
 /** Auth status for a server. */
 export type AuthStatus = 'authenticated' | 'expired' | 'not_authenticated';
@@ -44,24 +56,22 @@ export interface McpAuthenticateResult {
   error?: string;
 }
 
-/** An authorization_code flow waiting for its browser callback. */
-interface PendingFlow {
-  id: McpAuthIdentity;
-  transport: StreamableHTTPClientTransport;
-  oauthState: string;
-  cleanupTimer: ReturnType<typeof setTimeout>;
-}
+const DEFAULT_CALLBACK_HOST = '127.0.0.1';
+const DEFAULT_CALLBACK_PATH = '/callback';
+/** The redirect URI a connection's provider carries; a refresh never redirects, so it is never sent to a browser. */
+const FALLBACK_REDIRECT_URL = `http://${DEFAULT_CALLBACK_HOST}${DEFAULT_CALLBACK_PATH}`;
+const REVOCATION_TIMEOUT_MS = 10_000;
 
-/** Both maps are keyed by `flowKey`: same-named servers at different URLs are separate flows. */
-const pendingFlows = new Map<string, PendingFlow>();
-const pendingAuthentications = new Map<string, Promise<AuthStatus>>();
+/** Keyed by `flowKey`: same-named servers at different URLs are separate flows. */
+const pendingAuthentications = new Map<string, Promise<void>>();
+/** The CSRF state of each sign-in waiting for its browser redirect, so sign-out and shutdown can cancel it. */
+const activeSignIns = new Map<string, string>();
+/** The last WWW-Authenticate challenge a connection received per identity; sign-in uses its scope and metadata URL. */
+const challenges = new Map<string, OAuthChallenge>();
 
 function flowKey(id: McpAuthIdentity): string {
   return JSON.stringify([id.serverName, id.serverUrl]);
 }
-
-/** Timeout for manual auth completion (5 minutes). */
-const MANUAL_AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** A cryptographically secure random CSRF state parameter. */
 function generateState(): string {
@@ -71,11 +81,11 @@ function generateState(): string {
 }
 
 /**
- * Reject an authorization URL whose scheme is not http(s) before handing it to `openExternal`. The URL
- * is derived from the auth server's discovered `authorization_endpoint`, so a malicious/compromised
- * server could otherwise return a custom scheme that launches a local application.
+ * Reject an authorization URL that is not https or loopback http before handing it to `openExternal`.
+ * The URL is derived from the auth server's discovered `authorization_endpoint`, so a malicious server
+ * could otherwise return a custom scheme that launches a local application, or a plain-http page.
  */
-function assertSafeAuthorizationUrl(url: string): void {
+function assertSafeAuthorizationUrl(oauth: McpOAuthModule, url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -85,327 +95,226 @@ function assertSafeAuthorizationUrl(url: string): void {
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     throw new Error(`Refusing to open OAuth authorization URL with unsupported scheme "${parsed.protocol}"`);
   }
+  if (!isSecureEndpoint(parsed)) throw new oauth.OAuthInsecureEndpointError(parsed.origin);
 }
 
-/** Extract OAuth configuration from a server definition, validating string/URI fields. */
+/** The OAuth settings of a server definition; the values were validated and expanded on the way in. */
 export function extractOAuthConfig(definition: McpServerDefinition): McpOAuthConfig {
-  if (definition.oauth === false) {
-    return {};
-  }
-
-  const config: McpOAuthConfig = {};
-  const oauth = definition.oauth;
-  if (!oauth) return config;
-
-  if (oauth.grantType !== undefined) config.grantType = oauth.grantType;
-  if (oauth.clientId !== undefined) config.clientId = oauth.clientId;
-  if (oauth.clientSecret !== undefined) config.clientSecret = oauth.clientSecret;
-  if (oauth.scope !== undefined) config.scope = oauth.scope;
-  if (oauth.redirectUri !== undefined) {
-    if (typeof oauth.redirectUri !== 'string') {
-      throw new Error('OAuth redirectUri must be a string');
-    }
-    const redirectUri = oauth.redirectUri.trim();
-    if (!redirectUri) {
-      throw new Error('OAuth redirectUri must not be empty');
-    }
-    config.redirectUri = redirectUri;
-  }
-  if (oauth.clientName !== undefined) {
-    if (typeof oauth.clientName !== 'string') {
-      throw new Error('OAuth clientName must be a string');
-    }
-    const clientName = oauth.clientName.trim();
-    if (!clientName) {
-      throw new Error('OAuth clientName must not be empty');
-    }
-    config.clientName = clientName;
-  }
-  if (oauth.clientUri !== undefined) {
-    if (typeof oauth.clientUri !== 'string') {
-      throw new Error('OAuth clientUri must be a string');
-    }
-    const clientUri = oauth.clientUri.trim();
-    if (!clientUri) {
-      throw new Error('OAuth clientUri must not be empty');
-    }
-    config.clientUri = clientUri;
-  }
-  return config;
+  return definition.oauth ? { ...definition.oauth } : {};
 }
 
-/** Whether OAuth is supported for a server: requires a URL and is not explicitly disabled. */
+/**
+ * Whether a server uses OAuth: it has a URL, OAuth is not disabled, and it either asks for it or sets no
+ * other auth. A static `Authorization` header counts as other auth (pi's `usesOAuth`), so a rejected
+ * header token is a failed row, not a sign-in prompt.
+ */
 export function supportsOAuth(definition: McpServerDefinition): definition is McpServerDefinition & { url: string } {
   if (!definition.url) return false;
   if (definition.auth === false) return false;
   if (definition.oauth === false) return false;
-  return definition.auth === 'oauth' || definition.auth === undefined;
+  if (definition.auth === 'oauth') return true;
+  if (definition.auth !== undefined) return false;
+  return !Object.keys(definition.headers ?? {}).some((header) => header.toLowerCase() === 'authorization');
 }
 
-interface ParsedRedirectUri {
-  port: number;
-  callbackHost: string;
-  callbackPath: string;
+/** Whether the server's last challenge asked for more scope than the stored grant has (step-up). */
+export function hasScopeChallenge(serverName: string, serverUrl: string): boolean {
+  return challenges.get(flowKey({ serverName, serverUrl }))?.error === 'insufficient_scope';
 }
 
-function parseOAuthRedirectUri(redirectUri: string): ParsedRedirectUri {
-  let url: URL;
-  try {
-    url = new URL(redirectUri);
-  } catch (error) {
-    throw new Error(`Invalid OAuth redirectUri: ${redirectUri}`, { cause: error });
-  }
-
-  const hostname = url.hostname.toLowerCase();
-  const isLocalhost =
-    hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
-  if (url.protocol !== 'http:' || !isLocalhost) {
-    throw new Error('OAuth redirectUri must be an http:// localhost or loopback URI');
-  }
-  if (url.username || url.password) {
-    throw new Error('OAuth redirectUri must not include username or password');
-  }
-  if (url.hash) {
-    throw new Error('OAuth redirectUri must not include a fragment');
-  }
-  if (!url.port) {
-    throw new Error('OAuth redirectUri must include an explicit numeric port');
-  }
-  const port = Number.parseInt(url.port, 10);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error('OAuth redirectUri must include an explicit numeric port');
-  }
-  const callbackHost = hostname === '[::1]' ? '::1' : hostname;
-  return { port, callbackHost, callbackPath: url.pathname };
+/** How the loopback callback server binds for a sign-in, and the redirect URI it serves. */
+interface CallbackPlan {
+  strictPort: boolean;
+  /** The port to bind when strict. */
+  port: number | undefined;
+  /** The address to listen on. */
+  host: string;
+  path: string;
+  /** The redirect URI with its port left to the bind, when the port is not fixed. */
+  template: URL;
+  /** The exact redirect URI when the port is fixed. */
+  fixedRedirectUrl: string | undefined;
 }
 
 /**
- * Start the OAuth flow for a server. Returns `{ authorizationUrl: '' }` when authorization
- * completes immediately (client_credentials, or a valid refresh); otherwise the browser URL
- * the user must visit, with a pending transport registered for the callback to finish.
+ * Map `oauth.callbackUrl` / `oauth.callbackPort` onto the callback server (pi's `callbackSettings`,
+ * `pi-coding-agent/src/extensions/mcp/oauth.ts`). A callbackUrl with a port is sent exactly as written,
+ * because servers compare redirect URIs as strings. With neither, a pre-registered client keeps the
+ * strict configured port and a dynamically registered one binds a free port.
  */
-export async function startAuth(
-  sdk: McpSdkBundle,
-  serverName: string,
-  serverUrl: string,
-  definition?: McpServerDefinition,
-): Promise<{ authorizationUrl: string }> {
-  const config = definition ? extractOAuthConfig(definition) : {};
-  const id: McpAuthIdentity = { serverName, serverUrl };
+function callbackPlan(config: McpOAuthConfig): CallbackPlan {
+  const template = new URL(config.callbackUrl ?? `http://${DEFAULT_CALLBACK_HOST}${DEFAULT_CALLBACK_PATH}`);
+  const address = template.hostname.replace(/^\[|\]$/g, '');
+  // `localhost` is served on 127.0.0.1; browsers fall back to it when ::1 refuses.
+  const host = address === 'localhost' ? DEFAULT_CALLBACK_HOST : address;
+  const path = template.pathname;
+  if (config.callbackUrl !== undefined && template.port) {
+    return { strictPort: true, port: Number(template.port), host, path, template, fixedRedirectUrl: config.callbackUrl };
+  }
+  if (config.callbackPort !== undefined) {
+    const fixed = new URL(template.href);
+    fixed.port = String(config.callbackPort);
+    return { strictPort: true, port: config.callbackPort, host, path, template, fixedRedirectUrl: fixed.href };
+  }
+  if (config.callbackUrl === undefined && config.clientId !== undefined) {
+    const port = getConfiguredOAuthCallbackPort();
+    const fixed = new URL(template.href);
+    fixed.port = String(port);
+    return { strictPort: true, port, host, path, template, fixedRedirectUrl: fixed.href };
+  }
+  return { strictPort: false, port: undefined, host, path, template, fixedRedirectUrl: undefined };
+}
 
-  if (config.grantType === 'client_credentials') {
-    const storedAuth = await getAuthEntry(id);
-    if (storedAuth?.clientInfo && !storedAuth.tokens && !config.clientId) {
-      await clearClientInfo(id);
-      await clearCodeVerifier(id);
-      await clearOAuthState(id);
+/** The port of a stored client's registered redirect URI when it matches this plan's host and path. */
+function registeredPort(plan: CallbackPlan, redirectUris: string[] | undefined): number | undefined {
+  const registered = redirectUris?.[0];
+  if (!registered || !URL.canParse(registered)) return undefined;
+  const url = new URL(registered);
+  if (url.hostname !== plan.template.hostname || url.pathname !== plan.path || !url.port) return undefined;
+  return Number(url.port);
+}
+
+/** `provider` with some of its methods replaced; pi-mcp's flow sees only this object. */
+function withOverrides(provider: McpOAuthProvider, overrides: Partial<OAuthClientProvider>): OAuthClientProvider {
+  return {
+    redirectUrl: provider.redirectUrl,
+    clientMetadata: provider.clientMetadata,
+    state: () => provider.state(),
+    clientInformation: () => provider.clientInformation(),
+    saveClientInformation: (information) => provider.saveClientInformation(information),
+    tokens: () => provider.tokens(),
+    saveTokens: (tokens) => provider.saveTokens(tokens),
+    redirectToAuthorization: (url) => provider.redirectToAuthorization(url),
+    saveCodeVerifier: (verifier) => provider.saveCodeVerifier(verifier),
+    codeVerifier: () => provider.codeVerifier(),
+    invalidateCredentials: (kind) => provider.invalidateCredentials(kind),
+    saveDiscoveryState: (state) => provider.saveDiscoveryState(state),
+    discoveryState: () => provider.discoveryState(),
+    ...overrides,
+  };
+}
+
+/** `provider` with its discovery pinned, so the code exchange reaches the authorization server the `iss` check accepted. */
+function withDiscovery(provider: McpOAuthProvider, discovery: OAuthDiscoveryState): OAuthClientProvider {
+  return withOverrides(provider, { discoveryState: () => discovery });
+}
+
+/** The authorization_code sign-in: refresh when that suffices, else the browser flow on the loopback callback. */
+async function signInWithBrowser(oauth: McpOAuthModule, id: McpAuthIdentity, config: McpOAuthConfig): Promise<void> {
+  const key = flowKey(id);
+  const challenge = challenges.get(key);
+  const stepUp = challenge?.error === 'insufficient_scope';
+  const store = createOAuthStateStore(id, { interactive: true });
+  const stored = await store.load();
+  const plan = callbackPlan(config);
+  const oauthState = generateState();
+  const registeredUris =
+    stored.clientInformation && 'redirect_uris' in stored.clientInformation ? stored.clientInformation.redirect_uris : undefined;
+  const preferredPort = plan.strictPort ? undefined : registeredPort(plan, registeredUris);
+
+  await ensureCallbackServer({
+    strictPort: plan.strictPort,
+    ...(plan.port !== undefined ? { port: plan.port } : {}),
+    callbackHost: plan.host,
+    callbackPath: plan.path,
+    oauthState,
+    reserveState: true,
+    ...(preferredPort !== undefined ? { preferredPort } : {}),
+  });
+  activeSignIns.set(key, oauthState);
+  try {
+    let redirectUrl = plan.fixedRedirectUrl;
+    if (redirectUrl === undefined) {
+      const bound = new URL(plan.template.href);
+      bound.port = String(getOAuthCallbackPort());
+      redirectUrl = bound.href;
     }
 
-    const authProvider = new McpOAuthProvider(sdk, serverName, serverUrl, config, {
-      onRedirect: async () => {
-        throw new Error('Browser redirect is not used for client_credentials flow');
+    // Every sign-in gets a fresh state and verifier. A registered client cannot use another redirect URI, and its tokens belong to it.
+    const next = { ...stored, oauthState };
+    delete next.codeVerifier;
+    // pi-mcp's flow uses cached discovery instead of discovering, which is how a configured metadata document applies.
+    if (config.authServerMetadataUrl !== undefined) next.discovery = await discoverAuthorizationServer(oauth, id.serverUrl, config);
+    if (config.clientId === undefined && !(registeredUris ?? []).includes(redirectUrl)) {
+      delete next.clientInformation;
+      delete next.tokens;
+      delete next.tokensExpireAt;
+    }
+    await store.save(next);
+
+    let authorizationUrl: URL | undefined;
+    const provider = createAuthorizationCodeProvider(oauth, {
+      serverUrl: id.serverUrl,
+      config,
+      redirectUrl,
+      store,
+      onRedirect: (url) => {
+        authorizationUrl = url;
       },
     });
-    const result = await sdk.auth.auth(authProvider, { serverUrl });
-    if (result !== 'AUTHORIZED') {
-      throw new sdk.auth.UnauthorizedError('Failed to authorize');
-    }
-    return { authorizationUrl: '' };
-  }
-
-  const redirectCallback = config.redirectUri !== undefined ? parseOAuthRedirectUri(config.redirectUri) : undefined;
-  const oauthState = generateState();
-
-  try {
-    const ensureOptions: Parameters<typeof ensureCallbackServer>[0] = {
-      strictPort: Boolean(config.clientId) || config.redirectUri !== undefined,
-      oauthState,
-      reserveState: true,
+    // A server asking for more scope gets it on top of the configured scope and the scope granted so far.
+    const scope = mergeScopes(config.scope, stepUp ? stepUpScope(stored.tokens?.scope, challenge?.scope) : challenge?.scope);
+    const flow: OAuthFlowOptions = {
+      serverUrl: id.serverUrl,
+      fetch: createOAuthFetch(oauth),
+      ...(challenge?.resourceMetadataUrl ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : {}),
+      ...(scope !== undefined ? { scope } : {}),
     };
-    if (redirectCallback) {
-      ensureOptions.port = redirectCallback.port;
-      ensureOptions.callbackHost = redirectCallback.callbackHost;
-      ensureOptions.callbackPath = redirectCallback.callbackPath;
+    // A refresh keeps the granted scope, so a step-up goes straight to the browser.
+    if ((await oauth.authorizeMcp(provider, { ...flow, skipRefresh: stepUp })) === 'AUTHORIZED') return;
+    // The authorization server this redirect was built for; the callback wait can outlive the stored copy.
+    const discovery = await provider.discoveryState();
+    if (!discovery) throw new Error('OAuth discovery state was lost before the browser redirect');
+    if (!authorizationUrl) throw new Error('OAuth flow did not produce an authorization URL');
+    const url = authorizationUrl.href;
+    assertSafeAuthorizationUrl(oauth, url);
+
+    const callback = waitForCallback(oauthState);
+    // Not awaited: the callback can settle (an error redirect) before the handoff resolves, and it must be awaited first.
+    void platform().shell.openExternal(url).then(
+      (opened) => {
+        if (!opened) log('[McpAuthFlow] Browser handoff for %s reported failure; awaiting callback', id.serverName);
+      },
+      (error: unknown) => log('[McpAuthFlow] Failed to open browser for %s: %O', id.serverName, error),
+    );
+    const { code, iss } = await callback;
+
+    // The CSRF gate is the callback server's state-keyed lookup. This guards a different failure: a
+    // concurrent sign-in for the same identity replacing the stored state and verifier mid-flow.
+    if ((await getOAuthState(id)) !== oauthState) {
+      throw new Error('OAuth flow superseded by a concurrent authentication for the same server');
     }
-    await ensureCallbackServer(ensureOptions);
-  } catch (error) {
-    await clearOAuthState(id);
-    throw error;
-  }
-
-  let capturedUrl: URL | undefined;
-  const authProvider = new McpOAuthProvider(sdk, serverName, serverUrl, config, {
-    onRedirect: async (url) => {
-      capturedUrl = url;
-    },
-  });
-
-  try {
-    const storedAuth = await getAuthEntry(id);
-    if (storedAuth?.clientInfo && !config.clientId) {
-      if (!storedAuth.tokens) {
-        await clearClientInfo(id);
-        await clearCodeVerifier(id);
-        await clearOAuthState(id);
-      } else {
-        const redirectUris = storedAuth.clientInfo.redirectUris;
-        if (!Array.isArray(redirectUris) || !redirectUris.includes(authProvider.redirectUrl ?? '')) {
-          await clearClientInfo(id);
-          await clearTokens(id);
-          await clearCodeVerifier(id);
-          await clearOAuthState(id);
-        }
-      }
+    // RFC 9207. pi-mcp 0.99.2's authorizeMcp does not check `iss`; the exchange below uses the same captured discovery.
+    const metadata = discovery.authorizationServerMetadata;
+    if (metadata && (iss !== undefined || metadata['authorization_response_iss_parameter_supported'] === true) && iss !== metadata.issuer) {
+      throw new oauth.OAuthIssuerMismatchError(metadata.issuer, iss ?? 'none');
     }
-
-    await updateOAuthState(id, oauthState);
-
-    const result = await sdk.auth.auth(authProvider, { serverUrl });
-    if (result === 'AUTHORIZED') {
-      releaseCallbackServer(oauthState);
-      await clearOAuthState(id);
-      return { authorizationUrl: '' };
-    }
-    if (!capturedUrl) {
-      throw new sdk.auth.UnauthorizedError('OAuth authorization URL was not provided');
-    }
-    const pendingTransport = new sdk.http.StreamableHTTPClientTransport(new URL(serverUrl), { authProvider });
-    setPendingTransport(id, pendingTransport, oauthState);
-    return { authorizationUrl: capturedUrl.toString() };
-  } catch (error) {
-    await clearPendingAuth(id, oauthState);
-    throw error;
-  }
-}
-
-function setPendingTransport(
-  id: McpAuthIdentity,
-  transport: StreamableHTTPClientTransport,
-  oauthState: string,
-): void {
-  void clearPendingAuth(id);
-  const cleanupTimer = setTimeout(() => {
-    void clearPendingAuth(id, oauthState);
-  }, MANUAL_AUTH_TIMEOUT_MS);
-  cleanupTimer.unref?.();
-  pendingFlows.set(flowKey(id), { id, transport, oauthState, cleanupTimer });
-}
-
-async function clearPendingAuth(id: McpAuthIdentity, oauthState?: string): Promise<void> {
-  const key = flowKey(id);
-  const flow = pendingFlows.get(key);
-  if (oauthState && flow && flow.oauthState !== oauthState) return;
-
-  if (flow) {
-    clearTimeout(flow.cleanupTimer);
-    pendingFlows.delete(key);
-  }
-  const stateToRelease = flow?.oauthState ?? oauthState;
-  if (stateToRelease) {
-    releaseCallbackServer(stateToRelease);
-    const storedState = await getOAuthState(id);
-    if (storedState === stateToRelease) {
-      await clearOAuthState(id);
-    }
-  }
-  if (flow) {
-    await flow.transport.close().catch(() => {});
-  }
-}
-
-/** Complete OAuth using the captured authorization code via the pending transport. */
-export async function completeAuth(serverName: string, serverUrl: string, authorizationCode: string): Promise<AuthStatus> {
-  const id: McpAuthIdentity = { serverName, serverUrl };
-  const flow = pendingFlows.get(flowKey(id));
-  if (!flow) {
-    throw new Error(`No pending OAuth flow for server: ${serverName}`);
-  }
-
-  const oauthState = await getOAuthState(id);
-
-  try {
-    await flow.transport.finishAuth(authorizationCode);
-    return 'authenticated';
+    await oauth.authorizeMcp(withDiscovery(provider, discovery), { ...flow, authorizationCode: code });
   } finally {
-    await clearPendingAuth(id, oauthState);
+    if (activeSignIns.get(key) === oauthState) activeSignIns.delete(key);
+    cancelPendingCallback(oauthState);
+    await clearSignInState(id, oauthState);
   }
 }
 
-/**
- * Run the full OAuth flow for a server: client_credentials non-interactively, or
- * authorization_code via the localhost callback + browser. Concurrent calls per server identity
- * (name + URL) are deduplicated. Opens the browser through the host (`ShellService.openExternal`).
- */
-export async function authenticate(
-  sdk: McpSdkBundle,
-  serverName: string,
-  serverUrl: string,
-  definition?: McpServerDefinition,
-): Promise<AuthStatus> {
-  const id: McpAuthIdentity = { serverName, serverUrl };
+/** Run one sign-in for a server identity; concurrent calls for the same identity share it. */
+function signIn(oauth: McpOAuthModule, id: McpAuthIdentity, config: McpOAuthConfig): Promise<void> {
   const key = flowKey(id);
   const inFlight = pendingAuthentications.get(key);
-  if (inFlight) {
-    return inFlight;
-  }
-
-  const operation = (async (): Promise<AuthStatus> => {
-    const { authorizationUrl } = await startAuth(sdk, serverName, serverUrl, definition);
-
-    if (!authorizationUrl) {
-      return 'authenticated';
+  if (inFlight) return inFlight;
+  const operation = (async () => {
+    if (config.grantType === 'client_credentials') {
+      const challenge = challenges.get(key);
+      await requestClientCredentialsToken(oauth, id, config, mergeScopes(config.scope, challenge?.scope));
+    } else {
+      await signInWithBrowser(oauth, id, config);
     }
-
-    const oauthState = await getOAuthState(id);
-    if (!oauthState) {
-      throw new Error('OAuth state not found - this should not happen');
-    }
-
-    const callbackPromise = waitForCallback(oauthState);
-
-    try {
-      assertSafeAuthorizationUrl(authorizationUrl);
-      let opened = false;
-      try {
-        opened = await platform().shell.openExternal(authorizationUrl);
-      } catch (error) {
-        log('[McpAuthFlow] Failed to open browser for %s: %O', serverName, error);
-      }
-      if (!opened) {
-        log('[McpAuthFlow] Browser handoff for %s reported failure; awaiting callback', serverName);
-      }
-
-      const code = await callbackPromise;
-
-      // The authoritative CSRF gate is the callback server's state-keyed lookup: `waitForCallback`
-      // only resolves for the exact `oauthState` registered above, so the code we hold matches this
-      // flow's state. This secondary check guards a different failure: a concurrent authenticate() for
-      // the SAME server identity overwriting the persisted state mid-flow (which would make completeAuth
-      // read a stale verifier). It is not itself the CSRF defense.
-      const storedState = await getOAuthState(id);
-      if (storedState !== oauthState) {
-        await clearOAuthState(id);
-        throw new Error('OAuth flow superseded by a concurrent authentication for the same server');
-      }
-      await clearOAuthState(id);
-
-      return await completeAuth(serverName, serverUrl, code);
-    } catch (error) {
-      cancelPendingCallback(oauthState);
-      await clearPendingAuth(id, oauthState);
-      throw error;
-    }
-  })();
-
+    challenges.delete(key);
+  })().finally(() => {
+    if (pendingAuthentications.get(key) === operation) pendingAuthentications.delete(key);
+  });
   pendingAuthentications.set(key, operation);
-
-  try {
-    return await operation;
-  } finally {
-    if (pendingAuthentications.get(key) === operation) {
-      pendingAuthentications.delete(key);
-    }
-  }
+  return operation;
 }
 
 /** The current authentication status for a server identity. */
@@ -417,148 +326,159 @@ export async function getAuthStatus(serverName: string, serverUrl: string): Prom
   return expired ? 'expired' : 'authenticated';
 }
 
-/** Remove all OAuth credentials and cancel any in-flight flow for a server identity. */
+/** Remove all OAuth credentials and cancel any in-flight sign-in for a server identity. */
 export async function removeAuth(serverName: string, serverUrl: string): Promise<void> {
   const id: McpAuthIdentity = { serverName, serverUrl };
-  const oauthState = await getOAuthState(id);
-  if (oauthState) {
-    cancelPendingCallback(oauthState);
-  }
-  await clearPendingAuth(id, oauthState);
+  const key = flowKey(id);
+  const oauthState = activeSignIns.get(key);
+  if (oauthState) cancelPendingCallback(oauthState);
+  challenges.delete(key);
   await clearAllCredentials(id);
   log('[McpAuthFlow] Removed credentials for %s', serverName);
 }
 
 /**
  * Best-effort RFC 7009 token revocation at the authorization server, then ALWAYS clear local creds.
- * Revoke must run before `removeAuth` (which deletes the tokens it needs); revocation itself can never
- * throw — a network failure, a missing `revocation_endpoint`, or a server without RFC 9728 discovery all
- * degrade silently to a local forget.
+ * Revoke must run before `removeAuth` (which deletes the tokens it needs). A revocation failure (network,
+ * no `revocation_endpoint`, no discovery) is logged and sign-out continues locally.
  */
 export async function revokeAndRemoveAuth(
-  sdk: McpSdkBundle | null,
+  oauth: McpOAuthModule | null,
   serverName: string,
   definition: McpServerDefinition & { url: string },
 ): Promise<void> {
-  await revokeTokens(sdk, serverName, definition);
+  if (oauth && supportsOAuth(definition)) {
+    try {
+      await revokeTokens(oauth, serverName, definition);
+    } catch (error) {
+      log('[McpAuthFlow] Token revocation failed for %s (continuing with local sign-out): %s', serverName, failureForLog(error));
+    }
+  }
   await removeAuth(serverName, definition.url);
 }
 
-/** Best-effort revoke the stored access + refresh tokens at the auth server. Never throws. */
 async function revokeTokens(
-  sdk: McpSdkBundle | null,
+  oauth: McpOAuthModule,
   serverName: string,
   definition: McpServerDefinition & { url: string },
 ): Promise<void> {
-  if (!sdk) return;
-  if (!supportsOAuth(definition)) return;
-  try {
-    const entry = await getAuthEntry({ serverName, serverUrl: definition.url });
-    if (!entry?.tokens?.accessToken) return;
-
-    const info = await sdk.auth.discoverOAuthServerInfo(definition.url);
-    const metadata = info.authorizationServerMetadata;
-    // `revocation_endpoint` is on the OAuth arm of the SDK's metadata union but not the OpenID arm's
-    // zod schema, so the union doesn't expose it directly; read it through a narrow accessor.
-    if (!metadata || !revocationEndpointOf(metadata)) return;
-
-    const config = extractOAuthConfig(definition);
-    const provider = new McpOAuthProvider(sdk, serverName, definition.url, config, { onRedirect: async () => {} });
-
-    if (entry.tokens.refreshToken) {
-      await postRevocation(provider, metadata, entry.tokens.refreshToken, 'refresh_token');
-    }
-    await postRevocation(provider, metadata, entry.tokens.accessToken, 'access_token');
-  } catch (error) {
-    log('[McpAuthFlow] Token revocation failed for %s (continuing with local sign-out): %O', serverName, error);
-  }
+  const id: McpAuthIdentity = { serverName, serverUrl: definition.url };
+  const tokens = (await getAuthEntry(id))?.tokens;
+  if (!tokens?.accessToken) return;
+  const config = extractOAuthConfig(definition);
+  const info = await discoverAuthorizationServer(oauth, definition.url, config);
+  const metadata = info.authorizationServerMetadata;
+  const endpoint = metadata?.['revocation_endpoint'];
+  if (typeof endpoint !== 'string') return;
+  const client = await knownClient(id, config);
+  if (!client) return;
+  const oauthFetch = createOAuthFetch(oauth);
+  const revoke = async (token: string, hint: 'access_token' | 'refresh_token'): Promise<void> => {
+    const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
+    const params = new URLSearchParams({ token, token_type_hint: hint });
+    applyClientAuthentication(headers, params, client, metadata);
+    const res = await oauthFetch(endpoint, { method: 'POST', headers, body: params, signal: AbortSignal.timeout(REVOCATION_TIMEOUT_MS) });
+    // The body carries nothing sign-out needs; cancelling it releases the connection.
+    await res.body?.cancel();
+    // RFC 7009: 200 covers a revoked token and an already-invalid one; any other status is logged, and sign-out proceeds.
+    if (!res.ok) log('[McpAuthFlow] Revocation endpoint returned %d for %s token', res.status, hint);
+  };
+  if (tokens.refreshToken) await revoke(tokens.refreshToken, 'refresh_token');
+  await revoke(tokens.accessToken, 'access_token');
 }
 
-/** Read the optional RFC 7009 `revocation_endpoint`, which the SDK metadata union only types on its OAuth arm. */
-function revocationEndpointOf(metadata: AuthorizationServerMetadata): string | undefined {
-  return (metadata as { revocation_endpoint?: string }).revocation_endpoint;
-}
-
-/** POST a single RFC 7009 revocation request with negotiated client auth applied by the provider. */
-async function postRevocation(
-  provider: McpOAuthProvider,
-  metadata: AuthorizationServerMetadata,
-  token: string,
-  tokenTypeHint: 'access_token' | 'refresh_token',
-): Promise<void> {
-  const revocationEndpoint = revocationEndpointOf(metadata)!;
-  assertSafeAuthorizationUrl(revocationEndpoint);
-  const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
-  const params = new URLSearchParams({ token, token_type_hint: tokenTypeHint });
-  await provider.addClientAuthentication(headers, params, revocationEndpoint, metadata);
-  const res = await fetch(revocationEndpoint, {
-    method: 'POST',
-    headers,
-    body: params,
-    signal: AbortSignal.timeout(10_000),
-  });
-  // RFC 7009: a 200 is returned for a successful revocation AND for an already-invalid token; treat any
-  // 2xx as success. A non-2xx is logged but not thrown (sign-out proceeds regardless).
-  if (!res.ok) {
-    log('[McpAuthFlow] Revocation endpoint returned %d for %s token', res.status, tokenTypeHint);
-  }
-}
-
-/** Stop the OAuth subsystem: cancel pending flows and stop the callback server. */
+/** Stop the OAuth subsystem: cancel pending sign-ins and stop the callback server. */
 export async function shutdownOAuth(): Promise<void> {
-  // Reject every in-flight interactive auth's callback waiter so the awaiting authenticate() promise
-  // settles deterministically on deactivation, then drop the dedup map (M5).
-  const flows = Array.from(pendingFlows.values());
-  for (const flow of flows) {
-    cancelPendingCallback(flow.oauthState);
-  }
-  for (const flow of flows) {
-    await clearPendingAuth(flow.id);
-  }
+  for (const oauthState of activeSignIns.values()) cancelPendingCallback(oauthState);
+  activeSignIns.clear();
   pendingAuthentications.clear();
   await stopCallbackServer();
 }
 
 /**
- * Build an `AuthProviderFactory` (the shape `server-manager.ts` expects). Returns a provider
- * only when the definition supports OAuth; the SDK transport drives it on connect, and an
- * `UnauthorizedError` surfaces to the manager as `needs-auth`.
+ * Build the `authProvider` for a server's `StreamableHttpTransport`, or undefined when it does not use
+ * OAuth. `definition` carries expanded values. A connection never starts a browser flow: without a
+ * refresh token, or on an `insufficient_scope` challenge (a refresh keeps the granted scope), it throws
+ * `McpOAuthAuthorizationRequiredError`; otherwise pi-mcp's `adaptOAuthProvider` refreshes after a 401.
  */
 export function createMcpAuthProviderFactory(
-  sdk: McpSdkBundle,
-): (serverName: string, url: string, definition: McpServerDefinition) => OAuthClientProvider | undefined {
+  oauth: McpOAuthModule,
+): (serverName: string, url: string, definition: McpServerDefinition) => AuthProvider | undefined {
   return (serverName, url, definition) => {
     if (!supportsOAuth(definition)) return undefined;
     const config = extractOAuthConfig(definition);
-    return new McpOAuthProvider(sdk, serverName, url, config, {
-      onRedirect: async (authorizationUrl) => {
-        const url = authorizationUrl.toString();
-        assertSafeAuthorizationUrl(url);
-        await platform().shell.openExternal(url);
-      },
+    const id: McpAuthIdentity = { serverName, serverUrl: url };
+    const key = flowKey(id);
+    const onChallenge = (challenge: OAuthChallenge): void => {
+      challenges.set(key, challenge);
+    };
+    if (config.grantType === 'client_credentials') return createClientCredentialsAuthProvider(oauth, id, config, onChallenge);
+
+    const store = createOAuthStateStore(id, { interactive: false });
+    const provider = createAuthorizationCodeProvider(oauth, {
+      serverUrl: url,
+      config,
+      redirectUrl: callbackPlan(config).fixedRedirectUrl ?? FALLBACK_REDIRECT_URL,
+      store,
+      onRedirect: () => {},
     });
+    // A connection never registers a client (it would be orphaned): pi-mcp's flow asks for the client right
+    // before it registers one, on the first run and on its invalid_client retry alike.
+    const adapted = oauth.adaptOAuthProvider(
+      withOverrides(provider, {
+        clientInformation: async () => {
+          const client = await provider.clientInformation();
+          if (!client) throw new oauth.McpOAuthAuthorizationRequiredError();
+          return client;
+        },
+      }),
+    );
+    const oauthFetch = createOAuthFetch(oauth);
+    return {
+      token: () => adapted.token(),
+      onUnauthorized: async (context) => {
+        const challenge = oauth.parseWwwAuthenticate(context.response.headers.get('www-authenticate'));
+        onChallenge(challenge);
+        if (challenge.error === 'insufficient_scope') throw new oauth.McpOAuthAuthorizationRequiredError();
+        const tokens = await provider.tokens();
+        // Another request already replaced the rejected token: retry with it.
+        if (tokens?.access_token !== undefined && context.token !== undefined && tokens.access_token !== context.token) return;
+        if (!tokens?.refresh_token) throw new oauth.McpOAuthAuthorizationRequiredError();
+        // A refresh token without its client (absent, or its secret expired) would make pi-mcp register a new one.
+        if (config.clientId === undefined && !(await provider.clientInformation())) throw new oauth.McpOAuthAuthorizationRequiredError();
+        if (config.authServerMetadataUrl !== undefined && !(await provider.discoveryState())) {
+          await store.save({ ...(await store.load()), discovery: await discoverAuthorizationServer(oauth, url, config) });
+        }
+        await adapted.onUnauthorized?.({ ...context, fetch: oauthFetch });
+      },
+    };
   };
 }
 
+/** An auth failure as one capped line: server-supplied text reaches this message, the log and the panel. */
+function describeAuthError(error: unknown): string {
+  return flattenServerText(error instanceof Error ? error.message : String(error));
+}
+
 /**
- * Interactive authenticate entrypoint for the webview "Authenticate" button. Runs the
- * localhost-callback authorization_code/PKCE or client_credentials flow, persists tokens, and
- * returns success/failure (never throws). The caller force-reconnects on success.
+ * Interactive authenticate entrypoint for the panel's Authenticate action: the authorization_code flow
+ * through the browser, or a client_credentials token. `definition` carries expanded values. Returns
+ * success or failure and never throws; the caller force-reconnects on success.
  */
 export async function authenticateMcpServer(
-  sdk: McpSdkBundle,
+  oauth: McpOAuthModule,
   serverName: string,
   definition: McpServerDefinition,
 ): Promise<McpAuthenticateResult> {
-  if (!supportsOAuth(definition) || !definition.url) {
+  if (!supportsOAuth(definition)) {
     return { ok: false, error: `MCP server "${serverName}" does not support OAuth` };
   }
   try {
-    const status = await authenticate(sdk, serverName, definition.url, definition);
-    return { ok: status === 'authenticated' };
+    await signIn(oauth, { serverName, serverUrl: definition.url }, extractOAuthConfig(definition));
+    return { ok: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log('[McpAuthFlow] Authentication failed for %s: %s', serverName, message);
+    const message = describeAuthError(error);
+    log('[McpAuthFlow] Authentication failed for %s: %s', serverName, failureForLog(error));
     return { ok: false, error: message };
   }
 }

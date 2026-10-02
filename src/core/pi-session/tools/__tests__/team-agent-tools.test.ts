@@ -27,8 +27,8 @@ function leadCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
     role: 'lead',
     messageBus: { send: () => ({ messageId: 'm' }), getInbox: () => [], broadcast: () => undefined, getAllMessages: () => [], subscribe: () => () => undefined } as unknown as AgentMcpContext['messageBus'],
     scratchpad: {} as AgentMcpContext['scratchpad'],
-    startSpecialist: (_name: string, _task: string, _profileId?: string, _kind?: 'implementor' | 'reviewer') => 'spec-id',
-    redispatchSpecialist: (_name: string, _task: string, _profileId?: string, _kind?: 'implementor' | 'reviewer') => 'spec-id',
+    startSpecialist: (_name: string, _task: string, _profileId?: string, _kind?: 'implementor' | 'reviewer', _reviews?: string[]) => 'spec-id',
+    redispatchSpecialist: (_name: string, _task: string, _profileId?: string, _kind?: 'implementor' | 'reviewer', _reviews?: string[]) => 'spec-id',
     checkBriefReadGate: () => ({ ok: true }),
     synthesizeResult: () => undefined,
     cancelSpecialist: () => undefined,
@@ -44,6 +44,8 @@ function leadCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
     getAllAgents: () => [],
     enterStandby: () => undefined,
     reportComplete: () => undefined,
+    dismissReview: () => undefined,
+    getUnsatisfiedReviews: () => [],
     flagBriefConflict: () => undefined,
     resolveBriefConflict: () => undefined,
     getOpenBriefConflicts: () => [],
@@ -82,15 +84,15 @@ describe('team_spawn_specialist — brief read-gate', () => {
     ).rejects.toThrow(/mission-brief/);
   });
 
-  it('spawns after the brief read-gate passes, forwarding name/task/profile/kind (no model)', async () => {
+  it('spawns after the brief read-gate passes, forwarding name/task/profile/kind/reviews (no model)', async () => {
     const calls: unknown[][] = [];
     const ctx = leadCtx({
       checkBriefReadGate: () => ({ ok: true }),
       startSpecialist: (...args: unknown[]) => { calls.push(args); return 'spec-id'; },
     });
     const spawn = toolMap(ctx).get('team_spawn_specialist')!;
-    await spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'reviewer', profile: 'engineering-code-reviewer' });
-    expect(calls).toEqual([['Dev', 'do a well-described task here', 'engineering-code-reviewer', 'reviewer']]);
+    await spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: ['Backend'] });
+    expect(calls).toEqual([['Dev', 'do a well-described task here', 'engineering-code-reviewer', 'reviewer', ['Backend']]]);
   });
 
   it('rejects a specialist calling spawn (lead-only) before touching the gate', async () => {
@@ -102,11 +104,21 @@ describe('team_spawn_specialist — brief read-gate', () => {
 });
 
 describe('team_spawn_specialist — schema has NO `model` property', () => {
-  it('exposes only name/task/kind/profile (the model arg is removed)', () => {
+  it('exposes only name/task/kind/profile/reviews (the model arg is removed)', () => {
     const spawn = toolMap(leadCtx()).get('team_spawn_specialist')!;
     const props = (spawn.parameters as unknown as { properties: Record<string, unknown> }).properties;
     expect(props).not.toHaveProperty('model');
-    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'task']);
+    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'reviews', 'task']);
+  });
+
+  it('takes reviews as an optional list of non-empty names, [] included', () => {
+    const spawn = toolMap(leadCtx()).get('team_spawn_specialist')!;
+    const base = { name: 'Rev', task: 'review the backend work in detail', kind: 'reviewer' };
+    expect(Value.Check(spawn.parameters, { ...base, reviews: ['Backend', 'Frontend'] })).toBe(true);
+    expect(Value.Check(spawn.parameters, { ...base, reviews: [] })).toBe(true);
+    expect(Value.Check(spawn.parameters, base)).toBe(true);
+    expect(Value.Check(spawn.parameters, { ...base, reviews: [''] })).toBe(false);
+    expect(Value.Check(spawn.parameters, { ...base, reviews: 'Backend' })).toBe(false);
   });
 });
 
@@ -121,8 +133,8 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
       redispatchSpecialist: (...args: unknown[]) => { calls.push(args); return 're-id'; },
     });
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
-    const res = await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'engineering-code-reviewer' });
-    expect(calls).toEqual([['Dev', 'redo the task with more detail here', 'engineering-code-reviewer', 'reviewer']]);
+    const res = await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'reviewer', profile: 'engineering-code-reviewer', reviews: [] });
+    expect(calls).toEqual([['Dev', 'redo the task with more detail here', 'engineering-code-reviewer', 'reviewer', []]]);
     expect(res.content[0]!.text).toMatch(/re-dispatched/);
   });
 
@@ -133,7 +145,7 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
     });
     const redispatch = toolMap(ctx).get('team_redispatch_specialist')!;
     await redispatch.execute('id', { name: 'Dev', task: 'redo the task with more detail here', kind: 'implementor' });
-    expect(calls).toEqual([['Dev', 'redo the task with more detail here', undefined, 'implementor']]);
+    expect(calls).toEqual([['Dev', 'redo the task with more detail here', undefined, 'implementor', undefined]]);
   });
 
   it('rejects a specialist calling redispatch (lead-only)', async () => {
@@ -157,10 +169,10 @@ describe('team_redispatch_specialist — lead-only re-run (Slice C)', () => {
 describe('team_redispatch_specialist — schema mirrors team_spawn_specialist', () => {
   const redispatch = toolMap(leadCtx()).get('team_redispatch_specialist')!;
 
-  it('exposes exactly name/task/kind/profile (no model)', () => {
+  it('exposes exactly name/task/kind/profile/reviews (no model)', () => {
     const props = (redispatch.parameters as unknown as { properties: Record<string, unknown> }).properties;
     expect(props).not.toHaveProperty('model');
-    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'task']);
+    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'reviews', 'task']);
   });
 
   it('accepts a valid redispatch call (name, task ≥ MIN_TASK_LENGTH, kind; optional profile)', () => {
@@ -208,6 +220,48 @@ describe('team_resolve_brief_conflict — lead-only', () => {
   it('rejects a specialist resolving (lead-only)', async () => {
     const resolve = guardedTool('team_resolve_brief_conflict', 'specialist');
     await expect(resolve.execute('id', { name: 'Dev', resolution: 'ten-plus char resolution' })).rejects.toThrow(/Only the lead/);
+  });
+});
+
+describe('team_dismiss_review is lead-only and bounded', () => {
+  const schema = (): TSchema => toolMap(leadCtx()).get('team_dismiss_review')!.parameters;
+
+  it('requires reviewer, implementor and a reason of at least 10 characters', () => {
+    expect(Value.Check(schema(), { reviewer: 'appsec', implementor: 'backend', reason: 'appsec was cancelled; backend verified by suite' })).toBe(true);
+    expect(Value.Check(schema(), { reviewer: 'appsec', implementor: 'backend', reason: 'too short' })).toBe(false);
+    expect(Value.Check(schema(), { reviewer: 'appsec', implementor: 'backend' })).toBe(false);
+  });
+
+  it('hands the dismissal to the runner and says where it is recorded', async () => {
+    const calls: unknown[][] = [];
+    const ctx = leadCtx({ dismissReview: (...args: unknown[]) => { calls.push(args); } });
+    const res = await toolMap(ctx).get('team_dismiss_review')!.execute('id', { reviewer: 'appsec', implementor: 'backend', reason: 'appsec was cancelled; backend verified by suite' });
+    expect(calls).toEqual([['appsec', 'backend', 'appsec was cancelled; backend verified by suite']]);
+    expect(res.content[0]!.text).toContain('head the team result');
+  });
+
+  it('surfaces the runner refusal', async () => {
+    const ctx = leadCtx({ dismissReview: () => { throw new Error('Cannot dismiss: "appsec" can still review backend revision 2. Send it back with team_request_revision instead.'); } });
+    await expect(toolMap(ctx).get('team_dismiss_review')!.execute('id', { reviewer: 'appsec', implementor: 'backend', reason: 'a reason long enough' }))
+      .rejects.toThrow(/can still review/);
+  });
+
+  it('rejects a specialist dismissing (lead-only)', async () => {
+    await expect(guardedTool('team_dismiss_review', 'specialist').execute('id', { reviewer: 'appsec', implementor: 'backend', reason: 'a reason long enough' }))
+      .rejects.toThrow(/Only the lead/);
+  });
+});
+
+describe('team_synthesize_result blocks on an unsatisfied required review', () => {
+  it('names each unsatisfied review with its move and does not synthesize', async () => {
+    let synthesized = false;
+    const ctx = leadCtx({
+      getUnsatisfiedReviews: () => ['backend, revision 2, reviewed by appsec: appsec is cancelled and never reviewed it (redispatch appsec or dismiss with team_dismiss_review and a written reason)'],
+      synthesizeResult: () => { synthesized = true; },
+    });
+    await expect(toolMap(ctx).get('team_synthesize_result')!.execute('id', { result: 'done' }))
+      .rejects.toThrow(/unsatisfied required reviews: backend, revision 2, reviewed by appsec: .*team_dismiss_review/);
+    expect(synthesized).toBe(false);
   });
 });
 
@@ -677,6 +731,29 @@ describe('team_report_complete carries the closing summary', () => {
     await toolMap(ctx).get('team_report_complete')!.execute('id', { summary: 'delivered the parser, suite passes' });
     expect(calls).toEqual([['Dev', 'delivered the parser, suite passes']]);
   });
+
+  it('takes optional verdicts, each an implementor with approve or changes_requested', () => {
+    const summary = 'reviewed backend and frontend in full';
+    expect(Value.Check(schema(), { summary, verdicts: [{ implementor: 'backend', verdict: 'approve' }, { implementor: 'frontend', verdict: 'changes_requested' }] })).toBe(true);
+    expect(Value.Check(schema(), { summary, verdicts: [{ implementor: 'backend', verdict: 'lgtm' }] })).toBe(false);
+    expect(Value.Check(schema(), { summary, verdicts: [{ implementor: 'backend' }] })).toBe(false);
+    expect(Value.Check(schema(), { summary, verdicts: [{ implementor: 'backend', verdict: 'approve', note: 'x' }] })).toBe(false);
+  });
+
+  it('hands the verdicts to the runner, which validates them against the declared pairs', async () => {
+    const calls: unknown[][] = [];
+    const ctx = specialistCtx({ reportComplete: (...args: unknown[]) => { calls.push(args); } });
+    const verdicts = [{ implementor: 'backend', verdict: 'approve' }];
+    await toolMap(ctx).get('team_report_complete')!.execute('id', { summary: 'reviewed backend in full', verdicts });
+    expect(calls).toEqual([['Dev', 'reviewed backend in full', verdicts]]);
+  });
+
+  it('surfaces the runner verdict error', async () => {
+    const error = 'Cannot report complete: pass one verdict for each implementor you review (backend, frontend), except one that has landed no work yet. Missing: frontend.';
+    const ctx = specialistCtx({ reportComplete: () => { throw new Error(error); } });
+    await expect(toolMap(ctx).get('team_report_complete')!.execute('id', { summary: 'reviewed backend in full', verdicts: [{ implementor: 'backend', verdict: 'approve' }] }))
+      .rejects.toThrow(error);
+  });
 });
 
 /**
@@ -684,7 +761,7 @@ describe('team_report_complete carries the closing summary', () => {
  * request and sometimes called one. Registration now follows the same split as the runtime guards.
  */
 describe('team tool registration follows the agent role', () => {
-  const LEAD_ONLY = ['team_spawn_specialist', 'team_redispatch_specialist', 'team_cancel_specialist', 'team_request_revision', 'team_approve_specialist', 'team_resolve_brief_conflict', 'team_synthesize_result'];
+  const LEAD_ONLY = ['team_spawn_specialist', 'team_redispatch_specialist', 'team_cancel_specialist', 'team_request_revision', 'team_approve_specialist', 'team_resolve_brief_conflict', 'team_dismiss_review', 'team_synthesize_result'];
   const SPECIALIST_ONLY = ['team_standby', 'team_report_complete', 'team_flag_brief_conflict'];
   const BOTH = ['team_send_message', 'team_read_messages', 'team_read_scratchpad', 'team_write_scratchpad', 'team_get_status', 'team_record_verification'];
 
@@ -966,5 +1043,71 @@ describe('team_read_scratchpad returns a marker for content the reader already h
       expect(spec.description).toContain('unchanged marker');
       expect(spec.description).not.toContain('\u2014');
     });
+  });
+});
+
+/**
+ * A read-only reviewer cannot record a run, so reading the ledger is the only way it can tell which
+ * entries cover the tree it is reviewing. The fingerprint is recomputed on every read, the unchanged
+ * marker included, because the tree can change while the ledger does not.
+ */
+describe('team_read_scratchpad exposes currentFingerprint with the verification ledger', () => {
+  type ReadEntry = { section: string; content: string; version: number; currentFingerprint?: string };
+
+  function repoWithLedger(): { repo: string; scratchpad: Scratchpad; tool: PiTool } {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-read-')));
+    const git = (...args: string[]): void => { execFileSync('git', args, { cwd: repo, stdio: 'ignore' }); };
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'original');
+    git('add', '.');
+    git('commit', '-m', 'init');
+    const scratchpad = new Scratchpad();
+    scratchpad.seedAppendOnly('verification');
+    scratchpad.appendTo('verification', 'npx vitest run: pass (tree 0123456789abcdef)');
+    scratchpad.set('contract', 'body', 'Lead');
+    const tools = buildTeamAgentPiTools(pi, specialistCtx({ agentName: 'Reviewer', scratchpad }), repo) as unknown as PiTool[];
+    return { repo, scratchpad, tool: tools.find((t) => t.name === 'team_read_scratchpad')! };
+  }
+
+  async function read(tool: PiTool, section?: string): Promise<ReadEntry | ReadEntry[]> {
+    const res = await tool.execute('id', section === undefined ? {} : { section });
+    return JSON.parse(res.content[0]!.text) as ReadEntry | ReadEntry[];
+  }
+
+  it('adds it to a single-section read, and a later edit changes it even when the section is unchanged', async () => {
+    const { repo, tool } = repoWithLedger();
+    try {
+      const first = await read(tool, 'verification') as ReadEntry;
+      expect(first.currentFingerprint).toMatch(/^[0-9a-f]{16}$/);
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'edited');
+      const second = await read(tool, 'verification') as ReadEntry;
+      expect(second.content.startsWith(UNCHANGED_MARKER_PREFIX)).toBe(true);
+      expect(second.currentFingerprint).toMatch(/^[0-9a-f]{16}$/);
+      expect(second.currentFingerprint).not.toBe(first.currentFingerprint);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('adds it only to the verification entry of a full read', async () => {
+    const { repo, tool } = repoWithLedger();
+    try {
+      const all = await read(tool) as ReadEntry[];
+      expect(all.find((e) => e.section === 'verification')!.currentFingerprint).toMatch(/^[0-9a-f]{16}$/);
+      expect(all.find((e) => e.section === 'contract')).not.toHaveProperty('currentFingerprint');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves other single-section reads unchanged', async () => {
+    const { repo, tool } = repoWithLedger();
+    try {
+      expect(await read(tool, 'contract')).not.toHaveProperty('currentFingerprint');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

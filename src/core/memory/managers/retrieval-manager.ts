@@ -13,6 +13,7 @@ import { deriveTier, escapeLike, rowToEntry } from '../types';
 import { buildFtsMatchQuery } from '../text-tokenize';
 import { expandQuery } from '../query-expansion';
 import type { MemorySubCallRunner } from '../subcall-runner';
+import { LLM_RERANK_MIN_MS, classifierReason, classifierRerank } from '../classifier-judges';
 import type { SettingsStore } from '../../../platform/settings-store';
 
 /**
@@ -72,7 +73,10 @@ interface RankedCandidate {
   row: CandidateRow;
   relevance?: RerankRelevance;
   reason?: string;
+  classifierScore?: number;
 }
+
+type RerankGrade = Omit<RankedCandidate, 'row' | 'relevance'> & { relevance: RerankRelevance };
 
 interface RerankResult {
   results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
@@ -131,12 +135,7 @@ function buildTierFilter(tiers: MemoryTier[], column: string): { clause: string;
   };
 }
 
-function rowToSearchResult(
-  row: CandidateRow,
-  index: number,
-  relevance?: RerankRelevance,
-  reason?: string,
-): SearchResult {
+function rowToSearchResult({ row, relevance, reason, classifierScore }: RankedCandidate, index: number): SearchResult {
   return {
     id: row.id,
     tier: deriveTier(row.scope as MemoryScope, row.kind as MemoryKind),
@@ -147,6 +146,7 @@ function rowToSearchResult(
     ...(row.observation_type ? { observationType: row.observation_type as ObservationType } : {}),
     ...(relevance ? { rerankRelevance: relevance } : {}),
     ...(reason ? { reason } : {}),
+    ...(classifierScore !== undefined ? { rerankClassifierScore: classifierScore } : {}),
   };
 }
 
@@ -199,9 +199,7 @@ export class RetrievalManager {
       ? await this.rerank(query.query!, candidates)
       : candidates.map(row => ({ row }));
 
-    return ordered.slice(0, limit).map((entry, index) =>
-      rowToSearchResult(entry.row, index, entry.relevance, entry.reason),
-    );
+    return ordered.slice(0, limit).map(rowToSearchResult);
   }
 
   private fetchCandidates(query: SearchQuery, pool: number): CandidateRow[] {
@@ -317,19 +315,35 @@ export class RetrievalManager {
     return { clause: ` AND ${clauses.join(' AND ')}`, params };
   }
 
+  /** Jev when a classifier is configured, else (or when Jev fails) the LLM in the time left, else BM25 order. */
   private async rerank(query: string, candidates: CandidateRow[]): Promise<RankedCandidate[]> {
+    const runner = this.runner!;
+    let llmTimeoutMs = SEARCH_RERANK_TIMEOUT_MS;
+    if (runner.hasClassifier?.()) {
+      const started = Date.now();
+      const items = candidates.map(row => ({ id: row.id, title: row.title, snippet: row.content.slice(0, RERANK_SNIPPET_CHARS) }));
+      const jev = await classifierRerank(runner, query, items, SEARCH_RERANK_TIMEOUT_MS);
+      if (jev) {
+        const graded = new Map<string, RerankGrade>();
+        for (const [id, g] of jev) graded.set(id, { relevance: g.relevance, reason: classifierReason(g), classifierScore: g.score });
+        return this.orderByGrades(candidates, graded);
+      }
+      llmTimeoutMs -= Date.now() - started;
+      if (llmTimeoutMs < LLM_RERANK_MIN_MS) return candidates.map(row => ({ row }));
+    }
+
     const prompt = this.buildRerankPrompt(query, candidates);
-    const { value } = await this.runner!.run<RerankResult>({
+    const { value } = await runner.run<RerankResult>({
       purpose: 'rerank',
       systemPrompt: RERANK_SYSTEM_PROMPT,
       prompt,
       schema: RERANK_SCHEMA,
-      timeoutMs: SEARCH_RERANK_TIMEOUT_MS,
+      timeoutMs: llmTimeoutMs,
     });
 
     if (!isRerankResult(value)) return candidates.map(row => ({ row }));
 
-    const graded = new Map<string, { relevance: RerankRelevance; reason?: string }>();
+    const graded = new Map<string, RerankGrade>();
     for (const item of value.results) {
       if (!(item.relevance in RELEVANCE_RANK)) continue;
       const existing = graded.get(item.id);
@@ -339,19 +353,22 @@ export class RetrievalManager {
     }
 
     if (graded.size === 0) return candidates.map(row => ({ row }));
+    return this.orderByGrades(candidates, graded);
+  }
 
+  private orderByGrades(
+    candidates: CandidateRow[],
+    graded: ReadonlyMap<string, RerankGrade>,
+  ): RankedCandidate[] {
     return candidates
-      .map((row, bm25Index) => {
-        const grade = graded.get(row.id);
-        return { row, bm25Index, relevance: grade?.relevance, ...(grade?.reason ? { reason: grade.reason } : {}) };
-      })
+      .map((row, bm25Index) => ({ row, bm25Index, grade: graded.get(row.id) }))
       .sort(
         (a, b) =>
-          rerankSortWeight(b.relevance) - rerankSortWeight(a.relevance) ||
+          rerankSortWeight(b.grade?.relevance) - rerankSortWeight(a.grade?.relevance) ||
           b.row.source_count - a.row.source_count ||
           a.bm25Index - b.bm25Index,
       )
-      .map(({ row, relevance, reason }) => ({ row, ...(relevance ? { relevance } : {}), ...(reason ? { reason } : {}) }));
+      .map(({ row, grade }) => ({ row, ...grade }));
   }
 
   private buildRerankPrompt(query: string, candidates: CandidateRow[]): string {

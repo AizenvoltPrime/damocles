@@ -31,7 +31,7 @@ import {
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
 import { registerTurnEndImagePruning, registerAgentStartImageReconcile } from '../context-image-pruning';
-import { createToolSearchTool, mcpGroupName, type ToolActivationPort } from '../tools/tool-search-tool';
+import { createToolSearchTool, mcpGroupsOf, type McpToolMenuEntry, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
 export interface SubagentGateContext extends GatePermissionContext {
@@ -42,10 +42,12 @@ export interface SubagentGateContext extends GatePermissionContext {
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
   deferrableToolNames: readonly string[];
   /**
-   * `mcp__*` name → description, from the agent's frozen `NestedMcpToolset` snapshot. The ONLY blurb
-   * source for the nested ToolSearch inventory (constraint §4.3: never read pi's registry for this).
+   * `mcp__*` name → menu facts, from the agent's frozen `NestedMcpToolset` snapshot. The ONLY blurb and
+   * group source for the nested ToolSearch inventory (constraint §4.3: never read pi's registry for this).
    */
-  mcpDescriptions?: ReadonlyMap<string, string>;
+  mcpDescriptions?: ReadonlyMap<string, McpToolMenuEntry>;
+  /** The ToolSearch groups of the snapshot's Always-loaded tools (`NestedMcpToolset.directGroups`). */
+  directMcpGroups?: ReadonlySet<string>;
   /**
    * Frozen read-only classifier from the same snapshot (`NestedMcpToolset.isReadOnly`). Satisfies the
    * field `GatePermissionContext` already Picks, so the gate needs no plumbing of its own — without it
@@ -68,22 +70,12 @@ export interface SubagentGateContext extends GatePermissionContext {
 function buildSubagentActivationPort(
   pi: ExtensionAPI,
   deferrableToolNames: readonly string[],
-  mcpDescriptions: ReadonlyMap<string, string> | undefined,
+  mcpDescriptions: ReadonlyMap<string, McpToolMenuEntry> | undefined,
+  directMcpGroups: ReadonlySet<string> | undefined,
 ): ToolActivationPort {
-  const deferrableSet = new Set(deferrableToolNames);
-  // Groups are derived from the PI TOOL NAME (`mcp__<prefix>__<tool>`), never from
-  // `descriptor.serverName`: `buildServerPrefixMap` sanitizes and de-collides server keys
-  // (`my-server` → `my_server`, a collision gets `_2`), so only the pi-name-derived group is one
-  // `resolveToolSearchEntries` will accept back. Same rule as the panel's `deferrableToolsSnapshot()`.
-  // Computed once per spawn: this agent's universe is frozen, so there is nothing to recompute.
-  const mcpGroups = new Map<string, string[]>();
-  for (const name of deferrableToolNames) {
-    const group = mcpGroupName(name);
-    if (!group) continue;
-    const existing = mcpGroups.get(group);
-    if (existing) existing.push(name);
-    else mcpGroups.set(group, [name]);
-  }
+  // Groups come from the snapshot's menu facts (the descriptor's server), the same rule as the panel's
+  // `deferrableToolsSnapshot()`. Computed once per spawn: this agent's universe is frozen.
+  const mcpGroups = mcpGroupsOf(deferrableToolNames, mcpDescriptions);
   return {
     // One factory per spawn, so the agent's own universe IS the inventory — an agent is never offered
     // a group its own allowlist cannot reach. Fixed for the agent's lifetime by design: its allowlist
@@ -102,11 +94,12 @@ function buildSubagentActivationPort(
     // server that connects later reaches the NEXT spawned agent, never this one. Note the freeze is
     // over the DESCRIPTOR SET, not over connectivity: a server that is merely still connecting but
     // already had cached descriptors at spawn IS in this universe and IS callable, because `callTool`
-    // awaits `ensureConnected` (mcp-client-manager.ts:571).
+    // awaits `McpClientManager.ensureConnected`.
     deferrable: () => ({
       names: [...deferrableToolNames],
-      loaded: new Set(pi.getActiveTools().filter((name) => deferrableSet.has(name))),
+      loaded: new Set(pi.getActiveTools()),
       mcpGroups,
+      ...(directMcpGroups?.size ? { directMcpGroups } : {}),
     }),
     // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
     // of resending the full active set.
@@ -206,7 +199,7 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     if (ctx.deferrableToolNames.length > 0) {
       try {
         pi.registerTool(
-          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions)),
+          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions, ctx.directMcpGroups)),
         );
       } catch (err) {
         log('[SubagentExtension] ToolSearch registration failed: %O', err);
@@ -222,7 +215,7 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
         return await runPermissionGate(event, ctx, hookCtx.signal, ctx.parentToolUseId, preToolUse);
       } catch (err) {
         log('[SubagentExtension] permission gate threw for %s: %O', event.toolName, err);
-        return gateErrorFallback(event.toolName);
+        return gateErrorFallback();
       }
     });
 

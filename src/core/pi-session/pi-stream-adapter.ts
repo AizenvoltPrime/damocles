@@ -12,6 +12,7 @@ import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
 import type { TurnState } from './session-state';
 import { usageOfEntry } from '../../shared/usage-accounting';
+import { publishedEffort, type EffortBadgeLevel } from '../../shared/effort-badge';
 import { sessionUsageMessage } from './session-usage';
 import { contextSnapshotOf, emptyContextSnapshot, type ContextSnapshot } from './context-snapshot';
 
@@ -375,16 +376,18 @@ export class PiStreamAdapter {
    * without this its card would spin forever. We emit `toolAbandoned` for each running tool; the
    * `_aborted` guard in `onToolEnd` then suppresses any late completion so it cannot resurrect the card.
    * `_aborted` also tells `onSettled` to skip the `done`/`stopInfo`, so a cancelled turn never gets a
-   * completed result stacked on top of it.
+   * completed result stacked on top of it. Returns the abandoned call ids for the turn-stopped record.
    */
-  markAborted(): void {
+  markAborted(): string[] {
     this._aborted = true;
+    const abandoned = [...this._tools.keys()];
     for (const [toolCallId, rec] of this._tools) {
       // An aborted tool may never emit tool_execution_end, so this is the only cancel on that path.
       this._outputCoalescer.cancel(toolCallId);
       this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(rec.name), parentToolUseId: null });
     }
     this._tools.clear();
+    return abandoned;
   }
 
   private emit(m: ExtensionToWebviewMessage): void {
@@ -451,7 +454,7 @@ export class PiStreamAdapter {
           });
         }
         if (event.message.role === 'assistant') {
-          this.emitAssistantMessage(event.message.content);
+          this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
@@ -689,6 +692,7 @@ export class PiStreamAdapter {
    */
   private emitAssistantMessage(
     content: ReadonlyArray<{ type: string; text?: string; thinking?: string; thinkingSignature?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
+    effort?: EffortBadgeLevel,
   ): void {
     if (!content) return;
     const blocks: ContentBlock[] = [];
@@ -712,6 +716,7 @@ export class PiStreamAdapter {
           content: blocks,
           model: this.deps.modelValue(),
           stop_reason: null,
+          ...(effort ? { effort } : {}),
         },
         session_id: this.deps.sessionId(),
       },
@@ -921,6 +926,9 @@ export class PiStreamAdapter {
         this._aborted = true;
         this.emit({ type: 'sessionCancelled' });
       }
+    } else if (this._aborted) {
+      // A Stop's wind-down error; the turn-stopped record hides it on reload too.
+      return;
     } else if (isAuthError(message)) {
       this.emit({ type: 'authFailure', message });
     } else {

@@ -65,6 +65,8 @@ export function seedStubModel(h: HermeticHome, baseUrl: string): void {
     },
   };
   fs.writeFileSync(path.join(h.agentDir, 'models.json'), JSON.stringify(models, null, 2));
+  // The runner cannot seed the safeStorage secret store. A persistent store gets this key at the first start; without a
+  // keyring (the Linux runner) it stays in auth.json, where pi reads it again on every relaunch.
   writeAuth(h, { openai: { type: 'api_key', key: 'stub-key' } });
   writeUserSettings(h, { 'damocles.model': STUB_MODEL_ID });
 }

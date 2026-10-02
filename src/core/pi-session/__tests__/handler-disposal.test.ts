@@ -9,7 +9,7 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 
 /**
  * A pi stub faithful to three properties of `ExtensionRunner` that this file is about: `on` returns the
- * unsubscribe (`extensions/loader.ts:202-219`), a dispatch runs against a `.slice()` snapshot taken
+ * unsubscribe (`extensions/loader.ts:271-286` in pi 0.99.2), a dispatch runs against a `.slice()` snapshot taken
  * before the first handler (`extensions/runner.ts`, `snapshotEventHandlers`), and a `tool_call` is
  * skipped outright when the handler list is empty (`agent-session.ts`, `beforeToolCall` consults
  * `hasHandlers('tool_call')` and treats a miss as proceed). That last one is why an emptied handler map
@@ -325,12 +325,12 @@ describe('a tool call with no registered panel', () => {
     expect(decision).toMatchObject({ block: true });
   });
 
-  it('lets a read through, matching the gate-error fallback it shares', async () => {
+  it('blocks a read too, matching the gate-error fallback it shares', async () => {
     const pi = buildPanelExtension();
 
     const decision = await pi.emitToolCall(payloadFor('tool_call'), ctxFor('unregistered'));
 
-    expect(decision).toBeUndefined();
+    expect(decision).toMatchObject({ block: true });
   });
 });
 

@@ -8,6 +8,10 @@ import { formatUserSteerPrefix } from '../../../shared/steer';
 import type { AgentStopReason } from '../agent-records';
 import type { AgentRecord } from './types';
 
+export function resumeSentence(agentId: string): string {
+  return `Resume it with Agent({resume:"${agentId}"}) if the user asks to continue.`;
+}
+
 /**
  * Explicit parenthetical note for a non-normal terminal outcome, so the parent
  * agent can't mistake partial output for a completed result. Empty string for a
@@ -18,7 +22,7 @@ import type { AgentRecord } from './types';
  * ones (see `isResumableSubagentStatus`) name the resume call.
  */
 export function getStatusNote(status: string, stopReason: AgentStopReason | undefined, agentId: string): string {
-  const resume = `Resume it with Agent({resume:"${agentId}"}) if the user asks to continue.`;
+  const resume = resumeSentence(agentId);
   switch (status) {
     case 'stopped':
       switch (stopReason) {

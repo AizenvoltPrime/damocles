@@ -30,7 +30,7 @@ const emit = defineEmits<{
   (e: 'trustProject'): void;
 }>();
 
-const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'subagents', 'team', 'core'];
+const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'image', 'subagents', 'team', 'core'];
 
 /** Groups with no master switch — gated per-tool only (core is locked on; subagents toggle individually). */
 const NO_MASTER_GROUPS: ReadonlySet<ToolGroup> = new Set<ToolGroup>(['core', 'subagents']);
@@ -101,9 +101,18 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
             <Switch
               v-if="!NO_MASTER_GROUPS.has(view.group) && view.status"
               :checked="view.status.enabled"
-              :disabled="!view.status.available"
+              :disabled="!view.status.available && !view.status.enabled"
+              :aria-label="t('tools.groupSwitch', { group: t(`tools.group.${view.group}`) })"
+              :aria-describedby="view.status.unavailableReason ? `tools-unavailable-${view.group}` : undefined"
               @update:checked="(checked: boolean) => emit('toggleGroup', view.group, checked)"
             />
+          </div>
+          <div
+            v-if="view.status && !view.status.available && view.status.unavailableReason"
+            :id="`tools-unavailable-${view.group}`"
+            class="px-3 pb-2 text-xs text-muted-foreground"
+          >
+            {{ t(`tools.unavailable.${view.status.unavailableReason}`) }}
           </div>
 
           <div

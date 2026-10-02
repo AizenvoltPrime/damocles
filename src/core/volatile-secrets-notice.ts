@@ -18,6 +18,7 @@ export function withVolatileSecretsNotice(secrets: SecretsStore, notifications: 
     get: (key) => secrets.get(key),
     keys: () => secrets.keys(),
     delete: (key) => secrets.delete(key),
+    onDidChange: (listener) => secrets.onDidChange(listener),
     store: async (key, value) => {
       await secrets.store(key, value);
       if (noticed) return;

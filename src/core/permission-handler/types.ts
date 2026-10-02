@@ -9,7 +9,15 @@ export interface PermissionResult {
   message?: string;
   updatedInput?: unknown;
   interrupt?: boolean;
+  /** The user was never asked; set only by `buildUnaskedDenyResult`, so the gate words it as policy. */
+  policy?: true;
   updatedPermissions?: PermissionUpdate[];
+}
+
+/** The server an MCP call reaches, by its config name, and the server's own tool name. */
+export interface McpToolIdentity {
+  server: string;
+  tool: string;
 }
 
 export interface CanUseToolContext {
@@ -20,6 +28,8 @@ export interface CanUseToolContext {
   suggestions?: PermissionUpdate[];
   blockedPath?: string;
   decisionReason?: string;
+  /** Set for an MCP call whose descriptor the caller found; `mcp__` rules match it. */
+  mcpTool?: McpToolIdentity;
 }
 
 export interface ApprovalResult {
@@ -53,6 +63,8 @@ export interface SettledApproval {
 
 export interface QuestionResult {
   approved: boolean;
+  /** @see ApprovalResult.userAnswered */
+  userAnswered?: true;
   answers?: Record<string, string>;
   annotations?: QuestionAnnotations;
 }
@@ -70,6 +82,8 @@ export interface PendingQuestion {
  */
 export interface FormResolveResult {
   approved: boolean;
+  /** @see ApprovalResult.userAnswered */
+  userAnswered?: true;
   values?: FormValues;
 }
 
@@ -85,6 +99,8 @@ export interface PendingForm {
 
 export interface PlanApprovalResult {
   approved: boolean;
+  /** @see ApprovalResult.userAnswered */
+  userAnswered?: true;
   approvalMode?: 'acceptEdits' | 'manual';
   feedback?: string;
 }

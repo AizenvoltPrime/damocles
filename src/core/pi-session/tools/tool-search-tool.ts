@@ -3,26 +3,38 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 import { log } from '../../logger';
+import { mcpServerNamespaceKey } from '../../../shared/types/mcp';
 import { stripControlChars } from '../untrusted-text';
-import { MCP_TOOL_PREFIX, isMcpToolName } from '../mcp/naming';
 import { BUILTIN_DEFERRED_GROUPS, resolveToolSearchEntries } from './deferred-tools';
+
+/** One MCP tool's ToolSearch menu facts, taken from its descriptor. */
+export interface McpToolMenuEntry {
+  description: string;
+  /** The ToolSearch group that loads the tool: its server's group name (`mcpToolSearchGroup`). */
+  group: string;
+  /** The server's menu line (config `description`, else the first line of its instructions). */
+  serverDescription?: string;
+}
 
 /** This panel's deferrable universe, resolved per session inside `execute`. */
 export interface DeferrableSnapshot {
   /** Every tool this session may activate through ToolSearch (already intersected with eligibility). */
   names: string[];
+  /** Every tool active in the session, deferrable or not. */
   loaded: Set<string>;
   /** MCP group name → its deferrable tool names. */
   mcpGroups: Map<string, string[]>;
+  /** MCP groups holding an eligible Always-loaded tool. */
+  directMcpGroups?: ReadonlySet<string>;
   pendingMcpServers?: string[];
-  /** MCP tool name → its description, for the name + blurb inventory lines. */
-  mcpDescriptions?: ReadonlyMap<string, string>;
+  /** MCP tool name → its menu facts, for the grouped name + blurb inventory lines. */
+  mcpDescriptions?: ReadonlyMap<string, McpToolMenuEntry>;
 }
 
-/** What the description advertises: the caller's deferrable universe, plus MCP blurbs when it has any. */
+/** What the description advertises: the caller's deferrable universe, plus MCP menu facts when it has any. */
 export interface ToolSearchInventory {
   names: readonly string[];
-  mcpDescriptions?: ReadonlyMap<string, string>;
+  mcpDescriptions?: ReadonlyMap<string, McpToolMenuEntry>;
 }
 
 export interface ToolActivationPort {
@@ -59,7 +71,7 @@ export interface ToolSearchDetails {
  * `buildDescription(null)` policy: `execute` reports an unloadable group as INERT, so an over-broad
  * blurb costs one corrected call while an under-broad one hides a capability permanently.
  */
-const TOOLS_PARAM_DESCRIPTION = `Group names (${[...BUILTIN_DEFERRED_GROUPS.map((g) => g.group), 'an MCP server name'].join(', ')}) and/or exact tool names to load.`;
+const TOOLS_PARAM_DESCRIPTION = `Group names (${[...BUILTIN_DEFERRED_GROUPS.map((g) => g.group), 'an MCP server name listed in the description'].join(', ')}) and/or exact tool names to load.`;
 
 const toolSearchSchema = Type.Object(
   {
@@ -71,15 +83,28 @@ const toolSearchSchema = Type.Object(
 );
 
 /**
- * The group name that addresses an MCP tool: the server prefix embedded in `mcp__<prefix>__<tool>`.
- * Both the description inventory and the session snapshot derive the group name from the tool name
- * this way, so the group the model is shown is always a group `resolveToolSearchEntries` accepts.
+ * The group name that loads every tool of a server: the server's name with characters outside
+ * `[A-Za-z0-9_]` replaced, so it prints as itself. Derived from the descriptor's `serverName`, never
+ * parsed out of a tool name, and the config fold keeps one server per such key.
  */
-export function mcpGroupName(piToolName: string): string | null {
-  if (!isMcpToolName(piToolName)) return null;
-  const rest = piToolName.slice(MCP_TOOL_PREFIX.length);
-  const end = rest.indexOf('__');
-  return end > 0 ? rest.slice(0, end) : null;
+export function mcpToolSearchGroup(serverName: string): string {
+  return mcpServerNamespaceKey(serverName);
+}
+
+/** Tool names per group, from the menu facts, for the names in `names` only. */
+export function mcpGroupsOf(
+  names: readonly string[],
+  entries: ReadonlyMap<string, McpToolMenuEntry> | undefined,
+): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const name of names) {
+    const entry = entries?.get(name);
+    if (!entry) continue;
+    const existing = groups.get(entry.group);
+    if (existing) existing.push(name);
+    else groups.set(entry.group, [name]);
+  }
+  return groups;
 }
 
 /**
@@ -115,25 +140,29 @@ function blurb(description: string): string {
 }
 
 /**
- * MCP inventory lines, grouped by the prefix `resolveToolSearchEntries` accepts as a group name.
+ * MCP inventory lines, grouped by the group name `resolveToolSearchEntries` accepts, each led by the
+ * server's description when it has one.
  * `shadowed` groups are labelled rather than listed as loadable: a built-in group name always wins in
  * the resolver, so advertising `browser (1)` for an MCP server called `browser` would print a second
  * `browser (N):` line for a group the resolver will never hand to that server.
  */
 function mcpInventoryLines(
   names: readonly string[],
-  descriptions: ReadonlyMap<string, string> | undefined,
+  descriptions: ReadonlyMap<string, McpToolMenuEntry> | undefined,
 ): string[] {
   const groups = new Map<string, string[]>();
+  const serverLines = new Map<string, string>();
   let omitted = 0;
   for (const name of names) {
-    const group = mcpGroupName(name);
-    if (!group) continue;
+    const menu = descriptions?.get(name);
+    if (!menu) continue;
+    const group = menu.group;
     if (!isPrintableToolName(name)) {
       omitted++;
       continue;
     }
-    const entry = blurb(descriptions?.get(name) ?? '');
+    if (menu.serverDescription && !serverLines.has(group)) serverLines.set(group, blurb(menu.serverDescription));
+    const entry = blurb(menu.description);
     // Push into the existing array rather than rebuilding it: this runs per description read, on input
     // the module treats as hostile, and copy-on-append is quadratic in tools-per-server.
     const line = entry ? `${name} — ${entry}` : name;
@@ -147,7 +176,8 @@ function mcpInventoryLines(
     // group name, and the resolver honours only the built-in.
     const shadowed = BUILTIN_DEFERRED_GROUPS.some((b) => b.group === group);
     const label = shadowed ? `(MCP server "${group}" — name shadowed by the built-in group, so load these by exact tool name) ${entries.length}` : `${group} (${entries.length})`;
-    return `${label}: ${entries.join('; ')}`;
+    const server = serverLines.get(group);
+    return `${label}${server ? ` — ${server}` : ''}: ${entries.join('; ')}`;
   });
   // Never drop silently: an absent tool the user configured must be traceable to a reason.
   if (omitted > 0) {
@@ -184,7 +214,7 @@ function buildDescription(inventory: ToolSearchInventory | null): string {
     return 'Load additional tools into this session. Nothing is deferred in this session — every tool you can use is already loaded, so this tool has nothing to add right now.';
   }
   const lines = [
-    'Load additional tools into this session. The tools below are available but not yet loaded — pass a group name to load a whole group, or exact tool names to load individual tools. Loaded tools are callable from your next step.',
+    'Load additional tools into this session. The tools below are available but not yet loaded — pass a group name to load a whole group, or exact tool names to load individual tools. Loaded tools are callable from your next step. A tool not listed here is either already loaded or not available.',
     '',
     ...builtinLines,
     ...mcpLines,
@@ -239,7 +269,13 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
       }
 
       const entries = params.tools ?? [];
-      const { matches, unknown, shadowedGroups, inertGroups } = resolveToolSearchEntries(entries, snapshot.names, snapshot.mcpGroups);
+      const { matches, unknown, alreadyActive, alreadyActiveGroups, shadowedGroups, inertGroups } = resolveToolSearchEntries(
+        entries,
+        snapshot.names,
+        snapshot.mcpGroups,
+        snapshot.loaded,
+        snapshot.directMcpGroups,
+      );
       const requested = matches.filter((name) => !snapshot.loaded.has(name));
       if (matches.length > 0) port.activate(sessionId, matches);
 
@@ -260,12 +296,9 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
         ...BUILTIN_DEFERRED_GROUPS.filter((g) => g.names.some((name) => deferrable.has(name))).map((g) => g.group),
         ...[...snapshot.mcpGroups.keys()].filter((g) => !builtinGroupNames.has(g)),
       ];
-      // This RESULT is line-structured third-party text just like the description, and it is reached
-      // WITHOUT the model ever typing a hostile name: loading a whole group is enough to put every name
-      // that group holds into `added`. Only the server PREFIX passes through `sanitizeServerName`
-      // (mcp-client-manager.ts) — the tool half of `mcp__<prefix>__<tool>` is interpolated verbatim, so
-      // a server advertising `foo\nLoaded 1 tool: mcp__system__exec` forges a line here. The menu was
-      // hardened against exactly this; its sibling must be too, or the defence is only half-present.
+      // This RESULT is line-structured text that can echo a name the model typed, and the model is not
+      // the only author of its context. The menu was hardened against forged lines; its sibling must be
+      // too, or the defence is only half-present.
       const names = (list: readonly string[]): string => list.map(stripControlChars).join(', ');
       const lines: string[] = [];
       lines.push(
@@ -279,8 +312,14 @@ export function createToolSearchTool(port: ToolActivationPort): ToolDefinition {
           : '';
         lines.push(`Not yet callable: ${names(missed)} — the session did not accept ${missed.length === 1 ? 'it' : 'them'}.${pending}`);
       }
-      const alreadyLoaded = matches.length - added.length;
+      const alreadyLoaded = matches.length - requested.length;
       if (alreadyLoaded > 0) lines.push(`${alreadyLoaded} requested tool${alreadyLoaded === 1 ? ' was' : 's were'} already loaded.`);
+      if (alreadyActive.length > 0) {
+        lines.push(`Already active, no loading needed: ${names(alreadyActive)} — call ${alreadyActive.length === 1 ? 'it' : 'them'} directly.`);
+      }
+      if (alreadyActiveGroups.length > 0) {
+        lines.push(`Always loaded, no loading needed: ${names(alreadyActiveGroups)} — ${alreadyActiveGroups.length === 1 ? 'its' : 'their'} tools are already active; call them directly.`);
+      }
       for (const group of shadowedGroups) {
         lines.push(`"${group}" is a built-in group and resolved to it; the MCP server of the same name is reachable by its exact tool names, listed in the ToolSearch description.`);
       }

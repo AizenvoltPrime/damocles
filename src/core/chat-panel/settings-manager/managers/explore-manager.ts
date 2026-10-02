@@ -8,6 +8,10 @@ import { updateConfigAtEffectiveScope } from "../utils";
 import { parseEffortLevel, exploreSupportedEffortLevels } from "../../../../shared/types/constants";
 import { log } from "../../../logger";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
+import { TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
+import { CLASSIFIER_ENV_KEYS, JEV_VIA_OPENROUTER, JEV_VIA_TYPESAFE, memoryJudgeOf } from "../../../pi-session/classifier-model";
+import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
+import type { ClassifierProvider } from "../../../../shared/types/settings";
 
 const VALID_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_THIRD_PARTY_PROVIDERS);
 const DEFAULT_PROVIDER_ID = "default" as const;
@@ -61,6 +65,7 @@ export class ExploreManager {
   }
 
   async storeApiKey(apiKey: string): Promise<void> {
+    if (getProvider(this.platform.settings) === "openrouter") return storeOpenrouterApiKey(this.platform, apiKey);
     const key = getSecretKey(this.platform.settings);
     if (!key) {
       log("[ExploreManager] storeApiKey: provider has no secret key, ignoring");
@@ -68,7 +73,7 @@ export class ExploreManager {
     }
     await this.platform.secrets.store(key, apiKey.trim());
     log("[ExploreManager] storeApiKey: stored for %s", key);
-    this.resyncCustomProviders();
+    await resyncCustomProvidersNow(this.platform);
   }
 
   async deleteApiKey(): Promise<void> {
@@ -79,7 +84,7 @@ export class ExploreManager {
     }
     await this.platform.secrets.delete(key);
     log("[ExploreManager] deleteApiKey: deleted for %s", key);
-    this.resyncCustomProviders();
+    await resyncCustomProvidersNow(this.platform);
   }
 
   /**
@@ -198,4 +203,64 @@ export class ExploreManager {
     const configured = stored !== undefined && stored.length > 0;
     this.postMessage(host, { type: "deepseekAuthStatusChanged", configured });
   }
+}
+
+// ---- TypeSafe (own key, Jev for the memory judges) ---------------------------
+
+/** Awaited, so a status read next (memory judge, image generation's OpenRouter check) sees the new key. */
+async function resyncCustomProvidersNow(platform: Platform): Promise<void> {
+  if (!PiRuntime.exists) return;
+  await PiRuntime.get().syncCustomProviders((k) => platform.secrets.get(k));
+}
+
+/** Saving a classifier key, even the same one, is the user saying its refusal is resolved (a 402 can clear with the same key). */
+async function storeClassifierKey(platform: Platform, provider: ClassifierProvider, secretKey: string, key: string): Promise<void> {
+  await platform.secrets.store(secretKey, key.trim());
+  log("[ExploreManager] stored the %s key", provider);
+  await resyncCustomProvidersNow(platform);
+  if (PiRuntime.exists) PiRuntime.get().resetClassifierBreaker(provider);
+}
+
+export async function storeTypesafeApiKey(platform: Platform, key: string): Promise<void> {
+  await storeClassifierKey(platform, "typesafe", TYPESAFE_SECRET_KEY, key);
+}
+
+export async function deleteTypesafeApiKey(platform: Platform): Promise<void> {
+  await platform.secrets.delete(TYPESAFE_SECRET_KEY);
+  log("[ExploreManager] deleteTypesafeApiKey: deleted");
+  await resyncCustomProvidersNow(platform);
+}
+
+/** The OpenRouter key without touching the Explore provider or its enabled state: image generation and Jev use it too. */
+export async function storeOpenrouterApiKey(platform: Platform, key: string): Promise<void> {
+  await storeClassifierKey(platform, "openrouter", EXPLORE_SECRET_KEYS.openrouter, key);
+}
+
+export async function deleteOpenrouterApiKey(platform: Platform): Promise<void> {
+  await platform.secrets.delete(EXPLORE_SECRET_KEYS.openrouter);
+  log("[ExploreManager] deleteOpenrouterApiKey: deleted");
+  await resyncCustomProvidersNow(platform);
+}
+
+export async function openrouterAuthStatus(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openrouterAuthStatusChanged" }>> {
+  const stored = await platform.secrets.get(EXPLORE_SECRET_KEYS.openrouter);
+  return { type: "openrouterAuthStatusChanged", configured: (stored ?? "").length > 0 };
+}
+
+/**
+ * Until a chat has started pi, the judge is read from the stored keys and pi's environment keys alone, and
+ * the sub-call model is unknown.
+ */
+export async function typesafeAuthStatus(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "typesafeAuthStatusChanged" }>> {
+  const hasSecret = async (key: string): Promise<boolean> => ((await platform.secrets.get(key)) ?? "").length > 0;
+  const configured = await hasSecret(TYPESAFE_SECRET_KEY);
+  if (PiRuntime.exists && PiRuntime.get().memoryJudgeKnown) {
+    return { type: "typesafeAuthStatusChanged", configured, memoryJudge: PiRuntime.get().describeMemoryJudge() };
+  }
+  const inEnv = (provider: ClassifierProvider): boolean => (process.env[CLASSIFIER_ENV_KEYS[provider]] ?? "").length > 0;
+  const classifier =
+    configured || inEnv("typesafe") ? JEV_VIA_TYPESAFE
+    : inEnv("openrouter") || (await hasSecret(EXPLORE_SECRET_KEYS.openrouter)) ? JEV_VIA_OPENROUTER
+    : null;
+  return { type: "typesafeAuthStatusChanged", configured, memoryJudge: classifier ? memoryJudgeOf(classifier, null) : { kind: "unknown" } };
 }

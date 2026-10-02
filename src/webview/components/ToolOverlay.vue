@@ -2,7 +2,7 @@
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall, ToolResultOwner } from '@shared/types/session';
-import { isShellTool, LIVE_OUTPUT_TOOLS } from '@shared/tool-names';
+import { isShellTool, LIVE_OUTPUT_TOOLS, TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { cronToIntervalLabel } from '@shared/utils/cron';
 import {
@@ -25,6 +25,7 @@ import {
   IconGlobe,
   IconClock,
   IconCode,
+  IconImage,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import LiveOutputPane from './LiveOutputPane.vue';
@@ -54,6 +55,7 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   CronCreate: IconClock,
   CronDelete: IconClock,
   CronList: IconClock,
+  [TOOL_GENERATE_IMAGE]: IconImage,
 };
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -94,7 +96,7 @@ const toolIcon = computed((): Component => {
 const subtitle = computed(() => {
   const input = props.tool.input;
   if (isShellTool(props.tool.name) && input.description) return input.description as string;
-  if (props.tool.name === 'Read' && input.file_path) return input.file_path as string;
+  if ((props.tool.name === 'Read' || props.tool.name === TOOL_GENERATE_IMAGE) && input.file_path) return input.file_path as string;
   if (props.tool.name === 'Grep' && input.pattern) return `/${input.pattern as string}/`;
   if (props.tool.name === 'Glob' && input.pattern) return input.pattern as string;
   if (props.tool.name === 'WebFetch' && input.url) return input.url as string;

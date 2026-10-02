@@ -15,9 +15,12 @@ vi.mock('os', async (importOriginal) => {
 });
 
 import { FolderRuntime } from '../folder-runtime';
-import { PiRuntime } from '../pi-runtime';
+import { PiRuntime, renamedRuleNoticeMemory } from '../pi-runtime';
 import { initPiLoader, type PiCodingAgentModule } from '../pi-loader';
 import { McpClientManager } from '../mcp/mcp-client-manager';
+import { assignServerToolNames } from '../mcp/naming';
+import type { LegacyToolNameInput, NoticeMemory } from '../mcp/tool-name-migration';
+import type { McpRenamedToolRuleNotice } from '../../../shared/types/mcp';
 import type { PanelGateContext } from '../permission-gate';
 import type { CheckpointService } from '../checkpoint-service';
 import { folderKey } from '../../workspace-folders/folder-key';
@@ -34,8 +37,11 @@ function bareFolder(made: FolderRuntime[], cwd = '/tmp/ws'): FolderRuntime {
     cwd,
     agentDir: '/tmp/agent',
     modelRuntime: {} as ModelRuntime,
-    userMcp: new McpClientManager(),
-    createFolderMcp: (reservedPrefixes) => new McpClientManager({ reservedPrefixes }),
+    userMcp: new McpClientManager({ clientVersion: 'test' }),
+    createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
+    noticeMemory: { has: () => false, add: async () => {} },
+    projectDisabledTools: () => null,
+    toolExposureSetting: () => ({}),
     renameSession: async () => undefined,
     trust: testPlatform.trust,
     fileWatchers: testPlatform.fileWatchers,
@@ -54,24 +60,27 @@ describe('per-session registries are released by their owner only', () => {
     _panelRegistry: Map<string, unknown>;
     _checkpointRegistry: Map<string, unknown>;
     _activeToolRefreshers: Map<string, unknown>;
+    _ruleNoticePosters: Map<string, unknown>;
   };
   const entries = (folder: FolderRuntime) => {
     const r = folder as unknown as Registries;
-    return [r._panelRegistry, r._checkpointRegistry, r._activeToolRefreshers].map((m) => m.get('sess-x'));
+    return [r._panelRegistry, r._checkpointRegistry, r._activeToolRefreshers, r._ruleNoticePosters].map((m) => m.get('sess-x'));
   };
-  const owner = () => ({ gate: {} as PanelGateContext, checkpoints: {} as CheckpointService, refresh: () => {} });
+  const owner = () => ({ gate: {} as PanelGateContext, checkpoints: {} as CheckpointService, refresh: () => {}, post: () => {} });
   const register = (folder: FolderRuntime, o: ReturnType<typeof owner>) => {
     folder.registerPanel('sess-x', o.gate);
     folder.registerCheckpointService('sess-x', o.checkpoints);
     folder.registerActiveToolRefresher('sess-x', o.refresh);
+    folder.registerRuleNoticePoster('sess-x', o.post);
   };
   const unregister = (folder: FolderRuntime, o: ReturnType<typeof owner>) => {
     folder.unregisterPanel('sess-x', o.gate);
     folder.unregisterCheckpointService('sess-x', o.checkpoints);
     folder.unregisterActiveToolRefresher('sess-x', o.refresh);
+    folder.unregisterRuleNoticePoster('sess-x', o.post);
   };
 
-  it("a late unregister from the previous owner leaves the new owner's entry in all three registries", () => {
+  it("a late unregister from the previous owner leaves the new owner's entry in every registry", () => {
     // Two panels can hold one session id; the older closing after the newer registered must not strip
     // the newer's gate, or every tool call there hits the fail-closed fallback.
     const folder = bareFolder(made);
@@ -82,7 +91,7 @@ describe('per-session registries are released by their owner only', () => {
 
     unregister(folder, older);
 
-    expect(entries(folder)).toEqual([newer.gate, newer.checkpoints, newer.refresh]);
+    expect(entries(folder)).toEqual([newer.gate, newer.checkpoints, newer.refresh, newer.post]);
   });
 
   it("the current owner's unregister still removes its entries", () => {
@@ -92,7 +101,147 @@ describe('per-session registries are released by their owner only', () => {
 
     unregister(folder, only);
 
-    expect(entries(folder)).toEqual([undefined, undefined, undefined]);
+    expect(entries(folder)).toEqual([undefined, undefined, undefined, undefined]);
+  });
+});
+
+describe('renamed-tool rule migration', () => {
+  const OLD = 'mcp__context7__resolve-library-id';
+  const NEW = 'mcp__context7__resolve_library_id';
+  const made: FolderRuntime[] = [];
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const folder of made.splice(0)) await folder.dispose();
+    H.home = '';
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeRules(file: string, allow: string[]): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ permissions: { allow } }, null, 2)}\n`);
+  }
+
+  function memory(): NoticeMemory {
+    const shown = new Map<string, Set<string>>();
+    return {
+      has: (file, rule) => shown.get(file)?.has(rule) ?? false,
+      add: async (file, rules) => {
+        shown.set(file, new Set([...(shown.get(file) ?? []), ...rules]));
+      },
+    };
+  }
+
+  /** A folder whose MCP view knows context7's renamed tool, with its own `.damocles` settings files. */
+  function migrationFolder(platform: ReturnType<typeof createFakePlatform>, noticeMemory: NoticeMemory = memory()) {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-fr-rename-')));
+    dirs.push(root);
+    H.home = path.join(root, 'home');
+    const cwd = path.join(root, 'ws');
+    const files = { local: path.join(cwd, '.damocles', 'settings.local.json'), project: path.join(cwd, '.damocles', 'settings.json') };
+    writeRules(files.local, [OLD]);
+    writeRules(files.project, [OLD]);
+    const userMcp = new McpClientManager({ clientVersion: 'test' });
+    const folder = new FolderRuntime({
+      pi: {} as PiCodingAgentModule,
+      cwd,
+      agentDir: path.join(root, 'agent'),
+      modelRuntime: {} as ModelRuntime,
+      userMcp,
+      createFolderMcp: (reservedToolNames) => new McpClientManager({ clientVersion: 'test', reservedToolNames }),
+      noticeMemory,
+      projectDisabledTools: () => null,
+      toolExposureSetting: () => ({}),
+      renameSession: async () => undefined,
+      trust: platform.trust,
+      fileWatchers: platform.fileWatchers,
+    });
+    made.push(folder);
+    const tools = assignServerToolNames('context7', ['resolve-library-id'], new Set());
+    const input: LegacyToolNameInput = {
+      userServers: ['context7'],
+      visibleUserServers: ['context7'],
+      folderServers: [],
+      userTools: [{ serverName: 'context7', rawToolName: 'resolve-library-id', piName: tools.get('resolve-library-id')! }],
+      folderTools: [],
+    };
+    (folder as unknown as { _mcpView: { legacyToolNameInput(): LegacyToolNameInput } })._mcpView.legacyToolNameInput = () => input;
+    const toolsChanged = () => (userMcp as unknown as { emitToolsChanged(): void }).emitToolsChanged();
+    const settled = () => (folder as unknown as { _ruleMigration: Promise<void> })._ruleMigration;
+    const rules = (file: string) => (JSON.parse(fs.readFileSync(file, 'utf-8')) as { permissions: { allow: string[] } }).permissions.allow;
+    return { folder, cwd, files, toolsChanged, settled, rules };
+  }
+
+  it('runs again for the folder files when trust is granted, with an unchanged rename map', async () => {
+    const platform = createFakePlatform({ trusted: false });
+    const { folder, cwd, files, toolsChanged, settled, rules } = migrationFolder(platform);
+    const posted: McpRenamedToolRuleNotice[][] = [];
+    folder.registerRuleNoticePoster('sess-a', (notices) => posted.push(notices));
+
+    toolsChanged();
+    await settled();
+    expect(rules(files.local)).toEqual([OLD]);
+    expect(posted).toEqual([]);
+
+    platform.trust.grantTrust([cwd]);
+    await settled();
+    expect(rules(files.local)).toEqual([NEW]);
+    expect(rules(files.project)).toEqual([OLD]);
+    expect(posted).toEqual([[{ path: files.project, displayPath: files.project, rules: [{ old: OLD, new: NEW }] }]]);
+  });
+
+  it('retries a run that failed instead of treating its inputs as done', async () => {
+    const platform = createFakePlatform();
+    let failures = 1;
+    const base = memory();
+    const flaky: NoticeMemory = {
+      has: (file, rule) => {
+        if (failures-- > 0) throw new Error('state unavailable');
+        return base.has(file, rule);
+      },
+      add: base.add,
+    };
+    const { folder, toolsChanged, settled } = migrationFolder(platform, flaky);
+    const posted: McpRenamedToolRuleNotice[][] = [];
+    folder.registerRuleNoticePoster('sess-a', (notices) => posted.push(notices));
+
+    toolsChanged();
+    await settled();
+    expect(posted).toEqual([]);
+
+    toolsChanged();
+    await settled();
+    expect(posted).toHaveLength(1);
+  });
+
+  it('hands notices found before any panel to the first panels once, however quickly they register', async () => {
+    const platform = createFakePlatform();
+    const { folder, files, toolsChanged, settled } = migrationFolder(platform);
+    toolsChanged();
+    await settled();
+
+    const posted: Record<string, McpRenamedToolRuleNotice[][]> = { a: [], b: [] };
+    folder.registerRuleNoticePoster('sess-a', (notices) => posted['a']!.push(notices));
+    folder.registerRuleNoticePoster('sess-b', (notices) => posted['b']!.push(notices));
+    await settled();
+
+    const expected = [[{ path: files.project, displayPath: files.project, rules: [{ old: OLD, new: NEW }] }]];
+    expect(posted).toEqual({ a: expected, b: expected });
+  });
+
+  it('remembers notices for files outside the folder across workspaces, and the folder\u2019s own per workspace', async () => {
+    const first = createFakePlatform();
+    const second = createFakePlatform();
+    const home = path.join(os.tmpdir(), 'home');
+    const folderA = path.join(os.tmpdir(), 'ws-a');
+    const homeFile = path.join(home, '.damocles', 'hooks.json');
+    const folderFile = path.join(folderA, '.damocles', 'settings.json');
+    await renamedRuleNoticeMemory(first.state, folderA).add(homeFile, [OLD]);
+    await renamedRuleNoticeMemory(first.state, folderA).add(folderFile, [OLD]);
+
+    const otherWorkspace = renamedRuleNoticeMemory({ workspace: second.state.workspace, global: first.state.global }, folderA);
+    expect(otherWorkspace.has(homeFile, OLD)).toBe(true);
+    expect(otherWorkspace.has(folderFile, OLD)).toBe(false);
+    expect(renamedRuleNoticeMemory(first.state, folderA).has(folderFile, OLD)).toBe(true);
   });
 });
 
@@ -596,7 +745,7 @@ describe('createSubagentSession store', () => {
     return model;
   }
 
-  it('a file store writes into the given dir under the given id, from the first assistant message on', async () => {
+  it('a file store writes into the given dir under the given id, from the first user message on', async () => {
     const workspace = tempDir('damocles-store-ws-');
     const agentDir = tempDir('damocles-store-agent-');
     const storeDir = path.join(workspace, 'sess-1', 'subagents');
@@ -611,10 +760,11 @@ describe('createSubagentSession store', () => {
     expect(fs.existsSync(file)).toBe(false);
 
     session.sessionManager.appendCustomEntry('damocles-agent-launch', { agentId: 'agent-1' });
-    session.sessionManager.appendMessage(assistantMessage('anthropic', 'claude'));
+    expect(fs.existsSync(file)).toBe(false);
+    session.sessionManager.appendMessage({ role: 'user', content: [{ type: 'text', text: 'the task' }], timestamp: Date.now() });
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { type: string; id: string });
     expect(lines[0]).toMatchObject({ type: 'session', id: 'agent-1' });
-    expect(lines.map((l) => l.type)).toContain('custom');
+    expect(lines.map((l) => l.type)).toEqual(expect.arrayContaining(['custom', 'message']));
     folder.forgetSubagentSession(session);
   }, 60_000);
 

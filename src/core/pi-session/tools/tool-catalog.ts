@@ -25,6 +25,7 @@ import { MEMORY_TOOL_CATALOG, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { COMPASS_TOOL_CATALOG, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { BROWSER_TOOL_CATALOG, BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { TEAM_TOOL_CATALOG, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from './team-tools';
+import { IMAGE_TOOL_CATALOG } from './image-tool-specs';
 
 /**
  * The aggregated Tools-panel catalog. Each subsystem owns its own ordered catalog (`*_TOOL_CATALOG`);
@@ -61,13 +62,14 @@ const SUBAGENT_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_STEER_SUBAGENT, label: 'SteerSubagent', description: 'Steer a running background subagent.', group: 'subagents', toggleable: true },
 ];
 
-/** The full ordered catalog: Core, then the three module subsystems, then Web, Subagents, and Team. */
+/** The full ordered catalog: Core, then the three module subsystems, then Web, Image, Subagents, and Team. */
 export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...CORE_TOOL_CATALOG,
   ...MEMORY_TOOL_CATALOG,
   ...COMPASS_TOOL_CATALOG,
   ...BROWSER_TOOL_CATALOG,
   ...WEB_TOOL_CATALOG,
+  ...IMAGE_TOOL_CATALOG,
   ...SUBAGENT_TOOL_CATALOG,
   ...TEAM_TOOL_CATALOG,
 ];
@@ -84,6 +86,7 @@ export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.m
  * read-only `git rev-parse`/`git status` and reads files to compute a tree fingerprint. Auto-allowing it
  * in every mode, plan included, is therefore correct. The team AGENTS' own file/shell tools
  * (Edit/Write/Bash) still route through the central gate normally.
+ * Never add `GenerateImage`: this branch allows before the plan-mode check, and it is a paid write.
  */
 export const GATEABLE_MODULE_NAMES: ReadonlySet<string> = new Set<string>([
   ...MEMORY_PI_TOOL_NAMES,

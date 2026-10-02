@@ -32,6 +32,28 @@ describe('useStreamingStore.addSteerChip', () => {
   });
 });
 
+describe('useStreamingStore.updateToolStatus after a final status', () => {
+  it('keeps a finished card finished when a live status arrives late', () => {
+    const store = useStreamingStore();
+    store.addToolCall({ id: 't-1', name: 'Read', input: {} });
+    store.updateToolStatus('t-1', 'abandoned');
+
+    store.updateToolStatus('t-1', 'approved');
+
+    expect(defined(defined(at(store.messages, 0).toolCalls, 'toolCalls')[0], 't-1').status).toBe('abandoned');
+  });
+
+  it('keeps a cached final status when a live status arrives before the call', () => {
+    const store = useStreamingStore();
+    store.updateToolStatus('t-1', 'failed', { errorMessage: 'Operation aborted' });
+
+    store.updateToolStatus('t-1', 'running');
+    store.addToolCall({ id: 't-1', name: 'Read', input: {} });
+
+    expect(defined(defined(at(store.messages, 0).toolCalls, 'toolCalls')[0], 't-1').status).toBe('failed');
+  });
+});
+
 describe('useStreamingStore cache pruning', () => {
   it('caches nothing for a call that is already in the transcript', () => {
     const store = useStreamingStore();

@@ -141,7 +141,7 @@ describe('resumeAccepted', () => {
   });
 });
 
-/** The persisted id is what a reload or restart asks the host to replay, and pi writes no file before the first reply. */
+/** The persisted id is what a reload or restart asks the host to replay, and pi writes no file before the first prompt. */
 describe('sessionStarted persists only a stored conversation', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

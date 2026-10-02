@@ -42,6 +42,13 @@ export const DAMOCLES_ORIGINAL_INPUT_ENTRY = 'damocles-original-input';
 export const DAMOCLES_MID_STREAM_ENTRY = 'damocles-mid-stream';
 
 /**
+ * pi custom-entry recording what a Stop cut short, written once the aborted run settles (`turn-stopped.ts`):
+ * the tool calls in flight, which the live view marked abandoned, and the error entries pi wrote while
+ * winding down, which the live view never showed. Inert in LLM context; the history loader applies it.
+ */
+export const DAMOCLES_TURN_STOPPED_ENTRY = 'damocles-turn-stopped';
+
+/**
  * pi custom-entry recording that the user steered a running/queued subagent via `/steer`. Payload
  * `{ agentId, agentType?, description?, message }`. Inert in LLM context (a `CustomEntry`). Unlike the
  * other markers this is a STANDALONE entry keyed to nothing — its position on the branch IS its position

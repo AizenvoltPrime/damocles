@@ -1,20 +1,16 @@
 import { ref, watch, onMounted, onUnmounted, type Ref } from 'vue';
+import { stopwatchElapsedMs, type Stopwatch } from '@shared/team-stopwatch';
 
 export function useElapsedTimer(
   isRunning: Ref<boolean> | (() => boolean),
-  getStartTime: () => number | null,
-  getEndTime: () => number | null,
+  getStopwatch: () => Stopwatch | null,
 ) {
   const elapsedMs = ref(0);
   let interval: ReturnType<typeof setInterval> | null = null;
 
   function update(): void {
-    const start = getStartTime();
-    if (!start) {
-      elapsedMs.value = 0;
-      return;
-    }
-    elapsedMs.value = (getEndTime() ?? Date.now()) - start;
+    const stopwatch = getStopwatch();
+    elapsedMs.value = stopwatch ? stopwatchElapsedMs(stopwatch, Date.now()) : 0;
   }
 
   function startInterval(): void {
@@ -50,11 +46,10 @@ export function useElapsedTimer(
     },
   );
 
-  // Recompute when the bounds themselves change after mount — e.g. a completed team/agent reloaded from
-  // history swaps its placeholder (start≈end≈now → 0s) for the real persisted timestamps. Without this,
-  // a settled card (isRunning never flips) would keep the stale mount-time value forever.
+  // A settled card never flips isRunning, so a stopwatch replaced after mount (a reload swapping its
+  // placeholder, or a settle update) must recompute on its own.
   watch(
-    [() => getStartTime(), () => getEndTime()],
+    [() => getStopwatch()?.activeMs, () => getStopwatch()?.runningSince],
     update,
   );
 

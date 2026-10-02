@@ -1,5 +1,6 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { log } from '../logger';
+import type { PromptDisposition } from './prompt-entry';
 
 /**
  * How a shell-cancel note reaches the agent that ran the command. One builder per context
@@ -25,22 +26,20 @@ import { log } from '../logger';
  * because the tools are built before the session that runs them exists; the thunk resolves to the one
  * session those tools were built for, never to whatever session replaced it.
  *
- * `onAccepted` runs when pi takes the note, from `preflightResult`, which pi calls after queueing it
- * (`startsRun` false) or right before starting a run for it when none was running (`startsRun` true).
+ * `onPreflight` gets pi's disposition of the note: `queued` into the running run, `started` right before
+ * pi opens a run for it, or `handled` when an input handler consumed it and pi neither queued nor ran it.
  */
 export function sessionNoteDelivery(
   session: () => AgentSession | undefined,
-): (text: string, onAccepted: (startsRun: boolean) => void) => Promise<void> {
-  return async (text, onAccepted) => {
+): (text: string, onPreflight: (disposition: PromptDisposition) => void) => Promise<void> {
+  return async (text, onPreflight) => {
     const target = session();
     if (!target) throw new Error('the pi session these tools were built for was never created');
     await target.prompt(text, {
       expandPromptTemplates: false,
       streamingBehavior: 'steer',
       source: 'extension',
-      preflightResult: (accepted) => {
-        if (accepted) onAccepted(!target.isStreaming);
-      },
+      preflightResult: onPreflight,
     });
   };
 }

@@ -244,13 +244,48 @@ describe("validation — nothing is written when a definition is rejected", () =
 
   it.each([
     ["a non-http protocol", { type: "http", url: "file:///etc/passwd" }, /must use http or https/],
-    ["an unparseable URL", { type: "sse", url: "not a url" }, /must be absolute and include a scheme/],
+    ["an unparseable URL", { type: "streamable-http", url: "not a url" }, /must be absolute and include a scheme/],
+    ["the legacy SSE transport", { type: "sse", url: "https://x.invalid/sse" }, /legacy SSE transport is not supported; use the server's streamable HTTP URL/],
+    ["an unknown transport type", { type: "ws-secret-value", url: "https://x.invalid" }, /type is not a supported server type/],
     ["a missing URL", { type: "http" }, /a URL is required/],
     ["a bad bearerTokenEnv", { type: "http", url: "https://x.invalid", bearerTokenEnv: "1BAD" }, /valid variable name/],
     ["an empty headers map", { type: "http", url: "https://x.invalid", headers: {} }, /headers must be omitted/],
     ["a non-string header value", { type: "http", url: "https://x.invalid", headers: { A: 1 } }, /must be a string/],
   ])("rejects a remote server with %s", async (_label, config, message) => {
     await expectNoWrite(() => addDamoclesMcpServer("docs", config as McpServerConfig, NO_SHADOWING_NAMES), message);
+  });
+
+  it("names an unknown transport type without echoing it", async () => {
+    const thrown = await addDamoclesMcpServer("docs", { type: "sk-live-SECRET", url: "https://x.invalid" } as unknown as McpServerConfig, NO_SHADOWING_NAMES)
+      .then(() => "resolved", (e: unknown) => String(e));
+    expect(thrown).toMatch(/type is not a supported server type/);
+    expect(thrown).not.toContain("sk-live-SECRET");
+  });
+
+  it("writes the pi fields the form edits: description, timeout and the OAuth callback and metadata settings", async () => {
+    const config: McpServerConfig = {
+      type: "http",
+      url: "https://mcp.example.com/mcp",
+      description: "Issue tracker",
+      timeout: 30,
+      oauth: { clientName: "Acme", authServerMetadataUrl: "https://auth.example.com/meta", callbackUrl: "http://localhost:8080/cb", callbackPort: 8080 },
+    };
+    await addDamoclesMcpServer("tracker", config, NO_SHADOWING_NAMES);
+    expect(readServers()).toEqual({ tracker: config });
+  });
+
+  it("accepts a pi-style remote server with a url and no type, writes it back without one, and offers it to the form", async () => {
+    const config = { url: "https://mcp.example.com/mcp", headers: { "X-Team": "core" } } as McpServerConfig;
+    expect(isFormEditableMcpServerConfig(config)).toBe(true);
+    await addDamoclesMcpServer("typeless", config, NO_SHADOWING_NAMES);
+    expect(readServers()).toEqual({ typeless: { url: "https://mcp.example.com/mcp", headers: { "X-Team": "core" } } });
+  });
+
+  it("no longer accepts oauth.redirectUri, which the owned-file migration renamed to callbackUrl", async () => {
+    await expectNoWrite(
+      () => addDamoclesMcpServer("docs", { type: "http", url: "https://x.invalid", oauth: { redirectUri: "http://localhost:1/cb" } } as unknown as McpServerConfig, NO_SHADOWING_NAMES),
+      /redirectUri/,
+    );
   });
 
   it.each([
@@ -366,6 +401,35 @@ describe("name-collision policy", () => {
       .rejects.toThrow(/already exists in ~\/\.damocles\/mcp\.json/);
 
     expect(readServers()).toEqual({ docs: { command: "old" } });
+  });
+
+  it("rejects adding a different spelling that gets the same tool names as an existing entry", async () => {
+    writeConfigFile(JSON.stringify({ mcpServers: { "my-server": { command: "old" } } }));
+
+    const err = await addDamoclesMcpServer("my.server", stdio, NO_SHADOWING_NAMES).catch(e => e as McpWriteError);
+
+    expect((err as McpWriteError).info).toEqual({ code: "nameExists", params: { name: "my-server" } });
+    expect(readServers()).toEqual({ "my-server": { command: "old" } });
+  });
+
+  it("rejects renaming onto another entry's tool names, but lets an entry respell its own name", async () => {
+    writeConfigFile(JSON.stringify({ mcpServers: { "a.b": { command: "x" }, "c-d": { command: "y" } } }));
+
+    const err = await updateDamoclesMcpServer("a.b", "c_d", { command: "x" }, NO_SHADOWING_NAMES).catch(e => e as McpWriteError);
+    expect((err as McpWriteError).info).toEqual({ code: "nameExists", params: { name: "c-d" } });
+
+    await updateDamoclesMcpServer("a.b", "a-b", { command: "x" }, NO_SHADOWING_NAMES);
+    expect(Object.keys(readServers()).sort()).toEqual(["a-b", "c-d"]);
+  });
+
+  it("rejects a name whose tool names a shadowing project server already takes", async () => {
+    // The manager keys the shadowing map by namespace key, so `my.server` finds `my-server`'s entry.
+    const shadowing = new Map<string, McpServerSource>([["my_server", "workspace"]]);
+
+    const err = await addDamoclesMcpServer("my.server", stdio, shadowing).catch(e => e as McpWriteError);
+
+    expect((err as McpWriteError).info.code).toBe("nameShadowed");
+    expect(fs.existsSync(MCP_PATH)).toBe(false);
   });
 
   it("rejects updating a server Damocles does not own", async () => {

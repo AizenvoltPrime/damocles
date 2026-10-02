@@ -19,7 +19,7 @@ vi.mock('../tools', async (importOriginal) => ({
 
 const NOTE = 'wrong loop, use seq 1 5';
 
-type PromptOptions = { streamingBehavior?: 'steer' | 'followUp'; preflightResult?: (accepted: boolean) => void };
+type PromptOptions = { streamingBehavior?: 'steer' | 'followUp'; preflightResult?: (disposition: 'started' | 'queued' | 'handled') => void };
 
 /**
  * pi's own queue as the note path reaches it: while streaming, `prompt()` queues by `streamingBehavior`
@@ -32,11 +32,11 @@ function piQueue() {
     isStreaming: true,
     steers: steering,
     followUps: followUp,
-    // The panel echo stamps the prompt index, which is read from the branch.
-    sessionManager: { getBranch: () => [] },
+    // The panel echo stamps the prompt index, which is read from the branch; a Stop reads the leaf.
+    sessionManager: { getBranch: () => [], getLeafId: (): string | null => null },
     prompt: vi.fn(async (text: string, opts?: PromptOptions) => {
       if (session.isStreaming) (opts?.streamingBehavior === 'followUp' ? followUp : steering).push(text);
-      opts?.preflightResult?.(true);
+      opts?.preflightResult?.(session.isStreaming ? 'queued' : 'started');
     }),
     sendUserMessage: vi.fn(async (text: string, opts?: { deliverAs?: 'steer' | 'followUp' }) => {
       if (session.isStreaming) (opts?.deliverAs === 'followUp' ? followUp : steering).push(text);
