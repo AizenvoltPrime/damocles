@@ -16,7 +16,10 @@ import MemoryAuditOverlay from '../memory-audit/MemoryAuditOverlay.vue';
 import OverlayShell from '../OverlayShell.vue';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
+import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useMemoryStore } from '@/stores/useMemoryStore';
 import { MODAL_Z_INDEX, useOverlayEscape } from '@/composables/useOverlayEscape';
 import { i18n } from '@/i18n';
 import { at } from '@/__tests__/helpers';
@@ -46,8 +49,15 @@ function track<T extends VueWrapper>(wrapper: T): T {
  * Only the inline style counts. A `z-50` utility class reads as 50 too, so accepting one would let an
  * overlay that went back to a hardcoded z-index pass every case below that expects the base value.
  */
+/** The overlay's dialog element; an overlay's own root is a `<Transition>`, which test-utils stubs with a wrapper element. */
+function overlayRoot(wrapper: VueWrapper): HTMLElement {
+  const element = wrapper.element as HTMLElement;
+  if (element.matches?.('[role="dialog"]')) return element;
+  return element.querySelector<HTMLElement>('[role="dialog"]') ?? element;
+}
+
 function zIndexOf(wrapper: VueWrapper): number {
-  const root = wrapper.element as HTMLElement;
+  const root = overlayRoot(wrapper);
   const inline = root.style.zIndex;
   if (inline === '') {
     throw new Error(`overlay root has no derived z-index, only classes: ${root.className}`);
@@ -143,7 +153,7 @@ function openShell(title: string, buttonLabels: readonly string[] = []): VueWrap
 }
 
 function closeButtonOf(wrapper: VueWrapper): HTMLElement {
-  return wrapper.get('[aria-label="Close"]').element as HTMLElement;
+  return wrapper.get('[data-overlay-fallback-focus], [data-overlay-initial-focus]').element as HTMLElement;
 }
 
 function focusablesOf(wrapper: VueWrapper): HTMLElement[] {
@@ -152,9 +162,10 @@ function focusablesOf(wrapper: VueWrapper): HTMLElement[] {
 
 /** Mirrors the selector the dialog itself uses, for panels whose focusables are not all buttons. */
 function focusableWithin(wrapper: VueWrapper): HTMLElement[] {
-  const selector =
-    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-  return Array.from((wrapper.element as HTMLElement).querySelectorAll<HTMLElement>(selector));
+  const selector = ['a[href]', 'button:not([disabled])', 'input:not([disabled])', 'select:not([disabled])', 'textarea:not([disabled])', '[tabindex]']
+    .map((s) => `${s}:not([tabindex="-1"])`)
+    .join(', ');
+  return Array.from(overlayRoot(wrapper).querySelectorAll<HTMLElement>(selector));
 }
 
 /** Dispatched from whatever currently holds focus, which is what a real Tab press does. */
@@ -195,6 +206,16 @@ describe('a tool overlay opened from a team agent overlay', () => {
     expect(teamOverlay.emitted('close')).toBeUndefined();
   });
 
+  it('closes only itself from its X, leaving the team agent overlay open', async () => {
+    openTeamAgentOverlay();
+    const toolOverlay = openToolOverlay();
+
+    await toolOverlay.get('[data-testid="overlay-close"]').trigger('click');
+
+    expect(toolOverlay.emitted('close')).toHaveLength(1);
+    expect(useTeamStore().isAgentOverlayOpen).toBe(true);
+  });
+
   it('hands the stacking back when it closes, so the next one opened rises again', async () => {
     const teamOverlay = openTeamAgentOverlay();
     const first = openToolOverlay();
@@ -224,6 +245,16 @@ describe('a tool overlay opened from a subagent overlay', () => {
     const toolOverlay = openToolOverlay();
 
     pressEscape();
+
+    expect(toolOverlay.emitted('close')).toHaveLength(1);
+    expect(subagentOverlay.emitted('close')).toBeUndefined();
+  });
+
+  it('closes only itself from its X, leaving the subagent overlay open', async () => {
+    const subagentOverlay = openSubagentOverlay();
+    const toolOverlay = openToolOverlay();
+
+    await toolOverlay.get('[data-testid="overlay-close"]').trigger('click');
 
     expect(toolOverlay.emitted('close')).toHaveLength(1);
     expect(subagentOverlay.emitted('close')).toBeUndefined();
@@ -366,7 +397,7 @@ describe('the stacking source', () => {
 describe('the dialog an overlay presents to a screen reader', () => {
   it('is a modal dialog named by the heading it already renders', () => {
     const overlay = openSubagentOverlay();
-    const root = overlay.element as HTMLElement;
+    const root = overlayRoot(overlay);
 
     expect(root.getAttribute('role')).toBe('dialog');
     expect(root.getAttribute('aria-modal')).toBe('true');
@@ -380,7 +411,7 @@ describe('the dialog an overlay presents to a screen reader', () => {
 
   it('gives every overlay in the group the same dialog semantics', () => {
     for (const open of [openToolOverlay, openTeamAgentOverlay, openSubagentOverlay]) {
-      const root = open().element as HTMLElement;
+      const root = overlayRoot(open());
       expect(root.getAttribute('role')).toBe('dialog');
       expect(root.getAttribute('aria-modal')).toBe('true');
       const heading = root.querySelector(`#${root.getAttribute('aria-labelledby')}`);
@@ -408,7 +439,7 @@ describe('the dialog an overlay presents to a screen reader', () => {
     ));
 
     const ids = both.findAllComponents(OverlayShell)
-      .map((shell) => (shell.element as HTMLElement).getAttribute('aria-labelledby'));
+      .map((shell) => overlayRoot(shell).getAttribute('aria-labelledby'));
 
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
@@ -499,7 +530,7 @@ describe('where focus sits while an overlay is open', () => {
 describe('the memory panel as a dialog', () => {
   it('is a modal dialog named by the heading it already renders', () => {
     const panel = openMemoryPanel();
-    const root = panel.element as HTMLElement;
+    const root = overlayRoot(panel);
 
     expect(root.getAttribute('role')).toBe('dialog');
     expect(root.getAttribute('aria-modal')).toBe('true');
@@ -509,10 +540,10 @@ describe('the memory panel as a dialog', () => {
     expect(heading?.textContent?.trim()).toBe('Memory');
   });
 
-  it('moves focus to its named close button on open', () => {
+  it('moves focus to its search box on open', () => {
     const panel = openMemoryPanel();
 
-    expect(document.activeElement).toBe(closeButtonOf(panel));
+    expect(document.activeElement).toBe(panel.find('[data-testid="memory-search"]').element);
   });
 
   it('hands focus back to the control that opened it', () => {
@@ -539,7 +570,7 @@ describe('the memory panel as a dialog', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(at(items, 0));
-    expect(at(items, 0)).toBe(closeButtonOf(panel));
+    expect(items).toContain(closeButtonOf(panel));
   });
 
   it('still closes from Escape and from the named close button', () => {
@@ -673,11 +704,12 @@ describe('Tab containment', () => {
     const overlay = openToolOverlay({ ...RUNNING_TOOL_CALL, cancelRequested: true });
     await overlay.vm.$nextTick();
 
-    const items = focusablesOf(overlay);
+    const items = focusableWithin(overlay);
     const trigger = overlay.get('[aria-disabled="true"]').element as HTMLElement;
-    expect(at(items, items.length - 1)).toBe(trigger);
+    expect(items).toContain(trigger);
 
     trigger.focus();
+    at(items, items.length - 1).focus();
     const event = pressTab();
 
     expect(event.defaultPrevented).toBe(true);
@@ -789,6 +821,72 @@ describe('a popup open inside the top overlay', () => {
   });
 });
 
+describe('a confirmation opened from inside an overlay', () => {
+  it('paints one above an overlay opened at depth 1, and keeps the fixed layer outside any overlay', async () => {
+    const beneath = openShell('beneath');
+    const confirm = (): VNode => h(AlertDialog, { open: true }, { default: () => h(AlertDialogContent, { 'data-test-confirm': '' }, { default: () => 'Stop?' }) });
+    const shell = track(mount(OverlayShell, { props: { title: 'top', icon: StubIcon }, slots: { default: confirm }, global: { plugins: [i18n] }, attachTo: document.body }));
+    await settle();
+
+    const overlayZ = zIndexOf(shell);
+    expect(overlayZ).toBe(zIndexOf(beneath) + 1);
+    const content = document.body.querySelector<HTMLElement>('[data-test-confirm]')!;
+    expect(Number(content.style.zIndex)).toBe(overlayZ + 1);
+    expect(content.className).not.toContain('z-50');
+
+    unmountTracked(shell);
+    track(mount(AlertDialog, { props: { open: true }, slots: { default: () => h(AlertDialogContent, { 'data-test-confirm': '' }, { default: () => 'Stop?' }) }, attachTo: document.body }));
+    await settle();
+    const outside = document.body.querySelector<HTMLElement>('[data-test-confirm]')!;
+    expect(outside.className).toContain('z-50');
+    expect(outside.style.zIndex).toBe('');
+  });
+});
+
+describe('a dialog opened from inside an overlay', () => {
+  const body = (): VNode => h(DialogContent, null, { default: () => h(DialogTitle, null, { default: () => 'History' }) });
+  const dialog = (): VNode => h(Dialog, { open: true }, { default: body });
+  const content = (): HTMLElement => document.body.querySelector<HTMLElement>('[role="dialog"].d-dialog')!;
+  const scrim = (): HTMLElement => document.body.querySelector<HTMLElement>('.d-scrim')!;
+
+  it('paints its scrim and content one above an overlay opened at depth 1, and keeps the fixed layer outside any overlay', async () => {
+    const beneath = openShell('beneath');
+    const shell = track(mount(OverlayShell, { props: { title: 'top', icon: StubIcon }, slots: { default: dialog }, global: { plugins: [i18n] }, attachTo: document.body }));
+    await settle();
+
+    const overlayZ = zIndexOf(shell);
+    expect(overlayZ).toBe(zIndexOf(beneath) + 1);
+    for (const layer of [content(), scrim()]) {
+      expect(Number(layer.style.zIndex)).toBe(overlayZ + 1);
+      expect(layer.className).not.toContain('z-50');
+    }
+
+    unmountTracked(shell);
+    track(mount(Dialog, { props: { open: true }, slots: { default: body }, global: { plugins: [i18n] }, attachTo: document.body }));
+    await settle();
+    for (const layer of [content(), scrim()]) {
+      expect(layer.className).toContain('z-50');
+      expect(layer.style.zIndex).toBe('');
+    }
+  });
+
+  it("opens the memory panel's version history above the panel when the panel sits over another overlay", async () => {
+    useMemoryStore().setMemories([{ id: 'm1', tier: 'project', kind: 'fact', content: 'a fact', sessionId: null, workspace: null, createdAt: 1, updatedAt: 1, tags: [] }]);
+    const beneath = openShell('beneath');
+    const panel = openMemoryPanel();
+    await settle();
+
+    await panel.get('[data-memory-id="m1"] [data-memory-action="history"]').trigger('click');
+    await settle();
+
+    const panelZ = zIndexOf(panel);
+    expect(panelZ).toBe(zIndexOf(beneath) + 1);
+    const history = document.body.querySelector<HTMLElement>('[role="dialog"].d-dialog')!;
+    expect(history.textContent).toContain('Version history');
+    expect(Number(history.style.zIndex)).toBe(panelZ + 1);
+  });
+});
+
 describe('a tool result that carries images', () => {
   const api = (globalThis as unknown as { acquireVsCodeApi: () => { postMessage: (message: unknown) => void } }).acquireVsCodeApi();
   const SESSION: ToolResultOwner = { kind: 'session' };
@@ -827,13 +925,13 @@ describe('a tool result that carries images', () => {
     await overlay.get('[data-testid="tool-result-images"] button').trigger('click');
     await settle();
 
-    const backdrop = document.body.querySelector<HTMLElement>('.bg-black\\/80');
+    const backdrop = document.body.querySelector<HTMLElement>('.d-scrim');
     expect(backdrop).not.toBeNull();
     expect(Number(backdrop!.style.zIndex)).toBe(zIndexOf(overlay) + 1);
 
     pressEscape();
     await settle();
-    expect(document.body.querySelector('.bg-black\\/80')).toBeNull();
+    expect(document.body.querySelector('.d-scrim')).toBeNull();
     expect(overlay.emitted('close')).toBeUndefined();
 
     pressEscape();

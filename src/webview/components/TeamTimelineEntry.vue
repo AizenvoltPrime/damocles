@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { TeamMessage, TeamAgent } from '@shared/types/team';
 import { getAgentColor } from '@/composables/useTeamFormatting';
+import { formatClock } from '@/utils/clock';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
@@ -18,10 +19,7 @@ const senderIndex = computed(() =>
 
 const color = computed(() => getAgentColor(senderIndex.value));
 
-const formattedTime = computed(() => {
-  const d = new Date(props.message.timestamp);
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-});
+const formattedTime = computed(() => formatClock(props.message.timestamp, undefined, { seconds: true }));
 
 const recipientLabel = computed(() =>
   props.message.recipientName
@@ -31,23 +29,35 @@ const recipientLabel = computed(() =>
 </script>
 
 <template>
-  <div class="flex gap-2 py-1.5">
+  <div
+    class="d-arrive grid grid-cols-[0.875rem_minmax(0,1fr)] gap-2.5"
+    data-testid="team-timeline-entry"
+  >
     <div class="flex flex-col items-center pt-1.5">
-      <div class="w-2 h-2 rounded-full shrink-0" :class="color.dot" />
-      <div class="w-px flex-1 bg-border/30 mt-1" />
+      <span
+        class="size-2 flex-none rounded-full"
+        :class="color.dot"
+        aria-hidden="true"
+      />
+      <span
+        class="mt-1 w-px flex-1 bg-(--d-border)"
+        aria-hidden="true"
+      />
     </div>
-    <div class="flex-1 min-w-0">
-      <div class="flex items-center gap-1.5 text-xs">
-        <span class="font-medium" :class="color.text">{{ message.senderName }}</span>
-        <span class="text-foreground/40">{{ recipientLabel }}</span>
-        <span class="text-foreground/30 ml-auto shrink-0">{{ formattedTime }}</span>
+    <div class="min-w-0 pb-3.5">
+      <div class="flex items-baseline gap-1.5 text-xs">
+        <span
+          class="font-semibold"
+          :class="color.text"
+        >{{ message.senderName }}</span>
+        <span class="text-(--d-faint)">{{ recipientLabel }}</span>
+        <span class="flex-1" />
+        <span class="font-mono text-10.5 text-(--d-faint)">{{ formattedTime }}</span>
       </div>
-      <div
-        class="mt-1 pl-2 border-l-2 text-xs text-foreground/80 [&_.markdown-p]:my-1"
-        :class="color.border"
-      >
-        <MarkdownRenderer :content="message.content" />
-      </div>
+      <MarkdownRenderer
+        :content="message.content"
+        class="mt-0.75 text-12.5 leading-[1.55] [&_.markdown-p]:my-0"
+      />
     </div>
   </div>
 </template>

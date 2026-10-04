@@ -151,10 +151,9 @@ export function formatPolicyBlockReason(message: string | undefined): string {
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
 export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline'> & {
   /**
-   * Hold this caller to read-only shell commands even outside plan mode. Set for a subagent whose
-   * resolved toolset contains no write tool: denying `Edit`/`Write` while handing over an unrestricted
-   * `Bash` is not a read-only agent — `echo > file`, a heredoc, `tee`, or `cp` all restore writes, and
-   * under `dangerouslySkipPermissions` nothing else would stop them.
+   * Apply plan mode's shell rule to this caller in every mode: a command `readonly-shell.ts` proves
+   * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
+   * tools are blocked. Set for a subagent whose resolved toolset contains no write tool.
    */
   readOnlyShell?: boolean;
 };
@@ -333,19 +332,16 @@ export async function runPermissionGate(
     return rule === 'ask' ? askUser() : proceed();
   }
 
-  // Plan-mode defense in depth: gate any Damocles-native write/shell the read-only active set somehow let
-  // through. Shell commands are classified: a provably read-only command (git status/log/diff, ls, cat,
-  // grep, …) auto-allows through the settings evaluator (never prompts); anything not positively
-  // recognized as read-only is blocked with a teaching reason so the model self-corrects. The ONE write
-  // carve-out is Edit/Write to the plan file (US-002): the model maintains its plan there while planning,
-  // so those fall through to the normal flow where the EvaluatorManager auto-allows the plans-dir write.
-  // Every other Edit/Write (and every non-read-only shell command) stays blocked. MCP tools are NOT
-  // blocked here — they follow normal-mode rules (read-only ones auto-allow via the read branch below;
-  // non-read ones auto-allow via canUseTool), since the user controls which servers are enabled.
-  // The same classifier also serves read-only SUBAGENTS (Explore/Plan, or any agent whose toolset omits
-  // every write tool): an agent denied Edit/Write must not regain writes through the shell, in any
-  // permission mode. Plan mode's plan-file carve-out is plan-mode-only — a read-only subagent has no
-  // plan file to maintain.
+  // Plan mode blocks the write-category tools. A shell command `readonly-shell.ts` proves read-only
+  // auto-runs; any other goes through canUseTool like default mode (prompt, settings rules, YOLO), so
+  // the model can gather what the plan needs (services, logs, endpoints) with the user's approval. The
+  // plan-mode prompt forbids changing files through the shell. The ONE write carve-out is Edit/Write to
+  // the plan file (US-002): it falls through to the normal flow where the EvaluatorManager auto-allows
+  // the plans-dir write. MCP tools are NOT blocked here: they follow normal-mode rules, since the user
+  // controls which servers are enabled.
+  // Read-only SUBAGENTS (Explore/Plan, team reviewers, any agent whose toolset omits every write tool)
+  // get the same shell rule in every permission mode: proven reads auto-run, anything else asks, and
+  // YOLO approves it. Their prompts forbid writing through the shell. They have no plan file.
   //
   // MCP is exempt from the read-only-SUBAGENT branch too, on purpose and by the same reasoning. This
   // is load-bearing now that nested agents receive MCP tools: `toolCategory('mcp__…')` is `'other'`
@@ -357,31 +353,25 @@ export async function runPermissionGate(
   //     plan mode, which the paragraph above already exempts. Most servers omit `readOnlyHint`
   //     entirely, so it would fail closed against the common case and grant Explore/Plan nothing.
   //   - Auto-allowing non-annotated MCP for them would be laxer than the panel. It is not.
-  // `docs/invariants.md` scopes the read-only-agent rule to the SHELL: it is a shell-escape guard
-  // preventing `echo > file` from undoing a denied `Edit`, not a general capability ceiling. The trust
-  // boundary for MCP is the user's server-enablement list, which a subagent cannot widen.
+  // `docs/invariants.md` scopes the read-only-agent rule to the SHELL: an unproven command needs the
+  // user's approval, so `echo > file` cannot silently undo a denied `Edit`; it is not a general
+  // capability ceiling. The trust boundary for MCP is the user's server-enablement list, which a
+  // subagent cannot widen.
   const planMode = panel.isPlanMode();
-  if ((planMode || panel.readOnlyShell === true) && (category === 'write' || category === 'shell')) {
-    if (category === 'shell') {
-      const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
-      const shell = damoclesName === TOOL_BASH ? 'bash'
-        : damoclesName === TOOL_POWERSHELL ? 'powershell'
-          : null; // A shell tool with no classifier must stay blocked; never default it to allow.
-      const verdict = shell
-        ? classifyReadOnlyShellCommand(shell, command)
-        : { readOnly: false as const, reason: 'this shell tool is not permitted in a read-only context' };
-      if (verdict.readOnly) {
-        // Auto-allow unless a settings rule names the command: never fall through to canUseTool for the
-        // read-only verdict alone, since with no rule it would prompt for every shell command.
-        const rule = await panel.permissionHandler.matchRule(damoclesName, input);
-        if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
-        return rule === 'ask' ? askUser() : proceed();
-      }
-      return { block: true, reason: formatPolicyBlockReason(
-        planMode
-          ? `Plan mode is active — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase using only read-only commands, or exit plan mode to run it.`
-          : `You are a read-only agent — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase it as a pure read, or report back that the task needs an agent that can make changes.`) };
-    }
+  const readOnlyAgent = panel.readOnlyShell === true;
+  if (category === 'shell' && (planMode || readOnlyAgent)) {
+    const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
+    const shell = damoclesName === TOOL_BASH ? 'bash'
+      : damoclesName === TOOL_POWERSHELL ? 'powershell'
+        : null; // A shell tool with no classifier always asks; never default it to allow.
+    if (!shell || !classifyReadOnlyShellCommand(shell, command).readOnly) return askUser();
+    // Auto-allow unless a settings rule names the command: never fall through to canUseTool for the
+    // read-only verdict alone, since with no rule it would prompt for every shell command.
+    const rule = await panel.permissionHandler.matchRule(damoclesName, input);
+    if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
+    return rule === 'ask' ? askUser() : proceed();
+  }
+  if (category === 'write' && (planMode || readOnlyAgent)) {
     const isPlanFileEdit =
       planMode &&
       (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&

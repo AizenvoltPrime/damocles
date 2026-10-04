@@ -51,7 +51,7 @@ describe("ConfigManager — cacheWarming", () => {
   });
 
   async function readBack(): Promise<ExtensionSettings["cacheWarming"]> {
-    await manager.sendCurrentSettings(hostStub, permStub);
+    await manager.sendCurrentSettings(hostStub, permStub, undefined);
     const [, msg] = postMessage.mock.calls[0]!;
     return (msg.settings as ExtensionSettings).cacheWarming;
   }

@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
-import { useI18n } from 'vue-i18n';
 import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
-import type { ExpandedDiff } from '@/stores/useDiffStore';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useMessageHighlightStore } from '@/stores/useMessageHighlightStore';
 import { useVirtualizedMessages } from '@/composables/useVirtualizedMessages';
 import { useScrollEngine } from '@/composables/useScrollEngine';
+import { useLiveArrivals } from '@/composables/useLiveArrivals';
 import { useStickyHeader } from '@/composables/useStickyHeader';
 import { initFonts, invalidateLayoutCache } from '@/composables/usePretextMeasurement';
 import VirtualItemWrapper from './VirtualItemWrapper.vue';
@@ -18,9 +17,9 @@ import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { remPx } from '@/composables/useRemPx';
 import { storeToRefs } from 'pinia';
 
-const { t } = useI18n();
 const sessionStore = useSessionStore();
 const settingsStore = useSettingsStore();
 const { currentSettings } = storeToRefs(settingsStore);
@@ -49,13 +48,12 @@ const emit = defineEmits<{
   (e: 'rewind', message: ChatMessage): void;
   (e: 'rewindToCompaction', entryId: string): void;
   (e: 'expandSubagent', subagentId: string): void;
-  (e: 'expandTool', toolId: string): void;
-  (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'viewContext', promptIndex: number): void;
 }>();
 
 const scrollContainer = inject<Ref<HTMLElement | null>>('messageScrollContainer', ref(null));
 const canvasRef = ref<HTMLElement | null>(null);
+const columnProbe = ref<HTMLElement | null>(null);
 const stickyHeaderRef = ref<InstanceType<typeof StickyUserHeader> | null>(null);
 const stickyRef = computed<HTMLElement | null>(() => stickyHeaderRef.value?.rootRef ?? null);
 
@@ -75,7 +73,7 @@ const { items } = useVirtualizedMessages({
   streamingMessageId: streamingIdRef,
 });
 
-const engine = useScrollEngine(items, scrollContainer, canvasRef);
+const engine = useScrollEngine(items, streamingIdRef, scrollContainer, canvasRef, columnProbe);
 const sticky = useStickyHeader(items, engine.frame);
 const highlightStore = useMessageHighlightStore();
 
@@ -102,7 +100,7 @@ function scrollToMessageId(id: string): boolean {
   const canvas = canvasRef.value;
   if (!container || !canvas) return false;
 
-  const OFFSET = 16;
+  const OFFSET = remPx(1);
   const EPSILON = 1;
   let attempts = 5;
   scrollGeneration++;
@@ -129,19 +127,19 @@ function scrollToMessageId(id: string): boolean {
   return true;
 }
 
-defineExpose({ scrollToMessageId });
+// Empty means no row renders; a count of the store lists would miss a row type added later.
+const isEmpty = computed(() => items.value.length === 0);
+
+defineExpose({ scrollToMessageId, isEmpty });
 
 watch(() => sessionStore.currentResumedSessionId, () => {
   scrollGeneration++;
-  engine.knownItemIds.clear();
   expandedMessages.clear();
 });
 
 const lightboxImageUrl = ref<string | null>(null);
-const logoUri = ref('');
 
-// Notices render without any message of their own, so the welcome screen has to yield to anything the list emits.
-const isWelcome = computed(() => items.value.length === 0);
+const arrivingIds = useLiveArrivals(items);
 
 const visibleItems = computed(() => {
   const start = engine.visibleStart.value;
@@ -194,12 +192,6 @@ function getPromptIndexForMessage(messageIndex: number): number {
 
 function canRewindTo(message: ChatMessage): boolean {
   return message.role === 'user' && !!message.sdkMessageId && (props.checkpointMessages?.has(message.sdkMessageId) ?? false);
-}
-
-function isNewItem(itemId: string): boolean {
-  if (engine.knownItemIds.has(itemId)) return false;
-  engine.knownItemIds.add(itemId);
-  return true;
 }
 
 function openLightbox(block: ImageBlock): void {
@@ -279,8 +271,6 @@ watch(pinnedHeaderHidden, () => {
 });
 
 onMounted(() => {
-  logoUri.value = document.getElementById('app')?.dataset.logoUri ?? '';
-
   engine.measureContainerWidth();
 
   initFonts().then(() => {
@@ -314,22 +304,16 @@ onUnmounted(() => {
 
 <template>
   <div
-    v-if="isWelcome"
-    class="px-4 pb-4 bg-background flex flex-col justify-center h-full"
-  >
-    <div class="text-center w-full px-4">
-      <img :src="logoUri" alt="Damocles" class="w-16 h-16 mx-auto mb-4" />
-      <p class="text-xl mb-2 text-foreground font-medium">{{ t('welcome.title') }}</p>
-      <p class="text-sm text-muted-foreground">{{ t('welcome.message') }}</p>
-    </div>
-  </div>
-
-  <div
-    v-else
     ref="canvasRef"
-    class="relative bg-background"
+    class="relative"
     :style="{ minHeight: engine.frame.value.totalHeight + 'px' }"
   >
+    <div
+      ref="columnProbe"
+      class="chat-column pointer-events-none invisible absolute inset-x-0 top-0 h-0"
+      aria-hidden="true"
+    />
+
     <StickyUserHeader
       v-if="sticky.activeMessage.value && !pinnedHeaderHidden"
       ref="stickyHeaderRef"
@@ -349,14 +333,18 @@ onUnmounted(() => {
 
     <div
       v-if="sticky.activeMessage.value && pinnedHeaderHidden"
-      class="sticky top-0 z-20 pointer-events-none"
-      style="height: 0"
+      class="pointer-events-none sticky top-0 z-20 h-0"
+    >
+      <Transition
+        name="t-pop"
+        appear
     >
       <PinnedRestoreChip
         :message="sticky.activeMessage.value"
-        class="absolute top-2 right-2 pointer-events-auto"
+          class="pointer-events-auto absolute top-2 right-4.5"
         @restore="setPinnedHeaderHidden(false)"
       />
+      </Transition>
     </div>
 
     <VirtualItemWrapper
@@ -364,7 +352,7 @@ onUnmounted(() => {
       :key="item.id"
       :item="item"
       :top="frameItem.top"
-      :is-new="isNewItem(item.id)"
+      :arriving="arrivingIds.has(item.id)"
       :can-rewind="item.type === 'user-message' && canRewindTo(item.message)"
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
@@ -373,8 +361,6 @@ onUnmounted(() => {
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)"
       @expand-subagent="emit('expandSubagent', $event)"
-      @expand-tool="emit('expandTool', $event)"
-      @expand-diff="emit('expandDiff', $event)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="openLightbox"
       @toggle-user-message-expanded="toggleItemExpanded(item)"

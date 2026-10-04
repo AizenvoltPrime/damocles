@@ -445,7 +445,7 @@ onBeforeUnmount(() => {
     <p
       v-if="unavailableReason"
       data-testid="settings-json-unavailable"
-      class="absolute inset-0 p-4 text-sm text-muted-foreground bg-background break-words"
+      class="absolute inset-0 p-4 text-sm text-muted-foreground bg-background wrap-break-word"
     >
       {{ unavailableReason }}
     </p>

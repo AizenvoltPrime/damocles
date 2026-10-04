@@ -11,7 +11,7 @@ const colorClass = computed(() => getToolColorClass(props.name));
 </script>
 
 <template>
-  <Badge variant="outline" :class="['border', 'text-[9px]', 'font-mono', 'px-1.5', 'py-0.5', 'leading-none', colorClass]">
+  <Badge variant="outline" :class="['border', 'text-[0.5625rem]', 'font-mono', 'px-1.5', 'py-0.5', 'leading-none', colorClass]">
     {{ props.name }}
   </Badge>
 </template>

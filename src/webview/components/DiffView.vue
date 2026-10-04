@@ -1,73 +1,39 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Button } from '@/components/ui/button';
-
-import { IconCheck, IconCopy } from '@/components/icons';
-import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
-import {
-  computeDiff,
-  computeNewFileOnlyDiff,
-  getLanguageFromPath,
-  type DiffLine,
-} from '@/utils/parseUnifiedDiff';
+import { getLanguageFromPath, type DiffLine, type FileDiff } from '@/utils/parseUnifiedDiff';
 import { highlightDiffLines, type HighlightedDiffLine } from '@/utils/highlightDiff';
+import { codeHighlightTheme } from '@/composables/useShikiHighlighter';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import { escapeHtml } from '@/utils/stringUtils';
 
 const { t } = useI18n();
+const settingsStore = useSettingsStore();
 
 const props = withDefaults(
   defineProps<{
-    oldContent?: string;
-    newContent: string;
+    diff: FileDiff;
     fileName: string;
-    showActions?: boolean;
-    showHeader?: boolean;
     maxHeight?: string;
-    isNewFile?: boolean;
   }>(),
   {
-    oldContent: '',
-    showActions: false,
-    showHeader: true,
-    maxHeight: '400px',
-    isNewFile: false,
+    maxHeight: '25rem',
   }
 );
 
-const emit = defineEmits<{
-  approve: [];
-  reject: [];
-}>();
-
-const { hasCopied, copyToClipboard } = useCopyToClipboard();
-const isHovering = ref(false);
 const highlightedLines = ref<HighlightedDiffLine[]>([]);
 const isMounted = ref(true);
 
-const diffResult = computed(() => {
-  if (props.isNewFile || !props.oldContent) {
-    return computeNewFileOnlyDiff(props.newContent);
-  }
-  return computeDiff(props.oldContent, props.newContent);
-});
-
 const language = computed(() => getLanguageFromPath(props.fileName));
-
-const diffSummary = computed(() => {
-  const { added, removed } = diffResult.value.stats;
-  const parts: string[] = [];
-  if (added > 0) parts.push(`+${added}`);
-  if (removed > 0) parts.push(`-${removed}`);
-  return parts.join(' / ') || t('diffView.noChanges');
-});
+// The sign and code columns, plus both line number columns when the lines have real numbers.
+const columnCount = computed(() => (props.diff.numbered ? 4 : 2));
 
 async function highlightLines() {
   if (!isMounted.value) return;
 
-  const lines = diffResult.value.lines;
+  const lines = props.diff.lines;
   try {
-    const result = await highlightDiffLines(lines, language.value);
+    const result = await highlightDiffLines(lines, language.value, codeHighlightTheme(settingsStore.hostCapabilities.damoclesTheme));
     if (isMounted.value) {
       highlightedLines.value = result;
     }
@@ -81,21 +47,30 @@ async function highlightLines() {
   }
 }
 
-function handleCopyNewContent() {
-  copyToClipboard(props.newContent);
-}
-
 function getLineTypeClass(type: DiffLine['type']): string {
   switch (type) {
     case 'addition':
-      return 'diff-added';
+      return 'bg-(--d-add)';
     case 'deletion':
-      return 'diff-removed';
-    case 'gap':
-      return 'diff-gap';
+      return 'bg-(--d-del)';
     default:
       return '';
   }
+}
+
+function getSignClass(type: DiffLine['type']): string {
+  switch (type) {
+    case 'addition':
+      return 'text-(--d-success-text)';
+    case 'deletion':
+      return 'text-(--d-danger-text)';
+    default:
+      return '';
+  }
+}
+
+function getLineNumberClass(type: DiffLine['type']): string {
+  return type === 'addition' || type === 'deletion' ? 'text-(--d-faint-text)' : 'text-(--d-faint)';
 }
 
 function getLineIndicator(type: DiffLine['type']): string {
@@ -105,12 +80,12 @@ function getLineIndicator(type: DiffLine['type']): string {
     case 'deletion':
       return '-';
     default:
-      return ' ';
+      return '';
   }
 }
 
 watch(
-  () => [props.oldContent, props.newContent, props.fileName],
+  () => [props.diff, props.fileName, settingsStore.hostCapabilities.damoclesTheme],
   highlightLines,
   { immediate: true }
 );
@@ -126,69 +101,85 @@ onUnmounted(() => {
 
 <template>
   <div
-    class="diff-view overflow-hidden"
-    :class="showHeader ? 'border border-border rounded' : ''"
-    @mouseenter="isHovering = true"
-    @mouseleave="isHovering = false"
+    class="overflow-hidden bg-(--d-code)"
+    data-testid="diff-view"
+    :data-numbered="diff.numbered"
   >
-    <div
-      v-if="showHeader"
-      class="diff-header bg-muted px-3 py-2 border-b border-border flex justify-between items-center gap-2"
+    <p
+      v-if="diff.omitted"
+      class="px-3 py-2 text-xs text-(--d-muted)"
+      data-testid="diff-omitted"
     >
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="font-medium text-sm truncate">{{ fileName }}</span>
-        <span class="text-xs text-muted-foreground shrink-0">{{ diffSummary }}</span>
-      </div>
-
-      <div class="flex items-center gap-2 shrink-0">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          class="h-6 w-6 opacity-0 transition-opacity text-muted-foreground hover:text-foreground"
-          :class="{ 'opacity-100': isHovering || hasCopied, 'text-success': hasCopied }"
-          :title="t('diffView.copyNew')"
-          @click="handleCopyNewContent"
-        >
-          <IconCheck v-if="hasCopied" :size="14" />
-          <IconCopy v-else :size="14" />
-        </Button>
-
-        <template v-if="showActions">
-          <Button variant="destructive" size="sm" @click="emit('reject')">
-            {{ t('diffView.reject') }}
-          </Button>
-          <Button size="sm" class="bg-success hover:bg-success/80" @click="emit('approve')">
-            {{ t('diffView.approve') }}
-          </Button>
-        </template>
-      </div>
-    </div>
-
-    <div class="diff-content overflow-x-auto overflow-y-auto" :style="{ maxHeight }">
-      <table class="diff-table w-full text-xs font-mono">
+      {{ t(`diffView.omitted.${diff.omitted}`) }}
+    </p>
+    <p
+      v-else-if="diff.empty"
+      class="px-3 py-2 text-xs text-(--d-muted)"
+      data-testid="diff-empty"
+    >
+      {{ t(`diffView.empty.${diff.empty}`) }}
+    </p>
+    <div
+      v-else
+      class="overflow-auto py-1"
+      :style="{ maxHeight }"
+    >
+      <table class="w-full border-collapse font-mono text-11.5 leading-[1.7]">
         <tbody>
-          <template v-for="(line, idx) in highlightedLines" :key="idx">
-            <tr v-if="line.type === 'gap'" class="diff-gap-row">
-              <td colspan="4" class="text-center py-1 text-muted-foreground text-xs">
-                <span v-if="line.hiddenCount">{{ line.hiddenCount }} {{ t('diffView.hiddenLines') }}</span>
+          <template
+            v-for="(line, idx) in highlightedLines"
+            :key="idx"
+          >
+            <tr v-if="line.type === 'gap'">
+              <td
+                :colspan="columnCount"
+                class="py-0.5 text-center text-11 text-(--d-faint)"
+              >
+                <span v-if="line.hiddenCount">{{ t('diffView.hiddenLines', { n: line.hiddenCount }, line.hiddenCount) }}</span>
                 <span v-else>───</span>
               </td>
             </tr>
-            <tr v-else :class="getLineTypeClass(line.type)">
-              <td class="diff-line-num old-num select-none text-right pr-1 opacity-50 w-10">
-                {{ line.oldLineNum ?? '' }}
+            <tr v-else-if="line.type === 'noNewline'">
+              <td
+                :colspan="columnCount"
+                class="pl-12 text-11 text-(--d-faint) italic"
+                data-testid="diff-no-newline"
+              >
+                {{ t('diffView.noNewline') }}
               </td>
-              <td class="diff-line-num new-num select-none text-right pr-2 opacity-50 w-10 border-r border-border">
-                {{ line.newLineNum ?? '' }}
+            </tr>
+            <tr
+              v-else
+              :class="getLineTypeClass(line.type)"
+            >
+              <template v-if="diff.numbered">
+                <td
+                  class="w-8 pr-1 text-right align-top select-none"
+                  :class="getLineNumberClass(line.type)"
+                  data-part="old-line"
+                >
+                  {{ line.oldLineNum ?? '' }}
+                </td>
+                <td
+                  class="w-8 pr-2 text-right align-top select-none"
+                  :class="getLineNumberClass(line.type)"
+                  data-part="new-line"
+                >
+                  {{ line.newLineNum ?? '' }}
+                </td>
+              </template>
+              <td
+                class="w-3.5 align-top select-none"
+                :class="[getSignClass(line.type), !diff.numbered && 'pl-2']"
+              >
+                {{ getLineIndicator(line.type) }}
               </td>
-              <td class="diff-indicator select-none w-4 text-center">
-                <span
-                  :class="line.type === 'addition' ? 'text-success' : line.type === 'deletion' ? 'text-error' : 'opacity-0'"
-                >{{ getLineIndicator(line.type) }}</span>
-              </td>
-              <td class="diff-content-cell pl-1 whitespace-pre">
-                <span v-html="line.highlightedContent || '&nbsp;'" />
-              </td>
+              <!-- eslint-disable vue/no-v-html -- Shiki output, or the escaped fallback -->
+              <td
+                class="diff-code pr-4 align-top break-all whitespace-pre"
+                v-html="line.highlightedContent || '&nbsp;'"
+              />
+              <!-- eslint-enable vue/no-v-html -->
             </tr>
           </template>
         </tbody>
@@ -198,45 +189,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.diff-view {
-  background: var(--vscode-editor-background, #0d1117);
-}
-
-.diff-table {
-  border-collapse: collapse;
-}
-
-.diff-table tr {
-  line-height: 1.4;
-}
-
-.diff-table td {
-  padding: 1px 4px;
-  vertical-align: top;
-}
-
-.diff-line-num {
-  color: var(--vscode-editorLineNumber-foreground, #6e7681);
-  min-width: 40px;
-}
-
-.diff-added {
-  background-color: var(--vscode-diffEditor-insertedTextBackground, rgba(34, 197, 94, 0.15));
-}
-
-.diff-removed {
-  background-color: var(--vscode-diffEditor-removedTextBackground, rgba(239, 68, 68, 0.15));
-}
-
-.diff-gap-row {
-  background-color: var(--vscode-editorGroup-border, rgba(128, 128, 128, 0.1));
-}
-
-.diff-content-cell {
-  word-break: break-all;
-}
-
-.diff-content-cell :deep(span) {
+.diff-code :deep(span) {
   background: transparent !important;
 }
 </style>

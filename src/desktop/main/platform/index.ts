@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron';
 import type { Platform } from '../../../platform/platform';
 import type { LogSinkFactory } from '../../../platform/log-sink';
 import type { NotificationService } from '../../../platform/notification-service';
+import type { PanelHost, PanelOptions, WindowService } from '../../../platform/window-service';
 import type { WebviewPrompts } from '../../../core/chat-panel/webview-prompts';
 import { readContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { DAMOCLES_HOME_DIR } from '../../../core/paths';
@@ -22,7 +23,7 @@ import { createDesktopHostLifecycle } from './host-lifecycle';
 import type { DesktopKeyValueState } from './key-value-state';
 import type { DesktopLocalizationService } from './localization-service';
 import { createDesktopSecretsStore } from './secrets-store';
-import { DesktopSettingsStore } from './settings-store';
+import { DesktopSettingsStore, type ChatFolders } from './settings-store';
 import { createDesktopShellService } from './shell-service';
 import { createDesktopTrustService } from './trust-service';
 import { createDesktopWindowService } from './window-service';
@@ -39,10 +40,15 @@ export interface DesktopPlatformDeps {
   readonly trust: TrustStore;
   readonly window: () => BrowserWindow | undefined;
   readonly views: () => PanelViews;
+  // a chat core opens (Open Chat, a fork): created in the selected project and selected
+  readonly openChat: (options: PanelOptions) => PanelHost;
+  // shows the settings modal in the overlay, attached to the selected chat
+  readonly openAppSettings: WindowService['openAppSettings'];
   // undefined while the core services are being (re)built
   readonly prompts: () => WebviewPrompts | undefined;
-  // posts to a chat tab, opening one on the default project when none is open
+  // posts to a chat, opening one in the selected project when none is loaded
   readonly chatTabs: ChatTabMessenger;
+  readonly chatFolders: ChatFolders;
   readonly reload: () => Promise<void>;
   // lines logged before the core log sink is installed
   readonly log: (line: string) => void;
@@ -78,6 +84,7 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
         folder: () => defaultProjectPath(workspaceFolders, state.workspace),
         onDidChange: (cb) => state.onDidChange('workspace', DEFAULT_WORKSPACE_FOLDER_STATE_KEY, cb),
       },
+      chatFolders: deps.chatFolders,
       notifications,
       localization: deps.localization,
       log: deps.log,
@@ -94,8 +101,8 @@ export function createDesktopPlatform(deps: DesktopPlatformDeps): DesktopPlatfor
     clipboard: createDesktopClipboardService(),
     shell,
     dialogs: createDesktopDialogService(deps.window, deps.prompts),
-    editor: createDesktopEditorService(shell, deps.chatTabs),
-    window: createDesktopWindowService(deps.views),
+    editor: createDesktopEditorService(deps.chatTabs, deps.openAppSettings),
+    window: createDesktopWindowService(deps.views, deps.openChat, deps.openAppSettings),
     lifecycle: createDesktopHostLifecycle(deps.reload),
     logSinks: deps.logSinks,
   };

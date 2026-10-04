@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, type Component } from "vue";
+import { toast } from "vue-sonner";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
-import { Button } from "@/components/ui/button";
-import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader } from "@/components/icons";
+import { ArrowUp, CheckCheck, ClipboardList, Code, Eye, LoaderCircle, LockOpen, Mic, Paperclip, Pencil } from "lucide-vue-next";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
@@ -13,6 +13,7 @@ import { useImageAttachments, type ImageAttachment } from "@/composables/useImag
 import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
 import { useVoiceInput } from "@/composables/useVoiceInput";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
+import { DOCK_PROMPT_SELECTOR } from "@/composables/useDockPrompt";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
@@ -23,12 +24,12 @@ import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
 import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
+import ModelEffortPopover from "./composer/ModelEffortPopover.vue";
 
 const { t } = useI18n();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
 const streamingStore = useStreamingStore();
-const MAX_TEXTAREA_HEIGHT = 200;
 
 const props = defineProps<{
   isProcessing: boolean;
@@ -80,6 +81,7 @@ const {
 const {
   attachments: imageAttachments,
   hasAttachments: hasImageAttachments,
+  addFromFile: addImageFromFile,
   addFromClipboard: addImageFromClipboard,
   addFromBlock: addImageFromBlock,
   remove: removeImage,
@@ -147,7 +149,6 @@ function appendTranscription(text: string) {
   const current = inputText.value;
   inputText.value = current ? current + " " + text : text;
   nextTick(() => {
-    adjustTextareaHeight();
     textareaRef.value?.focus();
   });
 }
@@ -185,36 +186,23 @@ const voiceMicDisabled = computed(() => {
 
 const micButtonClass = computed(() => {
   if (isWakeMode.value) {
-    if (jarvisState.value === "error") return "text-destructive";
-    if (jarvisState.value === "off") return "text-muted-foreground opacity-50";
-    if (jarvisMuted.value || jarvisState.value === "muted") return "text-muted-foreground opacity-60";
-    if (jarvisState.value === "recording") {
-      return "text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse";
-    }
-    if (jarvisState.value === "cpu-fallback") return "text-amber-500 hover:text-amber-400";
-    if (jarvisState.value === "loading") return "text-muted-foreground";
-    return "text-emerald-500 hover:text-emerald-400";
+    if (jarvisState.value === "error") return "text-(--d-danger)";
+    if (jarvisState.value === "off") return "opacity-50";
+    if (jarvisMuted.value || jarvisState.value === "muted") return "opacity-60";
+    if (jarvisState.value === "recording") return "d-ring text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)]";
+    if (jarvisState.value === "cpu-fallback") return "text-(--d-warning)";
+    if (jarvisState.value === "loading") return "";
+    return "text-(--d-success)";
   }
-  return {
-    "text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse": voiceStatus.value === "recording",
-    "text-muted-foreground hover:text-foreground": voiceStatus.value === "idle",
-    "text-orange-500": voiceStatus.value === "error",
-  };
+  if (voiceStatus.value === "recording") return "d-ring text-(--d-danger) bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)]";
+  if (voiceStatus.value === "error") return "text-(--d-warning)";
+  return "";
 });
 
 const micShowsSpinner = computed(() => {
   if (isWakeMode.value) return jarvisState.value === "loading";
   return voiceStatus.value === "transcribing" || voiceStatus.value === "starting";
 });
-
-function adjustTextareaHeight() {
-  const textarea = textareaRef.value;
-  if (!textarea) return;
-
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
-  textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
-}
 
 function isCursorAtStart(textarea: HTMLTextAreaElement): boolean {
   return textarea.selectionStart === 0;
@@ -246,10 +234,6 @@ watch(currentEntry, (entry) => {
   }
 });
 
-watch(inputText, () => {
-  nextTick(adjustTextareaHeight);
-});
-
 function focus() {
   textareaRef.value?.focus();
 }
@@ -257,8 +241,20 @@ function focus() {
 function setInput(value: string) {
   inputText.value = value;
   nextTick(() => {
-    adjustTextareaHeight();
     textareaRef.value?.focus();
+  });
+}
+
+/** Puts `prefix` before the draft with the caret still on the same text; a draft that already starts with it is left alone. */
+function prependInput(prefix: string) {
+  const textarea = textareaRef.value;
+  const shift = inputText.value.startsWith(prefix) ? 0 : prefix.length;
+  const start = (textarea?.selectionStart ?? 0) + shift;
+  const end = (textarea?.selectionEnd ?? 0) + shift;
+  if (shift) inputText.value = prefix + inputText.value;
+  nextTick(() => {
+    textarea?.focus();
+    textarea?.setSelectionRange(start, end);
   });
 }
 
@@ -284,28 +280,37 @@ function restoreQueued(blocks: readonly UserContentBlock[]): void {
   if (text) inputText.value = inputText.value ? `${inputText.value}\n\n${text}` : text;
   for (const block of blocks) if (block.type === "image") void addImageFromBlock(block);
   nextTick(() => {
-    adjustTextareaHeight();
     textareaRef.value?.focus();
   });
 }
 
-defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued });
+defineExpose({ focus, setInput, prependInput, submit: handleSend, sendPrompt, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError, settleSteer, restoreQueued });
+
+// One composer per page, so fixed ids tie the textarea to whichever autocomplete list is open.
+const MENTION_LIST_ID = "composer-mentions";
+const COMMAND_LIST_ID = "composer-commands";
+const autocompleteListId = computed(() => (slashCommandOpen.value ? COMMAND_LIST_ID : atMentionOpen.value ? MENTION_LIST_ID : undefined));
+const activeOptionId = computed(() => {
+  if (slashCommandOpen.value) {
+    const count = slashCommandMode.value === "agent" ? slashCommandAgents.value.length : slashCommandCommands.value.length;
+    return slashCommandSelectedIndex.value < count ? `${COMMAND_LIST_ID}-${slashCommandSelectedIndex.value}` : undefined;
+  }
+  if (atMentionOpen.value) return atMentionSelectedIndex.value < atMentionItems.value.length ? `${MENTION_LIST_ID}-${atMentionSelectedIndex.value}` : undefined;
+  return undefined;
+});
 
 const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value || hasElementAttachments.value);
 
-const modeConfig = computed<Record<PermissionMode, { icon: Component; label: string; shortLabel: string }>>(() => ({
-  default: { icon: IconPencil, label: t("chatInput.permissionModes.default.label"), shortLabel: t("chatInput.permissionModes.default.short") },
-  acceptEdits: {
-    icon: IconCheck,
-    label: t("chatInput.permissionModes.acceptEdits.label"),
-    shortLabel: t("chatInput.permissionModes.acceptEdits.short"),
-  },
-  plan: { icon: IconClipboard, label: t("chatInput.permissionModes.plan.label"), shortLabel: t("chatInput.permissionModes.plan.short") },
+const modeConfig = computed<Record<PermissionMode, { icon: Component; label: string; color: string }>>(() => ({
+  default: { icon: Pencil, label: t("chatInput.permissionModes.default.label"), color: "text-(--d-muted)" },
+  acceptEdits: { icon: CheckCheck, label: t("chatInput.permissionModes.acceptEdits.label"), color: "text-(--d-success) hover:text-(--d-success-text)" },
+  plan: { icon: ClipboardList, label: t("chatInput.permissionModes.plan.label"), color: "text-(--d-info) hover:text-(--d-info-text)" },
 }));
 
 const modeOrder = computed<PermissionMode[]>(() => ["default", "acceptEdits", "plan"]);
 
 const currentModeConfig = computed(() => modeConfig.value[props.permissionMode]);
+const modeIndex = computed(() => Math.max(0, modeOrder.value.indexOf(props.permissionMode)));
 
 function cycleMode() {
   const order = modeOrder.value;
@@ -343,6 +348,19 @@ function toggleIdeContext() {
   uiStore.toggleIdeContext();
 }
 
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+async function attachChosenImages(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  for (const file of files) {
+    const result = await addImageFromFile(file);
+    if (result.error) toast.error(result.error);
+  }
+  textareaRef.value?.focus();
+}
+
 function handleSend() {
   // A prompt sent mid-switch would land in a fresh session in another folder; the draft stays in the box.
   if (!canSend.value || settingsStore.workspaceFolderSwitchPending) return;
@@ -365,16 +383,25 @@ function handleSend() {
 
   if (steer.kind === "steer") {
     emit("steer", { agentId: steer.agentId, message: steer.message, images: steer.images }, holdSteerDraft());
-  } else if (props.isProcessing) {
-    emit("queue", content);
   } else {
-    emit("send", content, ideContextEnabled.value);
+    dispatch(content);
   }
 
   inputText.value = "";
   clearImages();
   clearElements();
   resetHistory();
+}
+
+function dispatch(content: string | UserContentBlock[]) {
+  if (props.isProcessing) emit("queue", content);
+  else emit("send", content, ideContextEnabled.value);
+}
+
+/** Sends `prompt` on its own; the draft and its attachments stay staged in the box. */
+function sendPrompt(prompt: string) {
+  if (settingsStore.workspaceFolderSwitchPending) return;
+  dispatch(prompt);
 }
 
 function handleButtonClick() {
@@ -488,7 +515,8 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape" || !props.isProcessing || props.settingsOpen) {
     return;
   }
-  if ((event.target as HTMLElement)?.closest('[role="dialog"]')) {
+  // Escape inside a dialog or a dock prompt card belongs to that card, never to the run.
+  if (event.target instanceof Element && event.target.closest(`[role="dialog"], [role="alertdialog"], ${DOCK_PROMPT_SELECTOR}`)) {
     return;
   }
   event.preventDefault();
@@ -499,7 +527,6 @@ let unsubBus: (() => void) | null = null;
 
 onMounted(() => {
   window.addEventListener("keydown", handleGlobalKeydown);
-  adjustTextareaHeight();
   unsubBus = elementAttachmentBus.on(addElement);
 });
 
@@ -510,12 +537,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="shrink-0 bg-card">
-    <!-- @ Mention Autocomplete Popup -->
+  <div class="@container relative shrink-0">
     <AtMentionPopup
       :is-open="atMentionOpen"
       :items="atMentionItems"
       v-model:selected-index="atMentionSelectedIndex"
+      :list-id="MENTION_LIST_ID"
       :anchor-element="cardRef"
       :query="atMentionQuery"
       :is-loading="atMentionLoading"
@@ -523,11 +550,11 @@ onUnmounted(() => {
       @close="closeAtMention"
     />
 
-    <!-- Slash Command Autocomplete Popup -->
     <SlashCommandPopup
       :is-open="slashCommandOpen"
       :commands="slashCommandCommands"
       v-model:selected-index="slashCommandSelectedIndex"
+      :list-id="COMMAND_LIST_ID"
       :anchor-element="cardRef"
       :query="slashCommandQuery"
       :is-loading="slashCommandMode === 'agent' ? slashCommandAgentsLoading : slashCommandLoading"
@@ -537,112 +564,208 @@ onUnmounted(() => {
       @close="closeSlashCommand"
     />
 
-    <!-- Input area -->
-    <div class="p-3">
-      <div ref="cardRef" class="bg-input rounded-lg border border-border overflow-hidden transition-colors focus-within:border-primary">
-        <!-- Element attachments strip -->
-        <ElementAttachmentStrip :attachments="elementAttachments" @remove="removeElement" />
+    <div
+      ref="cardRef"
+      class="group/composer relative rounded-2xl border border-(--d-border2) bg-(--d-input) shadow-[0_1px_2px_rgb(0_0_0/.15)] transition-colors duration-200 focus-within:border-(--d-accent)"
+      data-testid="composer"
+    >
+      <span
+        class="pointer-events-none absolute -inset-1.25 rounded-[1.25rem] border-4 border-(--d-accent-soft) opacity-0 transition-opacity duration-200 group-focus-within/composer:opacity-100"
+        aria-hidden="true"
+      />
+      <ElementAttachmentStrip
+        :attachments="elementAttachments"
+        @remove="removeElement"
+      />
+      <ImageThumbnailStrip
+        :attachments="imageAttachments"
+        @remove="removeImage"
+      />
 
-        <!-- Image attachments strip -->
-        <ImageThumbnailStrip :attachments="imageAttachments" @remove="removeImage" />
+      <!-- field-sizing ignores rows, so min-h is the two rows plus pt-3 and pb-1.5, rounded to whole px at the default font. -->
+      <textarea
+        ref="textareaRef"
+        v-model="inputText"
+        :placeholder="isProcessing ? t('chatInput.placeholderQueued') : t('chatInput.placeholder')"
+        :aria-label="t('composer.inputLabel')"
+        aria-autocomplete="list"
+        :aria-controls="autocompleteListId"
+        :aria-activedescendant="activeOptionId"
+        rows="2"
+        class="relative block max-h-50 min-h-[round(calc(2lh+1.125rem),0.0625rem)] w-full resize-none overflow-x-hidden overflow-y-auto bg-transparent px-3.5 pb-1.5 pt-3 text-13.5 leading-[1.55] text-(--d-text) outline-none field-sizing-content placeholder:text-(--d-faint) focus-visible:outline-none"
+        @keydown="handleKeydown"
+        @input="handleInput"
+        @paste="handlePaste"
+      />
 
-        <textarea
-          ref="textareaRef"
-          v-model="inputText"
-          :placeholder="isProcessing ? t('chatInput.placeholderQueued') : t('chatInput.placeholder')"
-          rows="1"
-          class="w-full p-3 bg-transparent text-foreground resize-none overflow-hidden focus:outline-none placeholder:text-muted-foreground"
-          :style="{ maxHeight: `${MAX_TEXTAREA_HEIGHT}px` }"
-          @keydown="handleKeydown"
-          @input="handleInput"
-          @paste="handlePaste"
-        />
-
-        <!-- Bottom bar inside input -->
-        <div class="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-foreground/5">
-          <div class="flex items-center gap-3">
-            <!-- Mode toggle button -->
-            <Button
-              variant="ghost"
-              size="sm"
-              class="h-auto px-2 py-1 text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
-              :disabled="isProcessing"
-              @click="cycleMode"
-              :title="`${currentModeConfig.label} (Shift+Tab to cycle)`"
-            >
-              <component :is="currentModeConfig.icon" :size="12" />
-              <span>{{ currentModeConfig.label }}</span>
-            </Button>
-
-            <!-- YOLO mode toggle -->
-            <Button
-              variant="ghost"
-              size="sm"
-              class="h-auto px-2 py-1 text-xs flex items-center gap-1.5"
-              :class="
-                dangerouslySkipPermissions
-                  ? 'text-destructive hover:text-destructive/80 bg-destructive/10'
-                  : 'text-muted-foreground hover:text-foreground'
-              "
-              :disabled="isProcessing"
-              @click="toggleDangerouslySkipPermissions"
-              :title="t('chatInput.yolo.tooltip')"
-            >
-              <IconLockOpen :size="12" />
-              <span>{{ dangerouslySkipPermissions ? t("chatInput.yolo.active") : t("chatInput.yolo.inactive") }}</span>
-            </Button>
-
-            <!-- IDE Context toggle -->
-            <button
-              class="flex items-center gap-1.5 text-xs transition-colors cursor-pointer"
-              :class="ideContextEnabled ? 'text-foreground' : 'text-muted-foreground/50'"
-              @click="toggleIdeContext"
-              :title="ideContextTooltip"
+      <!-- The row wraps, so it never overflows: labels fold through the container breakpoints, then whole controls move down. -->
+      <div class="relative flex flex-wrap items-center gap-1 px-2 pb-2 pt-1.5">
+        <button
+          type="button"
+          class="d-press flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-(--d-border2) py-0 ps-0.75 pe-2.5 text-xs font-medium transition-colors duration-200 hover:bg-(--d-hover) @max-[28.75rem]:pe-0.75"
+          :class="currentModeConfig.color"
+          :disabled="isProcessing"
+          :title="t('composer.modeCycle', { mode: currentModeConfig.label })"
+          :aria-label="t('composer.modeCycle', { mode: currentModeConfig.label })"
+          data-testid="composer-mode"
+          @click="cycleMode"
+        >
+          <span
+            class="relative flex"
+            aria-hidden="true"
+          >
+            <span
+              class="absolute inset-y-0 inset-s-0 w-5 rounded-full bg-current/15 transition-transform duration-300 ease-(--ease-spring)"
+              :style="{ transform: `translateX(${modeIndex * 100}%)` }"
+            />
+            <span
+              v-for="mode in modeOrder"
+              :key="mode"
+              class="relative flex size-5 items-center justify-center transition-opacity duration-200"
+              :class="mode === permissionMode ? 'opacity-100' : 'opacity-40'"
             >
               <component
-                :is="uiStore.ideContext?.type === 'selection' ? IconEye : IconCode"
-                :size="12"
-                :class="ideContextEnabled ? '' : 'opacity-50'"
+                :is="modeConfig[mode].icon"
+                class="size-3"
               />
-              <span :class="!ideContextEnabled && uiStore.ideContext ? 'line-through' : ''">
-                {{ ideContextLabel }}
-              </span>
-            </button>
-          </div>
+            </span>
+          </span>
+          <Transition
+            name="t-fade"
+            mode="out-in"
+          >
+            <span
+              :key="permissionMode"
+              class="whitespace-nowrap @max-[28.75rem]:hidden"
+            >{{ currentModeConfig.label }}</span>
+          </Transition>
+        </button>
 
-          <div class="flex items-center gap-3">
-            <!-- Queue indicator when processing and has input -->
-            <span v-if="isProcessing && canSend" class="text-xs text-foreground">
+        <button
+          type="button"
+          class="d-press flex h-7 shrink-0 items-center gap-1.25 rounded-full px-2.25 text-xs font-medium transition-colors duration-200"
+          :class="dangerouslySkipPermissions
+            ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
+            : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
+          :disabled="isProcessing"
+          :aria-pressed="dangerouslySkipPermissions"
+          :title="t('chatInput.yolo.tooltip')"
+          data-testid="composer-yolo"
+          @click="toggleDangerouslySkipPermissions"
+        >
+          <LockOpen
+            class="size-3"
+            aria-hidden="true"
+          />
+          <span class="@max-[25rem]:sr-only">{{ dangerouslySkipPermissions ? t("chatInput.yolo.active") : t("chatInput.yolo.inactive") }}</span>
+        </button>
+
+        <button
+          v-if="settingsStore.hostCapabilities.ideContext"
+          type="button"
+          class="flex h-7 min-w-0 items-center gap-1.25 rounded-full px-2.25 text-xs transition-colors hover:bg-(--d-hover)"
+          :class="ideContextEnabled ? 'text-(--d-text)' : 'text-(--d-faint) hover:text-(--d-faint-text)'"
+          :aria-pressed="ideContextEnabled"
+          :title="ideContextTooltip"
+          data-testid="composer-ide"
+          @click="toggleIdeContext"
+        >
+          <component
+            :is="uiStore.ideContext?.type === 'selection' ? Eye : Code"
+            class="size-3 shrink-0"
+            aria-hidden="true"
+          />
+          <span
+            class="truncate font-mono text-11.5 @max-[25rem]:hidden"
+            :class="{ 'line-through': !ideContextEnabled && uiStore.ideContext }"
+          >{{ ideContextLabel }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="d-tool-btn size-7 min-w-7 rounded-full px-0"
+          :title="t('composer.attachImage')"
+          :aria-label="t('composer.attachImage')"
+          data-testid="composer-attach"
+          @click="fileInputRef?.click()"
+        >
+          <Paperclip
+            class="size-3.5"
+            aria-hidden="true"
+          />
+        </button>
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          class="hidden"
+          tabindex="-1"
+          aria-hidden="true"
+          @change="attachChosenImages"
+        >
+
+        <div class="ms-auto flex min-w-0 flex-wrap items-center justify-end gap-1">
+          <Transition name="t-fade">
+            <span
+              v-if="isProcessing && canSend"
+              class="me-1 min-w-0 truncate text-11 text-(--d-warning)"
+              data-testid="composer-will-queue"
+            >
               {{ t("chatInput.willQueue") }}
             </span>
+          </Transition>
 
-            <!-- Voice input button -->
-            <Button
-              v-if="settingsStore.voiceControlsAvailable && (!isProcessing || isWakeMode)"
-              variant="ghost"
-              size="icon"
-              class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[1.125rem]"
-              :class="micButtonClass"
-              :disabled="voiceMicDisabled"
-              :title="voiceTooltip"
-              @click="handleVoiceToggle"
-            >
-              <IconLoader v-if="micShowsSpinner" :size="18" class="animate-spin" />
-              <IconMicrophone v-else :size="18" />
-            </Button>
+          <ModelEffortPopover />
 
-            <!-- Send/Stop button -->
-            <Button
-              :disabled="canSend ? settingsStore.workspaceFolderSwitchPending : !isProcessing"
-              size="icon"
-              class="w-8 h-8 rounded-lg"
-              :class="isProcessing && !canSend ? 'bg-destructive hover:bg-destructive/80 border-destructive' : ''"
-              @click="handleButtonClick"
-            >
-              <span v-if="isProcessing && !canSend" class="w-3.5 h-3.5 bg-destructive-foreground rounded" />
-              <IconPlay v-else :size="14" />
-            </Button>
-          </div>
+          <button
+            v-if="settingsStore.voiceControlsAvailable && (!isProcessing || isWakeMode)"
+            type="button"
+            class="d-tool-btn size-7.5 min-w-7.5 rounded-9 px-0"
+            :class="micButtonClass"
+            :disabled="voiceMicDisabled"
+            :title="voiceTooltip"
+            :aria-label="voiceTooltip"
+            data-testid="composer-voice"
+            @click="handleVoiceToggle"
+          >
+            <LoaderCircle
+              v-if="micShowsSpinner"
+              class="size-3.75 animate-[d-spin_.9s_linear_infinite]"
+              aria-hidden="true"
+            />
+            <Mic
+              v-else
+              class="size-3.75"
+              aria-hidden="true"
+            />
+          </button>
+
+          <button
+            type="button"
+            class="d-press flex size-8 shrink-0 items-center justify-center rounded-10 transition-colors duration-200"
+            :class="isProcessing && !canSend
+              ? 'bg-(--d-danger) text-(--d-on-danger)'
+              : canSend
+                ? 'bg-(--d-accent) text-(--d-on-accent) shadow-[0_4px_14px_var(--d-accent-soft)]'
+                : 'bg-(--d-hover) text-(--d-faint)'"
+            :disabled="canSend ? settingsStore.workspaceFolderSwitchPending : !isProcessing"
+            :title="isProcessing && !canSend ? t('composer.stop') : t('composer.send')"
+            :aria-label="isProcessing && !canSend ? t('composer.stop') : t('composer.send')"
+            data-testid="composer-send"
+            @click="handleButtonClick"
+          >
+            <span
+              v-if="isProcessing && !canSend"
+              class="size-2.75 rounded-[0.1875rem] bg-current"
+              aria-hidden="true"
+            />
+            <ArrowUp
+              v-else
+              class="size-4"
+              aria-hidden="true"
+            />
+          </button>
         </div>
       </div>
     </div>

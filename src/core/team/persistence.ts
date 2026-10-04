@@ -22,6 +22,7 @@ import type {
   TeamLogSpawn,
   TeamMessage,
   TeamPersistenceWriter,
+  TeamResumableStop,
   TeamStatus,
 } from './types';
 import { isImageBlock } from '../../shared/types/content';
@@ -127,16 +128,20 @@ export class TeamPersistence implements TeamPersistenceWriter {
     return this.readCheckpoint(log.teamId, newest);
   }
 
-  /** Whether `resume_team` would find a checkpoint to continue from. A team with no event log has none. */
-  async isResumable(teamId: string): Promise<boolean> {
+  /**
+   * Why the team stopped, when `resume_team` would find a checkpoint to continue from, else null; a team
+   * with no event log has none. 'unrecorded' for a checkpoint written before the cause was recorded.
+   */
+  async resumableStop(teamId: string): Promise<TeamResumableStop | 'unrecorded' | null> {
     let teamLog: TeamEventLog;
     try {
       teamLog = await this.readEventLog(teamId);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw err;
     }
-    return (await this.resumableCheckpoint(teamLog)) !== null;
+    const checkpoint = await this.resumableCheckpoint(teamLog);
+    return checkpoint === null ? null : checkpoint.stoppedBy ?? 'unrecorded';
   }
 
   /** The event log as a resume needs it. Throws when the log is missing or a line is malformed. */
@@ -371,6 +376,7 @@ const AGENT_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>([
 ]);
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set<TeamAgent['status']>(['completed', 'failed', 'cancelled']);
+const RESUMABLE_STOPS: ReadonlySet<TeamResumableStop> = new Set<TeamResumableStop>(['user', 'parent', 'shutdown']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -422,6 +428,7 @@ function isCoverage(v: unknown): boolean {
 
 export function isTeamCheckpoint(value: unknown): value is TeamCheckpoint {
   if (!isRecord(value) || value['version'] !== 1 || !isString(value['teamId']) || !isCount(value['cancelledAt'])) return false;
+  if (value['stoppedBy'] !== undefined && !RESUMABLE_STOPS.has(value['stoppedBy'] as TeamResumableStop)) return false;
   if (!Array.isArray(value['members']) || !value['members'].every(isCheckpointMember)) return false;
   if (!isPairArray(value['readerCursors'], (s) => isPairArray(s, isCount))) return false;
   const review = value['review'];

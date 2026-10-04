@@ -76,14 +76,14 @@ describe('StatsKpiGrid', () => {
 
   it('colors spend neutral whichever way it moves and cache improvements as success', () => {
     const up = mountGrid(totals({ cost: 20, netCacheSavings: 5 }), totals({ cost: 10, netCacheSavings: 2, cacheRead: 1_000 }));
-    expect(card(up, 'cost').delta?.classes()).toContain('text-muted-foreground');
-    expect(card(up, 'totalTokens').delta?.classes()).toContain('text-muted-foreground');
-    expect(card(up, 'cacheHitRate').delta?.classes()).toContain('text-success');
-    expect(card(up, 'netCacheSavings').delta?.classes()).toContain('text-success');
+    expect(card(up, 'cost').delta?.classes()).toContain('text-(--d-faint)');
+    expect(card(up, 'totalTokens').delta?.classes()).toContain('text-(--d-faint)');
+    expect(card(up, 'cacheHitRate').delta?.classes()).toContain('text-(--d-success)');
+    expect(card(up, 'netCacheSavings').delta?.classes()).toContain('text-(--d-success)');
 
     const down = mountGrid(totals({ netCacheSavings: 1, cacheRead: 1_000 }), totals({ netCacheSavings: 2 }));
-    expect(card(down, 'cacheHitRate').delta?.classes()).toContain('text-muted-foreground');
-    expect(card(down, 'netCacheSavings').delta?.classes()).toContain('text-muted-foreground');
+    expect(card(down, 'cacheHitRate').delta?.classes()).toContain('text-(--d-faint)');
+    expect(card(down, 'netCacheSavings').delta?.classes()).toContain('text-(--d-faint)');
   });
 
   it('shows "new" where the previous value is zero', () => {

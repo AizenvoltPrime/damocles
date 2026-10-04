@@ -1,13 +1,23 @@
-import type { ElectronApplication, Page } from '@playwright/test';
-import type { ShellState, ShellToast } from '../../../src/desktop/preload/shell-channels';
-import { postMacKeyPress } from './mac-key-event';
+import { expect, type ElectronApplication, type Page } from '@playwright/test';
+import type { OverlayToast } from '../../../src/desktop/preload/overlay-channels';
+import type { ShellState } from '../../../src/desktop/preload/shell-channels';
+import { macKeySequence, postMacKeyPress } from './mac-key-event';
 
 export const SHELL_URL = 'app://damocles/shell/index.html';
+export const OVERLAY_URL = 'app://damocles/overlay/index.html';
 
-/** The window's own page, which hosts the project list, tab strip and toasts. */
+/** The window's own page, which draws the title bar and sidebar. */
 export async function shellPage(app: ElectronApplication): Promise<Page> {
   const isShell = (p: Page): boolean => p.url() === SHELL_URL;
   return app.windows().find(isShell) ?? app.waitForEvent('window', { predicate: isShell });
+}
+
+/** The overlay view's page, which draws menus, dialogs and toasts above every other view. */
+export async function overlayPage(app: ElectronApplication): Promise<Page> {
+  const isOverlay = (p: Page): boolean => p.url() === OVERLAY_URL;
+  const page = app.windows().find(isOverlay) ?? await app.waitForEvent('window', { predicate: isOverlay });
+  await page.waitForFunction(() => window.damoclesOverlay !== undefined);
+  return page;
 }
 
 /** The shell state main publishes, read through the shell's own preload API. */
@@ -17,34 +27,40 @@ export async function shellState(app: ElectronApplication): Promise<ShellState> 
   return shell.evaluate(() => window.damoclesShell!.getState());
 }
 
-/** Starts recording every toast main sends the shell, through a second listener on the shell API. */
+/** The selected project's key, once main knows a project. */
+export async function selectedProjectKey(app: ElectronApplication): Promise<string> {
+  let key: string | undefined;
+  await expect.poll(async () => (key = (await shellState(app)).selected.projectKey)).toBeDefined();
+  return key!;
+}
+
+/** Starts recording every toast main sends the overlay, through a second listener on the overlay API. */
 export async function recordToasts(app: ElectronApplication): Promise<void> {
-  const shell = await shellPage(app);
-  await shell.waitForFunction(() => window.damoclesShell !== undefined);
-  await shell.evaluate(() => {
-    const w = window as unknown as { __e2eToasts?: ShellToast[]; __e2eDismissed?: string[] };
+  const overlay = await overlayPage(app);
+  await overlay.evaluate(() => {
+    const w = window as unknown as { __e2eToasts?: OverlayToast[]; __e2eDismissed?: string[] };
     if (w.__e2eToasts) return;
     w.__e2eToasts = [];
     w.__e2eDismissed = [];
-    window.damoclesShell!.onToast((toast) => w.__e2eToasts!.push(toast));
-    window.damoclesShell!.onToastDismiss((id) => w.__e2eDismissed!.push(id));
+    window.damoclesOverlay!.onToast((toast) => w.__e2eToasts!.push(toast));
+    window.damoclesOverlay!.onToastDismiss((id) => w.__e2eDismissed!.push(id));
   });
 }
 
-export async function recordedToasts(app: ElectronApplication): Promise<ShellToast[]> {
-  const shell = await shellPage(app);
-  return shell.evaluate(() => (window as unknown as { __e2eToasts?: ShellToast[] }).__e2eToasts ?? []);
+export async function recordedToasts(app: ElectronApplication): Promise<OverlayToast[]> {
+  const overlay = await overlayPage(app);
+  return overlay.evaluate(() => (window as unknown as { __e2eToasts?: OverlayToast[] }).__e2eToasts ?? []);
 }
 
 export async function dismissedToasts(app: ElectronApplication): Promise<string[]> {
-  const shell = await shellPage(app);
-  return shell.evaluate(() => (window as unknown as { __e2eDismissed?: string[] }).__e2eDismissed ?? []);
+  const overlay = await overlayPage(app);
+  return overlay.evaluate(() => (window as unknown as { __e2eDismissed?: string[] }).__e2eDismissed ?? []);
 }
 
-/** Answers a toast as the shell's action button does. */
+/** Answers a toast as the overlay's action button does. */
 export async function answerToast(app: ElectronApplication, id: string, action?: string): Promise<void> {
-  const shell = await shellPage(app);
-  await shell.evaluate(([toastId, choice]) => window.damoclesShell!.resolveToast(toastId!, choice), [id, action] as const);
+  const overlay = await overlayPage(app);
+  await overlay.evaluate(([toastId, choice]) => window.damoclesOverlay!.resolveToast(toastId!, choice), [id, action] as const);
 }
 
 /**
@@ -53,6 +69,8 @@ export async function answerToast(app: ElectronApplication, id: string, action?:
  * application menu's accelerators when the page leaves them unhandled.
  */
 export async function pressKeys(app: ElectronApplication, urlPart: string, keyCode: string, modifiers: Array<'control' | 'shift' | 'alt' | 'meta'> = []): Promise<void> {
+  // Every platform checks the key against the macOS table, so a key only the macOS runner would reject fails here first.
+  macKeySequence(keyCode, modifiers);
   if (process.platform === 'darwin') return postMacKeyPress(app, urlPart, keyCode, modifiers);
   await app.evaluate(({ webContents }, [part, key, mods]) => {
     const target = webContents.getAllWebContents().find((c) => c.getURL().includes(part));

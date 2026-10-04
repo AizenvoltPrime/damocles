@@ -239,6 +239,7 @@ const H = vi.hoisted(() => {
     createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn() })),
     createGrepToolDefinition: vi.fn(() => ({ name: 'grep', label: 'grep', description: 'pi grep', parameters: {}, execute: vi.fn() })),
     createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
+    createWriteToolDefinition: vi.fn(() => ({ name: 'write', label: 'write', description: 'pi write', parameters: {}, execute: vi.fn() })),
   };
 
   return {
@@ -371,7 +372,7 @@ import { getPiCodingAgent } from '../pi-loader';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
 import { DEFAULT_AGENTS } from '../subagents/default-agents';
 import { computePlanFilePath } from '../../paths';
-import { PLAN_MODE_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
+import { PLAN_MODE_EXCLUDED_TOOLS, PI_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
 import { buildAccountInfo } from '../account-billing';
 import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
@@ -381,7 +382,7 @@ import { installTurnDecider, TEAM_TERMINAL_HOOK } from '../finish-turn';
 import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES, teamAgentPiToolNamesForRole } from '../tools/team-tools';
 import { deferredToolNames } from '../tools/deferred-tools';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
-import { CUSTOM_TOOL_NAMES, buildCustomTools } from '../tools';
+import { CUSTOM_TOOL_NAMES, OVERRIDE_TOOL_NAMES, buildCustomTools } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
 import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mode-hold';
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE } from '../../../shared/tool-names';
@@ -435,8 +436,9 @@ function fireSettingChange(key: string): void {
 function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<SessionOptions>): SessionOptions {
   return {
     cwd: '/cwd',
+    settingsFolder: undefined,
     platform: testPlatform,
-    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, hasPendingPrompts: () => false } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, pendingPromptKinds: () => new Set() } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -1166,14 +1168,14 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
     s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
-    s.cancelToolCall('x');
+    s.cancelToolCall('x'); s.stopSubagent('t');
 
     // async methods
     await Promise.all([
       s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
       s.getMcpServerStatus(), s.reconnectMcpServerLive('m'),
       s.getMemoryInjection(0),
-      s.requestContextUsage(), s.cancelAutoCompact(), s.stopTask('t'), s.interrupt(),
+      s.requestContextUsage(), s.cancelAutoCompact(), s.interrupt(),
       s.rewindFiles('u'), s.sendBtw('b', 'q'),
       s.sendMessage('hello', undefined, 'corr-1', { content: 'hello' }),
     ]);
@@ -2040,6 +2042,19 @@ describe('PiSession MCP scope feed', () => {
 
     expect(user).toHaveBeenLastCalledWith(SCOPE_X.userUnion);
     expect(folder).toHaveBeenLastCalledWith(SCOPE_X.folder, SCOPE_X.userVisible);
+  });
+
+  // Both reconciles are stubbed, so no tools-changed event fires, as for servers already connected under an unchanged scope.
+  it('publishes the MCP status once the session binds to its folder, after applying its scope', async () => {
+    const { folder } = await spyManagers();
+    const session = new PiSession(makeOptions([], { mcpScope: SCOPE_X }));
+    const status = vi.fn();
+    session.setMcpStatusListener(status);
+
+    await session.initializeEarly();
+
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(folder.mock.invocationCallOrder[0]).toBeLessThan(status.mock.invocationCallOrder[0]!);
   });
 
   it.each(['reset', 'clear'] as const)('a replacement session after %s re-applies the latest scope, not the creation-time one', async (replace) => {
@@ -3114,13 +3129,33 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
   });
 });
 
+describe('PiSession team stop causes', () => {
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it('stops a running team as the user on ESC and as a reset on a clear', async () => {
+    const teamService = { dispose: vi.fn(), cancelActiveTeam: vi.fn(() => true), setRunListener: vi.fn(), running: false };
+    const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
+    await session.initializeEarly();
+
+    session.cancel();
+    expect(teamService.cancelActiveTeam).toHaveBeenLastCalledWith('user');
+    session.reset();
+    expect(teamService.cancelActiveTeam).toHaveBeenLastCalledWith('reset');
+
+    await session.whenReplaced();
+    await session.dispose();
+  });
+});
+
 describe('PiSession.steerTarget (/steer routing to team members)', () => {
   afterEach(async () => {
     await PiRuntime.disposeInstance();
   });
 
   function teamServiceStub(outcome: unknown) {
-    return { steerMember: vi.fn(() => outcome), listSteerTargets: vi.fn(() => []), dispose: vi.fn(), cancelActiveTeam: vi.fn() };
+    return { steerMember: vi.fn(() => outcome), listSteerTargets: vi.fn(() => []), dispose: vi.fn(), cancelActiveTeam: vi.fn(), setRunListener: vi.fn(), running: false };
   }
 
   it('routes an id no subagent owns to the team member, emits the team chip and persists it', async () => {
@@ -3562,7 +3597,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     // so neither transition can clobber a loaded tool — while plan mode keeps its own exclusions intact.
     const cfg = subsystemsOn();
     const opts = makeOptions([]);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -3821,7 +3856,7 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
 
   async function teamSession() {
     const opts = makeOptions([]);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     opts.compassService = { isEnabled: true } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
@@ -3906,7 +3941,7 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     }));
 
     const opts = makeOptions([]);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
     const engine = session.buildTeamEngine(); // built ONCE, before the toggle
@@ -4012,7 +4047,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     }));
 
     const opts = makeOptions(messages);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
 
@@ -4281,13 +4316,14 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     await session.dispose();
   });
 
-  it("a reviewer's gate runs read-only shell commands and blocks the rest with the read-only reason", async () => {
+  it("a reviewer's gate runs read-only shell commands and sends the rest to the approval flow", async () => {
     const { session, cfg } = await teamSessionWithMcp();
     const engine = session.buildTeamEngine();
     const reviewer = engine.buildAgentToolset({ ...(teamCtx('agent-r') as object), kind: 'reviewer' } as never);
     // The stub handler has no rule evaluation; a read-only verdict still consults the user's rules.
     const matchRule = vi.fn(async () => null);
-    Object.assign((session as unknown as { options: SessionOptions }).options.permissionHandler, { matchRule });
+    const canUseTool = vi.fn(async () => ({ behavior: 'allow' as const, updatedInput: {} }));
+    Object.assign((session as unknown as { options: SessionOptions }).options.permissionHandler, { matchRule, canUseTool });
     const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>> = {};
     engine.buildExtensionFactory('reviewer', 'agent-r', reviewer.mcp, reviewer.readOnly)({
       ...(nestedTeamPi().api as object),
@@ -4298,11 +4334,11 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       { signal: undefined, sessionManager: { getSessionId: () => 'nested' } },
     );
 
-    const blocked = await call('npm test');
-    expect(blocked?.block).toBe(true);
-    expect(blocked?.reason).toContain('You are a read-only agent');
+    expect((await call('npm test'))?.block).toBeFalsy();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
     expect((await call('git diff'))?.block).toBeFalsy();
     expect(matchRule).toHaveBeenCalledTimes(1);
+    expect(canUseTool).toHaveBeenCalledTimes(1);
 
     cfg.mockRestore();
     await session.dispose();
@@ -4388,6 +4424,31 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     await session.dispose();
   });
 
+  it("every pi built-in override reaches the main, subagent and team toolsets under pi's own name, never excluded", async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const main = H.fakePi.createAgentSessionFromServices.mock.calls.at(-1)![0] as unknown as { customTools: Array<{ name: string }>; excludeTools: string[] };
+    const subagentEngine = (session as unknown as {
+      buildSubagentEngine: (pi: unknown) => {
+        buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { customTools: { name: string }[] };
+      };
+    }).buildSubagentEngine(getPiCodingAgent() as never);
+    const toolsets = {
+      main: main.customTools.map((t) => t.name),
+      subagent: subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'general-purpose', mcpDisallowed: new Set<string>() }).customTools.map((t) => t.name),
+      team: session.buildTeamEngine().buildAgentToolset(teamCtx('agent-1')).customTools.map((t) => t.name),
+    };
+
+    for (const [label, names] of Object.entries(toolsets)) {
+      for (const name of OVERRIDE_TOOL_NAMES) expect(names, `${label} ${name}`).toContain(name);
+    }
+    expect(OVERRIDE_TOOL_NAMES).toContain('write');
+    expect(main.excludeTools).toEqual([...PI_EXCLUDED_TOOLS]);
+    for (const name of OVERRIDE_TOOL_NAMES) expect(PI_EXCLUDED_TOOLS).not.toContain(name);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
   it('criterion 1, SUBAGENT path: the engine puts the snapshot`s definitions into customTools', async () => {
     // The one link `agent-manager.test.ts` cannot cover: its fake REPLACES `buildAgentToolset` with its
     // own re-implementation, so the real `[...buildSubagentCustomTools(...), ...mcp.tools]` in
@@ -4435,7 +4496,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     }));
 
     const opts = makeOptions([]);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
     stubPanelMcp({
@@ -4488,7 +4549,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const cfg = vi.spyOn(testPlatform.settings, 'get');
     cfg.mockImplementation(settingsReader((key: string) => (key === 'damocles.team.enabled' ? true : undefined)));
     const opts = makeOptions([]);
-    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {}, setRunListener: () => {}, running: false } as never;
     const session = new PiSession(opts);
     await session.initializeEarly();
     stubPanelMcp(null);
@@ -5635,6 +5696,8 @@ describe('PiSession undelivered background results', () => {
     const order: string[] = [];
     const teamService = {
       dispose: () => {},
+      setRunListener: () => {},
+      running: false,
       cancelActiveTeam: vi.fn(() => { order.push('cancel'); return true; }),
       whenRunSettled: vi.fn(() => runSettled.then(() => { order.push('settled'); })),
     };
@@ -5650,8 +5713,8 @@ describe('PiSession undelivered background results', () => {
     await session.whenReplaced();
 
     expect(H.getLastSession()!.sessionId).toBe('sess-B');
-    // A user stop, which keeps the team resumable from session A.
-    expect(teamService.cancelActiveTeam).toHaveBeenCalledWith();
+    // A shutdown stop, which keeps the team resumable from session A and tells it why it stopped.
+    expect(teamService.cancelActiveTeam).toHaveBeenCalledWith('shutdown');
     expect(order).toEqual(['cancel', 'settled']);
     await session.dispose();
   });
@@ -5747,7 +5810,7 @@ describe('PiSession undelivered background results', () => {
     storedSessions([{ id: 'sess-A', branch: [] }, { id: 'sess-B', branch: [] }]);
     let releaseTeam!: () => void;
     const teamSettled = new Promise<void>((resolve) => { releaseTeam = resolve; });
-    const teamService = { dispose: () => {}, cancelActiveTeam: vi.fn(() => true), whenRunSettled: vi.fn(() => teamSettled) };
+    const teamService = { dispose: () => {}, setRunListener: () => {}, running: false, cancelActiveTeam: vi.fn(() => true), whenRunSettled: vi.fn(() => teamSettled) };
     const session = new PiSession(makeOptions([], { teamService: teamService as unknown as NonNullable<SessionOptions['teamService']> }));
     await session.initializeEarly();
     await session.setPermissionMode('plan');

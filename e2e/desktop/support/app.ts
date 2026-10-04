@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { _electron as electron, type ElectronApplication, type TestInfo } from '@playwright/test';
 import { hermeticEnv, REPO_ROOT, type HermeticHome } from './hermetic';
-import { launchPackaged, packagedAppPath } from './packaged-app';
+import { launchPackaged, packagedAppPath, withoutMainProcess } from './packaged-app';
 
 export const MAIN_SCRIPT = path.join(REPO_ROOT, 'dist', 'desktop', 'main.js');
 
@@ -21,8 +21,11 @@ export interface LaunchOptions {
   args?: string[];
 }
 
-/** Launches the desktop app on the hermetic home (the packaged executable when PACKAGED_APP_ENV names one), with its output captured for artifacts. */
-export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}): Promise<DesktopApp> {
+/**
+ * Launches the desktop app on the hermetic home (the packaged executable when PACKAGED_APP_ENV names one), with its output
+ * captured for artifacts. With `mainProcess` false, a dev launch refuses main-process calls as a packaged one does.
+ */
+export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}, mainProcess = true): Promise<DesktopApp> {
   const args = ['--user-data-dir', h.userData, ...(options.args ?? [])];
   const env = hermeticEnv(h, options.env);
   const packaged = packagedAppPath();
@@ -36,7 +39,7 @@ export async function launchDesktop(h: HermeticHome, options: LaunchOptions = {}
   proc.stdout?.on('data', (d: Buffer) => (output += d.toString()));
   proc.stderr?.on('data', (d: Buffer) => (output += d.toString()));
   return {
-    app,
+    app: mainProcess ? app : withoutMainProcess(app),
     output: () => output,
     startTracing: async () => {
       await app.context().tracing.start({ screenshots: true, snapshots: true });

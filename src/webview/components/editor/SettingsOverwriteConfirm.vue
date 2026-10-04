@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
-import { AlertDialogContent, AlertDialogDescription, AlertDialogOverlay, AlertDialogPortal, AlertDialogRoot, AlertDialogTitle } from 'reka-ui';
-import { Button } from '@/components/ui/button';
+import { AlertDialogContent, AlertDialogOverlay, AlertDialogPortal, AlertDialogRoot } from 'reka-ui';
+import { TriangleAlert } from 'lucide-vue-next';
+import ConfirmDialogLayout from '../ConfirmDialogLayout.vue';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 
 defineProps<{ path: string }>();
@@ -18,40 +19,48 @@ const { zIndex } = useOverlayEscape(() => emit('cancel'));
   <AlertDialogRoot :open="true">
     <AlertDialogPortal>
       <AlertDialogOverlay
-        class="fixed inset-0 bg-black/80 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+        class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
         :style="{ zIndex }"
       />
       <!-- Escape belongs to the overlay stack, so it closes this dialog and leaves the editor under it open. -->
       <AlertDialogContent
         data-overlay-layer
         data-testid="settings-json-overwrite-confirm"
-        class="fixed left-1/2 top-1/2 grid w-full max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 border border-border bg-card p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:rounded-lg"
+        class="d-dialog fixed top-1/2 left-1/2 grid w-[calc(100%-2rem)] max-w-md -translate-1/2 overflow-hidden rounded-2xl border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
         :style="{ zIndex }"
         @escape-key-down="(e: KeyboardEvent) => e.preventDefault()"
       >
-        <AlertDialogTitle class="text-lg font-semibold text-foreground">
-          {{ t('settingsEditor.overwriteTitle') }}
-        </AlertDialogTitle>
-        <AlertDialogDescription class="space-y-2 text-sm text-muted-foreground">
-          <span class="block">{{ t('settingsEditor.overwriteDescription') }}</span>
-          <code class="block font-mono text-xs text-foreground break-all">{{ path }}</code>
-        </AlertDialogDescription>
-        <div class="flex justify-end gap-2 pt-2">
-          <Button
-            variant="outline"
-            data-testid="settings-json-overwrite-cancel"
-            @click="emit('cancel')"
-          >
-            {{ t('common.cancel') }}
-          </Button>
-          <Button
-            variant="destructive"
-            data-testid="settings-json-overwrite-confirm-button"
-            @click="emit('confirm')"
-          >
-            {{ t('settingsEditor.overwrite') }}
-          </Button>
-        </div>
+        <ConfirmDialogLayout
+          :icon="TriangleAlert"
+          tone="warning"
+          :title="t('settingsEditor.overwriteTitle')"
+        >
+          <template #description>
+            {{ t('settingsEditor.overwriteDescription') }}
+          </template>
+          <span
+            class="block rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2 font-mono text-xs break-all"
+            data-testid="settings-json-overwrite-path"
+          >{{ path }}</span>
+          <template #footer>
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+              data-testid="settings-json-overwrite-cancel"
+              @click="emit('cancel')"
+            >
+              {{ t('common.cancel') }}
+            </button>
+            <button
+              type="button"
+              class="d-press flex h-7.5 items-center rounded-9 bg-(--d-danger) px-3.5 text-12.5 font-semibold text-(--d-on-danger) transition-[filter] hover:brightness-110"
+              data-testid="settings-json-overwrite-confirm-button"
+              @click="emit('confirm')"
+            >
+              {{ t('settingsEditor.overwrite') }}
+            </button>
+          </template>
+        </ConfirmDialogLayout>
       </AlertDialogContent>
     </AlertDialogPortal>
   </AlertDialogRoot>

@@ -197,6 +197,12 @@ export class SettingsFileEditor implements Disposable {
     return first;
   }
 
+  /** Asks the chat to open its editor on the scope's file, for a settings view outside the chat that cannot host the editor. */
+  openInChat(host: PanelHost, scope: SettingsFileScope): void {
+    this.assertRequest(scope);
+    this.post(host, { type: "openSettingsFileEditor", scope });
+  }
+
   async reveal(scope: SettingsFileScope): Promise<void> {
     this.assertRequest(scope);
     const located = this.locate(scope);

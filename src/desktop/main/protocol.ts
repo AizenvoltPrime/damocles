@@ -27,11 +27,14 @@ const SERVED_FILES: Readonly<Record<string, readonly string[]>> = {
 const PANEL_PAGE = /^\/panel\/([A-Za-z0-9-]+)\/index\.html$/;
 const SHELL_PAGE = '/shell/index.html';
 const PANE_PAGE = '/pane/index.html';
+const OVERLAY_PAGE = '/overlay/index.html';
 
 // The window's own page; main generates it per request with a fresh script nonce.
 export const SHELL_PAGE_URL: string = `${APP_ORIGIN}${SHELL_PAGE}`;
 // The browser pane's chrome page, generated the same way.
 export const PANE_PAGE_URL: string = `${APP_ORIGIN}${PANE_PAGE}`;
+// The overlay view's page, generated the same way.
+export const OVERLAY_PAGE_URL: string = `${APP_ORIGIN}${OVERLAY_PAGE}`;
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
@@ -58,12 +61,14 @@ export type AppRequestTarget =
   | { readonly kind: 'file'; readonly root: string; readonly filePath: string }
   | { readonly kind: 'panel'; readonly panelId: string }
   | { readonly kind: 'shell' }
-  | { readonly kind: 'pane' };
+  | { readonly kind: 'pane' }
+  | { readonly kind: 'overlay' };
 
 export interface AppPages {
   panel(panelId: string): string | undefined;
   shell(): string;
   pane(): string;
+  overlay(): string;
 }
 
 export function panelPageUrl(panelId: string): string {
@@ -100,6 +105,7 @@ export function resolveAppRequest(url: string, resourceRoot: string): AppRequest
   if (panel?.[1] !== undefined) return { kind: 'panel', panelId: panel[1] };
   if (pathname === SHELL_PAGE) return { kind: 'shell' };
   if (pathname === PANE_PAGE) return { kind: 'pane' };
+  if (pathname === OVERLAY_PAGE) return { kind: 'overlay' };
 
   const file = SERVED_FILES[pathname];
   if (file) return { kind: 'file', root: resourceRoot, filePath: path.join(resourceRoot, ...file) };
@@ -156,6 +162,7 @@ export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
     if (!target) return notFound();
     if (target.kind === 'shell') return htmlPage(pages.shell());
     if (target.kind === 'pane') return htmlPage(pages.pane());
+    if (target.kind === 'overlay') return htmlPage(pages.overlay());
     if (target.kind === 'panel') {
       const html = pages.panel(target.panelId);
       return html === undefined ? notFound() : htmlPage(html);

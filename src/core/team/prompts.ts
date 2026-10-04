@@ -21,8 +21,8 @@ In a team, verification is shared through the append-only \`verification\` scrat
  - Record every full-suite run with \`team_record_verification\`: command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
  - Report verification by pointing at ledger entries rather than restating claims. A fingerprinted entry is evidence, a prose assertion is not.`;
 
-/** A reviewer's shell is read-only, so it judges the ledger and never runs or records a suite itself. */
-const REVIEWER_VERIFICATION = `Your shell is read-only, so you cannot run tests, type checks, linters or builds, and you do not record ledger entries. Verification evidence comes from the append-only \`verification\` scratchpad ledger, where every entry carries a **tree fingerprint** the extension computes from git state.
+/** A reviewer judges the ledger and never runs or records a suite itself. */
+const REVIEWER_VERIFICATION = `You do not run tests, type checks, linters or builds, and you do not record ledger entries: you judge the work from the evidence others recorded. Verification evidence comes from the append-only \`verification\` scratchpad ledger, where every entry carries a **tree fingerprint** the extension computes from git state.
  - Read the \`verification\` section with \`team_read_scratchpad\`. It also returns \`currentFingerprint\`, the tree's fingerprint now.
  - Only an entry whose fingerprint equals \`currentFingerprint\` vouches for the current tree. An entry at any other fingerprint covers code that has since changed.
  - When no entry at the current fingerprint covers the work you review, record that as a finding and name the command an implementor should run, rather than assuming the tree passes.
@@ -191,7 +191,7 @@ Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 - **Done criteria.** What "finished" looks like ("commit changes, run tests, report results via team_send_message")
 - **Scratchpad reference.** "read the scratchpad section 'api-contract' for the interface you must implement"
 
-**Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings. You do not choose models. A reviewer is read-only: it cannot edit files and runs only read-only shell commands, so it confirms test evidence from the \`verification\` ledger. Spawn any role that must run tests or change files as \`'implementor'\`.
+**Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings. You do not choose models. A reviewer is read-only: it cannot edit files, and any shell command beyond a plain read needs the user's approval, so it confirms test evidence from the \`verification\` ledger. Spawn any role that must run tests or change files as \`'implementor'\`.
 
 ### Good examples:
 - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
@@ -319,7 +319,7 @@ ${buildPlanModeDirective("lead")}`
 function buildReviewAssignment(reviews: readonly string[]): string {
   const posture = `### Your review assignment
 
-You are a **reviewer**, and you are read-only: you cannot edit or create files, and you can run only read-only shell commands. The Verification Evidence section says how you judge test results.`;
+You are a **reviewer**, and you are read-only: you cannot edit or create files. Read-only shell commands run directly; any other shell command asks the user for approval, and you never use the shell to create, change or delete files. The Verification Evidence section says how you judge test results.`;
   if (reviews.length === 0) {
     return `${posture}
 
@@ -340,7 +340,7 @@ You review: ${reviews.join(", ")}. Your sign-off gates their approval.
 function codebaseAccess(reviews: readonly string[] | undefined): string {
   return reviews === undefined
     ? "You also have full codebase access (Read, Write, Bash, etc.)."
-    : "You also have read access to the codebase (Read, Grep, find, and read-only shell commands).";
+    : "You also have read access to the codebase (Read, Grep, find, and shell commands, which ask the user for approval unless they are plain reads).";
 }
 
 function sliceContribution(reviews: readonly string[] | undefined): string {

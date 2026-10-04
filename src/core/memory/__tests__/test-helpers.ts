@@ -1,22 +1,42 @@
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { onTestFinished } from 'vitest';
 import { createDatabaseWrapper, runMigrations } from '../database';
 import { normalizedContentHash } from '../types';
 import type { DatabaseInstance } from '../types';
 
+function removeDir(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/**
+ * Path for a test's SQLite file in a fresh temp dir, removed when the current test finishes (after
+ * `afterEach`). Call from a test or `beforeEach`. Whatever opened the file must be closed by then.
+ */
+export function createTestDbPath(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-memory-test-'));
+  onTestFinished(() => removeDir(dir));
+  return path.join(dir, 'memory.db');
+}
+
 /**
  * Fresh, fully-migrated memory DB on a unique temp file, using production's engine/wrapper/migrations.
- * Not `:memory:`, so cross-connection tests can reopen the same path.
+ * Not `:memory:`, so cross-connection tests can reopen the same path. Closed and removed when the
+ * current test finishes; call from a test or `beforeEach`.
  */
 export async function createTestMemoryDb(): Promise<DatabaseInstance> {
-  const dbPath = path.join(os.tmpdir(), `damocles-memory-test-${crypto.randomUUID()}.db`);
-  const raw = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-memory-test-'));
+  const raw = new DatabaseSync(path.join(dir, 'memory.db'), { timeout: 5000, enableForeignKeyConstraints: true });
   raw.exec('PRAGMA journal_mode = WAL');
   raw.exec('PRAGMA synchronous = NORMAL');
   raw.exec('PRAGMA foreign_keys = ON');
   const db = createDatabaseWrapper(raw);
+  onTestFinished(() => {
+    db.close();
+    removeDir(dir);
+  });
   runMigrations(db);
   return db;
 }

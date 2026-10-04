@@ -1709,7 +1709,7 @@ export class BrowserService {
         OPEN_SETTINGS,
       );
       if (choice === OPEN_SETTINGS) {
-        await this.platform.editor.openHostSettings('damocles.browser.devToolsPort');
+        await this.platform.editor.openHostSettings('damocles.browser.devToolsPort', 'integrations');
       }
       return;
     }

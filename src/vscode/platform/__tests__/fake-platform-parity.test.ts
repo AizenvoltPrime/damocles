@@ -101,11 +101,14 @@ describe('host capabilities parity', () => {
       voice: true,
       hostSpeechExtensions: true,
       hostSettingsEditor: true,
-      markdownPreview: true,
       diffReview: true,
       settingsSources: false,
       monaco: false,
       ideContext: true,
+      damoclesTheme: false,
+      settingsInPanel: true,
+      historyInPanel: true,
+      folderPickerInPanel: true,
     });
   });
 });

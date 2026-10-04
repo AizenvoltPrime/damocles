@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { defineConfig } from '@playwright/test';
-import { packagedAppPath } from './e2e/desktop/support/packaged-app';
+import { PACKAGED_SPECS, packagedAppPath } from './e2e/desktop/support/packaged-app';
 import { devElectronDist } from './scripts/dev-electron-binary.mjs';
 
 // Playwright launches require('electron'); on Windows that is the branded copy test:desktop writes, as for dev:desktop.
@@ -8,9 +8,6 @@ if (process.platform === 'win32' && packagedAppPath() === undefined) {
   process.env.ELECTRON_OVERRIDE_DIST_PATH = devElectronDist(path.dirname(require.resolve('electron/package.json')));
 }
 
-// Specs that need no Electron main-process access, the only kind a packaged app (inspect fuse off) can run.
-// network.spec.ts stays out: the disabled nodeOptions fuse makes Electron drop NODE_EXTRA_CA_CERTS, which both its tests set.
-const PACKAGED_SPECS = ['packaged-assets.spec.ts', 'chat-stream.spec.ts', 'auth-refresh.spec.ts', 'quit.spec.ts'];
 // A CI leg runs both projects in turn and uploads the parent folders, so neither run's results replace the other's.
 const PROJECT = packagedAppPath() === undefined ? 'dev' : 'packaged';
 
@@ -32,6 +29,10 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   reporter: [['list'], ['html', { open: 'never', outputFolder: `./dist/e2e-report/${PROJECT}` }]],
   projects: PROJECT === 'dev'
-    ? [{ name: 'dev', testMatch: '**/*.spec.ts' }]
+    ? [
+        { name: 'dev', testMatch: '**/*.spec.ts' },
+        // Review captures, not tests: dev never matches them; select them with --project=screenshots (docs/invariants.md "Tests").
+        { name: 'screenshots', testMatch: '**/*.screenshots.ts', outputDir: './dist/e2e-results/screenshots' },
+      ]
     : [{ name: 'packaged', testMatch: PACKAGED_SPECS.map((spec) => `**/${spec}`) }],
 });

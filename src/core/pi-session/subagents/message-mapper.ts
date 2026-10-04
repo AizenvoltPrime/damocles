@@ -9,7 +9,7 @@
  */
 
 import type { HistoryAgentContentBlock, HistoryAgentMessage } from '../../../shared/types/content';
-import { mapPiToolName, normalizeToolInput } from '../tool-normalization';
+import { mapPiToolName, normalizeToolDetails, normalizeToolInput } from '../tool-normalization';
 import { toImageBlocks } from '../branch-text';
 import { resultImageCount } from '../tool-result-text';
 
@@ -35,6 +35,7 @@ interface PiMessageLike {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  details?: unknown;
 }
 
 /** Join the text blocks of a content array (or a raw string) into one string. */
@@ -50,12 +51,14 @@ function joinText(content: unknown): string {
 /** Map pi `session.messages` to the webview's `HistoryAgentMessage[]`. Pure — no session access. */
 export function piMessagesToHistoryAgentMessages(messages: readonly unknown[]): HistoryAgentMessage[] {
   // First pass: collect tool results keyed by the tool-call id they answer.
-  const resultsById = new Map<string, { text: string; isError: boolean; imageCount: number }>();
+  const resultsById = new Map<string, { text: string; isError: boolean; imageCount: number; metadata?: Record<string, unknown> }>();
   for (const raw of messages) {
     const msg = raw as PiMessageLike;
     if (msg.role === 'toolResult' && typeof msg.toolCallId === 'string') {
       const isError = msg.isError === true;
-      resultsById.set(msg.toolCallId, { text: joinText(msg.content), isError, imageCount: isError ? 0 : resultImageCount(msg) });
+      // The details carry what the live card got through `toolMetadata`: an edit's patch, a cancelled marker.
+      const metadata = msg.details && typeof msg.details === 'object' ? normalizeToolDetails(msg.details as Record<string, unknown>) : undefined;
+      resultsById.set(msg.toolCallId, { text: joinText(msg.content), isError, imageCount: isError ? 0 : resultImageCount(msg), ...(metadata ? { metadata } : {}) });
     }
   }
 
@@ -89,6 +92,7 @@ export function piMessagesToHistoryAgentMessages(messages: readonly unknown[]): 
           ...(result !== undefined ? { result: result.text } : {}),
           ...(result?.isError ? { isError: true } : {}),
           ...(result && result.imageCount > 0 ? { imageCount: result.imageCount } : {}),
+          ...(result?.metadata ? { metadata: result.metadata } : {}),
         });
       }
     }

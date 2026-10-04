@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { applyHostTheme } from './apply-theme';
 import type { PanelTheme } from './panel-channels';
 import { PANE_CHANNELS, type DamoclesPaneApi, type PaneState } from './pane-channels';
 
@@ -11,14 +11,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   };
 }
 
-// The pane HTML carries the theme from its creation; this keeps it current after an OS theme change.
-ipcRenderer.on(PANE_CHANNELS.theme, (_event, theme: PanelTheme) => {
-  const style = document.getElementById(HOST_THEME_STYLE_ID);
-  if (style) style.textContent = theme.css;
-  document.body.classList.remove('vscode-dark', 'vscode-light');
-  document.body.classList.add(`vscode-${theme.kind}`);
-  document.body.dataset['vscodeThemeKind'] = `vscode-${theme.kind}`;
-});
+// The pane HTML carries the theme from its creation; this keeps it current after a theme change.
+ipcRenderer.on(PANE_CHANNELS.theme, (_event, theme: PanelTheme) => applyHostTheme(theme));
 
 const api: DamoclesPaneApi = {
   getState: () => ipcRenderer.invoke(PANE_CHANNELS.getState) as Promise<PaneState>,

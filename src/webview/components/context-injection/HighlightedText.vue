@@ -14,7 +14,7 @@ const segments = computed(() => highlightTerms(props.text, props.terms));
   <template v-for="(segment, i) in segments" :key="i">
     <mark
       v-if="segment.hit"
-      class="rounded-sm bg-warning/25 px-0.5 font-semibold text-foreground"
+      class="rounded-sm bg-[color-mix(in_srgb,var(--d-warning)_25%,transparent)] px-0.5 font-semibold text-(--d-text)"
     >{{ segment.text }}</mark>
     <span v-else>{{ segment.text }}</span>
   </template>

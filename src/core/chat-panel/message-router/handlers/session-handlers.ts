@@ -3,20 +3,45 @@ import type { HostInstance } from "../../types";
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
 import { perfSpan, timed } from "../../../perf";
-import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
-import { PiRuntime } from "../../../pi-session/pi-runtime";
-import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor, whileSessionLeased } from "../../session-ownership";
+import type { PanelHost } from "../../../../platform/window-service";
+import type { CatalogResult } from "../../session-catalog";
+import { announceLeaseRefusal, claimStoredSession, findStoredSessionHolder, leaseRefusalFor } from "../../session-ownership";
 import { resumeStoredSession } from "./resume-session";
 
 // Past the moment a lease turns stale, so the retried claim takes it over.
 const RESTORE_RETRY_MARGIN_MS = 1_000;
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
+  const { postMessage, storageManager, settingsManager, getLanguagePreference, sessionCatalog } = deps;
 
-  /** The session's own folder, from any open folder; an id no open folder holds can only be the panel's own. */
-  const sessionCwd = async (sessionId: string, panelCwd: string): Promise<string> =>
-    (await storageManager.folderOf(sessionId))?.fsPath ?? panelCwd;
+  /** The first page of the stored sessions, for a webview whose list a catalog change made stale. */
+  const postFirstSessionPage = async (host: PanelHost): Promise<void> => {
+    try {
+      const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
+      postMessage(host, { type: "storedSessions", sessions, hasMore, nextOffset, isFirstPage: true });
+    } catch (err) {
+      log("[SessionHandlers] Error fetching sessions:", err);
+    }
+  };
+
+  /** The catalog already told the user about a lease refusal; a missing session means the webview's list is stale. */
+  const reportFailure = async (
+    host: PanelHost,
+    result: Exclude<CatalogResult, { ok: true }>,
+    failureText: (detail: string) => string,
+  ): Promise<void> => {
+    switch (result.reason) {
+      case "leased":
+        return;
+      case "missing":
+        await postFirstSessionPage(host);
+        return;
+      case "invalid":
+      case "failed":
+        postMessage(host, { type: "notification", message: failureText(result.message), notificationType: "error" });
+        return;
+    }
+  };
 
   return {
     ready: async (msg, ctx) => {
@@ -31,11 +56,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
       // The webview renders the conversation with these, so they precede any replay.
       const settingsSpan = perfSpan("ready.settings");
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
       settingsManager.sendMcpConfig(ctx.host, ctx.folder.key);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
       settingsSpan.end();
       deps.postWorkspaceFolderState(ctx.panelId);
@@ -102,7 +127,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       let route: "switch" | "restore" | "fresh";
       if (target.key !== ctx.folder.key) {
         // Claimed inside the switch, so a message the webview sent meanwhile reaches the restored session.
-        await deps.switchPanelFolder(ctx.panelId, target.key, "restore", resumeSaved);
+        await deps.switchPanelFolder(ctx.panelId, target.key, "restore", async (instance) => { await resumeSaved(instance); });
         route = "switch";
       } else {
         // A status posted before `ready` never reached the webview; a switch posts its target folder's status itself.
@@ -130,116 +155,34 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
     renameSession: async (msg, ctx) => {
       if (msg.type !== "renameSession") return;
-      try {
-        // Rename through the live manager when the session is open in any panel — a second file-writer
-        // would fork the branch and drop messages. Otherwise use the file-based path.
-        const mutator = PiRuntime.liveSessionMutator(msg.sessionId);
-        if (mutator) {
-          await mutator.renameActiveSession(msg.newName);
-        } else {
-          const cwd = await sessionCwd(msg.sessionId, ctx.folder.fsPath);
-          if (!(await whileSessionLeased(deps.platform.notifications, msg.sessionId, () => renamePiSession(cwd, msg.sessionId, msg.newName)))) return;
-        }
-        postMessage(ctx.host, {
-          type: "sessionRenamed",
-          sessionId: msg.sessionId,
-          newName: msg.newName,
-        });
-        storageManager.invalidateSessionsCache();
-        const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.host, {
-          type: "storedSessions",
-          sessions,
-          hasMore,
-          nextOffset,
-          isFirstPage: true,
-        });
-      } catch (err) {
-        log("[MessageRouter] Error renaming session:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to rename session: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
+      const result = await sessionCatalog.rename(msg.sessionId, msg.newName);
+      if (!result.ok) {
+        await reportFailure(ctx.host, result, (detail) => t("Failed to rename session: {0}", detail));
+        return;
       }
+      postMessage(ctx.host, { type: "sessionRenamed", sessionId: msg.sessionId, newName: msg.newName.trim() });
+      await postFirstSessionPage(ctx.host);
     },
 
     tagSession: async (msg, ctx) => {
       if (msg.type !== "tagSession") return;
-      try {
-        // Same anti-fork routing as rename.
-        const mutator = PiRuntime.liveSessionMutator(msg.sessionId);
-        if (mutator) {
-          await mutator.setActiveSessionTag(msg.tag);
-        } else {
-          const cwd = await sessionCwd(msg.sessionId, ctx.folder.fsPath);
-          if (!(await whileSessionLeased(deps.platform.notifications, msg.sessionId, () => tagPiSession(cwd, msg.sessionId, msg.tag)))) return;
-        }
-        postMessage(ctx.host, {
-          type: "sessionTagged",
-          sessionId: msg.sessionId,
-          tag: msg.tag,
-        });
-        storageManager.updateSessionTagInCache(msg.sessionId, msg.tag);
-      } catch (err) {
-        log("[MessageRouter] Error tagging session:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to tag session: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
+      const result = await sessionCatalog.tag(msg.sessionId, msg.tag);
+      if (!result.ok) {
+        await reportFailure(ctx.host, result, (detail) => t("Failed to tag session: {0}", detail));
+        return;
       }
+      postMessage(ctx.host, { type: "sessionTagged", sessionId: msg.sessionId, tag: msg.tag === null ? null : msg.tag.trim() });
     },
 
     deleteSession: async (msg, ctx) => {
       if (msg.type !== "deleteSession") return;
-      try {
-        // Every holder of this session must stop writing BEFORE the file goes, else its next append
-        // resurrects the path as a header-less file. Detach the registered owner, the other panel that
-        // holds it, AND this panel (deduped when they are the same object), since a panel may only POINT
-        // at the session as a not-yet-started resume/fork target, which registers nothing. A detach that
-        // fails throws, which aborts the delete rather than removing a file someone can still write to.
-        // The lease is taken as its writer before any detach: another process holding the session refuses
-        // the delete untouched, and neither another process nor another panel of this one can claim it
-        // between the detach and the rm.
-        const cwd = await sessionCwd(msg.sessionId, ctx.folder.fsPath);
-        const deleted = await whileSessionLeased(deps.platform.notifications, msg.sessionId, async () => {
-          const holders = new Set<{ detachFromDeletedSession(): Promise<void> }>();
-          const registered = PiRuntime.liveSessionMutator(msg.sessionId);
-          if (registered) holders.add(registered);
-          const otherPanel = findStoredSessionHolder(deps.getPanels(), ctx, msg.sessionId);
-          if (otherPanel) holders.add(otherPanel.session);
-          if (ctx.session.persistenceSessionId === msg.sessionId) holders.add(ctx.session);
-          await Promise.all([...holders].map((h) => h.detachFromDeletedSession()));
-          await deletePiSession(cwd, msg.sessionId);
-        });
-        if (!deleted) return;
-        // The file is now gone — that's the deletion truth. Memory cleanup is best-effort secondary
-        // work; a failure here must not flip the UI back to "delete failed" for an already-gone session.
-        try {
-          await deps.memoryService?.deleteSessionMemories(msg.sessionId);
-        } catch (memErr) {
-          log("[MessageRouter] Session file deleted but memory cleanup failed:", memErr);
-        }
-
-        postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });
-        storageManager.invalidateSessionsCache();
-        const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.host, {
-          type: "storedSessions",
-          sessions,
-          hasMore,
-          nextOffset,
-          isFirstPage: true,
-        });
-      } catch (err) {
-        log("[MessageRouter] Error deleting session:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to delete session: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
+      const result = await sessionCatalog.delete(msg.sessionId);
+      if (!result.ok) {
+        await reportFailure(ctx.host, result, (detail) => t("Failed to delete session: {0}", detail));
+        return;
       }
+      postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });
+      await postFirstSessionPage(ctx.host);
     },
   };
 }

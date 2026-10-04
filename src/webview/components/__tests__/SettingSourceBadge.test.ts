@@ -20,8 +20,8 @@ describe('SettingSourceBadge', () => {
   it('shows one badge for several keys set in the same file', () => {
     const store = useSettingsStore();
     store.updateSettings(store.currentSettings, {
-      'damocles.team.leadModel': { scope: 'project', path: PROJECT_FILE },
-      'damocles.team.leadEffort': { scope: 'project', path: PROJECT_FILE },
+      'damocles.team.leadModel': { scope: 'project', path: PROJECT_FILE, value: 'm' },
+      'damocles.team.leadEffort': { scope: 'project', path: PROJECT_FILE, value: 'high' },
     });
 
     expect(badges(['damocles.team.leadModel', 'damocles.team.leadEffort'])).toEqual([i18n.global.t('settings.source.fromFile', { path: PROJECT_FILE })]);
@@ -30,8 +30,8 @@ describe('SettingSourceBadge', () => {
   it('shows a badge per file when the keys come from different files', () => {
     const store = useSettingsStore();
     store.updateSettings(store.currentSettings, {
-      'damocles.team.leadModel': { scope: 'project', path: PROJECT_FILE },
-      'damocles.team.leadEffort': { scope: 'local', path: LOCAL_FILE },
+      'damocles.team.leadModel': { scope: 'project', path: PROJECT_FILE, value: 'm' },
+      'damocles.team.leadEffort': { scope: 'local', path: LOCAL_FILE, value: 'high' },
     });
 
     expect(badges(['damocles.team.leadModel', 'damocles.team.leadEffort'])).toHaveLength(2);

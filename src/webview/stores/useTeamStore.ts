@@ -90,6 +90,11 @@ export const useTeamStore = defineStore('team', () => {
   const agentHistoryLoaded = ref<ReadonlySet<string>>(new Set());
   const selectedAgentId = ref<string | null>(null);
   const isAgentOverlayOpen = ref(false);
+  // Teams the user asked to stop, until the run ends or the extension says the stop came too late.
+  const cancelRequested = ref<ReadonlySet<string>>(new Set());
+  // Members the user asked to stop, with the status each had then. Core answers no refused member stop,
+  // so a request holds only until that member's status changes.
+  const agentCancelRequested = ref<ReadonlyMap<string, TeamAgentStatus>>(new Map());
 
   interface PermissionRequest {
     requestId: string;
@@ -187,6 +192,29 @@ export const useTeamStore = defineStore('team', () => {
     };
   }
 
+  function markCancelRequested(teamId: string): void {
+    cancelRequested.value = new Set(cancelRequested.value).add(teamId);
+  }
+
+  function isCancelPending(teamId: string): boolean {
+    return cancelRequested.value.has(teamId) && teams.value[teamId]?.status === 'running';
+  }
+
+  function clearCancelRequest(teamId: string): void {
+    if (!cancelRequested.value.has(teamId)) return;
+    const kept = new Set(cancelRequested.value);
+    kept.delete(teamId);
+    cancelRequested.value = kept;
+  }
+
+  function markAgentCancelRequested(agent: Pick<TeamAgent, 'agentId' | 'status'>): void {
+    agentCancelRequested.value = new Map(agentCancelRequested.value).set(agent.agentId, agent.status);
+  }
+
+  function isAgentCancelPending(agent: Pick<TeamAgent, 'agentId' | 'status'>): boolean {
+    return agentCancelRequested.value.get(agent.agentId) === agent.status;
+  }
+
   function handleTeamStarted(team: TeamState): void {
     const pendingKey = Object.keys(teams.value).find(
       k => k.startsWith('pending-') && teams.value[k]?.toolUseId === team.toolUseId
@@ -211,6 +239,13 @@ export const useTeamStore = defineStore('team', () => {
   function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string, dollarBilled?: boolean, attempt?: number, effort?: EffortBadgeLevel | null, stopwatch?: Stopwatch): void {
     const team = teams.value[teamId];
     if (!team) return;
+    // Dropped, not left stale, because a resumed or redispatched member can return to the status it was stopped in.
+    const requestedAt = agentCancelRequested.value.get(agentId);
+    if (requestedAt !== undefined && requestedAt !== status) {
+      const kept = new Map(agentCancelRequested.value);
+      kept.delete(agentId);
+      agentCancelRequested.value = kept;
+    }
     const agents = team.agents.map(a => {
       if (a.agentId !== agentId) return a;
       // A redispatch reuses the agentId, so the fields describing the current run start over while the
@@ -282,6 +317,7 @@ export const useTeamStore = defineStore('team', () => {
 
   // The host's summary of the ended run replaces the live tally, so the card reads what a reload reads.
   function handleTeamCompleted(teamId: string, status: TeamState['status'], result: string | null, run: TeamRunSummary): void {
+    clearCancelRequest(teamId);
     const team = teams.value[teamId];
     if (!team) return;
     const known = team.runs.some(r => r.toolUseId === run.toolUseId);
@@ -558,6 +594,8 @@ export const useTeamStore = defineStore('team', () => {
     selectedAgentId.value = null;
     isAgentOverlayOpen.value = false;
     permissionQueue.value = [];
+    cancelRequested.value = new Set();
+    agentCancelRequested.value = new Map();
   }
 
   return {
@@ -584,6 +622,11 @@ export const useTeamStore = defineStore('team', () => {
     setActiveTab,
     registerTeamFromTool,
     handleTeamStarted,
+    markCancelRequested,
+    isCancelPending,
+    clearCancelRequest,
+    markAgentCancelRequested,
+    isAgentCancelPending,
     failPendingTeamByToolUseId,
     handleTeamPhaseUpdate,
     handleAgentStatusUpdate,

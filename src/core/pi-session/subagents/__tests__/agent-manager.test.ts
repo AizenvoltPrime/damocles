@@ -160,6 +160,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     resolveModel: () => ({}),
     modelDollarBilled: () => true,
     onSubagentCost: () => {},
+    onRunsChanged: () => {},
   };
   return { engine, gates };
 }
@@ -230,6 +231,30 @@ describe('AgentManager concurrency', () => {
     if (gates[3]) gates[3].resolve();
     await flush();
     expect(mgr.hasRunning()).toBe(false);
+    mgr.dispose();
+  });
+
+  // The panel's `background` activity reads `hasUnsettledRuns` when this callback reaches the publisher.
+  it('reports a run when it is created and again when it settles, a queued one included', async () => {
+    const { engine, gates } = makeEngine();
+    const unsettled: boolean[] = [];
+    const mgr = new AgentManager(engine, 1);
+    engine.onRunsChanged = () => unsettled.push(mgr.hasUnsettledRuns());
+
+    mgr.spawn(spec(0));
+    mgr.spawn(spec(1));
+    expect(unsettled).toEqual([true, true]);
+
+    await flush();
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+    gateAt(gates, 1).resolve();
+    await flush();
+    await flush();
+
+    expect(unsettled).toEqual([true, true, true, false]);
+    expect(mgr.hasUnsettledRuns()).toBe(false);
     mgr.dispose();
   });
 
@@ -450,7 +475,7 @@ describe('AgentManager background keep-alive', () => {
     mgr.dispose();
   });
 
-  it('aborting a running background subagent emits exactly one stopped completion (US-009 stopTask)', async () => {
+  it('aborting a running background subagent emits exactly one stopped completion', async () => {
     const { engine, gates } = makeEngine();
     const msgs: { type: string; status?: string }[] = [];
     engine.postMessage = (m) => msgs.push(m as { type: string; status?: string });
@@ -459,7 +484,7 @@ describe('AgentManager background keep-alive', () => {
     await flush();
     expect(mgr.getRecord(id)!.status).toBe('running');
 
-    // The Background Tasks "stop" button routes stopBackgroundTask → PiSession.stopTask → abort.
+    // Every user Stop routes stopSubagent → PiSession.stopSubagent → abort.
     expect(mgr.abort(id, 'user')).toBe(true);
     expect(mgr.getRecord(id)!.status).toBe('stopped');
 
@@ -514,6 +539,88 @@ describe('AgentManager background keep-alive', () => {
       id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString(),
     } as unknown as SessionEntry);
     expect(mgr.deliverableLive()).toEqual([]);
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager user stop of one subagent', () => {
+  type Posted = ExtensionToWebviewMessage;
+  const agentTool = (mgr: AgentManager) => buildSubagentTools(piStub, mgr).find((t) => t.name === 'Agent')!;
+  const resultText = (result: { content: Array<{ type: string; text?: string }> }): string => {
+    const parsed = JSON.parse(result.content[0]!.text!) as { content: Array<{ text: string }> };
+    return parsed.content[0]!.text;
+  };
+
+  it('names the agent to its card while it is still queued, so a stop can reach it', () => {
+    const { engine } = makeEngine();
+    const posted: Posted[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+
+    expect(mgr.getRecord(queued)!.status).toBe('queued');
+    expect(posted).toContainEqual(expect.objectContaining({ type: 'subagentStart', agentId: queued, toolUseId: 'tc1' }));
+    mgr.dispose();
+  });
+
+  it('a queued agent the user stops resolves its card as stopped and resumable, and never runs', async () => {
+    const { engine, gates } = makeEngine();
+    const posted: Posted[] = [];
+    engine.postMessage = (m) => void posted.push(m);
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+    await flush();
+
+    expect(mgr.abort(queued, 'user')).toBe(true);
+
+    const done = posted.find((m): m is Extract<Posted, { type: 'toolCompleted' }> => m.type === 'toolCompleted' && m.toolUseId === 'tc1');
+    expect(JSON.parse(done!.result)).toMatchObject({ agentId: queued, agentStatus: 'stopped', content: [{ text: expect.stringContaining('STOPPED BY THE USER') }] });
+    expect(posted).toContainEqual(expect.objectContaining({ type: 'subagentStop', agentId: queued, toolUseId: 'tc1' }));
+    gateAt(gates, 0).resolve();
+    await flush();
+    await flush();
+    expect(gates).toHaveLength(1);
+    mgr.dispose();
+  });
+
+  it('a foreground agent the user stops ends only its own Agent call, with the partial output and the stop note', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    const tool = agentTool(mgr);
+    const parent = new AbortController();
+    const call = (i: number) => tool.execute(`tc${i}`, { description: `d${i}`, prompt: `task ${i}`, subagent_type: 'general-purpose' }, parent.signal, undefined, {} as never);
+    const stopped = call(0);
+    const parallel = call(1);
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    const [first, second] = mgr.listActive();
+
+    expect(mgr.abort(first!.id, 'user')).toBe(true);
+    gateAt(gates, 0).resolve();
+    const result = await stopped;
+
+    expect(resultText(result)).toContain(`(STOPPED BY THE USER before completion; output is partial. Resume it with Agent({resume:"${first!.id}"}) if the user asks to continue.)`);
+    expect(result.details).toEqual({ agentId: first!.id, status: 'stopped', stopReason: 'user' });
+    expect(parent.signal.aborted).toBe(false);
+    expect(mgr.getRecord(second!.id)!.status).toBe('running');
+
+    gateAt(gates, 1).resolve();
+    expect((await parallel).details).toEqual({ agentId: second!.id, status: 'completed' });
+    mgr.dispose();
+  });
+
+  it('a stop that lands after the agent finished changes nothing and says so', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    gateAt(gates, 0).resolve();
+    await mgr.getRecord(id)!.promise;
+
+    expect(mgr.abort(id, 'user')).toBe(false);
+    expect(mgr.getRecord(id)!.status).toBe('completed');
+    expect(mgr.abort('no-such-agent', 'user')).toBe(false);
     mgr.dispose();
   });
 });
@@ -650,27 +757,14 @@ describe('AgentManager thinkingLevel precedence', () => {
     return { engine, gates, captured };
   }
 
-  it('enforceThinking beats a per-spawn spec.thinking', async () => {
+  it('creates the session at the resolved thinkingLevel', async () => {
     const { engine, gates, captured } = makeCapturingEngine();
-    engine.resolveModel = () => ({ thinkingLevel: 'high', enforceThinking: true });
+    engine.resolveModel = () => ({ thinkingLevel: 'xhigh' });
     const mgr = new AgentManager(engine, 2);
-    mgr.spawn({ ...spec(0), thinking: 'low' });
+    mgr.spawn(spec(0));
     await flush();
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.thinkingLevel).toBe('high');
-    gateAt(gates, 0).resolve();
-    await flush();
-    mgr.dispose();
-  });
-
-  it('without enforceThinking, spec.thinking wins over resolved.thinkingLevel', async () => {
-    const { engine, gates, captured } = makeCapturingEngine();
-    engine.resolveModel = () => ({ thinkingLevel: 'high' });
-    const mgr = new AgentManager(engine, 2);
-    mgr.spawn({ ...spec(0), thinking: 'low' });
-    await flush();
-    expect(captured).toHaveLength(1);
-    expect(captured[0]!.thinkingLevel).toBe('low');
+    expect(captured[0]!.thinkingLevel).toBe('xhigh');
     gateAt(gates, 0).resolve();
     await flush();
     mgr.dispose();
@@ -701,7 +795,7 @@ describe('AgentManager thinkingLevel precedence', () => {
     mgr.dispose();
   });
 
-  it('passes no thinkingLevel when neither spec.thinking nor resolved.thinkingLevel is set', async () => {
+  it('passes no thinkingLevel when resolved.thinkingLevel is unset', async () => {
     const { engine, gates, captured } = makeCapturingEngine();
     engine.resolveModel = () => ({});
     const mgr = new AgentManager(engine, 2);
@@ -1608,7 +1702,7 @@ describe('AgentManager agent records', () => {
       record(data);
     };
 
-    const id = mgr.spawn({ ...spec(0), thinking: 'low' });
+    const id = mgr.spawn(spec(0));
     expect(invocations).toEqual([{ kind: 'subagent', id, toolCallId: 'tc0', resume: false }]);
     expect(startedAfterInvocation).toBe(true);
     await flush();
@@ -1623,7 +1717,6 @@ describe('AgentManager agent records', () => {
         description: 'd0',
         prompt: 'task 0',
         background: true,
-        thinkingOverride: 'low',
       },
     });
     expect(mgr.getRecord(id)!.outputFile).toBe('/store/1.jsonl');
@@ -2024,6 +2117,7 @@ describe('AgentManager resume', () => {
 
   it('an agent with no file re-runs fresh under its id from the spawning call\'s arguments', async () => {
     const { engine, dir } = resumeEngine();
+    // `thinking` is not an Agent parameter: a stray one on the spawn call must not set the re-run's level.
     spawnOnBranch({ ...spawnArgs, thinking: 'low', run_in_background: false }, { agentId: AGENT, status: 'async_launched' });
     const mgr = new AgentManager(engine);
 
@@ -2032,11 +2126,11 @@ describe('AgentManager resume', () => {
 
     expect(record.background).toBe(true);
     expect(sessionOpts[0]!.store).toEqual({ kind: 'file', dir, id: AGENT });
-    expect(sessionOpts[0]!.thinkingLevel).toBe('low');
+    expect(sessionOpts[0]!.thinkingLevel).toBeUndefined();
     expect(customEntries).toEqual([
       {
         customType: 'damocles-agent-launch',
-        data: { agentId: AGENT, kind: 'subagent', agentType: 'general-purpose', description: 'dig in', prompt: 'find the bug', background: true, thinkingOverride: 'low' },
+        data: { agentId: AGENT, kind: 'subagent', agentType: 'general-purpose', description: 'dig in', prompt: 'find the bug', background: true },
       },
       { customType: 'damocles-agent-segment', data: { toolCallId: 'tc-r', message: 'be quick' } },
     ]);

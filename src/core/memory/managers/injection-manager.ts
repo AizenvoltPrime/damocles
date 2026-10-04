@@ -34,11 +34,11 @@ import type { MemorySubCallRunner } from '../subcall-runner';
 import { LLM_RERANK_MIN_MS, RERANK_QUERY_CHARS, classifierRerank } from '../classifier-judges';
 import type { ContextInjectionDetailsV1, LiveInjections, LiveMemory } from '../injection/details';
 import { QUALITY_AUDIT_FORGET_REASON } from '@shared/types/memory-audit';
+import { isStaleMemory } from '@shared/memory-staleness';
 import {
   BUDGETS,
   DEFAULT_TIER_LIMITS,
   FILE_PROXIMITY_FULL,
-  STALENESS_THRESHOLD,
   analyzeTerms,
   assignTiers,
   compareRank,
@@ -294,10 +294,6 @@ function toLoaded(row: MemoryRow): Loaded {
   return { row, entry: rowToEntry(row) };
 }
 
-function isStale(entry: MemoryEntry): boolean {
-  return (entry.fileChangeCount ?? 0) >= STALENESS_THRESHOLD;
-}
-
 function lastSegments(filePath: string, count: number): string {
   const segments = normalizePath(filePath).split('/').filter(Boolean);
   return segments.length >= count ? segments.slice(-count).join('/') : '';
@@ -328,7 +324,7 @@ function renderable(entry: MemoryEntry, workspace: string, forgotten = false): R
     facts: entry.facts ?? [],
     files: entryFiles(entry).map(f => relativizeFile(f, workspace)),
     observationType: entry.observationType ?? null,
-    isStale: isStale(entry),
+    isStale: isStaleMemory(entry),
     isPinned: !!entry.pinned,
     ...(forgotten ? { isForgotten: true } : {}),
   };
@@ -377,7 +373,7 @@ function toInjectedMemory(s: Selected): InjectedMemory {
     reasons: s.reasons,
     score: s.score,
     scoreBreakdown: s.breakdown,
-    isStale: isStale(e),
+    isStale: isStaleMemory(e),
     isPinned: !!e.pinned,
     sourceCount: e.sourceCount ?? 1,
     ...(s.forgottenMention ? { isForgotten: true } : {}),

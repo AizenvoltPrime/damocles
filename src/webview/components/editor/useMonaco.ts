@@ -52,28 +52,47 @@ self.MonacoEnvironment = {
 
 const THEME_NAME = 'damocles';
 
-// Monaco color id -> the --vscode-* variable the desktop host injects (palette in src/desktop/main/theme.ts).
-const THEME_COLORS: Readonly<Record<string, `--vscode-${string}`>> = {
-  'editor.background': '--vscode-editor-background',
-  'editor.foreground': '--vscode-editor-foreground',
-  'editorLineNumber.foreground': '--vscode-editorLineNumber-foreground',
-  'editorWidget.background': '--vscode-editorWidget-background',
-  'editorWidget.border': '--vscode-widget-border',
-  'editorHoverWidget.background': '--vscode-editorWidget-background',
-  'editorSuggestWidget.background': '--vscode-editorWidget-background',
-  'focusBorder': '--vscode-focusBorder',
-  'input.background': '--vscode-input-background',
-  'list.hoverBackground': '--vscode-list-hoverBackground',
-  'diffEditor.insertedTextBackground': '--vscode-diffEditor-insertedTextBackground',
-  'diffEditor.removedTextBackground': '--vscode-diffEditor-removedTextBackground',
-  'editorError.foreground': '--vscode-errorForeground',
-  'editorWarning.foreground': '--vscode-editorWarning-foreground',
-  'editorInfo.foreground': '--vscode-editorInfo-foreground',
-  'textLink.foreground': '--vscode-textLink-foreground',
+// Monaco color id -> the design token the desktop host injects (palettes in src/desktop/main/theme.ts).
+const THEME_COLORS: Readonly<Record<string, `--d-${string}`>> = {
+  'editor.background': '--d-bg',
+  'editor.foreground': '--d-text',
+  'editorLineNumber.foreground': '--d-faint',
+  'editorLineNumber.activeForeground': '--d-muted',
+  'editorWidget.background': '--d-card',
+  'editorWidget.border': '--d-border2',
+  'editorHoverWidget.background': '--d-card',
+  'editorSuggestWidget.background': '--d-card',
+  'focusBorder': '--d-accent',
+  'input.background': '--d-input',
+  'list.hoverBackground': '--d-hover',
+  'diffEditor.insertedTextBackground': '--d-add',
+  'diffEditor.removedTextBackground': '--d-del',
+  'editorError.foreground': '--d-danger',
+  'editorWarning.foreground': '--d-warning',
+  'editorInfo.foreground': '--d-info',
+  'textLink.foreground': '--d-accent',
 };
+
+// Monarch token prefix -> the desktop-only syntax token; Monaco matches a rule against every token that starts with it.
+const SYNTAX_RULES: ReadonlyArray<readonly [string, `--s-${string}` | `--d-${string}`]> = [
+  ['comment', '--s-com'],
+  ['keyword', '--s-kw'],
+  ['tag', '--s-kw'],
+  ['string', '--s-str'],
+  ['regexp', '--s-str'],
+  ['attribute.value', '--s-str'],
+  ['number', '--s-num'],
+  ['constant', '--s-num'],
+  ['type', '--s-type'],
+  ['predefined', '--s-fn'],
+  ['attribute.name', '--s-fn'],
+  ['delimiter', '--d-muted'],
+];
 
 // Monaco parses only hex colors; a value in any other form is left to the base theme.
 const HEX_COLOR = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+// A token rule takes six hex digits without the #.
+const RULE_COLOR = /^#([0-9a-f]{6})$/i;
 
 function applyHostTheme(): void {
   const style = getComputedStyle(document.documentElement);
@@ -82,8 +101,12 @@ function applyHostTheme(): void {
     const value = style.getPropertyValue(variable).trim();
     if (HEX_COLOR.test(value)) colors[id] = value;
   }
+  const rules = SYNTAX_RULES.flatMap(([token, variable]) => {
+    const hex = RULE_COLOR.exec(style.getPropertyValue(variable).trim())?.[1];
+    return hex === undefined ? [] : [{ token, foreground: hex }];
+  });
   const light = document.body.classList.contains('vscode-light');
-  monaco.editor.defineTheme(THEME_NAME, { base: light ? 'vs' : 'vs-dark', inherit: true, rules: [], colors });
+  monaco.editor.defineTheme(THEME_NAME, { base: light ? 'vs' : 'vs-dark', inherit: true, rules, colors });
   monaco.editor.setTheme(THEME_NAME);
 }
 
@@ -97,13 +120,15 @@ function followHostTheme(): void {
   themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'data-vscode-theme-kind'] });
   const hostStyle = document.getElementById(HOST_THEME_STYLE_ID);
   if (hostStyle) themeObserver.observe(hostStyle, { childList: true, characterData: true, subtree: true });
+  // Monaco measures glyph widths once per font, so an editor created before the webfont loaded measured a fallback.
+  document.fonts.addEventListener('loadingdone', () => monaco.editor.remeasureFonts());
 }
 
 /** Options every Damocles Monaco editor shares: the host's editor font, read-only unless the caller overrides it. */
 export function baseEditorOptions(): monaco.editor.IEditorOptions & { automaticLayout: boolean } {
   const style = getComputedStyle(document.documentElement);
-  const fontFamily = style.getPropertyValue('--vscode-editor-font-family').trim();
-  const fontSize = Number.parseInt(style.getPropertyValue('--vscode-editor-font-size'), 10);
+  const fontFamily = style.getPropertyValue('--d-mono').trim();
+  const fontSize = Number.parseInt(style.getPropertyValue('--d-mono-size'), 10);
   return {
     ...(fontFamily ? { fontFamily } : {}),
     ...(Number.isNaN(fontSize) ? {} : { fontSize }),

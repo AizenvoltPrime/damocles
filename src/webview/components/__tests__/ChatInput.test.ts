@@ -166,6 +166,30 @@ describe('the composer during an IME composition, beyond Enter', () => {
   });
 });
 
+describe('the composer with an autocomplete list open', () => {
+  it('names the open list and follows its highlighted option, so a screen reader hears the arrow keys', async () => {
+    const wrapper = composer();
+    const textarea = wrapper.get('textarea').element;
+    expect(textarea.hasAttribute('aria-controls')).toBe(false);
+    expect(textarea.hasAttribute('aria-activedescendant')).toBe(false);
+
+    await openSlashPopup(wrapper);
+    const listId = textarea.getAttribute('aria-controls');
+    expect(textarea.getAttribute('aria-autocomplete')).toBe('list');
+    expect([...document.querySelectorAll(`[id="${listId}"]`)].at(-1)?.getAttribute('role')).toBe('listbox');
+    expect(textarea.getAttribute('aria-activedescendant')).toBe(`${listId}-0`);
+
+    keydown(textarea, { key: 'ArrowDown' });
+    await wrapper.vm.$nextTick();
+
+    // Earlier composers in this file stay mounted with their own popups, so take this composer's, the last one teleported.
+    const active = [...document.querySelectorAll(`[id="${textarea.getAttribute('aria-activedescendant')}"]`)].at(-1);
+    expect(active?.getAttribute('aria-selected')).toBe('true');
+    expect(active?.textContent).toContain('/compact');
+    wrapper.unmount();
+  });
+});
+
 describe('the composer while a workspace folder switch is pending', () => {
   const FOLDERS = [
     { key: 'c:/ws/a', name: 'a', label: 'a', path: 'C:/ws/a' },
@@ -396,6 +420,77 @@ describe('the composer taking back queued messages a stop never sent', () => {
   });
 });
 
+describe('the composer prefixing its draft', () => {
+  const prepend = (wrapper: VueWrapper, prefix: string): void => (wrapper.vm as unknown as { prependInput: (prefix: string) => void }).prependInput(prefix);
+
+  it('puts the prefix before the draft and keeps the caret on the same text', async () => {
+    const wrapper = composer();
+    const textarea = await type(wrapper, 'why is the build slow');
+    textarea.setSelectionRange(4, 6);
+
+    prepend(wrapper, '/btw ');
+    await wrapper.vm.$nextTick();
+
+    expect(textarea.value).toBe('/btw why is the build slow');
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([9, 11]);
+    wrapper.unmount();
+  });
+
+  it('leaves the caret after the prefix in an empty box', async () => {
+    const wrapper = composer();
+    const textarea = wrapper.get('textarea').element as HTMLTextAreaElement;
+
+    prepend(wrapper, '/btw ');
+    await wrapper.vm.$nextTick();
+
+    expect(textarea.value).toBe('/btw ');
+    expect(textarea.selectionStart).toBe(5);
+    wrapper.unmount();
+  });
+
+  it('does not add the prefix twice', async () => {
+    const wrapper = composer();
+    const textarea = await type(wrapper, '/btw why');
+
+    prepend(wrapper, '/btw ');
+    await wrapper.vm.$nextTick();
+
+    expect(textarea.value).toBe('/btw why');
+    wrapper.unmount();
+  });
+});
+
+describe('the composer sending a prompt that is not its draft', () => {
+  const IMAGE: ImageAttachment = { id: 'img-1', dataUrl: 'data:image/png;base64,AAAA', base64Data: 'AAAA', mediaType: 'image/png', width: 1, height: 1 };
+  const imageStrip = (wrapper: VueWrapper) => wrapper.findComponent({ name: 'ImageThumbnailStrip' }).props('attachments') as unknown[];
+  const sendPrompt = (wrapper: VueWrapper, prompt: string): void => (wrapper.vm as unknown as { sendPrompt: (prompt: string) => void }).sendPrompt(prompt);
+
+  it('sends only the prompt and keeps the draft and its attachments staged', async () => {
+    seeded.images = [IMAGE];
+    const wrapper = composer();
+    const textarea = await type(wrapper, 'half a thought');
+
+    sendPrompt(wrapper, 'Write tests');
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.emitted('send')).toEqual([['Write tests', expect.any(Boolean)]]);
+    expect(textarea.value).toBe('half a thought');
+    expect(imageStrip(wrapper)).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it('queues it behind a running turn', async () => {
+    const wrapper = composer();
+    await wrapper.setProps({ isProcessing: true });
+
+    sendPrompt(wrapper, 'Write tests');
+
+    expect(wrapper.emitted('queue')).toEqual([['Write tests']]);
+    expect(wrapper.emitted('send')).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
 describe('Shift+Tab in the composer', () => {
   beforeEach(() => setActivePinia(createPinia()));
 
@@ -413,5 +508,60 @@ describe('Shift+Tab in the composer', () => {
     expect(press(textarea, { ctrlKey: true }).defaultPrevented).toBe(false);
     expect(press(textarea, { metaKey: true }).defaultPrevented).toBe(false);
     expect(press(textarea, { altKey: true }).defaultPrevented).toBe(false);
+  });
+});
+
+describe('Escape while a turn runs', () => {
+  it('stops the run, except when pressed inside a dock prompt card or a confirmation, which keep it', async () => {
+    const wrapper = composer();
+    await wrapper.setProps({ isProcessing: true });
+    const card = document.body.appendChild(document.createElement('section'));
+    card.setAttribute('data-dock-prompt', '');
+    const tab = card.appendChild(document.createElement('button'));
+    const confirmation = document.body.appendChild(document.createElement('div'));
+    confirmation.setAttribute('role', 'alertdialog');
+    const choice = confirmation.appendChild(document.createElement('button'));
+
+    keydown(tab, { key: 'Escape' });
+    keydown(choice, { key: 'Escape' });
+    expect(wrapper.emitted('cancel')).toBeUndefined();
+
+    keydown(document.body, { key: 'Escape' });
+    expect(wrapper.emitted('cancel')).toHaveLength(1);
+    wrapper.unmount();
+    card.remove();
+    confirmation.remove();
+  });
+});
+
+/**
+ * The box sizes itself from its text in CSS (`field-sizing`) up to a rem cap, so the cap follows the host font. A height
+ * written from script is a px value, which neither follows the font nor gives the space back when the text goes.
+ */
+describe('the composer box size', () => {
+  it('grows with its content from two rows up to a 12.5rem cap, then scrolls', () => {
+    const wrapper = composer();
+
+    expect(wrapper.get('textarea').classes()).toEqual(expect.arrayContaining([
+      'field-sizing-content',
+      'min-h-[round(calc(2lh+1.125rem),0.0625rem)]',
+      'max-h-50',
+      'overflow-y-auto',
+    ]));
+    wrapper.unmount();
+  });
+
+  it('writes no size from script as the text grows, is sent, or is cleared', async () => {
+    const wrapper = composer();
+    const textarea = await type(wrapper, Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'));
+    await wrapper.vm.$nextTick();
+    expect(textarea.getAttribute('style') ?? '').toBe('');
+
+    keydown(textarea, { key: 'Enter' });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted('send')).toHaveLength(1);
+    expect(textarea.value).toBe('');
+    expect(textarea.getAttribute('style') ?? '').toBe('');
+    wrapper.unmount();
   });
 });

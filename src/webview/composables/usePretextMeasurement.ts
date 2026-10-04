@@ -18,10 +18,11 @@ export async function initFonts(): Promise<void> {
   await document.fonts.ready;
 
   const style = getComputedStyle(document.documentElement);
-  const family = style.getPropertyValue('--vscode-editor-font-family').trim() || 'monospace';
-  const size = style.getPropertyValue('--vscode-editor-font-size').trim() || '13px';
+  const family = style.getPropertyValue('--d-mono').trim() || 'monospace';
+  const size = style.getPropertyValue('--d-mono-size').trim() || '13px';
+  const uiFamily = style.getPropertyValue('--d-font').trim() || 'sans-serif';
 
-  bodyFont = `400 14px -apple-system, BlinkMacSystemFont, "Segoe UI", ${family}, sans-serif`;
+  bodyFont = `400 14px ${uiFamily}`;
   monoFont = `400 ${size} ${family}`;
   bodyLineHeight = 22;
   codeLineHeight = 18;

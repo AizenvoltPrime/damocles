@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
 import * as path from 'path';
-import * as fs from 'fs';
-import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { createTestMemoryDb } from './test-helpers';
+import { createTestDbPath, createTestMemoryDb } from './test-helpers';
 import type { DatabaseInstance } from '../types';
 import {
   sameWorkspace,
@@ -135,21 +132,14 @@ describe('MemoryService.addObservation workspace attribution', () => {
   let service: MemoryService;
 
   beforeEach(async () => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-attrib-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
     service.setWorkspaceRoots([PANEL, OTHER]);
     await service.ensureInitialized();
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   const save = (filesRead: string[], filesModified: string[] = []) =>

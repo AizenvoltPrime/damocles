@@ -214,3 +214,23 @@ describe('MemoryPanel focus', () => {
     expect(toasts).toHaveLength(1);
   });
 });
+
+describe('MemoryPanel row marks', () => {
+  it('marks a memory stale once its files changed three times, and shows its use count and a version past the first', async () => {
+    const store = useMemoryStore();
+    store.setMemories([
+      entry('fresh', { fileChangeCount: 2 }),
+      entry('worn', { fileChangeCount: 3, accessCount: 14, version: 3 }),
+    ]);
+    const wrapper = mountPanel();
+    await nextTick();
+
+    expect(row(wrapper, 'fresh').text()).not.toContain('stale');
+    expect(row(wrapper, 'fresh').text()).not.toContain('used');
+    expect(row(wrapper, 'fresh').text()).not.toMatch(/\bv\d/);
+    const worn = row(wrapper, 'worn').text();
+    expect(worn).toContain('stale');
+    expect(worn).toContain('used 14×');
+    expect(worn).toContain('v3');
+  });
+});

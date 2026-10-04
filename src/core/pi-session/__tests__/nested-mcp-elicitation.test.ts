@@ -9,8 +9,8 @@ import { buildMcpPiTool, buildNestedMcpToolset } from '../tools/mcp-tools';
 import { WebviewExtensionUIContext } from '../extension-ui-context';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
-import { createExtensionUiHandlers } from '@/composables/message-handler/handlers/extension-ui-handlers';
-import type { HandlerContext } from '@/composables/message-handler/types';
+import { settingsViewHandlers } from '@/composables/message-handler/handlers/settings-handlers';
+import type { SettingsHandlerContext } from '@/composables/message-handler/handlers/settings-handlers';
 import { useExtensionUiStore } from '@/stores/useExtensionUiStore';
 import { specOf } from '../mcp/__tests__/fake-server-manager';
 
@@ -97,15 +97,15 @@ function fakeTransport(servers: Record<string, { tools: McpTool[] }>) {
 /** The parent panel: extension-side UI bridge wired to the REAL webview handler + store. */
 function panel() {
   const store = useExtensionUiStore();
-  const handlers = createExtensionUiHandlers();
-  const ctx = { stores: { extensionUiStore: store } } as unknown as HandlerContext;
+  const handlers = settingsViewHandlers;
+  const ctx = { stores: { extensionUiStore: store } } as unknown as SettingsHandlerContext;
   const emitted: ExtensionToWebviewMessage[] = [];
   const uiContext = new WebviewExtensionUIContext((message) => {
     emitted.push(message);
     // Deliver to the webview exactly as `ChatPanelProvider` would — the store's view of the world is
     // then the real one, not a transcription of the extension's intent.
-    if (message.type === 'extensionUiRequest') handlers.extensionUiRequest!(message, ctx);
-    if (message.type === 'extensionUiCancel') handlers.extensionUiCancel!(message, ctx);
+    if (message.type === 'extensionUiRequest') handlers.extensionUiRequest(message, ctx);
+    if (message.type === 'extensionUiCancel') handlers.extensionUiCancel(message, ctx);
   }, () => 'SID');
 
   const requests = (): UiRequest[] => emitted.filter((m): m is UiRequest => m.type === 'extensionUiRequest');

@@ -1,11 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
-import { chatTab, expect, nextTab, panelIdOf, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
-import { shellPage, shellState } from './support/shell';
-import { addProject, chatInput, postFromWebview, sendAndAwaitEcho } from './support/ui';
+import { shellState } from './support/shell';
+import { addProject, chatInput, clickMenu, postFromWebview, sendAndAwaitEcho } from './support/ui';
+import { editSettingsFile } from './support/settings';
 
 const TARGET_OLD = "export const target = 'old';";
 const TARGET_NEW = "export const target = 'new';";
@@ -57,9 +58,9 @@ async function replaceText(editor: Locator, text: string): Promise<void> {
 }
 
 async function openProject(app: ElectronApplication, h: HermeticHome): Promise<Page> {
-  const home = await chatTab(app);
+  const home = await activeChat(app);
   await expect(chatInput(home)).toBeVisible();
-  const opened = nextTab(app, [home]);
+  const opened = nextChat(app, [home]);
   await addProject(app, h.project, true);
   const tab = await opened;
   await expect(chatInput(tab)).toBeVisible();
@@ -91,6 +92,11 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
     stub.replies.push({ chunks: [], toolCalls: [{ name: 'Edit', arguments: { file_path: file, old_string: TARGET_OLD, new_string: TARGET_NEW } }] });
     await send(tab, 'edit the big file');
     await expect(permissionPrompt(tab)).toBeVisible();
+    // The agent raised the proposal, so it waits for the card's Open diff and the composer keeps focus.
+    await expect(overlay(tab)).toBeHidden();
+    // The placeholder changes while a prompt waits, so the composer is found by its name.
+    await expect(tab.getByRole('textbox', { name: 'Message Damocles' })).toBeFocused();
+    await permissionPrompt(tab).getByRole('button', { name: 'Open diff' }).click();
     await expect(overlay(tab)).toBeVisible();
     await expect(overlay(tab)).toHaveAttribute('data-view-kind', 'diff');
     await expect(overlay(tab)).toHaveAttribute('data-purpose', 'proposal');
@@ -111,7 +117,17 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
     await expect(permissionPrompt(tab)).toBeVisible();
     expect(fs.readFileSync(file, 'utf8')).toBe(original);
 
-    await permissionPrompt(tab).getByRole('option', { name: /^1\s*Yes$/ }).click();
+    // The card's Open diff shows the same Monaco proposal again.
+    await permissionPrompt(tab).getByRole('button', { name: 'Open diff' }).click();
+    await expect(overlay(tab)).toHaveAttribute('data-purpose', 'proposal');
+    await expect(diffView(tab)).toHaveAttribute('data-monaco-ready', 'true');
+    await tab.getByTestId('editor-overlay-close').click();
+    await expect(overlay(tab)).toBeHidden();
+
+    // The option's name is its label; its digit is announced through aria-keyshortcuts.
+    const yes = permissionPrompt(tab).getByRole('option', { name: 'Yes', exact: true });
+    await expect(yes).toHaveAttribute('aria-keyshortcuts', '1 Enter');
+    await yes.click();
     await expect(permissionPrompt(tab)).toBeHidden();
     const approved = original.replace(TARGET_OLD, TARGET_NEW);
     await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe(approved);
@@ -121,6 +137,7 @@ test('permission diff: Monaco shows original and proposed for a file over 1 MB; 
     stub.replies.push({ chunks: [], toolCalls: [{ name: 'Edit', arguments: { file_path: file, old_string: TARGET_NEW, new_string: TARGET_REJECTED } }] });
     await send(tab, 'edit it again');
     await expect(permissionPrompt(tab)).toBeVisible();
+    await permissionPrompt(tab).getByRole('button', { name: 'Open diff' }).click();
     await expect(diffView(tab)).toHaveAttribute('data-monaco-ready', 'true');
     await expect(modifiedEditor.locator('.view-line', { hasText: "target = 'rejected'" })).toBeVisible();
     await tab.getByTestId('editor-reject').click();
@@ -150,7 +167,7 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
     stub.replies.push({ chunks: [], toolCalls: [{ name: 'Edit', arguments: { file_path: file, old_string: TARGET_OLD, new_string: TARGET_NEW } }] });
     await send(tab, 'change the notes');
     await expect(permissionPrompt(tab)).toBeVisible();
-    await tab.getByTestId('editor-approve').click();
+    await permissionPrompt(tab).getByRole('option', { name: 'Yes', exact: true }).click();
     await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe(original.replace(TARGET_OLD, TARGET_NEW));
     await expect(overlay(tab)).toBeHidden();
 
@@ -171,7 +188,7 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
     await expect(modal.getByText('Restore Options')).toBeVisible();
     await expect(modal.getByTitle(`View checkpoint diff for ${file}`)).toBeVisible();
 
-    await modal.getByRole('button', { name: /Rewind code to here/ }).click();
+    await modal.getByRole('option', { name: /Rewind code to here/ }).click();
     await modal.getByRole('button', { name: 'Roll back files' }).click();
     await expect.poll(() => fs.readFileSync(file, 'utf8')).toBe(original);
   } finally {
@@ -179,37 +196,47 @@ test('rewind: the confirm modal opens the checkpoint diff in Monaco, and rolling
   }
 });
 
-test('open file: a read-only view at the requested line in the requesting tab; untitled element context opens read-only too', async ({ home, launch }) => {
+test('open file: a read-only view at the requested line in the requesting chat; untitled element context opens read-only too', async ({ home, launch }) => {
   const file = path.join(home.project, 'lines.py');
   fs.writeFileSync(file, Array.from({ length: 400 }, (_, i) => `value_${i + 1} = ${i + 1}`).join('\n'));
-  const { app } = await launch();
-  const project = await openProject(app, home);
-  const homeTab = await chatTab(app);
-  const shell = await shellPage(app);
-  await shell.evaluate((id) => window.damoclesShell!.selectTab(id), panelIdOf(homeTab));
-  await expect.poll(async () => (await shellState(app)).selectedTabId).toBe(panelIdOf(homeTab));
+  const stub = await startOpenAIStub();
+  try {
+    seedStubModel(home, stub.baseUrl);
+    const { app } = await launch();
+    const project = await openProject(app, home);
+    // A chat with a conversation stays loaded when another chat is selected.
+    await sendAndAwaitEcho(project, 'keep this chat');
+    const projectChatId = (await shellState(app)).selected.chatId;
+    const opened = nextChat(app, [project]);
+    await clickMenu(app, 'damocles.newChat');
+    const homeTab = await opened;
+    await expect(chatInput(homeTab)).toBeVisible();
 
-  // The request comes from the project tab while another tab is selected: the view opens there and that tab is revealed.
-  await postFromWebview(project, { type: 'openFile', filePath: file, line: 250 });
-  await expect.poll(async () => (await shellState(app)).selectedTabId).toBe(panelIdOf(project));
-  const view = project.getByTestId('editor-file-view');
-  await expect(view).toHaveAttribute('data-monaco-ready', 'true');
-  await expect(view).toHaveAttribute('data-revealed-line', '250');
-  await expect(view.locator('.view-line', { hasText: 'value_250 = 250' })).toBeVisible();
-  await expect(view.locator('.damocles-editor-highlight-line')).toBeVisible();
-  await expect(homeTab.getByTestId('editor-overlay')).toHaveCount(0);
+    // The request comes from the project chat while another chat is selected: the view opens there and that chat is revealed.
+    await postFromWebview(project, { type: 'openFile', filePath: file, line: 250 });
+    await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(projectChatId);
+    const view = project.getByTestId('editor-file-view');
+    await expect(view).toHaveAttribute('data-monaco-ready', 'true');
+    await expect(view).toHaveAttribute('data-revealed-line', '250');
+    await expect(view.locator('.view-line', { hasText: 'value_250 = 250' })).toBeVisible();
+    await expect(view.locator('.damocles-editor-highlight-line')).toBeVisible();
+    // The other chat was a new, empty one, so leaving it dropped it rather than showing it the view.
+    await expect.poll(() => homeTab.isClosed()).toBe(true);
 
-  await view.locator('.view-lines').click();
-  await project.keyboard.type('typed');
-  await expect(view.locator('.view-line', { hasText: 'typed' })).toHaveCount(0);
-  await project.getByTestId('editor-overlay-close').click();
-  await expect(overlay(project)).toBeHidden();
+    await view.locator('.view-lines').click();
+    await project.keyboard.type('typed');
+    await expect(view.locator('.view-line', { hasText: 'typed' })).toHaveCount(0);
+    await project.getByTestId('editor-overlay-close').click();
+    await expect(overlay(project)).toBeHidden();
 
-  await postFromWebview(project, { type: 'openElementContext', content: '<div class="picked">element</div>' });
-  const untitled = project.getByTestId('editor-file-view');
-  await expect(untitled).toHaveAttribute('data-untitled', 'true');
-  await expect(untitled.locator('.view-line', { hasText: 'picked' })).toBeVisible();
-  expect(fs.readFileSync(file, 'utf8')).not.toContain('typed');
+    await postFromWebview(project, { type: 'openElementContext', content: '<div class="picked">element</div>' });
+    const untitled = project.getByTestId('editor-file-view');
+    await expect(untitled).toHaveAttribute('data-untitled', 'true');
+    await expect(untitled.locator('.view-line', { hasText: 'picked' })).toBeVisible();
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('typed');
+  } finally {
+    await stub.close();
+  }
 });
 
 test('settings editor: schema validation flags unknown and user-only keys, save writes the file, invalid JSON is refused', async ({ home, launch }) => {
@@ -223,8 +250,7 @@ test('settings editor: schema validation flags unknown and user-only keys, save 
   const tab = await openProject(app, home);
   const workerFailures = watchWorkerFailures(tab);
 
-  await tab.getByRole('button', { name: 'Settings', exact: true }).click();
-  await tab.getByTestId('settings-edit-json-user').click();
+  await editSettingsFile(app, 'user');
   const editor = tab.getByTestId('settings-json-editor');
   const monaco = tab.getByTestId('settings-json-editor-monaco');
   await expect(editor).toHaveAttribute('data-scope', 'user');
@@ -252,8 +278,7 @@ test('settings editor: schema validation flags unknown and user-only keys, save 
   await tab.getByTestId('settings-json-close').click();
   await editor.getByRole('button', { name: 'Discard', exact: true }).click();
   await expect(editor).toBeHidden();
-  await tab.getByRole('button', { name: 'Settings', exact: true }).click();
-  await tab.getByTestId('settings-edit-json-project').click();
+  await editSettingsFile(app, 'project');
   await expect(editor).toHaveAttribute('data-scope', 'project');
   await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
   await expect(monaco).toHaveAttribute('data-marker-count', '1');

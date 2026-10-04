@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
-import { chatTab, expect, nextTab, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { addProject, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
@@ -55,7 +55,7 @@ test('watchers: memory file, hooks, agent registry, slash command and MCP config
   try {
     seedStubModel(home, stub.baseUrl);
     const desktop = await launch();
-    const tab = await chatTab(desktop.app);
+    const tab = await activeChat(desktop.app);
     await expect(chatInput(tab)).toBeVisible();
     await recordHostMessages(tab);
     // The first turn starts the session, which subscribes to the agent registry.
@@ -100,9 +100,9 @@ test('watchers: a permission rule written to a trusted project applies to the ne
     fs.writeFileSync(notes, 'FILE-CONTENT-MARKER-5a7c\n');
     const denied = 'Permission denied by a rule in your Damocles settings';
     const desktop = await launch();
-    const homeTab = await chatTab(desktop.app);
+    const homeTab = await activeChat(desktop.app);
     await expect(chatInput(homeTab)).toBeVisible();
-    const opened = nextTab(desktop.app, [homeTab]);
+    const opened = nextChat(desktop.app, [homeTab]);
     await addProject(desktop.app, home.project, true);
     const alpha = await opened;
     await expect(chatInput(alpha)).toBeVisible();

@@ -53,6 +53,7 @@ function noticeText(notice: MemoryNotice): string {
 
 <template>
   <OverlayShell
+    data-testid="context-injection-overlay"
     :title="t('contextInjection.title')"
     :subtitle="t('contextInjection.promptN', { n: store.activePromptIndex + 1 })"
     :icon="IconDatabase"
@@ -76,7 +77,7 @@ function noticeText(notice: MemoryNotice): string {
 
     <div class="@container p-4 space-y-4">
       <div v-if="store.isLoading && !store.isBuilding" class="flex items-center justify-center py-12">
-        <LoadingSpinner :size="24" />
+        <LoadingSpinner class="size-6" />
       </div>
 
       <div
@@ -84,16 +85,16 @@ function noticeText(notice: MemoryNotice): string {
         class="flex flex-col items-center justify-center text-center gap-3 py-12"
         data-state="no-record"
       >
-        <IconDatabase :size="32" class="text-muted-foreground/40" />
+        <IconDatabase class="size-8 text-(--d-faint)" />
         <div>
-          <p class="text-sm text-muted-foreground">{{ t('contextInjection.noContext') }}</p>
-          <p class="text-xs text-muted-foreground/60 mt-1">{{ t('contextInjection.noContextHint') }}</p>
+          <p class="text-sm text-(--d-muted)">{{ t('contextInjection.noContext') }}</p>
+          <p class="text-xs text-(--d-faint) mt-1">{{ t('contextInjection.noContextHint') }}</p>
         </div>
       </div>
 
       <div v-else-if="!display" class="flex items-center justify-center gap-2 py-12" data-state="building">
-        <LoadingSpinner :size="16" />
-        <span class="text-xs text-muted-foreground">{{ t('contextInjection.building') }}</span>
+        <LoadingSpinner class="size-4" />
+        <span class="text-xs text-(--d-muted)">{{ t('contextInjection.building') }}</span>
       </div>
 
       <template v-else>
@@ -107,7 +108,7 @@ function noticeText(notice: MemoryNotice): string {
           </TabsList>
 
           <TabsContent value="memories" class="space-y-4">
-            <p v-if="nothingNew" class="text-sm text-muted-foreground" data-state="nothing-new">
+            <p v-if="nothingNew" class="text-sm text-(--d-muted)" data-state="nothing-new">
               {{ counted('contextInjection.nothingNew', display.carried.length) }}
             </p>
 
@@ -116,22 +117,22 @@ function noticeText(notice: MemoryNotice): string {
                 <CollapsibleTrigger as-child>
                   <button
                     type="button"
-                    class="flex w-full items-center gap-2 py-1 text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
+                    class="flex w-full items-center gap-2 py-1 text-(--d-muted) transition-colors hover:text-(--d-text) cursor-pointer"
                     data-action="toggle-profile"
                   >
-                    <IconChevronRight :size="14" class="shrink-0 transition-transform" :class="{ 'rotate-90': profileOpen }" />
+                    <IconChevronRight class="size-3.5 shrink-0 transition-transform" :class="{ 'rotate-90': profileOpen }" />
                     <span class="font-medium">{{ t('contextInjection.profile.label') }}</span>
                     <span class="ml-auto tabular-nums" data-section-tokens>{{ counted('contextInjection.memoryTokenCount', display.profile.tokens) }}</span>
                   </button>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <pre
-                    class="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/60 p-3 font-mono text-xs text-foreground/90"
+                    class="mt-1 whitespace-pre-wrap wrap-break-word rounded-lg border border-(--d-border) bg-[color-mix(in_srgb,var(--d-hover)_60%,transparent)] p-3 font-mono text-xs text-(--d-text)"
                     data-profile-text
                   >{{ display.profile.text }}</pre>
                 </CollapsibleContent>
               </Collapsible>
-              <p v-else class="text-muted-foreground">
+              <p v-else class="text-(--d-muted)">
                 <span class="font-medium">{{ t('contextInjection.profile.label') }}:</span>
                 {{ t(`contextInjection.profile.${display.profile.state}`) }}
               </p>
@@ -142,29 +143,29 @@ function noticeText(notice: MemoryNotice): string {
                 <CollapsibleTrigger as-child>
                   <button
                     type="button"
-                    class="flex w-full items-center gap-2 py-1 text-muted-foreground transition-colors hover:text-foreground cursor-pointer"
+                    class="flex w-full items-center gap-2 py-1 text-(--d-muted) transition-colors hover:text-(--d-text) cursor-pointer"
                     data-action="toggle-compass"
                   >
-                    <IconChevronRight :size="14" class="shrink-0 transition-transform" :class="{ 'rotate-90': compassOpen }" />
+                    <IconChevronRight class="size-3.5 shrink-0 transition-transform" :class="{ 'rotate-90': compassOpen }" />
                     <span class="font-medium">{{ t('contextInjection.compass.label') }}</span>
                     <span class="ml-auto tabular-nums" data-section-tokens>{{ counted('contextInjection.memoryTokenCount', display.tokens.compass) }}</span>
                   </button>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <pre
-                    class="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/60 p-3 font-mono text-xs text-foreground/90"
+                    class="mt-1 whitespace-pre-wrap wrap-break-word rounded-lg border border-(--d-border) bg-[color-mix(in_srgb,var(--d-hover)_60%,transparent)] p-3 font-mono text-xs text-(--d-text)"
                     data-compass-text
                   >{{ display.compass.text }}</pre>
                 </CollapsibleContent>
               </Collapsible>
-              <p v-else class="text-muted-foreground">
+              <p v-else class="text-(--d-muted)">
                 <span class="font-medium">{{ t('contextInjection.compass.label') }}:</span>
                 {{ t(`contextInjection.compass.${display.compass.state}`) }}
               </p>
             </section>
 
             <section v-if="display.added.length > 0" class="space-y-2" data-section="added">
-              <h3 class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              <h3 class="text-xs font-medium uppercase tracking-widest text-(--d-muted)">
                 {{ t('contextInjection.section.added', { count: display.added.length }) }}
               </h3>
               <InjectedMemoryCard
@@ -177,14 +178,14 @@ function noticeText(notice: MemoryNotice): string {
             </section>
 
             <section v-if="display.notices.length > 0" class="space-y-2" data-section="notices">
-              <h3 class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              <h3 class="text-xs font-medium uppercase tracking-widest text-(--d-muted)">
                 {{ t('contextInjection.section.notices', { count: display.notices.length }) }}
               </h3>
               <ul class="space-y-1">
                 <li
                   v-for="notice in display.notices"
                   :key="`${notice.kind}:${notice.id}`"
-                  class="text-xs text-foreground/90 rounded-md border border-border/60 px-3 py-2"
+                  class="text-xs text-(--d-text) rounded-md border border-(--d-border) px-3 py-2"
                   :data-notice="notice.kind"
                 >
                   {{ noticeText(notice) }}
@@ -193,7 +194,7 @@ function noticeText(notice: MemoryNotice): string {
             </section>
 
             <section v-if="display.carried.length > 0" class="space-y-2" data-section="carried">
-              <h3 class="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              <h3 class="text-xs font-medium uppercase tracking-widest text-(--d-muted)">
                 {{ t('contextInjection.section.carried', { count: display.carried.length }) }}
               </h3>
               <ul class="space-y-1">
@@ -210,7 +211,7 @@ function noticeText(notice: MemoryNotice): string {
 
           <TabsContent value="exactText" class="space-y-2">
             <div class="flex items-center justify-between gap-2">
-              <p class="text-xs text-muted-foreground">{{ t('contextInjection.exactTextHint') }}</p>
+              <p class="text-xs text-(--d-muted)">{{ t('contextInjection.exactTextHint') }}</p>
               <Button
                 v-if="display.exactText"
                 variant="ghost"
@@ -219,16 +220,16 @@ function noticeText(notice: MemoryNotice): string {
                 data-action="copy-exact-text"
                 @click="copyToClipboard(display.exactText)"
               >
-                <component :is="hasCopied ? IconCheck : IconCopy" :size="14" />
+                <component :is="hasCopied ? IconCheck : IconCopy" class="size-3.5" />
                 <span>{{ hasCopied ? t('contextInjection.copied') : t('contextInjection.copy') }}</span>
               </Button>
             </div>
             <pre
               v-if="display.exactText"
-              class="text-xs font-mono whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/60 p-3 text-foreground/90"
+              class="text-xs font-mono whitespace-pre-wrap wrap-break-word rounded-lg border border-(--d-border) bg-[color-mix(in_srgb,var(--d-hover)_60%,transparent)] p-3 text-(--d-text)"
               data-exact-text
             >{{ display.exactText }}</pre>
-            <p v-else class="text-sm text-muted-foreground" data-state="nothing-sent">{{ t('contextInjection.nothingSent') }}</p>
+            <p v-else class="text-sm text-(--d-muted)" data-state="nothing-sent">{{ t('contextInjection.nothingSent') }}</p>
           </TabsContent>
         </Tabs>
       </template>

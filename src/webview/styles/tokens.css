@@ -1,0 +1,45 @@
+/*
+ * The design tokens, and the only renderer file that reads --vscode-* (design-token-guard.test.ts).
+ * VS Code fills them from the active theme here; desktop overrides every one from its host theme style
+ * (src/desktop/main/theme.ts), which loads after this stylesheet. See docs/invariants.md "Design tokens".
+ */
+:root {
+  --d-bg: var(--vscode-editor-background);
+  --d-panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --d-card: var(--vscode-editorWidget-background);
+  --d-hover: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+  --d-border: var(--vscode-panel-border, var(--vscode-widget-border));
+  --d-border2: var(--vscode-widget-border, var(--vscode-editorWidget-border, var(--vscode-panel-border)));
+  --d-text: var(--vscode-foreground);
+  --d-muted: var(--vscode-descriptionForeground);
+  --d-faint: var(--vscode-editorLineNumber-foreground);
+  --d-accent: var(--vscode-textLink-foreground);
+  --d-on-accent: var(--vscode-editor-background);
+  --d-success: var(--vscode-terminal-ansiGreen, #4caf50);
+  --d-warning: var(--vscode-editorWarning-foreground, #ff9800);
+  --d-danger: var(--vscode-errorForeground, #f44336);
+  --d-info: var(--vscode-editorInfo-foreground, #2196f3);
+  --d-code: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background));
+  --d-input: var(--vscode-input-background);
+  --d-add: var(--vscode-diffEditor-insertedTextBackground, rgba(34, 197, 94, 0.15));
+  --d-del: var(--vscode-diffEditor-removedTextBackground, rgba(239, 68, 68, 0.15));
+  --d-font: var(--vscode-font-family, system-ui, sans-serif);
+  --d-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
+  --d-mono-size: var(--vscode-editor-font-size, 12px);
+  --d-font-size: var(--vscode-font-size, 13px);
+  /* Black or white by WCAG luminance against 0.179, where both reach the same ratio (4.58:1) on the fill. */
+  --d-on-danger: color(from var(--d-danger) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+  --d-on-warning: color(from var(--d-warning) srgb-linear clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) clamp(0, (0.179 - (0.2126 * r + 0.7152 * g + 0.0722 * b)) * 1000000, 1) / 1);
+
+  --d-accent-soft: color-mix(in srgb, var(--d-accent) 15%, transparent);
+  /* Text on a tint of its tone, a hover or a diff row: leaning toward the theme foreground gains contrast in dark, light and high contrast themes alike. */
+  --d-accent-text: color-mix(in srgb, var(--d-accent) 70%, var(--d-text));
+  --d-success-text: color-mix(in srgb, var(--d-success) 70%, var(--d-text));
+  --d-warning-text: color-mix(in srgb, var(--d-warning) 70%, var(--d-text));
+  --d-danger-text: color-mix(in srgb, var(--d-danger) 70%, var(--d-text));
+  --d-info-text: color-mix(in srgb, var(--d-info) 70%, var(--d-text));
+  --d-faint-text: color-mix(in srgb, var(--d-faint) 70%, var(--d-text));
+  /* A near-black taken from the background, so a light theme gets a softer shadow and scrim than a dark one. */
+  --d-shadow: 0 12px 32px color-mix(in srgb, color-mix(in srgb, var(--d-bg) 30%, black) 40%, transparent);
+  --d-scrim: color-mix(in srgb, color-mix(in srgb, var(--d-bg) 30%, black) 55%, transparent);
+}

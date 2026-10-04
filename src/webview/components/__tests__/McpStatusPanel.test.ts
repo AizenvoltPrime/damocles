@@ -28,7 +28,7 @@ function mountPanel(
   servers: McpServerStatusInfo[],
   configErrors: McpConfigError[] = [],
   localMcpUnignored = false,
-  over: { visible?: boolean; configRevision?: number } = {},
+  over: { configRevision?: number } = {},
 ) {
   return track(mount(McpStatusPanel, {
     props: {
@@ -40,7 +40,6 @@ function mountPanel(
       localMcpUnignored,
       // The panel clears its reload spinner when this counter moves, so it has to be controllable.
       configRevision: 0,
-      visible: true,
       ...over,
     },
     attachTo: document.body,
@@ -114,9 +113,9 @@ async function type(el: HTMLInputElement, value: string): Promise<void> {
 
 const bodyText = (): string => document.body.textContent ?? '';
 
-/** reka-ui leaves a closed dialog in the DOM for its exit animation, so openness is `data-state`. */
+/** Every overlay on screen; the MCP form opens as its own overlay over the panel. */
 const openDialogTexts = (): string[] =>
-  Array.from(document.body.querySelectorAll('[role="dialog"][data-state="open"]')).map(
+  Array.from(document.body.querySelectorAll('[role="dialog"]')).map(
     (el) => el.textContent ?? '',
   );
 
@@ -341,14 +340,22 @@ describe('McpStatusPanel: name collisions carry trust through to the form', () =
 });
 
 describe('McpStatusPanel: reload config', () => {
-  const reloadButton = (): HTMLButtonElement => buttonByText('Reload config');
+  const reloadButton = (): HTMLButtonElement => document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-reload"]')!;
 
-  it('emits reloadConfig, the only way an unwatched ~/.claude.json is re-read', async () => {
+  it('reloads when the panel opens, so an edit made while it was closed is picked up', async () => {
+    const wrapper = mountPanel([]);
+    await nextTick();
+
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+    expect(reloadButton().hasAttribute('disabled')).toBe(false);
+  });
+
+  it('emits reloadConfig on click, the only way an unwatched ~/.claude.json is re-read', async () => {
     const wrapper = mountPanel([]);
     await nextTick();
     await click(reloadButton());
 
-    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(2);
   });
 
   it('names what it re-reads, since the reply usually renders identically to what is on screen', async () => {
@@ -358,7 +365,7 @@ describe('McpStatusPanel: reload config', () => {
     expect(reloadButton().getAttribute('title')).toContain('~/.claude.json');
   });
 
-  it('goes disabled with a spinner and swallows the repeat click', async () => {
+  it('goes disabled with a turning icon and swallows the repeat click', async () => {
     // Each click runs a full config load and re-feeds the live MCP client, so a button that looks
     // dead invites the user to do that three more times.
     const wrapper = mountPanel([]);
@@ -366,13 +373,14 @@ describe('McpStatusPanel: reload config', () => {
     await click(reloadButton());
 
     expect(reloadButton().hasAttribute('disabled')).toBe(true);
-    expect(reloadButton().querySelector('.animate-spinner')).not.toBeNull();
+    expect(reloadButton().textContent?.trim()).toBe('Reloading…');
+    expect(reloadButton().querySelector('.d-spinning')).not.toBeNull();
 
     await click(reloadButton());
-    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
+    expect(wrapper.emitted('reloadConfig')).toHaveLength(2);
   });
 
-  it('re-enables when the config update lands, and takes the spinner with it', async () => {
+  it('re-enables when the config update lands, and stops the icon', async () => {
     const wrapper = mountPanel([]);
     await nextTick();
     await click(reloadButton());
@@ -381,7 +389,7 @@ describe('McpStatusPanel: reload config', () => {
     await nextTick();
 
     expect(reloadButton().hasAttribute('disabled')).toBe(false);
-    expect(reloadButton().querySelector('.animate-spinner')).toBeNull();
+    expect(reloadButton().querySelector('.d-spinning')).toBeNull();
   });
 
   it('re-enables on its own when the reply never arrives', async () => {
@@ -403,42 +411,14 @@ describe('McpStatusPanel: reload config', () => {
     }
   });
 
-  it('reloads when the panel is opened, so an edit made while it was closed is picked up', async () => {
-    const wrapper = mountPanel([], [], false, { visible: false });
-    await nextTick();
-    expect(wrapper.emitted('reloadConfig')).toBeUndefined();
-
-    await wrapper.setProps({ visible: true });
-    await nextTick();
-
-    expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
-  });
-
-  it('does not spin the button for a reload the user did not click', async () => {
-    const wrapper = mountPanel([], [], false, { visible: false });
-    await nextTick();
-    await wrapper.setProps({ visible: true });
-    await nextTick();
-
-    expect(reloadButton().hasAttribute('disabled')).toBe(false);
-  });
-
   it('does not reload again when the reply to the open lands', async () => {
-    // The host answers a reload with a config update. If that fed the watcher, the panel would loop.
-    const wrapper = mountPanel([], [], false, { visible: false });
+    // The host answers a reload with a config update. If that triggered another, the panel would loop.
+    const wrapper = mountPanel([]);
     await nextTick();
-    await wrapper.setProps({ visible: true });
     await wrapper.setProps({ configRevision: 7 });
     await nextTick();
 
     expect(wrapper.emitted('reloadConfig')).toHaveLength(1);
-  });
-
-  it('does not reload on mount when the panel is already visible', async () => {
-    const wrapper = mountPanel([]);
-    await nextTick();
-
-    expect(wrapper.emitted('reloadConfig')).toBeUndefined();
   });
 });
 
@@ -540,8 +520,6 @@ describe('McpStatusPanel — add', () => {
 
     await settleWrite(wrapper);
 
-    // reka-ui keeps a closed dialog's node around for its exit animation, so "closed" is the
-    // `data-state`, not the absence of the element.
     expect(openDialogTexts().some((text) => text.includes('Add MCP server'))).toBe(false);
 
     await click(buttonByText('Add server'));
@@ -654,6 +632,81 @@ describe('McpStatusPanel — delete confirmation', () => {
 
     expect(wrapper.emitted('deleteServer')).toBeUndefined();
     expect(document.body.querySelector('[role="alertdialog"][data-state="open"]')).toBeNull();
+  });
+});
+
+describe('McpStatusPanel — focus around the delete confirmation', () => {
+  const other: McpServerStatusInfo = { ...editableDamocles, name: 'maps' };
+  const confirmationButton = (text: string): HTMLButtonElement =>
+    Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button'))
+      .find((el) => el.textContent?.trim() === text)!;
+  const rows = (): HTMLElement[] => Array.from(document.body.querySelectorAll<HTMLElement>('[data-testid="mcp-server-row"]'));
+  /** Clicks the button and lets the panel's post-render focus move run. */
+  async function press(el: HTMLElement): Promise<void> {
+    await click(el);
+    await nextTick();
+  }
+
+  it('moves focus into the confirmation, onto Cancel', async () => {
+    mountPanel([editableDamocles]);
+    await nextTick();
+    await press(buttonByText('Delete'));
+
+    expect(document.activeElement).toBe(confirmationButton('Cancel'));
+  });
+
+  it('returns focus to the Delete button on Cancel and on Escape', async () => {
+    mountPanel([editableDamocles]);
+    await nextTick();
+    await press(buttonByText('Delete'));
+    await press(confirmationButton('Cancel'));
+    expect(document.activeElement).toBe(buttonByText('Delete'));
+
+    await press(buttonByText('Delete'));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    await nextTick();
+    expect(document.activeElement).toBe(buttonByText('Delete'));
+  });
+
+  it('keeps focus on the row after confirming, then moves it to the next row once the server is gone', async () => {
+    const wrapper = mountPanel([editableDamocles, other]);
+    await nextTick();
+    await press(buttonsByText('Delete')[0]!);
+    await press(confirmationButton('Delete'));
+    expect(document.activeElement).toBe(rows()[0]);
+
+    await wrapper.setProps({ mcpWriteInFlight: true });
+    await wrapper.setProps({ servers: [other], mcpWriteInFlight: false });
+    await nextTick();
+
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement).toBe(rows()[0]);
+    expect(rows()[0]!.textContent).toContain('maps');
+  });
+
+  it('moves focus to Add server when the last server is deleted', async () => {
+    const wrapper = mountPanel([editableDamocles]);
+    await nextTick();
+    await press(buttonByText('Delete'));
+    await press(confirmationButton('Delete'));
+
+    await wrapper.setProps({ mcpWriteInFlight: true });
+    await wrapper.setProps({ servers: [], mcpWriteInFlight: false });
+    await nextTick();
+
+    expect(document.activeElement).toBe(document.body.querySelector('[data-testid="mcp-add-server"]'));
+  });
+
+  it('leaves focus on the row when the delete is refused', async () => {
+    const wrapper = mountPanel([editableDamocles, other]);
+    await nextTick();
+    await press(buttonsByText('Delete')[0]!);
+    await press(confirmationButton('Delete'));
+
+    await settleWrite(wrapper, { code: 'writeFailed', params: { detail: 'EACCES' } });
+
+    expect(document.activeElement).toBe(rows()[0]);
   });
 });
 
@@ -877,7 +930,6 @@ describe('McpStatusPanel — per-tool exposure', () => {
         mcpEnabled: true,
         localMcpUnignored: false,
         configRevision: 0,
-        visible: true,
         ...(scopes ? { toolExposureScopes: scopes } : {}),
       },
       attachTo: document.body,
@@ -957,7 +1009,6 @@ describe('McpStatusPanel — per-tool exposure', () => {
         mcpEnabled: true,
         localMcpUnignored: false,
         configRevision: 0,
-        visible: true,
         toolExposureScopes: ['user', 'project'],
       },
       attachTo: document.body,
@@ -991,5 +1042,35 @@ describe('McpStatusPanel — per-tool exposure', () => {
     await nextTick();
     expect(Array.from(groupFor('query-docs').querySelectorAll('[data-exposure]')).map((el) => el.textContent?.trim())).toEqual(['Ανενεργό', 'Ενεργό', 'Πάντα φορτωμένο']);
     expect(sources()[0]).toBe('Έργο');
+  });
+});
+
+describe('McpStatusPanel — the overlay stack', () => {
+  it('opens the form as a nested overlay, and Escape closes only the form', async () => {
+    const wrapper = mountPanel([editableDamocles]);
+    await nextTick();
+    await click(buttonByText('Add server'));
+
+    const dialogs = Array.from(document.body.querySelectorAll<HTMLElement>('[role="dialog"]'));
+    expect(dialogs).toHaveLength(2);
+    expect(Number(dialogs[1]!.style.zIndex)).toBeGreaterThan(Number(dialogs[0]!.style.zIndex));
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(wrapper.emitted('close')).toBeUndefined();
+  });
+
+  it('keeps a typed form open when every overlay is closed at once', async () => {
+    const wrapper = mountPanel([editableDamocles]);
+    await nextTick();
+    await click(buttonByText('Add server'));
+    await type(inputByPlaceholder('my-server'), 'weather');
+
+    const formDialog = Array.from(document.body.querySelectorAll<HTMLElement>('[role="dialog"]'))[1]!;
+    await click(formDialog.querySelector<HTMLElement>('[data-testid="overlay-close"]')!);
+
+    expect(inputByPlaceholder('my-server').value).toBe('weather');
+    expect(wrapper.emitted('close')).toBeUndefined();
   });
 });

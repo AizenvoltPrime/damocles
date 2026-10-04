@@ -29,6 +29,8 @@ import { TeamPersistence } from '../persistence';
 import { copyForkAgentData } from '../../pi-session/fork-agent-data';
 import { DAMOCLES_AGENT_INVOCATION_ENTRY, DAMOCLES_AGENT_LAUNCH_ENTRY } from '../../pi-session/session-store/constants';
 import { buildResumePrompt, formatTeamUserSteerPrefix } from '../../../shared/steer';
+import { PI_EXCLUDED_TOOLS } from '../../pi-session/pi-models';
+import { OVERRIDE_TOOL_NAMES } from '../../pi-session/tools';
 
 // The first pi import takes about a second, which under a loaded machine overruns a test's timeout.
 beforeAll(async () => {
@@ -60,6 +62,8 @@ interface Panel {
   webview: ExtensionToWebviewMessage[];
   resumableChecks: Array<[string, string]>;
   interruptionChecks: number;
+  /** Each member session's `excludeTools`, in creation order. */
+  excluded: Array<string[] | undefined>;
   parentBranch: ReturnType<typeof vi.fn>;
   behave: { lead: Behaviour };
 }
@@ -72,12 +76,13 @@ interface Panel {
 function panel(cwd = path.join(DAMOCLES_HOME_DIR, crypto.randomUUID().slice(0, 8)), sessionId = SESSION): Panel {
   const p = {
     cwd, invocations: [], branch: { override: null }, sessions: [], stores: [], order: [], webview: [],
-    resumableChecks: [], interruptionChecks: 0, behave: { lead: endTurn }, hook: null,
+    resumableChecks: [], interruptionChecks: 0, excluded: [], behave: { lead: endTurn }, hook: null,
   } as unknown as Panel;
   const engine = {
-    createSession: async (opts: { store: Record<string, unknown> }) => {
+    createSession: async (opts: { store: Record<string, unknown>; excludeTools?: string[] }) => {
       const store = opts.store;
       p.stores.push(store);
+      p.excluded.push(opts.excludeTools);
       p.order.push('session');
       p.hook?.('session');
       const session = new FakeSession({ onPrompt: (t, s) => p.behave.lead(t, s) });
@@ -138,7 +143,8 @@ async function runningTeam(p: Panel, toolCallId = 'tc-create'): Promise<{ teamId
 /** The cancel times of the team's checkpoints, oldest first. */
 const checkpointsOf = (p: Panel, teamId: string): Promise<number[]> => listTeamCheckpoints(teamCheckpointsDir(piSessionDir(p.cwd), SESSION, teamId));
 const checkpointFile = (p: Panel, teamId: string, cancelledAt: number): string => teamCheckpointPath(piSessionDir(p.cwd), SESSION, teamId, cancelledAt);
-const resumable = (p: Panel, teamId: string, sessionId = SESSION): Promise<boolean> => new TeamPersistence(p.cwd, sessionId).isResumable(teamId);
+const stopOf = (p: Panel, teamId: string) => new TeamPersistence(p.cwd, SESSION).resumableStop(teamId);
+const resumable = (p: Panel, teamId: string, sessionId = SESSION): Promise<boolean> => new TeamPersistence(p.cwd, sessionId).resumableStop(teamId).then((stop) => stop !== null);
 
 /** Copy `from`'s agent data into the fork session `to` the way a fork at `forkPointMs` does, over a branch holding `invocations`. */
 async function forkAt(cwd: string, from: string, to: string, forkPointMs: number, invocations: AgentInvocationData[]): Promise<void> {
@@ -193,8 +199,8 @@ describe('a cancelled team result says whether the team can be resumed', () => {
     const cancelText = p.service.cancelTeam(teamId);
     const createText = await result;
 
-    const header = teamCancelledHeader(teamId, true);
-    expect(header).toBe(`(TEAM CANCELLED before completion; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`);
+    const header = teamCancelledHeader(teamId, 'parent', true);
+    expect(header).toBe(`(TEAM CANCELLED by your cancel_team call before completion; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`);
     expect(cancelText).toBe(`${header}Team "${teamId}" cancelled.`);
     expect(createText.startsWith(header)).toBe(true);
     expect(createText).toContain('## Partial Team Results');
@@ -211,7 +217,7 @@ describe('a cancelled team result says whether the team can be resumed', () => {
     const p = panel();
     p.service.setPendingToolUseId('tc-create');
     const text = await p.service.createTeam(LEAD_ONLY);
-    expect(text).not.toContain('TEAM CANCELLED');
+    expect(text).not.toContain('before completion;');
   });
 
   it('puts the header before the operator steer prefix', async () => {
@@ -225,7 +231,7 @@ describe('a cancelled team result says whether the team can be resumed', () => {
 
     const prefix = formatTeamUserSteerPrefix([{ memberName: 'Lead', message: 'go faster', imageCount: 1 }]);
     expect(prefix).toBe('[User steered team member "Lead" mid-task: "go faster" (+1 image)]\n');
-    expect(await result).toMatch(new RegExp(`^${escape(teamCancelledHeader(teamId, true))}${escape(prefix)}`));
+    expect(await result).toMatch(new RegExp(`^${escape(teamCancelledHeader(teamId, 'parent', true))}${escape(prefix)}`));
   });
 
   it('a cancel whose checkpoint write failed does not offer resume_team', async () => {
@@ -236,8 +242,8 @@ describe('a cancelled team result says whether the team can be resumed', () => {
       const cancelText = p.service.cancelTeam(teamId);
       const createText = await result;
 
-      const header = teamCancelledHeader(teamId, false);
-      expect(header).toBe('(TEAM CANCELLED before completion; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n');
+      const header = teamCancelledHeader(teamId, 'parent', false);
+      expect(header).toBe('(TEAM CANCELLED by your cancel_team call before completion; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n');
       expect(cancelText).toBe(`${header}Team "${teamId}" cancelled.`);
       expect(createText.startsWith(header)).toBe(true);
     } finally {
@@ -251,7 +257,117 @@ describe('a cancelled team result says whether the team can be resumed', () => {
 
     p.service.cancelActiveTeam('reset');
 
-    expect((await result).startsWith(teamCancelledHeader(teamId, false))).toBe(true);
+    expect((await result).startsWith(teamCancelledHeader(teamId, 'reset', false))).toBe(true);
+  });
+});
+
+describe('a team member session', () => {
+  it("excludes only pi's edit, so no pi built-in override is dropped with the original", async () => {
+    const p = panel();
+    p.service.setPendingToolUseId('tc-create');
+    await p.service.createTeam(LEAD_ONLY);
+
+    expect(p.excluded).toEqual([[...PI_EXCLUDED_TOOLS]]);
+    for (const name of OVERRIDE_TOOL_NAMES) expect(PI_EXCLUDED_TOOLS).not.toContain(name);
+  });
+});
+
+describe("the user's Stop team", () => {
+  it('stops the running team resumably: the checkpoint is written, create_team returns the partial results, and the model is told', async () => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+    const checksBefore = p.interruptionChecks;
+
+    expect(p.service.stopTeam(teamId)).toBe(true);
+    const text = await result;
+
+    expect(text.startsWith(teamCancelledHeader(teamId, 'user', true))).toBe(true);
+    expect(text).toContain('## Partial Team Results');
+    expect(await resumable(p, teamId)).toBe(true);
+    expect(p.interruptionChecks).toBe(checksBefore + 1);
+    expect(p.service.running).toBe(false);
+  });
+
+  it('stops the same way as cancel_team, which names the parent model as the cause', async () => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+    const checksBefore = p.interruptionChecks;
+
+    p.service.cancelTeam(teamId);
+
+    expect((await result).startsWith(teamCancelledHeader(teamId, 'parent', true))).toBe(true);
+    expect(await stopOf(p, teamId)).toBe('parent');
+    expect(p.interruptionChecks).toBe(checksBefore + 1);
+  });
+
+  it.each([
+    ['Stop team', 'user', (p: Panel, teamId: string) => p.service.stopTeam(teamId)],
+    ['ESC', 'user', (p: Panel) => p.service.cancelActiveTeam('user')],
+    ['a panel close or reload', 'shutdown', (p: Panel) => p.service.dispose()],
+  ] as const)('%s records and states its cause', async (_label, cause, stop) => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+
+    stop(p, teamId);
+
+    expect((await result).startsWith(teamCancelledHeader(teamId, cause, true))).toBe(true);
+    expect(await stopOf(p, teamId)).toBe(cause);
+  });
+
+  it('keeps the first cause when a second stop follows', async () => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+
+    p.service.stopTeam(teamId);
+    p.service.dispose();
+
+    expect((await result).startsWith(teamCancelledHeader(teamId, 'user', true))).toBe(true);
+    expect(await stopOf(p, teamId)).toBe('user');
+  });
+
+  it('names each cause in the header', () => {
+    const id = newTeamId();
+    expect(teamCancelledHeader(id, 'user', true)).toBe(`(TEAM STOPPED BY THE USER before completion; results are partial. Resume it with resume_team({team_id:"${id}"}) if the user asks to continue.)\n\n`);
+    expect(teamCancelledHeader(id, 'shutdown', true)).toBe(`(TEAM STOPPED before completion because its chat panel closed, switched session or the editor window reloaded; results are partial. Resume it with resume_team({team_id:"${id}"}) if the user asks to continue.)\n\n`);
+    expect(teamCancelledHeader(id, 'reset', false)).toBe('(TEAM STOPPED before completion because the conversation was cleared; results are partial and it cannot be resumed.)\n\n');
+  });
+
+  it("refuses the lead through the member stop, so the lead's Stop can only be the team stop", async () => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+    const lead = p.service.listSteerTargets().find((t) => t.kind === 'team-member' && t.role === 'lead')!;
+
+    expect(() => p.service.cancelAgent(teamId, lead.id)).toThrow('leads the team and stops only with it');
+    expect(p.service.liveTeamState(teamId)).toMatchObject({ status: 'running' });
+
+    p.service.stopTeam(teamId);
+    await result;
+  });
+
+  it('stops a resume that is still validating before any member launches, keeping the team resumable', async () => {
+    const p = panel();
+    const teamId = await cancelledTeam(p);
+    p.behave.lead = endTurn;
+    const sessionsBefore = p.sessions.length;
+
+    const resuming = p.service.resumeTeam(teamId, undefined, 'tc-r');
+    expect(p.service.stopTeam(teamId)).toBe(true);
+
+    await expect(resuming).rejects.toThrow(`The resume of team "${teamId}" was stopped before it started; it can still be resumed.`);
+    expect(p.sessions).toHaveLength(sessionsBefore);
+    expect(await resumable(p, teamId)).toBe(true);
+  });
+
+  it('a stop that lands after the team finished changes nothing', async () => {
+    const p = panel();
+    p.service.setPendingToolUseId('tc-create');
+    await p.service.createTeam(LEAD_ONLY);
+    const teamId = p.invocations[0]!.id;
+    const checksBefore = p.interruptionChecks;
+
+    expect(p.service.stopTeam(teamId)).toBe(false);
+    expect(p.interruptionChecks).toBe(checksBefore);
+    expect(await resumable(p, teamId)).toBe(false);
   });
 });
 
@@ -283,7 +399,7 @@ describe('TeamService.resumeTeam', () => {
     expect(p.sessions.at(-1)!.prompts[0]).toBe(buildResumePrompt('carry on'));
     expect(p.invocations.at(-1)).toEqual({ kind: 'team', id: teamId, toolCallId: 'tc-resume', resume: true });
     expect(p.order.indexOf('record:resume')).toBeLessThan(p.order.indexOf('session'));
-    expect(text).not.toContain('TEAM CANCELLED');
+    expect(text).not.toContain('before completion;');
     const started = p.webview.filter((m) => m.type === 'teamStarted');
     expect(started.at(-1)).toMatchObject({ team: { teamId, status: 'running' } });
   });
@@ -298,11 +414,11 @@ describe('TeamService.resumeTeam', () => {
     await p.sessions[1]!.whenPrompted(1);
     p.service.cancelTeam(teamId);
 
-    expect((await second).startsWith(teamCancelledHeader(teamId, true))).toBe(true);
+    expect((await second).startsWith(teamCancelledHeader(teamId, 'parent', true))).toBe(true);
     const times = await checkpointsOf(p, teamId);
     expect(times).toHaveLength(2);
     p.behave.lead = endTurn;
-    await expect(p.service.resumeTeam(teamId, undefined, 'tc-resume-2')).resolves.not.toContain('TEAM CANCELLED');
+    await expect(p.service.resumeTeam(teamId, undefined, 'tc-resume-2')).resolves.not.toContain('before completion;');
     expect(logEntries(p, teamId).filter((e) => e['type'] === 'team-resumed').map((e) => e['checkpoint'])).toEqual(times);
   });
 
@@ -312,7 +428,7 @@ describe('TeamService.resumeTeam', () => {
 
     before.service.dispose();
 
-    expect((await result).startsWith(teamCancelledHeader(teamId, true))).toBe(true);
+    expect((await result).startsWith(teamCancelledHeader(teamId, 'shutdown', true))).toBe(true);
     expect(await resumable(before, teamId)).toBe(true);
     const after = panel(before.cwd);
     after.branch.override = before.invocations;
@@ -343,8 +459,8 @@ describe('TeamService.resumeTeam', () => {
     expect(after.sessions).toEqual([]);
 
     release();
-    expect((await result).startsWith(teamCancelledHeader(teamId, true))).toBe(true);
-    await expect(after.service.resumeTeam(teamId, undefined, 'tc-later')).resolves.not.toContain('TEAM CANCELLED');
+    expect((await result).startsWith(teamCancelledHeader(teamId, 'shutdown', true))).toBe(true);
+    await expect(after.service.resumeTeam(teamId, undefined, 'tc-later')).resolves.not.toContain('before completion;');
   });
 });
 
@@ -441,7 +557,7 @@ describe('a fork of a session with a team', () => {
     const created = [...parent.invocations];
     const forkPoint = await forkPointNow();
     parent.behave.lead = endTurn;
-    await expect(parent.service.resumeTeam(teamId, undefined, 'tc-parent-resume')).resolves.not.toContain('TEAM CANCELLED');
+    await expect(parent.service.resumeTeam(teamId, undefined, 'tc-parent-resume')).resolves.not.toContain('before completion;');
 
     await forkAt(parent.cwd, SESSION, FORK, forkPoint, created);
     await forkAt(parent.cwd, FORK, FORK_OF_FORK, await forkPointNow(), created);
@@ -450,14 +566,14 @@ describe('a fork of a session with a team', () => {
     fork.branch.override = created;
     fork.behave.lead = endTurn;
     expect(await resumable(fork, teamId, FORK)).toBe(true);
-    await expect(fork.service.resumeTeam(teamId, 'fork direction', 'tc-fork-resume')).resolves.not.toContain('TEAM CANCELLED');
+    await expect(fork.service.resumeTeam(teamId, 'fork direction', 'tc-fork-resume')).resolves.not.toContain('before completion;');
     expect(fork.sessions[0]!.prompts[0]).toBe(buildResumePrompt('fork direction'));
 
     const grandchild = panel(parent.cwd, FORK_OF_FORK);
     grandchild.branch.override = created;
     grandchild.behave.lead = endTurn;
     expect(await resumable(grandchild, teamId, FORK_OF_FORK)).toBe(true);
-    await expect(grandchild.service.resumeTeam(teamId, undefined, 'tc-grandchild-resume')).resolves.not.toContain('TEAM CANCELLED');
+    await expect(grandchild.service.resumeTeam(teamId, undefined, 'tc-grandchild-resume')).resolves.not.toContain('before completion;');
 
     await expect(parent.service.resumeTeam(teamId, undefined, 'tc-parent-again')).rejects.toThrow(`Team "${teamId}" completed and cannot be resumed.`);
   });
@@ -597,7 +713,7 @@ describe('TeamService.resumeTeam refuses a team it cannot continue, with a messa
   });
 
   it.each([
-    ['ESC', (p: Panel) => p.service.cancelActiveTeam()],
+    ['ESC', (p: Panel) => p.service.cancelActiveTeam('user')],
     ['a reload', (p: Panel) => p.service.dispose()],
   ])('%s while the resume validates stops it before any member launches, keeping it resumable', async (_label, stop) => {
     const p = panel();
@@ -626,13 +742,13 @@ describe('TeamService.resumeTeam refuses a team it cannot continue, with a messa
     p.hook = (at) => {
       if (stopped || at !== step || !p.invocations.some((i) => i.resume)) return;
       stopped = true;
-      p.service.cancelActiveTeam();
+      p.service.cancelActiveTeam('user');
     };
 
     const text = await p.service.resumeTeam(teamId, undefined, 'tc-r');
 
     expect(stopped).toBe(true);
-    expect(text.startsWith(teamCancelledHeader(teamId, true))).toBe(true);
+    expect(text.startsWith(teamCancelledHeader(teamId, 'user', true))).toBe(true);
     expect(await resumable(p, teamId)).toBe(true);
     p.hook = null;
     p.behave.lead = endTurn;
@@ -648,12 +764,12 @@ describe('TeamService.resumeTeam refuses a team it cannot continue, with a messa
     p.hook = (at) => {
       if (at !== 'assert') return;
       p.hook = null;
-      queueMicrotask(() => p.service.cancelActiveTeam());
+      queueMicrotask(() => p.service.cancelActiveTeam('user'));
     };
 
     const text = await p.service.resumeTeam(teamId, undefined, 'tc-r');
 
-    expect(text.startsWith(teamCancelledHeader(teamId, true))).toBe(true);
+    expect(text.startsWith(teamCancelledHeader(teamId, 'user', true))).toBe(true);
     expect(await resumable(p, teamId)).toBe(true);
   });
 

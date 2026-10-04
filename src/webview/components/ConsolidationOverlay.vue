@@ -2,26 +2,15 @@
 import { computed, ref, watch, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { Button } from '@/components/ui/button';
-import {
-  IconDatabase,
-  IconPlay,
-  IconCheck,
-  IconFileText,
-  IconSparkles,
-  IconWarning,
-  IconRepeat,
-  IconKey,
-  IconRotateLeft,
-  IconChevronDown,
-  IconChevronRight,
-} from '@/components/icons';
+import { ChevronRight, CircleCheck, CircleDashed, CircleX, KeyRound, LoaderCircle, Play, Repeat, RotateCcw, Sparkles } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import ConsolidationStepper from './ConsolidationStepper.vue';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import { useRelativeTime } from '@/composables/useRelativeTime';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useOpenSettings } from '@/composables/useOpenSettings';
 import { folderName } from '@/lib/folder-name';
 import type { ConsolidationPersistOutcome } from '@shared/types/consolidation';
 
@@ -29,9 +18,10 @@ const emit = defineEmits<{ (e: 'close'): void }>();
 const { t, te } = useI18n();
 
 const store = useConsolidationStore();
-const { pendingCandidates, isRunning, pendingCount, lastResult, phase, phaseMeta, persistProgress } =
+const { pendingCandidates, isRunning, lastResult, phase, phaseMeta, persistProgress } =
   storeToRefs(store);
 const { postMessage } = usePlatformBridge();
+const openSettings = useOpenSettings();
 
 function triggerNow(): void {
   // Doherty-threshold ack: flip the stepper to Claim-active immediately, before the round-trip.
@@ -39,46 +29,15 @@ function triggerNow(): void {
   postMessage({ type: 'triggerConsolidation' });
 }
 
-function retry(): void {
-  triggerNow();
-}
-
 function signIn(): void {
-  // `openSettingsPanel` travels extension→webview only; the host has no handler for it, so posting it
-  // from here was silently dropped. `invokeSignIn` is the request side, and the host answers it by
-  // posting `openSettingsPanel` back.
-  postMessage({ type: 'invokeSignIn' });
+  openSettings('accounts');
 }
 
-// ── Phase-aware header badge ──────────────────────────────────────────────────────────────────
-const PHASES_WITH_LABELS = new Set(['claim', 'extract', 'persist', 'maintain', 'profiles']);
-
-const statusBadge = computed(() => {
-  if (!isRunning.value) {
-    return {
-      label: t('consolidation.idle'),
-      class: 'bg-muted text-muted-foreground border-border',
-      showSpinner: false,
-    };
-  }
-  const base = PHASES_WITH_LABELS.has(phase.value) ? t(`consolidation.phase.${phase.value}`) : t('consolidation.running');
-  const label =
-    phase.value === 'persist' && persistProgress.value.total > 0
-      ? `${base} ${persistProgress.value.done}/${persistProgress.value.total}`
-      : base;
-  return {
-    label,
-    class: 'bg-primary/30 text-primary border-primary/30',
-    showSpinner: true,
-  };
-});
-
-const subtitle = computed(() =>
-  isRunning.value ? t('consolidation.consolidating') : t('consolidation.turnsQueued', pendingCount.value),
+const statusBadge = computed(() =>
+  isRunning.value
+    ? { label: t('consolidation.running'), class: 'd-tone-accent', pulse: true }
+    : { label: t('consolidation.idle'), class: 'd-tone-muted' },
 );
-
-// ── Honest progress strip ─────────────────────────────────────────────────────────────────────
-const claimCount = computed(() => phaseMeta.value.claim.count ?? 0);
 
 const STILL_THINKING_MS = 8_000;
 const extractElapsedMs = ref(0);
@@ -105,45 +64,28 @@ onUnmounted(() => {
   if (extractInterval) clearInterval(extractInterval);
 });
 
-/** Strip descriptor: determinate (Persist) or indeterminate (everything else with no real ETA). */
-const strip = computed(() => {
+/** What the pass is doing now, in words; the stepper above shows where it is. */
+const runningText = computed(() => {
   switch (phase.value) {
     case 'claim':
-      return { mode: 'indeterminate' as const, label: t('consolidation.strip.reviewing') };
+      return t('consolidation.strip.reviewing');
     case 'extract':
-      return {
-        mode: 'indeterminate' as const,
-        label:
-          extractElapsedMs.value >= STILL_THINKING_MS
-            ? t('consolidation.strip.stillThinking')
-            : t('consolidation.strip.reading', claimCount.value),
-      };
+      return extractElapsedMs.value >= STILL_THINKING_MS
+        ? t('consolidation.strip.stillThinking')
+        : t('consolidation.strip.reading', phaseMeta.value.claim.count ?? 0);
     case 'persist':
-      // Until the total is known (the first persist event), show an indeterminate bar rather than a
-      // meaningless "0/0".
       return persistProgress.value.total > 0
-        ? {
-            mode: 'determinate' as const,
-            label: t('consolidation.strip.persisting'),
-            done: persistProgress.value.done,
-            total: persistProgress.value.total,
-          }
-        : { mode: 'indeterminate' as const, label: t('consolidation.strip.persistingPending') };
+        ? `${t('consolidation.strip.persisting')} ${persistProgress.value.done}/${persistProgress.value.total}`
+        : t('consolidation.strip.persistingPending');
     case 'maintain':
-      return { mode: 'indeterminate' as const, label: t('consolidation.strip.maintenance') };
+      return t('consolidation.strip.maintenance');
     case 'profiles':
-      return { mode: 'indeterminate' as const, label: t('consolidation.strip.profiles') };
+      return t('consolidation.strip.profiles');
     default:
-      return null;
+      return t('consolidation.consolidating');
   }
 });
 
-const persistPct = computed(() => {
-  const { done, total } = persistProgress.value;
-  return total > 0 ? Math.round((done / total) * 100) : 0;
-});
-
-// ── Terminal result ───────────────────────────────────────────────────────────────────────────
 const { relative: ranRelative, absolute: ranAbsolute } = useRelativeTime(
   () => lastResult.value?.ranAt ?? null,
 );
@@ -167,16 +109,31 @@ const failureFooter = computed(() => {
   return f.phase ? t('consolidation.failedAt', { phase: t(`consolidation.phase.${f.phase}`), when }) : when;
 });
 
-// ── Last-run summary (extracted / empty) ──────────────────────────────────────────────────────
 const triggerChip = computed(() => {
   const manual = lastResult.value?.trigger === 'manual';
   return {
     label: manual ? t('consolidation.trigger.manual') : t('consolidation.trigger.auto'),
-    icon: manual ? IconPlay : IconRepeat,
-    class: manual
-      ? 'bg-violet-500/15 text-violet-400 border-violet-500/30'
-      : 'bg-muted text-muted-foreground border-border',
+    icon: manual ? Play : Repeat,
   };
+});
+
+const isFailed = computed(() => !isRunning.value && lastResult.value?.status === 'failed');
+
+const stripText = computed(() => {
+  if (isRunning.value) return runningText.value;
+  const r = lastResult.value;
+  if (!r) return `${t('consolidation.noRunYet')} ${t('consolidation.noRunHintBefore')} ${t('consolidation.runNow')} ${t('consolidation.noRunHintAfter')}`;
+  if (r.status === 'failed') return failureMessage.value;
+  if (r.status === 'empty') return t('consolidation.nothingNew', r.candidatesReviewed);
+  return [t('consolidation.extracted', { n: r.extracted.length }), ...rollup.value].join(' · ');
+});
+
+const stripIcon = computed(() => {
+  if (isRunning.value) return { icon: LoaderCircle, class: 'd-spinning text-(--d-accent)' };
+  const status = lastResult.value?.status;
+  if (status === 'failed') return { icon: CircleX, class: 'text-(--d-danger)' };
+  if (status) return { icon: CircleCheck, class: 'text-(--d-success)' };
+  return { icon: CircleDashed, class: 'text-(--d-faint)' };
 });
 
 const rollup = computed<string[]>(() => {
@@ -202,16 +159,15 @@ const rollup = computed<string[]>(() => {
   return parts;
 });
 
-// ── Outcome badges (1px same-hue border + uppercase tracking + leading dot) ─────────────────────
-const PERSIST_TONE: Record<ConsolidationPersistOutcome, { wrap: string; dot: string }> = {
-  inserted: { wrap: 'border-success/40 text-success', dot: 'bg-success' },
-  merged: { wrap: 'border-blue-400/40 text-blue-400', dot: 'bg-blue-400' },
-  superseded: { wrap: 'border-violet-400/40 text-violet-400', dot: 'bg-violet-400' },
-  deduped: { wrap: 'border-border text-muted-foreground', dot: 'bg-muted-foreground' },
-  invalid: { wrap: 'border-error/40 text-error', dot: 'bg-error' },
+const OUTCOME_TONE: Record<ConsolidationPersistOutcome, string> = {
+  inserted: 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)',
+  merged: 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)',
+  superseded: 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)',
+  deduped: 'bg-(--d-hover) text-(--d-muted)',
+  invalid: 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)',
 };
 
-// ── Collapsible queue (collapsed by default once a run exists) ──────────────────────────────────
+// The queue starts collapsed once a run exists, unless the user has toggled it.
 const queueOpen = ref(true);
 let queueUserToggled = false;
 watch(
@@ -225,277 +181,186 @@ function toggleQueue(): void {
   queueUserToggled = true;
   queueOpen.value = !queueOpen.value;
 }
-
-const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.value);
 </script>
 
 <template>
   <OverlayShell
+    max-width="62.5rem"
     :title="t('consolidation.title')"
-    :subtitle="subtitle"
-    :icon="IconDatabase"
-    icon-class="text-violet-400"
+    :subtitle="t('overlays.consolidation.subtitle')"
+    :icon="Sparkles"
     :status-badge="statusBadge"
+    data-testid="consolidation-overlay"
     @close="emit('close')"
   >
     <template #header-actions>
-      <Button
-        variant="secondary"
-        size="sm"
-        class="gap-1.5 shrink-0"
-        :disabled="isRunning"
+      <OverlayHeaderAction
+        :label="isRunning ? t('consolidation.consolidating') : t('consolidation.runNow')"
         :title="t('consolidation.runNowTitle')"
+        :icon="Play"
+        primary
+        :busy="isRunning"
+        :disabled="isRunning"
+        data-testid="consolidation-run"
         @click="triggerNow"
-      >
-        <IconPlay :size="14" />
-        <span>{{ t('consolidation.runNow') }}</span>
-      </Button>
+      />
     </template>
 
-    <!-- Honest progress strip (sticky under header while running) -->
-    <div
-      v-if="isRunning && strip"
-      class="sticky top-0 z-10 px-4 py-2 bg-background/95 backdrop-blur border-b border-border/40"
-    >
-      <div class="flex items-center justify-between gap-2 mb-1.5">
-        <span class="text-[11px] text-muted-foreground truncate">{{ strip.label }}</span>
-        <span
-          v-if="strip.mode === 'determinate'"
-          class="text-[11px] tabular-nums text-muted-foreground shrink-0"
-        >{{ strip.done }}/{{ strip.total }}</span>
-      </div>
-      <div class="h-1 rounded-full bg-muted overflow-hidden">
-        <div
-          v-if="strip.mode === 'determinate'"
-          class="h-full bg-primary rounded-full transition-[width] duration-300"
-          :style="{ width: `${persistPct}%` }"
-        />
-        <div
-          v-else
-          class="h-full w-1/3 bg-primary/70 rounded-full"
-          style="animation: indeterminate 1.4s ease-in-out infinite"
-        />
-      </div>
-    </div>
+    <div class="flex flex-col gap-4 px-4.5 pt-4 pb-5">
+      <ConsolidationStepper />
 
-    <div class="p-4 space-y-5">
-      <!-- Live stepper while a pass runs -->
-      <section v-if="isRunning">
-        <ConsolidationStepper />
-      </section>
-
-      <!-- FAILURE card -->
-      <section
-        v-if="!isRunning && lastResult && lastResult.status === 'failed'"
-        class="rounded-lg border border-error/30 bg-error/5 p-4 space-y-3"
+      <div
+        class="flex flex-wrap items-center gap-2 rounded-10 border px-3 py-2.25 text-xs"
+        :class="isFailed ? 'border-[color-mix(in_srgb,var(--d-danger)_35%,var(--d-border))] bg-[color-mix(in_srgb,var(--d-danger)_6%,var(--d-card))] text-(--d-text)' : 'border-(--d-border) bg-(--d-card) text-(--d-muted)'"
+        role="status"
+        data-testid="consolidation-strip"
       >
-        <div class="flex items-start gap-2.5">
-          <IconWarning
-            :size="18"
-            class="text-error shrink-0 mt-0.5"
-          />
-          <div class="space-y-1 min-w-0">
-            <p class="text-sm text-foreground/90">
-              {{ failureMessage }}
-            </p>
-            <p
-              class="text-[11px] text-muted-foreground"
-              :title="ranAbsolute"
-            >
-              {{ failureFooter }}
-            </p>
-          </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            class="gap-1.5"
-            @click="retry"
-          >
-            <IconRotateLeft :size="13" />
-            <span>{{ t('consolidation.retryNow') }}</span>
-          </Button>
-          <Button
-            v-if="lastResult.failure?.kind === 'no-model'"
-            variant="outline"
-            size="sm"
-            class="gap-1.5"
-            @click="signIn"
-          >
-            <IconKey :size="13" />
-            <span>{{ t('consolidation.signIn') }}</span>
-          </Button>
-        </div>
-      </section>
-
-      <!-- EMPTY-SUCCESS card (neutral, no error tone, no retry) -->
-      <section
-        v-else-if="!isRunning && lastResult && lastResult.status === 'empty'"
-        class="rounded-lg border border-border/60 bg-muted/30 p-4"
-      >
-        <div class="flex items-start gap-2.5">
-          <IconCheck
-            :size="16"
-            class="text-muted-foreground shrink-0 mt-0.5"
-          />
-          <div class="space-y-1 min-w-0">
-            <p class="text-sm text-foreground/80">
-              {{ t('consolidation.nothingNew', lastResult.candidatesReviewed) }}
-            </p>
-            <div class="flex items-center gap-2 flex-wrap">
-              <span
-                class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
-                :class="triggerChip.class"
-              >
-                <component
-                  :is="triggerChip.icon"
-                  :size="9"
-                />
-                {{ triggerChip.label }}
-              </span>
-              <span
-                v-if="rollup.length"
-                class="text-[11px] text-muted-foreground tabular-nums"
-              >{{ rollup.join(' · ') }}</span>
-              <span
-                class="text-[11px] text-muted-foreground"
-                :title="ranAbsolute"
-              >{{ ranRelative }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- EXTRACTED: last-run summary + items -->
-      <section v-else-if="!isRunning && lastResult && lastResult.status === 'extracted'">
-        <div class="flex items-center gap-2 mb-2 flex-wrap">
-          <IconSparkles
-            :size="13"
-            class="text-violet-400 shrink-0"
-          />
-          <span class="text-xs font-medium text-foreground/90">
-            {{ t('consolidation.extracted', { n: lastResult.extracted.length }) }}
-          </span>
-          <span
-            class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border"
-            :class="triggerChip.class"
-          >
+        <component
+          :is="stripIcon.icon"
+          class="size-3.25 flex-none"
+          :class="stripIcon.class"
+          aria-hidden="true"
+        />
+        <span class="min-w-0 flex-1 text-pretty">{{ stripText }}</span>
+        <template v-if="lastResult && !isRunning">
+          <span class="flex items-center gap-1 rounded-full bg-(--d-hover) px-1.75 text-10.5/4.5">
             <component
               :is="triggerChip.icon"
-              :size="9"
-            />
-            {{ triggerChip.label }}
+              class="size-2.5"
+              aria-hidden="true"
+            />{{ triggerChip.label }}
           </span>
           <span
-            v-if="rollup.length"
-            class="text-[11px] text-muted-foreground tabular-nums"
-          >{{ rollup.join(' · ') }}</span>
-          <span
-            class="text-[11px] text-muted-foreground ml-auto"
+            class="text-11 text-(--d-faint)"
             :title="ranAbsolute"
-          >{{ ranRelative }}</span>
-        </div>
-        <ul class="space-y-1.5">
-          <!-- Extracted memories carry no id; compose a stable key from their natural identity
-               (kind/scope/content) so rows keep identity across re-renders instead of by index. -->
-          <li
-            v-for="m in lastResult.extracted"
-            :key="`${m.kind}:${m.scope}:${m.content}`"
-            class="rounded-md border border-border/50 bg-card px-3 py-2"
+          >{{ isFailed ? failureFooter : ranRelative }}</span>
+        </template>
+        <div
+          v-if="isFailed"
+          class="flex w-full justify-end gap-2 pt-1"
+        >
+          <button
+            v-if="lastResult?.failure?.kind === 'no-model'"
+            type="button"
+            class="d-press flex h-7 items-center gap-1.5 rounded-lg border border-(--d-border2) px-2.5 transition-colors hover:bg-(--d-hover)"
+            @click="signIn"
           >
-            <div class="flex items-center gap-2 mb-1">
-              <span
-                class="inline-flex items-center gap-1 text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border font-medium"
-                :class="PERSIST_TONE[m.outcome].wrap"
-              >
-                <span
-                  class="h-1 w-1 rounded-full"
-                  :class="PERSIST_TONE[m.outcome].dot"
+            <KeyRound
+              class="size-3.25"
+              aria-hidden="true"
+            />{{ t('consolidation.signIn') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-7 items-center gap-1.5 rounded-lg bg-(--d-accent) px-2.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+            data-testid="consolidation-retry"
+            @click="triggerNow"
+          >
+            <RotateCcw
+              class="size-3.25"
+              aria-hidden="true"
+            />{{ t('consolidation.retryNow') }}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(16.25rem,1fr))] gap-3.5">
+        <section class="flex min-w-0 flex-col gap-1.5">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 self-start text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase transition-colors hover:text-(--d-text)"
+            :aria-expanded="queueOpen"
+            data-testid="consolidation-queue-toggle"
+            @click="toggleQueue"
+          >
+            <ChevronRight
+              class="size-3 transition-transform duration-200 ease-out"
+              :class="queueOpen && 'rotate-90'"
+              aria-hidden="true"
+            />
+            {{ t('consolidation.queued', { n: pendingCandidates.length }) }}
+          </button>
+          <template v-if="queueOpen">
+            <p
+              v-if="pendingCandidates.length === 0"
+              class="rounded-10 border border-dashed border-(--d-border2) p-3 text-xs text-(--d-faint)"
+            >
+              {{ t('consolidation.queueEmpty') }}
+            </p>
+            <div
+              v-for="(c, index) in pendingCandidates"
+              :key="c.id"
+              class="d-arrive flex flex-col gap-1 rounded-10 border border-(--d-border) bg-(--d-card) px-2.5 py-2"
+              :style="{ animationDelay: `${Math.min(index, 8) * 30}ms` }"
+            >
+              <div class="flex gap-2.25">
+                <span class="w-15.5 flex-none text-10.5 font-semibold text-(--d-accent)">{{ t('consolidation.user') }}</span>
+                <MarkdownRenderer
+                  :content="c.userPreview"
+                  :allow-remote-images="false"
+                  class="line-clamp-2 min-w-0 flex-1 text-xs text-(--d-muted)"
                 />
-                {{ t(`consolidation.outcome.${m.outcome}`) }}
-              </span>
-              <span class="text-[10px] text-muted-foreground">{{ te(`memory.kind.${m.kind}`) ? t(`memory.kind.${m.kind}`) : m.kind }} / {{ te(`memory.scope.${m.scope}`) ? t(`memory.scope.${m.scope}`) : m.scope }}</span>
+              </div>
+              <div class="flex gap-2.25">
+                <span class="w-15.5 flex-none text-10.5 font-semibold text-(--d-success)">{{ t('consolidation.assistant') }}</span>
+                <MarkdownRenderer
+                  :content="c.assistantPreview"
+                  :allow-remote-images="false"
+                  class="line-clamp-2 min-w-0 flex-1 text-xs text-(--d-muted)"
+                />
+              </div>
+            </div>
+          </template>
+        </section>
+
+        <section class="flex min-w-0 flex-col gap-1.5">
+          <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">
+            {{ lastResult ? t('overlays.consolidation.lastPass', { n: lastResult.extracted.length }) : t('overlays.consolidation.noPass') }}
+          </h3>
+          <p
+            v-if="!lastResult || lastResult.extracted.length === 0"
+            class="rounded-10 border border-dashed border-(--d-border2) p-3 text-xs text-(--d-faint)"
+          >
+            {{ lastResult ? t('overlays.consolidation.nothingExtracted') : t('consolidation.noRunYet') }}
+          </p>
+          <!-- Extracted memories carry no id; their kind, scope and content are their identity. -->
+          <div
+            v-for="(m, index) in lastResult?.extracted ?? []"
+            :key="`${m.kind}:${m.scope}:${m.content}`"
+            class="d-arrive flex flex-col gap-1.25 rounded-10 border border-(--d-border) bg-(--d-card) px-2.75 py-2.25"
+            :style="{ animationDelay: `${Math.min(index, 8) * 30}ms` }"
+          >
+            <div class="flex min-w-0 items-center gap-1.5 text-10.5">
+              <span class="rounded-5 bg-(--d-accent-soft) px-1.5 leading-4.25 font-semibold text-(--d-accent-text)">{{ te(`memory.kind.${m.kind}`) ? t(`memory.kind.${m.kind}`) : m.kind }}</span>
+              <span class="rounded-5 bg-(--d-hover) px-1.5 leading-4.25 text-(--d-muted)">{{ te(`memory.scope.${m.scope}`) ? t(`memory.scope.${m.scope}`) : m.scope }}</span>
               <span
                 v-if="m.workspace"
-                class="text-[10px] text-muted-foreground truncate"
+                class="min-w-0 truncate text-(--d-faint)"
                 :title="m.workspace"
                 data-extracted-workspace
               ><span aria-hidden="true">→ </span>{{ folderName(m.workspace) }}</span>
+              <span class="flex-1" />
+              <span
+                class="flex-none rounded-full px-1.5 leading-4.25 font-medium"
+                :class="OUTCOME_TONE[m.outcome]"
+              >{{ t(`consolidation.outcome.${m.outcome}`) }}</span>
             </div>
             <MarkdownRenderer
               :content="m.content"
               :allow-remote-images="false"
-              class="text-xs text-foreground/90"
+              class="text-12.5"
             />
-          </li>
-        </ul>
-      </section>
-
-      <!-- Queued turns (collapsible; collapsed by default once a run exists) -->
-      <section>
-        <button
-          type="button"
-          class="flex items-center gap-2 mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors w-full cursor-pointer"
-          @click="toggleQueue"
-        >
-          <component
-            :is="queueOpen ? IconChevronDown : IconChevronRight"
-            :size="12"
-          />
-          <IconFileText :size="13" />
-          <span>{{ t('consolidation.queued', { n: pendingCandidates.length }) }}</span>
-        </button>
-        <template v-if="queueOpen">
-          <div
-            v-if="pendingCandidates.length === 0"
-            class="text-sm text-muted-foreground pl-1 py-2"
-          >
-            {{ t('consolidation.queueEmpty') }}
           </div>
           <div
-            v-else
-            class="space-y-1.5"
+            v-if="rollup.length"
+            class="flex flex-wrap gap-1.5 font-mono text-11 text-(--d-faint)"
           >
-            <div
-              v-for="c in pendingCandidates"
-              :key="c.id"
-              class="rounded-md border border-border/50 bg-muted/40 px-3 py-2 text-xs space-y-1.5 cursor-pointer hover:bg-muted/60 transition-colors"
-            >
-              <div>
-                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">{{ t('consolidation.user') }}</span>
-                <MarkdownRenderer
-                  :content="c.userPreview"
-                  :allow-remote-images="false"
-                  class="text-xs text-foreground/90"
-                />
-              </div>
-              <div>
-                <span class="text-[10px] uppercase tracking-wide text-muted-foreground">{{ t('consolidation.assistant') }}</span>
-                <MarkdownRenderer
-                  :content="c.assistantPreview"
-                  :allow-remote-images="false"
-                  class="text-xs text-muted-foreground/80"
-                />
-              </div>
-            </div>
+            <span
+              v-for="part in rollup"
+              :key="part"
+            >{{ part }}</span>
           </div>
-        </template>
-      </section>
-
-      <!-- First-run placeholder -->
-      <div
-        v-if="showNoRunPlaceholder"
-        class="text-center text-muted-foreground text-sm py-6"
-      >
-        <IconCheck
-          :size="20"
-          class="mx-auto mb-2 opacity-60"
-        />
-        <p>{{ t('consolidation.noRunYet') }}</p>
-        <p class="text-xs mt-1">
-          {{ t('consolidation.noRunHintBefore') }} <span class="text-foreground">{{ t('consolidation.runNow') }}</span> {{ t('consolidation.noRunHintAfter') }}
-        </p>
+        </section>
       </div>
     </div>
   </OverlayShell>

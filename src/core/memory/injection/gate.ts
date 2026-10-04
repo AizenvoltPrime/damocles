@@ -1,6 +1,7 @@
 import type { InjectionTier, MemoryScoreBreakdown } from '@shared/types/context-injection';
 import type { MemoryScope } from '@shared/types/memory';
 import { SCORE_WEIGHTS } from '@shared/memory-score';
+import { STALENESS_THRESHOLD } from '@shared/memory-staleness';
 import { porterStem } from '../porter-stem';
 import { ENGLISH_REFERENCE_STEMS, SOFTWARE_REFERENCE_STEMS } from './reference-stems.generated';
 
@@ -41,7 +42,6 @@ export const DEFAULT_TIER_LIMITS = { full: 4, compact: 8, tokenBudget: 2000 } as
 
 export const FILE_PROXIMITY_FULL = 1;
 export const FILE_PROXIMITY_PARTIAL = 0.4;
-export const STALENESS_THRESHOLD = 3;
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const RETRIEVAL_BOOST_DENOMINATOR = Math.log2(11);

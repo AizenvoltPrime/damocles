@@ -6,6 +6,7 @@ import { setActivePinia, createPinia } from 'pinia';
 import { i18n } from '@/i18n';
 import { useEditorStore } from '@/stores/useEditorStore';
 import { usePermissionStore } from '@/stores/usePermissionStore';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { EditorDocument, EditorDocumentBody, ExtensionToWebviewMessage } from '@shared/types/messages';
 import EditorOverlayHost from '../EditorOverlayHost.vue';
 
@@ -121,11 +122,15 @@ const text = (content: string): EditorDocumentBody => ({ kind: 'text', content, 
 type ShowDiff = Extract<ExtensionToWebviewMessage, { type: 'editorShowDiff' }>;
 type OpenFile = Extract<ExtensionToWebviewMessage, { type: 'editorOpenFile' }>;
 
+// A proposal is held until its card's Open diff asks for it, which openProposal stands in for.
 function showDiff(overrides: Partial<ShowDiff> = {}): void {
-  useEditorStore().showDiff({
+  const store = useEditorStore();
+  const msg: ShowDiff = {
     type: 'editorShowDiff', viewId: 'v1', title: 'a.ts', purpose: 'proposal', approvalId: 'tool-1',
     original: doc(text('old')), modified: doc(text('new')), ...overrides,
-  });
+  };
+  store.showDiff(msg);
+  if (msg.purpose === 'proposal' && msg.approvalId !== undefined) store.openProposal(msg.approvalId);
 }
 function openFile(overrides: Partial<OpenFile> = {}): void {
   useEditorStore().openFile({ type: 'editorOpenFile', viewId: 'f1', title: 'a.ts', document: doc(text('1\n2\n3\n4')), ...overrides });
@@ -617,6 +622,15 @@ describe('settings JSON editor', () => {
 
       expect(saves().at(-1)).toEqual({ type: 'settingsFileSave', scope: 'user', content: '{ "mine": true }', baseVersion: 'v9' });
       expect(byTestId('settings-json-overwrite-confirm')).toBeNull();
+    });
+
+    it('names the whole path of the file it overwrites in text, not only in a tooltip', async () => {
+      useSettingsStore().setWorkspaceFolders([{ key: '/h', name: 'h', label: 'h', path: '/h' }], '/h', '/h');
+      await conflicted();
+      byTestId('settings-json-overwrite')!.click();
+      await nextTick();
+
+      expect(byTestId('settings-json-overwrite-path')!.textContent).toBe(READY.path);
     });
 
     it('closes the overwrite confirmation on Escape and leaves the editor open', async () => {

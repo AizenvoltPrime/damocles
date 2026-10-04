@@ -2,17 +2,7 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import {
-  IconDatabase,
-  IconSparkles,
-  IconLayers,
-  IconRepeat,
-  IconFileText,
-  IconCheck,
-  IconXCircle,
-  IconBan,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { Ban, Circle, CircleCheck, CircleX, LoaderCircle } from 'lucide-vue-next';
 import { useConsolidationStore } from '@/stores/useConsolidationStore';
 import type { ConsolidationPhaseId } from '@shared/types/consolidation';
 
@@ -21,115 +11,126 @@ const { phaseStatus, phaseMeta, persistProgress } = storeToRefs(store);
 
 const { t } = useI18n();
 
-const PHASES: { id: ConsolidationPhaseId; labelKey: string; icon: typeof IconDatabase }[] = [
-  { id: 'claim', labelKey: 'consolidation.phase.claim', icon: IconDatabase },
-  { id: 'extract', labelKey: 'consolidation.phase.extract', icon: IconSparkles },
-  { id: 'persist', labelKey: 'consolidation.phase.persist', icon: IconLayers },
-  { id: 'maintain', labelKey: 'consolidation.phase.maintain', icon: IconRepeat },
-  { id: 'profiles', labelKey: 'consolidation.phase.profiles', icon: IconFileText },
-];
+const PHASES: ConsolidationPhaseId[] = ['claim', 'extract', 'persist', 'maintain', 'profiles'];
 
 /** Trailing text per phase: real counts on done rows, reason/summary on skipped/failed rows. */
 function trailing(id: ConsolidationPhaseId): string {
   const status = phaseStatus.value[id];
   const meta = phaseMeta.value[id];
-  if (id === 'claim' && status === 'done') {
-    const n = meta.count ?? 0;
-    return t('consolidation.stepper.turns', n);
-  }
+  if (id === 'claim' && status === 'done') return t('consolidation.stepper.turns', meta.count ?? 0);
   if (id === 'extract') {
     if (status === 'active') return t('consolidation.stepper.readingTurns');
-    if (status === 'done') {
-      const n = meta.count ?? 0;
-      return t('consolidation.stepper.found', { n });
-    }
+    if (status === 'done') return t('consolidation.stepper.found', { n: meta.count ?? 0 });
   }
   if (id === 'persist') {
     if (status === 'active') return `${persistProgress.value.done}/${persistProgress.value.total}`;
-    if (status === 'done') {
-      const n = meta.done ?? 0;
-      return t('consolidation.stepper.items', n);
-    }
+    if (status === 'done') return t('consolidation.stepper.items', meta.done ?? 0);
   }
   if (id === 'maintain' && status === 'done') return meta.summary ?? '';
   if (id === 'profiles' && status === 'done') return t('consolidation.stepper.profilesDone');
   if (status === 'skipped') return meta.reason ? t('consolidation.stepper.skippedBecause', { reason: meta.reason }) : t('consolidation.stepper.skipped');
   if (status === 'failed') return meta.reason ?? t('consolidation.stepper.failed');
-  return '';
+  if (status === 'active') return t('consolidation.stepper.working');
+  return '—';
+}
+
+/** How far the phase's bar is filled; only persist knows its real progress while it runs. */
+function fill(id: ConsolidationPhaseId): number {
+  const status = phaseStatus.value[id];
+  if (status === 'done' || status === 'failed' || status === 'skipped') return 1;
+  if (status !== 'active') return 0;
+  if (id === 'persist' && persistProgress.value.total > 0) return persistProgress.value.done / persistProgress.value.total;
+  return 0.5;
 }
 
 const rows = computed(() =>
-  PHASES.map((p, i) => ({
-    ...p,
-    label: t(p.labelKey),
-    status: phaseStatus.value[p.id],
-    trailing: trailing(p.id),
-    last: i === PHASES.length - 1,
-  })),
+  PHASES.map((id) => {
+    const status = phaseStatus.value[id];
+    return {
+      id,
+      status,
+      label: t(`consolidation.phase.${id}`),
+      trailing: trailing(id),
+      fill: fill(id),
+      // An active phase with no measurable progress sweeps instead of claiming a fraction.
+      sweep: status === 'active' && !(id === 'persist' && persistProgress.value.total > 0),
+    };
+  }),
 );
 </script>
 
 <template>
-  <ul class="space-y-0">
+  <ol
+    class="grid grid-cols-5 gap-1.5"
+    :aria-label="t('consolidation.stepper.label')"
+  >
     <li
       v-for="row in rows"
       :key="row.id"
-      class="relative flex items-start gap-3 pl-0"
+      class="flex min-w-0 flex-col gap-1.75"
       :aria-current="row.status === 'active' ? 'step' : undefined"
+      :data-status="row.status"
+      data-testid="consolidation-phase"
     >
-      <!-- Marker + connector gutter (20px) -->
-      <div class="relative flex flex-col items-center w-5 shrink-0">
-        <div class="flex items-center justify-center h-5 w-5">
-          <LoadingSpinner
-            v-if="row.status === 'active'"
-            :size="14"
-            class="text-primary"
-          />
-          <IconCheck
-            v-else-if="row.status === 'done'"
-            :size="13"
-            class="text-success"
-          />
-          <IconBan
-            v-else-if="row.status === 'skipped'"
-            :size="12"
-            class="text-muted-foreground/60"
-          />
-          <IconXCircle
-            v-else-if="row.status === 'failed'"
-            :size="13"
-            class="text-error"
-          />
-          <span
-            v-else
-            class="h-2.5 w-2.5 rounded-full border border-muted-foreground/30"
-          />
-        </div>
-        <span
-          v-if="!row.last"
-          class="w-px flex-1 min-h-[14px] my-0.5"
-          :class="row.status === 'done' ? 'bg-success/30' : 'bg-border/60'"
+      <div
+        class="relative h-1 overflow-hidden rounded-full bg-(--d-hover)"
+        :class="row.sweep && 'd-sweep-bar text-(--d-accent)'"
+        aria-hidden="true"
+      >
+        <div
+          v-if="!row.sweep"
+          class="absolute inset-0 origin-left rounded-full transition-transform duration-500 ease-out rtl:origin-right"
+          :class="{
+            'bg-(--d-success)': row.status === 'done',
+            'bg-(--d-accent)': row.status === 'active',
+            'bg-(--d-danger)': row.status === 'failed',
+            'bg-(--d-border2)': row.status === 'skipped' || row.status === 'pending',
+          }"
+          :style="{ transform: `scaleX(${row.fill})` }"
         />
       </div>
-
-      <!-- Label + trailing -->
-      <div class="flex-1 min-w-0 flex items-baseline justify-between gap-2 pb-3">
-        <span
-          class="text-xs"
-          :class="{
-            'text-primary font-medium': row.status === 'active',
-            'text-foreground/90': row.status === 'done',
-            'text-muted-foreground/60 italic': row.status === 'skipped',
-            'text-error font-medium': row.status === 'failed',
-            'text-muted-foreground/50': row.status === 'pending',
-          }"
-        >{{ row.label }}</span>
-        <span
-          v-if="row.trailing"
-          class="text-[11px] tabular-nums truncate"
-          :class="row.status === 'failed' ? 'text-error/80' : 'text-muted-foreground'"
-        >{{ row.trailing }}</span>
+      <div
+        class="flex min-w-0 items-center gap-1.25 text-xs font-semibold"
+        :class="{
+          'text-(--d-text)': row.status === 'done',
+          'text-(--d-accent)': row.status === 'active',
+          'text-(--d-danger)': row.status === 'failed',
+          'text-(--d-faint)': row.status === 'pending' || row.status === 'skipped',
+        }"
+      >
+        <LoaderCircle
+          v-if="row.status === 'active'"
+          class="size-3 d-spinning flex-none"
+          aria-hidden="true"
+        />
+        <CircleCheck
+          v-else-if="row.status === 'done'"
+          class="size-3 flex-none text-(--d-success)"
+          aria-hidden="true"
+        />
+        <CircleX
+          v-else-if="row.status === 'failed'"
+          class="size-3 flex-none"
+          aria-hidden="true"
+        />
+        <Ban
+          v-else-if="row.status === 'skipped'"
+          class="size-3 flex-none"
+          aria-hidden="true"
+        />
+        <Circle
+          v-else
+          class="size-3 flex-none"
+          aria-hidden="true"
+        />
+        <span class="truncate">{{ row.label }}</span>
+      </div>
+      <div
+        class="truncate text-11 text-(--d-faint) tabular-nums"
+        :title="row.trailing"
+      >
+        {{ row.trailing }}
       </div>
     </li>
-  </ul>
+  </ol>
 </template>

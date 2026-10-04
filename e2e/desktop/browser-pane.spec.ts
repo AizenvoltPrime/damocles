@@ -1,11 +1,11 @@
 import type { ElectronApplication, Page } from '@playwright/test';
 import { PANE_CHROME_HEIGHT, PANE_DIVIDER_WIDTH, type PaneState } from '../../src/desktop/preload/pane-channels';
 import type { DesktopApp, LaunchOptions } from './support/app';
-import { chatTab, expect, nextTab, panelIdOf, tabById, test } from './support/fixtures';
+import { activeChat, chatById, chatIdOf, expect, nextChat, panelIdOf, selectChatPage, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { chromeEnv, openPage, PAGE_TIMEOUT, paneMouse, panePage, paneState, PANE_URL, setWindowContentSize, startSite, systemChrome, typeIntoFocused, viewOf, windowViews, type Site } from './support/pane';
-import { pressKeys, PRIMARY, shellPage, shellState } from './support/shell';
+import { pressKeys, PRIMARY, shellPage } from './support/shell';
 import { chatInput, clickMenu } from './support/ui';
 
 const chrome = systemChrome();
@@ -27,7 +27,7 @@ function enableBrowser(home: HermeticHome): void {
 
 async function launchWithBrowser(launch: (options?: LaunchOptions) => Promise<DesktopApp>): Promise<DesktopApp & { tab: Page }> {
   const desktop = await launch({ env: chromeEnv() });
-  const tab = await chatTab(desktop.app);
+  const tab = await activeChat(desktop.app);
   await expect(chatInput(tab)).toBeVisible();
   return { ...desktop, tab };
 }
@@ -77,7 +77,7 @@ test('the agent opening a page opens the pane beside the chat and keyboard focus
 
     await expect(chatInput(tab)).toHaveValue(typed);
     await expect.poll(() => paneOf(app)).toMatchObject({ chatTabId: chatId, mode: 'split', titles: ['Page agent'] });
-    expect((await shellState(app)).selectedTabId).toBe(chatId);
+    expect(panelIdOf(await activeChat(app))).toBe(chatId);
 
     const state = await paneState(app);
     const views = await windowViews(app);
@@ -103,13 +103,13 @@ test('the agent opening a page opens the pane beside the chat and keyboard focus
   }
 });
 
-test('each chat tab has its own pane; switching tabs switches the pane, and a second tab opened over an open pane is not covered', async ({ home, launch }) => {
+test('each chat has its own pane; switching chats switches the pane, and a second chat opened over an open pane is not covered', async ({ home, launch }) => {
   enableBrowser(home);
   const { app, tab: first } = await launchWithBrowser(launch);
   const firstId = panelIdOf(first);
   await openSitePage(app, first, '/first');
 
-  const opened = nextTab(app, [first]);
+  const opened = nextChat(app, [first]);
   await clickMenu(app, 'damocles.openChat');
   const second = await opened;
   await expect(chatInput(second)).toBeVisible();
@@ -125,8 +125,7 @@ test('each chat tab has its own pane; switching tabs switches the pane, and a se
   await openSitePage(app, second, '/second');
   await expect.poll(() => paneOf(app)).toMatchObject({ chatTabId: secondId, mode: 'split', titles: ['Page second'] });
 
-  const shell = await shellPage(app);
-  await shell.evaluate((id) => window.damoclesShell!.selectTab(id), firstId);
+  await selectChatPage(app, first);
   await expect.poll(() => paneOf(app)).toMatchObject({ chatTabId: firstId, mode: 'split', titles: ['Page first'] });
   const firstPage = (await paneState(app)).pages[0]!.id;
   const after = await windowViews(app);
@@ -187,7 +186,7 @@ test('divider drag and keyboard resize the pane, and the width survives a restar
 
   await app.close();
   const relaunched = await launch({ env: chromeEnv() });
-  await chatTab(relaunched.app);
+  await activeChat(relaunched.app);
   await setWindowContentSize(relaunched.app, 1400, 900);
   await expect.poll(() => paneOf(relaunched.app), { timeout: PAGE_TIMEOUT }).toMatchObject({ mode: 'split', width: resized, titles: ['Page resize'] });
 });
@@ -255,7 +254,7 @@ test('a narrow window overlays the pane on the chat, and the scrim or Escape dis
   await expect.poll(async () => (await paneState(app)).mode).toBe('collapsed');
 });
 
-test('closing a page removes it; closing the chat tab closes its pages; restart restores pages into their own chat\'s pane', async ({ home, launch }) => {
+test('closing a page removes it; deleting the chat closes its pages; restart restores pages into their own chat\'s pane', async ({ home, launch }) => {
   enableBrowser(home);
   const { app, tab: first } = await launchWithBrowser(launch);
   const firstId = panelIdOf(first);
@@ -268,7 +267,7 @@ test('closing a page removes it; closing the chat tab closes its pages; restart 
   await pane.keyboard.press('Delete');
   await expect.poll(() => paneOf(app)).toMatchObject({ titles: ['Page one'] });
 
-  const opened = nextTab(app, [first]);
+  const opened = nextChat(app, [first]);
   await clickMenu(app, 'damocles.openChat');
   const second = await opened;
   await expect(chatInput(second)).toBeVisible();
@@ -277,16 +276,17 @@ test('closing a page removes it; closing the chat tab closes its pages; restart 
   await openSitePage(app, second, '/doomed');
   const doomed = (await paneState(app)).pages.map((page) => page.id);
 
-  const third = nextTab(app, [first, second]);
+  const third = nextChat(app, [first, second]);
   await clickMenu(app, 'damocles.openChat');
   const thirdTab = await third;
   await expect(chatInput(thirdTab)).toBeVisible();
   await openSitePage(app, thirdTab, '/closed-with-chat');
   const thirdPages = (await paneState(app)).pages.map((page) => page.id);
-  await (await shellPage(app)).evaluate((id) => window.damoclesShell!.closeTab(id), panelIdOf(thirdTab));
+  const thirdId = await chatIdOf(app, thirdTab);
+  expect(await (await shellPage(app)).evaluate((id) => window.damoclesShell!.deleteChat(id), thirdId)).toEqual({ ok: true });
   await expect.poll(() => app.evaluate(({ webContents }, ids) => webContents.getAllWebContents().filter((c) => ids.some((id) => c.getURL().includes(`/panel/${id}/`))).length, thirdPages)).toBe(0);
 
-  await (await shellPage(app)).evaluate((id) => window.damoclesShell!.selectTab(id), secondId);
+  await selectChatPage(app, second);
   await (await panePage(app)).getByRole('tab', { name: 'Page doomed' }).focus();
   await (await panePage(app)).keyboard.press('Delete');
   await expect.poll(() => paneOf(app)).toMatchObject({ chatTabId: secondId, titles: ['Page second-chat'] });
@@ -294,12 +294,11 @@ test('closing a page removes it; closing the chat tab closes its pages; restart 
 
   await app.close();
   const relaunched = await launch({ env: chromeEnv() });
-  const shellAgain = await shellPage(relaunched.app);
-  await expect.poll(async () => (await shellState(relaunched.app)).tabs.map((t) => t.id)).toEqual([firstId, secondId]);
-  await tabById(relaunched.app, firstId);
-  await shellAgain.evaluate((id) => window.damoclesShell!.selectTab(id), firstId);
+  const firstAgain = await chatById(relaunched.app, `new:${firstId}`);
+  const secondAgain = await chatById(relaunched.app, `new:${secondId}`);
+  await selectChatPage(relaunched.app, firstAgain);
   await expect.poll(() => paneOf(relaunched.app), { timeout: PAGE_TIMEOUT }).toMatchObject({ chatTabId: firstId, titles: ['Page one'] });
-  await shellAgain.evaluate((id) => window.damoclesShell!.selectTab(id), secondId);
+  await selectChatPage(relaunched.app, secondAgain);
   await expect.poll(() => paneOf(relaunched.app), { timeout: PAGE_TIMEOUT }).toMatchObject({ chatTabId: secondId, titles: ['Page second-chat'] });
 });
 

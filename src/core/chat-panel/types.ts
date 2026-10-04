@@ -8,6 +8,7 @@ import type { McpServerConfig } from "../../shared/types/mcp";
 import type { HistoryMessage } from "../../shared/types/content";
 import type { ForkContext, RewindHistoryItem, StoredSession } from "../../shared/types/session";
 import type { FolderTarget } from "../workspace-folders/folder-registry";
+import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 
 export const SESSIONS_PAGE_SIZE = 20;
 
@@ -38,6 +39,14 @@ export interface HostInstance {
   /** Resolves once the webview posts its first `ready` message; the fork replay awaits this so its
    *  extension-initiated push doesn't race the webview's listener registration. */
   webviewReady?: Promise<void>;
+}
+
+/** A settings view outside the chat page (the desktop overlay) attached to one chat panel. */
+export interface AttachedView {
+  /** Called from inside attachView too, with the host prompts the attach moves into this view. */
+  post(message: ExtensionToWebviewMessage): void;
+  /** Called once, when the panel closes, another view is attached in its place or a dispose detaches it. */
+  detached(): void;
 }
 
 export type { StoredSession, HistoryMessage, RewindHistoryItem, McpServerConfig };

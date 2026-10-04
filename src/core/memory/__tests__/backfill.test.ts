@@ -1,7 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { normalizedContentHash } from '../types';
@@ -41,6 +38,7 @@ vi.mock('../query-expansion', () => ({
 
 import { MemoryService } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createTestDbPath } from './test-helpers';
 
 function seedUnexpanded(db: DatabaseInstance, id: string): void {
   const now = Date.now();
@@ -58,16 +56,13 @@ describe('MemoryService search-term backfill (R12)', () => {
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-backfill-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     expansion.impl = async () => ({ terms: ['syn'], failed: false });
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try { fs.unlinkSync(dbHolder.path + suffix); } catch { /* gone */ }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   it('drains the whole backlog in one launch (well past the old 100 cap)', async () => {

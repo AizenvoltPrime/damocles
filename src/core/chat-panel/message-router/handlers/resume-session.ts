@@ -27,7 +27,7 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
     const refusal = claimStoredSession(platform.notifications, deps.getPanels(), { panelId, session: instance.session }, sessionId);
     if (refusal) {
       refusal.holder?.host.reveal();
-      return false;
+      return;
     }
     // The webview keeps its current conversation on screen until this arrives.
     postMessage(instance.host, { type: "resumeAccepted", sessionId });
@@ -37,10 +37,9 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
       instance.session.seedCheckpoints(rewindableIds ?? []);
       postMessage(instance.host, { type: "sessionStarted", sessionId, stored: rewindableIds !== null });
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return true;
+      if (err instanceof Error && err.name === 'AbortError') return;
       log("[MessageRouter] Error loading session history:", err);
       postMessage(instance.host, { type: "sessionStarted", sessionId });
     }
-    return true;
   });
 }

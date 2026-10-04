@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { Button } from '@/components/ui/button';
-import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
-import { IconWarning, IconXMark } from '@/components/icons';
+import { KeyRound } from 'lucide-vue-next';
+import DockBanner from './DockBanner.vue';
 
 defineProps<{
   message: string;
@@ -14,40 +13,27 @@ defineEmits<{
 </script>
 
 <template>
-  <Alert
-    class="flex items-center gap-3 px-4 py-2 rounded-none border-x-0 border-t-0 bg-warning/30 border-warning/50"
+  <DockBanner
+    tone="warning"
+    :icon="KeyRound"
+    :title="$t('authBanner.title')"
+    data-testid="auth-banner"
+    @dismiss="$emit('dismiss')"
   >
-    <IconWarning :size="20" class="shrink-0" />
-
-    <div class="flex-1 min-w-0">
-      <AlertTitle class="font-medium text-warning mb-0">
-        {{ $t('authBanner.title') }}
-      </AlertTitle>
-      <AlertDescription class="text-xs opacity-80 mt-0.5 truncate">
-        {{ message }}
-      </AlertDescription>
-      <p class="text-xs opacity-70 mt-1">
-        {{ $t('authBanner.independenceNote') }}
-      </p>
-    </div>
-
-    <Button
-      variant="default"
-      size="sm"
-      class="h-7 shrink-0"
-      @click="$emit('sign-in')"
-    >
-      {{ $t('authBanner.signIn') }}
-    </Button>
-
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      class="opacity-50 hover:opacity-100 h-6 w-6 shrink-0"
-      :title="$t('common.dismiss')"
-      @click="$emit('dismiss')"
-    >
-      <IconXMark :size="12" />
-    </Button>
-  </Alert>
+    <p class="truncate text-xs text-(--d-text)">
+      {{ message }}
+    </p>
+    <p class="mt-0.5 pb-0.5 text-xs text-(--d-muted)">
+      {{ $t('authBanner.independenceNote') }}
+    </p>
+    <template #actions>
+      <button
+        type="button"
+        class="d-press flex h-7.5 shrink-0 items-center rounded-9 bg-(--d-accent) px-3.25 text-12.5 font-semibold text-(--d-on-accent)"
+        @click="$emit('sign-in')"
+      >
+        {{ $t('authBanner.signIn') }}
+      </button>
+    </template>
+  </DockBanner>
 </template>

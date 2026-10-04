@@ -4,6 +4,7 @@ import type { PanelHost } from "../../platform/window-service";
 import * as path from "path";
 import { PanelManager } from "./panel-manager";
 import { StorageManager } from "./storage-manager";
+import { createSessionCatalog, type SessionCatalog } from "./session-catalog";
 import { HistoryManager } from "./history-manager";
 import { SettingsManager } from "./settings-manager";
 import { WorkspaceManager } from "./workspace-manager";
@@ -19,6 +20,7 @@ import { UsageStatsService } from "../usage-stats";
 import { OPENAI_KEY_MOVED_MARKER_PATH, SUBCALL_USAGE_LEDGER_PATH, USAGE_INDEX_DB_PATH } from "../paths";
 import { showOpenAIKeyMovedNotice } from "../pi-session/openai-key-migration";
 import { PI_AGENT_DIR } from "../pi-session/agent-dir";
+import { readClaudeAuthFromDisk } from "../pi-session/subscription";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import { PiRuntime } from "../pi-session/pi-runtime";
 import { typesafeAuthStatus } from "./settings-manager/managers/explore-manager";
@@ -45,6 +47,7 @@ export interface ChatPanelHostDeps {
 export class ChatPanelProvider {
   private readonly panelManager: PanelManager;
   private readonly storageManager: StorageManager;
+  private readonly sessionCatalog: SessionCatalog;
   private readonly historyManager: HistoryManager;
   private readonly settingsManager: SettingsManager;
   private readonly workspaceManager: WorkspaceManager;
@@ -66,7 +69,7 @@ export class ChatPanelProvider {
   constructor(platform: Platform, hostDeps: ChatPanelHostDeps) {
     this.subscriptions = hostDeps.subscriptions;
     this.platform = platform;
-    this.folderRegistry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace);
+    this.folderRegistry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace, platform.fileWatchers);
 
     const postMessage = (host: PanelHost, message: unknown) => {
       this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
@@ -107,8 +110,19 @@ export class ChatPanelProvider {
 
     this.memoryService = new MemoryService(platform);
     this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
+    this.sessionCatalog = createSessionCatalog({
+      storage: this.storageManager,
+      getPanels: () => this.panelManager.getPanels(),
+      notifications: platform.notifications,
+      memoryService: this.memoryService,
+    });
     const stopJudgeUpdates = PiRuntime.onMemoryJudgeChange(() => this.broadcastMemoryJudge());
     this.subscriptions.push({ dispose: stopJudgeUpdates });
+    // A sign-in or sign-out in another app or the pi CLI lands only in auth.json; the settings' Anthropic row reads this.
+    const stopAuthUpdates = PiRuntime.onAuthFileChange(() => {
+      this.panelManager.broadcast({ type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode });
+    });
+    this.subscriptions.push({ dispose: stopAuthUpdates });
     // Before pi starts, the status is read from these secrets alone, so their changes are an input too.
     this.subscriptions.push(platform.secrets.onDidChange((key) => {
       if (key === TYPESAFE_SECRET_KEY || key === EXPLORE_SECRET_KEYS.openrouter) this.broadcastMemoryJudge();
@@ -164,12 +178,12 @@ export class ChatPanelProvider {
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getDefaultModel: () => this.settingsManager.getDefaultModel(),
       getPreferOpenAIApiKey: () => this.platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
-      resolveThinkingForPanel: (panelId, model) => {
+      resolveThinkingForPanel: (panelId, model, folder) => {
         const settings = this.platform.settings;
         return {
-          thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, model, settings),
-          effort: this.settingsManager.resolveThinkingEffort(panelId, model, settings),
-          maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, settings),
+          thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, model, settings, folder),
+          effort: this.settingsManager.resolveThinkingEffort(panelId, model, settings, folder),
+          maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, settings, folder),
         };
       },
       postMessage,
@@ -183,7 +197,10 @@ export class ChatPanelProvider {
     });
 
     this.webviewPrompts = new WebviewPrompts(
-      { target: (signal) => this.panelManager.promptTarget(signal) },
+      {
+        target: (signal) => this.panelManager.promptTarget(signal),
+        attachedView: (panelId) => this.panelManager.attachedView(panelId),
+      },
       (host, message) => this.panelManager.postMessage(host, message),
     );
 
@@ -191,6 +208,7 @@ export class ChatPanelProvider {
       postMessage,
       getPanels: () => this.panelManager.getPanels(),
       storageManager: this.storageManager,
+      sessionCatalog: this.sessionCatalog,
       historyManager: this.historyManager,
       settingsManager: this.settingsManager,
       workspaceManager: this.workspaceManager,
@@ -231,16 +249,16 @@ export class ChatPanelProvider {
         });
         return session;
       },
-      handleWebviewMessage: (message, panelId) =>
-        this.messageRouter.handleWebviewMessage(message, panelId),
-      sendCurrentSettings: (host, permissionHandler) =>
-        this.settingsManager.sendCurrentSettings(host, permissionHandler),
+      handleWebviewMessage: (message, panelId, view) =>
+        this.messageRouter.handleWebviewMessage(message, panelId, view),
+      sendCurrentSettings: (host, permissionHandler, folder) =>
+        this.settingsManager.sendCurrentSettings(host, permissionHandler, folder),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
       initPanelModel: (panelId) => this.settingsManager.initPanelModel(panelId),
       cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
       cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
-      sendThinkingForPanel: (host, panelId) => this.settingsManager.sendThinkingForPanel(host, panelId),
+      sendThinkingForPanel: (host, panelId, folder) => this.settingsManager.sendThinkingForPanel(host, panelId, folder),
       getInitialMessages: (folder) => this.compassStatusMessages(folder.key),
       onActivePanelChanged: () => this.refreshCompassViews(),
       sendFolderState: async (instance) => {
@@ -259,6 +277,8 @@ export class ChatPanelProvider {
       loadHistory: (cwd, sessionId, host, session) =>
         this.historyManager.loadSessionHistory(cwd, sessionId, host, session),
     });
+
+    this.subscriptions.push(this.panelManager.onDidChangeAttachment((panelId) => this.webviewPrompts.resurface(panelId)));
 
     // A removed folder's resources are released by `releaseFolder`, once no session runs there.
     this.subscriptions.push(this.folderRegistry.onDidChange(({ added, removed, relabelled }) => {
@@ -320,7 +340,7 @@ export class ChatPanelProvider {
     this.settingsManager.onDefaultModelChanged(() => {
       for (const [panelId, instance] of this.panelManager.getPanels()) {
         this.settingsManager.sendModelForPanel(instance.host, panelId);
-        this.settingsManager.sendThinkingForPanel(instance.host, panelId);
+        this.settingsManager.sendThinkingForPanel(instance.host, panelId, instance.folder);
       }
     });
     this.settingsManager.setupMcpWatcher();
@@ -333,6 +353,11 @@ export class ChatPanelProvider {
 
   getPanelManager(): PanelManager {
     return this.panelManager;
+  }
+
+  /** The stored conversations of the open folders; the desktop Chats list reads and edits them here. */
+  getSessionCatalog(): SessionCatalog {
+    return this.sessionCatalog;
   }
 
   getFolderRegistry(): WorkspaceFolderRegistry {
@@ -497,13 +522,14 @@ export class ChatPanelProvider {
    * Tear down every owned service.
    *
    * Resolves only once Chrome has exited (`BrowserService.dispose()`), so it does not outlive the host,
-   * and every panel's session is disposed, which releases its session lease. Callers must await it.
-   * The synchronous disposals still run first and unconditionally.
+   * every panel's session is disposed, which releases its session lease, and the memory database has
+   * flushed its queued writes and closed. Callers must await it. The synchronous disposals still run
+   * first and unconditionally.
    */
   async dispose(): Promise<void> {
     this.compassViews.dispose();
     this.compassRegistry.dispose().catch((err: unknown) => log("[ChatPanelProvider] compass dispose error: %O", err));
-    this.memoryService.dispose();
+    const memoryClosed = this.memoryService.dispose();
     const browserClosed = this.browserService.dispose().catch((err: unknown) => log('[ChatPanelProvider] browser dispose error: %O', err));
     this.storageManager.dispose();
     this.workspaceManager.dispose();
@@ -514,6 +540,6 @@ export class ChatPanelProvider {
     this.webviewPrompts.dispose();
     const sessionsDisposed = this.panelManager.dispose();
     this.folderRegistry.dispose();
-    await Promise.all([browserClosed, sessionsDisposed]);
+    await Promise.all([browserClosed, sessionsDisposed, memoryClosed]);
   }
 }

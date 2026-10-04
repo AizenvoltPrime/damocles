@@ -2,10 +2,11 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue';
 import type { ExploreEntry } from '@/stores/useExploreStore';
 import { formatModelDisplayName } from '@shared/utils';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { IconCompass, IconCheck, IconXCircle, IconGear } from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { useI18n } from 'vue-i18n';
+import { ChevronRight, Compass } from 'lucide-vue-next';
+import { agentStatusChip } from '@/composables/useTeamFormatting';
+
+const { t } = useI18n();
 
 const props = defineProps<{
   explore: ExploreEntry;
@@ -47,71 +48,68 @@ const formattedDuration = computed(() => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 });
 
-const cardClass = computed(() => {
-  switch (props.explore.status) {
-    case 'running': return 'border-primary/50 hover:border-primary/70';
-    case 'completed': return 'border-success/50 hover:border-success/70';
-    case 'failed': return 'border-error/50 hover:border-error/70';
-    default: return 'border-border';
-  }
-});
-
-const statusBadgeClass = computed(() => {
-  switch (props.explore.status) {
-    case 'running': return 'bg-primary/30 text-primary border-primary/30';
-    case 'completed': return 'bg-success/30 text-success border-success/30';
-    case 'failed': return 'bg-error/30 text-error border-error/30';
-    default: return 'bg-primary/30 text-primary border-primary/30';
-  }
-});
+const chip = computed(() => agentStatusChip(props.explore.status));
 
 const displayModel = computed(() => formatModelDisplayName(props.explore.model));
-
-const formattedToolCount = computed(() => `${props.explore.toolCount} tools`);
-
-const metadataItems = computed(() => [
-  formattedToolCount.value,
-  formattedDuration.value,
-  displayModel.value,
-].filter(Boolean));
 </script>
 
 <template>
-  <Card
-    class="text-sm overflow-hidden cursor-pointer transition-colors"
-    :class="cardClass"
+  <div
+    class="cursor-pointer overflow-hidden rounded-xl border bg-(--d-card) text-13 transition-colors duration-200 hover:border-(--d-border2)"
+    :class="explore.status === 'running' ? 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]' : explore.status === 'failed' ? 'border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]' : 'border-(--d-border)'"
+    data-testid="explore-card"
     @click="$emit('expand')"
   >
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
-      <IconCompass :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium truncate flex-1">{{ explore.description }}</span>
-      <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0">
-        <IconCompass :size="12" />
-        <span>{{ $t('explore.badge', { model: displayModel }) }}</span>
-      </Badge>
-    </CardHeader>
-
+    <div class="flex items-center gap-2.5 px-3 pt-2.25 pb-2">
+      <span
+        class="flex size-7 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info)"
+        aria-hidden="true"
+      >
+        <Compass class="size-3.5" />
+      </span>
+      <div class="flex min-w-0 flex-1 flex-col gap-px">
+        <span class="truncate font-semibold">{{ explore.description }}</span>
+        <span class="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-11 text-(--d-faint)">
+          <span class="font-semibold text-(--d-info)">{{ t('explore.kind') }}</span>
+          <template v-if="displayModel">
+            <span aria-hidden="true">·</span>
+            <span class="truncate">{{ displayModel }}</span>
+          </template>
+        </span>
+      </div>
+      <span
+        class="flex flex-none items-center gap-1.25 rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_13%,transparent)] px-2 py-0.5 text-11 font-medium"
+        :class="chip.color"
+      >
+        <component
+          :is="chip.icon"
+          class="size-2.75"
+          :class="chip.live && 'd-spinning'"
+          aria-hidden="true"
+        />{{ t(chip.labelKey) }}
+      </span>
+    </div>
     <div
       v-if="explore.status === 'running' && explore.lastToolName"
-      class="px-3 py-1.5 text-xs text-primary/80 italic truncate border-b border-border/30"
+      class="-mt-0.5 mr-3 mb-2 ml-12.5 truncate text-xs text-(--d-accent) italic"
     >
       {{ explore.lastToolName }}
     </div>
-
-    <CardContent class="px-3 py-2 flex items-center justify-between">
-      <div class="flex items-center gap-1.5 text-xs text-foreground/70 leading-none">
-        <IconGear :size="12" class="shrink-0" />
-        <template v-for="(item, index) in metadataItems" :key="index">
-          <span v-if="index > 0" class="text-foreground/40">&bull;</span>
-          <span>{{ item }}</span>
-        </template>
-      </div>
-
-      <div class="flex items-center">
-        <LoadingSpinner v-if="explore.status === 'running'" :size="14" class="text-primary" />
-        <IconCheck v-else-if="explore.status === 'completed'" :size="14" class="text-success" />
-        <IconXCircle v-else-if="explore.status === 'failed'" :size="14" class="text-error" />
-      </div>
-    </CardContent>
-  </Card>
+    <div class="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-t border-(--d-border) py-1.5 pr-3 pl-12.5 font-mono text-11 text-(--d-faint)">
+      <span>{{ t('subagentDisplay.tools', { n: explore.toolCount }, explore.toolCount) }}</span>
+      <span class="tabular-nums">{{ formattedDuration }}</span>
+      <span class="flex-1" />
+      <button
+        type="button"
+        class="flex items-center gap-0.75 rounded-sm font-sans text-(--d-muted) hover:text-(--d-text)"
+        :aria-label="t('cards.subagent.open', { name: explore.description })"
+        @click.stop="$emit('expand')"
+      >
+        {{ t('cards.details') }}<ChevronRight
+          class="size-2.75"
+          aria-hidden="true"
+        />
+      </button>
+    </div>
+  </div>
 </template>

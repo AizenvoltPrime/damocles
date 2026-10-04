@@ -1,6 +1,6 @@
 import { toast } from 'vue-sonner';
 import { useI18n } from 'vue-i18n';
-import type { HandlerRegistry, ScrollBehavior } from '../types';
+import type { HandlerRegistry } from '../types';
 
 export function createBackgroundTaskHandlers(): Partial<HandlerRegistry> {
   const { t } = useI18n();
@@ -17,7 +17,7 @@ export function createBackgroundTaskHandlers(): Partial<HandlerRegistry> {
       }
     },
 
-    backgroundTaskResult: (msg, ctx): ScrollBehavior => {
+    backgroundTaskResult: (msg, ctx) => {
       const { streamingStore, subagentStore } = ctx.stores;
       const description = subagentStore.getSubagentDescription(msg.toolUseId) ?? msg.summary;
       streamingStore.addMessage({
@@ -27,7 +27,6 @@ export function createBackgroundTaskHandlers(): Partial<HandlerRegistry> {
         isBackgroundResult: true,
         backgroundTaskLabel: description,
       });
-      return { forceScrollToBottom: true };
     },
   };
 }

@@ -70,7 +70,7 @@ function harness(): Harness {
   const options = {
     cwd: '/cwd',
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, hasPendingPrompts: () => false } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, pendingPromptKinds: () => new Set() } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null, maxThinkingTokens: null }),
   } as unknown as SessionOptions;

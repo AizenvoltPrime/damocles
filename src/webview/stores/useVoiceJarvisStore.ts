@@ -97,6 +97,8 @@ export interface VoiceJarvisStoreShape {
   isReady: ComputedRef<boolean>;
   isJarvisActive: ComputedRef<boolean>;
   hasActiveDownload: ComputedRef<boolean>;
+  /** The download modal is up: a download runs and the user has not closed the modal since it started or failed. */
+  showModelDownload: ComputedRef<boolean>;
   setWakeWordActive: (active: boolean) => void;
   setSidecarStatus: (
     state: SidecarLifecycleState,
@@ -118,6 +120,7 @@ export interface VoiceJarvisStoreShape {
   setFirstRunRequired: (reason: FirstRunReason | null) => void;
   updateModelDownload: (progress: ModelDownloadProgress) => void;
   setModelProgress: (modelId: string, entry: ModelDownloadEntry) => void;
+  hideModelDownload: () => void;
   clearDownloads: () => void;
   markModelDownloadsDone: () => void;
   setPendingUpgrades: (upgrades: ModelUpgradeInfo[]) => void;
@@ -146,6 +149,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
   const firstRunRequired = ref<FirstRunReason | null>(null);
   const modelDownload = ref<Record<string, ModelDownloadEntry>>({});
   const modelDownloadsAllDone = ref<boolean>(false);
+  const modelDownloadHidden = ref<boolean>(false);
   const pendingUpgrades = ref<ModelUpgradeInfo[]>([]);
   const lastTurnLostReason = ref<TurnLostReason | null>(null);
   const muted = ref<boolean>(false);
@@ -160,6 +164,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
   const hasActiveDownload = computed<boolean>(
     () => Object.keys(modelDownload.value).length > 0 && !modelDownloadsAllDone.value,
   );
+  const showModelDownload = computed<boolean>(() => hasActiveDownload.value && !modelDownloadHidden.value);
 
   const state = computed<VoiceJarvisIndicatorState>(() => {
     if (sidecarState.value === "error") return "error";
@@ -252,21 +257,33 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
       ...(progress.displayName !== undefined ? { displayName: progress.displayName } : {}),
     };
     modelDownload.value = { ...modelDownload.value, [progress.modelId]: next };
-    if (progress.status !== "done") modelDownloadsAllDone.value = false;
+    noteDownloadStatus(progress.status);
   }
 
   function setModelProgress(modelId: string, entry: ModelDownloadEntry): void {
     modelDownload.value = { ...modelDownload.value, [modelId]: entry };
-    if (entry.status !== "done") modelDownloadsAllDone.value = false;
+    noteDownloadStatus(entry.status);
+  }
+
+  // A failed model shows the hidden modal again, so its error is never silent.
+  function noteDownloadStatus(status: ModelDownloadEntry["status"]): void {
+    if (status !== "done") modelDownloadsAllDone.value = false;
+    if (status === "error") modelDownloadHidden.value = false;
+  }
+
+  function hideModelDownload(): void {
+    modelDownloadHidden.value = true;
   }
 
   function clearDownloads(): void {
     modelDownload.value = {};
     modelDownloadsAllDone.value = false;
+    modelDownloadHidden.value = false;
   }
 
   function markModelDownloadsDone(): void {
     modelDownloadsAllDone.value = true;
+    modelDownloadHidden.value = false;
   }
 
   function setPendingUpgrades(upgrades: ModelUpgradeInfo[]): void {
@@ -311,6 +328,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     firstRunRequired.value = null;
     modelDownload.value = {};
     modelDownloadsAllDone.value = false;
+    modelDownloadHidden.value = false;
     pendingUpgrades.value = [];
     lastTurnLostReason.value = null;
     muted.value = false;
@@ -344,6 +362,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     isReady,
     isJarvisActive,
     hasActiveDownload,
+    showModelDownload,
     setWakeWordActive,
     setSidecarStatus,
     setWakeDetected,
@@ -359,6 +378,7 @@ export const useVoiceJarvisStore = defineStore("voice-jarvis", (): VoiceJarvisSt
     setFirstRunRequired,
     updateModelDownload,
     setModelProgress,
+    hideModelDownload,
     clearDownloads,
     markModelDownloadsDone,
     setPendingUpgrades,

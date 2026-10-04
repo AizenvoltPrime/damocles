@@ -28,7 +28,7 @@ function pressEscape(): void {
 }
 
 function lightboxBackdrop(): HTMLElement | null {
-  return document.body.querySelector<HTMLElement>('.bg-black\\/80');
+  return document.body.querySelector<HTMLElement>('.d-scrim');
 }
 
 let host: VueWrapper | null = null;

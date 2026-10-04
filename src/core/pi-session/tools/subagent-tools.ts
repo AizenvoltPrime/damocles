@@ -17,7 +17,7 @@ import { getLifetimeTotal } from '../subagents/usage';
 import { buildAgentResultJson } from '../subagents/subagent-stream-bridge';
 import { formatAgentConversation } from '../subagents/subagent-runner';
 import type { AgentManager, BranchAgent, SpawnRequest } from '../subagents/agent-manager';
-import { THINKING_OVERRIDES, type AgentRecord } from '../subagents/types';
+import type { AgentRecord } from '../subagents/types';
 import {
   isAgentTerminalStatus,
   isResumableSubagentStatus,
@@ -42,7 +42,6 @@ function buildAgentSchema(agents: { name: string; description: string }[]) {
       description: Type.Optional(Type.String({ description: 'A short (3-5 word) description of the task. Required unless resuming.' })),
       prompt: Type.Optional(Type.String({ description: 'The task for the agent to perform. Required unless resuming.' })),
       subagent_type: Type.Optional(Type.String({ description: `The agent type to use. One of: ${typeList}. Required unless resuming.` })),
-      thinking: Type.Optional(Type.Union(THINKING_OVERRIDES.map((v) => Type.Literal(v)), { description: 'Optional thinking level override.' })),
       run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult.' })),
       resume: Type.Optional(Type.String({ description: 'The id of an interrupted subagent to continue. Pass alone or with message.' })),
       message: Type.Optional(Type.String({ description: 'With resume: an instruction for the resumed agent.' })),
@@ -155,7 +154,7 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     execute: async (toolCallId, params, signal) => {
       const spawnFields = [params.description, params.prompt, params.subagent_type];
       if (params.resume !== undefined) {
-        if (spawnFields.some((v) => v !== undefined) || params.thinking !== undefined || params.run_in_background !== undefined) {
+        if (spawnFields.some((v) => v !== undefined) || params.run_in_background !== undefined) {
           throw new Error(BAD_AGENT_ARGUMENTS);
         }
         // A resume keeps the agent's original mode; the manager binds the signal only to a foreground agent.
@@ -182,7 +181,6 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
         prompt,
         description,
         toolCallId,
-        ...(params.thinking ? { thinking: params.thinking } : {}),
         runInBackground: manager.resolveRunInBackground(type, params.run_in_background),
       };
       if (spec.runInBackground) {

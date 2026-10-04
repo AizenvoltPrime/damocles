@@ -45,7 +45,7 @@ describe('MemoryPanel search result reason', () => {
 
   it('renders the relevance badge in the active locale', async () => {
     const wrapper = await searchShowing([result({ rerankRelevance: 'low', reason: 'unrelated' })]);
-    const badgeText = (): string[] => wrapper.findAll('.text-xs.h-4').map((badge) => badge.text());
+    const badgeText = (): string[] => wrapper.findAll('[data-testid="search-rerank-badge"]').map((badge) => badge.text());
     expect(badgeText()).toContain('low relevance');
     applyLocale('el');
     await nextTick();

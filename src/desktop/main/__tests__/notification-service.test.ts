@@ -18,19 +18,21 @@ const electron = vi.hoisted(() => {
 
 vi.mock('electron', () => ({ dialog: electron.dialog, Notification: electron.Notification }));
 
-import type { ShellToast } from '../../preload/shell-channels';
+import type { OverlayToast } from '../../preload/overlay-channels';
 import { createDesktopNotificationService, TOAST_TIMEOUT_MS, type ToastSink } from '../platform/notification-service';
 
-let toasts: ShellToast[];
+let toasts: OverlayToast[];
 let dismissed: string[];
 let focused: boolean;
 let windowOpen: boolean;
 let sink: ToastSink | undefined;
+let osNotifications: boolean;
 
 function service(): ReturnType<typeof createDesktopNotificationService> {
   return createDesktopNotificationService({
     window: () => (windowOpen ? ({ isFocused: () => focused }) as never : undefined),
     toasts: () => sink,
+    osNotifications: () => osNotifications,
     showWindow: () => undefined,
     t: (message) => message,
     log: () => undefined,
@@ -43,6 +45,7 @@ beforeEach(() => {
   dismissed = [];
   focused = true;
   windowOpen = true;
+  osNotifications = true;
   electron.shown.length = 0;
   electron.dialog.showMessageBox.mockReset();
   sink = { show: (toast) => toasts.push(toast), dismiss: (id) => dismissed.push(id) };
@@ -101,6 +104,15 @@ describe('desktop notifications', () => {
     focused = false;
     void notifications.info('in the background');
     expect(electron.shown).toEqual(['in the background']);
+  });
+
+  it('raises no OS notification while damocles.desktop.notifications.enabled is off, and still shows the toast', () => {
+    osNotifications = false;
+    focused = false;
+    const notifications = service();
+    void notifications.info('in the background');
+    expect(electron.shown).toEqual([]);
+    expect(toasts.map((toast) => toast.message)).toEqual(['in the background']);
   });
 
   it('holds a toast raised while the shell loads, for replay once it has loaded', () => {

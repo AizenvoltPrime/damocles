@@ -66,7 +66,6 @@ export interface ChatInputExposed {
 }
 
 export interface RefContext {
-  messageContainerRef: Ref<HTMLElement | null>;
   chatInputRef: Ref<ChatInputExposed | null>;
 }
 
@@ -83,8 +82,8 @@ export interface HandlerContext {
 }
 
 export interface ScrollBehavior {
+  /** The transcript follows its output again, as for another session's transcript. */
   forceScrollToBottom?: boolean;
-  skipScroll?: boolean;
 }
 
 export type MessageHandler<T extends ExtensionToWebviewMessage = ExtensionToWebviewMessage> = (
@@ -97,6 +96,7 @@ export type HandlerRegistry = {
 };
 
 export interface MessageHandlerOptions {
-  messageContainerRef: Ref<HTMLElement | null>;
   chatInputRef: Ref<ChatInputExposed | null>;
+  /** The transcript's `useStickToBottom().scrollToBottom`. */
+  followTranscript: () => void;
 }

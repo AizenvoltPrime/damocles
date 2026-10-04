@@ -1,4 +1,5 @@
 import type { Platform } from '../../platform/platform';
+import type { SettingsFolder } from '../../platform/settings-store';
 import { DiffManager } from './diff-manager';
 import { PermissionState } from './state';
 import { ApprovalManager } from './managers/approval-manager';
@@ -17,6 +18,7 @@ import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdent
 import { buildUnaskedDenyResult } from './utils';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
 import type { FormValues } from '../../shared/types/forms';
+import type { PendingKind } from '../pi-session/session-state';
 import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
 export type { PermissionResult, CanUseToolContext };
@@ -35,7 +37,8 @@ export class PermissionHandler {
   private readonly platform: Platform;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
-  constructor(platform: Platform, panelId?: string) {
+  /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler. */
+  constructor(platform: Platform, panelId?: string, settingsFolder?: SettingsFolder) {
     this.platform = platform;
     this.state = new PermissionState();
     this.diffManager = new DiffManager(platform.editor, panelId);
@@ -69,8 +72,8 @@ export class PermissionHandler {
     this.evaluatorManager = new EvaluatorManager(this.state, platform);
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
 
-    this.state.permissionMode = platform.settings.get<PermissionMode>('damocles.permissionMode', 'default');
-    this.state.dangerouslySkipPermissions = platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false);
+    this.state.permissionMode = platform.settings.get<PermissionMode>('damocles.permissionMode', 'default', settingsFolder);
+    this.state.dangerouslySkipPermissions = platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
   }
 
   setPermissionMode(mode: PermissionMode): void {
@@ -89,8 +92,8 @@ export class PermissionHandler {
    * Start a fresh conversation's permissions: YOLO back to the workspace default and every session-scoped
    * approval dropped, so none outlives the conversation or folder it was granted in. The mode stays.
    */
-  resetForNewConversation(): void {
-    this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false);
+  resetForNewConversation(settingsFolder: SettingsFolder | undefined): void {
+    this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
     this.state.autoApprovedSkills.clear();
     this.state.autoApprovedSubagents.clear();
   }
@@ -113,9 +116,9 @@ export class PermissionHandler {
     this.state.onPendingChanged = fn;
   }
 
-  /** Whether any prompt map on this panel's `PermissionState` still holds an unanswered prompt. */
-  hasPendingPrompts(): boolean {
-    return this.state.hasPendingPrompts();
+  /** The kinds of the unanswered prompts on this panel's `PermissionState`; empty when none is open. */
+  pendingPromptKinds(): Set<PendingKind> {
+    return this.state.pendingKinds();
   }
 
   /**

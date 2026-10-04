@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 import { DialogRoot, DialogPortal, DialogOverlay, DialogContent, DialogClose, DialogTitle } from 'reka-ui';
-import { IconX } from '@/components/icons';
+import { X } from 'lucide-vue-next';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 
 const { t } = useI18n();
@@ -21,13 +21,13 @@ const { zIndex } = useOverlayEscape(() => emit('close'));
   <DialogRoot :open="true" @update:open="(v) => !v && emit('close')">
     <DialogPortal>
       <DialogOverlay
-        class="fixed inset-0 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+        class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-[6px]"
         :style="{ zIndex }"
       />
       <!-- Escape belongs to the overlay stack: the dialog's own dismissal is suppressed and `data-overlay-layer` keeps the stack from yielding to it. -->
       <DialogContent
         data-overlay-layer
-        class="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 outline-none"
+        class="d-dialog fixed left-1/2 top-1/2 -translate-1/2 outline-none"
         :style="{ zIndex }"
         :aria-describedby="undefined"
         @escape-key-down="(e: KeyboardEvent) => e.preventDefault()"
@@ -37,14 +37,16 @@ const { zIndex } = useOverlayEscape(() => emit('close'));
           <img
             :src="imageUrl"
             :alt="t('imageLightbox.enlarged')"
-            class="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+            class="max-h-[88vh] max-w-[90vw] rounded-xl border border-(--d-border2) object-contain shadow-(--d-shadow)"
           />
           <DialogClose
-            class="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-background text-foreground border border-border
-                   flex items-center justify-center shadow-lg
-                   hover:bg-muted transition-colors cursor-pointer"
+            class="d-press absolute -top-3 -right-3 flex size-7.5 items-center justify-center rounded-9 border border-(--d-border2) bg-(--d-card) text-(--d-muted) shadow-(--d-shadow) transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :title="t('overlays.closeHint')"
           >
-            <IconX :size="18" />
+            <X
+              class="size-4"
+              aria-hidden="true"
+            />
             <span class="sr-only">{{ t('common.close') }}</span>
           </DialogClose>
         </div>

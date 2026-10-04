@@ -1,70 +1,24 @@
 import { computed, type ComputedRef } from "vue";
-import {
-  useUIStore,
-  usePermissionStore,
-  useSubagentStore,
-  useQuestionStore,
-  useFormStore,
-  useDiffStore,
-} from "@/stores";
-import { usePlanViewStore } from "@/stores/usePlanViewStore";
-import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
-import { useContextUsageStore } from "@/stores/useContextUsageStore";
-import { useSubscriptionUsageStore } from "@/stores/useSubscriptionUsageStore";
-import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
-import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
-import { useTeamStore } from "@/stores/useTeamStore";
-import { useCompassStore } from "@/stores/useCompassStore";
-import { useBtwStore } from "@/stores/useBtwStore";
-import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
-import { resolveExpandedTool } from "@/composables/useExpandedTool";
+import { useUIStore, usePermissionStore, useQuestionStore, useFormStore } from "@/stores";
+import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
+import { openOverlayCount } from "@/composables/useOverlayEscape";
 
+/** Whether a foreground surface other than the prompt navigator is up, which the navigator's toggle must leave alone. */
 export function isForegroundOverlayOpen(): boolean {
+  // Every full overlay registers in the overlay stack, the navigator's own entry included.
+  const navigatorEntries = usePromptNavigatorStore().isOpen ? 1 : 0;
+  if (openOverlayCount() > navigatorEntries) return true;
+
+  // Foreground surfaces outside this page's stack: the rewind confirmation is a reka alert dialog, the prompts sit in the
+  // composer dock, and desktop renders the settings modal in its own overlay page.
   const uiStore = useUIStore();
   const permissionStore = usePermissionStore();
-  const subagentStore = useSubagentStore();
-  const questionStore = useQuestionStore();
-  const formStore = useFormStore();
-  const diffStore = useDiffStore();
-  const planViewStore = usePlanViewStore();
-  const contextInjectionStore = useContextInjectionStore();
-  const contextUsageStore = useContextUsageStore();
-  const subscriptionUsageStore = useSubscriptionUsageStore();
-  const usageStatsStore = useUsageStatsStore();
-  const backgroundTaskStore = useBackgroundTaskStore();
-  const teamStore = useTeamStore();
-  const compassStore = useCompassStore();
-  const btwStore = useBtwStore();
-  const voiceJarvisStore = useVoiceJarvisStore();
-
-  if (uiStore.showRewindBrowser) return true;
-  if (uiStore.showSettingsPanel) return true;
-  if (uiStore.showMcpPanel) return true;
-  if (uiStore.showToolsPanel) return true;
-  if (uiStore.showMemoryPanel) return true;
-  if (uiStore.showRewindTypeModal) return true;
-  if (permissionStore.currentPermission) return true;
-  if (permissionStore.pendingPlanApproval && permissionStore.isPlanOverlayVisible) return true;
-  if (permissionStore.pendingSkillApproval) return true;
-  if (questionStore.pendingQuestion) return true;
-  if (formStore.pendingForm) return true;
-  if (subagentStore.expandedSubagent) return true;
-  if (resolveExpandedTool()) return true;
-  if (diffStore.expandedDiff) return true;
-  if (planViewStore.viewingPlan) return true;
-  if (contextInjectionStore.isOverlayOpen) return true;
-  if (contextUsageStore.isOverlayOpen) return true;
-  if (subscriptionUsageStore.isOverlayOpen) return true;
-  if (usageStatsStore.isOverlayOpen) return true;
-  if (backgroundTaskStore.isOverlayOpen) return true;
-  if (teamStore.isOverlayOpen) return true;
-  if (teamStore.isAgentOverlayOpen) return true;
-  if (compassStore.activePanel !== null) return true;
-  if (btwStore.isOverlayOpen) return true;
-  if (voiceJarvisStore.firstRunRequired) return true;
-  if (voiceJarvisStore.hasActiveDownload) return true;
-  if (voiceJarvisStore.pendingUpgrades.length > 0) return true;
-  return false;
+  return uiStore.showRewindTypeModal
+    || uiStore.showSettingsModal
+    || Boolean(permissionStore.currentPermission)
+    || Boolean(permissionStore.pendingSkillApproval)
+    || Boolean(useQuestionStore().pendingQuestion)
+    || Boolean(useFormStore().pendingForm);
 }
 
 export function useForegroundOverlayOpen(): ComputedRef<boolean> {

@@ -1,7 +1,8 @@
-import { ref } from 'vue';
+import { ref, shallowRef } from 'vue';
 import { defineStore } from 'pinia';
 import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo, RestorePoint, SkippedFile, SkippedFilesTarget } from '@shared/types/session';
 import type { MemoryKind } from '@shared/types/memory';
+import type { SettingsTarget } from '@shared/settings-sections';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 type RewindSource = 'picker' | 'bubble' | null;
@@ -23,8 +24,9 @@ export interface MemoryPanelFocus {
 
 export const useUIStore = defineStore('ui', () => {
   const isProcessing = ref(false);
-  const isAtBottom = ref(true);
-  const showSettingsPanel = ref(false);
+  const showSettingsModal = ref(false);
+  // The latest request for the modal, a new object each time, so asking again while it shows still selects the section.
+  const settingsTarget = shallowRef<SettingsTarget | null>(null);
   const showMcpPanel = ref(false);
   const showToolsPanel = ref(false);
   const currentRunningTool = ref<string | null>(null);
@@ -63,20 +65,18 @@ export const useUIStore = defineStore('ui', () => {
     }
   }
 
-  function setIsAtBottom(value: boolean) {
-    isAtBottom.value = value;
-  }
-
   function setCurrentRunningTool(name: string | null) {
     currentRunningTool.value = name;
   }
 
-  function openSettingsPanel() {
-    showSettingsPanel.value = true;
+  function openSettingsModal(target: SettingsTarget = {}) {
+    settingsTarget.value = { ...target };
+    showSettingsModal.value = true;
   }
 
-  function closeSettingsPanel() {
-    showSettingsPanel.value = false;
+  function closeSettingsModal() {
+    showSettingsModal.value = false;
+    settingsTarget.value = null;
   }
 
   function openMcpPanel(): boolean {
@@ -269,8 +269,8 @@ export const useUIStore = defineStore('ui', () => {
 
   function $reset() {
     isProcessing.value = false;
-    isAtBottom.value = true;
-    showSettingsPanel.value = false;
+    showSettingsModal.value = false;
+    settingsTarget.value = null;
     showMcpPanel.value = false;
     showToolsPanel.value = false;
     showMemoryPanel.value = false;
@@ -300,8 +300,8 @@ export const useUIStore = defineStore('ui', () => {
 
   return {
     isProcessing,
-    isAtBottom,
-    showSettingsPanel,
+    showSettingsModal,
+    settingsTarget,
     showMcpPanel,
     currentRunningTool,
     showRewindTypeModal,
@@ -319,10 +319,9 @@ export const useUIStore = defineStore('ui', () => {
     startDirectRewind,
     startDirectCompactionRewind,
     setProcessing,
-    setIsAtBottom,
     setCurrentRunningTool,
-    openSettingsPanel,
-    closeSettingsPanel,
+    openSettingsModal,
+    closeSettingsModal,
     openMcpPanel,
     closeMcpPanel,
     showToolsPanel,

@@ -3,7 +3,7 @@ import { platform } from '../platform-host';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
-import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog } from './types';
+import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole, TeamRunResult, TeamEventLog, TeamStop } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SteerTargetInfo } from '../../shared/types/subagents';
 import type { ImageBlock } from '../../shared/types/content';
@@ -23,11 +23,20 @@ export function isValidTeamId(id: string): boolean {
   return TEAM_ID.test(id);
 }
 
-/** Heads the result of a team that stopped on a cancel, so the parent knows whether it can offer to continue it. */
-export function teamCancelledHeader(teamId: string, resumable: boolean): string {
+const TEAM_STOP_CAUSE: Record<TeamStop, string> = {
+  user: 'TEAM STOPPED BY THE USER before completion',
+  parent: 'TEAM CANCELLED by your cancel_team call before completion',
+  shutdown: 'TEAM STOPPED before completion because its chat panel closed, switched session or the editor window reloaded',
+  reset: 'TEAM STOPPED before completion because the conversation was cleared',
+};
+
+/** Heads the result of a team that stopped on a cancel, so the parent knows why and whether it can offer to continue it. */
+export function teamCancelledHeader(teamId: string, stop: TeamStop, resumable: boolean): string {
+  const cause = TEAM_STOP_CAUSE[stop];
+  if (stop === 'reset') return `(${cause}; results are partial and it cannot be resumed.)\n\n`;
   return resumable
-    ? `(TEAM CANCELLED before completion; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`
-    : '(TEAM CANCELLED before completion; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n';
+    ? `(${cause}; results are partial. Resume it with resume_team({team_id:"${teamId}"}) if the user asks to continue.)\n\n`
+    : `(${cause}; results are partial. Its resume state was not saved, so it cannot be resumed.)\n\n`;
 }
 
 // Keyed by event log path, across every panel of this window: a team whose run has not settled, draining
@@ -75,9 +84,26 @@ export class TeamService {
   // Settles only after the team's drain and final event-log writes, so it is what a folder delete waits on.
   private lastRun: Promise<unknown> = Promise.resolve();
   private readonly deps: TeamServiceDeps;
+  /** Called whenever `running` flips. Supplied by the owning PiSession's state publisher. */
+  private runListener: (() => void) | null = null;
 
   constructor(deps: TeamServiceDeps) {
     this.deps = deps;
+  }
+
+  setRunListener(listener: (() => void) | null): void {
+    this.runListener = listener;
+  }
+
+  /** A team holds this panel's claim: it runs, or a resume of one is validating. */
+  get running(): boolean {
+    return this.activeTeamId !== null;
+  }
+
+  private setActiveTeam(teamId: string | null, runner: TeamRunner | null): void {
+    this.activeTeamId = teamId;
+    this.activeRunner = runner;
+    this.runListener?.();
   }
 
   get isEnabled(): boolean {
@@ -141,8 +167,7 @@ export class TeamService {
 
     const runner = new TeamRunner(teamConfig, (msg) => this.deps.onMessage(msg));
 
-    this.activeRunner = runner;
-    this.activeTeamId = teamId;
+    this.setActiveTeam(teamId, runner);
     const unsettledKey = teamEventLogPath(piSessionDir(this.deps.cwd), sessionId, teamId);
     unsettledTeams.add(unsettledKey);
 
@@ -155,8 +180,7 @@ export class TeamService {
     } finally {
       unsettledTeams.delete(unsettledKey);
       if (this.activeRunner === runner) {
-        this.activeRunner = null;
-        this.activeTeamId = null;
+        this.setActiveTeam(null, null);
       }
     }
   }
@@ -181,7 +205,7 @@ export class TeamService {
       throw new Error(`Team "${teamId}" is still running in another panel or shutting down; try again shortly.`);
     }
     unsettledTeams.add(unsettledKey);
-    this.activeTeamId = teamId;
+    this.setActiveTeam(teamId, null);
     const claim = {};
     this.resumeClaim = claim;
     const epoch = this.cancelEpoch;
@@ -233,14 +257,13 @@ export class TeamService {
       unsettledTeams.delete(unsettledKey);
       if (this.resumeClaim === claim) {
         this.resumeClaim = null;
-        this.activeRunner = null;
-        this.activeTeamId = null;
+        this.setActiveTeam(null, null);
       }
     }
   }
 
   private formatResult(teamId: string, runner: TeamRunner, result: TeamRunResult): string {
-    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.resumable) : '';
+    const header = result.status === 'cancelled' ? teamCancelledHeader(teamId, result.stop, result.resumable) : '';
     return header + formatTeamUserSteerPrefix(runner.getOperatorSteers()) + result.text;
   }
 
@@ -261,21 +284,37 @@ export class TeamService {
     return this.activeTeamId === teamId && this.activeRunner ? this.activeRunner.getTeamState() : null;
   }
 
+  /** The user's Stop team, from the team's card or overlay or the lead's Stop. */
+  stopTeam(teamId: string): boolean {
+    return this.stopRunningTeam(teamId, 'user');
+  }
+
   /** The `cancel_team` tool's result. Throws when the team is not the one running here. */
   cancelTeam(teamId: string): string {
     if (this.activeTeamId !== teamId) throw new Error(`Team "${teamId}" is not running.`);
     const runner = this.activeRunner;
-    if (!this.cancelActiveTeam()) return `Team "${teamId}" had already finished, so nothing was cancelled.`;
-    this.deps.requestInterruptionCheck();
+    if (!this.stopRunningTeam(teamId, 'parent')) return `Team "${teamId}" had already finished, so nothing was cancelled.`;
     // With no runner the resume was still validating, so the checkpoint it read is unused.
-    return `${teamCancelledHeader(teamId, runner?.hasCheckpoint() ?? true)}Team "${teamId}" cancelled.`;
+    return `${teamCancelledHeader(teamId, 'parent', runner?.hasCheckpoint() ?? true)}Team "${teamId}" cancelled.`;
   }
 
   /**
-   * True when it stopped an unfinished team, or a resume before it launched. A 'user' stop keeps the team
-   * resumable; a 'reset' stop discards the conversation that could resume it, so it writes no checkpoint.
+   * The one stop of a named team, shared by the user's Stop team and the `cancel_team` tool. It leaves the
+   * team resumable, and its blocked `create_team` or `resume_team` call returns the partial results, so
+   * the parent turn goes on. False when `teamId` is not running here or had already finished.
    */
-  cancelActiveTeam(stop: 'user' | 'reset' = 'user'): boolean {
+  private stopRunningTeam(teamId: string, stop: 'user' | 'parent'): boolean {
+    if (this.activeTeamId !== teamId || !this.cancelActiveTeam(stop)) return false;
+    this.deps.requestInterruptionCheck();
+    return true;
+  }
+
+  /**
+   * True when it stopped an unfinished team, or a resume before it launched. The first stop of a run names
+   * its cause. Every stop but 'reset' keeps the team resumable; a 'reset' stop discards the conversation
+   * that could resume it, so it writes no checkpoint.
+   */
+  cancelActiveTeam(stop: TeamStop): boolean {
     this.cancelEpoch++;
     if (this.activeRunner) return this.activeRunner.cancel(stop);
     return this.activeTeamId !== null;
@@ -305,6 +344,7 @@ export class TeamService {
     };
   }
 
+  /** Stops one specialist; the lead stops only with its team, through `stopTeam`. */
   cancelAgent(teamId: string, agentId: string): void {
     if (this.activeTeamId === teamId && this.activeRunner) {
       this.activeRunner.cancelAgent(agentId);
@@ -312,9 +352,8 @@ export class TeamService {
   }
 
   dispose(): void {
-    this.cancelActiveTeam();
-    this.activeRunner = null;
-    this.activeTeamId = null;
+    this.cancelActiveTeam('shutdown');
+    this.setActiveTeam(null, null);
     this.resumeClaim = null;
     this.pendingToolUseId = null;
   }

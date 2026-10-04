@@ -2,12 +2,8 @@ import { computed, type ComputedRef } from 'vue';
 import type { ChatMessage } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
 import { useStreamingStore } from '@/stores/useStreamingStore';
-
-const timeFormatter = new Intl.DateTimeFormat(undefined, {
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
+import { i18n } from '@/i18n';
+import { clockFormatter } from '@/utils/clock';
 
 export interface EnrichedPrompt {
   messageId: string;
@@ -59,15 +55,12 @@ function hasNonText(blocks: ContentBlock[] | undefined): boolean {
   return blocks.some((b) => b.type !== 'text');
 }
 
-function formatTime(timestamp: number): string {
-  return timeFormatter.format(new Date(timestamp));
-}
-
 export function useEnrichedPrompts(): ComputedRef<EnrichedPrompt[]> {
   const streamingStore = useStreamingStore();
 
   return computed<EnrichedPrompt[]>(() => {
     const msgs = streamingStore.messages;
+    const clock = clockFormatter(i18n.global.locale.value);
     const result: EnrichedPrompt[] = [];
 
     for (let i = 0; i < msgs.length; i++) {
@@ -109,7 +102,7 @@ export function useEnrichedPrompts(): ComputedRef<EnrichedPrompt[]> {
         promptIndex: msg.promptIndex ?? 0,
         text,
         hasNonTextAttachments: nonText,
-        time: formatTime(msg.timestamp),
+        time: clock.format(msg.timestamp),
         tools,
         errored,
         sdkMessageId: msg.sdkMessageId ?? null,

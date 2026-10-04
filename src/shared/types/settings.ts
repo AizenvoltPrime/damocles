@@ -50,6 +50,8 @@ export interface ExtensionSettings {
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
   cacheWarming: CacheWarmingMode;
+  /** `damocles.checkpoints.retentionDays`; 0 keeps checkpoints forever. */
+  checkpointRetentionDays: number;
   dangerouslySkipPermissions: boolean;
   /** Workspace default seeded into each new panel's YOLO state; per-panel toggle overrides it. */
   defaultDangerouslySkipPermissions: boolean;

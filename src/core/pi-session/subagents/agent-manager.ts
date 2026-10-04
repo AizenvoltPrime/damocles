@@ -61,7 +61,7 @@ import { SubagentStreamBridge, buildAgentResultJson } from './subagent-stream-br
 import { runSubagent } from './subagent-runner';
 import { getStatusNote } from './status-note';
 import { addUsage, getLifetimeTotal } from './usage';
-import { PLAN_AGENT_NAME, isThinkingOverride, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
+import { PLAN_AGENT_NAME, type AgentConfig, type AgentRecord, type PendingSteer, type SubagentType, type ThinkingLevel } from './types';
 import { extractImages } from '../branch-text';
 import type { ImageBlock } from '../../../shared/types/content';
 import { emptyAgentUsage, type AgentUsageTotals } from '../../../shared/usage-accounting';
@@ -102,9 +102,6 @@ export interface ResolvedSubagentModel {
   /** Short label for the card's model line (e.g. "haiku"), when known. */
   modelLabel?: string;
   thinkingLevel?: ThinkingLevel;
-  /** Set only by the Explore-section resolution when the user's effort setting yielded a `thinkingLevel`:
-   *  makes that level a hard guarantee that beats a per-spawn `spec.thinking`. */
-  enforceThinking?: boolean;
   /** Whether the model bills real dollars. Unset when unknown, so the card falls back to the panel's flag. */
   dollarBilled?: boolean;
   /** Set when resolution failed (out-of-scope / unauthed) — the spawn fails soft with this message. */
@@ -169,6 +166,8 @@ export interface SubagentEngine {
   modelDollarBilled: (model: Model<Api>) => boolean;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
   onSubagentCost: (costDeltaUsd: number) => void;
+  /** A run was created or settled, so `hasUnsettledRuns()` may have changed. */
+  onRunsChanged: () => void;
   /** Configured-hooks dispatch deps (US-008) — fires PreToolUse/PostToolUse/subagent_end for this subagent. */
   getHooksDispatch?: () => DispatchDeps | undefined;
 }
@@ -180,7 +179,6 @@ export interface SpawnRequest {
   prompt: string;
   description: string;
   toolCallId: string;
-  thinking?: ThinkingLevel;
   runInBackground: boolean;
   /** Parent abort signal (foreground synchronous spawn) — aborts this subagent when the parent turn does. */
   signal?: AbortSignal;
@@ -215,6 +213,12 @@ export interface ResumeTarget {
 
 /** What the queue holds and a start runs: a spawn, or a resume that already passed validation. */
 type RunSpec = SpawnRequest | (ResumeRequest & { target: ResumeTarget });
+
+interface QueuedRun {
+  id: string;
+  spec: RunSpec;
+  bridge: SubagentStreamBridge;
+}
 
 function runType(spec: RunSpec): SubagentType {
   return spec.kind === 'spawn' ? spec.type : spec.target.launch.agentType;
@@ -264,7 +268,7 @@ export class AgentManager {
   private readonly bridges = new Map<string, SubagentStreamBridge>();
   private readonly engine: SubagentEngine;
   private maxConcurrent: number;
-  private readonly queue: { id: string; spec: RunSpec }[] = [];
+  private readonly queue: QueuedRun[] = [];
   /** Ids claimed by a resume between validation and the resumed record being tracked. */
   private readonly resuming = new Set<string>();
   /** Total concurrent subagents (foreground + background) that have started — capped at maxConcurrent. */
@@ -425,7 +429,6 @@ export class AgentManager {
     if (!state.spawn || typeof description !== 'string' || typeof prompt !== 'string' || typeof agentType !== 'string') {
       throw unknownResumeError(agentId);
     }
-    const thinking = args?.['thinking'];
     const requested = args?.['run_in_background'];
     const spawnDetails = index.toolDetails.get(state.spawn.toolCallId);
     const background =
@@ -438,7 +441,6 @@ export class AgentManager {
       description,
       prompt,
       background,
-      ...(isThinkingOverride(thinking) ? { thinkingOverride: thinking } : {}),
     };
   }
 
@@ -447,12 +449,38 @@ export class AgentManager {
     const willQueue = this.running >= this.maxConcurrent;
     const record = this.newRecord(id, spec, willQueue);
     this.agents.set(id, record);
+    this.engine.onRunsChanged();
+    const bridge = this.createBridge(id, record, spec);
+    // Announced before the record can wait in the queue, so its card holds the id a stop names from the start.
+    bridge.start();
     if (willQueue) {
-      this.queue.push({ id, spec });
+      this.queue.push({ id, spec, bridge });
     } else {
-      this.startRecord(id, record, spec);
+      this.startRecord(id, record, spec, bridge);
     }
     return record;
+  }
+
+  private createBridge(id: string, record: AgentRecord, spec: RunSpec): SubagentStreamBridge {
+    const type = runType(spec);
+    const bridge = new SubagentStreamBridge({
+      parentToolUseId: spec.toolCallId,
+      agentId: id,
+      agentType: this.engine.registry.getAgentConfig(type)?.name ?? type,
+      isBackground: runInBackground(spec),
+      description: record.description,
+      ...(spec.kind === 'resume' ? { resumedFrom: id } : {}),
+      getSessionId: this.engine.getParentSessionId,
+      postMessage: this.engine.postMessage,
+      onUsage: (usage) => this.rollCost(record, usage),
+    });
+    this.bridges.set(id, bridge);
+    return bridge;
+  }
+
+  /** Whether a run created here has not settled yet, queued and stopped-but-winding-down runs included. */
+  hasUnsettledRuns(): boolean {
+    return this.doneResolvers.size > 0;
   }
 
   /**
@@ -586,10 +614,11 @@ export class AgentManager {
     if (!resolve) return;
     this.doneResolvers.delete(id);
     resolve(text);
+    this.engine.onRunsChanged();
   }
 
   /** Begin running a subagent record (immediate spawn or queue drain). */
-  private startRecord(id: string, record: AgentRecord, spec: RunSpec): void {
+  private startRecord(id: string, record: AgentRecord, spec: RunSpec, bridge: SubagentStreamBridge): void {
     record.status = 'running';
     record.startedAt = Date.now();
     this.running++;
@@ -597,24 +626,11 @@ export class AgentManager {
     const type = runType(spec);
     const background = runInBackground(spec);
     const config = this.engine.registry.getAgentConfig(type);
-    const bridge = new SubagentStreamBridge({
-      parentToolUseId: spec.toolCallId,
-      agentId: id,
-      agentType: config?.name ?? type,
-      isBackground: background,
-      description: record.description,
-      ...(spec.kind === 'resume' ? { resumedFrom: id } : {}),
-      getSessionId: this.engine.getParentSessionId,
-      postMessage: this.engine.postMessage,
-      onUsage: (usage) => this.rollCost(record, usage),
-    });
-    this.bridges.set(id, bridge);
 
     // A resume validates across awaits and a spawn can wait in the queue, so the parent signal may
     // already have fired. Finish without running: pi ignores a session abort that precedes prompt().
     if (spec.signal?.aborted) {
       this.abort(id, 'user');
-      bridge.start();
       this.afterComplete(id, record, bridge);
       return;
     }
@@ -631,7 +647,6 @@ export class AgentManager {
     // Reject an unknown or explicitly-disabled type with a distinct error rather than silently running
     // it as general-purpose (which would hand a disabled/hallucinated agent the full toolset).
     if (!config || !this.engine.registry.isValidType(type)) {
-      bridge.start();
       this.finalizeError(id, record, bridge, `Unknown or disabled subagent type "${type}".`, detachParent);
       return;
     }
@@ -644,7 +659,8 @@ export class AgentManager {
           ...(spec.target.launch.dollarBilled !== undefined ? { dollarBilled: spec.target.launch.dollarBilled } : {}),
         }
       : this.engine.resolveModel({ agentConfig: config });
-    bridge.start(resolved.modelLabel, config.filePath);
+    bridge.emitModel(resolved.modelLabel);
+    if (config.filePath) bridge.emitTemplate(config.filePath);
 
     if (resolved.error) {
       this.finalizeError(id, record, bridge, resolved.error, detachParent);
@@ -749,18 +765,14 @@ export class AgentManager {
     const reopenPath = spec.kind === 'resume' ? spec.target.path : null;
     // A fresh run: a spawn, or a resume of an agent that stopped before its task was committed.
     const fresh = spec.kind === 'spawn'
-      ? { description: spec.description, prompt: spec.prompt, background: spec.runInBackground, thinking: spec.thinking }
-      : { ...spec.target.launch, thinking: spec.target.launch.thinkingOverride };
-    const thinkingLevel =
-      resolved.enforceThinking && resolved.thinkingLevel
-        ? resolved.thinkingLevel
-        : (fresh.thinking ?? resolved.thinkingLevel);
+      ? { description: spec.description, prompt: spec.prompt, background: spec.runInBackground }
+      : spec.target.launch;
     const createSession = () =>
       this.engine.createSession({
         cwd: this.engine.cwd,
         systemPrompt: prepared.systemPrompt,
         ...(reopenPath === null && resolved.model ? { model: resolved.model } : {}),
-        ...(reopenPath === null && thinkingLevel ? { thinkingLevel } : {}),
+        ...(reopenPath === null && resolved.thinkingLevel ? { thinkingLevel: resolved.thinkingLevel } : {}),
         // `mcp.names` MUST be here: pi freezes `options.tools` into `_allowedToolNames` and filters the
         // registry by it, so an MCP definition whose name is missing is dropped silently. It is also
         // where `createSubagentSession` reads this agent's MCP set back from, for the deferred baseline.
@@ -781,7 +793,6 @@ export class AgentManager {
       description: fresh.description,
       prompt: fresh.prompt,
       background: fresh.background,
-      ...(fresh.thinking ? { thinkingOverride: fresh.thinking } : {}),
       ...(config.filePath ? { templatePath: config.filePath } : {}),
       ...(resolved.modelLabel ? { modelLabel: resolved.modelLabel } : {}),
       ...(resolved.dollarBilled !== undefined ? { dollarBilled: resolved.dollarBilled } : {}),
@@ -958,7 +969,7 @@ export class AgentManager {
       const next = this.queue.shift()!;
       const record = this.agents.get(next.id);
       if (!record || record.status !== 'queued') continue;
-      this.startRecord(next.id, record, next.spec);
+      this.startRecord(next.id, record, next.spec, next.bridge);
     }
   }
 
@@ -983,21 +994,14 @@ export class AgentManager {
     this.engine.postMessage({ type: 'backgroundTaskCompleted', taskId: record.id, status });
   }
 
-  /** Abort one subagent (queued → dropped; running → session abort). */
+  /** Abort one subagent (queued → dropped; running → session abort). False when it had already finished. */
   abort(id: string, reason: AgentStopReason): boolean {
     const record = this.agents.get(id);
     if (!record) return false;
-    if (record.status === 'queued') {
-      const idx = this.queue.findIndex((q) => q.id === id);
-      if (idx !== -1) this.queue.splice(idx, 1);
-      record.status = 'stopped';
-      record.stopReason = reason;
-      record.completedAt = Date.now();
-      // A queued agent never ran, so any steer it holds was never delivered — drop both the undelivered
-      // buffer and the parent-awareness note so a stopped record can't carry a phantom "[User steered…]".
-      record.pendingSteers = undefined;
-      record.userSteers = undefined;
-      this.settleDone(id, '');
+    const queued = this.queue.find((q) => q.id === id);
+    if (queued) {
+      this.queue.splice(this.queue.indexOf(queued), 1);
+      this.stopQueued(queued, record, reason);
       return true;
     }
     if (record.status !== 'running') return false;
@@ -1008,6 +1012,28 @@ export class AgentManager {
     return true;
   }
 
+  /** A queued record never ran, so it ends here, card included, and its settle is all that follows. */
+  private stopQueued(queued: QueuedRun, record: AgentRecord, reason: AgentStopReason): void {
+    record.status = 'stopped';
+    record.stopReason = reason;
+    record.completedAt = Date.now();
+    // A queued agent never ran, so any steer it holds was never delivered — drop both the undelivered
+    // buffer and the parent-awareness note so a stopped record can't carry a phantom "[User steered…]".
+    record.pendingSteers = undefined;
+    record.userSteers = undefined;
+    const responseText = getStatusNote(record.status, reason, record.id);
+    if (!this.disposed) {
+      queued.bridge.finish({
+        responseText,
+        resultJson: buildAgentResultJson({ responseText, agentId: record.id, agentStatus: 'stopped', totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
+        isError: false,
+        durationMs: 0,
+      });
+    }
+    this.bridges.delete(record.id);
+    this.settleDone(record.id, responseText);
+  }
+
   /**
    * Abort all running + queued subagents (interrupt / reset / budget / shutdown). Returns the count
    * aborted. A killed agent has no result to deliver, so its record is discarded and no push path
@@ -1016,21 +1042,14 @@ export class AgentManager {
   abortAll(reason: AgentStopReason): number {
     this.abortEpoch++;
     let count = 0;
-    for (const queued of this.queue) {
+    for (const queued of this.queue.splice(0)) {
       const record = this.agents.get(queued.id);
       if (record) {
-        record.status = 'stopped';
-        record.stopReason = reason;
-        record.completedAt = Date.now();
         record.discarded = true;
-        // Never-delivered steers on a queued agent must not survive the abort (see abort()).
-        record.pendingSteers = undefined;
-        record.userSteers = undefined;
-        this.settleDone(queued.id, '');
+        this.stopQueued(queued, record, reason);
         count++;
       }
     }
-    this.queue.length = 0;
     for (const record of this.agents.values()) {
       if (record.status === 'running') {
         record.status = 'stopped';

@@ -30,7 +30,7 @@ export function createPlanModeTools(
   const enterPlan = pi.defineTool<typeof enterPlanSchema, undefined>({
     name: TOOL_ENTER_PLAN_MODE,
     label: 'EnterPlanMode',
-    description: 'Enter plan mode: research and design a plan with read-only tools and read-only shell commands (plus writing your plan file) before making any changes.',
+    description: 'Enter plan mode: research and design a plan with read tools and shell commands that gather information (plus writing your plan file) before making any changes.',
     parameters: enterPlanSchema,
     execute: async () => {
       await permissionHandler.activatePlanMode();

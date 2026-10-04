@@ -9,25 +9,19 @@ import QuestionToolCard from '../QuestionToolCard.vue';
 import SkillToolCard from '../SkillToolCard.vue';
 import EnterPlanModeToolCard from '../EnterPlanModeToolCard.vue';
 import ExitPlanModeToolCard from '../ExitPlanModeToolCard.vue';
-import { IconBan, IconCheckCircle } from '../icons';
 import { i18n } from '@/i18n';
 
 /**
  * The five specialised cards share one status mapping. `cancelled` is in the status union every card
  * receives, so a card that falls through to the default renders a live-looking gear on a stopped call.
- * The glyphs are compared by path data, because a card that renders no icon at all would pass an
+ * The glyphs are compared by lucide glyph name, because a card that renders no icon at all would pass an
  * assertion that only checks the wrong glyph is absent.
  */
 
-function pathOf(icon: { render?: unknown } | ((...args: never[]) => unknown)): string {
-  const vnode = (icon as (props: object) => { children: { props: { d: string } }[] })({});
-  const first = vnode.children[0];
-  if (!first) throw new Error('icon rendered no path');
-  return first.props.d;
-}
 
-const BAN_PATH = pathOf(IconBan);
-const CHECK_CIRCLE_PATH = pathOf(IconCheckCircle);
+const BAN_PATH = 'ban';
+const CHECK_CIRCLE_PATH = 'circle-check';
+const SPINNER_PATH = 'loader-circle';
 
 const CARDS: Array<[string, Component]> = [
   ['FormToolCard', FormToolCard],
@@ -48,8 +42,9 @@ function render(component: Component, status: ToolCall['status']): VueWrapper {
   });
 }
 
+/** The lucide glyph name of every icon the card rendered, e.g. `ban` or `circle-check`. */
 function headerPaths(wrapper: VueWrapper): string[] {
-  return wrapper.findAll('svg path').map((p) => p.attributes('d') ?? '');
+  return wrapper.findAll('svg').map((svg) => svg.classes().find((c) => c.startsWith('lucide-') && !c.endsWith('-icon'))?.slice('lucide-'.length) ?? '');
 }
 
 beforeEach(() => setActivePinia(createPinia()));
@@ -75,11 +70,22 @@ describe.each(CARDS)('%s on a cancelled call', (_name, component) => {
   it('takes neither success nor error colouring', () => {
     const html = render(component, 'cancelled').html();
 
-    expect(html).not.toContain('text-success');
-    expect(html).not.toContain('text-error');
+    expect(html).not.toContain('--d-success');
+    expect(html).not.toContain('--d-danger');
   });
 
   it('shows no spinner, so a stopped call does not read as still running', () => {
-    expect(render(component, 'cancelled').find('.animate-spin').exists()).toBe(false);
+    const wrapper = render(component, 'cancelled');
+
+    expect(headerPaths(wrapper)).not.toContain(SPINNER_PATH);
+    expect(wrapper.find('.d-spinning').exists()).toBe(false);
+  });
+
+  it('shows the spinning loader for the running call it must not be confused with', () => {
+    // Pins the contrast: a spinner drawn some other way would pass the case above.
+    const wrapper = render(component, 'running');
+
+    expect(headerPaths(wrapper)).toContain(SPINNER_PATH);
+    expect(wrapper.find('.d-spinning').exists()).toBe(true);
   });
 });

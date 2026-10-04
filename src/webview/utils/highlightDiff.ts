@@ -1,4 +1,4 @@
-import { getHighlighter, getShikiTheme, normalizeLanguage } from '@/composables/useShikiHighlighter';
+import { getHighlighter, normalizeLanguage, type HighlightTheme } from '@/composables/useShikiHighlighter';
 import type { DiffLine } from './parseUnifiedDiff';
 import { escapeHtml } from './stringUtils';
 
@@ -8,9 +8,15 @@ export interface HighlightedDiffLine extends DiffLine {
 
 const MAX_HIGHLIGHT_LINES = 1000;
 
+/** Gap and end-of-file marker rows hold no code, so they stay out of the highlighted text. */
+function isCode(line: DiffLine): boolean {
+  return line.type !== 'gap' && line.type !== 'noNewline';
+}
+
 export async function highlightDiffLines(
   lines: DiffLine[],
-  language: string
+  language: string,
+  theme: HighlightTheme
 ): Promise<HighlightedDiffLine[]> {
   if (lines.length > MAX_HIGHLIGHT_LINES || lines.length === 0) {
     return lines.map((line) => ({
@@ -21,11 +27,10 @@ export async function highlightDiffLines(
 
   try {
     const normalizedLang = normalizeLanguage(language);
-    const theme = getShikiTheme();
     const highlighter = await getHighlighter(normalizedLang, theme);
 
     const contentLines = lines
-      .filter((l) => l.type !== 'gap')
+      .filter(isCode)
       .map((l) => l.content);
 
     if (contentLines.length === 0) {
@@ -54,7 +59,7 @@ export async function highlightDiffLines(
     let highlightIdx = 0;
 
     return lines.map((line) => {
-      if (line.type === 'gap') {
+      if (!isCode(line)) {
         return { ...line, highlightedContent: '' };
       }
       const highlighted = highlightedLines[highlightIdx++] || escapeHtml(line.content);

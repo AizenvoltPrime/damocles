@@ -1,5 +1,6 @@
 import { onMounted, onUnmounted, ref, type Ref } from 'vue';
 import { i18n } from '@/i18n';
+import { formatDateTime } from '@/utils/clock';
 
 /**
  * Auto-ticking relative-time label ("just now", "3m ago") for a timestamp. One shared interval per
@@ -34,7 +35,7 @@ export function useRelativeTime(getTimestamp: () => number | null, intervalMs = 
       return;
     }
     relative.value = format(ts);
-    absolute.value = new Date(ts).toLocaleString();
+    absolute.value = formatDateTime(ts, i18n.global.locale.value, { seconds: true });
   }
 
   onMounted(() => {

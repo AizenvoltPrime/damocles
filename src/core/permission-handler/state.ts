@@ -10,13 +10,14 @@ import type {
   PermissionRequiredNotifier,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { PendingKind } from '../pi-session/session-state';
 import { log } from '../logger';
 
 /**
  * Register a pending prompt against the signal that can cancel it.
  *
  * A signal that already aborted never fires `abort` again, so a listener added after the fact never
- * runs: the entry registers and never settles, `hasPendingPrompts()` stays true for the life of the
+ * runs: the entry registers and never settles, `pendingKinds()` keeps it for the life of the
  * panel, the panel pins on `requires_action`, and the `canUseTool` promise behind it never resolves.
  * Settling through the same handler the listener would have called keeps the already-aborted case
  * indistinguishable from an ordinary abort for every caller. Nothing may run after this call: the
@@ -62,16 +63,14 @@ export class PermissionState {
   /** Fired on every add and every remove so a listener re-derives from the maps, never from a count. */
   onPendingChanged: (() => void) | null = null;
 
-  /** Whether any prompt map on this state still holds an unanswered prompt. */
-  hasPendingPrompts(): boolean {
-    return (
-      this.pendingApprovals.size > 0 ||
-      this.pendingQuestions.size > 0 ||
-      this.pendingForms.size > 0 ||
-      this.pendingPlanApprovals.size > 0 ||
-      this.pendingSkillApprovals.size > 0 ||
-      this.pendingElicitations.size > 0
-    );
+  /** The kinds of the unanswered prompts; a new prompt map must map to a kind here. */
+  pendingKinds(): Set<PendingKind> {
+    const kinds = new Set<PendingKind>();
+    if (this.pendingApprovals.size > 0 || this.pendingSkillApprovals.size > 0) kinds.add('approval');
+    if (this.pendingQuestions.size > 0) kinds.add('question');
+    if (this.pendingPlanApprovals.size > 0) kinds.add('plan');
+    if (this.pendingForms.size > 0 || this.pendingElicitations.size > 0) kinds.add('input');
+    return kinds;
   }
 
   addPendingApproval(toolUseId: string, approval: PendingApproval): void {

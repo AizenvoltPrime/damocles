@@ -29,6 +29,7 @@ function picker(agents: SteerTargetInfo[]): VueWrapper {
   return mount(SlashCommandPopup, {
     props: {
       isOpen: true,
+      listId: 'commands',
       commands: [],
       selectedIndex: 0,
       anchorElement: null,
@@ -42,7 +43,7 @@ function picker(agents: SteerTargetInfo[]): VueWrapper {
 }
 
 function rows(wrapper: VueWrapper): string[] {
-  return wrapper.findAll('.rounded.cursor-pointer').map((row) => row.text().replace(/\s+/g, ' ').trim());
+  return wrapper.findAll('[role="option"]').map((row) => row.text().replace(/\s+/g, ' ').trim());
 }
 
 describe('the /steer agent picker', () => {

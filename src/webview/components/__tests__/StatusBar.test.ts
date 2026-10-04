@@ -2,9 +2,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 
-// `vue3-lottie` runs canvas setup at import time, which happy-dom does not provide.
-vi.mock('vue3-lottie', () => ({ Vue3Lottie: { name: 'Vue3Lottie', render: () => null } }));
-
 import StatusBar from '../StatusBar.vue';
 import { i18n, applyLocale } from '@/i18n';
 
@@ -26,7 +23,7 @@ afterEach(() => applyLocale('en'));
 
 describe('when the bar is on screen', () => {
   it('shows while the turn is running', () => {
-    expect(mountBar(true, false).find('div').exists()).toBe(true);
+    expect(mountBar(true, false).find('[data-testid="status-row"]').exists()).toBe(true);
   });
 
   it('stays up when a turn settles with a dialog still open', () => {
@@ -37,30 +34,60 @@ describe('when the bar is on screen', () => {
   });
 
   it('shows for a dialog opened with no turn in flight', () => {
-    expect(mountBar(false, true).find('div').exists()).toBe(true);
+    expect(mountBar(false, true).find('[data-testid="status-row"]').exists()).toBe(true);
   });
 
   it('hides once the run is idle and nothing is pending', () => {
-    expect(mountBar(false, false).find('div').exists()).toBe(false);
+    expect(mountBar(false, false).find('[data-testid="status-row"]').exists()).toBe(false);
   });
 });
 
 describe('telling a parked run from a working run', () => {
-  it('tints the bar with the warning colour only when parked', () => {
-    expect(mountBar(true, true).find('div').classes()).toContain('bg-warning/10');
-    expect(mountBar(true, false).find('div').classes()).not.toContain('bg-warning/10');
+  it('colours the row with the warning token only when parked', () => {
+    expect(mountBar(true, true).get('[data-testid="status-label"]').classes()).toContain('text-(--d-warning)');
+    expect(mountBar(true, false).get('[data-testid="status-label"]').classes()).not.toContain('text-(--d-warning)');
   });
 
-  it('swaps the spinner for a static icon', () => {
-    expect(mountBar(true, false).findComponent({ name: 'Vue3Lottie' }).exists()).toBe(true);
-    expect(mountBar(true, true).findComponent({ name: 'Vue3Lottie' }).exists()).toBe(false);
-    expect(mountBar(true, true).find('svg').exists()).toBe(true);
+  it('swaps the spinner for a pulsing dot', () => {
+    expect(mountBar(true, false).find('svg.lucide-loader-circle').exists()).toBe(true);
+    expect(mountBar(true, true).find('svg').exists()).toBe(false);
+    expect(mountBar(true, true).find('span.rounded-full').classes()).toContain('animate-[d-pulse_1.2s_infinite]');
   });
 
   it('drops the witty phrase, which reads as progress that is not happening', () => {
     const bar = mountBar(true, true);
 
-    expect(bar.get('span.flex-1').text()).toBe('Waiting for your answer');
+    expect(bar.get('[data-testid="status-label"]').text()).toBe('Waiting for your answer');
+    expect(bar.text()).not.toContain('Esc to interrupt');
+  });
+
+  it('offers Esc to interrupt while working, with the phrase drawn by the transform shimmer', () => {
+    const bar = mountBar(true, false);
+
+    expect(bar.text()).toContain('Esc to interrupt');
+    expect(bar.get('[data-testid="status-label"]').classes()).toContain('d-glint');
+    expect(bar.get('.d-glint-window').attributes('aria-hidden')).toBe('true');
+  });
+
+  it('names the running tool instead of a phrase', () => {
+    const bar = mount(StatusBar, {
+      props: { isProcessing: true, awaitingUserAction: false, currentToolName: 'Bash' },
+      global: { plugins: [i18n] },
+    });
+
+    expect(bar.get('[data-testid="status-label"]').text()).toContain('Running Bash');
+  });
+
+  it('counts the elapsed time from when the row appears', async () => {
+    vi.useFakeTimers();
+    try {
+      const bar = mountBar(true, false);
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('0s');
+      await vi.advanceTimersByTimeAsync(65_000);
+      expect(bar.get('[data-testid="status-elapsed"]').text()).toBe('1:05');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -82,14 +109,13 @@ describe('what a screen reader gets', () => {
     expect(bar.get('[role="status"]').text()).toBe('Waiting for your answer');
   });
 
-  it('hides the icon, which carries no accessible name', () => {
-    const bar = mountBar(true, true);
-
-    expect(bar.get('svg').element.closest('[aria-hidden="true"]')).not.toBeNull();
+  it('hides the marks, which carry no accessible name', () => {
+    expect(mountBar(true, false).get('svg').attributes('aria-hidden')).toBe('true');
+    expect(mountBar(true, true).get('span.rounded-full').attributes('aria-hidden')).toBe('true');
   });
 
   it('hides the visible parked label, because the region already reads it out', () => {
-    expect(mountBar(true, true).get('span.flex-1').attributes('aria-hidden')).toBe('true');
+    expect(mountBar(true, true).get('[data-testid="status-label"]').attributes('aria-hidden')).toBe('true');
   });
 });
 

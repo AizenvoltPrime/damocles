@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -34,7 +34,9 @@ vi.mock('../query-expansion', () => ({
   clearExpansionCache: vi.fn(() => {}),
 }));
 
-setInjectionDbDirForTests(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-jev-test-')));
+const INJECTION_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-jev-test-'));
+setInjectionDbDirForTests(INJECTION_DB_DIR);
+afterAll(() => fs.rmSync(INJECTION_DB_DIR, { recursive: true, force: true }));
 
 const WORKSPACE = '/repo/damocles';
 

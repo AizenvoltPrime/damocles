@@ -5,6 +5,7 @@ import { TOOL_OUTPUT_COALESCE_MS, ToolOutputCoalescer } from '../tool-output-coa
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 import type { TurnState } from '../session-state';
+import type { TurnOutcome } from '../session-state';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
@@ -54,7 +55,7 @@ function makeAdapter(
     defaultModelValue?: () => string;
     showCacheMissNotices?: () => boolean;
     showThinkingDroppedNotices?: () => boolean;
-    onTurnStateChanged?: (state: TurnState) => void;
+    onTurnStateChanged?: (state: TurnState, outcome?: TurnOutcome) => void;
   },
 ): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
@@ -75,13 +76,13 @@ function makeAdapter(
     onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
     onMidStreamEntryCommitted: hooks?.onMidStreamEntryCommitted ?? (() => undefined),
     promptEntryId: () => 'u-entry',
-    onTurnStateChanged: hooks?.onTurnStateChanged ?? (() => undefined),
+    onTurnStateChanged: (...[state, outcome]) => hooks?.onTurnStateChanged?.(state, outcome),
     onAssistantTextFinal: vi.fn(),
   });
 }
 
 /** Adapter wired with a dollar budget limit + abort spy for the US-008 budget tests. */
-function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onStop: () => void, turns?: TurnState[]): PiStreamAdapter {
+function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onStop: () => void, turns?: TurnState[], outcomes?: TurnOutcome[]): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
   return new PiStreamAdapter({
     onMessage: (m) => out.push(m),
@@ -100,7 +101,10 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     onUserMessageDelivered: () => false,
     onMidStreamEntryCommitted: () => undefined,
     promptEntryId: () => 'u-entry',
-    onTurnStateChanged: (state) => { turns?.push(state); },
+    onTurnStateChanged: (...[state, outcome]) => {
+      turns?.push(state);
+      if (outcome) outcomes?.push(outcome);
+    },
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -177,6 +181,28 @@ function normalize(messages: ExtensionToWebviewMessage[]): unknown[] {
   }
   return out;
 }
+
+describe('PiStreamAdapter turn outcome', () => {
+  const settle = (message: Record<string, unknown>): TurnOutcome | undefined => {
+    const outcomes: Array<TurnOutcome | undefined> = [];
+    const adapter = makeAdapter([], { onTurnStateChanged: (state, outcome) => { if (state === 'idle') outcomes.push(outcome); } });
+    const session = fakeSession([
+      { type: 'message_end', message: { role: 'assistant', content: [], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} }, ...message } },
+      { type: 'agent_settled' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+    expect(outcomes).toHaveLength(1);
+    return outcomes[0];
+  };
+
+  it('the last assistant message of the turn decides it: completed, an error, or a rate limit', () => {
+    expect(settle({ stopReason: 'stop' })).toEqual({ kind: 'completed' });
+    expect(settle({ stopReason: 'error', errorMessage: 'invalid x-api-key' })).toEqual({ kind: 'error', message: 'invalid x-api-key' });
+    expect(settle({ stopReason: 'error', errorMessage: '429 rate_limit_error' })).toEqual({ kind: 'rateLimit' });
+  });
+});
 
 describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   it('emits the SDK-equivalent logical sequence with tool renames and final text', () => {
@@ -1014,7 +1040,8 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     // The host's real onBudgetStop is graceful: it never calls markAborted, so the settle must finish
     // the turn exactly like a natural completion. This is the claim the US-008 tests never asserted.
     const turns: TurnState[] = [];
-    const adapter = makeBudgetAdapter(out, 1.0, () => undefined, turns);
+    const outcomes: TurnOutcome[] = [];
+    const adapter = makeBudgetAdapter(out, 1.0, () => undefined, turns, outcomes);
     const session = fakeSessionWithCost(turn(), () => 1.2);
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
@@ -1024,6 +1051,7 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     expect(tail.map((m) => m.type)).toEqual(['done', 'processing', 'stopInfo']);
     expect(tail[1]).toMatchObject({ isProcessing: false });
     expect(turns).toEqual(['running', 'idle']);
+    expect(outcomes).toEqual([{ kind: 'budget' }]);
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(false);
   });
 

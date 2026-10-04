@@ -1,41 +1,99 @@
 {
-  "tabs": {
-    "listLabel": "Open tabs",
-    "newConversation": "New conversation",
-    "labelWithProject": "{title}, {project}",
-    "busy": "{label}, working",
-    "newTab": "New tab",
-    "closeTab": "Close {title}",
-    "noTabToClose": "Close tab",
-    "keyboardHelp": "Arrow keys move between tabs, Enter opens, Delete closes, {modifier}+Shift+Arrow reorders."
+  "titleBar": {
+    "appMenu": "{app} application menu",
+    "breadcrumb": "Current chat",
+    "toggleSidebarName": "Toggle sidebar",
+    "toggleSidebar": "Toggle sidebar ({shortcut})",
+    "themeToLight": "Switch to light theme",
+    "themeToDark": "Switch to dark theme",
+    "settingsName": "Settings",
+    "settings": "Settings ({shortcut})"
   },
-  "content": {
-    "empty": "No open tabs",
-    "emptyHint": "New conversations open in the default project.",
-    "newConversation": "New conversation"
+  "sidebar": {
+    "label": "Sidebar",
+    "resize": "Resize sidebar",
+    "resizeSections": "Resize the Projects and Chats sections",
+    "sizeValue": "{size} pixels"
   },
   "projects": {
     "heading": "Projects",
-    "show": "Show projects",
-    "hide": "Hide projects",
-    "add": "Add project",
-    "empty": "No projects yet. New tabs open in your home folder.",
-    "default": "Default",
-    "trusted": "Trusted",
-    "untrusted": "Not trusted",
-    "trust": "Trust",
-    "trustLabel": "Trust project {name}",
-    "setDefault": "Use project {name} for new tabs",
-    "newTabIn": "New tab in project {name}",
-    "remove": "Remove project {name}",
-    "removeRefused": "Could not remove project {name}: {reason}"
+    "listLabel": "Projects",
+    "add": "Open a project folder",
+    "empty": "No projects yet. New chats open in your home folder.",
+    "untrusted": "Untrusted",
+    "untrustedTitle": "Not trusted. Click to review.",
+    "running": "{count} running",
+    "waiting": "{count} waiting",
+    "runningTitle": "Chats running",
+    "waitingTitle": "A chat is waiting for you",
+    "trust": "Trust project",
+    "remove": "Remove project",
+    "menuLabel": "Actions for {name}",
+    "removeRefused": "Could not remove project {name}: {reason}",
+    "keyboardHelp": "Arrow keys move, Enter selects, Shift+F10 opens the menu.",
+    "home": "Home folder"
+  },
+  "chats": {
+    "heading": "Chats",
+    "newChat": "New chat",
+    "search": "Search chats",
+    "searchPlaceholder": "Filter chats in {project}",
+    "new": "New",
+    "newTitle": "New chat ({shortcut})",
+    "listLabel": "Chats in {project}",
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "earlier": "Earlier",
+    "empty": "No chats in {project} yet.",
+    "startFirst": "Start the first one",
+    "noMatch": "No sessions found",
+    "loadFailed": "Damocles could not load the chats.",
+    "retry": "Try again",
+    "running": "Running",
+    "needsYou": "Needs you",
+    "open": "Open",
+    "rename": "Rename session",
+    "renamePlaceholder": "Enter new name…",
+    "save": "Save",
+    "cancel": "Cancel",
+    "tag": "Tag session",
+    "changeTag": "Change tag",
+    "removeTag": "Remove tag",
+    "delete": "Delete session",
+    "menuLabel": "Actions for {title}",
+    "tagPlaceholder": "Enter tag…",
+    "showTagged": "Show chats tagged {tag}",
+    "clearTagFilter": "Clear the tag filter",
+    "tagFilters": "Tag filters",
+    "allTags": "All tags",
+    "moreTags": "+{count} more tags",
+    "filterTags": "Filter {count} tags",
+    "deleteTitle": "Delete Session",
+    "deleteMessage": "Delete this session? This action cannot be undone.",
+    "deleteDetail": "Session:",
+    "deleteRunning": "This chat is still running. Deleting it stops the agent.",
+    "deleteWaiting": "This chat is waiting for you. Deleting it stops the agent.",
+    "deleteConfirm": "Delete",
+    "keyboardHelp": "Arrow keys move, Enter opens, F2 renames, Delete deletes, Shift+F10 opens the menu."
+  },
+  "content": {
+    "empty": "No chat selected",
+    "newChat": "New chat"
+  },
+  "overlay": {
+    "noMatches": "No matches",
+    "tagPicker": "Tag",
+    "existingTags": "Existing tags",
+    "save": "Save",
+    "removeTag": "Remove tag"
   },
   "toasts": {
     "region": "Notifications",
     "dismiss": "Dismiss notification",
     "info": "Information",
     "warning": "Warning",
-    "error": "Error"
+    "error": "Error",
+    "moreDismissAll": "{count} more · Dismiss all"
   },
   "pane": {
     "label": "Browser pane",
@@ -65,5 +123,55 @@
     "toggleName": "Browser pane",
     "show": "Show browser pane ({shortcut})",
     "hide": "Hide browser pane ({shortcut})"
+  },
+  "settingsHost": {
+    "sections": {
+      "appearance": {
+        "label": "Appearance",
+        "subtitle": "How Damocles looks."
+      }
+    },
+    "groups": {
+      "layout": "Layout"
+    },
+    "theme": {
+      "dark": "Dark",
+      "light": "Light",
+      "system": "System"
+    },
+    "language": {
+      "system": "System"
+    },
+    "rows": {
+      "theme": {
+        "label": "Theme",
+        "description": "System follows your OS setting."
+      },
+      "reduceMotion": {
+        "label": "Reduce motion",
+        "description": "Turns off non-essential animations."
+      },
+      "restoreLayout": {
+        "label": "Reopen where I left off",
+        "description": "Remembers the open project and chat, the sidebar sections and their sizes, and the pane layout."
+      },
+      "restoreDefaultLayout": {
+        "label": "Restore default layout",
+        "description": "Puts every pane, section and size back to how Damocles first opened."
+      },
+      "language": {
+        "label": "Language",
+        "description": "Interface language. Applies after a restart."
+      },
+      "notify": {
+        "label": "Notify me when a chat needs me",
+        "description": "Each in-app notification also shows as a desktop notification while the Damocles window is not focused."
+      }
+    },
+    "restoreDefaults": "Restore defaults",
+    "layoutRestored": "The default layout is back.",
+    "restartBanner": "Restart Damocles to switch the language. Your layout, chats and unsaved editors come back.",
+    "restartNow": "Restart now",
+    "later": "Later"
   }
 }

@@ -1,80 +1,88 @@
 import { computed, toValue, type Component, type ComputedRef, type MaybeRefOrGetter } from "vue";
 import type { ToolCall } from "@shared/types/session";
-import { IconCheckCircle, IconXCircle, IconBan, IconQuestionCircle } from "@/components/icons";
+import { Ban, CircleCheck, CircleQuestionMark, CircleX, Hourglass, LoaderCircle } from "lucide-vue-next";
 
 type ToolStatus = ToolCall["status"];
 
-/** Null while a call is still in flight, where every card shows a spinner in the same slot. */
-function iconFor(status: ToolStatus): Component | null {
+function iconFor(status: ToolStatus): Component {
   switch (status) {
     case "pending":
     case "running":
+      return LoaderCircle;
     case "awaiting_approval":
-      return null;
+      return Hourglass;
     case "approved":
     case "completed":
-      return IconCheckCircle;
+      return CircleCheck;
     case "denied":
     case "failed":
-      return IconXCircle;
+      return CircleX;
     case "abandoned":
     case "cancelled":
-      return IconBan;
+      return Ban;
     case "unrecorded":
-      return IconQuestionCircle;
+      return CircleQuestionMark;
   }
+}
+
+function motionFor(status: ToolStatus): string {
+  return status === "pending" || status === "running" ? "d-spinning" : "";
 }
 
 function textClassFor(status: ToolStatus): string {
   switch (status) {
     case "running":
+      return "text-(--d-accent)";
     case "awaiting_approval":
-      return "text-primary";
+      return "text-(--d-warning)";
     case "approved":
     case "completed":
-      return "text-success";
+      return "text-(--d-success)";
     case "denied":
     case "failed":
-      return "text-error";
+      return "text-(--d-danger)";
     case "pending":
     case "abandoned":
     case "cancelled":
     case "unrecorded":
-      return "text-muted-foreground";
+      return "text-(--d-faint)";
   }
 }
 
 function borderClassFor(status: ToolStatus): string {
   switch (status) {
     case "awaiting_approval":
-      return "border-primary/50 bg-primary/5";
+      return "border-[color-mix(in_srgb,var(--d-warning)_45%,var(--d-border))]";
     case "denied":
     case "failed":
-      return "border-error/50";
+      return "border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]";
     case "abandoned":
     case "cancelled":
     case "unrecorded":
-      return "border-muted/50 opacity-60";
+      return "border-(--d-border) opacity-60";
     case "completed":
-      return "border-success/30";
     case "pending":
     case "running":
     case "approved":
-      return "border-border";
+      return "border-(--d-border)";
   }
 }
 
 export interface ToolCardStatus {
-  statusIcon: ComputedRef<Component | null>;
+  statusIcon: ComputedRef<Component>;
+  /** The icon's colour and its motion.css class. */
   statusClass: ComputedRef<string>;
+  /** The motion.css class alone, for an icon that takes its colour from a chip. */
+  statusMotion: ComputedRef<string>;
   cardClass: ComputedRef<string>;
 }
 
-/** The five specialised cards share this mapping; ToolCallCard deliberately keeps a different one. */
+/** The one status vocabulary of every tool card (the reference's tool row, Chat Panel.dc.html m.isTool). */
 export function useToolCardStatus(status: MaybeRefOrGetter<ToolStatus>): ToolCardStatus {
   return {
     statusIcon: computed(() => iconFor(toValue(status))),
-    statusClass: computed(() => textClassFor(toValue(status))),
+    statusClass: computed(() => [textClassFor(toValue(status)), motionFor(toValue(status))].filter(Boolean).join(" ")),
+    statusMotion: computed(() => motionFor(toValue(status))),
     cardClass: computed(() => borderClassFor(toValue(status))),
   };
 }

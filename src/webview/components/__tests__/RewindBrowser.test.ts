@@ -26,7 +26,7 @@ const items: RewindHistoryItem[] = [
 ];
 
 function mountBrowser(): VueWrapper {
-  const wrapper = mount(RewindBrowser, { props: { isOpen: true, prompts: items }, attachTo: document.body, global: { plugins: [i18n] } });
+  const wrapper = mount(RewindBrowser, { props: { prompts: items }, attachTo: document.body, global: { plugins: [i18n] } });
   mounted.push(wrapper as VueWrapper);
   return wrapper as VueWrapper;
 }
@@ -52,6 +52,20 @@ afterEach(() => {
 });
 
 describe('RewindBrowser keyboard', () => {
+  const search = () => q('[data-testid="rewind-search"]') as HTMLInputElement;
+
+  it('opens with the search box focused and selects the active row with Enter from it', async () => {
+    const wrapper = mountBrowser();
+    await flush();
+    expect(document.activeElement).toBe(search());
+
+    key(search(), 'ArrowDown');
+    await flush();
+    key(search(), 'Enter');
+
+    expect(wrapper.emitted('select')).toEqual([[items[1]]]);
+  });
+
   it('lets Enter on the "not restored" toggle expand it instead of selecting the row', async () => {
     const wrapper = mountBrowser();
     await flush();
@@ -61,8 +75,18 @@ describe('RewindBrowser keyboard', () => {
     await flush();
     expect(wrapper.emitted('select')).toBeUndefined();
 
-    key(document.body, 'Enter');
+    key(search(), 'Enter');
     expect(wrapper.emitted('select')).toEqual([[items[0]]]);
+  });
+
+  it('closes from the shared header X, and only itself', async () => {
+    const wrapper = mountBrowser();
+    await flush();
+
+    (browserRoot().querySelector('[data-testid="overlay-close"]') as HTMLButtonElement).click();
+
+    expect(wrapper.emitted('close')).toEqual([[]]);
+    expect(browserRoot().querySelector('h2')?.textContent).toContain('Rewind to Previous Prompt');
   });
 });
 
@@ -76,7 +100,7 @@ describe('RewindBrowser restore points', () => {
 
   function mountWithPoints(): VueWrapper {
     const wrapper = mount(RewindBrowser, {
-      props: { isOpen: true, prompts: items, restorePoints: points },
+      props: { prompts: items, restorePoints: points },
       attachTo: document.body,
       global: { plugins: [i18n] },
     });
@@ -87,10 +111,9 @@ describe('RewindBrowser restore points', () => {
   it('lists each pre-rewind snapshot by its time and undoes the one the user picks', async () => {
     const wrapper = mountWithPoints();
     await flush();
-    const time = (ms: number) => new Date(ms).toLocaleString('en', { hour: 'numeric', minute: '2-digit' });
     const rows = [...document.body.querySelectorAll('[data-testid="rewind-restore-point"]')];
-    expect(rows[0]!.textContent).toContain(`Before undo at ${time(points[0]!.createdAt)}`);
-    expect(rows[1]!.textContent).toContain(`Before rewind at ${time(points[1]!.createdAt)}`);
+    expect(rows[0]!.textContent).toContain('Before undo at 14:33');
+    expect(rows[1]!.textContent).toContain('Before rewind at 14:32');
     expect(rows[1]!.textContent).toContain('Rewound to "first prompt"');
     expect(rows[1]!.textContent).toContain('3 files will be restored');
     // Only the point that skipped files offers the "not restored" list, keyed to the point itself.

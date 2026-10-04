@@ -1,6 +1,7 @@
 import type {
   AgentSession,
   AgentSessionServices,
+  ExtensionAPI,
   ExtensionFactory,
   ModelRuntime,
   SessionManager,
@@ -168,7 +169,8 @@ function disposeSessionSafe(session: AgentSession): void {
  * The pi services for one workspace folder. pi binds cwd, context files, skills and project settings to
  * the services object rather than the session, so every folder a panel targets needs its own loader.
  * Everything a loader's extension instance reads (gate, checkpoint and active-tool registries, the
- * ToolSearch republishers, hooks, markdown agents) is scoped here with it. Provider registration and
+ * instance attachments: ToolSearch republishers and MCP registrations, hooks, markdown agents) is scoped
+ * here with it. Provider registration and
  * auth stay on the shared `ModelRuntime` that `PiRuntime` owns.
  */
 export class FolderRuntime {
@@ -192,7 +194,7 @@ export class FolderRuntime {
   private readonly _folderMcp: McpClientManager;
   /** The only MCP source this folder's panels and nested agents read. */
   private readonly _mcpView: FolderMcpView;
-  /** Registers MCP tools into this folder's live extension `pi` (reload-safe; mid-session top-up). */
+  /** Registers MCP tools into every attached extension instance of this folder (mid-session top-up included). */
   private readonly _mcpRegistrar: McpToolRegistrar;
   private readonly _mcpUnsubscribe: () => void;
   private readonly _noticeMemory: NoticeMemory;
@@ -213,22 +215,23 @@ export class FolderRuntime {
   /** Re-registers ToolSearch so pi re-wraps it and re-materializes its description getter. A SET, not a
    *  single slot: each reload mints a fresh instance while earlier panels keep their bound one, so a
    *  single slot would freeze every earlier panel's description — silently, its runtime being live
-   *  rather than stale.
+   *  rather than stale. Entries arrive and leave with their instance's attachment
+   *  (`attachExtensionInstance`), as do the instance's MCP registrations.
    *
    *  Retirement is deterministic, never inferred from a throw, and has exactly two owners:
-   *  session-bound instances call their own disposer from `session_shutdown`; unbound ones (bare
-   *  reload, or services creation before any session exists) are held in `_unboundRepublisherDisposer`
+   *  session-bound instances call their own detach from `session_shutdown`; unbound ones (bare
+   *  reload, or services creation before any session exists) are held in `_unboundInstanceDetach`
    *  and retired by this runtime when superseded — or released if a session binds them after all. */
   private readonly _toolSearchRepublishers = new Set<() => void>();
-  /** The disposer handed to the extension instance the loader currently holds, WHEN nothing has bound
+  /** The detach handed to the extension instance the loader currently holds, WHEN nothing has bound
    *  that instance. Non-null means "this instance is unowned: retire it when it is superseded". Null
    *  means the current instance is session-bound (or about to be) and owns its own retirement. */
-  private _unboundRepublisherDisposer: (() => void) | null = null;
+  private _unboundInstanceDetach: (() => void) | null = null;
   /** Scratch slot letting a reload identify the instance IT just minted — the factory runs inside
    *  `resourceLoader.reload()`, which hands nothing back. Only valid immediately after an awaited
    *  reload, hence `_reloadSync`: an overlapping reload could adopt the other's instance, and adopting
-   *  a session-bound one as unbound would retire a live panel and freeze its menu. */
-  private _lastRegisteredRepublisherDisposer: (() => void) | null = null;
+   *  a session-bound one as unbound would retire a live panel, freezing its menu and its MCP tools. */
+  private _lastAttachedInstanceDetach: (() => void) | null = null;
   /** Serializes this loader's reloads (bare fan-outs + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Watchers on this folder's `.damocles`/`.claude`/`.codex` skill+command roots. */
@@ -324,9 +327,8 @@ export class FolderRuntime {
           createDamoclesExtensionFactory(
             this._panelRegistryReader(),
             this._checkpointRegistryReader(),
-            (extensionApi) => this._mcpRegistrar.registerAll(extensionApi),
             hooksWiring,
-            (republish) => this.registerToolSearchRepublisher(republish),
+            (extensionApi, republishToolSearch) => this.attachExtensionInstance(extensionApi, republishToolSearch),
           ),
         ],
         // Surface `.damocles` + `.claude` + `.codex` skills and slash commands (commands = pi
@@ -359,7 +361,7 @@ export class FolderRuntime {
     // `createAgentSessionServices` already ran the factory above, so an extension instance exists with
     // no session bound to it and none guaranteed to arrive: the subscription reconcile can supersede it
     // with a bare reload before the first panel ever binds. Adopt it now — otherwise that reload strands
-    // its republisher for the life of the folder.
+    // its attachment for the life of the folder.
     this._trackCurrentInstanceAsUnbound();
     for (const diag of this._services.diagnostics) {
       log('[FolderRuntime] services diagnostic (%s): %s', diag.type, diag.message);
@@ -479,17 +481,20 @@ export class FolderRuntime {
   }
 
   /**
-   * Register one instance's ToolSearch republisher and hand back a disposer for exactly that entry.
-   * Ownership is explicit rather than inferred from a failed call. Double-disposal is inert and the
-   * entry is keyed by closure identity, so a disposer can never evict a peer's.
+   * Attach one Damocles extension instance: register this folder's MCP tools on it (and every tool that
+   * connects later, until detached) and, when given, its ToolSearch republisher. Returns the detach for
+   * exactly this instance. Ownership is explicit rather than inferred from a failed call. Double-detach
+   * is inert and both registries key by instance identity, so a detach can never evict a peer's entry.
    */
-  registerToolSearchRepublisher(republish: () => void): () => void {
-    this._toolSearchRepublishers.add(republish);
-    const dispose = (): void => {
-      this._toolSearchRepublishers.delete(republish);
+  attachExtensionInstance(extensionApi: ExtensionAPI, republishToolSearch: (() => void) | null): () => void {
+    const detachMcp = this._mcpRegistrar.attach(extensionApi);
+    if (republishToolSearch) this._toolSearchRepublishers.add(republishToolSearch);
+    const detach = (): void => {
+      detachMcp();
+      if (republishToolSearch) this._toolSearchRepublishers.delete(republishToolSearch);
     };
-    this._lastRegisteredRepublisherDisposer = dispose;
-    return dispose;
+    this._lastAttachedInstanceDetach = detach;
+    return detach;
   }
 
   /**
@@ -499,8 +504,8 @@ export class FolderRuntime {
    * so this runtime is the only party left that can retire it.
    */
   private _trackCurrentInstanceAsUnbound(): void {
-    this._unboundRepublisherDisposer = this._lastRegisteredRepublisherDisposer;
-    this._lastRegisteredRepublisherDisposer = null;
+    this._unboundInstanceDetach = this._lastAttachedInstanceDetach;
+    this._lastAttachedInstanceDetach = null;
   }
 
   /**
@@ -602,7 +607,7 @@ export class FolderRuntime {
     return run;
   }
 
-  /** Recompute the additional resource roots, reload the resource loader, retire/adopt the republisher
+  /** Recompute the additional resource roots, reload the resource loader, retire/adopt the attachment
    *  of the instance the reload replaces or mints, then re-apply the asset dirs (the reload drops the
    *  `extendResources` source/scope metadata, so it has to be re-pushed each time). */
   private async _runResourceReload(binding: ReloadBinding): Promise<void> {
@@ -610,14 +615,14 @@ export class FolderRuntime {
     this._refreshAdditionalResourcePaths();
     // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
     // that below would hand the runtime a disposer for a live panel.
-    this._lastRegisteredRepublisherDisposer = null;
+    this._lastAttachedInstanceDetach = null;
     await this._services.resourceLoader.reload();
     // Only past here is the outgoing instance definitively superseded. On a throw we never arrive — pi
     // never rebuilt, so that instance is still live and stays tracked rather than retired.
-    this._unboundRepublisherDisposer?.();
-    this._unboundRepublisherDisposer = null;
+    this._unboundInstanceDetach?.();
+    this._unboundInstanceDetach = null;
     if (binding === 'bare') this._trackCurrentInstanceAsUnbound();
-    else this._lastRegisteredRepublisherDisposer = null;
+    else this._lastAttachedInstanceDetach = null;
     this.applyAssetResources();
   }
 
@@ -688,23 +693,23 @@ export class FolderRuntime {
    * aborting session creation).
    *
    * It is also the only announcement that a bind is coming, so it is where ownership of that instance's
-   * republisher passes from the runtime to the instance (see `ReloadBinding`). The handover must happen
-   * on EVERY exit path, including the one that never reloads — otherwise the runtime keeps a disposer
-   * for a now-live instance and the next reload freezes that panel's menu, silently.
+   * attachment passes from the runtime to the instance (see `ReloadBinding`). The handover must happen
+   * on EVERY exit path, including the one that never reloads — otherwise the runtime keeps a detach
+   * for a now-live instance and the next reload freezes that panel's menu and MCP tools, silently.
    */
   async prepareSessionExtensions(): Promise<void> {
     if (this._sessionsCreated++ === 0) {
       // The first session binds the pristine creation runtime without reloading — possibly the instance
       // a startup bare reload (the subscription reconcile) minted. Release WITHOUT retiring: it is about
       // to go session-bound and will retire itself on `session_shutdown`.
-      this._unboundRepublisherDisposer = null;
+      this._unboundInstanceDetach = null;
       return;
     }
     try {
       await this._reloadResources('session-bound');
     } catch (err) {
       // The reload never completed, so the instance the loader holds is the one about to be bound.
-      this._unboundRepublisherDisposer = null;
+      this._unboundInstanceDetach = null;
       log('[FolderRuntime] per-session extension reload failed (web tools may be unavailable): %O', err);
     }
   }
@@ -892,7 +897,7 @@ export class FolderRuntime {
     if (this._disposed) return;
     this._disposed = true;
     // A reload already queued returns early on `_disposed`; wait for one in flight so nothing re-adopts
-    // a republisher after the registries below are cleared.
+    // an instance attachment after the registries below are cleared.
     await this._reloadSync;
     for (const session of this._subagentSessions) disposeSessionSafe(session);
     this._subagentSessions.clear();
@@ -917,11 +922,12 @@ export class FolderRuntime {
     this._panelRegistry.clear();
     this._checkpointRegistry.clear();
     this._activeToolRefreshers.clear();
-    // Cleared alongside the refreshers, not left behind: both are per-live-instance registries, and a
-    // half-cleared pair invites the inference that republishers are somehow exempt from teardown.
+    // Cleared alongside the refreshers, not left behind: all are per-live-instance registries, and a
+    // half-cleared set invites the inference that instance attachments are somehow exempt from teardown.
     this._toolSearchRepublishers.clear();
-    this._unboundRepublisherDisposer = null;
-    this._lastRegisteredRepublisherDisposer = null;
+    this._mcpRegistrar.clear();
+    this._unboundInstanceDetach = null;
+    this._lastAttachedInstanceDetach = null;
     log('[FolderRuntime] disposed (cwd=%s)', this.cwd);
   }
 }

@@ -347,3 +347,30 @@ describe('focus after the note box closes', () => {
     expect(document.activeElement).not.toBe(document.body);
   });
 });
+
+/**
+ * The note sizes itself from its text in CSS (`field-sizing`) up to a rem cap, so the cap follows the host font. A height
+ * written from script is a px value, which neither follows the font nor gives the space back when the text goes.
+ */
+describe('the cancel note box size', () => {
+  it('grows with its content up to a 4.5rem cap, then scrolls', async () => {
+    const wrapper = open();
+    const textarea = await openNote(wrapper);
+
+    expect([...textarea.classList]).toEqual(expect.arrayContaining(['field-sizing-content', 'max-h-18', 'overflow-y-auto']));
+    wrapper.unmount();
+  });
+
+  it('writes no size from script on opening, on Shift+Enter, or as the text changes', async () => {
+    const wrapper = open();
+    const textarea = await openNote(wrapper);
+    expect(textarea.getAttribute('style') ?? '').toBe('');
+
+    await wrapper.find('textarea').setValue('one\ntwo\nthree\nfour\nfive');
+    press(textarea, 'Enter', true);
+    await wrapper.vm.$nextTick();
+    await wrapper.find('textarea').setValue('');
+    expect(textarea.getAttribute('style') ?? '').toBe('');
+    wrapper.unmount();
+  });
+});

@@ -1,0 +1,104 @@
+/*
+ * The one motion source (plan section 7, Animation): the reference keyframes from Damocles Desktop.dc.html
+ * and Chat Panel.dc.html, the shared enter and exit classes, and the easing curves. The webview, the shell page and the overlay
+ * import it through src/webview/style.css; no other file defines a keyframe.
+ */
+:root {
+  --ease-out: cubic-bezier(.2,.8,.2,1);
+  --ease-spring: cubic-bezier(.3,.7,.3,1.3);
+}
+
+@keyframes d-pop{from{opacity:0;transform:translateY(-4px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes d-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes d-fade{from{opacity:0}to{opacity:1}}
+@keyframes d-zoom{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
+@keyframes d-spin{to{transform:rotate(360deg)}}
+@keyframes d-pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes d-blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes d-slide{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+@keyframes nt-in{from{opacity:0;transform:translateX(28px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes d-from-end{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+
+/* Chat Panel.dc.html keyframes. d-ring and the glint pair replace the reference's box-shadow ring and background-position shimmer with transform and opacity. */
+@keyframes o-zoom{from{opacity:0;transform:scale(.975) translateY(10px)}to{opacity:1;transform:none}}
+@keyframes o-fade{from{opacity:0}to{opacity:1}}
+@keyframes o-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes o-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+@keyframes o-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes o-bar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes d-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes d-ring{0%{opacity:.4;transform:scale(1)}100%{opacity:0;transform:scale(var(--ring-scale,1.75))}}
+@keyframes o-glint{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+@keyframes o-glint-hold{from{transform:translateX(100%)}to{transform:translateX(-100%)}}
+
+/* Exit counterparts: each mirrors its entrance and ends invisible. */
+@keyframes o-zoom-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.985) translateY(6px)}}
+@keyframes o-fade-out{from{opacity:1}to{opacity:0}}
+@keyframes o-up-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(6px)}}
+@keyframes d-pop-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-4px) scale(.97)}}
+@keyframes d-pop-top{from{opacity:0;transform:translateY(4px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes d-pop-top-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px) scale(.97)}}
+
+/* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
+.t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
+.t-fade-leave-active{animation:o-fade-out .14s ease-in both}
+.t-pop-enter-active{animation:d-pop .16s var(--ease-out)}
+.t-pop-leave-active{animation:d-pop-out .12s ease-in both}
+.t-pop-top-enter-active{animation:d-pop-top .16s var(--ease-out)}
+.t-pop-top-leave-active{animation:d-pop-top-out .12s ease-in both}
+.t-up-enter-active{animation:d-up .3s var(--ease-out)}
+.t-up-leave-active{animation:o-up-out .16s ease-in both}
+/* An overlay root (scrim) carries the longest animation so Vue waits for its .o-panel child too. */
+.t-overlay-enter-active{animation:o-fade .26s var(--ease-out)}
+.t-overlay-leave-active{animation:o-fade-out .18s ease-in both}
+.t-overlay-enter-active .o-panel{animation:o-zoom .26s var(--ease-out)}
+.t-overlay-leave-active .o-panel{animation:o-zoom-out .18s ease-in both}
+.t-overlay-leave-active{pointer-events:none}
+
+/* reka-ui content keyed on data-state; reka keeps the node mounted until the closed animation ends. */
+.d-popper[data-state="open"],.d-popper[data-state="delayed-open"],.d-popper[data-state="instant-open"]{animation:d-pop .16s var(--ease-out)}
+.d-popper[data-state="closed"]{animation:d-pop-out .12s ease-in both}
+.d-popper[data-side="top"][data-state="open"],.d-popper[data-side="top"][data-state="delayed-open"],.d-popper[data-side="top"][data-state="instant-open"]{animation-name:d-pop-top}
+.d-popper[data-side="top"][data-state="closed"]{animation-name:d-pop-top-out}
+.d-dialog[data-state="open"]{animation:o-zoom .26s var(--ease-out)}
+.d-dialog[data-state="closed"]{animation:o-zoom-out .18s ease-in both}
+.d-scrim[data-state="open"]{animation:o-fade .2s var(--ease-out)}
+.d-scrim[data-state="closed"]{animation:o-fade-out .18s ease-in both}
+/* reka Collapsible content fades while its height snaps, since layout never animates; reka skips the entrance when it mounts open. */
+.d-collapsible[data-state="open"]{animation:o-fade .2s var(--ease-out)}
+.d-collapsible[data-state="closed"]{animation:o-fade-out .14s ease-in both}
+
+/* One-shot entrance for live arrivals only; a virtualized row re-mounted by scrolling must not get this class. */
+.d-arrive{animation:o-up .25s var(--ease-out) both}
+
+/* A pressed control may shrink; hover never moves anything. */
+.d-press{transition:transform .1s var(--ease-out),color .15s,background-color .15s,border-color .15s,filter .15s,opacity .15s}
+.d-press:active:not(:disabled){transform:scale(.97)}
+
+/* Attention ring around a rounded box; the colour is the box's currentColor. Needs no wrapper. */
+.d-ring{position:relative;isolation:isolate}
+.d-ring::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:currentColor;opacity:0;pointer-events:none;animation:d-ring 1.6s var(--ease-out) infinite}
+
+/* Indeterminate progress: a band that sweeps a track with overflow hidden. */
+.d-sweep-bar{position:relative;overflow:hidden}
+.d-sweep-bar::after{content:"";position:absolute;inset-block:0;inset-inline-start:0;width:40%;border-radius:inherit;background:currentColor;transform:translateX(-100%);animation:o-sweep 1.1s ease-in-out infinite}
+
+/*
+ * Shimmer text by transform: <span class="d-glint">phrase<span class="d-glint-window" aria-hidden="true"><span>phrase</span></span></span>.
+ * The window slides across while its copy slides back by the same distance, so the bright copy stays put under a moving mask.
+ */
+.d-glint{position:relative;display:inline-block;max-width:100%;overflow:hidden;vertical-align:bottom}
+.d-glint-window{position:absolute;inset:0;overflow:hidden;transform:translateX(-100%);pointer-events:none;-webkit-mask-image:linear-gradient(90deg,transparent 20%,#000 50%,transparent 80%);mask-image:linear-gradient(90deg,transparent 20%,#000 50%,transparent 80%);animation:o-glint 2.4s linear infinite}
+.d-glint-window>span{display:block;white-space:inherit;overflow:hidden;text-overflow:inherit;transform:translateX(100%);animation:o-glint-hold 2.4s linear infinite}
+
+/* A busy icon turns in place; a live status dot breathes (the reference's d-spin .9s and d-pulse 1s). */
+.d-spinning{animation:d-spin .9s linear infinite}
+.d-pulsing{animation:d-pulse 1s ease-in-out infinite}
+
+/* One-shot entrances on mount: a fade, and a panel arriving from the window's end edge. */
+.d-fade-in{animation:o-fade .2s var(--ease-out) both}
+.d-enter-from-end{animation:d-from-end .2s var(--ease-out) both}
+
+/* Meters fill from their start edge on mount. */
+.d-bar{transform-origin:left;animation:o-bar .6s var(--ease-out) both}
+[dir="rtl"] .d-bar{transform-origin:right}

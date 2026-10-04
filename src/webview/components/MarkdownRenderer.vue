@@ -263,14 +263,14 @@ function renderTokens(tokens: Token[]): VNode[] {
 
 <style scoped>
 .markdown-renderer {
-  color: var(--vscode-editor-foreground);
+  color: var(--d-text);
 }
 
 .markdown-renderer :deep(.markdown-heading) {
-  margin-top: 16px;
-  margin-bottom: 8px;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
   font-weight: 600;
-  color: var(--vscode-editor-foreground);
+  color: var(--d-text);
 }
 
 .markdown-renderer :deep(h1) {
@@ -286,20 +286,20 @@ function renderTokens(tokens: Token[]): VNode[] {
 }
 
 .markdown-renderer :deep(.markdown-p) {
-  margin: 8px 0;
+  margin: 0.5rem 0;
 }
 
 .markdown-renderer :deep(.inline-code) {
-  background-color: var(--vscode-textCodeBlock-background);
-  color: var(--vscode-textPreformat-foreground, var(--vscode-editor-foreground));
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: var(--vscode-editor-font-family);
-  font-size: 0.85em;
+  background-color: var(--d-hover);
+  color: var(--d-accent-text);
+  padding: 0.0625rem 0.375rem;
+  border-radius: 0.3125rem;
+  font-family: var(--d-mono);
+  font-size: 0.89em;
 }
 
 .markdown-renderer :deep(a) {
-  color: var(--vscode-editor-foreground);
+  color: var(--d-text);
   text-decoration: underline;
 }
 
@@ -310,35 +310,39 @@ function renderTokens(tokens: Token[]): VNode[] {
 
 .markdown-renderer :deep(ul) {
   list-style-type: disc;
-  margin: 8px 0;
-  padding-left: 20px;
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
 }
 
 .markdown-renderer :deep(ol) {
   list-style-type: decimal;
-  margin: 8px 0;
-  padding-left: 20px;
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
 }
 
 .markdown-renderer :deep(li) {
-  margin: 4px 0;
+  margin: 0.25rem 0;
+}
+
+.markdown-renderer :deep(ul > li::marker) {
+  color: var(--d-accent);
 }
 
 .markdown-renderer :deep(.markdown-blockquote) {
-  border-left: 3px solid var(--vscode-textBlockQuote-border);
-  margin: 8px 0;
-  padding: 8px 12px;
-  color: var(--vscode-textBlockQuote-foreground);
-  background: var(--vscode-textBlockQuote-background);
-  border-radius: 0 4px 4px 0;
+  border-left: 3px solid var(--d-border2);
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  color: var(--d-text);
+  background: var(--d-code);
+  border-radius: 0 0.25rem 0.25rem 0;
 }
 
 .markdown-renderer :deep(.table-wrapper) {
   overflow-x: auto;
-  margin: 8px 0;
-  background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background));
-  border-radius: 12px;
-  border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+  margin: 0.5rem 0;
+  background: var(--d-code);
+  border-radius: 0.75rem;
+  border: 1px solid var(--d-border);
   box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.25), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
 }
 
@@ -349,54 +353,54 @@ function renderTokens(tokens: Token[]): VNode[] {
 
 .markdown-renderer :deep(th),
 .markdown-renderer :deep(td) {
-  border: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
-  padding: 8px 12px;
+  border: 1px solid var(--d-border);
+  padding: 0.5rem 0.75rem;
   text-align: left;
 }
 
 .markdown-renderer :deep(th) {
-  background-color: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
-  color: var(--vscode-foreground);
+  background-color: var(--d-card);
+  color: var(--d-text);
   font-weight: 600;
 }
 
 .markdown-renderer :deep(tr:nth-child(even)) {
-  background-color: var(--vscode-list-inactiveSelectionBackground);
+  background-color: color-mix(in srgb, var(--d-hover) 50%, transparent);
 }
 
 .markdown-renderer :deep(tr:hover) {
-  background-color: var(--vscode-list-hoverBackground);
+  background-color: var(--d-hover);
   transition: background-color 0.15s ease;
 }
 
 .markdown-renderer :deep(strong) {
-  color: var(--vscode-textPreformat-foreground, var(--vscode-editor-foreground));
+  color: var(--d-text);
   font-weight: 600;
 }
 
 .markdown-renderer :deep(em) {
-  color: var(--vscode-editor-foreground);
+  color: var(--d-text);
 }
 
 .markdown-renderer :deep(.markdown-hr) {
   border: none;
-  border-top: 1px solid var(--vscode-panel-border);
-  margin: 16px 0;
+  border-top: 1px solid var(--d-border);
+  margin: 1rem 0;
 }
 
 .markdown-renderer :deep(.markdown-image) {
   max-width: 100%;
-  border-radius: 4px;
+  border-radius: 0.25rem;
 }
 
 .markdown-renderer :deep(.markdown-image-blocked) {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 6px;
+  gap: 0.25rem;
+  padding: 0.0625rem 0.375rem;
   font-size: 0.85em;
-  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
-  border: 1px dashed var(--vscode-panel-border, var(--vscode-widget-border));
-  border-radius: 4px;
+  color: var(--d-muted);
+  border: 1px dashed var(--d-border);
+  border-radius: 0.25rem;
 }
 </style>

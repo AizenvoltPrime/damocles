@@ -54,6 +54,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   defaultDangerouslySkipPermissions: false,
   ideContextEnabled: true,
   pinnedHeaderHidden: false,
+  checkpointRetentionDays: 30,
   team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
 };
 
@@ -120,6 +121,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const hostCapabilities = ref<HostCapabilities>({ ...VSCODE_HOST_CAPABILITIES });
   // damocles.* key -> the .damocles file supplying its effective value; empty unless hostCapabilities.settingsSources.
   const settingSources = ref<Record<string, SettingSource>>({});
+  // False in an untrusted folder, whose Workspace section core refuses to write.
+  const workspaceWritable = ref<boolean>(true);
   const voiceControlsAvailable = computed(() => hostCapabilities.value.voice || hostCapabilities.value.hostSpeechExtensions);
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
@@ -141,7 +144,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const openaiChatGPTAuthInFlight = ref(false);
   const openaiChatGPTAuthError = ref<string | null>(null);
   const pendingOpenAIModel = ref<string | null>(null);
-  const openaiAuthPanelRequested = ref(false);
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
@@ -162,6 +164,10 @@ export const useSettingsStore = defineStore('settings', () => {
   function updateSettings(settings: ExtensionSettings, sources?: Record<string, SettingSource>) {
     currentSettings.value = settings;
     settingSources.value = sources ?? {};
+  }
+
+  function setWorkspaceWritable(writable: boolean) {
+    workspaceWritable.value = writable;
   }
 
   function setHostCapabilities(capabilities: HostCapabilities) {
@@ -364,6 +370,14 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.cacheWarming = mode;
   }
 
+  function setTeamSettings(team: ExtensionSettings['team']) {
+    currentSettings.value.team = team;
+  }
+
+  function setCheckpointRetentionDays(days: number) {
+    currentSettings.value.checkpointRetentionDays = days;
+  }
+
   function setModelState(active: string, newDefault: string) {
     activeModel.value = active;
     defaultModel.value = newDefault;
@@ -453,13 +467,10 @@ export const useSettingsStore = defineStore('settings', () => {
     pendingOpenAIModel.value = model;
   }
 
-  function setOpenAIAuthPanelRequested(value: boolean) {
-    openaiAuthPanelRequested.value = value;
-  }
-
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     settingSources.value = {};
+    workspaceWritable.value = true;
     baseAvailableModels.value = [];
     accountInfo.value = null;
     mcpServers.value = [];
@@ -501,7 +512,6 @@ export const useSettingsStore = defineStore('settings', () => {
     memoryJudge.value = null;
     imageGeneration.value = null;
     pendingOpenAIModel.value = null;
-    openaiAuthPanelRequested.value = false;
     workspaceFolders.value = [];
     panelWorkspaceFolderKey.value = "";
     defaultWorkspaceFolderKey.value = "";
@@ -525,6 +535,8 @@ export const useSettingsStore = defineStore('settings', () => {
     projectTrusted,
     hostCapabilities,
     settingSources,
+    workspaceWritable,
+    setWorkspaceWritable,
     voiceControlsAvailable,
     setHostCapabilities,
     budgetWarning,
@@ -569,6 +581,8 @@ export const useSettingsStore = defineStore('settings', () => {
     dismissContextWarning,
     updateAutoCompactConfig,
     setCacheWarmingMode,
+    setCheckpointRetentionDays,
+    setTeamSettings,
     setModelState,
     voiceConfig,
     voiceHasApiKey,
@@ -607,8 +621,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setClaudeAuthBusy,
     setClaudeAuthError,
     setPendingOpenAIModel,
-    openaiAuthPanelRequested,
-    setOpenAIAuthPanelRequested,
     workspaceFolders,
     panelWorkspaceFolderKey,
     defaultWorkspaceFolderKey,

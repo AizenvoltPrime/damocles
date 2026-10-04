@@ -29,7 +29,7 @@ const host = computed(() => {
   <button
     v-if="!loaded"
     type="button"
-    class="remote-image-placeholder"
+    class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-dashed border-(--d-border) bg-(--d-card) px-2 py-1 text-[0.85em] text-(--d-text) hover:bg-(--d-hover)"
     :title="title"
     @click="loaded = true"
   >
@@ -40,30 +40,6 @@ const host = computed(() => {
     :src="src"
     :alt="alt"
     :title="title"
-    class="markdown-image"
+    class="markdown-image max-w-full rounded-md"
   >
 </template>
-
-<style scoped>
-.remote-image-placeholder {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  font-size: 0.85em;
-  color: var(--vscode-foreground);
-  background: var(--vscode-editorWidget-background, var(--vscode-textCodeBlock-background));
-  border: 1px dashed var(--vscode-panel-border, var(--vscode-widget-border));
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.remote-image-placeholder:hover {
-  background: var(--vscode-list-hoverBackground);
-}
-
-.markdown-image {
-  max-width: 100%;
-  border-radius: 4px;
-}
-</style>

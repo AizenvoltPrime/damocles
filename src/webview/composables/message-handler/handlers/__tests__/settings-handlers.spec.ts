@@ -117,7 +117,7 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
   beforeEach(() => setActivePinia(createPinia()));
 
   function openaiContext(): HandlerContext {
-    return { stores: { settingsStore: useSettingsStore(), uiStore: useUIStore() } } as unknown as HandlerContext;
+    return { stores: { settingsStore: useSettingsStore(), uiStore: useUIStore() }, bridge: { postMessage: () => undefined } } as unknown as HandlerContext;
   }
 
   it('records a failure error, clears it when a sign-in starts, and ends the in-flight state on completion', () => {
@@ -150,7 +150,7 @@ describe('ChatGPT sign-in messages reaching the settings store', () => {
 
     dispatch({ type: 'openOpenAIAuthPanel' }, ctx);
 
-    expect(ctx.stores.uiStore.showSettingsPanel).toBe(true);
-    expect(ctx.stores.settingsStore.openaiAuthPanelRequested).toBe(true);
+    expect(ctx.stores.uiStore.showSettingsModal).toBe(true);
+    expect(ctx.stores.uiStore.settingsTarget).toEqual({ section: 'accounts', account: 'openai' });
   });
 });

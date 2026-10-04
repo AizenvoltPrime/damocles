@@ -117,7 +117,7 @@ function trackLoader(): LoaderProbe {
   });
   const mint = (): void => {
     const id = `instance-${++seq}`;
-    creating.at(-1)!.registerToolSearchRepublisher(() => probe.fired.push(id));
+    creating.at(-1)!.attachExtensionInstance({} as never, () => probe.fired.push(id));
   };
   H.createServicesSpy.mockImplementation(async (options: unknown) => {
     const additional = (options as { resourceLoaderOptions: { additionalSkillPaths: string[] } })

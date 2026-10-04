@@ -7,12 +7,10 @@ import { IconChartBar, IconChevronRight } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
-import { useSettingsStore } from '@/stores/useSettingsStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 const { t, te, locale } = useI18n();
 const store = useContextUsageStore();
-const settingsStore = useSettingsStore();
 const { postMessage } = usePlatformBridge();
 
 // Section rows arrive in upstream discovery order (filesystem walk, MCP registration, Map insertion),
@@ -58,14 +56,15 @@ const allCategories = computed(() => store.data?.categories ?? []);
 
 const percentage = computed(() => store.data?.percentage ?? 0);
 
-const ringColor = computed(() => {
-  if (percentage.value >= 80) return 'text-rose-500';
-  if (percentage.value >= 50) return 'text-amber-500';
-  return 'text-emerald-500';
+// `chip` is the tone's `.d-tone-*` class (style.css), for the percentage on its tint.
+const usageColor = computed(() => {
+  if (percentage.value >= 80) return { ring: 'text-(--d-danger)', chip: 'd-tone-danger' };
+  if (percentage.value >= 50) return { ring: 'text-(--d-warning)', chip: 'd-tone-warning' };
+  return { ring: 'text-(--d-success)', chip: 'd-tone-success' };
 });
 
 const ringStrokeDasharray = computed(() => {
-  const circumference = 2 * Math.PI * 45;
+  const circumference = 2 * Math.PI * 54;
   const filled = (percentage.value / 100) * circumference;
   return `${filled} ${circumference - filled}`;
 });
@@ -90,7 +89,7 @@ const detailSections = computed((): DetailSection[] => {
         name: i.name,
         detail: i.serverName,
         tokens: i.tokens,
-        ...(settingsStore.hostCapabilities.markdownPreview ? { onOpen: () => postMessage({ type: 'openMcpToolInfo', piName: i.name }) } : {}),
+        onOpen: () => postMessage({ type: 'openMcpToolInfo', piName: i.name }),
         ...(i.isLoaded !== undefined ? { badge: i.isLoaded ? t('context.loaded') : t('context.deferred') } : {}),
       })),
     });
@@ -113,7 +112,7 @@ const detailSections = computed((): DetailSection[] => {
     sections.push({
       key: 'systemPromptSections',
       label: t('context.systemPromptSections'),
-      items: d.systemPromptSections.map(i => ({ name: promptSectionLabel(i.name), detail: '', tokens: i.tokens, title: i.name, ...(settingsStore.hostCapabilities.markdownPreview ? { onOpen: () => postMessage({ type: 'openSystemPrompt' }) } : {}) })),
+      items: d.systemPromptSections.map(i => ({ name: promptSectionLabel(i.name), detail: '', tokens: i.tokens, title: i.name, onOpen: () => postMessage({ type: 'openSystemPrompt' }) })),
     });
   }
   if (d.systemTools && d.systemTools.length > 0) {
@@ -192,40 +191,33 @@ function toggleSection(key: string): void {
     :title="t('context.title')"
     :subtitle="store.data?.model"
     :icon="IconChartBar"
-    icon-class="text-sky-400"
+    icon-class="text-(--d-info)"
     @close="$emit('close')"
   >
     <template #header-actions>
       <template v-if="store.data">
-        <Badge variant="secondary" class="gap-1 tabular-nums shrink-0">
-          {{ formatTokens(store.data.totalTokens) }} / {{ formatTokens(store.data.maxTokens) }}
-        </Badge>
-        <Badge
-          variant="secondary"
-          class="tabular-nums shrink-0"
-          :class="percentage >= 80 ? 'bg-rose-500/15 text-rose-400' : percentage >= 50 ? 'bg-amber-500/15 text-amber-400' : 'bg-emerald-500/15 text-emerald-400'"
-        >
-          {{ percentage }}%
-        </Badge>
-        <Badge
+        <span
+          class="flex-none rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_13%,transparent)] px-2 font-mono text-11/5 tabular-nums"
+          :class="usageColor.chip"
+        >{{ percentage }}%</span>
+        <span
           v-if="store.data.autoCompactThreshold"
-          variant="outline"
-          class="tabular-nums shrink-0 text-xs"
+          class="hidden flex-none rounded-full border border-(--d-border2) px-2 font-mono text-11/5 text-(--d-muted) tabular-nums @min-[35rem]/app:inline"
         >
           {{ t('context.autoCompactAt', { threshold: store.data.autoCompactThreshold }) }}
           {{ store.data.isAutoCompactEnabled ? '✓' : '✗' }}
-        </Badge>
+        </span>
       </template>
     </template>
 
     <!-- Loading -->
     <div v-if="store.isLoading" class="flex-1 flex items-center justify-center py-16">
-      <LoadingSpinner :size="32" />
+      <LoadingSpinner class="size-8" />
     </div>
 
     <!-- Error states -->
     <div v-else-if="!store.data" class="flex-1 flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
-      <IconChartBar :size="32" class="opacity-40" />
+      <IconChartBar class="size-8 opacity-40" />
       <template v-if="store.failReason === 'noQuery'">
         <p class="text-sm font-medium">{{ t('context.noQuery') }}</p>
         <p class="text-xs opacity-70">{{ t('context.noQueryHint') }}</p>
@@ -237,78 +229,97 @@ function toggleSection(key: string): void {
     </div>
 
     <!-- Populated -->
-    <div v-else class="p-4 space-y-5">
-      <!-- Ring Chart -->
-      <div class="flex flex-col items-center gap-1">
-        <div class="relative w-32 h-32">
-          <svg viewBox="0 0 100 100" class="w-full h-full -rotate-90">
+    <div
+      v-else
+      class="space-y-4 px-4.5 pt-4 pb-5"
+    >
+      <div class="flex flex-wrap items-center gap-5.5">
+        <div
+          class="relative mx-auto size-32 flex-none"
+          data-testid="context-ring"
+        >
+          <svg
+            viewBox="0 0 128 128"
+            class="size-full -rotate-90"
+            aria-hidden="true"
+          >
             <circle
-              cx="50" cy="50" r="45"
+              cx="64"
+              cy="64"
+              r="54"
               fill="none"
-              stroke="currentColor"
-              stroke-width="8"
-              class="text-muted/40"
+              stroke="var(--d-hover)"
+              stroke-width="11"
             />
             <circle
-              cx="50" cy="50" r="45"
+              v-if="percentage > 0"
+              cx="64"
+              cy="64"
+              r="54"
               fill="none"
               stroke="currentColor"
-              stroke-width="8"
+              stroke-width="11"
               stroke-linecap="round"
               :stroke-dasharray="ringStrokeDasharray"
-              :class="ringColor"
+              :class="usageColor.ring"
             />
           </svg>
-          <div class="absolute inset-0 flex flex-col items-center justify-center">
-            <span class="text-2xl font-bold tabular-nums" :class="ringColor">{{ percentage }}%</span>
+          <div class="absolute inset-0 flex flex-col items-center justify-center gap-px">
+            <span
+              class="font-mono text-2xl font-bold tabular-nums"
+              :class="usageColor.ring"
+            >{{ percentage }}%</span>
+            <span class="font-mono text-11 text-(--d-faint) tabular-nums">{{ formatTokens(store.data.totalTokens) }} / {{ formatTokens(store.data.maxTokens) }}</span>
           </div>
         </div>
-        <span class="text-xs text-muted-foreground tabular-nums">
-          {{ formatTokens(store.data.totalTokens) }} / {{ formatTokens(store.data.maxTokens) }}
-        </span>
-      </div>
 
-      <!-- Stacked Overview Bar -->
-      <div v-if="visibleCategories.length > 0" class="flex h-2.5 rounded-full overflow-hidden bg-muted/30">
+        <div class="flex min-w-0 flex-[1_1_18.75rem] flex-col gap-1.75">
+          <div
+            v-if="visibleCategories.length > 0"
+            class="flex h-2.5 overflow-hidden rounded-full bg-(--d-hover)"
+            data-testid="context-bar"
+          >
         <div
           v-for="cat in visibleCategories"
           :key="cat.name"
-          class="min-w-[2px] transition-all"
+              class="d-bar min-w-0.5"
           :style="{ width: `${store.data!.maxTokens > 0 ? (cat.tokens / store.data!.maxTokens) * 100 : 0}%`, backgroundColor: cat.color }"
           :title="`${cat.name}: ${formatTokens(cat.tokens)}`"
         />
       </div>
+          <div class="flex justify-between font-mono text-10.5 text-(--d-faint)">
+            <span>0</span>
+            <span v-if="store.data.autoCompactThreshold">{{ t('context.autoCompactAt', { threshold: store.data.autoCompactThreshold }) }}</span>
+            <span>{{ formatTokens(store.data.maxTokens) }}</span>
+          </div>
 
-      <!-- Category Breakdown -->
-      <div class="space-y-1.5">
+          <div class="mt-0.5 flex flex-col gap-1.25">
         <div
           v-for="cat in allCategories"
           :key="cat.name"
-          class="flex items-center gap-2 text-xs"
+              class="flex items-center gap-2.25 text-xs"
           :class="cat.isDeferred ? 'opacity-60' : ''"
+              data-testid="context-legend-row"
         >
-          <div class="w-2.5 h-2.5 rounded-sm shrink-0" :style="{ backgroundColor: cat.color }" />
-          <span class="text-muted-foreground flex-1 truncate">{{ cat.name }}</span>
-          <Badge
+              <span
+                class="size-2.25 flex-none rounded-[0.1875rem]"
+                :style="{ backgroundColor: cat.color }"
+                aria-hidden="true"
+              />
+              <span
+                class="min-w-0 flex-1 truncate text-(--d-muted)"
+                data-testid="context-legend-name"
+              >{{ cat.name }}</span>
+              <span
             v-if="cat.isDeferred"
-            variant="outline"
-            class="text-xs px-1 py-0 shrink-0"
-          >
-            {{ t('context.deferred') }}
-          </Badge>
-          <div class="w-24 h-1.5 rounded-full bg-muted/30 overflow-hidden shrink-0">
-            <!-- A deferred row is a SAVING, not consumption: drawing it at the same saturation as the
-                 categories that do occupy the window reads as spend at a glance. -->
-            <div
-              class="h-full rounded-full transition-all"
-              :class="cat.isDeferred ? 'opacity-40' : ''"
-              :style="{ width: `${store.data!.maxTokens > 0 ? Math.min((cat.tokens / store.data!.maxTokens) * 100, 100) : 0}%`, backgroundColor: cat.color }"
-            />
-          </div>
-          <span class="tabular-nums text-foreground w-12 text-right shrink-0">{{ formatTokens(cat.tokens) }}</span>
-          <span class="tabular-nums text-muted-foreground w-10 text-right shrink-0">
+                class="flex-none rounded-full border border-(--d-border2) px-1.5 text-10.5/4 text-(--d-muted)"
+              >{{ t('context.deferred') }}</span>
+              <span class="w-12 flex-none text-right font-mono tabular-nums">{{ formatTokens(cat.tokens) }}</span>
+              <span class="w-11 flex-none text-right font-mono text-(--d-faint) tabular-nums">
             {{ store.data!.maxTokens > 0 ? ((cat.tokens / store.data!.maxTokens) * 100).toFixed(1) : '0.0' }}%
           </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -317,16 +328,24 @@ function toggleSection(key: string): void {
         <Collapsible :open="openSections.has('messageBreakdown')" @update:open="toggleSection('messageBreakdown')">
           <CollapsibleTrigger as-child>
             <button class="flex items-center gap-2 w-full py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-              <IconChevronRight :size="14" class="shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('messageBreakdown') }" />
+              <IconChevronRight class="size-3.5 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('messageBreakdown') }" />
               <span class="font-medium">{{ t('context.messageBreakdown') }}</span>
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div class="ml-5 space-y-1.5 pb-2">
-              <div v-for="row in messageBreakdownRows" :key="row.label" class="flex items-center gap-2 text-xs">
+              <div
+                v-for="row in messageBreakdownRows"
+                :key="row.label"
+                class="flex items-center gap-2 text-xs"
+                data-context-row
+              >
                 <span class="text-muted-foreground flex-1 truncate">{{ row.label }}</span>
                 <div class="w-20 h-1.5 rounded-full bg-muted/30 overflow-hidden shrink-0">
-                  <div class="h-full rounded-full bg-sky-500 transition-all" :style="{ width: `${row.pct}%` }" />
+                  <div
+                    class="d-bar h-full rounded-full bg-(--d-info)"
+                    :style="{ width: `${row.pct}%` }"
+                  />
                 </div>
                 <span class="tabular-nums text-foreground w-12 text-right shrink-0">{{ formatTokens(row.tokens) }}</span>
               </div>
@@ -335,14 +354,19 @@ function toggleSection(key: string): void {
                 <Collapsible :open="openSections.has('toolCallsByType')" @update:open="toggleSection('toolCallsByType')">
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                      <IconChevronRight :size="12" class="shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('toolCallsByType') }" />
+                      <IconChevronRight class="size-3 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('toolCallsByType') }" />
                       <span>{{ t('context.toolCallsByType') }}</span>
                       <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ toolCallsByType.length }}</Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <div class="ml-4 space-y-0.5 pb-1">
-                      <div v-for="tc in toolCallsByType" :key="tc.name" class="flex items-center gap-2 text-xs py-0.5">
+                      <div
+                        v-for="tc in toolCallsByType"
+                        :key="tc.name"
+                        class="flex items-center gap-2 text-xs py-0.5"
+                        data-context-row
+                      >
                         <span class="text-foreground truncate flex-1">{{ tc.name }}</span>
                         <span class="tabular-nums text-muted-foreground shrink-0">↑{{ formatTokens(tc.callTokens) }}</span>
                         <span class="tabular-nums text-muted-foreground shrink-0">↓{{ formatTokens(tc.resultTokens) }}</span>
@@ -356,14 +380,19 @@ function toggleSection(key: string): void {
                 <Collapsible :open="openSections.has('attachmentsByType')" @update:open="toggleSection('attachmentsByType')">
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                      <IconChevronRight :size="12" class="shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('attachmentsByType') }" />
+                      <IconChevronRight class="size-3 shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('attachmentsByType') }" />
                       <span>{{ t('context.attachmentsByType') }}</span>
                       <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ attachmentsByType.length }}</Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <div class="ml-4 space-y-0.5 pb-1">
-                      <div v-for="at in attachmentsByType" :key="at.name" class="flex items-center gap-2 text-xs py-0.5">
+                      <div
+                        v-for="at in attachmentsByType"
+                        :key="at.name"
+                        class="flex items-center gap-2 text-xs py-0.5"
+                        data-context-row
+                      >
                         <span class="text-foreground truncate flex-1">{{ at.name }}</span>
                         <span class="tabular-nums text-muted-foreground w-12 text-right shrink-0">{{ formatTokens(at.tokens) }}</span>
                       </div>
@@ -377,7 +406,10 @@ function toggleSection(key: string): void {
       </div>
 
       <!-- Detail Sections -->
-      <div v-if="detailSections.length > 0" class="space-y-1 pt-2 border-t border-border/30">
+      <div
+        v-if="detailSections.length > 0"
+        class="divide-y divide-(--d-border) overflow-hidden rounded-xl border border-(--d-border) bg-(--d-card)"
+      >
         <Collapsible
           v-for="section in detailSections"
           :key="section.key"
@@ -386,30 +418,35 @@ function toggleSection(key: string): void {
         >
           <CollapsibleTrigger as-child>
             <button
-              class="flex items-center gap-2 w-full py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              type="button"
+              class="flex w-full items-center gap-2 px-3 py-2.5 text-13 font-semibold transition-colors hover:bg-(--d-hover)"
             >
               <IconChevronRight
-                :size="14"
-                class="shrink-0 transition-transform"
+                class="size-3.5 shrink-0 text-(--d-faint) transition-transform duration-200"
                 :class="{ 'rotate-90': openSections.has(section.key) }"
               />
-              <span class="font-medium">{{ section.label }}</span>
-              <Badge variant="secondary" class="text-xs px-1.5 py-0">
+              <span>{{ section.label }}</span>
+              <span class="rounded-full bg-(--d-hover) px-1.5 font-mono text-10.5/4 font-normal text-(--d-muted)">
                 {{ section.badge ?? section.items.length }}
-              </Badge>
+              </span>
+              <span class="ml-auto font-mono text-xs font-normal text-(--d-muted) tabular-nums">{{ formatTokens(section.items.reduce((sum, item) => sum + item.tokens, 0)) }}</span>
             </button>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div class="ml-5 space-y-0.5 pb-1">
-              <div
+            <div class="space-y-0.5 pr-3 pb-2.5 pl-9">
+              <component
+                :is="(item.onOpen || item.filePath) ? 'button' : 'div'"
                 v-for="(item, idx) in section.items"
                 :key="idx"
-                class="flex items-center gap-2 text-xs py-0.5"
-                :class="(item.onOpen || item.filePath) ? 'cursor-pointer hover:text-foreground' : ''"
+                :type="(item.onOpen || item.filePath) ? 'button' : undefined"
+                class="flex w-full items-center gap-2 rounded py-0.5 text-left text-xs"
+                :class="(item.onOpen || item.filePath) ? 'hover:text-(--d-accent) focus-visible:outline-2 focus-visible:outline-(--d-accent)' : ''"
                 :title="item.title ?? item.filePath ?? item.name"
+                :data-testid="(item.onOpen || item.filePath) ? 'context-row-open' : undefined"
+                data-context-row
                 @click="item.onOpen ? item.onOpen() : openFile(item.filePath)"
               >
-                <span class="text-foreground truncate flex-1">{{ item.name }}</span>
+                <span class="flex-1 truncate">{{ item.name }}</span>
                 <Badge
                   v-if="item.badge"
                   variant="outline"
@@ -417,9 +454,9 @@ function toggleSection(key: string): void {
                 >
                   {{ item.badge }}
                 </Badge>
-                <span v-if="item.detail" class="text-muted-foreground text-xs shrink-0">{{ item.detail }}</span>
-                <span class="tabular-nums text-muted-foreground w-12 text-right shrink-0">{{ formatTokens(item.tokens) }}</span>
-              </div>
+                <span v-if="item.detail" class="shrink-0 text-xs text-(--d-muted)">{{ item.detail }}</span>
+                <span class="w-12 shrink-0 text-right text-(--d-muted) tabular-nums">{{ formatTokens(item.tokens) }}</span>
+              </component>
             </div>
           </CollapsibleContent>
         </Collapsible>

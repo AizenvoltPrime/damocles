@@ -234,21 +234,21 @@ describe('switching folder', () => {
     expect(sessionOf(panelId).cwd).toBe(A);
   });
 
-  it('does not start a session the caller claimed for a stored conversation, whatever the reason', async () => {
+  it('starts a session the caller claimed for a history resume once, after the claim', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();
-    await h.manager.switchPanelFolder(panelId, folderKey(B), 'resume', async () => true);
-    expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
-    await h.manager.switchPanelFolder(panelId, folderKey(A), 'restore', async () => true);
-    expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'resume', async (instance) => { instance.session.setResumeSession('sess-b'); });
+    const resumed = sessionOf(panelId);
+    expect(resumed.initializeEarly).toHaveBeenCalledTimes(1);
+    expect(resumed.setResumeSession.mock.invocationCallOrder[0]).toBeLessThan(resumed.initializeEarly.mock.invocationCallOrder[0]!);
   });
 
-  it('starts the session when the caller claimed nothing, except on a restore, which the ready handler starts after the lists', async () => {
+  it('leaves starting a restored session to the ready handler, which starts it after the lists, claimed or not', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();
-    await h.manager.switchPanelFolder(panelId, folderKey(B), 'user', async () => false);
-    expect(sessionOf(panelId).initializeEarly).toHaveBeenCalledTimes(1);
-    await h.manager.switchPanelFolder(panelId, folderKey(A), 'restore', async () => false);
+    await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore', async (instance) => { instance.session.setResumeSession('sess-b'); });
+    expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
+    await h.manager.switchPanelFolder(panelId, folderKey(A), 'restore', async () => undefined);
     expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
   });
 
@@ -484,7 +484,7 @@ describe('switch races and failures', () => {
     const { host, panelId } = await openPanel();
     let release!: () => void;
     h.holdFolderState.gate = new Promise((resolve) => { release = resolve; });
-    const afterSwitch = vi.fn(async () => false);
+    const afterSwitch = vi.fn(async () => undefined);
 
     const switching = h.manager.switchPanelFolder(panelId, folderKey(B), 'user', afterSwitch);
     await vi.waitFor(() => expect(h.folderStatePushes).toHaveLength(1));
@@ -510,7 +510,6 @@ describe('switch races and failures', () => {
     const switching = h.manager.switchPanelFolder(panelId, folderKey(B), 'resume', async (instance) => {
       deliveredBeforeClaim.push(h.routed.filter((r) => r.message.type === 'sendMessage').length);
       claimed.push(instance.session as unknown as FakeSession);
-      return true;
     });
     await vi.waitFor(() => expect(h.sessions[0]!.dispose).toHaveBeenCalled());
     host.send({ type: 'sendMessage', content: 'during the resume' });
@@ -528,7 +527,7 @@ describe('switch races and failures', () => {
   it('runs the caller\'s claim on the current instance when no switch is needed', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();
-    const afterSwitch = vi.fn(async () => true);
+    const afterSwitch = vi.fn(async () => undefined);
     await h.manager.switchPanelFolder(panelId, folderKey(A), 'resume', afterSwitch);
     expect(afterSwitch).toHaveBeenCalledWith(h.instance(panelId));
   });
@@ -575,7 +574,7 @@ describe('switch races and failures', () => {
     expect(recovered).not.toBe(old);
     expect(recovered.cwd).toBe(A);
     expect(recovered.setResumeSession).toHaveBeenCalledWith('sess-a');
-    expect(recovered.initializeEarly).not.toHaveBeenCalled();
+    expect(recovered.initializeEarly).toHaveBeenCalledTimes(1);
     // The transcript on screen is the resumed conversation, so the webview keeps it and only ends the aborted turn.
     const update = lastFolderUpdate(host);
     expect(update?.panelFolderKey).toBe(folderKey(A));
@@ -611,6 +610,18 @@ describe('switch races and failures', () => {
     const delivered = h.routed.filter((r) => r.message.type === 'sendMessage');
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.session).toBe(recovered);
+  });
+
+  it('leaves starting the session a failed restore recovered to the ready handler', async () => {
+    h = createHarness([folderEntry(A), folderEntry(B)]);
+    const { panelId } = await openPanel();
+    const old = sessionOf(panelId);
+    h.failCreation.errors.push(new Error('mcp config unreadable'));
+
+    expect(await h.manager.switchPanelFolder(panelId, folderKey(B), 'restore')).toBeUndefined();
+
+    expect(sessionOf(panelId)).not.toBe(old);
+    expect(sessionOf(panelId).initializeEarly).not.toHaveBeenCalled();
   });
 
   it('starts fresh and resets the webview when another panel took the conversation during a failed resume', async () => {

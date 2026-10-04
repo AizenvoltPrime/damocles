@@ -67,7 +67,7 @@ onUnmounted(() => {
     v-bind="definedProps(forwarded)"
     :id="id"
     ref="itemRef"
-    :class="cn('relative flex cursor-pointer gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0', props.class)"
+    :class="cn('relative flex cursor-pointer gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-highlighted:bg-accent data-highlighted:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0', props.class)"
     @select="() => {
       // A multi-select list stays open for the next pick, so it keeps the search that found this one.
       if (!listbox.multiple.value) filterState.search = ''

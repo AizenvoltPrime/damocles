@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { IconMicrophone } from "@/components/icons";
+import { Download, Mic } from "lucide-vue-next";
 import OverlayShell from "./OverlayShell.vue";
 
 type FirstRunReason = "missing-runtime" | "missing-models" | "first-time";
@@ -58,70 +56,77 @@ function handleCancel(): void {
   <OverlayShell
     :title="t('voiceFirstRun.title')"
     :subtitle="t('voiceFirstRun.subtitle')"
-    :icon="IconMicrophone"
-    icon-class="text-primary"
+    :icon="Mic"
+    max-width="40rem"
+    data-testid="voice-first-run"
     @close="handleCancel"
   >
-    <div class="p-6 max-w-2xl mx-auto space-y-6">
-      <Card>
-        <CardHeader class="pb-3">
-          <CardTitle class="text-base">{{ t("voiceFirstRun.whatThisEnables") }}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ul class="space-y-2 text-sm leading-relaxed">
-            <li
-              v-for="(point, i) in privacyPoints"
-              :key="i"
-              class="flex gap-2"
-            >
-              <span class="text-primary shrink-0" aria-hidden="true">•</span>
-              <span class="text-foreground">{{ point }}</span>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
+    <div class="flex flex-col gap-4 px-4.5 pt-4 pb-5">
+      <section class="flex flex-col gap-2">
+        <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">
+          {{ t("voiceFirstRun.whatThisEnables") }}
+        </h3>
+        <ul class="flex flex-col gap-1.5 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-12.5">
+          <li
+            v-for="(point, i) in privacyPoints"
+            :key="i"
+            class="flex gap-2 text-pretty"
+          >
+            <span
+              class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent)"
+              aria-hidden="true"
+            />
+            <span>{{ point }}</span>
+          </li>
+        </ul>
+      </section>
 
-      <Card>
-        <CardHeader class="pb-3">
-          <CardTitle class="text-base">{{ t("voiceFirstRun.engines") }}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ul class="space-y-1.5 text-sm">
-            <li
-              v-for="engine in engines"
-              :key="engine.role"
-              class="flex items-baseline gap-2"
-            >
-              <span class="text-muted-foreground w-20 shrink-0">{{ engine.role }}:</span>
-              <span class="text-foreground font-medium">{{ engine.name }}</span>
-              <span class="text-xs text-muted-foreground">({{ engine.license }})</span>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
+      <section class="flex flex-col gap-2">
+        <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">
+          {{ t("voiceFirstRun.engines") }}
+        </h3>
+        <dl class="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1.5 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-12.5">
+          <template
+            v-for="engine in engines"
+            :key="engine.role"
+          >
+            <dt class="text-(--d-faint)">
+              {{ engine.role }}
+            </dt>
+            <dd class="min-w-0">
+              <span class="font-medium">{{ engine.name }}</span>
+              <span class="ml-2 rounded-5 bg-(--d-hover) px-1.5 text-10.5 text-(--d-muted)">{{ engine.license }}</span>
+            </dd>
+          </template>
+        </dl>
+      </section>
+    </div>
 
-      <Card>
-        <CardContent class="pt-4">
-          <p class="text-sm text-foreground" role="note">
-            {{ sizeNote }}
-          </p>
-        </CardContent>
-      </Card>
-
-      <div class="flex justify-end gap-2 pt-2">
-        <Button
-          variant="outline"
+    <template #footer>
+      <footer class="flex flex-none items-center gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
+        <span
+          class="flex-1 text-11.5 text-pretty text-(--d-faint)"
+          role="note"
+        >{{ sizeNote }}</span>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
           @click="handleCancel"
         >
           {{ t("voiceFirstRun.cancel") }}
-        </Button>
-        <Button
-          variant="default"
+        </button>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
           @click="handleAccept"
         >
+          <Download
+            class="size-3.25"
+            aria-hidden="true"
+          />
           {{ t("voiceFirstRun.accept") }}
-        </Button>
-      </div>
-    </div>
+        </button>
+      </footer>
+    </template>
   </OverlayShell>
 </template>

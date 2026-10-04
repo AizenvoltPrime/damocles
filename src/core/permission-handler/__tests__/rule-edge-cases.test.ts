@@ -390,7 +390,7 @@ describe('aborting a prompt', () => {
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('aborted before this approval was answered');
     expect(result).not.toHaveProperty('terminate');
-    expect(h.hasPendingPrompts()).toBe(false);
+    expect(h.pendingPromptKinds().size > 0).toBe(false);
     expect(posted.filter((m) => m.type === 'permissionAutoResolved')).toEqual([expect.objectContaining({ outcome: 'withdrawn' })]);
   });
 });

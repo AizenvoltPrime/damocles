@@ -25,7 +25,7 @@ const NOW = 10_000_000;
 const TEAM_ID = 'team-1';
 const AGENT_ID = 'agent-1';
 
-const ShellStub = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
+const ShellStub = defineComponent({ template: '<div><slot name="header-actions" /><slot /><slot name="footer" /></div>' });
 const PassThrough = defineComponent({ template: '<div><slot /></div>' });
 
 function agent(over: Partial<TeamAgent> = {}): TeamAgent {
@@ -80,10 +80,9 @@ describe('the team overlay', () => {
     });
     await nextTick();
 
-    // The separators are literal, since a bare `|` is vue-i18n's plural separator and dropped the elapsed time.
-    expect(wrapper.find('.subtitle').text()).toContain('1 agents | 0 tools | 1:10');
+    expect(wrapper.get('[data-part="elapsed"]').text()).toBe('1:10');
     await tick(5_000);
-    expect(wrapper.find('.subtitle').text()).toContain('1:15');
+    expect(wrapper.get('[data-part="elapsed"]').text()).toBe('1:15');
   });
 });
 
@@ -128,8 +127,8 @@ describe('a member timer', () => {
       global: { plugins: [i18n], stubs: { OverlayShell: ShellStub, ScrollArea: PassThrough, ToolCallCard: true, Button: true, MarkdownRenderer: true, LoadingSpinner: true } },
     });
     await nextTick();
-    expect(wrapper.find('.subtitle').text()).toContain('12s');
+    expect(wrapper.get('[data-part="elapsed"]').text()).toBe('12s');
     await tick(3_000);
-    expect(wrapper.find('.subtitle').text()).toContain('15s');
+    expect(wrapper.get('[data-part="elapsed"]').text()).toBe('15s');
   });
 });

@@ -1,16 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, useId } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
-import { IconCircleGreen, IconCircleRed } from "@/components/icons";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Eye, EyeOff, Trash2, LogOut } from "lucide-vue-next";
+import SettingButton from "@/components/settings/controls/SettingButton.vue";
+import SettingSwitch from "@/components/settings/controls/SettingSwitch.vue";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 
 const { t } = useI18n();
@@ -61,6 +57,9 @@ function handleClear() {
   inlineMessage.value = null;
   postMessage({ type: "clearOpenAIApiKey", requestId });
 }
+
+const preferLabelId = useId();
+const preferHintId = useId();
 
 function handlePreferenceChange(value: boolean) {
   const requestId = makeRequestId();
@@ -130,7 +129,6 @@ let unsubscribe: (() => void) | null = null;
 
 onMounted(() => {
   unsubscribe = onMessage(handleAck);
-  postMessage({ type: "getOpenAIAuthStatus" });
 });
 
 onUnmounted(() => {
@@ -139,65 +137,46 @@ onUnmounted(() => {
 
 const messageClass = computed(() => {
   switch (inlineMessage.value?.kind) {
-    case "success": return "text-emerald-500";
-    case "warning": return "text-amber-500";
-    case "error": return "text-destructive";
+    case "success": return "sm-hint-success";
+    case "warning": return "sm-hint-warning";
+    case "error": return "sm-hint-error";
     default: return "";
   }
 });
-
-const preferenceTooltip = computed(() => t('openai.preferApiKey.tooltip'));
 </script>
 
 <template>
-  <section class="mb-6">
-    <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
-      {{ t('openai.sectionTitle') }}
-    </h3>
-
-    <div class="mb-4">
-      <div class="flex items-center gap-1.5 mb-1">
-        <Label class="text-xs text-muted-foreground">{{ t('openai.chatgpt.label') }}</Label>
-        <span class="flex items-center gap-1 text-xs">
-          <IconCircleGreen
-            v-if="chatgptSignedIn"
-            :size="8"
-          />
-          <IconCircleRed
-            v-else
-            :size="8"
-          />
-          <span class="text-muted-foreground">
-            {{ chatgptSignedIn ? t('openai.chatgpt.signedIn') : t('openai.chatgpt.notSignedIn') }}
-          </span>
-        </span>
+  <div data-testid="openai-auth-panel">
+    <div class="sm-field">
+      <div class="sm-field-label">
+        {{ t('openai.chatgpt.label') }}
+        <span class="sm-hint">{{ chatgptSignedIn ? t('openai.chatgpt.signedIn') : t('openai.chatgpt.notSignedIn') }}</span>
       </div>
-
-      <div class="flex gap-2">
-        <Button
+      <div class="sm-field-row">
+        <SettingButton
           v-if="!chatgptSignedIn"
-          size="sm"
+          variant="primary"
           :disabled="!canStartChatGPTSignIn"
           @click="handleChatGPTSignIn"
         >
           {{ openaiChatGPTAuthInFlight ? t('openai.chatgpt.waiting') : t('openai.chatgpt.signIn') }}
-        </Button>
-        <Button
+        </SettingButton>
+        <SettingButton
           v-else
-          variant="outline"
-          size="sm"
-          class="text-destructive border-destructive/40 hover:bg-destructive/10"
+          variant="danger"
           :aria-label="t('openai.chatgpt.signOutLabel')"
           @click="handleChatGPTSignOut"
         >
-          <LogOut class="h-3.5 w-3.5 mr-1.5" />
+          <LogOut
+            class="size-3.25"
+            aria-hidden="true"
+          />
           {{ t('openai.chatgpt.signOut') }}
-        </Button>
+        </SettingButton>
       </div>
-
       <p
         v-if="openaiChatGPTAuthInFlight"
-        class="text-xs text-muted-foreground mt-2"
+        class="sm-hint"
         role="status"
         data-testid="chatgpt-manual-hint"
       >
@@ -205,14 +184,14 @@ const preferenceTooltip = computed(() => t('openai.preferApiKey.tooltip'));
       </p>
       <p
         v-else-if="openaiChatGPTAuthError"
-        class="text-xs text-destructive mt-2"
+        class="sm-hint sm-hint-error"
         role="alert"
       >
         {{ openaiChatGPTAuthError }}
       </p>
       <p
         v-else-if="!chatgptSignedIn"
-        class="text-xs text-muted-foreground mt-2"
+        class="sm-hint"
       >
         {{ t('openai.chatgpt.browserHint') }}
       </p>
@@ -220,135 +199,128 @@ const preferenceTooltip = computed(() => t('openai.preferApiKey.tooltip'));
 
     <div
       v-if="codexSignedIn"
-      class="mb-4"
+      class="sm-field"
       data-testid="legacy-codex-row"
     >
-      <div class="flex items-center gap-1.5 mb-1">
-        <Label class="text-xs text-muted-foreground">{{ t('openai.legacyCodex.label') }}</Label>
-        <span class="flex items-center gap-1 text-xs">
-          <IconCircleGreen :size="8" />
-          <span class="text-muted-foreground">{{ t('openai.chatgpt.signedIn') }}</span>
-        </span>
+      <div class="sm-field-label">
+        {{ t('openai.legacyCodex.label') }}
+        <span class="sm-hint">{{ t('openai.chatgpt.signedIn') }}</span>
       </div>
-      <Button
-        variant="outline"
-        size="sm"
-        class="text-destructive border-destructive/40 hover:bg-destructive/10"
-        :aria-label="t('openai.legacyCodex.signOutLabel')"
-        :disabled="openaiChatGPTAuthInFlight"
-        @click="handleCodexSignOut"
-      >
-        <LogOut class="h-3.5 w-3.5 mr-1.5" />
-        {{ t('openai.chatgpt.signOut') }}
-      </Button>
-      <p class="text-xs text-muted-foreground mt-2">
+      <div class="sm-field-row">
+        <SettingButton
+          variant="danger"
+          :aria-label="t('openai.legacyCodex.signOutLabel')"
+          :disabled="openaiChatGPTAuthInFlight"
+          @click="handleCodexSignOut"
+        >
+          <LogOut
+            class="size-3.25"
+            aria-hidden="true"
+          />
+          {{ t('openai.chatgpt.signOut') }}
+        </SettingButton>
+      </div>
+      <p class="sm-hint">
         {{ t('openai.legacyCodex.hint') }}
       </p>
     </div>
 
-    <Separator class="my-3 bg-border" />
-
-    <div class="mb-4">
-      <div class="flex items-center gap-1.5 mb-1">
-        <Label class="text-xs text-muted-foreground">{{ t('openai.apiKey.label') }}</Label>
-        <span class="flex items-center gap-1 text-xs">
-          <IconCircleGreen
-            v-if="apiKeyConfigured"
-            :size="8"
-          />
-          <IconCircleRed
-            v-else
-            :size="8"
-          />
-          <span class="text-muted-foreground">
-            {{ apiKeyConfigured ? t('openai.apiKey.configured') : t('openai.apiKey.notConfigured') }}
-          </span>
-        </span>
+    <div class="sm-field">
+      <div class="sm-field-label">
+        {{ t('openai.apiKey.label') }}
+        <span class="sm-hint">{{ apiKeyConfigured ? t('openai.apiKey.configured') : t('openai.apiKey.notConfigured') }}</span>
       </div>
-
-      <div class="flex gap-2">
-        <div class="relative flex-1">
-          <Input
+      <div class="sm-field-row">
+        <div class="sm-input sm-input-wide">
+          <input
             v-model="apiKeyInput"
             :type="showKey ? 'text' : 'password'"
+            autocomplete="new-password"
+            spellcheck="false"
             placeholder="sk-..."
-            class="bg-input border-border placeholder:text-muted-foreground pr-9"
+            :aria-label="t('openai.apiKey.label')"
             :disabled="saving"
-            @keydown.enter="handleSave"
-          />
+            @keydown.enter.prevent="handleSave"
+          >
           <button
             type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            class="sm-search-clear"
+            :aria-label="showKey ? t('openai.apiKey.hide') : t('openai.apiKey.show')"
             :title="showKey ? t('openai.apiKey.hide') : t('openai.apiKey.show')"
             @click="showKey = !showKey"
           >
             <EyeOff
               v-if="showKey"
-              class="h-4 w-4"
+              class="size-3.5"
+              aria-hidden="true"
             />
             <Eye
               v-else
-              class="h-4 w-4"
+              class="size-3.5"
+              aria-hidden="true"
             />
           </button>
         </div>
-        <Button
-          size="sm"
+        <SettingButton
+          variant="primary"
           :disabled="!apiKeyInput.trim() || saving"
           @click="handleSave"
         >
           {{ saving ? t('openai.apiKey.saving') : t('common.save') }}
-        </Button>
-        <Button
+        </SettingButton>
+        <SettingButton
           v-if="apiKeyConfigured"
-          variant="ghost"
-          size="icon"
-          class="h-9 w-9 shrink-0 text-destructive hover:text-destructive/80 hover:bg-destructive/10"
+          variant="danger"
+          :aria-label="t('openai.apiKey.clear')"
           :title="t('openai.apiKey.clear')"
           :disabled="saving"
           @click="handleClear"
         >
-          <Trash2 class="h-4 w-4" />
-        </Button>
+          <Trash2
+            class="size-3.25"
+            aria-hidden="true"
+          />
+        </SettingButton>
       </div>
-
       <p
         v-if="inlineMessage"
-        class="text-xs mt-2"
+        class="sm-hint"
         :class="messageClass"
       >
         {{ inlineMessage.text }}
       </p>
       <p
         v-else
-        class="text-xs text-muted-foreground mt-2"
+        class="sm-hint"
       >
         {{ t('openai.apiKey.validationHint') }}
       </p>
     </div>
 
-    <div class="flex items-start gap-2">
-      <Checkbox
-        id="openai-prefer-apikey"
-        :checked="openaiPreferApiKey"
+    <!-- The whole row toggles the switch; aria-labelledby keeps the hint out of the switch's name. -->
+    <label class="sm-field-row">
+      <SettingSwitch
+        :model-value="openaiPreferApiKey"
+        :aria-labelledby="preferLabelId"
+        :aria-describedby="preferHintId"
         :disabled="!canTogglePreference"
-        @update:checked="handlePreferenceChange"
+        data-testid="openai-prefer-api-key"
+        @update:model-value="handlePreferenceChange"
       />
-      <div class="flex-1">
-        <Label
-          for="openai-prefer-apikey"
-          class="text-xs text-foreground cursor-pointer"
-          :class="!canTogglePreference && 'text-muted-foreground'"
-          :title="preferenceTooltip"
+      <span class="flex-1">
+        <span
+          :id="preferLabelId"
+          class="sm-field-label"
         >
           {{ t('openai.preferApiKey.label') }}
-        </Label>
-        <p class="text-xs text-muted-foreground mt-0.5">
-          {{ canTogglePreference
-            ? t('openai.preferApiKey.descriptionEnabled')
-            : t('openai.preferApiKey.descriptionDisabled') }}
-        </p>
-      </div>
-    </div>
-  </section>
+        </span>
+        <span
+          :id="preferHintId"
+          class="sm-hint block"
+        >
+          {{ canTogglePreference ? t('openai.preferApiKey.descriptionEnabled') : t('openai.preferApiKey.descriptionDisabled') }}
+        </span>
+      </span>
+    </label>
+  </div>
 </template>

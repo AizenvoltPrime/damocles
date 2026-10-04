@@ -6,6 +6,8 @@ import type { SettingsStore } from "../../../../platform/settings-store";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { CpuFallbackEvent, IncomingTtsChunk, SidecarManagerStatus, SidecarOutbound, TtsUnloadedEvent } from "../../../voice/sidecar";
 import { log } from "../../../logger";
+import { writeSetting } from "../setting-write";
+import { t } from "../../../l10n";
 import {
   cleanupOldVersions,
   compareInstalled,
@@ -59,6 +61,15 @@ async function emitVoiceFilesSize(
   } catch (err) {
     log("[VoiceStreamHandlers] voiceFilesSizeUpdate emit failed:", err);
   }
+}
+
+/** The size on disk of the voice runtime and models, for the settings' Remove all voice files label. */
+export async function postVoiceFilesSize(deps: Pick<HandlerDependencies, "postMessage" | "voiceService">, host: PanelHost): Promise<void> {
+  if (deps.voiceService === undefined) {
+    deps.postMessage(host, { type: "voiceFilesSizeUpdate", bytes: 0 });
+    return;
+  }
+  await emitVoiceFilesSize(deps.postMessage, host, deps.voiceService.getPaths().rootDir);
 }
 
 function buildUpgradeNotification(outdated: OutdatedModelEntry[]): {
@@ -492,10 +503,11 @@ export function createVoiceStreamHandlers(
       // Persist the setting first — this is the source of truth the
       // sidecar reads at next __init__ even if hot-swap fails or the
       // sidecar isn't alive.
-      await deps.settingsManager.setVoiceTtsVoice(msg.voice);
+      const saved = await writeSetting(deps, ctx, "damocles.voice.tts.voice", (detail) => t("Failed to save the voice setting: {0}", detail), () =>
+        deps.settingsManager.setVoiceTtsVoice(msg.voice));
       await deps.settingsManager.sendVoiceConfig(ctx.host);
 
-      if (voiceService === undefined) return;
+      if (!saved || voiceService === undefined) return;
       const paths = voiceService.getPaths();
 
       // Locate the manifest entry for vibevoice and the expected
@@ -687,13 +699,6 @@ export function createVoiceStreamHandlers(
       }
     },
 
-    voiceQueryFilesSize: async (_msg, ctx) => {
-      if (voiceService === undefined) {
-        postMessage(ctx.host, { type: "voiceFilesSizeUpdate", bytes: 0 });
-        return;
-      }
-      await emitVoiceFilesSize(postMessage, ctx.host, voiceService.getPaths().rootDir);
-    },
   };
 
   const markUserTypedDuringTurn = (): void => {

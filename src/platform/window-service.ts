@@ -1,4 +1,5 @@
 import type { Disposable } from './disposable';
+import type { SettingsAccountId, SettingsSectionId } from '../shared/settings-sections';
 
 export interface PanelHost {
   readonly visible: boolean;
@@ -8,7 +9,7 @@ export interface PanelHost {
   readonly cspSource: string;
   // worker-src sources for the chat panel page; undefined omits the directive (the VS Code hosts never set it, so their CSP is unchanged).
   readonly workerSrc?: string;
-  // CSS text defining the --vscode-* variables when the host does not inject them itself; '' otherwise.
+  // CSS text that fills the --d-* design tokens (desktop palettes and fonts); '' where tokens.css maps the host's own theme variables.
   themeCssSource(): string;
   setHtml(html: string): void;
   postMessage(message: unknown): Promise<boolean>;
@@ -45,4 +46,7 @@ export interface WindowService {
   createPanel(opts: PanelOptions): PanelHost;
   // Opens in a column holding only panels of this kind, else in an unused column the host then reserves for them (VS Code: lockEditorGroup).
   createPanelInOwnColumn(opts: Omit<PanelOptions, 'column'>): Promise<PanelHost>;
+  // Shows the settings modal outside the chat pages (desktop: the overlay). Only a host whose capabilities say
+  // settingsInPanel false is asked; one that shows the modal inside the chat page has nowhere else to show it.
+  openAppSettings(section: SettingsSectionId | undefined, account?: SettingsAccountId): void;
 }

@@ -5,7 +5,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
-import type { AgentMcpContext } from '../../team/types';
+import type { AgentMcpContext, TeamStop } from '../../team/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../team/review-gate';
@@ -179,8 +179,8 @@ export interface TeamServiceRef {
   cancelTeam: (teamId: string) => string;
   /** Record the spawning `create_team` tool-call id, which the parent's invocation entry carries. */
   setPendingToolUseId: (toolUseId: string) => void;
-  /** Abort the active team (ESC during a team → the `create_team` tool returns an aborted result). */
-  cancelActiveTeam: () => void;
+  /** Stop the active team for `stop`; the blocked `create_team` or `resume_team` call returns its partial result. */
+  cancelActiveTeam: (stop: TeamStop) => void;
 }
 
 const createTeamSchema = Type.Object(
@@ -242,7 +242,8 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
         // Tie the team to this `create_team` tool-call id, and wire ESC: aborting
         // the tool aborts the whole team (the team then synthesizes partial results and returns them).
         teamService.setPendingToolUseId(toolCallId);
-        const onAbort = (): void => teamService.cancelActiveTeam();
+        // Every owner that aborts the turn for another cause stops the team with that cause first, and the first stop wins.
+        const onAbort = (): void => teamService.cancelActiveTeam('user');
         signal?.addEventListener('abort', onAbort, { once: true });
         try {
           const result = await teamService.createTeam({
@@ -297,7 +298,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
           throw new TeamToolError(`The resume of team "${input.team_id}" was stopped before it started; it can still be resumed.`);
         }
         // Wired like create_team: aborting the tool cancels the resumed team, which returns its partial synthesis.
-        const onAbort = (): void => teamService.cancelActiveTeam();
+        const onAbort = (): void => teamService.cancelActiveTeam('user');
         signal?.addEventListener('abort', onAbort, { once: true });
         try {
           return textResult(await teamService.resumeTeam(input.team_id, input.message, toolCallId));

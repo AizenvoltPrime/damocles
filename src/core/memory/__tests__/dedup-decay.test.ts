@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { createTestMemoryDb, assertContentHashInvariant } from './test-helpers';
+import { createTestDbPath, createTestMemoryDb, assertContentHashInvariant } from './test-helpers';
 import { MemoryWriteQueue } from '../write-queue';
 import { normalizedContentHash } from '../types';
 import type { DatabaseInstance, MemoryRow } from '../types';
@@ -600,19 +597,12 @@ describe('MemoryService.updateMemory — in-place edit for note/episode/observat
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-updatemem-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   /** Insert a live in-place-kind row directly (bypasses extraction) with a valid content_hash. */
@@ -708,19 +698,12 @@ describe('MemoryService.deleteSessionMemories — delete hygiene (Slice 6)', () 
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-delsession-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   function seedSessionRow(db: DatabaseInstance, sessionId: string, content: string): string {

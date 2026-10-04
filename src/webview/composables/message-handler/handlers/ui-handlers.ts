@@ -2,8 +2,9 @@ import { nextTick } from "vue";
 import { toast } from "vue-sonner";
 import { applyLocale, i18n } from "@/i18n";
 import { useUsageStatsStore } from "@/stores/useUsageStatsStore";
+import { useBindPlanStore } from "@/stores/useBindPlanStore";
 import type { PermissionMode } from "@shared/types/settings";
-import type { HandlerRegistry, ScrollBehavior } from "../types";
+import type { HandlerRegistry } from "../types";
 
 export function createUIHandlers(): Partial<HandlerRegistry> {
   return {
@@ -23,11 +24,10 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       }
     },
 
-    panelFocused: (_msg, ctx): ScrollBehavior => {
+    panelFocused: (_msg, ctx) => {
       nextTick(() => {
         ctx.refs.chatInputRef.value?.focus();
       });
-      return { skipScroll: true };
     },
 
     ideContextUpdate: (msg, ctx) => {
@@ -40,6 +40,10 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     showPlanContent: (msg, ctx) => {
       ctx.stores.planViewStore.setViewingPlan(msg.content, msg.filePath);
+    },
+
+    planFileCandidates: (msg) => {
+      useBindPlanStore().setCandidates(msg.files, msg.hasPlan, msg.listFailed === true);
     },
 
     tokenUsageUpdate: (msg, ctx) => {

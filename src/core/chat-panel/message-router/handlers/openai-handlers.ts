@@ -1,5 +1,6 @@
 import type { AuthInteraction } from "@earendil-works/pi-ai";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { Platform } from "../../../../platform/platform";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
@@ -78,6 +79,21 @@ function toSnapshot(status: OpenAIAuthStatus): OpenAIAuthSnapshot {
   };
 }
 
+/** Live status once init's first key sync has run. Before that, the disk part plus a direct secret read. */
+async function readStatus(platform: Platform): Promise<OpenAIAuthStatus> {
+  if (PiRuntime.exists && PiRuntime.get().openaiStatusReady) return PiRuntime.get().getOpenAIAuthStatus();
+  const secret = await platform.secrets.get(OPENAI_API_KEY_SECRET);
+  return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
+}
+
+export async function openaiAuthStatusMessage(platform: Platform): Promise<Extract<ExtensionToWebviewMessage, { type: "openaiAuthStatusChanged" }>> {
+  return {
+    type: "openaiAuthStatusChanged",
+    status: toSnapshot(await readStatus(platform)),
+    preferApiKey: platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
+  };
+}
+
 /**
  * Webview-driven OpenAI auth (API key secret, Sign in with ChatGPT, legacy Codex sign-out) backed by
  * `PiRuntime`. pi owns the grants in auth.json, the loopback OAuth callback server, PKCE and token
@@ -96,25 +112,10 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     }
   }
 
-  /** Live status once init's first key sync has run. Before that, the disk part plus a direct secret read. */
-  async function readStatus(): Promise<OpenAIAuthStatus> {
-    if (PiRuntime.exists && runtime().openaiStatusReady) return runtime().getOpenAIAuthStatus();
-    const secret = await platform.secrets.get(OPENAI_API_KEY_SECRET);
-    return openaiAuthStatus(readOpenAIAuthFromDisk(PI_AGENT_DIR), secret !== undefined && secret !== "");
-  }
-
-  async function authStatusMessage(): Promise<ExtensionToWebviewMessage> {
-    return {
-      type: "openaiAuthStatusChanged",
-      status: toSnapshot(await readStatus()),
-      preferApiKey: platform.state.workspace.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
-    };
-  }
-
-  /** Called on the mutation paths only. The read-only status query posts `authStatusMessage()` direct,
+  /** Called on the mutation paths only. The read-only status queries post `openaiAuthStatusMessage()` direct,
    *  because a read changes nothing the account chip is derived from. */
   async function broadcastAuthStatus(): Promise<void> {
-    broadcast(await authStatusMessage());
+    broadcast(await openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);
   }
 
@@ -219,7 +220,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     },
 
     getOpenAIAuthStatus: async (_msg, ctx) => {
-      postMessage(ctx.host, await authStatusMessage());
+      postMessage(ctx.host, await openaiAuthStatusMessage(platform));
     },
 
     setOpenAIPreferApiKey: async (msg, ctx) => {

@@ -138,6 +138,17 @@ describe('PiRuntime OpenAI auth', () => {
     expect(rt.getOpenAIAuthStatus()).toEqual({ apiKey: true, chatgpt: false, codex: false });
   });
 
+  it('tells auth-file listeners after an outside change to auth.json was republished', async () => {
+    const rt = PiRuntime.get(agentDir);
+    await rt.init();
+    const heard = vi.fn();
+    const stop = PiRuntime.onAuthFileChange(heard);
+    mock.writeState({ anthropic: { type: 'api_key', key: 'sk-ant' } });
+    platform.fileWatchers.watcher(agentDir, 'auth.json').fireChange(path.join(agentDir, 'auth.json'));
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledOnce());
+    stop();
+  });
+
   it('setOpenAIApiKey writes only the secret, never auth.json, and applies the runtime key', async () => {
     const rt = PiRuntime.get(agentDir);
     const status = await rt.setOpenAIApiKey('sk-test');

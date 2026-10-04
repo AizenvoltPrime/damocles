@@ -14,3 +14,7 @@ if (process.platform === "win32") {
 // this: in a worker thread, `process.env` writes do not reach `os.homedir()`.
 process.env["USERPROFILE"] = home;
 process.env["HOME"] = home;
+// `os.tmpdir()` reads TEMP then TMP on Windows and TMPDIR then TMP then TEMP on POSIX. Under the run
+// root, whatever a test leaves in its temp dir is removed by the global teardown.
+const tmp = mkdtempSync(join(inject("testHomeRoot"), "t-"));
+for (const name of ["TMPDIR", "TMP", "TEMP"]) process.env[name] = tmp;

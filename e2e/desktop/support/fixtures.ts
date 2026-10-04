@@ -1,7 +1,12 @@
+import * as path from 'node:path';
 import { test as base, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { attachDiagnostics, launchDesktop, type DesktopApp, type LaunchOptions } from './app';
+import { PACKAGED_SPECS } from './packaged-app';
 import { createHermeticHome, type HermeticHome } from './hermetic';
-import { shellState } from './shell';
+import { selectedProjectKey, shellPage, shellState } from './shell';
+
+// Electron prints this when an ipcMain.handle handler throws; the renderer gets a rejection and the test may never see it.
+const IPC_HANDLER_ERROR = 'Error occurred in handler for ';
 
 export interface DesktopFixtures {
   home: HermeticHome;
@@ -18,8 +23,9 @@ export const test = base.extend<DesktopFixtures>({
   },
   launch: async ({ home }, use, testInfo) => {
     const launched: DesktopApp[] = [];
+    const mainProcess = !PACKAGED_SPECS.includes(path.basename(testInfo.file));
     await use(async (options) => {
-      const desktop = await launchDesktop(home, options);
+      const desktop = await launchDesktop(home, options, mainProcess);
       launched.push(desktop);
       await desktop.startTracing();
       return desktop;
@@ -35,6 +41,8 @@ export const test = base.extend<DesktopFixtures>({
       await desktop.close().catch(record);
       // After close, so the attached log also covers the shutdown.
       await attachDiagnostics(testInfo, `launch-${i}`, desktop, home).catch(record);
+      const handlerErrors = desktop.output().split('\n').filter((line) => line.includes(IPC_HANDLER_ERROR));
+      if (handlerErrors.length > 0) record(new Error(`launch ${i}: main threw in an IPC handler:\n${handlerErrors.join('\n')}`));
     }
     if (firstError) throw firstError.error;
   },
@@ -42,34 +50,87 @@ export const test = base.extend<DesktopFixtures>({
 
 export { expect };
 
-/** The first chat tab page (app://damocles/panel/<panelId>/index.html). */
-export async function chatTab(app: ElectronApplication): Promise<Page> {
-  const isTab = (p: Page): boolean => p.url().includes('/panel/');
-  const existing = app.windows().find(isTab);
-  if (existing) return existing;
-  return app.waitForEvent('window', { predicate: isTab });
-}
+const NEW_CHAT_PREFIX = 'new:';
 
-/** The panelId in a tab page URL. */
+/** The panelId in a chat page URL (app://damocles/panel/<panelId>/index.html). */
 export function panelIdOf(page: Page): string {
   const match = /\/panel\/([^/]+)\//.exec(page.url());
   if (!match) throw new Error(`not a panel page: ${page.url()}`);
   return match[1]!;
 }
 
-/**
- * Resolves with the next chat tab that is not one of `known`. A browser page view loads the same /panel/<id>/ URL as a
- * chat tab, so the shell's tab list decides which new page is a tab.
- */
-export async function nextTab(app: ElectronApplication, known: Page[]): Promise<Page> {
-  const knownIds = new Set(known.flatMap((p) => /\/panel\/([^/]+)\//.exec(p.url())?.[1] ?? []));
-  let opened: string | undefined;
-  await expect.poll(async () => (opened = (await shellState(app)).tabs.map((t) => t.id).find((id) => !knownIds.has(id)))).toBeDefined();
-  return tabById(app, opened!);
+async function savedSessionId(page: Page): Promise<string | undefined> {
+  return page.evaluate(() => (window.damoclesBridge?.getState() as { sessionId?: string } | null | undefined)?.sessionId);
 }
 
-/** The chat tab for `panelId`, waiting for it to load if a relaunch has not restored it yet. */
-export async function tabById(app: ElectronApplication, panelId: string): Promise<Page> {
-  const matches = (p: Page): boolean => p.url().includes(`/panel/${panelId}/`);
-  return app.windows().find(matches) ?? app.waitForEvent('window', { predicate: matches });
+async function findChat(app: ElectronApplication, chatId: string): Promise<Page | undefined> {
+  const pages = app.windows().filter((p) => !p.isClosed() && p.url().includes('/panel/'));
+  if (chatId.startsWith(NEW_CHAT_PREFIX)) return pages.find((p) => p.url().includes(`/panel/${chatId.slice(NEW_CHAT_PREFIX.length)}/`));
+  for (const page of pages) if ((await savedSessionId(page)) === chatId) return page;
+  return undefined;
+}
+
+/**
+ * The loaded chat main names `chatId`: `new:<panelId>` is the chat page of that panel, a session id the chat page whose
+ * webview state holds it. Waits for the page to load when main has only just created its view.
+ */
+export async function chatById(app: ElectronApplication, chatId: string): Promise<Page> {
+  let page: Page | undefined;
+  await expect.poll(async () => (page = await findChat(app, chatId)), { timeout: 30_000 }).toBeDefined();
+  return page!;
+}
+
+/** The selected chat's page; the selected chat's id is read again on every try, since a first file write changes it. */
+export async function activeChat(app: ElectronApplication): Promise<Page> {
+  let page: Page | undefined;
+  await expect.poll(async () => {
+    const chatId = (await shellState(app)).selected.chatId;
+    page = chatId === undefined ? undefined : await findChat(app, chatId);
+    return page;
+  }, { timeout: 30_000 }).toBeDefined();
+  return page!;
+}
+
+/** Resolves with the selected chat once it is a chat page other than `known`, as after New Chat. */
+export async function nextChat(app: ElectronApplication, known: Page[]): Promise<Page> {
+  const knownIds = new Set(known.filter((p) => p.url().includes('/panel/')).map(panelIdOf));
+  let page: Page | undefined;
+  await expect.poll(async () => {
+    const chatId = (await shellState(app)).selected.chatId;
+    const candidate = chatId === undefined ? undefined : await findChat(app, chatId);
+    page = candidate && !knownIds.has(panelIdOf(candidate)) ? candidate : undefined;
+    return page;
+  }, { timeout: 30_000 }).toBeDefined();
+  return page!;
+}
+
+/** The id main gives the loaded chat shown in `page`, found among the loaded chats of every project's list. */
+export async function chatIdOf(app: ElectronApplication, page: Page): Promise<string> {
+  const candidates = [`${NEW_CHAT_PREFIX}${panelIdOf(page)}`, await savedSessionId(page)];
+  const state = await shellState(app);
+  const shell = await shellPage(app);
+  const keys = [...new Set([await selectedProjectKey(app), ...state.projects.map((project) => project.key)])];
+  for (const key of keys) {
+    const list = await shell.evaluate((projectKey) => window.damoclesShell!.listChats(projectKey), key);
+    const found = list.chats.find((chat) => chat.loaded && candidates.includes(chat.id));
+    if (found) return found.id;
+  }
+  throw new Error(`no loaded chat shows ${page.url()}`);
+}
+
+/** Selects the loaded chat shown in `page` as a click on its sidebar row does, and waits until it is selected. */
+export async function selectChatPage(app: ElectronApplication, page: Page): Promise<void> {
+  const chatId = await chatIdOf(app, page);
+  const shell = await shellPage(app);
+  expect(await shell.evaluate((id) => window.damoclesShell!.selectChat(id), chatId)).toEqual({ ok: true });
+  await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(chatId);
+}
+
+/**
+ * The first chat page of a fresh launch, as soon as its window exists, before its webview boots: a test that must record
+ * from the first host message takes it here, because activeChat waits for the shell's state.
+ */
+export async function firstChatPage(app: ElectronApplication): Promise<Page> {
+  const isChat = (p: Page): boolean => p.url().includes('/panel/');
+  return app.windows().find(isChat) ?? app.waitForEvent('window', { predicate: isChat });
 }

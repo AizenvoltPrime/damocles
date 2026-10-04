@@ -31,20 +31,22 @@ const style = computed(() => ({ transform: `translateY(${props.offset}px)` }));
 
 <template>
   <div ref="rootRef" class="sticky top-0 z-10" :style="style">
-    <UserMessageBlock
-      mode="pinned"
-      :message="message"
-      :message-index="itemIndex"
-      :prompt-index="promptIndex"
-      :can-rewind="canRewind"
-      :offset="offset"
-      :expanded="expanded"
-      @rewind="(msg: ChatMessage) => emit('rewind', msg)"
-      @open-lightbox="emit('openLightbox', $event)"
-      @scroll-to-primary="emit('scrollToPrimary')"
-      @view-context="emit('viewContext', $event)"
-      @toggle-expanded="emit('toggle-expanded')"
-      @hide-pinned="emit('hide-pinned')"
-    />
+    <div class="chat-column pt-2">
+      <UserMessageBlock
+        mode="pinned"
+        :message="message"
+        :message-index="itemIndex"
+        :prompt-index="promptIndex"
+        :can-rewind="canRewind"
+        :offset="offset"
+        :expanded="expanded"
+        @rewind="(msg: ChatMessage) => emit('rewind', msg)"
+        @open-lightbox="emit('openLightbox', $event)"
+        @scroll-to-primary="emit('scrollToPrimary')"
+        @view-context="emit('viewContext', $event)"
+        @toggle-expanded="emit('toggle-expanded')"
+        @hide-pinned="emit('hide-pinned')"
+      />
+    </div>
   </div>
 </template>

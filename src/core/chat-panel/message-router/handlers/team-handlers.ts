@@ -51,6 +51,13 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
     },
 
+    cancelTeam: (msg, ctx) => {
+      if (msg.type !== "cancelTeam") return;
+      // The team's own completion reports a stop that landed; a late click is answered so "Stopping..." clears.
+      if (ctx.session.teamService?.stopTeam(msg.teamId)) return;
+      postMessage(ctx.host, { type: "teamCancelRejected", teamId: msg.teamId });
+    },
+
     requestTeamAgentData: async (msg, ctx) => {
       if (msg.type !== "requestTeamAgentData") return;
       const sessionId = ctx.session.persistenceSessionId;

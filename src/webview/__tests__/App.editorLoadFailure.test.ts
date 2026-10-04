@@ -1,7 +1,5 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-// `vue3-lottie` runs canvas setup at import time, which happy-dom does not provide.
-vi.mock('vue3-lottie', () => ({ Vue3Lottie: { name: 'Vue3Lottie', render: () => null } }));
 // A thenable module namespace makes `import()` reject, as a Monaco chunk that fails to load does.
 vi.mock('@/components/editor/EditorOverlayHost.vue', () => ({
   then: (_resolve: unknown, reject: (err: Error) => void) => reject(new Error('chunk failed')),

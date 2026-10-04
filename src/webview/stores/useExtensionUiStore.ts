@@ -39,5 +39,10 @@ export const useExtensionUiStore = defineStore('extensionUi', () => {
     remove(requestId);
   }
 
-  return { queue, current, setRequest, resolve, cancel };
+  /** Every request is gone with the chat it was asked for (the desktop settings view re-attaching to another chat). */
+  function $reset(): void {
+    queue.value = [];
+  }
+
+  return { queue, current, setRequest, resolve, cancel, $reset };
 });

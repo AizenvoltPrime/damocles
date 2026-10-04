@@ -8,6 +8,7 @@ import { TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import ToolCallCard from '../ToolCallCard.vue';
 import ToolOverlay from '../ToolOverlay.vue';
 import { useStreamingStore } from '@/stores/useStreamingStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { i18n } from '@/i18n';
 
 /**
@@ -53,7 +54,7 @@ describe('GenerateImage tool card', () => {
 
     expect(wrapper.text()).toContain('assets/fox.png');
     await wrapper.get(`[aria-label="${i18n.global.t('toolCall.expandDetails', { name: TOOL_GENERATE_IMAGE })}"]`).trigger('click');
-    expect(wrapper.emitted('expand')).toEqual([['g-1']]);
+    expect(useUIStore()).toMatchObject({ expandedToolId: 'g-1', expandedToolSource: 'session' });
   });
 
   it('renders ToolResultImages by imageCount, fetched on demand and kept out of every store', async () => {

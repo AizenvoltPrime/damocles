@@ -6,6 +6,7 @@ import { setActivePinia, createPinia } from 'pinia';
 import StatsBreakdown from '../StatsBreakdown.vue';
 import { i18n } from '@/i18n';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
+import { providerLogoSvg } from '@/components/icons/provider-logos';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
 import type { UsageStatsAggregate, UsageStatsReport } from '@shared/types/usage-stats';
 
@@ -132,6 +133,16 @@ describe('StatsBreakdown', () => {
     // Sonnet: 400 of 4,000 tokens; the tokens metric also sorts by tokens.
     expect(section(tokens, 'model').get('[data-row="model:anthropic/claude-sonnet-4-5"]').text()).toContain('10%');
     expect(rowIds(tokens, 'model')[0]).toBe('model:openai/gpt-5');
+  });
+
+  it('shows the provider logo beside each model with a known provider, and on no other section', () => {
+    const wrapper = mountBreakdown();
+    const logo = (id: string) => section(wrapper, 'model').get(`[data-row="${id}"]`).find('[data-model-logo]');
+    expect(logo('model:anthropic/claude-sonnet-4-5').html()).toContain(providerLogoSvg('anthropic'));
+    expect(logo('model:openai/gpt-5').html()).toContain(providerLogoSvg('openai'));
+    expect(logo('model:local/llama').exists()).toBe(false);
+    expect(section(wrapper, 'project').find('[data-model-logo]').exists()).toBe(false);
+    expect(section(wrapper, 'source').find('[data-model-logo]').exists()).toBe(false);
   });
 
   it('marks rows with unpriced tokens', () => {

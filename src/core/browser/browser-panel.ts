@@ -1,6 +1,7 @@
 import { randomBytes } from 'crypto';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelHost, WindowService } from '../../platform/window-service';
+import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import { t } from '../l10n';
 import { BROWSER_WEBVIEW_SCRIPT } from './browser-webview-script';
 import type { ElementOverlayInfo } from './types';
@@ -104,7 +105,7 @@ export class BrowserPanel {
       urlPlaceholder: t('Enter URL...'),
       waiting: t('Waiting for browser frames...'),
     };
-    this.panel!.setHtml(buildHtml(nonce, strings, !this.window.chatBrowserPane));
+    this.panel!.setHtml(buildHtml(nonce, strings, !this.window.chatBrowserPane, this.panel!.themeCssSource()));
 
     const msgDisposable = this.panel!.onMessage((message) => {
       const msg = message as WebviewMessage;
@@ -290,8 +291,9 @@ function toolbarHtml(strings: PanelStrings): string {
 `;
 }
 
-// toolbar false: the host draws the navigation chrome itself (WindowService.chatBrowserPane).
-function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): string {
+// toolbar false: the host draws the navigation chrome itself (WindowService.chatBrowserPane). Colours read the desktop
+// design tokens from themeCss first and VS Code's theme variables otherwise.
+function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean, themeCss: string): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -300,7 +302,7 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): stri
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: var(--vscode-editor-background, #1e1e1e);
+    background: var(--d-bg, var(--vscode-editor-background, #1e1e1e));
     overflow: hidden;
     width: 100vw;
     height: 100vh;
@@ -371,7 +373,7 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): stri
     flex: 1;
     position: relative;
     overflow: hidden;
-    background: var(--vscode-editor-background, #1e1e1e);
+    background: var(--d-bg, var(--vscode-editor-background, #1e1e1e));
   }
 
   #screen {
@@ -390,7 +392,7 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): stri
     justify-content: center;
     width: 100%;
     height: 100%;
-    color: var(--vscode-descriptionForeground, #666);
+    color: var(--d-muted, var(--vscode-descriptionForeground, #666));
     font-family: system-ui, -apple-system, sans-serif;
     font-size: 14px;
   }
@@ -399,13 +401,13 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): stri
     position: absolute;
     pointer-events: none;
     z-index: 100;
-    background: var(--vscode-editor-background, #1e1e1e);
-    border: 1px solid var(--vscode-focusBorder, #007fd4);
+    background: var(--d-card, var(--vscode-editor-background, #1e1e1e));
+    border: 1px solid var(--d-accent, var(--vscode-focusBorder, #007fd4));
     border-radius: 4px;
     padding: 6px 10px;
     font-family: monospace;
     font-size: 11px;
-    color: var(--vscode-editor-foreground, #cccccc);
+    color: var(--d-text, var(--vscode-editor-foreground, #cccccc));
     box-shadow: 0 2px 8px rgba(0,0,0,0.4);
     opacity: 0;
     transition: opacity 0.3s ease;
@@ -418,15 +420,16 @@ function buildHtml(nonce: string, strings: PanelStrings, toolbar: boolean): stri
   #element-overlay.visible { display: block; opacity: 1; }
   #element-overlay.fading { opacity: 0; }
   #element-overlay .selector {
-    color: var(--vscode-focusBorder, #007fd4);
+    color: var(--d-accent, var(--vscode-focusBorder, #007fd4));
     font-weight: bold;
   }
   #element-overlay .dims {
-    color: var(--vscode-descriptionForeground, #888);
+    color: var(--d-muted, var(--vscode-descriptionForeground, #888));
     margin-left: 6px;
   }
 
-</style>
+</style>${themeCss === '' ? '' : `
+<style id="${HOST_THEME_STYLE_ID}">${themeCss}</style>`}
 </head>
 <body>
 ${toolbar ? toolbarHtml(strings) : ''}  <div id="content-area">

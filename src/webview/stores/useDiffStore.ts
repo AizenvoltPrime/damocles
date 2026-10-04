@@ -1,11 +1,12 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
+import type { FileDiffSource } from '@/utils/parseUnifiedDiff';
 
 export interface ExpandedDiff {
   filePath: string;
-  oldContent: string;
-  newContent: string;
-  isNewFile: boolean;
+  tool: 'Edit' | 'Write';
+  /** The same source the card that opened it renders, so the two show the same lines and numbers. */
+  source: FileDiffSource;
 }
 
 export const useDiffStore = defineStore('diff', () => {

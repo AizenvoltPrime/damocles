@@ -2,10 +2,7 @@
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Textarea } from '@/components/ui/textarea';
-import { IconSparkles, IconCheck, IconPencil, IconPaperPlane, IconBolt } from '@/components/icons';
+import { ClipboardList, Check, Pencil, SendHorizontal, Zap } from 'lucide-vue-next';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useSessionStore, useSettingsStore } from '@/stores';
@@ -20,10 +17,10 @@ const { contextPercentage } = useContextPercentage(sessionStats);
 
 const contextBadgeStyle = computed(() => {
   const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
-  if (contextPercentage.value >= hard) return 'bg-rose-500/15 text-rose-400';
-  if (contextPercentage.value >= soft) return 'bg-orange-500/15 text-[var(--color-orange)]';
-  if (contextPercentage.value >= warning) return 'bg-amber-500/15 text-amber-400';
-  return 'bg-emerald-500/15 text-emerald-400';
+  if (contextPercentage.value >= hard) return 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)';
+  if (contextPercentage.value >= soft) return 'bg-[color-mix(in_srgb,var(--d-warning)_15%,transparent)] text-(--d-warning-text)';
+  if (contextPercentage.value >= warning) return 'bg-[color-mix(in_srgb,var(--d-warning)_15%,transparent)] text-(--d-warning-text)';
+  return 'bg-[color-mix(in_srgb,var(--d-success)_15%,transparent)] text-(--d-success-text)';
 });
 
 const contextTooltip = computed(() => {
@@ -59,48 +56,87 @@ function handleSendFeedback() {
   <OverlayShell
     :title="t('planApproval.readyToCode')"
     :subtitle="t('planApproval.reviewPlan')"
-    :icon="IconSparkles"
-    icon-class="text-primary"
+    :icon="ClipboardList"
+    icon-class="text-(--d-accent)"
+    max-width="53.75rem"
+    :has-draft="canSubmitFeedback"
     @close="emit('dismiss')"
   >
     <template #header-actions>
-      <Badge variant="secondary" class="gap-1 tabular-nums shrink-0" :class="contextBadgeStyle" :title="contextTooltip">
-        <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="6" cy="6" r="5" fill="currentColor" />
-        </svg>
-        {{ contextPercentage }}%
-      </Badge>
+      <span
+        class="flex flex-none items-center gap-1 rounded-full px-2 font-mono text-11/5 tabular-nums"
+        :class="contextBadgeStyle"
+        :title="contextTooltip"
+      >
+        <span
+          class="size-1.5 rounded-full bg-current"
+          aria-hidden="true"
+        />{{ contextPercentage }}%
+      </span>
     </template>
 
-    <div class="p-4">
+    <div class="px-4.5 pt-4 pb-5">
       <MarkdownRenderer :content="planContent" />
     </div>
 
     <template #footer>
-      <footer class="shrink-0 border-t border-border/30 bg-muted p-4 space-y-3">
-        <Textarea
+      <footer class="flex flex-none flex-col gap-2.5 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-3">
+        <label
+          class="sr-only"
+          for="plan-feedback"
+        >{{ t('planApproval.sendFeedback') }}</label>
+        <textarea
+          id="plan-feedback"
           v-model="feedbackText"
+          rows="2"
+          class="max-h-30 resize-none rounded-10 border border-(--d-border2) bg-(--d-input) px-3 py-2.25 text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint) focus:border-(--d-accent)"
           :placeholder="t('planApproval.feedbackPlaceholder')"
-          class="resize-none max-h-32"
-          @keydown.enter.ctrl="handleSendFeedback"
+          data-testid="plan-feedback"
+          @keydown.enter.ctrl.prevent="handleSendFeedback"
+          @keydown.enter.meta.prevent="handleSendFeedback"
         />
-        <div class="flex justify-end gap-2">
-          <Button variant="outline" :disabled="!canSubmitFeedback" @click="handleSendFeedback">
-            <IconPaperPlane :size="16" class="mr-2" />
-            {{ t('planApproval.sendFeedback') }}
-          </Button>
-          <Button variant="outline" @click="emit('approve', { approvalMode: 'manual' })">
-            <IconPencil :size="16" class="mr-2" />
-            {{ t('planApproval.manualApprove') }}
-          </Button>
-          <Button variant="outline" @click="emit('approve', { approvalMode: 'acceptEdits' })">
-            <IconCheck :size="16" class="mr-2" />
-            {{ t('planApproval.autoAccept') }}
-          </Button>
-          <Button @click="emit('approve', { approvalMode: 'acceptEdits', clearContext: true })">
-            <IconBolt :size="16" class="mr-2" />
-            {{ t('planApproval.clearContextAndAccept') }}
-          </Button>
+        <div class="flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            class="d-press flex h-8 items-center gap-1.75 rounded-9 border border-(--d-border2) px-3 text-12.5 whitespace-nowrap transition-colors hover:bg-(--d-hover) disabled:cursor-default disabled:opacity-40"
+            :disabled="!canSubmitFeedback"
+            @click="handleSendFeedback"
+          >
+            <SendHorizontal
+              class="size-3.5"
+              aria-hidden="true"
+            />{{ t('planApproval.sendFeedback') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-8 items-center gap-1.75 rounded-9 border border-(--d-border2) px-3 text-12.5 whitespace-nowrap transition-colors hover:bg-(--d-hover)"
+            @click="emit('approve', { approvalMode: 'manual' })"
+          >
+            <Pencil
+              class="size-3.5"
+              aria-hidden="true"
+            />{{ t('planApproval.manualApprove') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-8 items-center gap-1.75 rounded-9 border border-(--d-border2) px-3 text-12.5 whitespace-nowrap transition-colors hover:bg-(--d-hover)"
+            @click="emit('approve', { approvalMode: 'acceptEdits' })"
+          >
+            <Check
+              class="size-3.5"
+              aria-hidden="true"
+            />{{ t('planApproval.autoAccept') }}
+          </button>
+          <button
+            type="button"
+            class="d-press flex h-8 items-center gap-1.75 rounded-9 bg-(--d-accent) px-3 text-12.5 font-semibold whitespace-nowrap text-(--d-on-accent) transition-[filter] hover:brightness-110"
+            @click="emit('approve', { approvalMode: 'acceptEdits', clearContext: true })"
+          >
+            <Zap
+              class="size-3.5"
+              aria-hidden="true"
+            />{{ t('planApproval.clearContextAndAccept') }}
+          </button>
         </div>
       </footer>
     </template>

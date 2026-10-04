@@ -1,0 +1,835 @@
+/*
+ * The settings modal (plan appendix A.1, Desktop template lines 532-605). Only opacity and transform animate.
+ * Keyframes come from styles/motion.css.
+ */
+
+.sm-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: var(--d-text);
+  font-family: var(--d-font);
+  font-size: 0.8125rem;
+}
+
+.sm-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--d-scrim);
+  animation: d-fade 0.2s;
+}
+
+/* In VS Code the modal shares the chat's document, so the scrim can blur it; the desktop overlay cannot sample the chat view. */
+.sm-scrim-blur {
+  backdrop-filter: blur(6px);
+}
+
+.sm-panel {
+  position: relative;
+  display: flex;
+  width: 100%;
+  max-width: 66.25rem;
+  height: 100%;
+  max-height: 47.5rem;
+  border-radius: 1.125rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-bg);
+  box-shadow: var(--d-shadow);
+  overflow: hidden;
+  outline: none;
+  animation: d-zoom 0.26s var(--ease-out);
+}
+
+/* The exit itself is a Web Animation (SettingsModal close); leaving only stops input. */
+.sm-leaving {
+  pointer-events: none;
+}
+
+.sm-narrow {
+  padding: 0;
+}
+
+.sm-narrow .sm-panel {
+  flex-direction: column;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  border: 0;
+}
+
+/* Nav column */
+.sm-nav {
+  width: 14.75rem;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--d-panel);
+  border-right: 1px solid var(--d-border);
+  padding: 1rem 0.625rem;
+}
+
+.sm-narrow .sm-nav {
+  width: 100%;
+  flex: 1;
+  border-right: 0;
+}
+
+/* Narrow and searching: the nav keeps only its title and search box above the results. */
+.sm-narrow .sm-nav-compact {
+  flex: none;
+  padding-bottom: 0;
+  border-bottom: 1px solid var(--d-border);
+}
+
+.sm-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5625rem;
+  padding: 0.125rem 0.5rem 0.875rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.sm-brand > svg:first-child {
+  color: var(--d-accent);
+}
+
+.sm-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  margin-bottom: 0.625rem;
+  border-radius: 0.5625rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-input);
+}
+
+.sm-search:focus-within {
+  border-color: var(--d-accent);
+}
+
+.sm-search svg {
+  flex: none;
+  color: var(--d-faint);
+}
+
+.sm-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--d-text);
+  font: inherit;
+  font-size: 0.78125rem;
+}
+
+.sm-search input::placeholder {
+  color: var(--d-faint);
+}
+
+/* The field has its own clear button, which also keeps Escape's clear-then-close order. */
+.sm-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.sm-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.375rem;
+  color: var(--d-faint);
+}
+
+.sm-search-clear:hover {
+  color: var(--d-text);
+}
+
+.sm-tabs {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.sm-pill {
+  transition: opacity 0.15s;
+}
+
+.sm-pill-hidden {
+  opacity: 0;
+}
+
+.sm-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  height: 2.125rem;
+  flex: none;
+  padding: 0 0.625rem;
+  border-radius: 0.5625rem;
+  color: var(--d-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover paints a layer under the label, so the change animates opacity rather than background. */
+.sm-tab::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--d-hover);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.sm-tab:hover::before {
+  opacity: 1;
+}
+
+.sm-tab[aria-selected="true"]::before {
+  opacity: 0;
+}
+
+.sm-tab > * {
+  position: relative;
+}
+
+.sm-tab[aria-selected="true"] {
+  color: var(--d-accent-text);
+  font-weight: 600;
+}
+
+/* While a search runs no section is current on screen, so the nav marks none (with its indicator hidden). */
+.sm-tabs-searching .sm-tab[aria-selected="true"] {
+  color: var(--d-text);
+  font-weight: 400;
+}
+
+.sm-narrow .sm-tab {
+  height: 2.75rem;
+  border-bottom: 1px solid var(--d-border);
+  border-radius: 0;
+}
+
+.sm-tab-chevron {
+  margin-left: auto;
+  color: var(--d-faint);
+}
+
+.sm-footer-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.5rem;
+  font-size: 0.71875rem;
+  color: var(--d-faint);
+  text-align: left;
+}
+
+.sm-footer-link:hover {
+  color: var(--d-text);
+}
+
+/* Content column */
+.sm-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sm-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 3.875rem;
+  flex: none;
+  padding: 0 1.125rem 0 1.75rem;
+  border-bottom: 1px solid var(--d-border);
+}
+
+.sm-narrow .sm-header {
+  padding: 0 0.75rem;
+}
+
+.sm-heading {
+  flex: 1;
+  min-width: 0;
+  animation: d-slide 0.22s var(--ease-out);
+}
+
+.sm-title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-subtitle {
+  font-size: 0.75rem;
+  color: var(--d-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sm-icon-button {
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5625rem;
+  color: var(--d-muted);
+  transition: transform 0.12s var(--ease-out);
+}
+
+.sm-icon-button:hover {
+  background: var(--d-hover);
+  color: var(--d-text);
+}
+
+.sm-icon-button:active {
+  transform: scale(0.97);
+}
+
+.sm-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.875rem 1.75rem 2rem;
+}
+
+.sm-narrow .sm-content {
+  padding: 0.5rem 1rem 1.5rem;
+}
+
+.sm-page-in {
+  animation: d-slide 0.24s var(--ease-out);
+}
+
+.sm-group-head {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--d-faint);
+  margin: 1.125rem 0 0.375rem;
+}
+
+.sm-empty {
+  padding: 2.5rem 0;
+  text-align: center;
+  color: var(--d-faint);
+  animation: d-fade 0.3s;
+}
+
+.sm-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.25rem 0 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-accent-soft);
+  animation: d-up 0.3s var(--ease-out) both;
+}
+
+.sm-banner-text {
+  flex: 1 1 13.75rem;
+  min-width: 0;
+}
+
+/* Rows */
+.sm-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.625rem 1.5rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--d-border);
+  animation: d-up 0.3s var(--ease-out) both;
+  animation-delay: var(--sm-row-delay, 0s);
+}
+
+.sm-row-text {
+  flex: 1 1 16.25rem;
+  min-width: 0;
+}
+
+.sm-row-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-weight: 500;
+}
+
+.sm-row-desc {
+  margin-top: 0.125rem;
+  max-width: 32.5rem;
+  font-size: 0.75rem;
+  color: var(--d-muted);
+  text-wrap: pretty;
+}
+
+.sm-row-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.sm-row-block {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sm-badge {
+  font-size: 0.625rem;
+  font-family: var(--d-mono);
+  font-weight: 400;
+  padding: 0 0.375rem;
+  border-radius: 0.3125rem;
+  line-height: 1rem;
+  background: var(--d-hover);
+  color: var(--d-faint);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm-badge-file {
+  background: var(--d-accent-soft);
+  color: var(--d-accent-text);
+}
+
+.sm-badge-pop {
+  animation: d-pop 0.22s var(--ease-out);
+}
+
+.sm-feedback {
+  margin-top: 0.1875rem;
+  font-size: 0.71875rem;
+  color: var(--d-muted);
+}
+
+.sm-feedback-error {
+  color: var(--d-danger);
+}
+
+.sm-fade-enter-active {
+  animation: d-fade 0.2s;
+}
+
+.sm-fade-leave-active {
+  transition: opacity 0.3s;
+}
+
+.sm-fade-leave-to {
+  opacity: 0;
+}
+
+.sm-expand {
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--d-border);
+  background: var(--d-panel);
+  animation: d-up 0.24s var(--ease-out) both;
+}
+
+/* No inline padding or margin: the mark sits inside a text run and must not cover the glyphs beside it. */
+mark.sm-mark {
+  margin: 0;
+  padding: 0;
+  border-radius: 0.125rem;
+  background: var(--d-accent-soft);
+  color: var(--d-accent-text);
+  font: inherit;
+  box-decoration-break: clone;
+}
+
+/* Every control: the 2px accent focus ring with a 2px offset (M10). */
+.sm-root :is(button, input, [tabindex]):focus-visible,
+.sm-popper :is([role="option"]):focus-visible {
+  outline: 2px solid var(--d-accent);
+  outline-offset: 2px;
+}
+
+.sm-root .sm-search input:focus-visible {
+  outline: none;
+}
+
+/* Select */
+.sm-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 12.5rem;
+  max-width: 20rem;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border-radius: 0.5625rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-input);
+  color: var(--d-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sm-select:hover:not(:disabled),
+.sm-select:focus-visible,
+.sm-select[data-state="open"] {
+  border-color: var(--d-accent);
+}
+
+.sm-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sm-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sm-select-chevron {
+  flex: none;
+  color: var(--d-faint);
+}
+
+.sm-popper {
+  min-width: var(--reka-select-trigger-width);
+  max-height: min(21.25rem, var(--reka-select-content-available-height));
+  overflow: hidden;
+  border-radius: 0.6875rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-card);
+  color: var(--d-text);
+  box-shadow: var(--d-shadow);
+  font-family: var(--d-font);
+  font-size: 0.78125rem;
+  animation: d-pop 0.16s var(--ease-out);
+}
+
+.sm-popper-viewport {
+  padding: 0.25rem;
+}
+
+.sm-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.875rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.4375rem;
+  cursor: pointer;
+  outline: none;
+}
+
+.sm-option[data-highlighted] {
+  background: var(--d-hover);
+}
+
+.sm-option[data-disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sm-option-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.sm-option-hint {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--d-muted);
+}
+
+.sm-option-check {
+  flex: none;
+  color: var(--d-accent);
+}
+
+/* Slider */
+.sm-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 15rem;
+  flex: none;
+}
+
+.sm-slider input {
+  --sm-fill: 50%;
+  flex: 1;
+  min-width: 0;
+  height: 1.125rem;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+
+.sm-slider input::-webkit-slider-runnable-track {
+  height: 0.25rem;
+  border-radius: 999rem;
+  background: linear-gradient(to right, var(--d-accent) var(--sm-fill), var(--d-border2) var(--sm-fill));
+}
+
+.sm-slider input::-webkit-slider-thumb {
+  appearance: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-top: -0.3125rem;
+  border-radius: 999rem;
+  border: 2px solid var(--d-accent);
+  background: var(--d-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s var(--ease-out);
+}
+
+.sm-slider input:hover::-webkit-slider-thumb,
+.sm-slider input:active::-webkit-slider-thumb,
+.sm-slider input[data-dragging]::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+.sm-slider-value {
+  min-width: 2.875rem;
+  text-align: right;
+  font-family: var(--d-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Text and number input */
+.sm-input {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 10rem;
+  height: 2rem;
+  flex: none;
+  padding: 0 0.625rem;
+  border-radius: 0.5625rem;
+  border: 1px solid var(--d-border2);
+  background: var(--d-input);
+}
+
+.sm-input-wide {
+  width: 17.5rem;
+  max-width: 100%;
+}
+
+.sm-input:focus-within {
+  border-color: var(--d-accent);
+}
+
+.sm-input[data-invalid] {
+  border-color: var(--d-danger);
+}
+
+.sm-input-affix {
+  color: var(--d-faint);
+}
+
+.sm-input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--d-text);
+  font: inherit;
+  font-family: var(--d-mono);
+  font-size: 0.78125rem;
+}
+
+.sm-input input:focus-visible {
+  outline: none;
+}
+
+.sm-input input::placeholder {
+  color: var(--d-faint);
+}
+
+/* Buttons */
+.sm-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  flex: none;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--d-border2);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--d-text);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease-out);
+}
+
+.sm-button:hover:not(:disabled) {
+  border-color: var(--d-accent);
+  color: var(--d-accent);
+}
+
+.sm-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.sm-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sm-button-primary {
+  border-color: var(--d-accent);
+  background: var(--d-accent);
+  color: var(--d-on-accent);
+}
+
+.sm-button-primary:hover:not(:disabled) {
+  color: var(--d-on-accent);
+}
+
+.sm-button-danger {
+  color: var(--d-danger);
+}
+
+.sm-button-danger:hover:not(:disabled) {
+  border-color: var(--d-danger);
+  color: var(--d-danger);
+}
+
+/* Account */
+.sm-account {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex: none;
+}
+
+.sm-account-status {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--d-faint);
+}
+
+.sm-account-status[data-state="ok"] {
+  color: var(--d-success);
+}
+
+.sm-account-status[data-state="busy"] {
+  color: var(--d-accent);
+}
+
+.sm-account-dot {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 0.5625rem;
+  background: currentColor;
+}
+
+.sm-account-status[data-state="busy"] .sm-account-dot {
+  animation: d-pulse 1.4s infinite;
+}
+
+.sm-spin {
+  animation: d-spin 0.8s linear infinite;
+}
+
+/* Embedded panels (auth, voice maintenance) */
+.sm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+}
+
+.sm-field:last-child {
+  margin-bottom: 0;
+}
+
+.sm-field-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--d-text);
+}
+
+.sm-field-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.sm-hint {
+  font-size: 0.71875rem;
+  color: var(--d-muted);
+}
+
+.sm-hint-success {
+  color: var(--d-success);
+}
+
+.sm-hint-warning {
+  color: var(--d-warning);
+}
+
+.sm-hint-error {
+  color: var(--d-danger);
+}
+
+.sm-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.375rem 0;
+  cursor: pointer;
+}
+
+.sm-choice input {
+  margin-top: 0.125rem;
+  accent-color: var(--d-accent);
+}

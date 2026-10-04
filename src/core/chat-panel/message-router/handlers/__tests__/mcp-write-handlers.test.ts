@@ -5,7 +5,7 @@ const logMock = vi.hoisted(() => vi.fn());
 vi.mock("../../../../logger", () => ({ log: logMock }));
 vi.mock("../../../settings-manager/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../settings-manager/utils")>()),
-  updateConfigAtEffectiveScope: vi.fn(async () => {}),
+  updateConfigAtEffectiveScope: vi.fn(async (_platform: unknown, key: string) => ({ key, home: "user" as const })),
 }));
 
 import { createSettingsHandlers } from "../settings-handlers";
@@ -13,6 +13,7 @@ import { McpWriteError } from "../../../settings-manager/managers/mcp-config-wri
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
 import type { McpScope } from "../../../../session-types";
+import { createFakePlatform } from "../../../../../__mocks__/fake-platform";
 import { specOf } from "../../../../pi-session/mcp/__tests__/fake-server-manager";
 
 /**
@@ -141,6 +142,8 @@ describe("mcpAddServer / mcpUpdateServer / mcpDeleteServer — success", () => {
       postMessage: () => {},
       settingsManager,
       getPanels: () => panels,
+      // updateConfigAtEffectiveScope is mocked, so the store holds the value the write would have left
+      platform: createFakePlatform({ settings: { user: { "damocles.mcp.enabled": false } } }),
     } as unknown as HandlerDependencies);
 
     await handlers[msg.type]!(msg, panels.get("panel-1") as HandlerContext);

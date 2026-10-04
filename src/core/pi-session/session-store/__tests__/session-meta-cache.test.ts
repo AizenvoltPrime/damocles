@@ -200,6 +200,23 @@ describe('session metadata cache', () => {
     expect(vi.mocked(log).mock.calls.some(([msg]) => String(msg).includes('rebuilding'))).toBe(true);
   });
 
+  // A schema-2 cache holds rows written before `StoredSession.model` existed; serving one would hide the model for good.
+  it('does not serve rows a schema-2 cache wrote, so a listed session carries its model', async () => {
+    const file = writeSessionFile('first');
+    fs.appendFileSync(file, line({ type: 'message', id: 'a1', parentId: 'u1', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }], provider: 'anthropic', model: 'claude-opus-4-8', timestamp: 0 } }));
+    fs.utimesSync(file, PINNED_MTIME, PINNED_MTIME);
+    expect((await listPiSessions(CWD))[0]?.model).toEqual({ provider: 'anthropic', id: 'claude-opus-4-8' });
+    flushSessionMetaCache();
+
+    const sessionCacheFile = cacheFileFor(ensurePiSessionDir(CWD), '1.0.0');
+    const doc = JSON.parse(fs.readFileSync(sessionCacheFile, 'utf8')) as { entries: Record<string, SessionMetaEntry> };
+    for (const cached of Object.values(doc.entries)) if (cached.stored) delete cached.stored.model;
+    fs.writeFileSync(sessionCacheFile, JSON.stringify({ ...doc, schema: 2 }));
+    resetSessionMetaCacheMemory();
+
+    expect((await listPiSessions(CWD))[0]?.model).toEqual({ provider: 'anthropic', id: 'claude-opus-4-8' });
+  });
+
   it('a dir loads and writes only its own entries from a cache file a same-named dir shares', () => {
     const otherFile = path.join(SESSION_META_CACHE_DIR, '..', '..', 'meta-cache-test-other', '--work-alpha--', '0_c.jsonl');
     setSessionMeta(otherFile, entry(3, 3));

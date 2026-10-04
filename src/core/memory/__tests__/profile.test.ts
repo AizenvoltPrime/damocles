@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { createTestMemoryDb } from './test-helpers';
+import { createTestDbPath, createTestMemoryDb } from './test-helpers';
 import { ProfileManager, PROFILE_SYSTEM_PROMPT, isUserProfileShape, truncateAtBoundary } from '../managers/profile-manager';
 import { USEFULNESS_RUBRIC } from '../rubric';
 import { estimateTokens } from '../token-estimate';
@@ -341,19 +337,12 @@ describe('MemoryService.setProfileSection boolean contract', () => {
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-profile-t10-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   it('returns true when the upsert commits, and the section is readable back', async () => {

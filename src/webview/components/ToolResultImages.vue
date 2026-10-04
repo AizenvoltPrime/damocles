@@ -67,7 +67,7 @@ onUnmounted(() => {
       <div
         v-for="index in imageCount"
         :key="`placeholder-${index}`"
-        class="w-40 h-28 rounded-md bg-muted animate-pulse"
+        class="w-40 h-28 rounded-md bg-muted d-pulsing"
         data-testid="tool-result-image-placeholder"
       />
     </div>

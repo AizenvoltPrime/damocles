@@ -2,17 +2,9 @@
 import { computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import {
-  IconPaperPlane,
-  IconCheck,
-  IconXCircle,
-  IconBan,
-  IconClock,
-  IconInfo,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { Ban, CircleCheck, CircleX, Clock, Info, Send } from 'lucide-vue-next';
+import ToolCardFrame from './ToolCardFrame.vue';
+import ToolCardNote from './ToolCardNote.vue';
 import { useSubagentStore } from '@/stores';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
@@ -66,23 +58,19 @@ interface StatusView {
 const statusView = computed<StatusView | null>(() => {
   switch (steerStatus.value) {
     case 'steered':
-      return { label: t('steerTool.delivered'), icon: IconCheck, colorClass: 'text-success' };
+      return { label: t('steerTool.delivered'), icon: CircleCheck, colorClass: 'text-(--d-success)' };
     case 'queued':
-      return { label: t('steerTool.queued'), icon: IconClock, colorClass: 'text-primary' };
+      return { label: t('steerTool.queued'), icon: Clock, colorClass: 'text-(--d-accent)' };
     case 'finished':
-      return { label: t('steerTool.alreadyFinished'), icon: IconInfo, colorClass: 'text-foreground/70' };
+      return { label: t('steerTool.alreadyFinished'), icon: Info, colorClass: 'text-(--d-muted)' };
     case 'failed':
-      return { label: t('steerTool.failed'), icon: IconXCircle, colorClass: 'text-error' };
+      return { label: t('steerTool.failed'), icon: CircleX, colorClass: 'text-(--d-danger)' };
     case 'not-found':
-      return { label: t('steerTool.notFound'), icon: IconBan, colorClass: 'text-error' };
+      return { label: t('steerTool.notFound'), icon: Ban, colorClass: 'text-(--d-danger)' };
     default:
       return null;
   }
 });
-
-// Spin only while the call is genuinely in flight — keying off `result === undefined` left abandoned/
-// denied calls (which never produce a result) spinning forever, unlike sibling tool cards.
-const isPending = computed(() => props.toolCall.status === 'pending' || props.toolCall.status === 'running');
 
 const formattedDuration = computed(() => {
   const ms = props.toolCall.durationMs;
@@ -96,50 +84,48 @@ const formattedDuration = computed(() => {
 </script>
 
 <template>
-  <Card class="text-sm overflow-hidden border-border">
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
-      <IconPaperPlane :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium truncate flex-1">{{ t('steerTool.title') }}</span>
-      <Badge
+  <ToolCardFrame
+    :icon="Send"
+    :name="t('steerTool.title')"
+    :arg="resolvedDescription"
+    :status="toolCall.status"
+    data-testid="steer-tool-card"
+  >
+    <template #meta>
+      <span
         v-if="displayAgentType"
-        variant="secondary"
-        class="bg-primary/30 text-primary border-primary/30 gap-1 shrink-0"
-      >
-        <span>{{ displayAgentType }}</span>
-      </Badge>
-    </CardHeader>
-
-    <CardContent class="px-3 py-2 space-y-2">
-      <div class="flex items-baseline gap-1.5 text-xs">
-        <span class="text-foreground/50 shrink-0">{{ t('steerTool.targetLabel') }}:</span>
-        <span class="text-foreground/90 truncate">{{ resolvedDescription }}</span>
-        <span class="text-foreground/40 shrink-0 font-mono">{{ shortId }}</span>
-      </div>
-
-      <div class="text-xs">
-        <span class="text-foreground/50">{{ t('steerTool.messageLabel') }}:</span>
-        <p class="text-foreground/90 italic line-clamp-3 mt-0.5">"{{ input.message }}"</p>
-      </div>
-    </CardContent>
-
-    <div class="px-3 py-2 flex items-center justify-between border-t border-border/50 bg-foreground/5">
-      <div class="flex items-center gap-1.5 text-xs leading-none">
-        <template v-if="isPending">
-          <LoadingSpinner :size="14" class="text-primary" />
-        </template>
-        <template v-else-if="statusView">
-          <component :is="statusView.icon" :size="14" :class="statusView.colorClass" class="shrink-0" />
-          <span :class="statusView.colorClass">{{ statusView.label }}</span>
-        </template>
-        <template v-else>
-          <span class="text-foreground/70">{{ toolCall.result }}</span>
-        </template>
-      </div>
-
-      <div v-if="formattedDuration" class="flex items-center gap-1 text-xs text-foreground/50 shrink-0">
-        <IconClock :size="12" />
-        <span>{{ formattedDuration }}</span>
+        class="flex-none rounded-5 bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] px-1.5 py-px text-10.5 font-semibold text-(--d-info-text)"
+      >{{ displayAgentType }}</span>
+      <span class="flex-none font-mono text-10.5 text-(--d-faint)">{{ shortId }}</span>
+      <span
+        v-if="formattedDuration"
+        class="flex-none font-mono text-10.5 text-(--d-faint)"
+      >{{ formattedDuration }}</span>
+    </template>
+    <div class="flex justify-end border-t border-(--d-border) px-3 py-2">
+      <div class="max-w-[85%] rounded-[0.875rem_0.875rem_0.3125rem_0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_7%,transparent)] px-3 pt-2 pb-2.25">
+        <div class="mb-0.5 flex items-center gap-1.5 text-11 font-semibold text-(--d-warning-text)">
+          <Send
+            class="size-2.75"
+            aria-hidden="true"
+          />{{ t('steerTool.messageLabel') }}
+        </div>
+        <p class="line-clamp-3 text-12.5 whitespace-pre-wrap text-pretty">
+          {{ input.message }}
+        </p>
       </div>
     </div>
-  </Card>
+    <ToolCardNote
+      v-if="statusView"
+      :tone="statusView.colorClass"
+      :icon="statusView.icon"
+      :text="statusView.label"
+    />
+    <p
+      v-else-if="toolCall.result && toolCall.status !== 'pending' && toolCall.status !== 'running'"
+      class="border-t border-(--d-border) px-3 py-2 text-xs text-(--d-muted)"
+    >
+      {{ toolCall.result }}
+    </p>
+  </ToolCardFrame>
 </template>

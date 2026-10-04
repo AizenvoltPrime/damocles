@@ -689,6 +689,51 @@
         "default": "",
         "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
       },
+      "damocles.desktop.theme": {
+        "type": "string",
+        "enum": [
+          "system",
+          "dark",
+          "light"
+        ],
+        "enumDescriptions": [
+          "Follow the operating system.",
+          "Damocles Dark.",
+          "Damocles Light."
+        ],
+        "default": "system",
+        "description": "Color theme of the desktop app."
+      },
+      "damocles.desktop.reduceMotion": {
+        "type": "boolean",
+        "default": false,
+        "description": "Stop non-essential animation in the desktop app. The operating system's reduced-motion preference applies as well."
+      },
+      "damocles.desktop.language": {
+        "type": "string",
+        "enum": [
+          "system",
+          "en",
+          "el"
+        ],
+        "enumDescriptions": [
+          "Follow the operating system.",
+          "English.",
+          "Greek."
+        ],
+        "default": "system",
+        "description": "Display language of the desktop app. A change applies after a restart."
+      },
+      "damocles.desktop.restoreLayout": {
+        "type": "boolean",
+        "default": true,
+        "description": "Reopen the window layout and the chats that were open when the app last quit. When off, the app starts with the default layout and a new chat."
+      },
+      "damocles.desktop.notifications.enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Also show each in-app notification as an operating system notification while the window is not focused."
+      },
       "permissions": {
         "type": "object",
         "description": "Permission rules for Damocles tools. More specific files win: local over project over user.",
@@ -1405,6 +1450,36 @@
         ],
         "default": "",
         "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
+      },
+      "damocles.desktop.theme": {
+        "not": {},
+        "errorMessage": "damocles.desktop.theme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.theme applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nColor theme of the desktop app."
+      },
+      "damocles.desktop.reduceMotion": {
+        "not": {},
+        "errorMessage": "damocles.desktop.reduceMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.reduceMotion applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nStop non-essential animation in the desktop app. The operating system's reduced-motion preference applies as well."
+      },
+      "damocles.desktop.language": {
+        "not": {},
+        "errorMessage": "damocles.desktop.language applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.language applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nDisplay language of the desktop app. A change applies after a restart."
+      },
+      "damocles.desktop.restoreLayout": {
+        "not": {},
+        "errorMessage": "damocles.desktop.restoreLayout applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.restoreLayout applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nReopen the window layout and the chats that were open when the app last quit. When off, the app starts with the default layout and a new chat."
+      },
+      "damocles.desktop.notifications.enabled": {
+        "not": {},
+        "errorMessage": "damocles.desktop.notifications.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.notifications.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAlso show each in-app notification as an operating system notification while the window is not focused."
       },
       "permissions": {
         "type": "object",

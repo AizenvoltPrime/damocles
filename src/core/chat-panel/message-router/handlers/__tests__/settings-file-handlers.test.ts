@@ -18,7 +18,7 @@ describe('settings file handlers', () => {
       const panelDisposables: Disposable[] = [];
       const subscriptions: Disposable[] = [];
       const posted: unknown[] = [];
-      const handlers = createSettingsFileHandlers({
+      const { handlers } = createSettingsFileHandlers({
         platform,
         subscriptions,
         postMessage: (_host: unknown, message: unknown) => { posted.push(message); },
@@ -47,7 +47,7 @@ describe('settings file handlers', () => {
     const platform = createFakePlatform({ capabilities: { settingsSources: true }, trusted: false, settings: { scopeFiles: { user: path.join(os.tmpdir(), 'unused.json') } } });
     const panelDisposables: Disposable[] = [];
     const posted: unknown[] = [];
-    const handlers = createSettingsFileHandlers({
+    const { postAvailability } = createSettingsFileHandlers({
       platform,
       subscriptions: [],
       postMessage: (_host: unknown, message: unknown) => { posted.push(message); },
@@ -55,8 +55,8 @@ describe('settings file handlers', () => {
     } as unknown as HandlerDependencies);
     const ctx = { host: {}, panelId: 'p1' } as unknown as HandlerContext;
 
-    void handlers.getSettingsFileAvailability!({ type: 'getSettingsFileAvailability' }, ctx);
-    void handlers.getSettingsFileAvailability!({ type: 'getSettingsFileAvailability' }, ctx);
+    postAvailability(ctx);
+    postAvailability(ctx);
     expect(panelDisposables).toHaveLength(1);
 
     panelDisposables[0]!.dispose();

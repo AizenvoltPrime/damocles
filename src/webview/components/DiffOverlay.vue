@@ -2,12 +2,14 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
-import { IconPencilSquare, IconPencil } from '@/components/icons';
+import { FilePen, FilePlus } from 'lucide-vue-next';
 import DiffView from './DiffView.vue';
 import OverlayShell from './OverlayShell.vue';
-import { computeDiff, computeNewFileOnlyDiff } from '@/utils/parseUnifiedDiff';
+import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
+import { buildFileDiff } from '@/utils/parseUnifiedDiff';
 
 const { t } = useI18n();
+const relativePath = useFolderRelativePath();
 
 const props = defineProps<{
   diff: ExpandedDiff;
@@ -22,43 +24,54 @@ const fileName = computed(() => {
   return parts[parts.length - 1] || props.diff.filePath;
 });
 
-const diffStats = computed(() => {
-  const result = props.diff.isNewFile || !props.diff.oldContent
-    ? computeNewFileOnlyDiff(props.diff.newContent)
-    : computeDiff(props.diff.oldContent, props.diff.newContent);
+const fileDiff = computed(() => buildFileDiff(props.diff.source));
 
-  return result.stats;
-});
-
-const toolIcon = computed(() => props.diff.isNewFile ? IconPencil : IconPencilSquare);
-const toolName = computed(() => props.diff.isNewFile ? t('diffOverlay.write') : t('diffOverlay.edit'));
+const toolIcon = computed(() => props.diff.tool === 'Write' ? FilePlus : FilePen);
+const toolName = computed(() => props.diff.tool === 'Write' ? t('diffOverlay.write') : t('diffOverlay.edit'));
 </script>
 
 <template>
   <OverlayShell
-    :title="diff.filePath"
+    max-width="62.5rem"
+    :title="relativePath(diff.filePath)"
     title-class="font-mono"
     :icon="toolIcon"
-    icon-class="text-primary"
+    data-testid="diff-overlay"
     @close="emit('close')"
   >
     <template #subtitle>
       <div class="flex items-center gap-1.5">
         <span>{{ toolName }}</span>
-        <span class="text-muted-foreground/50">&bull;</span>
-        <span>{{ fileName }}</span>
-        <span v-if="diffStats.added > 0" class="text-success">+{{ diffStats.added }}</span>
-        <span v-if="diffStats.removed > 0" class="text-error">-{{ diffStats.removed }}</span>
+        <span class="text-(--d-faint)">&bull;</span>
+        <span
+          class="truncate font-mono"
+          :title="diff.filePath"
+        >{{ fileName }}</span>
       </div>
     </template>
 
-    <DiffView
-      :old-content="diff.oldContent"
-      :new-content="diff.newContent"
-      :file-name="diff.filePath"
-      :is-new-file="diff.isNewFile"
-      :show-header="false"
-      max-height="none"
-    />
+    <template
+      v-if="!fileDiff.omitted"
+      #header-actions
+    >
+      <span
+        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-success-text)"
+        data-testid="diff-overlay-added"
+      >+{{ fileDiff.stats.added }}</span>
+      <span
+        class="flex-none rounded-full bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] px-2 font-mono text-11/5 text-(--d-danger-text)"
+        data-testid="diff-overlay-removed"
+      >−{{ fileDiff.stats.removed }}</span>
+    </template>
+
+    <div class="px-4 pt-3 pb-4">
+      <div class="overflow-hidden rounded-lg border border-(--d-border) bg-(--d-code)">
+        <DiffView
+          :diff="fileDiff"
+          :file-name="diff.filePath"
+          max-height="none"
+        />
+      </div>
+    </div>
   </OverlayShell>
 </template>

@@ -3,10 +3,9 @@ import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { AcceptableValue } from 'reka-ui';
-import { ListChecks, TriangleAlert, Info, RefreshCw } from 'lucide-vue-next';
+import { ShieldCheck, TriangleAlert, Info, RefreshCw } from 'lucide-vue-next';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Progress } from '@/components/ui/progress';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import OverlayShell from '../OverlayShell.vue';
 import LoadingSpinner from '../LoadingSpinner.vue';
@@ -177,59 +176,71 @@ function confirmRevert(): void {
 
 <template>
   <OverlayShell
+    data-testid="memory-audit-overlay"
     :title="t('memoryAudit.title')"
     :subtitle="t('memoryAudit.subtitle')"
-    :icon="ListChecks"
-    icon-class="text-primary"
+    :icon="ShieldCheck"
     @close="emit('close')"
   >
-    <div class="@container p-4 space-y-4">
+    <div class="@container flex flex-col gap-3 px-4.5 pt-4 pb-5">
       <div
         v-if="error"
         role="alert"
-        class="flex items-start gap-2 rounded-md border border-destructive/50 p-3 text-xs text-destructive"
+        class="flex items-start gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-danger)_50%,transparent)] p-3 text-xs text-(--d-danger)"
         data-audit-error
       >
-        <TriangleAlert :size="14" class="shrink-0 mt-0.5" />
-        <span class="break-words">{{ t(`memoryAudit.error.${error}`) }}</span>
+        <TriangleAlert class="size-3.5 shrink-0 mt-0.5" />
+        <span class="wrap-break-word">{{ t(`memoryAudit.error.${error}`) }}</span>
       </div>
 
-      <p v-if="resultText" role="status" class="text-xs text-muted-foreground" data-audit-result>{{ resultText }}</p>
-      <p v-if="cancelResult === 'held-elsewhere'" role="status" class="text-xs text-warning" data-audit-cancel-held>
+      <p v-if="resultText" role="status" class="text-xs text-(--d-muted)" data-audit-result>{{ resultText }}</p>
+      <p v-if="cancelResult === 'held-elsewhere'" role="status" class="text-xs text-(--d-warning)" data-audit-cancel-held>
         {{ t('memoryAudit.cancelHeldElsewhere') }}
       </p>
 
       <div
         v-if="heldElsewhere"
-        class="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
+        class="flex items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] p-3 text-xs"
         data-audit-held
       >
-        <Info :size="14" class="shrink-0 text-warning" />
+        <Info class="size-3.5 shrink-0 text-(--d-warning)" />
         <span class="flex-1">{{ t('memoryAudit.heldElsewhere') }}</span>
         <Button variant="outline" size="sm" class="h-6 text-xs shrink-0" data-audit-refresh @click="store.requestState()">
-          <RefreshCw :size="12" class="mr-1" />{{ t('memoryAudit.refresh') }}
+          <RefreshCw class="size-3 mr-1" />{{ t('memoryAudit.refresh') }}
         </Button>
       </div>
 
       <div
         v-if="state === null && !error"
-        class="flex items-center justify-center gap-2 py-12 text-xs text-muted-foreground"
+        class="flex items-center justify-center gap-2 py-12 text-xs text-(--d-muted)"
         data-audit-loading
       >
-        <LoadingSpinner :size="16" />{{ t('memoryAudit.loading') }}
+        <LoadingSpinner class="size-4" />{{ t('memoryAudit.loading') }}
       </div>
 
       <template v-else-if="state">
         <section
           v-if="liveRun"
-          class="space-y-2 rounded-md border border-border/50 bg-card p-3"
+          class="space-y-2 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5"
           data-audit-progress
         >
-          <h3 class="text-xs font-medium">{{ t('memoryAudit.progress.title') }}</h3>
-          <Progress :model-value="progressPercent" class="h-2" />
-          <div class="flex items-center gap-2 text-xs text-muted-foreground">
+          <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">{{ t('memoryAudit.progress.title') }}</h3>
+          <div
+            class="h-1.5 overflow-hidden rounded-full bg-(--d-hover)"
+            role="progressbar"
+            :aria-label="t('memoryAudit.progress.title')"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="progressPercent"
+          >
+            <div
+              class="h-full origin-left rounded-full bg-(--d-accent) transition-transform duration-300 ease-out rtl:origin-right"
+              :style="{ transform: `scaleX(${progressPercent / 100})` }"
+            />
+          </div>
+          <div class="flex items-center gap-2 text-xs text-(--d-muted)">
             <span data-audit-progress-count>{{ t('memoryAudit.progress.count', { graded: count(liveRun.graded), total: count(liveRun.total) }) }}</span>
-            <span v-if="liveRun.failedBatches > 0" class="text-warning" data-audit-progress-failed>
+            <span v-if="liveRun.failedBatches > 0" class="text-(--d-warning)" data-audit-progress-failed>
               {{ t('memoryAudit.progress.failed', { n: liveRun.failedBatches }, liveRun.failedBatches) }}
             </span>
             <Button
@@ -247,44 +258,57 @@ function confirmRevert(): void {
 
         <section
           v-else-if="estimate"
-          class="space-y-3 rounded-md border border-border/50 bg-card p-3"
+          class="flex flex-col gap-3"
           data-audit-estimate
         >
-          <h3 class="text-xs font-medium">{{ t('memoryAudit.estimate.title') }}</h3>
-          <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-            <dt class="text-muted-foreground">{{ t('memoryAudit.estimate.memories') }}</dt>
-            <dd data-estimate="memories">{{ count(estimate.memoryCount) }}</dd>
-            <dt class="text-muted-foreground">{{ t('memoryAudit.estimate.profiles') }}</dt>
-            <dd data-estimate="profiles">{{ count(estimate.profileCount) }}</dd>
-            <dt class="text-muted-foreground">{{ t('memoryAudit.estimate.inputTokens') }}</dt>
-            <dd data-estimate="input-tokens">{{ tokens(estimate.inputTokens) }}</dd>
-            <dt class="text-muted-foreground">{{ t('memoryAudit.estimate.outputTokens') }}</dt>
-            <dd data-estimate="output-tokens">{{ tokens(estimate.outputTokens) }}</dd>
-            <dt class="text-muted-foreground">{{ t('memoryAudit.estimate.model') }}</dt>
-            <dd class="truncate" data-estimate="model">
-              {{ estimate.model ? `${estimate.model.provider}/${estimate.model.id}` : t('memoryAudit.estimate.noModelShort') }}
-            </dd>
-            <template v-if="estimate.model && (estimate.unpriced || estimate.costUsd !== null)">
-              <dt class="text-muted-foreground" data-estimate="cost-label">
+          <h3 class="text-11 font-semibold tracking-[.07em] text-(--d-faint) uppercase">{{ t('memoryAudit.estimate.title') }}</h3>
+          <dl class="flex flex-wrap gap-px overflow-hidden rounded-lg border border-(--d-border) bg-(--d-border)">
+            <div class="flex min-w-0 flex-[1_1_8rem] flex-col bg-(--d-bg) px-2.75 pt-2.25 pb-2">
+              <dt class="truncate text-11 text-(--d-muted)">{{ t('memoryAudit.estimate.memories') }}</dt>
+              <dd class="mt-0.5 font-mono text-[1.0625rem] font-semibold tabular-nums" data-estimate="memories">{{ count(estimate.memoryCount) }}</dd>
+            </div>
+            <div class="flex min-w-0 flex-[1_1_8rem] flex-col bg-(--d-bg) px-2.75 pt-2.25 pb-2">
+              <dt class="truncate text-11 text-(--d-muted)">{{ t('memoryAudit.estimate.profiles') }}</dt>
+              <dd class="mt-0.5 font-mono text-[1.0625rem] font-semibold tabular-nums" data-estimate="profiles">{{ count(estimate.profileCount) }}</dd>
+            </div>
+            <div class="flex min-w-0 flex-[1_1_8rem] flex-col bg-(--d-bg) px-2.75 pt-2.25 pb-2">
+              <dt class="truncate text-11 text-(--d-muted)">{{ t('memoryAudit.estimate.inputTokens') }}</dt>
+              <dd class="mt-0.5 font-mono text-[1.0625rem] font-semibold tabular-nums" data-estimate="input-tokens">{{ tokens(estimate.inputTokens) }}</dd>
+            </div>
+            <div class="flex min-w-0 flex-[1_1_8rem] flex-col bg-(--d-bg) px-2.75 pt-2.25 pb-2">
+              <dt class="truncate text-11 text-(--d-muted)">{{ t('memoryAudit.estimate.outputTokens') }}</dt>
+              <dd class="mt-0.5 font-mono text-[1.0625rem] font-semibold tabular-nums" data-estimate="output-tokens">{{ tokens(estimate.outputTokens) }}</dd>
+            </div>
+            <div
+              v-if="estimate.model && (estimate.unpriced || estimate.costUsd !== null)"
+              class="flex min-w-0 flex-[1_1_8rem] flex-col bg-(--d-bg) px-2.75 pt-2.25 pb-2"
+            >
+              <dt class="truncate text-11 text-(--d-muted)" data-estimate="cost-label">
                 {{ estimate.model.dollarBilled ? t('memoryAudit.estimate.cost') : t('memoryAudit.estimate.costApiEquivalent') }}
               </dt>
-              <dd v-if="estimate.unpriced" data-estimate="cost" :title="t('common.unpricedTooltip')">{{ t('common.unpriced') }}</dd>
-              <dd v-else-if="estimate.costUsd !== null" data-estimate="cost" :title="costTitle(estimate.model.dollarBilled)">
+              <dd v-if="estimate.unpriced" class="mt-0.5 font-mono text-[1.0625rem] font-semibold" data-estimate="cost" :title="t('common.unpricedTooltip')">{{ t('common.unpriced') }}</dd>
+              <dd v-else-if="estimate.costUsd !== null" class="mt-0.5 font-mono text-[1.0625rem] font-semibold tabular-nums" data-estimate="cost" :title="costTitle(estimate.model.dollarBilled)">
                 {{ costLabel(estimate.costUsd, estimate.model.dollarBilled) }}
               </dd>
-            </template>
+            </div>
           </dl>
-          <p v-if="estimate.model === null" class="text-xs text-warning" data-audit-no-model>
+          <div class="flex min-w-0 items-center gap-2 text-xs">
+            <span class="text-(--d-faint)">{{ t('memoryAudit.estimate.model') }}</span>
+            <span class="min-w-0 truncate rounded-5 bg-(--d-hover) px-1.5 font-mono text-11.5 text-(--d-muted)" data-estimate="model">
+              {{ estimate.model ? `${estimate.model.provider}/${estimate.model.id}` : t('memoryAudit.estimate.noModelShort') }}
+            </span>
+          </div>
+          <p v-if="estimate.model === null" class="text-xs text-(--d-warning)" data-audit-no-model>
             {{ t('memoryAudit.estimate.noModel') }}
           </p>
-          <p v-else-if="estimate.memoryCount + estimate.profileCount === 0" class="text-xs text-muted-foreground">
+          <p v-else-if="estimate.memoryCount + estimate.profileCount === 0" class="text-xs text-(--d-muted)">
             {{ t('memoryAudit.estimate.nothing') }}
           </p>
-          <p class="text-xs text-muted-foreground">{{ t('memoryAudit.estimate.note') }}</p>
+          <p class="text-xs text-(--d-muted)">{{ t('memoryAudit.estimate.note') }}</p>
           <div
             v-if="confirmingStart"
             role="alert"
-            class="space-y-2 rounded-md border border-warning/40 bg-warning/10 p-2 text-xs"
+            class="space-y-2 rounded-md border border-[color-mix(in_srgb,var(--d-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] p-2 text-xs"
             data-audit-start-prompt
           >
             <p>{{ t('memoryAudit.estimate.confirmNew') }}</p>
@@ -302,16 +326,16 @@ function confirmRevert(): void {
           </Button>
         </section>
 
-        <p v-if="run && !liveRun" class="text-xs text-muted-foreground" data-audit-run-summary>
+        <p v-if="run && !liveRun" class="text-xs text-(--d-muted)" data-audit-run-summary>
           {{ t('memoryAudit.runSummary', { status: t(`memoryAudit.runStatus.${run.status}`), graded: count(run.graded), total: count(run.total) }) }}
-          <span v-if="run.failedBatches > 0" class="text-warning">
+          <span v-if="run.failedBatches > 0" class="text-(--d-warning)">
             {{ t('memoryAudit.progress.failed', { n: run.failedBatches }, run.failedBatches) }}
           </span>
         </p>
 
         <p
           v-if="run && !liveRun && run.status !== 'running' && proposals.length === 0"
-          class="text-xs text-muted-foreground"
+          class="text-xs text-(--d-muted)"
           data-audit-no-proposals
         >
           {{ t('memoryAudit.review.empty') }}
@@ -348,7 +372,7 @@ function confirmRevert(): void {
                   {{ t(`memoryAudit.decision.${d}`) }}
                 </ToggleGroupItem>
               </ToggleGroup>
-              <span v-if="groupDecision(group.pendingIds) === 'mixed'" class="text-xs text-muted-foreground" data-audit-group-mixed>
+              <span v-if="groupDecision(group.pendingIds) === 'mixed'" class="text-xs text-(--d-muted)" data-audit-group-mixed>
                 {{ t('memoryAudit.decision.mixed') }}
               </span>
             </template>
@@ -357,13 +381,13 @@ function confirmRevert(): void {
           <div
             v-for="p in group.items"
             :key="p.id"
-            class="space-y-1 rounded-md border border-border/50 bg-card p-2"
+            class="space-y-1 rounded-md border border-(--d-border) bg-(--d-card) p-2"
             :data-audit-proposal="p.id"
             :data-status="p.status"
           >
             <div class="flex items-center gap-1.5 flex-wrap">
               <Badge v-if="p.kind" variant="secondary" class="h-4 px-1.5 text-xs">{{ kindLabel(p.kind) }}</Badge>
-              <span class="text-xs font-medium break-words">{{ rowLabel(p) }}</span>
+              <span class="text-xs font-medium wrap-break-word">{{ rowLabel(p) }}</span>
               <Badge
                 v-if="p.status !== 'pending'"
                 variant="outline"
@@ -374,19 +398,22 @@ function confirmRevert(): void {
                 {{ t(`memoryAudit.status.${p.status}`) }}
               </Badge>
             </div>
-            <p v-if="p.title && p.contentPreview" class="text-xs text-muted-foreground line-clamp-3 break-words">
+            <p v-if="p.title && p.contentPreview" class="text-xs text-(--d-muted) line-clamp-3 wrap-break-word">
               {{ p.contentPreview }}
             </p>
-            <p class="text-xs text-violet-400/80 italic break-words" data-audit-reason>
+            <p
+              class="text-xs text-(--d-info) italic wrap-break-word"
+              data-audit-reason
+            >
               {{ t('memoryAudit.review.reason', { reason: p.reason }) }}
             </p>
-            <p v-if="p.action !== 'profile_rewrite'" class="text-xs text-muted-foreground" data-audit-change>
+            <p v-if="p.action !== 'profile_rewrite'" class="text-xs text-(--d-muted)" data-audit-change>
               <span :title="p.currentWorkspace ?? undefined">{{ scopeLabel(p.currentScope, p.currentWorkspace) }}</span>
               <span aria-hidden="true"> → </span>
               <span class="sr-only">{{ t('memoryAudit.review.becomes') }}</span>
-              <span class="text-foreground" :title="p.targetWorkspace ?? undefined">{{ proposedLabel(p) }}</span>
+              <span class="text-(--d-text)" :title="p.targetWorkspace ?? undefined">{{ proposedLabel(p) }}</span>
             </p>
-            <p v-if="p.status === 'stale'" class="text-xs text-warning">{{ t('memoryAudit.review.staleHint') }}</p>
+            <p v-if="p.status === 'stale'" class="text-xs text-(--d-warning)">{{ t('memoryAudit.review.staleHint') }}</p>
             <div
               v-if="p.action === 'profile_rewrite' && p.profileBefore && p.profileAfter"
               class="space-y-2"
@@ -397,17 +424,17 @@ function confirmRevert(): void {
                 :key="section"
                 class="space-y-1"
               >
-                <p class="text-xs font-medium text-muted-foreground">{{ t(`memoryAudit.profile.${section}`) }}</p>
+                <p class="text-xs font-medium text-(--d-muted)">{{ t(`memoryAudit.profile.${section}`) }}</p>
                 <div class="grid grid-cols-1 @md:grid-cols-2 gap-2">
-                  <div class="rounded border border-border/40 p-1.5">
-                    <p class="text-xs text-muted-foreground/70 mb-0.5">{{ t('memoryAudit.profile.before') }}</p>
-                    <p class="text-xs whitespace-pre-wrap break-words" :data-profile-before="section">
+                  <div class="rounded border border-(--d-border) p-1.5">
+                    <p class="text-xs text-(--d-faint) mb-0.5">{{ t('memoryAudit.profile.before') }}</p>
+                    <p class="text-xs whitespace-pre-wrap wrap-break-word" :data-profile-before="section">
                       {{ p.profileBefore[section] || t('memoryAudit.profile.empty') }}
                     </p>
                   </div>
-                  <div class="rounded border border-primary/30 p-1.5">
-                    <p class="text-xs text-muted-foreground/70 mb-0.5">{{ t('memoryAudit.profile.after') }}</p>
-                    <p class="text-xs whitespace-pre-wrap break-words" :data-profile-after="section">
+                  <div class="rounded border border-[color-mix(in_srgb,var(--d-accent)_30%,transparent)] p-1.5">
+                    <p class="text-xs text-(--d-faint) mb-0.5">{{ t('memoryAudit.profile.after') }}</p>
+                    <p class="text-xs whitespace-pre-wrap wrap-break-word" :data-profile-after="section">
                       {{ p.profileAfter[section] || t('memoryAudit.profile.empty') }}
                     </p>
                   </div>
@@ -444,7 +471,7 @@ function confirmRevert(): void {
     <template #footer>
       <div
         v-if="run && !liveRun && (pending.length > 0 || appliedCount > 0)"
-        class="flex flex-wrap items-center gap-2 border-t border-border/30 px-4 py-3 shrink-0"
+        class="flex flex-wrap items-center gap-2 border-t border-(--d-border) px-4 py-3 shrink-0"
       >
         <template v-if="confirmingRevert">
           <span class="flex-1 text-xs" data-audit-revert-prompt>{{ t('memoryAudit.revert.confirm', { n: appliedCount }, appliedCount) }}</span>
@@ -456,7 +483,7 @@ function confirmRevert(): void {
           </Button>
         </template>
         <template v-else>
-          <span v-if="pending.length > 0" class="flex-1 text-xs text-muted-foreground" data-audit-apply-summary>
+          <span v-if="pending.length > 0" class="flex-1 text-xs text-(--d-muted)" data-audit-apply-summary>
             {{ t('memoryAudit.apply.summary', { accept: count(acceptIds.length), reject: count(rejectIds.length), undecided: count(undecidedCount) }) }}
           </span>
           <span v-else class="flex-1" />

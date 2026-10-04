@@ -1,9 +1,9 @@
 import type { MemoryScope } from '@shared/types/memory';
 
 const SCOPE_BADGE_CLASS: Record<MemoryScope, string> = {
-  session: 'border-info/40 text-info',
-  project: 'border-primary/40 text-primary',
-  global: 'border-success/40 text-success',
+  session: 'border-info/40 text-(--d-info-text)',
+  project: 'border-primary/40 text-(--d-accent-text)',
+  global: 'border-success/40 text-(--d-success-text)',
 };
 
 export function scopeBadgeClass(scope: MemoryScope): string {

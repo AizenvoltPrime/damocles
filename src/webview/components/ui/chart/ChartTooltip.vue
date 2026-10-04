@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
+interface TooltipItem {
+  name: string
+  color: string
+  value: string | number
+}
+
 defineProps<{
   title?: string
-  data: {
-    name: string
-    color: string
-    value: string | number
-  }[]
+  data: TooltipItem[]
+}>()
+
+defineSlots<{
+  icon?: (props: { item: TooltipItem, index: number }) => unknown
 }>()
 </script>
 
@@ -18,10 +24,11 @@ defineProps<{
         {{ title }}
       </CardTitle>
     </CardHeader>
-    <CardContent class="flex min-w-[160px] flex-col gap-1 px-2.5 py-1.5">
-      <div v-for="(item, key) in data" :key="key" class="flex justify-between gap-4">
+    <CardContent class="flex min-w-40 flex-col gap-1 px-2.5 py-1.5">
+      <div v-for="(item, index) in data" :key="index" class="flex justify-between gap-4">
         <div class="flex min-w-0 items-center gap-1.5">
           <span class="size-2.5 shrink-0 rounded-sm" :style="{ backgroundColor: item.color }" />
+          <slot name="icon" :item="item" :index="index" />
           <span class="truncate">{{ item.name }}</span>
         </div>
         <span class="font-semibold tabular-nums">{{ item.value }}</span>

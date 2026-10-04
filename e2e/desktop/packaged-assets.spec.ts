@@ -3,10 +3,14 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { asarFiles, readAsarHeader } from '../../scripts/asar-archive.mjs';
+import { DESKTOP_FONT_FILES, DESKTOP_FONT_LICENSES } from '../../src/desktop/main/desktop-fonts';
 import { mainLog } from './support/app';
-import { chatTab, expect, test } from './support/fixtures';
-import { seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
+import { activeChat, expect, test } from './support/fixtures';
+import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
+import { readyOverlay } from './support/overlay';
+import { packagedAppPath } from './support/packaged-app';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 
 // One file per bundled tree-sitter grammar whose extraction has no fallback, each defining a symbol named probe_<language>.
@@ -27,6 +31,23 @@ const GRAMMAR_SAMPLES: Record<string, string> = {
   'probe.php': '<?php\nfunction probe_php() { return 1; }\n',
   'Probe.vue': '<script setup lang="ts">\nfunction probe_vue(): number { return 1; }\n</script>\n',
 };
+
+// The overlay's preload and page, and the desktop fonts with their OFL texts, which ship only in the desktop build.
+const SHELL_FILES = [
+  'dist/desktop/preload-overlay.js',
+  'dist/desktop-shell/assets/overlay.js',
+  'dist/desktop-shell/assets/overlay.css',
+  ...[...DESKTOP_FONT_FILES, ...DESKTOP_FONT_LICENSES].map((file) => `dist/desktop-shell/fonts/${file.output}`),
+];
+
+/** The SHELL_FILES the app under test lacks: inside app.asar for a packaged app, else in the repo's build output. */
+function missingShellFiles(): string[] {
+  const executable = packagedAppPath();
+  if (executable === undefined) return SHELL_FILES.filter((file) => !fs.existsSync(path.join(REPO_ROOT, file)));
+  const resources = process.platform === 'darwin' ? path.join(path.dirname(executable), '..', 'Resources') : path.join(path.dirname(executable), 'resources');
+  const packed = new Set(asarFiles(readAsarHeader(path.join(resources, 'app.asar')).header).map((file: { path: string }) => file.path));
+  return SHELL_FILES.filter((file) => !packed.has(file));
+}
 
 // The only Damocles files userData may hold: window and tab state, the trust store, the project list, encrypted secrets and logs.
 const USER_DATA_JSON = new Set(['panels.json', 'projects.json', 'trusted-folders.json', 'secrets.json']);
@@ -90,7 +111,7 @@ function checkpointRepos(h: HermeticHome): string[] {
     .map((entry) => entry.parentPath);
 }
 
-test('bundled assets resolve: first window, pi chat, shell, ripgrep, git, compass grammars, usage stats worker, voice package, data home', async ({ home, launch }) => {
+test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripgrep, git, compass grammars, usage stats worker, voice package, data home', async ({ home, launch }) => {
   test.setTimeout(300_000);
   const stub = await startOpenAIStub();
   try {
@@ -100,9 +121,14 @@ test('bundled assets resolve: first window, pi chat, shell, ripgrep, git, compas
     for (const [name, source] of Object.entries(GRAMMAR_SAMPLES)) fs.writeFileSync(path.join(home.project, name), source);
 
     const { app } = await launch();
-    const tab = await chatTab(app);
+    const tab = await activeChat(app);
     await expect(chatInput(tab)).toBeVisible();
     await recordHostMessages(tab);
+
+    // The overlay page runs on its own preload, script and stylesheet; the fonts and their licences ship beside it.
+    expect(missingShellFiles()).toEqual([]);
+    const overlay = await readyOverlay(app);
+    await expect(overlay.getByTestId('overlay-toasts')).toHaveCSS('position', 'fixed');
 
     // pi against the stub, the shell tool (koffi job objects on Windows, the ELECTRON_RUN_AS_NODE sentinel elsewhere) and a write that git checkpoints.
     stub.replies.push({

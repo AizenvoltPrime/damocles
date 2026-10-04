@@ -33,51 +33,28 @@ import type { MessageHandlerOptions, HandlerContext, HandlerRegistry, StoreConte
 export type { MessageHandlerOptions } from "./types";
 
 /**
- * Runs each host message through `registry` and scrolls the transcript at most once per animation frame,
- * so a burst of messages costs one `scrollHeight` layout read.
+ * Runs each host message through `registry`. The transcript follows its own growth
+ * (`useStickToBottom`); a handler only asks it to follow again, for another session's transcript.
  */
 export function createMessageDispatcher(
   registry: HandlerRegistry,
   context: HandlerContext,
+  followTranscript: () => void,
 ): (message: ExtensionToWebviewMessage) => void {
-  const { streamingStore, uiStore } = context.stores;
-  let scrollFrame: number | null = null;
-  let forceScroll = false;
-  let followScroll = false;
-
-  function scrollOnce(): void {
-    scrollFrame = null;
-    const force = forceScroll;
-    const follow = followScroll;
-    forceScroll = false;
-    followScroll = false;
-    streamingStore.flushReplayQueue();
-    void nextTick(() => {
-      const container = context.refs.messageContainerRef.value;
-      // A follow re-checks isAtBottom, so a scroll-up between the message and the frame is kept.
-      if (container && (force || (follow && uiStore.isAtBottom))) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
-  }
+  const { streamingStore } = context.stores;
 
   return (message) => {
     // Handlers that read or truncate the transcript must see every replay item that arrived before them.
     if (!QUEUED_REPLAY_TYPES.has(message.type)) streamingStore.flushReplayQueue();
     const handler = registry[message.type];
     const result = handler?.(message as never, context);
-
-    if (result?.skipScroll) return;
-    if (result?.forceScrollToBottom) forceScroll = true;
-    else if (uiStore.isAtBottom) followScroll = true;
-    else return;
-    scrollFrame ??= requestAnimationFrame(scrollOnce);
+    if (result?.forceScrollToBottom) followTranscript();
   };
 }
 
 export function useMessageHandler(options: MessageHandlerOptions): void {
   const { postMessage, onMessage, setState, getState } = usePlatformBridge();
-  const { messageContainerRef, chatInputRef } = options;
+  const { chatInputRef, followTranscript } = options;
 
   const uiStore = useUIStore();
   const settingsStore = useSettingsStore();
@@ -133,13 +110,13 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
 
   const context: HandlerContext = {
     stores,
-    refs: { messageContainerRef, chatInputRef },
+    refs: { chatInputRef },
     bridge: { postMessage, getState, setState },
   };
 
   const registry = createHandlerRegistry();
 
-  const dispatch = createMessageDispatcher(registry, context);
+  const dispatch = createMessageDispatcher(registry, context, followTranscript);
 
   onMounted(() => {
     onMessage(dispatch);

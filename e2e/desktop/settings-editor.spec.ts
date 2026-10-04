@@ -1,9 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
-import { chatTab, expect, nextTab, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { writeUserSettings, type HermeticHome } from './support/hermetic';
-import { addProject, chatInput, postFromWebview } from './support/ui';
+import { addProject, chatInput } from './support/ui';
+import { editSettingsFile as editFromModal } from './support/settings';
 
 const SELECT_ALL = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 
@@ -20,18 +21,17 @@ async function replaceText(editor: Locator, text: string): Promise<void> {
 }
 
 async function openProject(app: ElectronApplication, h: HermeticHome): Promise<Page> {
-  const home = await chatTab(app);
+  const home = await activeChat(app);
   await expect(chatInput(home)).toBeVisible();
-  const opened = nextTab(app, [home]);
+  const opened = nextChat(app, [home]);
   await addProject(app, h.project, true);
   const tab = await opened;
   await expect(chatInput(tab)).toBeVisible();
   return tab;
 }
 
-async function openUserEditor(tab: Page): Promise<Locator> {
-  await tab.getByRole('button', { name: 'Settings', exact: true }).click();
-  await tab.getByTestId('settings-edit-json-user').click();
+async function openUserEditor(app: ElectronApplication, tab: Page): Promise<Locator> {
+  await editFromModal(app, 'user');
   const monaco = tab.getByTestId('settings-json-editor-monaco');
   await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');
   return monaco;
@@ -43,8 +43,8 @@ const THEIRS = '{\n  "damocles.maxTurns": 40,\n  "damocles.taskBudget": 5000\n}\
 const MERGED = '{\n  "damocles.maxTurns": 12,\n  "damocles.taskBudget": 5000\n}\n';
 
 /** Edits the user file in the editor, then lets another writer change it on disk, so the next save conflicts. */
-async function conflictingSave(tab: Page, userFile: string): Promise<Locator> {
-  const monaco = await openUserEditor(tab);
+async function conflictingSave(app: ElectronApplication, tab: Page, userFile: string): Promise<Locator> {
+  const monaco = await openUserEditor(app, tab);
   await expect(monaco.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
   await replaceText(monaco, MINE);
   await expect(tab.getByTestId('settings-json-editor')).toHaveAttribute('data-dirty', 'true');
@@ -61,10 +61,10 @@ test('settings editor conflict: Compare merges in an editable diff and saves ove
   writeUserSettings(home, { 'damocles.maxTurns': 40 });
   fs.writeFileSync(userFile, ORIGINAL);
   const { app } = await launch();
-  const tab = await chatTab(app);
+  const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
 
-  const conflict = await conflictingSave(tab, userFile);
+  const conflict = await conflictingSave(app, tab, userFile);
   expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
   await conflict.getByTestId('settings-json-compare').click();
 
@@ -89,14 +89,14 @@ test('settings editor conflict: Overwrite asks first, and only then saves the us
   writeUserSettings(home, { 'damocles.maxTurns': 40 });
   fs.writeFileSync(userFile, ORIGINAL);
   const { app } = await launch();
-  const tab = await chatTab(app);
+  const tab = await activeChat(app);
   await expect(chatInput(tab)).toBeVisible();
 
-  const conflict = await conflictingSave(tab, userFile);
+  const conflict = await conflictingSave(app, tab, userFile);
   await conflict.getByTestId('settings-json-overwrite').click();
   const confirm = tab.getByTestId('settings-json-overwrite-confirm');
   await expect(confirm).toBeVisible();
-  await expect(confirm).toContainText(userFile);
+  await expect(confirm.getByTestId('settings-json-overwrite-path')).toHaveText(userFile);
   await confirm.getByTestId('settings-json-overwrite-cancel').click();
   await expect(confirm).toBeHidden();
   expect(fs.readFileSync(userFile, 'utf8')).toBe(THEIRS);
@@ -117,19 +117,14 @@ test('settings editor: opening a settings file while the editor holds unsaved ed
   const tab = await openProject(app, home);
   const editor = tab.getByTestId('settings-json-editor');
 
-  const monaco = await openUserEditor(tab);
+  const monaco = await openUserEditor(app, tab);
   await expect(monaco.locator('.view-line', { hasText: 'damocles.maxTurns' })).toBeVisible();
   await replaceText(monaco, MINE);
   await expect(editor).toHaveAttribute('data-dirty', 'true');
-  // Focus stays in the editor overlay rather than on the Settings button beneath it.
   await expect.poll(() => tab.evaluate(() => document.querySelector('[data-testid="settings-json-editor"]')?.contains(document.activeElement) === true)).toBe(true);
 
-  // The host opens the Settings sheet over the editor; the same file brings the editor back as it was.
-  await postFromWebview(tab, { type: 'invokeSignIn' });
-  const returnButton = tab.getByTestId('settings-edit-json-user');
-  await expect(returnButton).toHaveText('Back to user settings.json');
-  await returnButton.click();
-  await expect(returnButton).toBeHidden();
+  // Settings opens over the editor; the same file brings the editor back as it was.
+  await editFromModal(app, 'user');
   await expect(editor).toHaveAttribute('data-scope', 'user');
   await expect(editor).toHaveAttribute('data-dirty', 'true');
   await expect(tab.getByText('Loading settings file...')).toBeHidden();
@@ -137,8 +132,7 @@ test('settings editor: opening a settings file while the editor holds unsaved ed
   await expect(tab.getByTestId('settings-json-save')).toBeEnabled();
 
   // Another file asks before discarding the edits, and keeping them keeps the editor.
-  await postFromWebview(tab, { type: 'invokeSignIn' });
-  await tab.getByTestId('settings-edit-json-project').click();
+  await editFromModal(app, 'project');
   const prompt = tab.getByTestId('settings-json-discard-prompt');
   await expect(prompt).toContainText('Open Project settings and discard your unsaved changes?');
   await tab.getByTestId('settings-json-keep-editing').click();
@@ -146,8 +140,7 @@ test('settings editor: opening a settings file while the editor holds unsaved ed
   await expect(editor).toHaveAttribute('data-scope', 'user');
   await expect(monaco.locator('.view-line', { hasText: '"damocles.maxTurns": 12' })).toBeVisible();
 
-  await postFromWebview(tab, { type: 'invokeSignIn' });
-  await tab.getByTestId('settings-edit-json-project').click();
+  await editFromModal(app, 'project');
   await tab.getByTestId('settings-json-discard').click();
   await expect(editor).toHaveAttribute('data-scope', 'project');
   await expect(monaco).toHaveAttribute('data-monaco-ready', 'true');

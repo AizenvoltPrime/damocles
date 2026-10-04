@@ -3,6 +3,7 @@ import type { DialogContentEmits, DialogContentProps } from "reka-ui"
 import type { HTMLAttributes } from "vue"
 import { reactiveOmit } from "@vueuse/core"
 import { X } from "lucide-vue-next"
+import { useI18n } from "vue-i18n"
 import {
   DialogClose,
   DialogContent,
@@ -12,6 +13,7 @@ import {
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { definedProps } from "@/lib/definedProps"
+import { usePopperZIndex } from "@/composables/useOverlayEscape"
 
 const props = withDefaults(
   defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean }>(),
@@ -22,18 +24,26 @@ const emits = defineEmits<DialogContentEmits>()
 const delegatedProps = reactiveOmit(props, "class", "showClose")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+const { t } = useI18n()
+
+// Portalled to `body`, so a dialog opened from an overlay must paint above it, as popper content does.
+const popperZIndex = usePopperZIndex()
 </script>
 
 <template>
   <DialogPortal>
     <DialogOverlay
-      class="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+      class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
+      :class="popperZIndex === undefined && 'z-50'"
+      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
     />
     <DialogContent
       v-bind="definedProps(forwarded)"
+      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
       :class="
         cn(
-          'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-xl',
+          popperZIndex === undefined && 'z-50',
+          'd-dialog fixed left-1/2 top-1/2 grid w-full max-w-lg -translate-1/2 gap-4 rounded-2xl border border-(--d-border2) bg-(--d-card) p-6 text-(--d-text) shadow-(--d-shadow)',
           props.class,
         )"
     >
@@ -41,10 +51,13 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
       <DialogClose
         v-if="props.showClose"
-        class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground cursor-pointer"
+        class="absolute right-3.5 top-3.5 flex size-7.5 items-center justify-center rounded-9 text-(--d-muted) transition-colors hover:bg-(--d-hover) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent) disabled:pointer-events-none"
       >
-        <X class="w-4 h-4" />
-        <span class="sr-only">Close</span>
+        <X
+          class="size-4"
+          aria-hidden="true"
+        />
+        <span class="sr-only">{{ t("overlay.close") }}</span>
       </DialogClose>
     </DialogContent>
   </DialogPortal>

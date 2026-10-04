@@ -73,10 +73,11 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
  *
  * HOW MUCH THE GATE BACKS THIS UP DEPENDS ON THE TOOL — do not read "defense in depth" as universal:
  *
- *  - Damocles-native write/shell (`Edit`, `write`, `bash`, `PowerShell`) ARE independently enforced.
- *    `runPermissionGate` blocks a non-plan-file Edit/Write and classifies every shell command whenever
- *    `isPlanMode()` is true, whatever this list contains. For these, the active set is genuinely a
- *    second layer and the bar for exclusion is "calling this while planning is always wrong".
+ *  - Damocles-native writes (`Edit`, `write`) ARE independently enforced: `runPermissionGate` blocks a
+ *    non-plan-file Edit/Write whenever `isPlanMode()` is true, whatever this list contains. The shell
+ *    (`bash`, `PowerShell`) is deliberately left active: a provably read-only command auto-runs and any
+ *    other goes through the normal approval flow, so the model can gather information. The bar for
+ *    exclusion is "calling this while planning is always wrong".
  *
  *  - Gateable MODULE tools (memory, compass, browser, team — `GATEABLE_MODULE_NAMES`) are NOT. Their
  *    branch in `runPermissionGate` returns BEFORE the plan-mode branch, so it auto-allows them in every
@@ -86,7 +87,7 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
  *
  * The browser tools are deliberately left ACTIVE. That is an accepted risk, not an oversight: plan mode
  * already permits side effects outside the workspace (every enabled MCP tool stays available, including
- * mutating ones), so its guarantee is "no unapproved workspace writes and no unapproved shell", not "no
+ * mutating ones), so its guarantee is "no Edit/Write outside the plan file and no unapproved shell", not "no
  * side effects anywhere". `BrowserEvaluate`, `BrowserUpload` and `BrowserIntercept` are the sharp edges
  * — arbitrary main-world JS against a live logged-in profile, an arbitrary local path to a remote
  * origin, and context-wide interception that reaches the human's own tabs. They are governed by the

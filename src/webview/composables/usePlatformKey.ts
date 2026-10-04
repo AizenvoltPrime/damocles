@@ -12,7 +12,7 @@ function detectIsMac(): boolean {
   return /mac/i.test(platform);
 }
 
-const isMac = typeof navigator !== 'undefined' && detectIsMac();
+export const isMac = typeof navigator !== 'undefined' && detectIsMac();
 
 export const META_KEY_LABEL = isMac ? '⌘' : 'Ctrl';
 

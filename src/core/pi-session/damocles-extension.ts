@@ -90,10 +90,10 @@ export interface CheckpointRegistryReader {
 export function createDamoclesExtensionFactory(
   registry: PanelRegistryReader,
   checkpoints: CheckpointRegistryReader,
-  registerMcpTools?: (pi: ExtensionAPI) => void,
   hooks?: HooksWiring,
-  /** Receives this instance's ToolSearch republisher and returns a disposer this instance owns. */
-  onToolSearchRepublish?: (republish: () => void) => () => void,
+  /** Attaches this instance (MCP tool registration, plus its ToolSearch republisher when the initial
+   *  publish succeeded) to the folder and returns the detach this instance owns. */
+  attachInstance?: (pi: ExtensionAPI, republishToolSearch: (() => void) | null) => () => void,
 ): ExtensionFactory {
   const hookDispatch: DispatchDeps | undefined = hooks
     ? { config: hooks.config, workspaceRoot: hooks.workspaceRoot, userHome: hooks.userHome }
@@ -111,17 +111,6 @@ export function createDamoclesExtensionFactory(
     // and `pi-session.ts:2545`), so deleting either of those leaves those sessions unpruned.
     registerTurnEndImagePruning(pi);
     registerAgentStartImageReconcile(pi);
-
-    // Register cached MCP tools (Phase 6). Re-runs on every reload (fresh runtime → fresh registry),
-    // so MCP tools survive `resourceLoader.reload()`; mid-session new tools are topped up via the
-    // captured `pi` handle the registrar keeps. Fail-soft: MCP must never break the gate/checkpoint hooks.
-    if (registerMcpTools) {
-      try {
-        registerMcpTools(pi);
-      } catch (err) {
-        log('[DamoclesExtension] MCP tool registration failed: %O', err);
-      }
-    }
 
     // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
     // (browser, compass, web, MCP). Registered here rather than in `buildCustomTools` because
@@ -156,43 +145,52 @@ export function createDamoclesExtensionFactory(
     // registering the SAME definition is the sanctioned way to ask for that refresh (it is what
     // `McpToolRegistrar` already relies on), and `_refreshToolRegistry` preserves the active set.
     //
-    // Retirement is deterministic and ownership-based: `onToolSearchRepublish` returns a disposer for
-    // exactly this instance's entry, called from its own `session_shutdown` below. Nothing infers
-    // deadness from a thrown `assertActive`. That handler is only reachable for an instance a session
-    // BINDS; a reload with no bind following it (compat-dir watcher, subscription-plugin swap) mints an
-    // instance that receives no session event, so `FolderRuntime` retires that one instead.
+    // Retirement is deterministic and ownership-based: `attachInstance` returns a detach for exactly
+    // this instance, called from its own `session_shutdown` below, which pi emits before it invalidates
+    // the instance. Nothing infers deadness from a thrown `assertActive`. That handler is only reachable
+    // for an instance a session BINDS; a reload with no bind following it (compat-dir watcher,
+    // subscription-plugin swap) mints an instance that receives no session event, so `FolderRuntime`
+    // retires that one instead.
     const republishToolSearch = (): void => pi.registerTool(toolSearch);
-    // Declared outside the try so the `session_shutdown` handler below can close over it: registration
-    // is conditional on the initial publish succeeding, but the teardown handler is not.
-    let disposeRepublisher: (() => void) | undefined;
+    let republisher: (() => void) | null = null;
     try {
-      // Fail-soft like the MCP block above — a registration failure must never break the permission
-      // gate. Only `registerTool` can throw here; building the definition cannot.
+      // Fail-soft: a registration failure must never break the permission gate. Only `registerTool`
+      // can throw here; building the definition cannot. A republisher whose first publish threw is not
+      // attached, or it would re-throw on every settings toggle.
       republishToolSearch();
-      disposeRepublisher = onToolSearchRepublish?.(republishToolSearch);
+      republisher = republishToolSearch;
     } catch (err) {
       log('[DamoclesExtension] ToolSearch registration failed: %O', err);
     }
+    // Declared outside the try so the `session_shutdown` handler below can close over it.
+    let detachInstance: (() => void) | undefined;
+    try {
+      // MCP tools register here, so they survive `resourceLoader.reload()` (fresh instance → fresh registry).
+      detachInstance = attachInstance?.(pi, republisher);
+    } catch (err) {
+      log('[DamoclesExtension] extension instance attach failed: %O', err);
+    }
 
-    // The republisher is the only thing this instance owns outright, so it is the only thing retired
-    // here. The event handlers stay registered: this instance is shared by the folder and a session shutdown
-    // says nothing about the other sessions bound to it, or about the one that binds it next.
+    // The attachment (MCP top-ups and the ToolSearch republisher) is the only thing this instance owns
+    // outright, so it is the only thing retired here. The event handlers stay registered: this instance
+    // is shared by the folder and a session shutdown says nothing about the other sessions bound to it,
+    // or about the one that binds it next.
     //
     // Retire on EVERY shutdown reason, `'reload'` INCLUDED — a deliberate divergence from the
     // observe-only handlers in `hooks/index.ts`, which skip `'reload'`. Do not "unify" them: skipping a
     // user's hook for an internal rebuild is right, but `resourceLoader.reload()` supersedes this
-    // instance without invalidating it, so its republisher would keep succeeding into an extension
+    // instance without invalidating it, so its attachment would keep succeeding into an extension
     // object no session references — never throwing, never prunable, invoked on every toggle forever.
     //
     // ACCEPTED WINDOW, do not add recovery machinery. That shutdown fires BEFORE the reload it precedes,
     // so if the reload then throws (it does git work for pinned packages) no replacement is minted and
-    // this panel runs on an unregistered instance — its menu frozen, silently, since `runMcpReload` only
+    // this panel runs on a detached instance — its menu frozen, silently, since `runMcpReload` only
     // logs. Accepted: it self-heals on the next successful reload and costs one stale menu line, not a
-    // broken tool. If ever observed, the fix is idempotent re-registration from `session_start`, guarded
-    // on `disposeRepublisher === undefined`.
+    // broken tool. If ever observed, the fix is idempotent re-attachment from `session_start`, guarded
+    // on `detachInstance === undefined`.
     pi.on('session_shutdown', () => {
-      disposeRepublisher?.();
-      disposeRepublisher = undefined;
+      detachInstance?.();
+      detachInstance = undefined;
     });
 
     pi.on('tool_call', async (event, ctx) => {

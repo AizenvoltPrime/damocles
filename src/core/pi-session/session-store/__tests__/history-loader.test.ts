@@ -144,6 +144,20 @@ describe('reconstructMessages — compaction', () => {
     expect((messages[1] as { content: string }).content).toBe('what did I ask so far');
   });
 
+  it('a session compacted more than once shows only the latest summary, as the live view does', () => {
+    const branch = [
+      userMsg('u1', 'first question'),
+      compactionEntry('c1', 'first summary'),
+      userMsg('u2', 'second question'),
+      compactionEntry('c2', 'second summary'),
+      userMsg('u3', 'third question'),
+    ];
+    const { messages } = reconstructMessages(branch);
+
+    expect(messages.map((m) => m.kind)).toEqual(['compaction', 'user']);
+    expect(messages[0]).toMatchObject({ summary: 'second summary', entryId: 'c2' });
+  });
+
   it('a session with no compaction is unaffected', () => {
     const branch = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
     const { messages } = reconstructMessages(branch);

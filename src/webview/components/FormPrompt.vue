@@ -3,9 +3,9 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Button } from '@/components/ui/button';
 import { IconLock } from '@/components/icons';
 import { useI18n } from 'vue-i18n';
+import { Bot, FormInput, SendHorizontal } from 'lucide-vue-next';
 import { useFormStore } from '@/stores/useFormStore';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { useQuestionStore } from '@/stores/useQuestionStore';
@@ -206,42 +206,59 @@ onBeforeUnmount(() => {
 });
 
 const nativeControlClass =
-  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+  'flex h-8.5 w-full rounded-[0.625rem] border border-(--d-border2) bg-(--d-input) px-2.75 text-12.5 text-(--d-text) placeholder:text-(--d-faint) focus-visible:border-(--d-accent) focus-visible:outline-none disabled:cursor-default disabled:opacity-50';
 </script>
 
 <template>
   <div
     v-if="visible && form"
     ref="rootRef"
-    class="border-t border-border bg-background"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
     role="region"
     :aria-label="t('form.ariaLabel')"
+    data-dock-prompt
+    data-testid="form-card"
     @keydown="onRootKeydown"
   >
-    <!-- Header with agent badge -->
-    <div v-if="hasAgentDescription" class="px-4 pt-2 flex items-center gap-2">
-      <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs bg-primary/20 text-primary border border-border">
-        <span class="text-primary">🤖</span>
-        {{ agentDescription }}
+    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
+      <span
+        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+        aria-hidden="true"
+      >
+        <FormInput class="size-3.5" />
       </span>
-    </div>
+      <div class="min-w-0 flex-1">
+        <div class="truncate font-semibold">
+          {{ form.title || t('form.ariaLabel') }}
+        </div>
+        <div
+          v-if="form.description"
+          class="text-xs text-pretty text-(--d-muted)"
+        >
+          {{ form.description }}
+        </div>
+      </div>
+      <span
+        v-if="hasAgentDescription"
+        class="flex min-w-0 items-center gap-1.5 truncate rounded-full bg-(--d-accent-soft) px-2 py-0.5 text-11 font-medium text-(--d-accent-text)"
+      >
+        <Bot
+          class="size-3 flex-none"
+          aria-hidden="true"
+        />
+        <span class="truncate">{{ agentDescription }}</span>
+      </span>
+    </header>
 
-    <!-- Title / description -->
-    <div v-if="form.title || form.description" class="px-4 pt-3 pb-1">
-      <div v-if="form.title" class="text-sm font-medium text-foreground">{{ form.title }}</div>
-      <div v-if="form.description" class="text-xs text-muted-foreground mt-0.5">{{ form.description }}</div>
-    </div>
-
-    <!-- Fields -->
-    <div class="px-4 py-3 space-y-3 max-h-[60vh] overflow-y-auto">
+    <div class="max-h-[60vh] space-y-3 overflow-y-auto px-3.5 py-3">
       <div v-for="field in fields" :key="field.id" class="flex flex-col gap-1">
         <label
           :for="field.type === 'radio' ? undefined : `form-field-${field.id}`"
-          class="text-xs font-medium text-foreground/90 flex items-center gap-1.5"
+          class="flex items-center gap-1.5 text-xs font-medium text-(--d-muted)"
         >
-          <IconLock v-if="field.sensitive || field.type === 'password'" :size="12" class="text-muted-foreground shrink-0" />
+          <IconLock v-if="field.sensitive || field.type === 'password'" class="size-3 shrink-0 text-(--d-faint)" />
           <span>{{ field.label }}</span>
-          <span v-if="field.required" class="text-error" aria-hidden="true">*</span>
+          <span v-if="field.required" class="text-(--d-danger)" aria-hidden="true">*</span>
         </label>
 
         <!-- text / password / number / date / email / url / tel -->
@@ -253,7 +270,7 @@ const nativeControlClass =
           :placeholder="field.placeholder"
           :aria-invalid="showErrors && isMissing(field)"
           autocomplete="off"
-          :class="showErrors && isMissing(field) ? 'border-error focus-visible:ring-error' : ''"
+          :class="showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : ''"
           @update:model-value="(v: string | number) => (values[field.id] = String(v))"
         />
 
@@ -265,7 +282,7 @@ const nativeControlClass =
           :placeholder="field.placeholder"
           :aria-invalid="showErrors && isMissing(field)"
           class="min-h-20 max-h-40 resize-none"
-          :class="showErrors && isMissing(field) ? 'border-error focus-visible:ring-error' : ''"
+          :class="showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : ''"
           @update:model-value="(v) => (values[field.id] = String(v))"
         />
 
@@ -275,7 +292,7 @@ const nativeControlClass =
           :id="`form-field-${field.id}`"
           :value="stringModel(field)"
           :aria-invalid="showErrors && isMissing(field)"
-          :class="[nativeControlClass, showErrors && isMissing(field) ? 'border-error focus-visible:ring-error' : '']"
+          :class="[nativeControlClass, showErrors && isMissing(field) ? 'border-(--d-danger) focus-visible:ring-(--d-danger)' : '']"
           @change="(e) => (values[field.id] = (e.target as HTMLSelectElement).value)"
         >
           <option value="" disabled>{{ field.placeholder ?? t('form.selectPlaceholder') }}</option>
@@ -291,7 +308,7 @@ const nativeControlClass =
             :checked="values[field.id] === true"
             @update:checked="(v: boolean) => (values[field.id] = v)"
           />
-          <label :for="`form-field-${field.id}`" class="text-xs text-foreground/80 cursor-pointer">
+          <label :for="`form-field-${field.id}`" class="text-xs text-(--d-text) cursor-pointer">
             {{ field.placeholder ?? field.label }}
           </label>
         </div>
@@ -301,14 +318,14 @@ const nativeControlClass =
           <label
             v-for="opt in field.options ?? []"
             :key="opt.value"
-            class="flex items-center gap-2 text-xs text-foreground/90 cursor-pointer"
+            class="flex items-center gap-2 text-xs text-(--d-text) cursor-pointer"
           >
             <input
               type="radio"
               :name="`form-field-${field.id}`"
               :value="opt.value"
               :checked="values[field.id] === opt.value"
-              class="accent-primary cursor-pointer"
+              class="cursor-pointer accent-(--d-accent)"
               @change="() => (values[field.id] = opt.value)"
             />
             <span>{{ opt.label }}</span>
@@ -318,17 +335,32 @@ const nativeControlClass =
         <!-- required hint -->
         <span
           v-if="showErrors && isMissing(field)"
-          class="text-xs text-error/80"
+          class="text-xs text-(--d-danger)"
         >
           {{ t('form.requiredField') }}
         </span>
       </div>
     </div>
 
-    <!-- Actions -->
-    <div class="px-4 pb-4 flex justify-end gap-2 border-t border-border/30 pt-3">
-      <Button type="button" variant="ghost" size="sm" @click="handleCancel">{{ t('form.cancel') }}</Button>
-      <Button type="button" size="sm" @click="handleSubmit">{{ submitLabel }}</Button>
+    <div class="flex justify-end gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
+      <button
+        type="button"
+        class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+        @click="handleCancel"
+      >
+        {{ t('form.cancel') }}
+      </button>
+      <button
+        type="button"
+        class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+        @click="handleSubmit"
+      >
+        <SendHorizontal
+          class="size-3.25"
+          aria-hidden="true"
+        />
+        {{ submitLabel }}
+      </button>
     </div>
   </div>
 </template>

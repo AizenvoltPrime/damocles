@@ -15,7 +15,7 @@ function setup(): { prompts: WebviewPrompts; host: FakePanelHost; other: FakePan
   platform.window.createPanel({ kind: 'chat', title: 'b', localResourceRoots: [] });
   const [host, other] = platform.window.panels as [FakePanelHost, FakePanelHost];
   const target = vi.fn(async (): Promise<PromptTarget | undefined> => ({ panelId: 'p1', host }));
-  const prompts = new WebviewPrompts({ target }, (h: PanelHost, m) => { void h.postMessage(m); });
+  const prompts = new WebviewPrompts({ target, attachedView: () => undefined }, (h: PanelHost, m) => { void h.postMessage(m); });
   return { prompts, host, other, target };
 }
 

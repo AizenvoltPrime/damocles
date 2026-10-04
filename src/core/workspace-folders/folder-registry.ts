@@ -1,17 +1,25 @@
 import * as os from "os";
 import * as path from "path";
 import { folderKey } from "./folder-key";
+import { BranchTracker } from "./git-head";
 import { log } from "../logger";
 import type { WorkspaceFolderInfo } from "../../shared/types/workspace-folders";
 import type { Disposable } from "../../platform/disposable";
+import type { FileWatcherFactory } from "../../platform/file-watcher";
 import type { Memento } from "../../platform/key-value-state";
 import type { WorkspaceFolders } from "../../platform/workspace-folders";
+import type { SettingsFolder } from "../../platform/settings-store";
 
 export const DEFAULT_WORKSPACE_FOLDER_STATE_KEY = "damocles.defaultWorkspaceFolder";
 
 /** The home target's path; no-folder session dirs and memory strings already on disk key on exactly this. */
 export function homeDirectory(): string {
   return process.env["HOME"] || process.env["USERPROFILE"] || os.homedir();
+}
+
+/** The folder a chat on `target` reads settings for; the home target has none, so its reads are user-level. */
+export function settingsFolderOf(target: FolderTarget): SettingsFolder | undefined {
+  return target.projectScope ? { path: target.fsPath } : undefined;
 }
 
 /**
@@ -41,9 +49,13 @@ export interface FolderChange {
   /** A folder that stayed open now shows a different label. */
   relabelled: boolean;
   defaultChanged: boolean;
+  /** A folder's git branch changed (D42); the folders themselves did not. */
+  branchChanged: boolean;
 }
 
 type FolderChangeListener = (change: FolderChange) => void;
+
+const NO_FOLDER_CHANGE: FolderChange = { added: [], removed: [], relabelled: false, defaultChanged: false, branchChanged: false };
 
 /** The folders a panel may target: the open `file`-scheme workspace folders, or home when none is open. */
 export class WorkspaceFolderRegistry implements Disposable {
@@ -52,12 +64,15 @@ export class WorkspaceFolderRegistry implements Disposable {
   private readonly subscription: Disposable;
   private readonly folders: WorkspaceFolders;
   private readonly state: Memento;
+  private readonly branches: BranchTracker;
 
   /** `state` is the window-scoped (workspace) memento. */
-  constructor(folders: WorkspaceFolders, state: Memento) {
+  constructor(folders: WorkspaceFolders, state: Memento, fileWatchers: FileWatcherFactory) {
     this.folders = folders;
     this.state = state;
     this.snapshot = readTargets(folders);
+    this.branches = new BranchTracker(fileWatchers, () => this.emit({ ...NO_FOLDER_CHANGE, branchChanged: true }));
+    this.trackBranches();
     this.subscription = folders.onDidChange(() => this.refresh());
   }
 
@@ -91,12 +106,21 @@ export class WorkspaceFolderRegistry implements Disposable {
     if (!this.resolve(key)) return false;
     const before = this.defaultTarget().key;
     await this.state.update(DEFAULT_WORKSPACE_FOLDER_STATE_KEY, key);
-    if (this.defaultTarget().key !== before) this.emit({ added: [], removed: [], relabelled: false, defaultChanged: true });
+    if (this.defaultTarget().key !== before) this.emit({ ...NO_FOLDER_CHANGE, defaultChanged: true });
     return true;
   }
 
   folderInfos(): WorkspaceFolderInfo[] {
-    return this.snapshot.map((t) => ({ key: t.key, name: t.name, label: t.label, path: t.fsPath }));
+    return this.snapshot.map((t) => {
+      const branch = this.branchOf(t.key);
+      return { key: t.key, name: t.name, label: t.label, path: t.fsPath, ...(branch !== undefined ? { branch } : {}) };
+    });
+  }
+
+  /** The branch checked out in the folder's working tree, read from git's HEAD file (D42); undefined outside git. */
+  branchOf(key: string): string | undefined {
+    const target = this.resolve(key);
+    return target ? this.branches.branchOf(target.fsPath) : undefined;
   }
 
   onDidChange(listener: FolderChangeListener): Disposable {
@@ -106,13 +130,20 @@ export class WorkspaceFolderRegistry implements Disposable {
 
   dispose(): void {
     this.subscription.dispose();
+    this.branches.dispose();
     this.listeners.clear();
+  }
+
+  // The home target of a window with no folder open is not a project, so it shows no branch.
+  private trackBranches(): void {
+    this.branches.setFolders(this.snapshot.filter((t) => t.projectScope).map((t) => t.fsPath));
   }
 
   private refresh(): void {
     const previous = this.snapshot;
     const previousDefault = this.defaultTarget().key;
     this.snapshot = readTargets(this.folders);
+    this.trackBranches();
     // Diffed by key, so a folder whose display name changed is neither removed nor added.
     const previousLabels = new Map(previous.map((t) => [t.key, t.label]));
     const currentKeys = new Set(this.snapshot.map((t) => t.key));
@@ -121,6 +152,7 @@ export class WorkspaceFolderRegistry implements Disposable {
       removed: previous.filter((t) => !currentKeys.has(t.key)),
       relabelled: this.snapshot.some((t) => previousLabels.has(t.key) && previousLabels.get(t.key) !== t.label),
       defaultChanged: this.defaultTarget().key !== previousDefault,
+      branchChanged: false,
     });
   }
 

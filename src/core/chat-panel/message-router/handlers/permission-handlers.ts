@@ -95,7 +95,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         });
 
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
         settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
 
         ctx.session.clear();
@@ -126,7 +126,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       if (msg.approved && msg.approvalMode) {
         const newMode = msg.approvalMode === "acceptEdits" ? "acceptEdits" : "default";
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, newMode);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
       }
     },
 
@@ -148,7 +148,8 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
     extensionUiResponse: (msg, ctx) => {
       if (msg.type !== "extensionUiResponse") return;
-      if (deps.webviewPrompts.handleResponse(ctx.panelId, msg.requestId, msg.value)) return;
+      // A settings view answers only the host prompts redirected to it, never a PiSession dialog.
+      if (deps.webviewPrompts.handleResponse(ctx.panelId, msg.requestId, msg.value, ctx.view) || ctx.view) return;
       // Bridges a pi-extension `ctx.ui.*` dialog answer back to the per-session UI context (US-026).
       ctx.session.resolveExtensionUiResponse?.(msg.requestId, msg.value);
     },

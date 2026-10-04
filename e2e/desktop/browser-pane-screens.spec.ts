@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import type { ElectronApplication, Page } from '@playwright/test';
 import type { DesktopApp, LaunchOptions } from './support/app';
-import { chatTab, expect, nextTab, panelIdOf, test } from './support/fixtures';
+import { activeChat, expect, nextChat, panelIdOf, test } from './support/fixtures';
 import { REPO_ROOT, writeUserSettings } from './support/hermetic';
 import { captureWindow, chromeEnv, openPage, panePage, paneState, setWindowContentSize, startSite, systemChrome, type Site } from './support/pane';
 import { shellPage } from './support/shell';
@@ -36,7 +36,7 @@ test.afterAll(async () => {
 
 async function start(launch: (options?: LaunchOptions) => Promise<DesktopApp>, theme: 'dark' | 'light', args: string[] = []): Promise<{ app: ElectronApplication; tab: Page }> {
   const { app } = await launch({ env: chromeEnv(), args });
-  const tab = await chatTab(app);
+  const tab = await activeChat(app);
   const composer = tab.locator('textarea').first();
   await expect(composer).toBeVisible();
   await setThemeSource(app, theme);
@@ -108,7 +108,7 @@ for (const theme of ['dark', 'light'] as const) {
     await shoot(app, `${theme}-10-narrow-overlay`);
 
     await setWindowContentSize(app, 1280, 780);
-    const opened = nextTab(app, [tab]);
+    const opened = nextChat(app, [tab]);
     await clickMenu(app, 'damocles.openChat');
     await expect((await opened).locator('textarea').first()).toBeVisible();
     await expect.poll(async () => (await paneState(app)).mode).toBe('collapsed');

@@ -29,8 +29,9 @@ export interface PendingPermissionInfo {
   prompt?: string;
   /** GenerateImage only: the OpenRouter image model the call is billed for. */
   imageModel?: string;
-  originalContent?: string;
-  proposedContent?: string;
+  /** Edit and Write: the change's patch with real line numbers, or why there is none. */
+  patch?: string;
+  patchOmitted?: import('./file-patch').FilePatchOmitted;
   command?: string;
   parentToolUseId?: string | null;
   agentDescription?: string;

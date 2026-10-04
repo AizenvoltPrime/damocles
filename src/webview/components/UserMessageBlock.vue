@@ -6,14 +6,14 @@ import type { ChatMessage } from "@shared/types/session";
 import { isImageBlock, type ImageBlock } from "@shared/types/content";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
-import { Button } from "@/components/ui/button";
-import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp, IconX } from "@/components/icons";
+import { ArrowUp, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Database, Pin, RotateCcw, X } from "lucide-vue-next";
+import { formatClock } from "@/utils/clock";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
 import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
 import { USER_PROMPT_FILTER } from "@/composables/useEnrichedPrompts";
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const props = withDefaults(
   defineProps<{
@@ -54,10 +54,12 @@ const { flashedMessageId } = storeToRefs(useMessageHighlightStore());
 const isHighlighted = computed(() => flashedMessageId.value === props.message.id);
 
 const borderColorClass = computed(() => {
-  if (isHighlighted.value) return "border-primary/70";
-  if (isInjectedOrQueued.value) return "border-warning/25";
-  return "border-border";
+  if (isHighlighted.value) return "border-(--d-accent)";
+  if (isInjectedOrQueued.value) return "border-[color-mix(in_srgb,var(--d-warning)_35%,var(--d-border2))]";
+  return "border-(--d-border2)";
 });
+
+const time = computed(() => formatClock(props.message.timestamp, locale.value));
 
 function handleCopy(): void {
   if (props.message.content) void copyToClipboard(props.message.content);
@@ -66,20 +68,24 @@ function handleCopy(): void {
 const isPinned = computed(() => props.mode === "pinned");
 const showScrollUp = computed(() => isPinned.value && props.offset === 0);
 
-const COLLAPSED_PX = 160;
+/** `max-h-40`, the collapsed card's height. */
+const COLLAPSED_REM = 10;
 const cardRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
 const naturalHeight = ref<number>(0);
-const isOverflowing = computed(() => naturalHeight.value > COLLAPSED_PX);
+const isOverflowing = computed(() => naturalHeight.value > COLLAPSED_REM * parseFloat(getComputedStyle(document.documentElement).fontSize));
 const isCollapsed = computed(() => !props.expanded && isOverflowing.value);
 
+const surfaceClass = computed(() =>
+  isInjectedOrQueued.value ? "bg-[color-mix(in_srgb,var(--d-warning)_8%,var(--d-card))]" : "bg-(--d-card)",
+);
 const fadeFromClass = computed(() =>
-  isInjectedOrQueued.value ? "from-[color-mix(in_srgb,var(--color-warning)_10%,var(--background))]" : "from-muted/[0.98]",
+  isInjectedOrQueued.value ? "from-[color-mix(in_srgb,var(--d-warning)_8%,var(--d-card))]" : "from-(--d-card)",
 );
 
 const { maxHeightVh, clamp: clampVh } = useUserMessageMaxHeight();
 const scrollAreaStyle = computed(() =>
-  isCollapsed.value ? undefined : { maxHeight: `max(${maxHeightVh.value}vh, ${COLLAPSED_PX}px)` },
+  isCollapsed.value ? undefined : { maxHeight: `max(${maxHeightVh.value}vh, ${COLLAPSED_REM}rem)` },
 );
 
 let dragStartY = 0;
@@ -134,153 +140,220 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex justify-center px-2 py-2">
-    <div class="w-full">
+  <div :class="isPinned ? '' : 'flex justify-end pt-1.5'">
+    <div
+      ref="cardRef"
+      class="group relative min-w-0 border bubble-fade-transitions"
+      :class="[
+        surfaceClass,
+        borderColorClass,
+        isHighlighted && 'is-highlighted',
+        isPinned
+          ? 'w-full rounded-[0.875rem] px-3.5 pt-2.25 pb-2.75 shadow-(--d-shadow) animate-[d-pop_.18s_var(--ease-out)]'
+          : 'max-w-[88%] rounded-[1rem_1rem_0.3125rem_1rem] px-3.75 pt-2.75 pb-3 shadow-[inset_0_1px_0_rgba(255,255,255,.03)]',
+      ]"
+    >
       <div
-        ref="cardRef"
-        class="group relative rounded-xl border px-4 py-3 bubble-fade-transitions"
-        :class="[
-          isInjectedOrQueued
-            ? isPinned
-              ? 'bg-[color-mix(in_srgb,var(--color-warning)_10%,var(--background))]'
-              : 'bg-warning/10'
-            : isPinned
-              ? 'bg-muted/[0.98]'
-              : 'bg-muted/75 group-hover:shadow-md',
-          borderColorClass,
-          isHighlighted && 'is-highlighted',
-          isPinned ? 'shadow-md ring-1 ring-border/40' : 'shadow-sm',
-          isCollapsed && 'max-h-40 overflow-hidden',
-        ]"
+        class="mb-1 flex min-w-0 flex-wrap items-center gap-2 text-11 whitespace-nowrap"
+        :class="isInjectedOrQueued ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
       >
-        <div v-if="isInjectedOrQueued" class="flex items-center gap-2 mb-2 text-xs text-warning/80">
-          <span v-if="message.steerTarget" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30 max-w-[16rem] truncate">
+        <Pin
+          v-if="isPinned"
+          class="size-3 flex-none text-(--d-accent)"
+          aria-hidden="true"
+        />
+        <span class="flex-none font-semibold text-(--d-muted)">{{ t("pinned.you") }}</span>
+        <span
+          class="flex-none tabular-nums"
+          data-testid="user-message-time"
+        >{{ time }}</span>
+        <span
+          v-if="isPinned && !isInjectedOrQueued"
+          class="min-w-0 truncate font-mono"
+          data-testid="pinned-prompt-index"
+        >· {{ t("pinned.prompt", { n: promptIndex + 1 }) }}</span>
+        <template v-if="isInjectedOrQueued">
+          <span
+            v-if="message.steerTarget"
+            class="max-w-[16rem] truncate rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+          >
             {{ t("steerCommand.youSteered", { agent: message.steerTarget.description ?? message.steerTarget.agentId.slice(0, 8) }) }}
           </span>
-          <span v-else-if="message.isCommandEcho" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30" data-user-label="command">
-            {{ t("welcome.commandEcho") }}
-          </span>
+          <span
+            v-else-if="message.isCommandEcho"
+            class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+            data-user-label="command"
+          >{{ t("welcome.commandEcho") }}</span>
           <template v-else>
-            <span class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30" data-user-label="mid-stream">
-              {{ t("welcome.sentMidStream") }}
-            </span>
-            <span v-if="message.isQueued" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
-              {{ t("welcome.queued") }}
-            </span>
+            <span
+              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+              data-user-label="mid-stream"
+            >{{ t("welcome.sentMidStream") }}</span>
+            <span
+              v-if="message.isQueued"
+              class="rounded-5 bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] px-1.5 font-medium text-(--d-warning-text)"
+            >{{ t("welcome.queued") }}</span>
           </template>
+        </template>
+        <span class="min-w-0 flex-1" />
+        <div class="ms-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <button
+            v-if="isOverflowing"
+            type="button"
+            class="flex flex-none rounded-5 p-0.75 transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :title="props.expanded ? t('common.collapse') : t('common.expand')"
+            :aria-label="props.expanded ? t('common.collapse') : t('common.expand')"
+            :aria-expanded="props.expanded"
+            data-testid="user-message-expand"
+            @click="emit('toggle-expanded')"
+          >
+            <ChevronUp
+              v-if="props.expanded"
+              class="size-3"
+              aria-hidden="true"
+            />
+            <ChevronDown
+              v-else
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            v-if="showScrollUp"
+            type="button"
+            class="flex flex-none rounded-5 p-0.75 transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :title="t('userMessage.scrollToTopTitle')"
+            :aria-label="t('userMessage.scrollToTopTitle')"
+            data-testid="pinned-scroll-to"
+            @click="emit('scrollToPrimary')"
+          >
+            <ArrowUp
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            v-if="canRewind && !isInjectedOrQueued"
+            type="button"
+            class="flex flex-none rounded-5 p-0.75 transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :title="t('userMessage.rewindAria')"
+            :aria-label="t('userMessage.rewindAria')"
+            data-testid="user-message-rewind"
+            @click="emit('rewind', props.message)"
+          >
+            <RotateCcw
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            v-if="message.content"
+            type="button"
+            class="flex flex-none rounded-5 p-0.75 transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :class="{ 'text-(--d-success)': hasCopied }"
+            :title="hasCopied ? t('userMessage.copiedTitle') : t('userMessage.copyTitle')"
+            :aria-label="hasCopied ? t('userMessage.copiedAria') : t('userMessage.copyAria')"
+            data-testid="user-message-copy"
+            @click="handleCopy"
+          >
+            <Check
+              v-if="hasCopied"
+              class="size-3"
+              aria-hidden="true"
+            />
+            <Copy
+              v-else
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            v-if="isPinned"
+            type="button"
+            class="flex flex-none rounded-5 p-0.75 transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+            :title="t('userMessage.hidePinnedTitle')"
+            :aria-label="t('userMessage.hidePinnedAria')"
+            data-testid="pinned-hide"
+            @click="emit('hide-pinned')"
+          >
+            <X
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
         </div>
+      </div>
 
-        <div ref="contentRef" class="pr-12 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" :style="scrollAreaStyle">
-          <div v-if="imageBlocks.length > 0" class="flex flex-wrap gap-1.5 mb-2">
-            <UserMessageImageChip v-for="(img, index) in imageBlocks" :key="index" :block="img" @open-lightbox="emit('openLightbox', $event)" />
-          </div>
-
-          <MarkdownRenderer v-if="message.content" :content="message.content" class="text-foreground" />
-        </div>
-
+      <div
+        class="relative"
+        :class="isCollapsed && 'max-h-40 overflow-hidden'"
+      >
         <div
-          v-if="!isCollapsed && isOverflowing"
-          class="flex justify-center py-3 touch-none select-none cursor-ns-resize group/resize"
-          :title="t('userMessage.resizeTitle')"
-          @pointerdown="onResizeStart"
+          ref="contentRef"
+          class="overflow-x-hidden overflow-y-auto overscroll-contain"
+          :style="scrollAreaStyle"
         >
-          <div class="h-1 w-10 rounded-full bg-border/60 group-hover/resize:bg-primary/70 motion-safe:transition-colors" />
+          <div
+            v-if="imageBlocks.length > 0"
+            class="mb-2 flex flex-wrap gap-1.5"
+          >
+            <UserMessageImageChip
+              v-for="(img, index) in imageBlocks"
+              :key="index"
+              :block="img"
+              @open-lightbox="emit('openLightbox', $event)"
+            />
+          </div>
+          <MarkdownRenderer
+            v-if="message.content"
+            :content="message.content"
+            class="text-(--d-text)"
+          />
         </div>
-
         <div
           v-if="isCollapsed"
           aria-hidden="true"
-          class="absolute bottom-0 left-0 right-0 h-10 pointer-events-none bg-gradient-to-t to-transparent"
+          class="pointer-events-none absolute inset-x-0 bottom-0 h-8.5 bg-linear-to-t to-transparent"
           :class="fadeFromClass"
         />
-
-        <div
-          class="absolute top-3 right-3 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 motion-safe:transition-opacity motion-safe:duration-150"
-        >
-          <Button
-            v-if="isOverflowing"
-            variant="ghost"
-            size="icon-sm"
-            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
-            :title="props.expanded ? t('common.collapse') : t('common.expand')"
-            :aria-expanded="props.expanded"
-            @click="emit('toggle-expanded')"
-          >
-            <IconChevronUp v-if="props.expanded" :size="12" />
-            <IconChevronDown v-else :size="12" />
-          </Button>
-          <Button
-            v-if="showScrollUp"
-            variant="ghost"
-            size="icon-sm"
-            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
-            :title="t('userMessage.scrollToTopTitle')"
-            @click="emit('scrollToPrimary')"
-          >
-            <IconArrowUp :size="12" />
-          </Button>
-          <Button
-            v-if="canRewind && !isInjectedOrQueued"
-            variant="ghost"
-            size="icon-sm"
-            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
-            :title="t('welcome.undoChanges')"
-            :aria-label="t('userMessage.rewindAria')"
-            @click="emit('rewind', props.message)"
-          >
-            <IconRotateLeft :size="12" />
-          </Button>
-          <Button
-            v-if="message.content"
-            variant="ghost"
-            size="icon-sm"
-            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
-            :class="{ 'text-success': hasCopied }"
-            :title="hasCopied ? t('userMessage.copiedTitle') : t('userMessage.copyTitle')"
-            :aria-label="hasCopied ? t('userMessage.copiedAria') : t('userMessage.copyAria')"
-            @click="handleCopy"
-          >
-            <IconCheck v-if="hasCopied" :size="12" />
-            <IconCopy v-else :size="12" />
-          </Button>
-          <Button
-            v-if="isPinned"
-            variant="ghost"
-            size="icon-sm"
-            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
-            :title="t('userMessage.hidePinnedTitle')"
-            :aria-label="t('userMessage.hidePinnedAria')"
-            @click="emit('hide-pinned')"
-          >
-            <IconX :size="12" />
-          </Button>
-        </div>
-
-        <span class="sr-only" role="status" aria-live="polite">
-          {{ hasCopied ? t("userMessage.copiedAnnouncement") : "" }}
-        </span>
-
-        <button
-          v-if="!isInjectedOrQueued && !isCollapsed"
-          type="button"
-          class="group/ctx flex items-center gap-1.5 mt-2.5 px-2 py-0.5 rounded-full text-xs font-medium text-primary/50 bg-primary/5 border border-primary/10 hover:text-primary hover:bg-primary/10 hover:border-primary/20 motion-safe:transition-all motion-safe:duration-200 cursor-pointer"
-          :title="t('contextInjection.viewContext')"
-          @click.stop="emit('viewContext', promptIndex)"
-        >
-          <span class="relative flex h-1.5 w-1.5 shrink-0">
-            <span
-              class="absolute inline-flex h-full w-full rounded-full bg-primary opacity-0 group-hover/ctx:opacity-40 group-hover/ctx:animate-ping"
-            />
-            <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary/70" />
-          </span>
-          <IconDatabase :size="10" class="shrink-0 opacity-60 group-hover/ctx:opacity-100 motion-safe:transition-opacity" />
-          <span>{{ t("contextInjection.viewContext") }}</span>
-          <IconChevronRight
-            :size="8"
-            class="shrink-0 opacity-0 -ml-0.5 group-hover/ctx:opacity-60 group-hover/ctx:ml-0 motion-safe:transition-all motion-safe:duration-200"
-          />
-        </button>
       </div>
+
+      <div
+        v-if="!isCollapsed && isOverflowing"
+        class="group/resize flex cursor-ns-resize touch-none justify-center pt-2 select-none"
+        :title="t('userMessage.resizeTitle')"
+        data-testid="user-message-resize"
+        @pointerdown="onResizeStart"
+      >
+        <div class="h-1 w-10 rounded-full bg-(--d-border2) transition-colors group-hover/resize:bg-(--d-accent)" />
+      </div>
+
+      <span
+        class="sr-only"
+        role="status"
+        aria-live="polite"
+      >
+        {{ hasCopied ? t("userMessage.copiedAnnouncement") : "" }}
+      </span>
+
+      <button
+        v-if="!isInjectedOrQueued && !isCollapsed"
+        type="button"
+        class="mt-2.25 inline-flex max-w-full items-center gap-1.5 rounded-full bg-(--d-accent-soft) px-2.25 py-0.5 text-11 font-medium text-(--d-accent-text) transition-colors hover:bg-[color-mix(in_srgb,var(--d-accent)_22%,transparent)]"
+        :title="t('contextInjection.viewContext')"
+        data-testid="user-message-context"
+        @click.stop="emit('viewContext', promptIndex)"
+      >
+        <Database
+          class="size-2.5 shrink-0"
+          aria-hidden="true"
+        />
+        <span class="min-w-0">{{ t("contextInjection.viewContext") }}</span>
+        <ChevronRight
+          class="size-2.5 shrink-0"
+          aria-hidden="true"
+        />
+      </button>
     </div>
   </div>
 </template>

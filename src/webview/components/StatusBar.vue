@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted, computed, type Component } from "vue";
+import { ref, watch, onUnmounted, computed } from "vue";
 import { useI18n } from 'vue-i18n';
+import { LoaderCircle } from 'lucide-vue-next';
 import { usePhraseCycler } from "../composables/usePhraseCycler";
-import { sessionStateTreatment, type SessionStateIcon } from "@/lib/session-state-indicator";
-import LottieSpinner from "@/components/LottieSpinner.vue";
-import { IconExclamation } from "@/components/icons";
+import { sessionStateTreatment } from "@/lib/session-state-indicator";
 
 const { t } = useI18n();
 
@@ -23,21 +22,13 @@ const isVisible = computed(() => props.isProcessing || props.awaitingUserAction)
 // The bar can be up before the first sessionStateChanged lands, so anything not parked draws as working.
 const treatment = computed(() => sessionStateTreatment(props.awaitingUserAction ? 'requires_action' : 'running'));
 
-const ICON_COMPONENTS: Record<Exclude<SessionStateIcon, null>, Component> = {
-  spinner: LottieSpinner,
-  exclamation: IconExclamation,
-};
-
-const iconComponent = computed<Component | null>(() => {
-  const icon = treatment.value.icon;
-  return icon === null ? null : ICON_COMPONENTS[icon];
-});
-
 const startTime = ref<number | null>(null);
 const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 
 const { currentPhrase } = usePhraseCycler(() => props.isProcessing);
+
+const label = computed(() => props.statusOverride ?? (props.currentToolName ? t('status.running', { tool: props.currentToolName }) : currentPhrase.value));
 
 const hookLabel = computed(() => {
   if (!props.activeHooks?.size) return null;
@@ -86,40 +77,60 @@ onUnmounted(() => {
 
 <template>
   <!-- Always mounted so a text change is announced, and only the parked label goes in it because the phrases would talk over everything. -->
-  <span class="sr-only" role="status" aria-live="polite">
+  <span
+    class="sr-only"
+    role="status"
+    aria-live="polite"
+  >
     {{ awaitingUserAction ? t('status.requiresAction') : '' }}
   </span>
 
-  <div
-    v-if="isVisible"
-    class="flex items-center pl-1 pr-4 border-t"
-    :class="treatment.barClass"
-  >
-    <!-- Fixed box so the bar keeps its height when the spinner is swapped for the smaller parked icon. -->
+  <Transition name="t-up">
     <div
-      class="flex h-[52px] w-[52px] shrink-0 items-center justify-center"
-      :class="treatment.iconClass"
-      aria-hidden="true"
+      v-if="isVisible"
+      class="flex items-center gap-2.5 px-1"
+      data-testid="status-row"
     >
-      <component
-        :is="iconComponent"
-        v-if="iconComponent"
-        :size="treatment.iconSize"
-      />
+      <template v-if="awaitingUserAction">
+        <span
+          class="size-2 flex-none rounded-full"
+          :class="treatment.iconClass"
+          aria-hidden="true"
+        />
+        <!-- Hidden from a reader because the live region above already carries this exact string. -->
+        <span
+          class="min-w-0 flex-1 truncate"
+          :class="treatment.labelClass"
+          aria-hidden="true"
+          data-testid="status-label"
+        >{{ t('status.requiresAction') }}</span>
+      </template>
+      <template v-else>
+        <LoaderCircle
+          class="size-3.75 flex-none"
+          :class="treatment.iconClass"
+          aria-hidden="true"
+        />
+        <span class="flex min-w-0 flex-1 items-baseline gap-1">
+          <span
+            class="d-glint min-w-0 truncate"
+            :class="treatment.labelClass"
+            data-testid="status-label"
+          >{{ label }}<span
+            class="d-glint-window text-(--d-text)"
+            aria-hidden="true"
+          ><span>{{ label }}</span></span></span>
+          <span
+            v-if="hookLabel"
+            class="flex-none text-11 text-(--d-faint)"
+          >· {{ t('status.hook', { event: hookLabel }) }}</span>
+        </span>
+        <span class="flex-none text-11 text-(--d-faint)">{{ t('status.escToInterrupt') }}</span>
+      </template>
+      <span
+        class="flex-none font-mono text-11.5 text-(--d-faint) tabular-nums"
+        data-testid="status-elapsed"
+      >{{ formattedTime }}</span>
     </div>
-    <!-- Hidden from a reader because the live region above already carries this exact string. -->
-    <span
-      v-if="awaitingUserAction"
-      class="flex-1 text-base truncate"
-      :class="treatment.labelClass"
-      aria-hidden="true"
-    >{{ t('status.requiresAction') }}</span>
-    <span v-else class="flex-1 text-base truncate" :class="treatment.labelClass">
-      {{ statusOverride ?? (currentToolName ? t('status.running', { tool: currentToolName }) : currentPhrase) }}
-      <span v-if="hookLabel" class="text-xs opacity-40 not-italic"> · {{ t('status.hook', { event: hookLabel }) }}</span>
-    </span>
-    <span class="text-sm text-muted-foreground font-mono">
-      {{ formattedTime }}
-    </span>
-  </div>
+  </Transition>
 </template>

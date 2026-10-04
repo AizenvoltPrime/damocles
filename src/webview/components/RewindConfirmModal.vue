@@ -1,16 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-} from '@/components/ui/alert-dialog';
-import { Button } from '@/components/ui/button';
-import { IconWarning, IconChevronRight } from '@/components/icons';
+import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
+import { ChevronRight, RotateCcw, TriangleAlert } from 'lucide-vue-next';
+import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 import RewindCheckpointNotes from '@/components/RewindCheckpointNotes.vue';
 import type { RewindOption, RewindHistoryItem, SkippedFilesTarget } from '@shared/types/session';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -230,69 +223,81 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AlertDialog :open="visible && !suspended" @update:open="handleDialogOpenUpdate">
-    <AlertDialogContent class="bg-card border-border max-w-md">
-      <template v-if="view === 'options'">
-        <AlertDialogHeader>
-          <AlertDialogTitle class="flex items-center gap-2">
-            {{ t('rewind.title') }}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            <div class="flex items-start gap-3 mt-2">
-              <IconWarning :size="24" class="shrink-0 text-warning" />
-              <div>
-                <p class="mb-2 text-foreground">
-                  {{ t('rewind.description') }}
-                </p>
-              </div>
-            </div>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <div v-if="kind === 'compaction'" class="p-3 rounded bg-muted text-sm">
-          <div class="text-xs text-info mb-1">{{ t('rewindBrowser.compactionPoint') }}</div>
-          <div v-if="messagePreview" class="italic break-words text-muted-foreground">{{ messagePreview }}</div>
-          <div class="mt-2 text-xs text-warning/90">{{ t('rewind.compactionCaveat') }}</div>
+  <AlertDialog
+    :open="visible && !suspended"
+    @update:open="handleDialogOpenUpdate"
+  >
+    <AlertDialogContent class="max-h-[90vh] max-w-lg gap-0 overflow-hidden p-0">
+      <ConfirmDialogLayout
+        v-if="view === 'options'"
+        :icon="RotateCcw"
+        :title="t('rewind.title')"
+        :description="t('rewind.description')"
+      >
+        <div
+          v-if="kind === 'compaction'"
+          class="rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2 text-12.5"
+        >
+          <div class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-info) uppercase">
+            {{ t('rewindBrowser.compactionPoint') }}
+          </div>
+          <div
+            v-if="messagePreview"
+            class="wrap-break-word text-(--d-muted) italic"
+          >
+            {{ messagePreview }}
+          </div>
+          <div class="mt-2 text-xs text-(--d-warning)">
+            {{ t('rewind.compactionCaveat') }}
+          </div>
         </div>
-        <div v-else-if="messagePreview" class="p-3 rounded bg-muted text-sm">
-          <div class="text-xs text-muted-foreground mb-1">{{ t('rewind.rewindToAfter') }}</div>
-          <div class="italic break-words">"{{ messagePreview }}"</div>
+        <div
+          v-else-if="messagePreview"
+          class="rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2 text-12.5"
+        >
+          <div class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint) uppercase">
+            {{ t('rewind.rewindToAfter') }}
+          </div>
+          <div class="line-clamp-3 wrap-break-word">
+            “{{ messagePreview }}”
+          </div>
         </div>
 
         <div
           v-if="loadingMetadata || filesAffected"
           data-no-keyboard-shortcuts
-          class="px-1 text-xs text-muted-foreground"
+          class="text-xs text-(--d-muted)"
         >
-          <span v-if="loadingMetadata" class="animate-pulse">
-            {{ t('rewind.loadingMetadata') }}
-          </span>
+          <span
+            v-if="loadingMetadata"
+            role="status"
+          >{{ t('rewind.loadingMetadata') }}</span>
           <template v-else>
             <div class="flex items-center gap-3">
               <button
                 v-if="hasFileList"
                 type="button"
-                class="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
+                class="flex items-center gap-1 rounded text-(--d-accent) focus:outline-none focus-visible:ring-1 focus-visible:ring-(--d-accent)"
                 :aria-expanded="filesExpanded"
                 :aria-label="t('rewind.toggleFileList')"
                 @click="filesExpanded = !filesExpanded"
               >
-                <IconChevronRight
-                  :size="12"
-                  class="transition-transform"
+                <ChevronRight
+                  class="size-3 transition-transform duration-200 ease-out"
                   :class="filesExpanded ? 'rotate-90' : ''"
+                  aria-hidden="true"
                 />
                 <span>{{ t('rewind.filesAffected', { n: filesAffected }, filesAffected!) }}</span>
               </button>
               <span v-else>{{ t('rewind.filesAffected', { n: filesAffected }, filesAffected!) }}</span>
               <template v-if="linesChanged">
-                <span class="text-success">{{ t('diff.linesAdded', { n: linesChanged.added }) }}</span>
-                <span class="text-error">{{ t('diff.linesRemoved', { n: linesChanged.removed }) }}</span>
+                <span class="font-mono text-(--d-success)">{{ t('diff.linesAdded', { n: linesChanged.added }) }}</span>
+                <span class="font-mono text-(--d-danger)">{{ t('diff.linesRemoved', { n: linesChanged.removed }) }}</span>
               </template>
             </div>
             <div
               v-if="hasFileList && filesExpanded"
-              class="mt-2 rounded bg-muted/50 border border-border/60 max-h-40 overflow-y-auto"
+              class="mt-2 max-h-40 overflow-y-auto rounded-lg border border-(--d-border) bg-(--d-bg)"
             >
               <template
                 v-for="file in files"
@@ -301,7 +306,7 @@ onUnmounted(() => {
                 <button
                   v-if="settingsStore.hostCapabilities.diffReview"
                   type="button"
-                  class="w-full text-left px-3 py-1.5 font-mono text-xs text-foreground/80 hover:bg-primary/10 hover:text-foreground focus:outline-none focus-visible:bg-primary/10 cursor-pointer truncate"
+                  class="w-full truncate px-3 py-1.5 text-left font-mono text-xs text-(--d-text) hover:bg-(--d-hover) focus:outline-none focus-visible:bg-(--d-hover)"
                   :title="t('rewind.openDiffTooltip', { path: file.path })"
                   @click="emit('openRewindDiff', file.path)"
                 >
@@ -309,7 +314,7 @@ onUnmounted(() => {
                 </button>
                 <div
                   v-else
-                  class="px-3 py-1.5 font-mono text-xs text-foreground/80 truncate"
+                  class="truncate px-3 py-1.5 font-mono text-xs text-(--d-text)"
                   :title="file.path"
                 >
                   {{ file.displayName }}
@@ -319,73 +324,75 @@ onUnmounted(() => {
           </template>
         </div>
 
-        <RewindCheckpointNotes v-if="!loadingMetadata" :skipped="skipped" :not-rewindable="notRewindable" :target="skippedTarget" />
+        <RewindCheckpointNotes
+          v-if="!loadingMetadata"
+          :skipped="skipped"
+          :not-rewindable="notRewindable"
+          :target="skippedTarget"
+        />
 
-        <div class="space-y-2">
+        <div
+          class="-mx-1.5 flex flex-col"
+          role="listbox"
+          :aria-label="t('rewind.title')"
+        >
           <button
             v-for="(option, index) in options"
             :key="option.key"
-            class="w-full p-3 rounded-lg text-left transition-all flex items-start gap-3"
-            :class="[
-              isDisabled(option)
-                ? 'bg-muted/40 border border-transparent opacity-50 cursor-not-allowed'
-                : index === selectedIndex
-                  ? 'bg-primary/60 border border-primary cursor-pointer'
-                  : 'bg-muted border border-transparent hover:bg-muted/80 cursor-pointer',
-            ]"
+            type="button"
+            role="option"
+            :aria-selected="index === selectedIndex"
+            class="group flex items-start gap-2.5 rounded-9 px-2.5 py-1.75 text-left transition-colors disabled:opacity-40"
+            :class="index === selectedIndex && !isDisabled(option) ? 'bg-(--d-accent-soft) text-(--d-accent-text)' : ''"
             :disabled="isDisabled(option)"
             @click="selectOption(index)"
             @mouseenter="!isDisabled(option) && (selectedIndex = index)"
           >
             <span
-              class="shrink-0 w-6 h-6 rounded flex items-center justify-center text-sm font-mono leading-none"
-              :class="index === selectedIndex && !isDisabled(option)
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-border text-muted-foreground'"
-            >
-              {{ option.shortcut }}
+              class="mt-px flex size-5 flex-none items-center justify-center rounded-md border font-mono text-11"
+              :class="index === selectedIndex && !isDisabled(option) ? 'border-(--d-accent)' : 'border-(--d-border2)'"
+              aria-hidden="true"
+            >{{ option.shortcut }}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block font-medium">{{ option.label }}</span>
+              <span class="block text-xs text-(--d-muted)">{{ option.description }}</span>
             </span>
-            <div>
-              <div class="font-medium text-sm">{{ option.label }}</div>
-              <div class="text-xs text-muted-foreground mt-0.5">{{ option.description }}</div>
-            </div>
           </button>
         </div>
 
-        <Alert class="bg-warning/20 border-warning/30">
-          <AlertTitle class="text-warning font-semibold text-xs">{{ t('common.note') }}</AlertTitle>
-          <AlertDescription class="text-xs text-foreground/70">
-            {{ t('rewind.checkpointWarning') }}
-          </AlertDescription>
-        </Alert>
+        <p class="flex items-start gap-2 rounded-10 bg-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] px-3 py-2.25 text-xs text-(--d-warning-text)">
+          <TriangleAlert
+            class="size-3.25 mt-0.5 flex-none"
+            aria-hidden="true"
+          />
+          <span class="text-pretty">{{ t('rewind.checkpointWarning') }}</span>
+        </p>
 
-        <div class="pt-2 text-xs text-muted-foreground flex items-center gap-4">
-          <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">1-4</kbd>
-            <span>{{ t('common.or') }}</span>
-            <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">↑↓</kbd>
-            <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">Enter</kbd>
+        <template #footer>
+          <span
+            class="flex flex-1 items-center gap-1.5 font-mono text-11 text-(--d-faint)"
+            aria-hidden="true"
+          >
+            <kbd>1-4</kbd>
+            <span class="font-sans">{{ t('common.or') }}</span>
+            <kbd>↑↓</kbd>
+            <kbd>Enter</kbd>
           </span>
-        </div>
-      </template>
+        </template>
+      </ConfirmDialogLayout>
 
-      <template v-else>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{{ t('rewind.confirmCodeRewind.title') }}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {{ t('rewind.confirmCodeRewind.description') }}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        <div class="flex justify-end gap-2 pt-2">
-          <Button variant="outline" @click="backToOptions">
-            {{ t('rewind.confirmCodeRewind.cancel') }}
-          </Button>
-          <Button variant="destructive" @click="confirmFileRewind">
-            {{ t('rewind.confirmCodeRewind.confirm') }}
-          </Button>
-        </div>
-      </template>
+      <ConfirmDialogLayout
+        v-else
+        :icon="TriangleAlert"
+        tone="danger"
+        :title="t('rewind.confirmCodeRewind.title')"
+        :description="t('rewind.confirmCodeRewind.description')"
+        :cancel-label="t('rewind.confirmCodeRewind.cancel')"
+        :confirm-label="t('rewind.confirmCodeRewind.confirm')"
+        danger
+        @cancel="backToOptions"
+        @confirm="confirmFileRewind"
+      />
     </AlertDialogContent>
   </AlertDialog>
 </template>

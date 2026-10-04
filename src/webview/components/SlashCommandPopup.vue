@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue';
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconLoader, IconTerminal } from '@/components/icons';
 import type { SlashCommandItem } from '@shared/types/commands';
@@ -8,9 +8,12 @@ import { escapeHtml } from '@shared/utils';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
 const { t } = useI18n();
+const listLabel = computed(() => (props.mode === 'agent' ? t('composer.agentList') : t('composer.commandList')));
 
 const props = defineProps<{
   isOpen: boolean;
+  /** The listbox id the composer's textarea names in aria-controls; option ids derive from it. */
+  listId: string;
   commands: SlashCommandItem[];
   selectedIndex: number;
   anchorElement: HTMLElement | null;
@@ -40,7 +43,7 @@ function updatePosition() {
 
   popupStyle.value = {
     position: 'fixed',
-    bottom: `${window.innerHeight - rect.top + 8}px`,
+    bottom: `calc(${window.innerHeight - rect.top}px + 0.5rem)`,
     left: `${rect.left}px`,
     width: `${rect.width}px`,
   };
@@ -91,7 +94,7 @@ function highlightMatch(text: string): string {
   const escapedMatch = escapeHtml(text.slice(index, index + props.query.length));
   const escapedAfter = escapeHtml(text.slice(index + props.query.length));
 
-  return `${escapedBefore}<span class="text-primary font-semibold">${escapedMatch}</span>${escapedAfter}`;
+  return `${escapedBefore}<span class="text-(--d-accent-text) font-bold">${escapedMatch}</span>${escapedAfter}`;
 }
 
 function isUntrusted(command: SlashCommandItem): boolean {
@@ -137,32 +140,38 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
 
 <template>
   <Teleport to="body">
-    <Transition
-      enter-active-class="transition-all duration-150 ease-out"
-      enter-from-class="opacity-0 scale-95 translate-y-2"
-      enter-to-class="opacity-100 scale-100 translate-y-0"
-      leave-active-class="transition-all duration-100 ease-in"
-      leave-from-class="opacity-100 scale-100 translate-y-0"
-      leave-to-class="opacity-0 scale-95 translate-y-2"
-    >
+    <Transition name="t-pop-top">
       <div
         v-if="isOpen"
         ref="popupRef"
         :style="popupStyle"
-        class="z-50 bg-muted border border-border rounded-lg shadow-xl overflow-hidden origin-bottom flex flex-col max-h-80"
+        class="z-50 flex max-h-80 origin-bottom flex-col overflow-hidden rounded-xl border border-(--d-border2) bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
       >
         <div class="flex-1 min-h-0 overflow-y-auto">
-          <div class="p-1">
+          <div
+            :id="listId"
+            class="p-1"
+            role="listbox"
+            :aria-label="listLabel"
+          >
             <!-- Loading State -->
-            <div v-if="isLoading" class="px-3 py-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <IconLoader :size="16" class="animate-spin text-primary" />
+            <div
+              v-if="isLoading"
+              class="flex items-center justify-center gap-2 px-3 py-4 text-12.5 text-(--d-muted)"
+            >
+              <IconLoader
+                class="size-4 animate-[d-spin_.9s_linear_infinite] text-(--d-accent)"
+              />
               <span>{{ mode === 'agent' ? t('steerCommand.loadingAgents') : t('slashCommand.loading') }}</span>
             </div>
 
             <!-- Agent Mode -->
             <template v-else-if="mode === 'agent'">
               <!-- Agent Empty State -->
-              <div v-if="agents.length === 0" class="px-3 py-4 text-center text-sm text-muted-foreground">
+              <div
+                v-if="agents.length === 0"
+                class="px-3 py-4 text-center text-12.5 text-(--d-muted)"
+              >
                 {{ t('steerCommand.noAgents') }}
               </div>
 
@@ -170,21 +179,22 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
               <div
                 v-for="(agent, index) in agents"
                 v-else
+                :id="`${listId}-${index}`"
                 :key="agent.id"
                 :ref="el => itemRefs[index] = el as HTMLDivElement"
-                class="px-2 py-1.5 rounded cursor-pointer flex items-center gap-2 transition-all duration-75"
-                :class="index === selectedIndex
-                  ? 'bg-primary/60 text-primary-foreground'
-                  : 'hover:bg-muted text-foreground'"
+                class="flex min-h-8.5 cursor-pointer items-center gap-2.25 rounded-lg px-2.25 py-1.25 text-12.5 transition-colors duration-75"
+                :class="index === selectedIndex ? 'bg-(--d-accent-soft)' : ''"
+                role="option"
+                :aria-selected="index === selectedIndex"
                 @click="emit('select', index)"
                 @mouseenter="$emit('update:selectedIndex', index)"
               >
                 <!-- Status dot -->
                 <span
-                  class="shrink-0 w-2 h-2 rounded-full"
+                  class="shrink-0 size-2 rounded-full"
                   :class="isActive(agent)
-                    ? 'bg-primary animate-pulse'
-                    : 'border border-amber-500'"
+                    ? 'bg-(--d-accent) animate-[d-pulse_1.4s_ease-in-out_infinite]'
+                    : 'border border-(--d-warning)'"
                   aria-hidden="true"
                 />
 
@@ -192,13 +202,13 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
                 <div class="flex-1 min-w-0 flex flex-col">
                   <div class="flex items-center gap-2">
                     <span
-                      class="text-xs px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50 shrink-0"
+                      class="shrink-0 rounded-5 border border-(--d-border) bg-(--d-hover) px-1.5 text-10.5/4.25 text-(--d-muted)"
                     >
                       {{ agentBadge(agent) }}
                     </span>
-                    <span class="text-sm truncate">{{ agentLabel(agent) }}</span>
+                    <span class="truncate">{{ agentLabel(agent) }}</span>
                   </div>
-                  <span class="text-xs text-muted-foreground">
+                  <span class="text-xs text-(--d-muted)">
                     <span class="font-mono">{{ agent.id.slice(0, 8) }}</span>
                     <span v-if="agentStatusText(agent)"> · {{ agentStatusText(agent) }}</span>
                   </span>
@@ -207,7 +217,10 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
             </template>
 
             <!-- Command Empty State -->
-            <div v-else-if="commands.length === 0" class="px-3 py-4 text-center text-sm text-muted-foreground">
+            <div
+              v-else-if="commands.length === 0"
+              class="px-3 py-4 text-center text-12.5 text-(--d-muted)"
+            >
               <div class="mb-1">{{ t('slashCommand.noMatches') }}</div>
               <div class="text-xs opacity-70">{{ t('slashCommand.createHint') }}</div>
             </div>
@@ -216,17 +229,20 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
             <div
               v-for="(cmd, index) in commands"
               v-else
+              :id="`${listId}-${index}`"
               :key="cmd.name"
               :ref="el => itemRefs[index] = el as HTMLDivElement"
-              class="px-2 py-1.5 rounded cursor-pointer flex items-center gap-2 transition-all duration-75"
-              :class="index === selectedIndex
-                ? 'bg-primary/60 text-primary-foreground'
-                : 'hover:bg-muted text-foreground'"
+              class="flex min-h-8.5 cursor-pointer items-center gap-2.25 rounded-lg px-2.25 py-1.25 text-12.5 transition-colors duration-75"
+              :class="index === selectedIndex ? 'bg-(--d-accent-soft)' : ''"
+              role="option"
+              :aria-selected="index === selectedIndex"
               @click="emit('select', index)"
               @mouseenter="$emit('update:selectedIndex', index)"
             >
               <!-- Icon -->
-              <IconTerminal :size="16" class="shrink-0 text-primary" />
+              <IconTerminal
+                class="size-4 shrink-0 text-(--d-accent)"
+              />
 
               <!-- Command info -->
               <div class="flex-1 min-w-0 flex flex-col">
@@ -239,23 +255,24 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
                   <!-- Argument hint -->
                   <span
                     v-if="argumentHint(cmd)"
-                    class="text-xs text-muted-foreground/70 font-mono"
+                    class="text-xs font-mono"
+                    :class="index === selectedIndex ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
                   >
                     {{ argumentHint(cmd) }}
                   </span>
                   <!-- Source badge -->
                   <span
                     v-if="getSourceBadge(cmd)"
-                    class="text-xs px-1.5 py-0.5 rounded border"
+                    class="rounded-5 border px-1.5 text-10.5/4.25"
                     :class="isUntrusted(cmd)
-                      ? 'bg-warning/15 text-warning border-warning/40'
-                      : 'bg-muted-foreground/15 text-muted-foreground border-border/50'"
+                      ? 'border-(--d-warning) text-(--d-warning-text)'
+                      : 'border-(--d-border) bg-(--d-hover) text-(--d-muted)'"
                   >
                     {{ getSourceBadge(cmd) }}
                   </span>
                 </div>
                 <!-- Description -->
-                <span class="text-xs text-muted-foreground truncate">
+                <span class="text-xs text-(--d-muted) truncate">
                   {{ cmd.description }}
                 </span>
               </div>
@@ -263,20 +280,13 @@ function agentStatusText(agent: SteerTargetInfo): string | null {
           </div>
         </div>
 
-        <!-- Footer hints -->
-        <div class="px-3 py-2 border-t border-border/30 bg-card/30 text-xs text-muted-foreground flex items-center gap-4">
-          <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">↑↓</kbd>
-            <span class="opacity-80">{{ t('common.navigate') }}</span>
-          </span>
-          <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Tab</kbd>
-            <span class="opacity-80">{{ t('common.select') }}</span>
-          </span>
-          <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Esc</kbd>
-            <span class="opacity-80">{{ t('common.close') }}</span>
-          </span>
+        <div
+          class="flex items-center gap-3.5 border-t border-(--d-border) bg-(--d-panel) px-3 py-1.75 text-11 text-(--d-faint)"
+          aria-hidden="true"
+        >
+          <span class="flex items-center gap-1"><kbd class="rounded-md border border-(--d-border) bg-(--d-card) px-1.5 py-px font-mono text-10.5">↑↓</kbd>{{ t('composer.acNavigate') }}</span>
+          <span class="flex items-center gap-1"><kbd class="rounded-md border border-(--d-border) bg-(--d-card) px-1.5 py-px font-mono text-10.5">Tab</kbd>{{ t('composer.acSelect') }}</span>
+          <span class="flex items-center gap-1"><kbd class="rounded-md border border-(--d-border) bg-(--d-card) px-1.5 py-px font-mono text-10.5">Esc</kbd>{{ t('composer.acClose') }}</span>
         </div>
       </div>
     </Transition>

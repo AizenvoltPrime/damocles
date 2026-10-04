@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { IconExternalLink, IconMicrophone } from "@/components/icons";
+import { Download, ExternalLink, Mic } from "lucide-vue-next";
 import OverlayShell from "./OverlayShell.vue";
 import type { ModelUpgradeInfo } from "@/stores/useVoiceJarvisStore";
 
@@ -49,68 +47,69 @@ function handleOpenLicense(url: string): void {
   <OverlayShell
     :title="t('voiceModelUpgrade.title')"
     :subtitle="subtitle"
-    :icon="IconMicrophone"
-    icon-class="text-primary"
+    :icon="Mic"
+    max-width="40rem"
+    data-testid="voice-model-upgrade"
     @close="handleDismiss"
   >
-    <div class="p-6 max-w-3xl mx-auto space-y-4">
-      <Card>
-        <CardHeader class="pb-3">
-          <CardTitle class="text-sm flex items-center justify-between">
-            <span>{{ t("voiceModelUpgrade.totalDownloadSize") }}</span>
-            <span class="text-muted-foreground font-normal">{{ formatGB(totalBytes) }}</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent class="text-xs text-muted-foreground">
-          {{ t("voiceModelUpgrade.rollbackNote") }}
-        </CardContent>
-      </Card>
-
-      <div class="space-y-3">
-        <Card v-for="u in upgrades" :key="u.modelId">
-          <CardContent class="pt-4 space-y-2">
-            <div class="flex items-baseline justify-between gap-2">
-              <div class="flex flex-col min-w-0">
-                <span class="text-sm font-medium text-foreground truncate">{{ u.modelId }}</span>
-                <span class="text-xs text-muted-foreground">{{ u.description }}</span>
-              </div>
-              <span class="text-xs text-muted-foreground tabular-nums shrink-0">
-                v{{ u.installedVersion }} → v{{ u.newVersion }}
-              </span>
-            </div>
-            <div class="flex items-center justify-between text-xs text-muted-foreground">
-              <span>{{ formatGB(u.bytesDelta) }}</span>
-              <span>{{ u.license }}</span>
-            </div>
-            <div v-if="u.licenseUrl">
-              <Button
-                variant="link"
-                size="sm"
-                class="h-auto p-0 text-xs gap-1"
-                @click="handleOpenLicense(u.licenseUrl)"
-              >
-                <IconExternalLink :size="12" />
-                {{ t("voiceModelUpgrade.reviewLicense") }}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+    <div class="flex flex-col gap-3 px-4.5 pt-4 pb-5">
+      <div
+        v-for="u in upgrades"
+        :key="u.modelId"
+        class="flex flex-col gap-1 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5"
+      >
+        <div class="flex items-center gap-2 text-12.5">
+          <span class="min-w-0 flex-1 truncate font-medium">{{ u.modelId }}</span>
+          <span class="flex-none font-mono text-xs text-(--d-muted) tabular-nums">v{{ u.installedVersion }} → v{{ u.newVersion }}</span>
+        </div>
+        <p class="text-xs text-pretty text-(--d-muted)">
+          {{ u.description }}
+        </p>
+        <div class="flex items-center gap-2 text-11 text-(--d-faint)">
+          <span class="font-mono">{{ formatGB(u.bytesDelta) }}</span>
+          <span class="rounded-5 bg-(--d-hover) px-1.5 text-10.5 text-(--d-muted)">{{ u.license }}</span>
+          <span class="flex-1" />
+          <button
+            v-if="u.licenseUrl"
+            type="button"
+            class="flex items-center gap-1 text-xs text-(--d-accent) hover:underline"
+            @click="handleOpenLicense(u.licenseUrl)"
+          >
+            <ExternalLink
+              class="size-3"
+              aria-hidden="true"
+            />
+            {{ t("voiceModelUpgrade.reviewLicense") }}
+          </button>
+        </div>
       </div>
+      <p class="text-xs text-pretty text-(--d-faint)">
+        {{ t("voiceModelUpgrade.rollbackNote") }}
+      </p>
+    </div>
 
-      <div class="flex justify-end gap-2 pt-2">
-        <Button
-          variant="outline"
+    <template #footer>
+      <footer class="flex flex-none items-center gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
+        <span class="flex-1 text-11.5 text-(--d-faint)">{{ t("voiceModelUpgrade.totalDownloadSize") }} <span class="font-mono text-(--d-muted)">{{ formatGB(totalBytes) }}</span></span>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
           @click="handleDismiss"
         >
           {{ t("voiceModelUpgrade.dismiss") }}
-        </Button>
-        <Button
-          variant="default"
+        </button>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
           @click="handleAccept"
         >
+          <Download
+            class="size-3.25"
+            aria-hidden="true"
+          />
           {{ t("voiceModelUpgrade.accept") }}
-        </Button>
-      </div>
-    </div>
+        </button>
+      </footer>
+    </template>
   </OverlayShell>
 </template>

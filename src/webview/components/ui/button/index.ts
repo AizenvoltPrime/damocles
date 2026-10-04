@@ -9,8 +9,9 @@ export const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        // The fill stays opaque on hover: --d-on-danger is chosen against the solid danger color.
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+          "bg-destructive text-destructive-foreground hover:shadow-[0_0_0_3px_color-mix(in_srgb,var(--d-danger)_28%,transparent)]",
         outline:
           "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
         secondary:
@@ -22,7 +23,7 @@ export const buttonVariants = cva(
         "default": "h-10 px-4 py-2",
         "sm": "h-9 rounded-md px-3",
         "lg": "h-11 rounded-md px-8",
-        "icon": "h-10 w-10",
+        "icon": "size-10 ",
         "icon-sm": "size-9",
         "icon-lg": "size-11",
       },

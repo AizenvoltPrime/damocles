@@ -27,23 +27,11 @@ const note = ref("");
 const noteInput = ref<HTMLTextAreaElement | null>(null);
 const stopButton = ref<ComponentPublicInstance | null>(null);
 
-/** Roughly four lines of the note field; past this the textarea scrolls instead of growing the card. */
-const MAX_NOTE_HEIGHT = 72;
-
-function adjustNoteHeight(): void {
-  const textarea = noteInput.value;
-  if (!textarea) return;
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_NOTE_HEIGHT)}px`;
-  textarea.style.overflowY = textarea.scrollHeight > MAX_NOTE_HEIGHT ? "auto" : "hidden";
-}
-
 async function openNote(): Promise<void> {
   if (isStopping.value) return;
   isNoteMode.value = true;
   await nextTick();
   noteInput.value?.focus();
-  adjustNoteHeight();
 }
 
 /** The trigger is aria-disabled rather than disabled so closing the note has somewhere to put focus. */
@@ -74,7 +62,6 @@ function handleNoteKeydown(event: KeyboardEvent): void {
     note.value = note.value.substring(0, start) + "\n" + note.value.substring(end);
     void nextTick(() => {
       textarea.selectionStart = textarea.selectionEnd = start + 1;
-      adjustNoteHeight();
       textarea.scrollTop = textarea.scrollHeight;
     });
     return;
@@ -101,17 +88,16 @@ function submit(): void {
   <!-- Stops the click so pressing Stop or typing a note never expands the card underneath. -->
   <div v-if="isVisible" class="flex items-center gap-1 shrink-0" @click.stop>
     <template v-if="isNoteMode && !isStopping">
+      <!-- One line is the h-6 buttons' height (hence pb-0.5); max-h-18 holds four lines, then the note scrolls. -->
       <textarea
         ref="noteInput"
         v-model="note"
         rows="1"
         :placeholder="t('toolCall.cancelNotePlaceholder')"
         :aria-label="t('toolCall.cancelNotePlaceholder')"
-        :style="{ maxHeight: `${MAX_NOTE_HEIGHT}px` }"
-        class="w-44 min-h-6 resize-none overflow-hidden rounded-md border border-input bg-background px-2 py-1 text-xs leading-4 text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        class="max-h-18 w-44 min-h-6 resize-none overflow-x-hidden overflow-y-auto rounded-md border border-input bg-background px-2 pb-0.5 pt-1 text-xs/4 text-foreground field-sizing-content placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         @keydown="handleNoteKeydown"
         @keydown.esc.stop.prevent="closeNote"
-        @input="adjustNoteHeight"
       ></textarea>
       <Button variant="secondary" size="sm" class="h-6 px-2 text-xs" @click="submit">
         {{ t("toolCall.cancelNoteSubmit") }}

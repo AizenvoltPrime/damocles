@@ -98,7 +98,7 @@ const ACTION_BUTTON = 'size-7 shrink-0 rounded-md text-muted-foreground hover:bg
     <div
       v-if="overlay"
       aria-hidden="true"
-      class="h-full min-w-0 flex-1 animate-in fade-in-0 bg-black/25 duration-200"
+      class="h-full min-w-0 flex-1 d-fade-in bg-black/25"
       @click="collapse"
     />
     <section
@@ -106,7 +106,7 @@ const ACTION_BUTTON = 'size-7 shrink-0 rounded-md text-muted-foreground hover:bg
       :key="openCount"
       :aria-label="t('pane.label')"
       :class="cn(
-        'flex h-full min-w-0 bg-background text-foreground animate-in fade-in-0 slide-in-from-right-8 duration-200 ease-out',
+        'flex h-full min-w-0 bg-background text-foreground d-enter-from-end',
         overlay ? 'shrink-0 shadow-[-12px_0_32px_rgb(0_0_0/0.35)]' : 'flex-1',
       )"
       :style="overlay ? { width: `${state.width}px` } : undefined"
@@ -186,7 +186,7 @@ const ACTION_BUTTON = 'size-7 shrink-0 rounded-md text-muted-foreground hover:bg
               class="absolute inset-x-0 -bottom-px h-0.5 overflow-hidden"
               aria-hidden="true"
             >
-              <div class="h-full w-1/3 animate-[indeterminate_1.2s_ease-in-out_infinite] bg-info" />
+              <div class="d-sweep-bar h-full text-info" />
             </div>
           </div>
         </div>

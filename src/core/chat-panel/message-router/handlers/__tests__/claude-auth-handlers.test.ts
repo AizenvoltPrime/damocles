@@ -215,12 +215,5 @@ describe("createClaudeAuthHandlers", () => {
 
       expect(publishAccountInfo).not.toHaveBeenCalled();
     });
-
-    it("reading the auth status changes nothing, so it does not republish", () => {
-      handlers.getClaudeAuthStatus!({ type: "getClaudeAuthStatus" }, ctx);
-
-      expect(sent.some((m) => m.type === "claudeAuthStatusChanged")).toBe(true);
-      expect(publishAccountInfo).not.toHaveBeenCalled();
-    });
   });
 });

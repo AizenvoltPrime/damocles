@@ -22,6 +22,7 @@ import {
 import { createEditTool } from './edit-tool';
 import { createBashTool, type ShellOptions } from './bash-tool';
 import { createFindTool, createGrepTool } from './search-tools';
+import { createWriteTool } from './write-tool';
 import { resolveRgPath } from '../../chat-panel/ripgrep';
 import { platform } from '../../platform-host';
 import { withPerCallCancel } from './cancellable-shell';
@@ -122,7 +123,7 @@ export interface ModuleToolNameDeps {
  * `CUSTOM_TOOL_NAMES` because `PI_NATIVE_ACTIVE_TOOLS` already carries them, and listing an override
  * in both makes `fullActiveToolNames` name it twice.
  */
-export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find'];
+export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', 'write'];
 
 /**
  * Names of the Damocles custom tools, in active-set order. Every name MUST also be passed in the
@@ -146,9 +147,10 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
  * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, the Task list tools, plan,
- * question). The native `read/write/ls` come from pi directly. `bash` is pi's own tool, re-registered
+ * question). The native `read/ls` come from pi directly. `bash` is pi's own tool, re-registered
  * here under the same name so the panel owns a per-call abort controller for it; `grep` and `find`
- * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd.
+ * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd; `write` is
+ * re-registered so a write that replaces a file records its patch.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   const { pi, cwd, permissionHandler, getShellOptions, shellCancel, deliverUserNote, shellJob, memoryService, compassService, browserService, browserScopeId, browserChat, getSessionId, getPlanFilePath, subagentManager, teamService, imageGeneration, isTeamEnabled } = deps;
@@ -162,6 +164,7 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     createBashTool(pi, cwd, { getShellOptions, cancelRegistry, shellJob }),
     createGrepTool(pi, cwd, rgPath, readRuleFilter),
     createFindTool(pi, cwd, rgPath, readRuleFilter),
+    createWriteTool(pi, cwd),
     createEditTool(pi, cwd),
     withPerCallCancel(createPowerShellTool(pi, cwd, shellJob), cancelRegistry),
     taskCreate,

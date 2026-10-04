@@ -201,7 +201,7 @@ describe('page tab strip', () => {
     expect(tabs[1]!.attributes('aria-controls')).toBeUndefined();
     expect(tabs[0]!.find('img').attributes('src')).toBe('data:image/png;base64,AA==');
     expect(tabs[2]!.find('img').exists()).toBe(false);
-    expect(tabs[1]!.find('.animate-spin').exists()).toBe(true);
+    expect(tabs[1]!.find('.d-spinning').exists()).toBe(true);
     expect(wrapper.find('[role="tab"] button, [role="tab"] [tabindex]:not([role="tab"])').exists()).toBe(false);
   });
 

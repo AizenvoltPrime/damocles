@@ -49,7 +49,7 @@ const toastClasses = {
     </template>
     <template #loading-icon>
       <div class="toast-icon toast-icon-loading">
-        <Loader2Icon class="size-3.5 animate-spin" />
+        <Loader2Icon class="size-3.5 d-spinning" />
       </div>
     </template>
     <template #close-icon>

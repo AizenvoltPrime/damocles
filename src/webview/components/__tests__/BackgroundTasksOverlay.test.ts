@@ -47,7 +47,7 @@ beforeEach(() => {
 });
 
 describe('BackgroundTasksOverlay', () => {
-  it('lists one subagent card per task, in launch order, with the card’s usage', () => {
+  it('lists one subagent row per task, in launch order, with the run’s usage', () => {
     const tasks = useBackgroundTaskStore();
     tasks.handleTaskStarted(task({ taskId: 'a1', toolUseId: 'tc1' }));
     tasks.handleTaskStarted(task({ taskId: 'a2', toolUseId: 'tc2' }));
@@ -57,17 +57,29 @@ describe('BackgroundTasksOverlay', () => {
     };
     const wrapper = render();
 
-    const cards = wrapper.findAllComponents({ name: 'SubagentCard' });
-    expect(cards.map((c) => (c.props('subagent') as SubagentState).id)).toEqual(['tc1', 'tc2']);
+    const rows = wrapper.findAll('[data-testid="bg-subagent-row"]');
+    expect(rows.map((row) => row.text())).toEqual([expect.stringContaining('first'), expect.stringContaining('second')]);
     expect(wrapper.findAll('[data-part="tokens"]').map((t) => t.text())).toEqual(['10.0K tokens', '10.0K tokens']);
   });
 
-  it('opens the subagent overlay when a card is clicked', async () => {
+  it('counts a row\'s tools in one Greek phrase with the Greek plural', () => {
+    i18n.global.locale.value = 'el';
+    try {
+      useBackgroundTaskStore().handleTaskStarted(task());
+      useSubagentStore().subagents = { tc1: card({ toolCalls: [{ id: 't1', name: 'Read', input: {}, status: 'completed' }] as SubagentState['toolCalls'] }) };
+
+      expect(render().get('[data-testid="bg-subagent-row"]').text()).toContain('1 εργαλείο');
+    } finally {
+      i18n.global.locale.value = 'en';
+    }
+  });
+
+  it('opens the subagent overlay when a row is clicked', async () => {
     useBackgroundTaskStore().handleTaskStarted(task());
     useSubagentStore().subagents = { tc1: card() };
     const wrapper = render();
 
-    await wrapper.findComponent({ name: 'SubagentCard' }).trigger('click');
+    await wrapper.get('[data-testid="bg-subagent-row"]').trigger('click');
 
     expect(useSubagentStore().expandedSubagentId).toBe('tc1');
   });
@@ -79,7 +91,7 @@ describe('BackgroundTasksOverlay', () => {
 
     await wrapper.get('[data-action="stop"]').trigger('click');
 
-    expect(postMessage).toHaveBeenCalledWith({ type: 'stopBackgroundTask', taskId: 'a1' });
+    expect(postMessage).toHaveBeenCalledWith({ type: 'stopSubagent', agentId: 'a1' });
     expect(wrapper.find('[data-action="dismiss"]').exists()).toBe(false);
     expect(useSubagentStore().expandedSubagentId).toBeNull();
   });
@@ -93,7 +105,7 @@ describe('BackgroundTasksOverlay', () => {
     await nextTick();
 
     expect(useBackgroundTaskStore().tasks).toEqual([]);
-    expect(wrapper.findComponent({ name: 'SubagentCard' }).exists()).toBe(false);
+    expect(wrapper.find('[data-testid="bg-subagent-row"]').exists()).toBe(false);
     expect(postMessage).not.toHaveBeenCalled();
   });
 
@@ -105,7 +117,7 @@ describe('BackgroundTasksOverlay', () => {
     expect(wrapper.text()).not.toContain('No background tasks');
     await wrapper.get('[data-action="stop"]').trigger('click');
 
-    expect(postMessage).toHaveBeenCalledWith({ type: 'stopBackgroundTask', taskId: 'a1' });
+    expect(postMessage).toHaveBeenCalledWith({ type: 'stopSubagent', agentId: 'a1' });
   });
 
   it('shows the empty state with no tasks', () => {

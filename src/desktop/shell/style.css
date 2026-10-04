@@ -1,2 +1,50 @@
 @import "../../webview/style.css";
 @source "../../webview/components/ui";
+
+@theme {
+  --font-mono: var(--d-mono);
+}
+
+/* AD7 frameless window: the title bar drags the window; its controls opt out. */
+.title-bar {
+  -webkit-app-region: drag;
+  /* Window Controls Overlay (Windows, Linux): keep clear of the native controls main draws on the right. */
+  padding-left: env(titlebar-area-x, 0px);
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+}
+
+/* macOS has no Window Controls Overlay; this inset clears the traffic lights at trafficLightPosition { x: 12, y: 13 }. */
+.title-bar.title-bar-darwin {
+  padding-left: 80px;
+  padding-right: 0;
+}
+
+.title-bar-control {
+  -webkit-app-region: no-drag;
+}
+
+/* --avatar-hue comes from project-avatar.ts; the light palette needs a darker initial to keep AA contrast. */
+.project-avatar {
+  background-color: oklch(0.72 0.13 var(--avatar-hue) / 0.2);
+  color: oklch(0.72 0.14 var(--avatar-hue));
+  transition: box-shadow 0.2s;
+}
+
+.vscode-light .project-avatar {
+  background-color: oklch(0.72 0.13 var(--avatar-hue) / 0.25);
+  color: oklch(0.46 0.14 var(--avatar-hue));
+}
+
+.project-avatar-ring {
+  box-shadow: 0 0 0 1.5px oklch(0.72 0.14 var(--avatar-hue));
+}
+
+.provider-logo > svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Reference section collapse (secTrans); off while a row sash drags so the section follows the pointer. */
+.sidebar-sections-animated .sidebar-section {
+  transition: flex 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}

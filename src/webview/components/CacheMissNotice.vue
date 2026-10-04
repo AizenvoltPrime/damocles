@@ -3,7 +3,8 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { CacheMissNotice as CacheMissNoticeType } from '@shared/types/session';
 import { formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
-import { IconDatabase } from '@/components/icons';
+import { Database } from 'lucide-vue-next';
+import TranscriptNotice from './TranscriptNotice.vue';
 import { CACHE_TTL_MS } from '@shared/types/constants';
 
 const { t, locale } = useI18n();
@@ -41,19 +42,12 @@ const idleMinutes = computed(() => Math.round(props.notice.idleMs / 60000));
 </script>
 
 <template>
-  <!-- py-2 (not my-2): the scroll engine measures element height, and margins are collapsed/ignored. -->
-  <div class="mx-4 py-2">
-    <div class="flex items-start gap-2.5 rounded-md border border-info/30 bg-muted px-3 py-2 text-xs">
-      <div class="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center text-info">
-        <IconDatabase :size="14" />
-      </div>
-      <div class="flex flex-col gap-0.5">
-        <span class="font-medium text-foreground">{{ title }}</span>
-        <span class="text-muted-foreground">{{ detailText }}</span>
-        <span v-if="showIdleHint" class="text-muted-foreground/80">
-          {{ t('cacheMiss.idleHint', { minutes: idleMinutes }) }}
-        </span>
-      </div>
-    </div>
-  </div>
+  <TranscriptNotice
+    tone="info"
+    :icon="Database"
+    :title="title"
+  >
+    <span>{{ detailText }}</span>
+    <span v-if="showIdleHint">{{ t('cacheMiss.idleHint', { minutes: idleMinutes }) }}</span>
+  </TranscriptNotice>
 </template>

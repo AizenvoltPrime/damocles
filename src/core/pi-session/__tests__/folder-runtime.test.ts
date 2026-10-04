@@ -265,8 +265,8 @@ describe('ToolSearch republishers', () => {
     // last one, leaving every earlier panel's ToolSearch description frozen for the session's life.
     const folder = bareFolder(made);
     const fired: string[] = [];
-    folder.registerToolSearchRepublisher(() => fired.push('panelA'));
-    folder.registerToolSearchRepublisher(() => fired.push('panelB'));
+    folder.attachExtensionInstance({} as never, () => fired.push('panelA'));
+    folder.attachExtensionInstance({} as never, () => fired.push('panelB'));
 
     folder.republishToolSearch();
 
@@ -278,9 +278,9 @@ describe('ToolSearch republishers', () => {
     // but closure identity, would silently freeze every live panel's menu.
     const folder = bareFolder(made);
     const fired: string[] = [];
-    const disposeA = folder.registerToolSearchRepublisher(() => fired.push('panelA'));
-    folder.registerToolSearchRepublisher(() => fired.push('panelB'));
-    folder.registerToolSearchRepublisher(() => fired.push('panelC'));
+    const disposeA = folder.attachExtensionInstance({} as never, () => fired.push('panelA'));
+    folder.attachExtensionInstance({} as never, () => fired.push('panelB'));
+    folder.attachExtensionInstance({} as never, () => fired.push('panelC'));
 
     disposeA();
     folder.republishToolSearch();
@@ -303,12 +303,12 @@ describe('ToolSearch republishers', () => {
     const fired: string[] = [];
     let attempts = 0;
     let failing = true;
-    folder.registerToolSearchRepublisher(() => {
+    folder.attachExtensionInstance({} as never, () => {
       attempts++;
       if (failing) throw new Error('extension context is no longer active');
       fired.push('recovered');
     });
-    folder.registerToolSearchRepublisher(() => fired.push('live'));
+    folder.attachExtensionInstance({} as never, () => fired.push('live'));
 
     folder.republishToolSearch();
     expect(attempts).toBe(1);
@@ -329,11 +329,11 @@ describe('ToolSearch republishers', () => {
   it('does not grow across repeated teardowns — the count tracks live instances, not lifetime registrations', () => {
     const folder = bareFolder(made);
     const fired: string[] = [];
-    folder.registerToolSearchRepublisher(() => fired.push('survivor'));
+    folder.attachExtensionInstance({} as never, () => fired.push('survivor'));
     expect(registeredCount(folder)).toBe(1);
 
     for (let i = 0; i < 20; i++) {
-      const dispose = folder.registerToolSearchRepublisher(() => fired.push(`transient-${i}`));
+      const dispose = folder.attachExtensionInstance({} as never, () => fired.push(`transient-${i}`));
       expect(registeredCount(folder)).toBe(2);
       dispose();
       expect(registeredCount(folder)).toBe(1);
@@ -346,7 +346,7 @@ describe('ToolSearch republishers', () => {
   it('dispose() clears the republisher registry, not just the active-tool refreshers', async () => {
     const folder = bareFolder(made);
     const fired: string[] = [];
-    const dispose = folder.registerToolSearchRepublisher(() => fired.push('gone'));
+    const dispose = folder.attachExtensionInstance({} as never, () => fired.push('gone'));
 
     await folder.dispose();
 
@@ -400,7 +400,7 @@ describe('unbound extension instances', () => {
             throw new Error('packageManager.resolve failed');
           }
           const id = `instance-${++seq}`;
-          folder.registerToolSearchRepublisher(() => fired.push(id));
+          folder.attachExtensionInstance({} as never, () => fired.push(id));
           await Promise.resolve();
         },
         extendResources: () => undefined,
@@ -409,7 +409,7 @@ describe('unbound extension instances', () => {
     };
     const internals = folder as unknown as { _services: unknown; _trackCurrentInstanceAsUnbound(): void };
     internals._services = services;
-    folder.registerToolSearchRepublisher(() => fired.push('init'));
+    folder.attachExtensionInstance({} as never, () => fired.push('init'));
     internals._trackCurrentInstanceAsUnbound();
     return { fired, failNextReload: () => { failNext = true; } };
   }

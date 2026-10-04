@@ -1,20 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, useId } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall, ToolResultOwner } from '@shared/types/session';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import {
-  IconMcp,
-  IconCheck,
-  IconXCircle,
-  IconWarning,
-  IconChevronDown,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { ChevronRight, CircleCheck, CircleX, CornerDownRight, LoaderCircle, Plug } from 'lucide-vue-next';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -34,6 +22,7 @@ const emit = defineEmits<{
 
 const isInputExpanded = ref(true);
 const isResponseExpanded = ref(true);
+const ids = useId();
 
 const parsedToolName = computed(() => {
   const name = props.tool.name;
@@ -58,16 +47,10 @@ const isFailed = computed(() => props.tool.status === 'failed');
 const isCompleted = computed(() => props.tool.status === 'completed');
 
 const statusBadge = computed(() => {
-  if (isRunning.value) {
-    return { label: t('toolOverlay.statusRunning'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
-  }
-  if (isCompleted.value) {
-    return { label: t('toolOverlay.statusCompleted'), class: 'bg-success/30 text-success border-success/30', icon: IconCheck };
-  }
-  if (isFailed.value) {
-    return { label: t('toolOverlay.statusFailed'), class: 'bg-error/30 text-error border-error/30', icon: IconXCircle };
-  }
-  return { label: props.tool.status, class: 'bg-muted text-muted-foreground border-muted', icon: IconWarning };
+  if (isRunning.value) return { label: t('toolOverlay.statusRunning'), class: 'd-tone-accent', pulse: true };
+  if (isCompleted.value) return { label: t('toolOverlay.statusCompleted'), class: 'd-tone-success' };
+  if (isFailed.value) return { label: t('toolOverlay.statusFailed'), class: 'd-tone-danger' };
+  return { label: props.tool.status, class: 'd-tone-muted' };
 });
 
 const hasResult = computed(() => Boolean(resultText.value.trim()) || (props.tool.imageCount ?? 0) > 0);
@@ -113,88 +96,141 @@ function closeLightbox(): void {
 
 <template>
   <OverlayShell
+    max-width="47.5rem"
     :title="parsedToolName.toolName"
     :subtitle="parsedToolName.serverName || undefined"
-    :icon="IconMcp"
-    icon-class="text-primary"
+    :icon="Plug"
     :status-badge="statusBadge"
     @close="emit('close')"
   >
-    <div class="p-4 space-y-4">
-      <div v-if="isFailed && tool.errorMessage" class="text-error">
-        <div class="flex items-center gap-2 mb-2 text-xs font-medium">
-          <IconXCircle :size="14" />
-          <span>{{ t('common.error') }}</span>
-        </div>
-        <div class="pl-2 font-mono text-sm">{{ tool.errorMessage }}</div>
+    <div class="flex flex-col gap-3 px-4.5 pt-3.5 pb-4.5 text-13">
+      <section class="overflow-hidden rounded-10 border border-(--d-border) bg-(--d-card)">
+        <button
+          type="button"
+          class="flex h-8.5 w-full items-center gap-2 px-3 text-left text-xs font-semibold text-(--d-muted) transition-colors hover:bg-(--d-hover)"
+          :aria-expanded="isInputExpanded"
+          :aria-controls="isInputExpanded ? `${ids}-input` : undefined"
+          @click="isInputExpanded = !isInputExpanded"
+        >
+          <ChevronRight
+            class="size-3.25 transition-transform duration-200"
+            :class="isInputExpanded && 'rotate-90'"
+            aria-hidden="true"
+          />
+          <CornerDownRight
+            class="size-3 text-(--d-faint)"
+            aria-hidden="true"
+          />
+          {{ t('mcpToolOverlay.input') }}
+        </button>
+        <Transition name="t-fade">
+          <div
+            v-if="isInputExpanded"
+            :id="`${ids}-input`"
+            class="border-t border-(--d-border)"
+          >
+            <CodeBlock
+              v-if="hasInput"
+              bare
+              :code="inputAsJson"
+              language="json"
+            />
+            <p
+              v-else
+              class="py-2.5 pr-3.5 pl-8.25 text-xs text-(--d-faint) italic"
+            >
+              {{ t('mcpToolOverlay.noInput') }}
+            </p>
+          </div>
+        </Transition>
+      </section>
+
+      <div
+        v-if="isRunning"
+        class="flex items-center justify-center gap-2.25 py-6.5 text-12.5 text-(--d-muted)"
+      >
+        <LoaderCircle
+          class="size-4 d-spinning text-(--d-accent)"
+          aria-hidden="true"
+        />{{ t('mcpToolOverlay.running') }}
       </div>
 
-      <div v-else-if="isRunning" class="text-center text-muted-foreground text-sm py-8">
-        <LoadingSpinner :size="24" class="mx-auto mb-2" />
-        <p>{{ t('mcpToolOverlay.running') }}</p>
+      <div
+        v-if="isFailed && tool.errorMessage"
+        role="alert"
+        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
+      >
+        <CircleX
+          class="size-3.5 mt-0.5 flex-none"
+          aria-hidden="true"
+        />
+        <span class="font-mono text-xs wrap-break-word">{{ tool.errorMessage }}</span>
       </div>
 
-      <template v-else>
-        <!-- Input Section -->
-        <Collapsible v-model:open="isInputExpanded">
-          <CollapsibleTrigger
-            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
+      <section
+        v-if="hasResult"
+        class="overflow-hidden rounded-10 border border-(--d-border) bg-(--d-card)"
+      >
+        <button
+          type="button"
+          class="flex h-8.5 w-full items-center gap-2 px-3 text-left text-xs font-semibold text-(--d-muted) transition-colors hover:bg-(--d-hover)"
+          :aria-expanded="isResponseExpanded"
+          :aria-controls="isResponseExpanded ? `${ids}-output` : undefined"
+          @click="isResponseExpanded = !isResponseExpanded"
+        >
+          <ChevronRight
+            class="size-3.25 transition-transform duration-200"
+            :class="isResponseExpanded && 'rotate-90'"
+            aria-hidden="true"
+          />
+          <component
+            :is="isFailed ? CircleX : CircleCheck"
+            class="size-3"
+            :class="isFailed ? 'text-(--d-danger)' : 'text-(--d-success)'"
+            aria-hidden="true"
+          />
+          {{ t('mcpToolOverlay.response') }}
+        </button>
+        <Transition name="t-fade">
+          <div
+            v-if="isResponseExpanded"
+            :id="`${ids}-output`"
+            class="flex flex-col gap-3 border-t border-(--d-border) bg-(--d-code)"
           >
-            <IconChevronDown
-              :size="14"
-              class="text-muted-foreground transition-transform duration-200"
-              :class="{ '-rotate-90': !isInputExpanded }"
+            <template v-if="resultText.trim()">
+              <CodeBlock
+                v-if="responseIsJson"
+                bare
+                :code="formattedResponse"
+                language="json"
+              />
+              <MarkdownRenderer
+                v-else
+                class="px-3.5 py-2.5"
+                :content="formattedResponse"
+              />
+            </template>
+            <ToolResultImages
+              :tool="tool"
+              :owner="owner"
+              @open="openImageLightbox"
             />
-            <span class="text-xs font-medium text-muted-foreground">{{ t('mcpToolOverlay.input') }}</span>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div class="mt-2">
-              <CodeBlock v-if="hasInput" :code="inputAsJson" language="json" />
-              <div v-else class="text-sm text-muted-foreground italic pl-6">
-                {{ t('mcpToolOverlay.noInput') }}
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+          </div>
+        </Transition>
+      </section>
 
-        <!-- Response Section -->
-        <Collapsible v-if="hasResult" v-model:open="isResponseExpanded">
-          <CollapsibleTrigger
-            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
-          >
-            <IconChevronDown
-              :size="14"
-              class="text-primary transition-transform duration-200"
-              :class="{ '-rotate-90': !isResponseExpanded }"
-            />
-            <span class="text-xs font-medium text-primary">{{ t('mcpToolOverlay.response') }}</span>
-            <IconCheck :size="14" class="text-primary" />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div class="mt-2 space-y-3">
-              <template v-if="resultText.trim()">
-                <template v-if="responseIsJson">
-                  <CodeBlock :code="formattedResponse" language="json" />
-                </template>
-                <template v-else>
-                  <div class="pl-2">
-                    <MarkdownRenderer :content="formattedResponse" />
-                  </div>
-                </template>
-              </template>
-
-              <ToolResultImages :tool="tool" :owner="owner" @open="openImageLightbox" />
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-
-        <!-- No Response State -->
-        <div v-else class="text-center text-muted-foreground text-sm py-8">
-          <p>{{ t('mcpToolOverlay.noResponse') }}</p>
-        </div>
-      </template>
+      <p
+        v-else-if="!isFailed && !isRunning"
+        class="py-6.5 text-center text-12.5 text-(--d-muted)"
+      >
+        {{ t('mcpToolOverlay.noResponse') }}
+      </p>
     </div>
 
-    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="closeLightbox" />
+    <ImageLightbox
+      :open="lightboxImageUrl !== null"
+      :image-url="lightboxImageUrl ?? ''"
+      @close="closeLightbox"
+    />
   </OverlayShell>
 </template>

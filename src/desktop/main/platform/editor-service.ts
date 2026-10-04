@@ -2,26 +2,27 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import type { Disposable } from '../../../platform/disposable';
 import type { DiffView, EditorService } from '../../../platform/editor-service';
-import type { ShellService } from '../../../platform/shell-service';
+import type { WindowService } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { fileDocument, knownLanguageId, memoryDocument, readFileText, sideDocument } from './editor-document';
 
 export interface ChatTabMessenger {
-  // Posts to the requesting chat tab (or the fallback tab, opened when none is), reveals it, and resolves the core panel id it went to.
+  // Posts to the requesting chat (or the fallback chat, opened when none is), reveals it, and resolves the core panel id it went to.
   show(panelId: string | undefined, message: ExtensionToWebviewMessage): Promise<string>;
-  // Posts only to that chat tab, and only while it is open; never reveals or opens a tab.
+  // Posts only to that chat, and only while it is loaded; never reveals or opens a chat.
   post(panelId: string, message: ExtensionToWebviewMessage): void;
 }
 
-// Editors render as read-only overlays in a chat tab's webview; the host builds every document, so the renderer never reads a file.
-export function createDesktopEditorService(shell: ShellService, tabs: ChatTabMessenger): EditorService {
+// Editors render as read-only overlays in a chat's webview; the host builds every document, so the renderer never reads a file.
+export function createDesktopEditorService(tabs: ChatTabMessenger, openAppSettings: WindowService['openAppSettings']): EditorService {
   const unavailable = (feature: string): Promise<never> => Promise.reject(new Error(`${feature} is not available in the desktop app yet`));
+  const openFile: EditorService['openFile'] = async (filePath, opts) => {
+    const line = opts?.line !== undefined && Number.isInteger(opts.line) && opts.line > 0 ? opts.line : undefined;
+    const document = await fileDocument(filePath);
+    await tabs.show(opts?.panelId, { type: 'editorOpenFile', viewId: randomUUID(), title: path.basename(filePath), document, ...(line !== undefined ? { line } : {}) });
+  };
   return {
-    openFile: async (filePath, opts) => {
-      const line = opts?.line !== undefined && Number.isInteger(opts.line) && opts.line > 0 ? opts.line : undefined;
-      const document = await fileDocument(filePath);
-      await tabs.show(opts?.panelId, { type: 'editorOpenFile', viewId: randomUUID(), title: path.basename(filePath), document, ...(line !== undefined ? { line } : {}) });
-    },
+    openFile,
     openUntitled: async (content, language, opts) => {
       const languageId = knownLanguageId(language);
       const name = `untitled.${language}`;
@@ -50,13 +51,14 @@ export function createDesktopEditorService(shell: ShellService, tabs: ChatTabMes
         },
       };
     },
-    // markdownPreview is off on desktop, so no webview control requests this; revealing keeps a model-named file from being launched.
-    showMarkdownPreview: (filePath) => shell.revealPath(filePath),
+    // Opens in the asking chat's read-only editor, never through the OS, so a model-named file is not launched.
+    showMarkdownPreview: (filePath, opts) => openFile(filePath, opts?.panelId !== undefined ? { panelId: opts.panelId } : undefined),
     getActiveContext: () => undefined,
     onDidChangeActiveContext: (): Disposable => ({ dispose: () => undefined }),
-    // The in-app settings panel has no search box, so the query (a setting key) is not forwarded.
-    openHostSettings: async () => {
-      await tabs.show(undefined, { type: 'openSettingsPanel' });
+    // The app settings open at the section; their search box is the user's, so the query (a setting key) is not forwarded.
+    openHostSettings: (_query, section) => {
+      openAppSettings(section);
+      return Promise.resolve();
     },
     isHostExtensionActive: () => false,
     searchHostExtensions: () => unavailable('Extension search'),

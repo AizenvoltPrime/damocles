@@ -1,60 +1,33 @@
 <script setup lang="ts">
-import { computed, type Component } from "vue";
+import { computed, ref, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
 import { TOOL_STRUCTURED_OUTPUT, TOOL_GENERATE_IMAGE, LIVE_OUTPUT_TOOLS } from "@shared/tool-names";
 import { TEAM_TOOL_PRESENTATION } from "@shared/team-tool-labels";
-import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardContent } from "@/components/ui/card";
-import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
-import type { ExpandedDiff } from "@/stores/useDiffStore";
-import type { ExpandedToolSource } from "@/stores/useUIStore";
+import { useDiffStore } from "@/stores/useDiffStore";
+import { useUIStore, type ExpandedToolSource } from "@/stores/useUIStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
+import { useFolderRelativePath } from "@/composables/useFolderRelativePath";
 import { ownEntry } from "@/utils/ownEntry";
-
+import { buildFileDiff, fileChangeSource } from "@/utils/parseUnifiedDiff";
+import { usePermissionStore } from "@/stores/usePermissionStore";
 import {
-  IconGear,
-  IconLock,
-  IconCheckCircle,
-  IconXCircle,
-  IconCheck,
-  IconWarning,
-  IconBan,
-  IconQuestionCircle,
-  IconFile,
-  IconFileText,
-  IconFolder,
-  IconPencil,
-  IconPencilSquare,
-  IconTerminal,
-  IconSearch,
-  IconGlobe,
-  IconWrench,
-  IconClipboard,
-  IconClock,
-  IconCode,
-  IconMcp,
-  IconCompass,
-  IconBrain,
-  IconMessageSquare,
-  IconPaperPlane,
-  IconRobot,
-  IconSignal,
-  IconRotateLeft,
-  IconX,
-  IconEye,
-  IconLayers,
-  IconPlay,
-  IconImage,
-} from "@/components/icons";
-import LoadingSpinner from "./LoadingSpinner.vue";
+  Ban, Bot, Brain, Check, CircleCheck, CircleQuestionMark, CircleX, ClipboardList, Clock, Code, Compass, Eye, FilePen,
+  FilePlus, FileText, Folder, FolderSearch, Globe, ImagePlus, Layers, MessageSquare, Play, Plug,
+  RotateCcw, Search, Send, Signal, SquareTerminal, TriangleAlert, Users, Wrench, X, ChevronDown,
+} from "lucide-vue-next";
+import ToolCardFrame from "./ToolCardFrame.vue";
 import LiveOutputPane from "./LiveOutputPane.vue";
 import ToolCancelControl from "./ToolCancelControl.vue";
 import DiffView from "./DiffView.vue";
-import MarkdownRenderer from "./MarkdownRenderer.vue";
+import StructuredResult from "./StructuredResult.vue";
 
 const { t } = useI18n();
+const displayPath = useFolderRelativePath();
 const { postMessage } = usePlatformBridge();
+const permissionStore = usePermissionStore();
+const uiStore = useUIStore();
+const diffStore = useDiffStore();
 
 const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "CodeSearch", "FeedRead", "YouTubeTranscript", "ToolSearch", "CronCreate", "CronDelete", "CronList", TOOL_GENERATE_IMAGE]);
 
@@ -68,28 +41,28 @@ const MEMORY_TOOL_NAMES = new Set([
 
 /** Icons for the twenty team tools. `TEAM_TOOL_PRESENTATION` is the name list; this only picks glyphs. */
 const TEAM_TOOL_ICONS: Record<string, Component> = {
-  create_team: IconRobot,
-  get_team_status: IconSignal,
-  cancel_team: IconX,
-  resume_team: IconPlay,
+  create_team: Users,
+  get_team_status: Signal,
+  cancel_team: X,
+  resume_team: Play,
 
-  team_send_message: IconPaperPlane,
-  team_read_messages: IconMessageSquare,
-  team_read_scratchpad: IconEye,
-  team_write_scratchpad: IconPencilSquare,
-  team_get_status: IconSignal,
-  team_spawn_specialist: IconRobot,
-  team_redispatch_specialist: IconRotateLeft,
-  team_cancel_specialist: IconX,
-  team_request_revision: IconRotateLeft,
-  team_approve_specialist: IconCheckCircle,
-  team_standby: IconClock,
-  team_report_complete: IconCheck,
-  team_flag_brief_conflict: IconWarning,
-  team_resolve_brief_conflict: IconCheckCircle,
-  team_dismiss_review: IconBan,
-  team_record_verification: IconClipboard,
-  team_synthesize_result: IconLayers,
+  team_send_message: Send,
+  team_read_messages: MessageSquare,
+  team_read_scratchpad: Eye,
+  team_write_scratchpad: FilePen,
+  team_get_status: Signal,
+  team_spawn_specialist: Bot,
+  team_redispatch_specialist: RotateCcw,
+  team_cancel_specialist: X,
+  team_request_revision: RotateCcw,
+  team_approve_specialist: CircleCheck,
+  team_standby: Clock,
+  team_report_complete: Check,
+  team_flag_brief_conflict: TriangleAlert,
+  team_resolve_brief_conflict: CircleCheck,
+  team_dismiss_review: Ban,
+  team_record_verification: ClipboardList,
+  team_synthesize_result: Layers,
 };
 
 /** The Damocles subsystem a custom pi tool belongs to, for icon + expand treatment (null = none). */
@@ -107,11 +80,6 @@ const props = defineProps<{
 
 const toolGroup = computed(() => groupForTool(props.toolCall.name));
 
-const emit = defineEmits<{
-  (e: "expand", toolId: string): void;
-  (e: "expandDiff", diff: ExpandedDiff): void;
-}>();
-
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
 const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
 
@@ -127,36 +95,14 @@ const displayName = computed(() => {
   return teamToolLabel.value ?? props.toolCall.name;
 });
 
-const structuredFields = computed(() =>
-  Object.entries(props.toolCall.input).map(([key, value]) => ({
-    key,
-    isString: typeof value === "string",
-    value: typeof value === "string" ? value : "",
-    display: typeof value === "string" ? value : JSON.stringify(value, null, 2),
-  })),
-);
-
-function handleCardClick(): void {
-  if (isExpandable.value) {
-    emit("expand", props.toolCall.id);
-  }
-}
-
-/** The keyboard target is the name, not the card: role="button" on the card would hide the Stop button from assistive tech. */
-function handleNameKeydown(event: KeyboardEvent): void {
-  if (event.key !== "Enter" && event.key !== " ") return;
-  event.preventDefault();
-  event.stopPropagation();
-  handleCardClick();
-}
+const structuredFields = computed(() => Object.keys(props.toolCall.input));
 
 function handleDiffClick(): void {
-  if (diffContent.value && filePath.value) {
-    emit("expandDiff", {
+  if (diffSource.value && filePath.value) {
+    diffStore.expandDiff({
       filePath: filePath.value,
-      oldContent: diffContent.value.oldContent,
-      newContent: diffContent.value.newContent,
-      isNewFile: isNewFile.value,
+      tool: props.toolCall.name === "Write" ? "Write" : "Edit",
+      source: diffSource.value,
     });
   }
 }
@@ -189,76 +135,21 @@ const filePath = computed(() => {
   return "";
 });
 
-const isNewFile = computed(() => props.toolCall.name === "Write");
+// While the call awaits approval, the pending prompt holds the change's real-numbered patch. Read only
+// then, and through its own computed, so another call's prompt never re-parses and re-highlights this card.
+const pendingApproval = computed(() =>
+  props.toolCall.status === "awaiting_approval" ? permissionStore.pendingPermissions[props.toolCall.id] : undefined,
+);
+const diffSource = computed(() =>
+  isFileOperation.value ? fileChangeSource(props.toolCall, pendingApproval.value) : null,
+);
+const fileDiff = computed(() => (diffSource.value ? buildFileDiff(diffSource.value) : null));
 
-const diffContent = computed(() => {
-  if (!isFileOperation.value) return null;
-
-  const input = props.toolCall.input;
-
-  if (props.toolCall.name === "Edit") {
-    return {
-      oldContent: (input.old_string as string) || "",
-      newContent: (input.new_string as string) || "",
-    };
-  }
-
-  return {
-    oldContent: "",
-    newContent: (input.content as string) || "",
-  };
-});
-
-const isPending = computed(() => props.toolCall.status === "pending");
-
-const statusIconComponent = computed((): Component | null => {
-  switch (props.toolCall.status) {
-    case "pending":
-      return null;
-    case "running":
-      return IconGear;
-    case "awaiting_approval":
-      return IconLock;
-    case "approved":
-      return IconCheckCircle;
-    case "denied":
-      return IconXCircle;
-    case "completed":
-      return IconCheck;
-    case "failed":
-      return IconWarning;
-    case "abandoned":
-      return IconBan;
-    case "cancelled":
-      return IconBan;
-    case "unrecorded":
-      return IconQuestionCircle;
-    default:
-      return IconGear;
-  }
-});
-
-const statusClass = computed(() => {
-  switch (props.toolCall.status) {
-    case "pending":
-      return "text-muted-foreground";
-    case "running":
-      return "text-primary animate-spin-slow";
-    case "awaiting_approval":
-      return "text-warning animate-pulse";
-    case "approved":
-    case "completed":
-      return "text-success";
-    case "denied":
-    case "failed":
-      return "text-error";
-    case "abandoned":
-    case "cancelled":
-    case "unrecorded":
-      return "text-muted-foreground";
-    default:
-      return "text-muted-foreground";
-  }
+/** The change size beside an Edit or Write, as the reference's "+7 −0" chip. */
+const changeMeta = computed(() => {
+  const diff = fileDiff.value;
+  if (!diff || diff.omitted) return null;
+  return `+${diff.stats.added} −${diff.stats.removed}`;
 });
 
 const isRunning = computed(() => props.toolCall.status === "running");
@@ -266,53 +157,45 @@ const isFailed = computed(() => props.toolCall.status === "failed");
 const isAbandoned = computed(() => props.toolCall.status === "abandoned");
 const isCancelled = computed(() => props.toolCall.status === "cancelled");
 const isUnrecorded = computed(() => props.toolCall.status === "unrecorded");
-const isAwaitingApproval = computed(() => props.toolCall.status === "awaiting_approval");
 
 const showLiveOutput = computed(() =>
   isRunning.value && LIVE_OUTPUT_TOOLS.has(props.toolCall.name) && props.toolCall.liveOutput !== undefined
 );
 const liveOutputText = computed(() => props.toolCall.liveOutput ?? "");
 
-const cardClass = computed(() => {
-  if (isFailed.value) return "border-error/50";
-  if (isAbandoned.value || isCancelled.value || isUnrecorded.value) return "border-muted/50 opacity-60";
-  if (isMcpTool.value || isStructuredOutput.value) return "border-primary/30";
-  return "border-border";
-});
-
 const GROUP_ICONS: Record<NonNullable<ReturnType<typeof groupForTool>>, Component> = {
-  browser: IconGlobe,
-  compass: IconCompass,
-  memory: IconBrain,
+  browser: Globe,
+  compass: Compass,
+  memory: Brain,
 };
 
 const BUILT_IN_TOOL_ICONS: Record<string, Component> = {
-  Read: IconFile,
-  Write: IconPencil,
-  Edit: IconPencilSquare,
-  Bash: IconTerminal,
-  PowerShell: IconTerminal,
-  Glob: IconSearch,
-  Grep: IconSearch,
-  Ls: IconFolder,
-  WebFetch: IconGlobe,
-  WebSearch: IconSearch,
-  CodeSearch: IconCode,
-  FeedRead: IconGlobe,
-  YouTubeTranscript: IconFileText,
-  ToolSearch: IconSearch,
-  CronCreate: IconClock,
-  CronDelete: IconClock,
-  CronList: IconClock,
-  LSP: IconWrench,
-  Agent: IconClipboard,
-  [TOOL_GENERATE_IMAGE]: IconImage,
-  [TOOL_STRUCTURED_OUTPUT]: IconCode,
+  Read: FileText,
+  Write: FilePlus,
+  Edit: FilePen,
+  Bash: SquareTerminal,
+  PowerShell: SquareTerminal,
+  Glob: FolderSearch,
+  Grep: Search,
+  Ls: Folder,
+  WebFetch: Globe,
+  WebSearch: Search,
+  CodeSearch: Code,
+  FeedRead: Globe,
+  YouTubeTranscript: FileText,
+  ToolSearch: Search,
+  CronCreate: Clock,
+  CronDelete: Clock,
+  CronList: Clock,
+  LSP: Wrench,
+  Agent: Bot,
+  [TOOL_GENERATE_IMAGE]: ImagePlus,
+  [TOOL_STRUCTURED_OUTPUT]: Code,
 };
 
 const toolIconComponent = computed((): Component => {
   if (isMcpTool.value) {
-    return IconMcp;
+    return Plug;
   }
   if (toolGroup.value) {
     return GROUP_ICONS[toolGroup.value];
@@ -320,7 +203,7 @@ const toolIconComponent = computed((): Component => {
   return (
     ownEntry(TEAM_TOOL_ICONS, props.toolCall.name) ??
     ownEntry(BUILT_IN_TOOL_ICONS, props.toolCall.name) ??
-    IconWrench
+    Wrench
   );
 });
 
@@ -368,7 +251,7 @@ function truncate(value: string, max = 50): string {
 
 function formatInput(input: Record<string, unknown>): string {
   if ("file_path" in input) {
-    return input.file_path as string;
+    return displayPath(input.file_path as string);
   }
   if ("command" in input) {
     return truncate(input.command as string);
@@ -434,6 +317,14 @@ const inputSummary = computed(() => {
   return presentation ? presentation.summarizeInput(props.toolCall.input) : formatInput(props.toolCall.input);
 });
 
+const headerArg = computed(() => {
+  if (isLs.value) return lsPath.value;
+  if (isStructuredOutput.value) return undefined;
+  return props.toolCall.name === "CronList" ? t("toolOverlay.cronInfo.listJobs") : inputSummary.value;
+});
+
+const peek = ref(false);
+
 /** An error result stays raw; the presentation summary describes a happy path that did not happen. */
 const resultSummary = computed(() => {
   const result = props.toolCall.result;
@@ -442,227 +333,199 @@ const resultSummary = computed(() => {
   if (!presentation || props.toolCall.isError === true) return truncate(result, 200);
   return presentation.summarizeResult(result, props.toolCall.input);
 });
+
+const outputSummary = computed(() => {
+  if (toolSearchMeta.value) return t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.value.matches.length, total: toolSearchMeta.value.totalDeferredTools });
+  if (cronCreateMeta.value) return cronCreateMeta.value.humanSchedule;
+  if (cronListMeta.value) {
+    return cronListMeta.value.jobs.length > 0
+      ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.value.jobs.length })
+      : t('toolOverlay.cronInfo.noJobs');
+  }
+  if (isFailed.value && props.toolCall.errorMessage) return '';
+  return resultSummary.value;
+});
+
+const hasPeek = computed(() => !isFileOperation.value && !isStructuredOutput.value && Boolean(inputSummary.value || outputSummary.value));
+
+const statusNote = computed(() => {
+  if (isAbandoned.value) return { icon: Ban, title: t('toolCall.notExecuted'), description: t('toolCall.changedCourse') };
+  if (isCancelled.value) return { icon: Ban, title: t('toolCall.cancelled'), description: t('toolCall.cancelledDescription') };
+  if (isUnrecorded.value) return { icon: CircleQuestionMark, title: t('toolCall.outcomeUnrecorded'), description: t('toolCall.outcomeUnrecordedDescription') };
+  return null;
+});
 </script>
 
 <template>
-  <Card
-    class="text-sm overflow-hidden"
-    :class="[cardClass, isExpandable ? 'cursor-pointer hover:border-primary/50 transition-colors' : '']"
-    @click="handleCardClick"
+  <ToolCardFrame
+    :icon="toolIconComponent"
+    :name="displayName"
+    :arg="headerArg"
+    :arg-title="filePath || undefined"
+    :status="toolCall.status"
+    :expandable="isExpandable"
+    data-testid="tool-card"
+    @expand="uiStore.expandTool(toolCall.id, source)"
   >
-    <CardHeader
-      class="flex flex-row items-center gap-2 px-3 py-1.5 border-b border-border/50 space-y-0"
-      :class="isMcpTool ? 'bg-gradient-to-r from-primary/10 to-transparent' : 'bg-foreground/5'"
+    <template
+      v-if="isFileOperation && filePath"
+      #arg
     >
-      <component :is="toolIconComponent" :size="18" class="shrink-0" :class="isMcpTool || isStructuredOutput ? 'text-primary' : 'text-foreground'" />
-      <span
-        v-if="isExpandable"
-        role="button"
-        tabindex="0"
-        aria-haspopup="dialog"
-        :aria-label="t('toolCall.expandDetails', { name: displayName })"
-        class="text-foreground font-medium rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        @click.stop="handleCardClick"
-        @keydown="handleNameKeydown"
-      >{{ displayName }}</span>
-      <span
-        v-else
-        class="text-foreground font-medium"
-      >{{ displayName }}</span>
-      <span
-        v-if="isFileOperation && filePath"
-        class="text-muted-foreground text-xs truncate min-w-0 flex-1 cursor-pointer hover:text-primary hover:underline transition-colors"
+      <button
+        type="button"
+        class="min-w-0 flex-1 truncate text-left font-mono text-11.5 text-(--d-muted) transition-colors hover:text-(--d-accent)"
+        :title="filePath"
         @click.stop="handleFilePathClick"
       >
-        {{ filePath }}
-      </span>
+        {{ displayPath(filePath) }}
+      </button>
+    </template>
+    <template #meta>
       <span
-        v-else-if="isLs"
-        class="text-muted-foreground text-xs font-mono truncate min-w-0 flex-1"
-      >
-        {{ lsPath }}
-      </span>
+        v-if="changeMeta"
+        class="flex-none rounded-5 bg-(--d-hover) px-1.5 py-px font-mono text-10.5 text-(--d-muted)"
+        data-testid="tool-card-change"
+      >{{ changeMeta }}</span>
       <ToolCancelControl
         :tool-call="toolCall"
         :source="source"
       />
-
       <span
         v-if="toolCall.durationMs !== undefined"
-        class="text-xs text-muted-foreground font-mono ml-auto shrink-0"
+        class="flex-none font-mono text-10.5 text-(--d-faint)"
+      >{{ formatToolDuration(toolCall.durationMs) }}</span>
+    </template>
+    <template #trailing>
+      <button
+        v-if="hasPeek"
+        type="button"
+        class="-mr-1 flex flex-none rounded-5 p-0.75 text-(--d-faint) transition-colors hover:bg-(--d-border) hover:text-(--d-text)"
+        :aria-expanded="peek"
+        :aria-label="peek ? t('cards.tool.hideIo') : t('cards.tool.showIo')"
+        :title="peek ? t('cards.tool.hideIo') : t('cards.tool.showIo')"
+        data-testid="tool-card-peek"
+        @click.stop="peek = !peek"
       >
-        {{ formatToolDuration(toolCall.durationMs) }}
-      </span>
-      <LoadingSpinner
-        v-if="isPending"
-        :size="16"
-        :class="[statusClass, toolCall.durationMs !== undefined ? 'ml-2' : 'ml-auto']"
-        class="shrink-0"
-      />
-      <component
-        v-else
-        :is="statusIconComponent"
-        :size="16"
-        :class="[statusClass, toolCall.durationMs !== undefined ? 'ml-2' : 'ml-auto']"
-        class="shrink-0"
-      />
-    </CardHeader>
+        <ChevronDown
+          class="size-3.25 transition-transform duration-200 ease-out"
+          :class="peek && 'rotate-180'"
+          aria-hidden="true"
+        />
+      </button>
+    </template>
 
-    <CardContent v-if="isFileOperation && diffContent" class="p-2">
       <div
-        class="relative group cursor-pointer rounded border border-border/50 overflow-hidden shadow-[inset_0_1px_4px_rgba(0,0,0,0.3)]"
+      v-if="fileDiff"
+      class="mx-2 mb-2"
+    >
+      <button
+        type="button"
+        class="group relative block w-full overflow-hidden rounded-lg border border-(--d-border) bg-(--d-code) text-left"
+        :aria-label="t('toolCall.clickToExpand')"
         @click="handleDiffClick"
       >
         <DiffView
-          :old-content="diffContent.oldContent"
-          :new-content="diffContent.newContent"
+          :diff="fileDiff"
           :file-name="filePath"
-          :is-new-file="isNewFile"
-          :show-header="false"
-          max-height="300px"
+          max-height="18.75rem"
         />
+        <span class="pointer-events-none absolute right-2 bottom-2 rounded-md border border-(--d-border2) bg-(--d-card) px-2 py-0.5 text-11 text-(--d-muted) opacity-0 shadow-(--d-shadow) transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          {{ t("toolCall.clickToExpand") }}
+        </span>
+      </button>
+    </div>
 
-        <div class="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors pointer-events-none">
-          <Button variant="secondary" size="sm" class="opacity-0 group-hover:opacity-100 transition-opacity text-xs pointer-events-none">
-            {{ t("toolCall.clickToExpand") }}
-          </Button>
+    <div
+      v-else-if="isStructuredOutput"
+      class="space-y-2.5 border-t border-(--d-border) px-3 pt-2 pb-2.5"
+    >
+      <StructuredResult :value="toolCall.input" />
+      <div
+        v-if="structuredFields.length === 0"
+        class="text-xs text-(--d-faint) italic"
+      >
+        {{ t('toolCall.structuredOutputEmpty') }}
         </div>
-      </div>
-
-      <div v-if="isFailed && toolCall.errorMessage" class="px-3 py-2 border-t border-error/20 bg-error/10">
-        <div class="flex items-start gap-2 text-xs">
-          <IconXCircle :size="14" class="text-error shrink-0 mt-0.5" />
-          <span class="text-error/80">{{ toolCall.errorMessage }}</span>
-        </div>
-      </div>
-
-      <Alert v-if="isAwaitingApproval" class="mt-2 p-2 text-xs bg-amber-900/20 border-amber-500/30 animate-pulse">
-        <AlertTitle class="text-amber-400 font-semibold mb-0">{{ t("toolCall.awaitingApproval") }}</AlertTitle>
-        <AlertDescription class="text-amber-400">{{ t("toolCall.respondToDialog") }}</AlertDescription>
-      </Alert>
-
-      <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden mt-2">
-        <div class="h-full bg-primary animate-progress"></div>
-      </div>
-    </CardContent>
-
-    <CardContent v-else-if="isStructuredOutput" class="p-3 space-y-2.5">
-      <div v-for="field in structuredFields" :key="field.key" class="space-y-0.5">
-        <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{{ field.key }}</p>
-        <MarkdownRenderer v-if="field.isString" :content="field.value" class="text-xs" />
-        <pre v-else class="text-xs font-mono text-foreground/70 bg-foreground/5 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">{{ field.display }}</pre>
-      </div>
-      <div v-if="structuredFields.length === 0" class="text-xs text-muted-foreground italic">{{ t('toolCall.structuredOutputEmpty') }}</div>
-    </CardContent>
-
-    <CardContent v-else class="p-3 space-y-2">
-      <div v-if="!isLs && (inputSummary || toolCall.name === 'CronList')" class="flex items-start gap-2 text-xs">
-        <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.in') }}</span>
-        <span v-if="toolCall.name === 'CronList'" class="text-foreground/50 italic">{{ t('toolOverlay.cronInfo.listJobs') }}</span>
-        <span v-else class="font-mono text-foreground/70 truncate">{{ inputSummary }}</span>
       </div>
 
       <!-- Stops the click so selecting output text does not expand the card. -->
-      <div v-if="showLiveOutput" class="space-y-1 border-t border-border/30 pt-2" @click.stop>
-        <p class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('toolCall.liveOutput') }}</p>
+    <div
+      v-if="showLiveOutput"
+      class="mx-2 mb-2 space-y-1"
+      @click.stop
+    >
+      <p class="flex items-center gap-1.5 text-10 tracking-[.06em] text-(--d-faint) uppercase">
+        <span
+          class="d-pulsing size-1.5 rounded-full bg-(--d-accent)"
+          aria-hidden="true"
+        />{{ t('toolCall.liveOutput') }}
+      </p>
         <LiveOutputPane
           :output="liveOutputText"
           :truncated="toolCall.liveOutputTruncated === true"
-          height-class="h-[240px]"
+        height-class="h-45"
         />
       </div>
 
       <div
-        v-if="isFailed && toolCall.errorMessage"
-        class="flex items-start gap-2 text-xs border-t border-error/20 pt-2 -mx-3 px-3 bg-error/10 -mb-3 pb-3"
+      v-if="hasPeek"
+      class="grid transition-[grid-template-rows] duration-250 ease-out"
+      :class="peek ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'"
+      :inert="!peek"
       >
-        <IconXCircle :size="14" class="text-error shrink-0 mt-0.5" />
-        <span class="text-error/80">{{ toolCall.errorMessage }}</span>
+      <div class="min-h-0 overflow-hidden">
+        <div class="grid grid-cols-[2.125rem_1fr] gap-x-2 gap-y-1 border-t border-(--d-border) px-3 pt-2 pb-2.5 text-11.5">
+          <template v-if="inputSummary && !isLs">
+            <span class="font-semibold text-(--d-faint)">{{ t('toolCall.in') }}</span>
+            <span class="font-mono break-all text-(--d-muted)">{{ inputSummary }}</span>
+          </template>
+          <template v-if="outputSummary">
+            <span class="font-semibold text-(--d-faint)">{{ t('toolCall.out') }}</span>
+            <span
+              class="flex flex-wrap items-center gap-2 font-mono break-all"
+              :class="toolCall.isError ? 'text-(--d-danger)' : 'text-(--d-text)'"
+            >
+              {{ outputSummary }}
+              <code
+                v-if="cronCreateMeta"
+                class="rounded px-1 py-0.5 text-xs"
+                :class="cronCreateMeta.recurring ? 'bg-(--d-accent-soft) text-(--d-accent-text)' : 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)'"
+              >
+                {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
+              </code>
+            </span>
+          </template>
       </div>
-
-      <div v-else-if="toolSearchMeta" class="text-xs border-t border-border/30 pt-2">
-        <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
-          <span class="font-mono text-foreground">
-            {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
-          </span>
         </div>
       </div>
 
-      <div v-else-if="cronCreateMeta" class="text-xs border-t border-border/30 pt-2">
-        <div class="flex items-center gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
-          <span class="font-mono text-foreground">{{ cronCreateMeta.humanSchedule }}</span>
-          <code class="text-xs px-1 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
-            {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
-          </code>
-        </div>
+    <div
+      v-if="isFailed && toolCall.errorMessage"
+      class="flex items-start gap-2 border-t border-[color-mix(in_srgb,var(--d-danger)_25%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2 text-xs text-(--d-danger-text)"
+    >
+      <CircleX
+        class="size-3.25 mt-px flex-none"
+        aria-hidden="true"
+      />
+      <span>{{ toolCall.errorMessage }}</span>
       </div>
 
-      <div v-else-if="cronListMeta" class="text-xs border-t border-border/30 pt-2">
-        <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
-          <span class="font-mono text-foreground">
-            {{ cronListMeta.jobs.length > 0
-              ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.jobs.length })
-              : t('toolOverlay.cronInfo.noJobs')
-            }}
-          </span>
-        </div>
+    <div
+      v-if="statusNote"
+      class="flex items-start gap-2 border-t border-(--d-border) px-3 py-2 text-xs text-(--d-muted)"
+    >
+      <component
+        :is="statusNote.icon"
+        class="size-3.25 mt-px flex-none text-(--d-faint)"
+        aria-hidden="true"
+      />
+      <span><span class="font-semibold text-(--d-text)">{{ statusNote.title }}</span> · {{ statusNote.description }}</span>
       </div>
 
-      <div v-else-if="toolCall.result" class="text-xs border-t border-border/30 pt-2">
-        <div class="flex items-start gap-2">
-          <span class="text-muted-foreground font-medium shrink-0">{{ t('toolCall.out') }}</span>
-          <span class="font-mono overflow-x-auto" :class="toolCall.isError ? 'text-error' : 'text-foreground'">
-            {{ resultSummary }}
-          </span>
-        </div>
-      </div>
-
-      <Alert v-if="isAwaitingApproval" class="p-2 text-xs bg-amber-900/20 border-amber-500/30 animate-pulse">
-        <AlertTitle class="text-amber-400 font-semibold mb-0">{{ t("toolCall.awaitingApproval") }}</AlertTitle>
-        <AlertDescription class="text-amber-400">{{ t("toolCall.respondToDialog") }}</AlertDescription>
-      </Alert>
-
-      <Alert v-if="isAbandoned" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
-        <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.notExecuted") }}</AlertTitle>
-        <AlertDescription class="text-gray-400">{{ t("toolCall.changedCourse") }}</AlertDescription>
-      </Alert>
-
-      <Alert v-if="isCancelled" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
-        <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.cancelled") }}</AlertTitle>
-        <AlertDescription class="text-gray-400">{{ t("toolCall.cancelledDescription") }}</AlertDescription>
-      </Alert>
-
-      <Alert v-if="isUnrecorded" class="p-2 text-xs bg-gray-800/40 border-gray-600/30">
-        <AlertTitle class="text-gray-400 font-semibold mb-0">{{ t("toolCall.outcomeUnrecorded") }}</AlertTitle>
-        <AlertDescription class="text-gray-400">{{ t("toolCall.outcomeUnrecordedDescription") }}</AlertDescription>
-      </Alert>
-
-      <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden">
-        <div class="h-full bg-primary animate-progress"></div>
-      </div>
-    </CardContent>
-  </Card>
+    <div
+      v-if="isRunning"
+      class="d-sweep-bar h-0.5 bg-(--d-hover) text-(--d-accent)"
+      aria-hidden="true"
+    />
+  </ToolCardFrame>
 </template>
-
-<style scoped>
-@keyframes progress {
-  0% {
-    transform: translateX(-100%);
-    width: 30%;
-  }
-  50% {
-    width: 50%;
-  }
-  100% {
-    transform: translateX(400%);
-    width: 30%;
-  }
-}
-
-.animate-progress {
-  animation: progress 1.5s ease-in-out infinite;
-}
-</style>

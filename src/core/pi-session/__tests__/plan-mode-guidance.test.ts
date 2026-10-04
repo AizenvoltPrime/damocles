@@ -49,17 +49,19 @@ describe('buildPlanModeGuidance', () => {
     }
   });
 
-  it('keeps the read-only carve-out: research/design only, write only the plan file', () => {
+  it('keeps the write carve-out: research/design only, write only the plan file', () => {
     const out = buildPlanModeGuidance('/p/x.md');
-    expect(out).toContain('MAY run read-only shell commands');
-    expect(out).toContain('Do NOT edit files');
+    expect(out).toContain('Do NOT edit or create files');
     expect(out).toContain('ONE');
   });
 
-  it('states the shell allowances the classifier actually grants, and the browser toolset', () => {
+  it('states which shell commands auto-run, that the rest ask for approval, and forbids shell writes', () => {
     const out = buildPlanModeGuidance('/p/x.md');
+    expect(out).toContain('Read-only shell commands');
     expect(out).toContain('2>/dev/null');
     expect(out).toContain('cd <dir>');
+    expect(out).toContain('asks the user for approval first');
+    expect(out).toContain('Never use the shell to create, change or delete files');
     expect(out).toContain('BrowserRequestInput');
   });
 

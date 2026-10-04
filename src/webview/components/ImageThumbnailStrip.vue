@@ -47,14 +47,14 @@ function closeLightbox(): void {
       />
       <button
         type="button"
-        class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground
+        class="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-destructive text-destructive-foreground
                flex items-center justify-center opacity-0 group-hover:opacity-100 motion-safe:transition-opacity
                hover:bg-destructive/80 cursor-pointer"
         :title="t('imageThumbnail.remove', { name: attachment.fileName || 'image' })"
         :aria-label="t('imageThumbnail.remove', { name: attachment.fileName || 'image' })"
         @click="$emit('remove', attachment.id)"
       >
-        <IconX :size="12" />
+        <IconX class="size-3" />
       </button>
     </div>
 

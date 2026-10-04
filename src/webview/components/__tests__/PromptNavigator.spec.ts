@@ -1,9 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { EnrichedPrompt } from "@/composables/useEnrichedPrompts";
 import {
-  buildVisibleRows,
   canRewindForPrompt,
-  countVisibleRows,
   escapeHtml,
   escapeRegex,
   filterPrompts,
@@ -81,36 +79,6 @@ describe("promptNavigatorLogic.filterPrompts", () => {
 
   it("matches tool names via the joined tool list", () => {
     expect(filterPrompts(prompts, "write").map((p) => p.messageId)).toEqual(["c"]);
-  });
-});
-
-describe("promptNavigatorLogic.buildVisibleRows", () => {
-  const prompts = [
-    makePrompt({ messageId: "a" }),
-    makePrompt({ messageId: "b" }),
-    makePrompt({ messageId: "c" }),
-    makePrompt({ messageId: "d" }),
-  ];
-
-  it("emits one row per prompt", () => {
-    const rows = buildVisibleRows(prompts);
-    expect(rows.length).toBe(4);
-    expect(rows.every((r) => r.kind === "row")).toBe(true);
-  });
-
-  it("assigns a contiguous flatIndex over rows", () => {
-    const rows = buildVisibleRows(prompts);
-    expect(rows.map((r) => r.flatIndex)).toEqual([0, 1, 2, 3]);
-  });
-
-  it("preserves prompt order", () => {
-    const rows = buildVisibleRows(prompts);
-    expect(rows.map((r) => r.prompt.messageId)).toEqual(["a", "b", "c", "d"]);
-  });
-
-  it("countVisibleRows counts all rows", () => {
-    const rows = buildVisibleRows(prompts);
-    expect(countVisibleRows(rows)).toBe(4);
   });
 });
 

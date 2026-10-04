@@ -4,7 +4,8 @@
  * New for the Damocles port (US-018.4). The webview already renders subagent cards from the
  * `subagent*` messages + the `parentToolUseId` field on tool messages (no contract change). This bridge
  * subscribes to a nested `AgentSession` and emits, all via the PARENT panel's `postMessage`:
- *   - `subagentStart` + `subagentModelUpdate` at spawn, and `subagentModelUpdate` with the effort at attach,
+ *   - `subagentStart` when the record is created, queued or not, `subagentModelUpdate` once it runs, and
+ *     `subagentModelUpdate` with the effort at attach,
  *   - per nested tool: `toolPending` → `toolProgress` → `toolCompleted`/`toolFailed`, stamped with
  *     `parentToolUseId = <Agent tool-call id>` so they land on the subagent card,
  *   - at completion: a final (sealing) `subagentMessagesUpdate` built by `piMessagesToHistoryAgentMessages`,
@@ -100,8 +101,8 @@ export class SubagentStreamBridge {
     this.deps.postMessage(m);
   }
 
-  /** Emit `subagentStart` (registers the card's sdkAgentId) and, if known, the model + template path. */
-  start(model?: string, templatePath?: string): void {
+  /** Emit `subagentStart`, which registers the card's sdkAgentId; the model and template follow once the run starts. */
+  start(): void {
     this.emit({
       type: 'subagentStart',
       agentId: this.deps.agentId,
@@ -111,8 +112,6 @@ export class SubagentStreamBridge {
       ...(this.deps.description !== undefined ? { description: this.deps.description } : {}),
       ...(this.deps.resumedFrom !== undefined ? { resumedFrom: this.deps.resumedFrom } : {}),
     });
-    if (model) this.emitModel(model);
-    if (templatePath) this.emitTemplate(templatePath);
   }
 
   /** Emit `subagentModelUpdate` once per (model, effort) pair: the model at start, then its effort once the session exists. */

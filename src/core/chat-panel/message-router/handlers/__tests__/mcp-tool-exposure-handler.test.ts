@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 vi.mock("../../../../logger", () => ({ log: vi.fn() }));
 
 import { createSettingsHandlers } from "../settings-handlers";
+import { SettingsManager } from "../../../settings-manager";
 import { platform } from "../../../../platform-host";
 import type { HandlerDependencies, HandlerContext } from "../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
@@ -52,10 +53,11 @@ function setup(opts: {
   const sessionB = { getMcpServerStatus: vi.fn(async () => statuses), refreshActiveTools: refreshB };
   const hostA = {};
   const hostB = {};
-  const settingsManager = {
+  // The real manager, for the write serialization the handler relies on.
+  const settingsManager = Object.assign(new SettingsManager({ postMessage: () => undefined, platform, folders: () => [] }), {
     getMcpToolExposureScopes: vi.fn(() => opts.scopes ?? ["user", "project", "local"]),
     sendMcpStatus: vi.fn(async () => {}),
-  };
+  });
   const deps = {
     postMessage: (_host: unknown, msg: ExtensionToWebviewMessage) => { posted.push(msg); },
     settingsManager,

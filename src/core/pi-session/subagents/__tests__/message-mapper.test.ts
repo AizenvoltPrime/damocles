@@ -47,6 +47,18 @@ describe('piMessagesToHistoryAgentMessages', () => {
     ]);
   });
 
+  it("carries a tool result's details as its block's metadata, so a sealed or reloaded card keeps an edit's patch", () => {
+    const patch = '--- a.ts\n+++ a.ts\n@@ -120,1 +120,1 @@\n-old\n+new\n';
+    const messages = [
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'tc1', name: 'Edit', arguments: { file_path: '/a.ts', old_string: 'old', new_string: 'new' } }] },
+      { role: 'toolResult', toolCallId: 'tc1', toolName: 'Edit', content: [{ type: 'text', text: 'ok' }], details: { patch, firstChangedLine: 120 } },
+    ];
+
+    const [assistant] = piMessagesToHistoryAgentMessages(messages);
+
+    expect(assistant!.contentBlocks[0]).toMatchObject({ type: 'tool_use', id: 'tc1', metadata: { patch, editLineNumber: 120 } });
+  });
+
   it('marks a successful tool result that carries images with imageCount, never a failed or text-only one', () => {
     const png = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
     const messages = [

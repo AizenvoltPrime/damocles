@@ -1,5 +1,6 @@
 import type { Platform } from "../../../platform/platform";
-import type { SettingsStore } from "../../../platform/settings-store";
+import type { SettingsFolder, SettingsStore } from "../../../platform/settings-store";
+import { settingsFolderOf, type FolderTarget } from "../../workspace-folders/folder-registry";
 import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PanelHost } from "../../../platform/window-service";
@@ -7,9 +8,9 @@ import type { McpServerConfig, McpServerStatusInfo, McpToolExposureScope } from 
 import type { McpScope } from "../../session-types";
 import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
-import type { ToolGroup } from "../../../shared/types/tools";
+import { TOOL_GROUP_SETTINGS, type SwitchableToolGroup } from "../../../shared/types/tools";
 import type { ExtensionToWebviewMessage } from "../../../shared/types/messages";
-import { updateConfigAtEffectiveScope } from "./utils";
+import { updateConfigAtEffectiveScope, type SettingWrite } from "./utils";
 import { MCP_TOOL_EXPOSURE_SETTING } from "../../../shared/types/mcp";
 import { McpManager } from "./managers/mcp-manager";
 import { log } from "../../logger";
@@ -41,6 +42,7 @@ export class SettingsManager {
   private readonly thinkingManager: ThinkingManager;
   private readonly voiceManager: VoiceManager;
   private readonly exploreManager: ExploreManager;
+  private settingWrites: Promise<unknown> = Promise.resolve();
 
   constructor(config: SettingsManagerConfig) {
     this.postMessage = config.postMessage;
@@ -136,17 +138,19 @@ export class SettingsManager {
       log("[SettingsManager] the enabled state of MCP server %s did not follow its rename: %s", serverName, err instanceof Error ? err.message : String(err));
     }
 
-    const inspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
-    const scopes = [["user", inspection.userValue], ["project", inspection.projectValue], ["local", inspection.localValue]] as const;
-    for (const [scope, value] of scopes) {
-      if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, serverName)) continue;
-      const { [serverName]: tools, ...rest } = value as Record<string, unknown>;
-      try {
-        await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, { ...rest, [newServerName]: tools }, scope);
-      } catch (err) {
-        log("[SettingsManager] the %s-scope tool exposure of MCP server %s did not follow its rename: %s", scope, serverName, err instanceof Error ? err.message : String(err));
+    await this.serializeSettingWrite(async () => {
+      const inspection = this.platform.settings.inspect<unknown>(MCP_TOOL_EXPOSURE_SETTING);
+      const scopes = [["user", inspection.userValue], ["project", inspection.projectValue], ["local", inspection.localValue]] as const;
+      for (const [scope, value] of scopes) {
+        if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, serverName)) continue;
+        const { [serverName]: tools, ...rest } = value as Record<string, unknown>;
+        try {
+          await this.platform.settings.update(MCP_TOOL_EXPOSURE_SETTING, { ...rest, [newServerName]: tools }, scope);
+        } catch (err) {
+          log("[SettingsManager] the %s-scope tool exposure of MCP server %s did not follow its rename: %s", scope, serverName, err instanceof Error ? err.message : String(err));
+        }
       }
-    }
+    });
   }
 
   async deleteMcpServer(serverName: string): Promise<void> {
@@ -196,7 +200,7 @@ export class SettingsManager {
     this.browserManager.loadState();
   }
 
-  async setBrowserEnabled(enabled: boolean): Promise<void> {
+  async setBrowserEnabled(enabled: boolean): Promise<SettingWrite> {
     return this.browserManager.setEnabled(enabled);
   }
 
@@ -204,49 +208,45 @@ export class SettingsManager {
     return this.browserManager.isEnabled();
   }
 
-  /** Add/remove a tool's active-set name in `damocles.tools.disabled` (per-tool Tools-panel toggle). */
-  async setToolDisabled(toolName: string, disabled: boolean): Promise<void> {
-    const current = this.platform.settings.get<string[]>("damocles.tools.disabled", []) ?? [];
-    const set = new Set(current);
-    if (disabled) set.add(toolName);
-    else set.delete(toolName);
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "tools.disabled", [...set]);
+  /**
+   * Runs a setter that reads a list or object setting and writes it back after the setters queued before it, so each
+   * reads what the previous one wrote: the stores change what they read only once a write has landed.
+   */
+  serializeSettingWrite<T>(write: () => Promise<T>): Promise<T> {
+    const run = this.settingWrites.then(write);
+    // The chain only orders writes; each caller handles its own failure.
+    this.settingWrites = run.catch(() => undefined);
+    return run;
   }
 
-  /** Flip a subsystem's master enable config (the Tools-panel group switch). Core is not toggleable. */
-  async setToolGroupEnabled(group: ToolGroup, enabled: boolean): Promise<void> {
-    switch (group) {
-      case "memory":
-        await updateConfigAtEffectiveScope(this.platform, "damocles", "memory.enabled", enabled);
-        break;
-      case "compass":
-        await updateConfigAtEffectiveScope(this.platform, "damocles", "compass.enabled", enabled);
-        break;
-      case "browser":
-        await this.browserManager.setEnabled(enabled);
-        break;
-      case "web":
-        await updateConfigAtEffectiveScope(this.platform, "damocles", "pi.webSearch.enabled", enabled);
-        break;
-      case "team":
-        await updateConfigAtEffectiveScope(this.platform, "damocles", "team.enabled", enabled);
-        break;
-      case "image":
-        await this.setImageGenerationEnabled(enabled);
-        break;
-      case "core":
-        break;
-    }
+  /** Add/remove a tool's active-set name in `damocles.tools.disabled` (per-tool Tools-panel toggle). */
+  async setToolDisabled(toolName: string, disabled: boolean): Promise<void> {
+    await this.serializeSettingWrite(async () => {
+      const current = this.platform.settings.get<string[]>("damocles.tools.disabled", []) ?? [];
+      const set = new Set(current);
+      if (disabled) set.add(toolName);
+      else set.delete(toolName);
+      await updateConfigAtEffectiveScope(this.platform, "damocles.tools.disabled", [...set]);
+    });
+  }
+
+  /** Flip a subsystem's master enable config (the Tools-panel group switch). */
+  async setToolGroupEnabled(group: SwitchableToolGroup, enabled: boolean): Promise<SettingWrite> {
+    if (group === "browser") return this.browserManager.setEnabled(enabled);
+    if (group === "image") return this.setImageGenerationEnabled(enabled);
+    return updateConfigAtEffectiveScope(this.platform, TOOL_GROUP_SETTINGS[group], enabled);
   }
 
   /** Always the user scope: a repository must never turn on generation billed to the user's key. */
-  async setImageGenerationEnabled(enabled: boolean): Promise<void> {
+  async setImageGenerationEnabled(enabled: boolean): Promise<SettingWrite> {
     await this.platform.settings.update(IMAGE_ENABLED_SETTING, enabled, "user");
+    return { key: IMAGE_ENABLED_SETTING, home: "user" };
   }
 
   /** Always the user scope: the model decides what each image costs on the user's key. */
-  async setImageGenerationModel(model: string): Promise<void> {
+  async setImageGenerationModel(model: string): Promise<SettingWrite> {
     await this.platform.settings.update(IMAGE_MODEL_SETTING, model, "user");
+    return { key: IMAGE_MODEL_SETTING, home: "user" };
   }
 
   /** Posts nothing until pi's runtime is up: the model list and the OpenRouter check both come from it. */
@@ -264,8 +264,8 @@ export class SettingsManager {
     });
   }
 
-  async sendCurrentSettings(host: PanelHost, permissionHandler: PermissionHandler): Promise<void> {
-    return this.configManager.sendCurrentSettings(host, permissionHandler);
+  async sendCurrentSettings(host: PanelHost, permissionHandler: PermissionHandler, folder: FolderTarget): Promise<void> {
+    return this.configManager.sendCurrentSettings(host, permissionHandler, settingsFolderOf(folder));
   }
 
   async sendAvailableModels(session: ChatSession, host: PanelHost): Promise<void> {
@@ -296,7 +296,7 @@ export class SettingsManager {
     return this.modelManager.setActiveModelForPanel(panelId, model);
   }
 
-  async setDefaultModel(model: string): Promise<void> {
+  async setDefaultModel(model: string): Promise<SettingWrite> {
     return this.modelManager.setDefaultModel(model);
   }
 
@@ -304,28 +304,28 @@ export class SettingsManager {
     this.modelManager.sendModelForPanel(host, panelId);
   }
 
-  async handleSetDefaultMaxThinkingTokens(tokens: number | null): Promise<void> {
-    return this.configManager.handleSetDefaultMaxThinkingTokens(tokens);
+  async handleSetDefaultMaxThinkingTokens(tokens: number | null, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetDefaultMaxThinkingTokens(tokens, settingsFolderOf(folder));
   }
 
-  async handleSetDefaultThinkingDisabled(disabled: boolean): Promise<void> {
-    return this.configManager.handleSetDefaultThinkingDisabled(disabled);
+  async handleSetDefaultThinkingDisabled(disabled: boolean, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetDefaultThinkingDisabled(disabled, settingsFolderOf(folder));
   }
 
   async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
     return this.configManager.handleSetPinnedHeaderHidden(hidden);
   }
 
-  async handleSetDefaultEffort(effort: EffortLevel | null, model: string): Promise<void> {
-    return this.configManager.handleSetDefaultEffort(effort, model);
+  async handleSetDefaultEffort(effort: EffortLevel | null, model: string, folder: FolderTarget): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.configManager.handleSetDefaultEffort(effort, model, settingsFolderOf(folder)));
   }
 
-  async handleSetTeamRoleModel(role: TeamRole, model: string): Promise<void> {
-    return this.configManager.handleSetTeamRoleModel(role, model);
+  async handleSetTeamRoleModel(role: TeamRole, model: string, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetTeamRoleModel(role, model, settingsFolderOf(folder));
   }
 
-  async handleSetTeamRoleEffort(role: TeamRole, effort: EffortLevel | null): Promise<void> {
-    return this.configManager.handleSetTeamRoleEffort(role, effort);
+  async handleSetTeamRoleEffort(role: TeamRole, effort: EffortLevel | null, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetTeamRoleEffort(role, effort, settingsFolderOf(folder));
   }
 
   cleanupPanelThinking(panelId: string): void {
@@ -336,16 +336,16 @@ export class SettingsManager {
     this.thinkingManager.copyPanelStateTo(sourcePanelId, targetPanelId);
   }
 
-  resolveThinkingDisabled(panelId: string, model: string, settings: SettingsStore): boolean {
-    return this.thinkingManager.resolveDisabled(panelId, model, settings);
+  resolveThinkingDisabled(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): boolean {
+    return this.thinkingManager.resolveDisabled(panelId, model, settings, folder);
   }
 
-  resolveThinkingEffort(panelId: string, model: string, settings: SettingsStore): EffortLevel | null {
-    return this.thinkingManager.resolveEffort(panelId, model, settings);
+  resolveThinkingEffort(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): EffortLevel | null {
+    return this.thinkingManager.resolveEffort(panelId, model, settings, folder);
   }
 
-  resolveMaxThinkingTokens(panelId: string, model: string, settings: SettingsStore): number | null {
-    return this.thinkingManager.resolveMaxTokens(panelId, model, settings);
+  resolveMaxThinkingTokens(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): number | null {
+    return this.thinkingManager.resolveMaxTokens(panelId, model, settings, folder);
   }
 
   handleSetPanelThinkingDisabled(panelId: string, disabled: boolean): void {
@@ -360,25 +360,29 @@ export class SettingsManager {
     this.thinkingManager.setPanelMaxTokens(panelId, model, tokens);
   }
 
-  sendThinkingForPanel(host: PanelHost, panelId: string): void {
+  sendThinkingForPanel(host: PanelHost, panelId: string, folder: FolderTarget): void {
     const activeModel = this.modelManager.getActiveModelForPanel(panelId);
     const defaultModel = this.modelManager.getDefaultModel();
-    this.thinkingManager.sendThinkingForPanel(host, panelId, activeModel, defaultModel, this.platform.settings);
+    this.thinkingManager.sendThinkingForPanel(host, panelId, activeModel, defaultModel, this.platform.settings, settingsFolderOf(folder));
   }
 
-  async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {
-    return this.configManager.handleSetBudgetLimit(budgetUsd);
+  async handleSetBudgetLimit(budgetUsd: number | null, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetBudgetLimit(budgetUsd, settingsFolderOf(folder));
   }
 
-  async handleSetTaskBudget(budget: number | null): Promise<void> {
-    return this.configManager.handleSetTaskBudget(budget);
+  async handleSetTaskBudget(budget: number | null, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetTaskBudget(budget, settingsFolderOf(folder));
   }
 
-  async handleSetAutoCompact(config: AutoCompactConfig): Promise<void> {
-    return this.configManager.handleSetAutoCompact(config);
+  async handleSetAutoCompact(config: AutoCompactConfig, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetAutoCompact(config, settingsFolderOf(folder));
   }
 
-  async handleSetCacheWarming(mode: CacheWarmingMode): Promise<void> {
+  async handleSetCheckpointRetentionDays(days: number): Promise<SettingWrite> {
+    return this.configManager.handleSetCheckpointRetentionDays(days);
+  }
+
+  async handleSetCacheWarming(mode: CacheWarmingMode): Promise<SettingWrite> {
     return this.configManager.handleSetCacheWarming(mode);
   }
 
@@ -390,15 +394,15 @@ export class SettingsManager {
     return this.configManager.handleSetPermissionMode(session, permissionHandler, mode);
   }
 
-  async handleSetDefaultPermissionMode(mode: PermissionMode): Promise<void> {
-    return this.configManager.handleSetDefaultPermissionMode(mode);
+  async handleSetDefaultPermissionMode(mode: PermissionMode, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetDefaultPermissionMode(mode, settingsFolderOf(folder));
   }
 
-  async handleSetDefaultDangerouslySkipPermissions(enabled: boolean): Promise<void> {
-    return this.configManager.handleSetDefaultDangerouslySkipPermissions(enabled);
+  async handleSetDefaultDangerouslySkipPermissions(enabled: boolean, folder: FolderTarget): Promise<SettingWrite> {
+    return this.configManager.handleSetDefaultDangerouslySkipPermissions(enabled, settingsFolderOf(folder));
   }
 
-  async handleSetIdeContextEnabled(enabled: boolean): Promise<void> {
+  async handleSetIdeContextEnabled(enabled: boolean): Promise<SettingWrite> {
     return this.configManager.handleSetIdeContextEnabled(enabled);
   }
 
@@ -406,11 +410,11 @@ export class SettingsManager {
     this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
   }
 
-  async setVoiceProvider(provider: VoiceProvider): Promise<void> {
+  async setVoiceProvider(provider: VoiceProvider): Promise<SettingWrite> {
     return this.voiceManager.setProvider(provider);
   }
 
-  async setVoiceLanguage(language: string): Promise<void> {
+  async setVoiceLanguage(language: string): Promise<SettingWrite> {
     return this.voiceManager.setLanguage(language);
   }
 
@@ -434,43 +438,43 @@ export class SettingsManager {
     return this.voiceManager.sendVoiceConfig(host);
   }
 
-  async setVoiceMode(mode: VoiceMode): Promise<void> {
+  async setVoiceMode(mode: VoiceMode): Promise<SettingWrite> {
     return this.voiceManager.setMode(mode);
   }
 
-  async setVoiceWakeWord(wakeWord: string): Promise<void> {
+  async setVoiceWakeWord(wakeWord: string): Promise<SettingWrite> {
     return this.voiceManager.setWakeWord(wakeWord);
   }
 
-  async setVoiceWakeWordSensitivity(sensitivity: number): Promise<void> {
+  async setVoiceWakeWordSensitivity(sensitivity: number): Promise<SettingWrite> {
     return this.voiceManager.setWakeWordSensitivity(sensitivity);
   }
 
-  async setVoiceTtsEnabled(enabled: boolean): Promise<void> {
+  async setVoiceTtsEnabled(enabled: boolean): Promise<SettingWrite> {
     return this.voiceManager.setTtsEnabled(enabled);
   }
 
-  async setVoiceTtsVoice(voice: TtsVoiceId): Promise<void> {
+  async setVoiceTtsVoice(voice: TtsVoiceId): Promise<SettingWrite> {
     return this.voiceManager.setTtsVoice(voice);
   }
 
-  async setVoiceLocalGpu(pref: GpuPreference): Promise<void> {
+  async setVoiceLocalGpu(pref: GpuPreference): Promise<SettingWrite> {
     return this.voiceManager.setGpuPreference(pref);
   }
 
-  async setVoiceEndOfTurnSilenceMs(ms: number): Promise<void> {
+  async setVoiceEndOfTurnSilenceMs(ms: number): Promise<SettingWrite> {
     return this.voiceManager.setEndOfTurnSilenceMs(ms);
   }
 
-  async setVoiceMaxUtteranceMs(ms: number): Promise<void> {
+  async setVoiceMaxUtteranceMs(ms: number): Promise<SettingWrite> {
     return this.voiceManager.setMaxUtteranceMs(ms);
   }
 
-  async setVoiceAutoSubmit(autoSubmit: boolean): Promise<void> {
+  async setVoiceAutoSubmit(autoSubmit: boolean): Promise<SettingWrite> {
     return this.voiceManager.setAutoSubmit(autoSubmit);
   }
 
-  async setVoiceDiagnostics(diagnostics: boolean): Promise<void> {
+  async setVoiceDiagnostics(diagnostics: boolean): Promise<SettingWrite> {
     return this.voiceManager.setDiagnostics(diagnostics);
   }
 
@@ -486,15 +490,15 @@ export class SettingsManager {
     return this.exploreManager.sendExploreKeyStatus(host);
   }
 
-  async setExploreProvider(provider: string): Promise<void> {
+  async setExploreProvider(provider: string): Promise<SettingWrite> {
     return this.exploreManager.setProvider(provider);
   }
 
-  async setExploreModel(model: string): Promise<void> {
-    return this.exploreManager.setModel(model);
+  async setExploreModel(model: string): Promise<SettingWrite> {
+    return this.serializeSettingWrite(() => this.exploreManager.setModel(model));
   }
 
-  async setExploreEffort(effort: string): Promise<void> {
+  async setExploreEffort(effort: string): Promise<SettingWrite> {
     return this.exploreManager.setEffort(effort);
   }
 

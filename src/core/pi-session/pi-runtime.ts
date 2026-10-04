@@ -72,6 +72,7 @@ const memoryJudgeListeners = new Set<() => void>();
 function notifyMemoryJudgeListeners(): void {
   for (const listener of memoryJudgeListeners) listener();
 }
+const authFileListeners = new Set<() => void>();
 
 /** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
  *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
@@ -268,6 +269,14 @@ export class PiRuntime {
   /** Whether the singleton has been created. */
   static get exists(): boolean {
     return PiRuntime._instance !== null;
+  }
+
+  /** Fires after auth.json changed outside a sign-in Damocles ran and the account chips were republished. Subscribing does not create the singleton. */
+  static onAuthFileChange(listener: () => void): () => void {
+    authFileListeners.add(listener);
+    return () => {
+      authFileListeners.delete(listener);
+    };
   }
 
   /** Fires when an input of `describeMemoryJudge()` may have changed. Subscribing does not create the singleton. */
@@ -521,7 +530,9 @@ export class PiRuntime {
       if (this._authDebounce) clearTimeout(this._authDebounce);
       this._authDebounce = setTimeout(() => {
         this._authDebounce = null;
-        void this._resyncOpenAIAndRepublish('auth.json change');
+        void this._resyncOpenAIAndRepublish('auth.json change').then(() => {
+          for (const listener of [...authFileListeners]) listener();
+        });
       }, AUTH_REPUBLISH_DEBOUNCE_MS);
     };
     const watcher = this._platform.fileWatchers.watch(this._agentDir, 'auth.json');

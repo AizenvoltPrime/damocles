@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { applyHostTheme } from './apply-theme';
 import { PANEL_CHANNELS, type PanelInit, type PanelTheme } from './panel-channels';
 import type { DamoclesBridge } from '../../shared/damocles-bridge';
 
@@ -23,12 +23,7 @@ ipcRenderer.on(PANEL_CHANNELS.message, (_event, message: unknown) => {
 // The panel HTML carries the theme CSS from its creation; this brings a reloaded or crash-recreated page up to the current theme too.
 function applyTheme(): void {
   const theme = current()?.theme;
-  if (!theme) return;
-  const style = document.getElementById(HOST_THEME_STYLE_ID);
-  if (style) style.textContent = theme.css;
-  document.body.classList.remove('vscode-dark', 'vscode-light');
-  document.body.classList.add(`vscode-${theme.kind}`);
-  document.body.dataset['vscodeThemeKind'] = `vscode-${theme.kind}`;
+  if (theme) applyHostTheme(theme);
 }
 
 ipcRenderer.on(PANEL_CHANNELS.theme, (_event, next: PanelTheme) => {

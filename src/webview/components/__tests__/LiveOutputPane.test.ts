@@ -32,11 +32,10 @@ function pane(wrapper: VueWrapper): HTMLPreElement {
 }
 
 /**
- * happy-dom reports every layout box as zero, so the tail-follow branch is unreachable without these.
+ * happy-dom reports every layout box as zero, so the pane never overflows without these.
  *
- * The watcher decides from `scrollHeight`, `scrollTop` and `clientHeight` read off the live element,
- * which is exactly the trio a headless DOM does not compute. Faking them on the prototype is what lets
- * the "scrolled up" and "sitting at the tail" cases differ at all.
+ * `useStickToBottom` decides from `scrollHeight`, `scrollTop` and `clientHeight` read off the live
+ * element, which is exactly the trio a headless DOM does not compute.
  */
 function fakeLayout(el: HTMLElement, scrollHeight: number, clientHeight: number): void {
   Object.defineProperty(el, 'scrollHeight', { configurable: true, value: scrollHeight });
@@ -184,33 +183,40 @@ describe('the truncation hint', () => {
 describe('the reader\'s scroll position', () => {
   it('is left alone when the reader has scrolled up', async () => {
     const wrapper = open('first frame');
+    await wrapper.vm.$nextTick();
     const el = pane(wrapper);
     fakeLayout(el, 1000, 100);
-    el.scrollTop = 200;
-
     await wrapper.setProps({ output: 'first frame\nsecond frame' });
+    expect(el.scrollTop).toBe(900);
+
+    // A reader's scroll: the wheel, then the browser moving the view and firing `scroll`.
+    el.dispatchEvent(new WheelEvent('wheel', { deltaY: -300, bubbles: true }));
+    el.scrollTop = 600;
+    el.dispatchEvent(new Event('scroll'));
+    await wrapper.setProps({ output: 'first frame\nsecond frame\nthird frame' });
     await wrapper.vm.$nextTick();
 
-    expect(el.scrollTop).toBe(200);
+    expect(el.scrollTop).toBe(600);
   });
 
-  it('follows the tail when the reader is already sitting at the bottom', async () => {
+  it('follows the tail while the reader has not scrolled away', async () => {
     const wrapper = open('first frame');
     const el = pane(wrapper);
     fakeLayout(el, 1000, 100);
-    el.scrollTop = 900;
 
     await wrapper.setProps({ output: 'first frame\nsecond frame' });
     await wrapper.vm.$nextTick();
 
-    expect(el.scrollTop).toBe(1000);
+    expect(el.scrollTop).toBe(900);
   });
 
-  it('jumps to the tail when it mounts over output that is already running', () => {
+  it('jumps to the tail when it mounts over output that is already running', async () => {
     // Opening the overlay over a long-running command mounts a pane whose output is already there.
     Object.defineProperty(HTMLPreElement.prototype, 'scrollHeight', { configurable: true, value: 4321 });
     try {
       const wrapper = open('a\nb\nc');
+      // The pane attaches once its element is rendered, a tick after mount.
+      await wrapper.vm.$nextTick();
 
       expect(pane(wrapper).scrollTop).toBe(4321);
     } finally {

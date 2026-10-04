@@ -1,6 +1,10 @@
 import * as fs from "fs/promises";
 import * as path from "path";
+import { randomUUID } from "crypto";
+import type { Platform } from "../../../../platform/platform";
+import type { ChatSession } from "../../../chat-session";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
+import { listWorkspaceFiles } from "../../ripgrep";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { findSessionPlanFiles } from "../../../paths";
 import { findAgentFile, subagentsDir } from "../../../pi-session/agent-records";
@@ -8,9 +12,46 @@ import { ensurePiSessionDir } from "../../../pi-session/session-store/session-di
 import { log } from "../../../logger";
 import { t } from "../../../l10n";
 import { openMarkdownPreview } from "../../markdown-preview";
+import { isSettingsAccountId, isSettingsSectionId } from "../../../../shared/settings-sections";
 
 function hasPathTraversal(slug: string): boolean {
   return slug.includes("..") || slug.includes("/") || slug.includes("\\");
+}
+
+const PLAN_CANDIDATE_LIMIT = 8;
+
+/** A markdown file under a `plans` folder at any depth, or whose name has "plan" as a word (`PLAN.md`, `rollout-plan.md`, `rolloutPlan.md`). */
+export function isPlanFileCandidate(relativePath: string): boolean {
+  const segments = relativePath.split("/");
+  const name = segments.pop() ?? "";
+  if (!name.toLowerCase().endsWith(".md")) return false;
+  if (segments.some((segment) => segment.toLowerCase() === "plans")) return true;
+  const words = name.slice(0, -".md".length).split(/[^A-Za-z]+|(?<=[a-z])(?=[A-Z])/);
+  return words.some((word) => word.toLowerCase() === "plan");
+}
+
+/** The folder's plan files from the `@` autocomplete's listing (same excludes), newest first. */
+async function planFileCandidates(
+  host: Pick<Platform, "settings" | "paths">,
+  folderPath: string,
+): Promise<{ fsPath: string; relativePath: string; modifiedAt: number }[]> {
+  const listed = (await listWorkspaceFiles(host, folderPath)).filter(
+    (file) => !file.isDirectory && isPlanFileCandidate(file.relativePath),
+  );
+  const stated = await Promise.all(listed.map(async ({ relativePath }) => {
+    const fsPath = path.join(folderPath, relativePath);
+    try {
+      return { fsPath, relativePath, modifiedAt: (await fs.stat(fsPath)).mtimeMs };
+    } catch (err) {
+      // Deleted between the listing and the stat.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  }));
+  return stated
+    .filter((file) => file !== null)
+    .sort((a, b) => b.modifiedAt - a.modifiedAt)
+    .slice(0, PLAN_CANDIDATE_LIMIT);
 }
 
 export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -20,15 +61,41 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
   const stillOnDispatchFolder = (ctx: HandlerContext): boolean =>
     deps.getPanels().get(ctx.panelId)?.folder.key === ctx.folder.key;
 
+  /**
+   * Per panel, the plan files its last planFileCandidates listed, by issued id, and the session they were listed for;
+   * bindPlanToSession reads only these. A folder switch replaces the session, which retires the ids.
+   */
+  const issuedPlanFiles = new Map<string, { session: ChatSession; files: Map<string, string> }>();
+
+  /** False, issuing nothing, when the panel closed or replaced the session the listing ran for. */
+  const issuePlanFiles = (ctx: HandlerContext, files: Map<string, string>): boolean => {
+    const instance = deps.getPanels().get(ctx.panelId);
+    if (instance?.session !== ctx.session) return false;
+    if (!issuedPlanFiles.has(ctx.panelId)) {
+      instance.disposables.push({ dispose: () => issuedPlanFiles.delete(ctx.panelId) });
+    }
+    issuedPlanFiles.set(ctx.panelId, { session: ctx.session, files });
+    return true;
+  };
+
   return {
     openSettings: () => {
       void platform.editor.openHostSettings("damocles");
     },
 
-    invokeSignIn: (_msg, ctx) => {
-      // Auth-failure recovery surfaces the panel-driven Claude auth flow (ClaudeAuthPanel lives in the
-      // settings panel) rather than the removed CLI sign-in command.
-      postMessage(ctx.host, { type: "openSettingsPanel" });
+    openAppSettings: (msg, ctx) => {
+      if (msg.type !== "openAppSettings") return;
+      if (msg.section !== undefined && !isSettingsSectionId(msg.section)) throw new Error("Unknown settings section");
+      if (msg.account !== undefined && !isSettingsAccountId(msg.account)) throw new Error("Unknown settings account");
+      if (platform.capabilities.settingsInPanel) {
+        postMessage(ctx.host, {
+          type: "openSettingsPanel",
+          ...(msg.section !== undefined ? { section: msg.section } : {}),
+          ...(msg.account !== undefined ? { account: msg.account } : {}),
+        });
+      } else {
+        platform.window.openAppSettings(msg.section, msg.account);
+      }
     },
 
     openSessionLog: async (_msg, ctx) => {
@@ -88,19 +155,58 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
-    bindPlanToSession: async (_msg, ctx) => {
+    // Every request is answered, or the overlay never leaves its loading state.
+    requestPlanFileCandidates: async (_msg, ctx) => {
+      let hasPlan = false;
+      let files: Awaited<ReturnType<typeof planFileCandidates>>;
+      try {
+        hasPlan = (await ctx.session.getActivePlanFilePath()) !== null;
+        files = await planFileCandidates(platform, ctx.folder.fsPath);
+      } catch (err) {
+        log("[MessageRouter] Listing plan files in %s failed: %O", ctx.folder.fsPath, err);
+        issuePlanFiles(ctx, new Map());
+        postMessage(ctx.host, { type: "planFileCandidates", files: [], hasPlan, listFailed: true });
+        return;
+      }
+      const issued = new Map<string, string>();
+      const listed = files.map((file) => {
+        const id = randomUUID();
+        issued.set(id, file.fsPath);
+        return { id, relativePath: file.relativePath, modifiedAt: file.modifiedAt };
+      });
+      if (!issuePlanFiles(ctx, issued)) {
+        postMessage(ctx.host, { type: "planFileCandidates", files: [], hasPlan: false });
+        return;
+      }
+      postMessage(ctx.host, { type: "planFileCandidates", files: listed, hasPlan });
+    },
+
+    bindPlanToSession: async (msg, ctx) => {
+      if (msg.type !== "bindPlanToSession") return;
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
         void platform.notifications.info(t("No active session"));
         return;
       }
 
-      const selectedPath = await platform.dialogs.pickFile({
-        filters: { Markdown: ["md"] },
-        title: t("Select Plan File to Inject"),
-        defaultPath: ctx.folder.fsPath,
-      });
-      if (!selectedPath) return;
+      let selectedPath: string;
+      if (msg.candidateId === undefined) {
+        const picked = await platform.dialogs.pickFile({
+          filters: { Markdown: ["md"] },
+          title: t("Select Plan File to Inject"),
+          defaultPath: ctx.folder.fsPath,
+        });
+        if (!picked) return;
+        selectedPath = picked;
+      } else {
+        const entry = issuedPlanFiles.get(ctx.panelId);
+        const issued = entry?.session === ctx.session ? entry.files.get(msg.candidateId) : undefined;
+        if (!issued) {
+          log("[MessageRouter] Refusing to bind plan candidate %s, which this panel's last list for this session did not issue", msg.candidateId);
+          return;
+        }
+        selectedPath = issued;
+      }
 
       // Overwrite the session's EXISTING plan file in place when one is already bound (matched on the
       // stable `-<id8>` suffix, the same resolver consumers read), so binding again never leaves an
@@ -109,26 +215,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
       try {
         const content = await fs.readFile(selectedPath, "utf-8");
-
-        let fileExists = false;
-        try {
-          await fs.access(planFilePath);
-          fileExists = true;
-        } catch {
-          fileExists = false;
-        }
-
-        if (fileExists) {
-          const confirmation = await platform.notifications.warn(
-            t("A plan file already exists for this session. Overwrite it?"),
-            { modal: true },
-            t("Overwrite")
-          );
-          if (!confirmation) {
-            return;
-          }
-        }
-
         await fs.mkdir(path.dirname(planFilePath), { recursive: true });
         await fs.writeFile(planFilePath, content);
 
@@ -173,7 +259,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         void platform.notifications.info(t("The system prompt isn't available yet. Send a message first."));
         return;
       }
-      await openMarkdownPreview(platform, "system-prompt", prompt);
+      await openMarkdownPreview(platform, "system-prompt", prompt, ctx.panelId);
     },
 
     openMcpToolInfo: async (msg, ctx) => {
@@ -183,7 +269,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         void platform.notifications.info(t("Tool information isn't available for \"{0}\".", msg.piName));
         return;
       }
-      await openMarkdownPreview(platform, msg.piName, markdown);
+      await openMarkdownPreview(platform, msg.piName, markdown, ctx.panelId);
     },
 
     openRewindDiff: async (msg, ctx) => {
@@ -239,11 +325,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await setLanguagePreference(msg.locale);
     },
 
-    stopBackgroundTask: async (msg, ctx) => {
-      if (msg.type !== "stopBackgroundTask" || !msg.taskId) return;
-      // Aborting the subagent emits the authoritative `backgroundTaskCompleted` (status `stopped`)
-      // from AgentManager; don't optimistically post one here or the store double-counts the stop.
-      await ctx.session.stopTask(msg.taskId);
+    stopSubagent: (msg, ctx) => {
+      if (msg.type !== "stopSubagent") return;
+      // The stopped run's own completion resolves the card and the task, so a stop that landed posts nothing here.
+      if (ctx.session.stopSubagent(msg.agentId)) return;
+      // A late click: the agent had already finished, and nothing else clears the webview's "Stopping..." state.
+      postMessage(ctx.host, { type: "subagentStopRejected", agentId: msg.agentId });
     },
 
     steerAgent: async (msg, ctx) => {

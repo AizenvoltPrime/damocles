@@ -13,11 +13,11 @@ function slugify(name: string): string {
  * read-only context documents (the live system prompt, an MCP tool's schema) as a readable preview.
  * A stable per-slug filename means re-opening the same document overwrites rather than piling up temps.
  */
-export async function openMarkdownPreview(platform: Pick<Platform, 'editor' | 'notifications'>, slug: string, content: string): Promise<void> {
+export async function openMarkdownPreview(platform: Pick<Platform, 'editor' | 'notifications'>, slug: string, content: string, panelId: string): Promise<void> {
   try {
     const file = path.join(os.tmpdir(), `damocles-${slugify(slug)}.md`);
     await fs.promises.writeFile(file, content, 'utf8');
-    await platform.editor.showMarkdownPreview(file);
+    await platform.editor.showMarkdownPreview(file, { panelId });
   } catch (err) {
     log('[markdownPreview] failed to open preview for %s: %O', slug, err);
     void platform.notifications.error('Damocles: could not open the document preview.');

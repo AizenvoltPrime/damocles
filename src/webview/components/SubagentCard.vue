@@ -2,28 +2,23 @@
 import { computed, ref, onMounted, onUnmounted, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import {
-  IconClipboard,
-  IconSearch,
-  IconCompass,
-  IconRobot,
-  IconCheck,
-  IconXCircle,
-  IconBan,
-  IconGear,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { Bot, ChevronRight, ClipboardList, Compass, Loader, LoaderCircle, Search, Square } from 'lucide-vue-next';
 import AgentUsageStats from './AgentUsageStats.vue';
-import EffortBadge from './EffortBadge.vue';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useSubagentStop } from '@/composables/useSubagentStop';
+import { useModelIdentity } from '@/composables/useModelIdentity';
+import { agentStatusChip } from '@/composables/useTeamFormatting';
+import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
+import { effortBadgeLabelKey } from '@shared/effort-badge';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
 import { subagentHeading } from '@/stores/useSubagentStore';
 
 const { t } = useI18n();
 const { postMessage } = usePlatformBridge();
+const modelIdentity = useModelIdentity();
+const backgroundTaskStore = useBackgroundTaskStore();
+const subagentStop = useSubagentStop();
 
 const props = defineProps<{
   subagent: SubagentState;
@@ -76,15 +71,15 @@ const formattedDuration = computed(() => {
 });
 
 const AGENT_TYPE_ICONS: Record<string, Component> = {
-  'code-reviewer': IconSearch,
-  Explore: IconCompass,
-  Plan: IconClipboard,
-  'general-purpose': IconRobot,
+  'code-reviewer': Search,
+  Explore: Compass,
+  Plan: ClipboardList,
+  'general-purpose': Bot,
 };
 
 const agentIcon = computed((): Component => {
   const type = props.subagent.agentType;
-  return (type !== undefined ? ownEntry(AGENT_TYPE_ICONS, type) : undefined) ?? IconClipboard;
+  return (type !== undefined ? ownEntry(AGENT_TYPE_ICONS, type) : undefined) ?? Bot;
 });
 
 const toolCount = computed(() => {
@@ -103,32 +98,15 @@ const toolCount = computed(() => {
 const cardClass = computed(() => {
   switch (props.subagent.status) {
     case 'running':
-      return 'border-primary/50 hover:border-primary/70';
-    case 'completed':
-      return 'border-success/50 hover:border-success/70';
+      return 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]';
     case 'failed':
-      return 'border-error/50 hover:border-error/70';
-    case 'cancelled':
-      return 'border-warning/50 hover:border-warning/70';
+      return 'border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]';
     default:
-      return 'border-border';
+      return 'border-(--d-border)';
   }
 });
 
-const statusBadgeClass = computed(() => {
-  switch (props.subagent.status) {
-    case 'running':
-      return 'bg-primary/30 text-primary border-primary/30';
-    case 'completed':
-      return 'bg-success/30 text-success border-success/30';
-    case 'failed':
-      return 'bg-error/30 text-error border-error/30';
-    case 'cancelled':
-      return 'bg-warning/30 text-warning border-warning/30';
-    default:
-      return 'bg-primary/30 text-primary border-primary/30';
-  }
-});
+const chip = computed(() => agentStatusChip(props.subagent.status));
 
 const displayAgentType = computed((): string | null => {
   const type = props.subagent.agentType;
@@ -139,90 +117,165 @@ const displayAgentType = computed((): string | null => {
 
 // Render the extension-resolved display label verbatim (custom providers like StepFun included); never
 // re-parse it as a model id. Identical value on fresh streaming and on history restore.
-const displayModel = computed(() => props.subagent.model ?? null);
+const model = computed(() => modelIdentity(props.subagent.model));
 
 const formattedToolCount = computed(() => t('subagentDisplay.tools', { n: toolCount.value }, toolCount.value));
 
-const metadataItems = computed(() => [
-  formattedToolCount.value,
-  formattedDuration.value,
-  displayModel.value,
-].filter(Boolean));
+const stopping = computed(() => subagentStop.isStopping(props.subagent));
+const stopLabel = computed(() => (stopping.value ? t('toolCall.stopping') : t('agentStop.stopSubagentNamed', { name: heading.value.title })));
+
+function stop(): void {
+  if (props.subagent.sdkAgentId) subagentStop.stop(props.subagent.sdkAgentId);
+}
 </script>
 
 <template>
-  <Card
-    class="text-sm overflow-hidden cursor-pointer transition-colors"
+  <div
+    class="cursor-pointer overflow-hidden rounded-xl border bg-(--d-card) text-13 transition-colors duration-200 hover:border-(--d-border2)"
     :class="cardClass"
+    data-testid="subagent-card"
     @click="$emit('expand')"
   >
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
-      <component :is="agentIcon" :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium truncate flex-1">{{ heading.title }}</span>
-      <Badge
-        v-if="heading.resumed"
-        variant="secondary"
-        class="bg-primary/15 text-primary border-primary/30 shrink-0"
+    <div class="flex items-center gap-2.5 px-3 pt-2.25 pb-2">
+      <span
+        class="flex size-7 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info)"
+        aria-hidden="true"
       >
-        {{ t('subagentDisplay.resumed') }}
-      </Badge>
-      <Badge v-if="subagent.isBackground" variant="secondary" class="bg-blue-500/15 text-blue-400 border-blue-500/30 gap-1 shrink-0">
-        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
-        <span>{{ t('backgroundTask.background') }}</span>
-      </Badge>
-      <Badge
-        v-if="displayAgentType !== null"
-        variant="secondary"
-        :class="[statusBadgeClass, hasTemplate ? 'cursor-pointer hover:brightness-125 transition' : '']"
-        class="gap-1 shrink-0"
-        :title="hasTemplate ? t('subagentDisplay.openTemplate', { path: subagent.templatePath }) : undefined"
-        @click.stop="hasTemplate && openTemplate()"
+        <component
+          :is="agentIcon"
+          class="size-3.5"
+        />
+      </span>
+      <div class="flex min-w-0 flex-1 flex-col gap-px">
+        <div class="flex min-w-0 items-center gap-2">
+          <span class="truncate font-semibold">{{ heading.title }}</span>
+          <span
+            v-if="heading.resumed"
+            class="flex-none rounded-full bg-(--d-accent-soft) px-1.5 text-10.5/4 font-medium text-(--d-accent-text)"
+          >{{ t('subagentDisplay.resumed') }}</span>
+        </div>
+        <div class="flex min-w-0 items-center gap-1.5 overflow-hidden text-11 whitespace-nowrap text-(--d-faint)">
+          <button
+            v-if="displayAgentType !== null && hasTemplate"
+            type="button"
+            class="font-semibold text-(--d-info) hover:underline"
+            :title="t('subagentDisplay.openTemplate', { path: subagent.templatePath })"
+            @click.stop="openTemplate()"
+          >
+            {{ displayAgentType }}
+          </button>
+          <span
+            v-else-if="displayAgentType !== null"
+            class="font-semibold text-(--d-info)"
+          >{{ displayAgentType }}</span>
+          <template v-if="subagent.isBackground">
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              class="flex items-center gap-1 rounded-full bg-(--d-hover) px-1.5 leading-4 text-(--d-muted) transition-colors hover:bg-(--d-border2) hover:text-(--d-text)"
+              :title="t('overlays.agent.openBackgroundTasks')"
+              data-testid="subagent-card-background"
+              @click.stop="backgroundTaskStore.openOverlay()"
+            >
+              <Loader
+                class="size-2.5"
+                :class="subagent.status === 'running' && 'd-spinning'"
+                aria-hidden="true"
+              />{{ t('backgroundTask.background') }}
+            </button>
+          </template>
+          <template v-if="model">
+            <span aria-hidden="true">·</span>
+            <span class="flex min-w-0 items-center gap-1">
+              <!-- eslint-disable vue/no-v-html -- a vendored static logo constant (provider-logos.ts) -->
+              <span
+                v-if="model.logo"
+                class="size-2.75 flex-none [&>svg]:size-full"
+                aria-hidden="true"
+                v-html="model.logo"
+              />
+              <!-- eslint-enable vue/no-v-html -->
+              <span class="truncate">{{ model.name }}</span>
+            </span>
+          </template>
+          <template v-if="subagent.effort">
+            <span aria-hidden="true">·</span>
+            <span
+              class="flex-none"
+              data-testid="subagent-card-effort"
+            >{{ t('overlays.agent.effortLevel', { level: t(effortBadgeLabelKey(subagent.effort)) }) }}</span>
+          </template>
+        </div>
+      </div>
+      <span
+        class="flex flex-none items-center gap-1.25 rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_13%,transparent)] px-2 py-0.5 text-11 font-medium"
+        :class="chip.color"
+        data-testid="subagent-status"
       >
-        <component :is="agentIcon" :size="12" />
-        <span>{{ displayAgentType }}</span>
-      </Badge>
-    </CardHeader>
+        <component
+          :is="chip.icon"
+          class="size-2.75"
+          :class="chip.live && 'd-spinning'"
+          aria-hidden="true"
+        />{{ t(chip.labelKey) }}
+      </span>
+    </div>
 
     <div
       v-if="subagent.status === 'running' && subagent.progressSummary"
-      class="px-3 py-1.5 text-xs text-primary/80 italic truncate border-b border-border/30"
+      class="-mt-0.5 mr-3 mb-2 ml-12.5 truncate text-xs text-(--d-accent) italic"
     >
       {{ subagent.progressSummary }}
     </div>
 
-    <CardContent class="px-3 py-2 flex items-center justify-between">
-      <div class="flex items-center gap-1.5 text-xs text-foreground/70 leading-none">
-        <IconGear :size="12" class="shrink-0" />
-        <template v-for="(item, index) in metadataItems" :key="index">
-          <span v-if="index > 0" class="text-foreground/40">•</span>
-          <span>{{ item }}</span>
-        </template>
-        <EffortBadge v-if="subagent.effort" :effort="subagent.effort" />
-        <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="card" />
-      </div>
-
-      <div class="flex items-center">
-        <LoadingSpinner
-          v-if="subagent.status === 'running'"
-          :size="14"
-          class="text-primary"
+    <div
+      class="flex flex-wrap items-center gap-x-3.5 gap-y-1 border-t border-(--d-border) py-1.5 pr-3 pl-12.5 font-mono text-11 text-(--d-faint)"
+      data-testid="subagent-stats"
+    >
+      <span>{{ formattedToolCount }}</span>
+      <span class="tabular-nums">{{ formattedDuration }}</span>
+      <AgentUsageStats
+        v-if="subagent.usage"
+        :usage="subagent.usage"
+        :dollar-billed="subagent.dollarBilled"
+        variant="card"
+        separator-class="hidden"
+        cost-class="text-(--d-muted)"
+      />
+      <span class="flex-1" />
+      <button
+        v-if="subagentStop.canStop(subagent)"
+        type="button"
+        class="flex rounded-5 p-0.75 text-(--d-danger) opacity-75 transition-[opacity,background-color] enabled:hover:bg-[color-mix(in_srgb,var(--d-danger)_12%,transparent)] enabled:hover:opacity-100 disabled:opacity-60"
+        :title="stopLabel"
+        :aria-label="stopLabel"
+        :aria-busy="stopping || undefined"
+        :disabled="stopping"
+        data-testid="subagent-card-stop"
+        @click.stop="stop"
+      >
+        <LoaderCircle
+          v-if="stopping"
+          class="size-3 d-spinning"
+          aria-hidden="true"
         />
-        <IconCheck
-          v-else-if="subagent.status === 'completed'"
-          :size="14"
-          class="text-success"
+        <Square
+          v-else
+          class="size-3"
+          aria-hidden="true"
         />
-        <IconXCircle
-          v-else-if="subagent.status === 'failed'"
-          :size="14"
-          class="text-error"
+      </button>
+      <button
+        type="button"
+        class="flex items-center gap-0.75 rounded font-sans text-(--d-muted) hover:text-(--d-text) focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+        :aria-label="t('cards.subagent.open', { name: heading.title })"
+        @click.stop="$emit('expand')"
+      >
+        {{ t('cards.details') }}<ChevronRight
+          class="size-2.75"
+          aria-hidden="true"
         />
-        <IconBan
-          v-else-if="subagent.status === 'cancelled'"
-          :size="14"
-          class="text-warning"
-        />
-      </div>
-    </CardContent>
-  </Card>
+      </button>
+    </div>
+  </div>
 </template>

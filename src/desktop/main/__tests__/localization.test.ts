@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { createDesktopLocalizationService, formatMessage, normalizeLanguage } from '../platform/localization-service';
+import * as os from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createDesktopLocalizationService, formatMessage, launchLanguage, normalizeLanguage, readLanguageSetting } from '../platform/localization-service';
 
 const noLog = (): void => undefined;
 
@@ -75,5 +76,38 @@ describe('desktop localization', () => {
     expect(() => l10n.setLanguage('el')).not.toThrow();
     expect(seen).toEqual(['el']);
     expect(lines.some((line) => line.startsWith('[l10n] a listener threw') && line.includes('menu rebuild failed'))).toBe(true);
+  });
+});
+
+describe('damocles.desktop.language', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  function userFile(text: string | undefined): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dmx-lang-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'settings.json');
+    if (text !== undefined) fs.writeFileSync(file, text);
+    return file;
+  }
+
+  it('reads en and el from the user file, BOM included, and anything else as system', () => {
+    const lines: string[] = [];
+    const log = (line: string): void => { lines.push(line); };
+    expect(readLanguageSetting(userFile('{"damocles.desktop.language": "el"}'), log)).toBe('el');
+    expect(readLanguageSetting(userFile('\ufeff{"damocles.desktop.language": "en"}'), log)).toBe('en');
+    for (const text of [undefined, '', '{', '[]', '{"damocles.desktop.language": "de"}', '{"damocles.desktop.language": "--no-sandbox"}', '{"damocles.desktop.language": ["el"]}', '{"__proto__": {"damocles.desktop.language": "el"}}']) {
+      expect(readLanguageSetting(userFile(text), log), String(text)).toBe('system');
+    }
+    expect(lines.filter((line) => line.includes('does not parse'))).toHaveLength(2);
+  });
+
+  it('uses the setting for the bundles in place of the stored choice and the OS locale unless it is system', () => {
+    expect(launchLanguage('el', 'en', 'en-US')).toBe('el');
+    expect(launchLanguage('en', undefined, 'el-GR')).toBe('en');
+    expect(launchLanguage('system', 'el', 'en-US')).toBe('el');
+    expect(launchLanguage('system', undefined, 'el-GR')).toBe('el');
+    expect(launchLanguage('system', undefined, 'de-DE')).toBe('en');
   });
 });

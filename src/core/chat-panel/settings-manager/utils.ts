@@ -1,5 +1,5 @@
 import type { Platform } from "../../../platform/platform";
-import type { SettingsScope } from "../../../platform/settings-store";
+import type { SettingsFolder, SettingsScope } from "../../../platform/settings-store";
 import * as path from "path";
 import * as os from "os";
 import { log } from "../../logger";
@@ -59,26 +59,39 @@ export function getContextWindowForModel(modelId: string): number {
   return modelInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 
-// Writes where the value that wins is read from; a store reports a local value only where it can write one.
+const SCOPE_RANK: Readonly<Record<SettingsScope, number>> = { user: 0, project: 1, local: 2 };
+
+/** The highest scope holding a value for the key, which is the one its effective value comes from; undefined when only the default applies. */
+export function effectiveScope(platform: Pick<Platform, "settings">, fullKey: string, folder: SettingsFolder | undefined): SettingsScope | undefined {
+  const inspection = platform.settings.inspect<unknown>(fullKey, folder);
+  if (inspection.localValue !== undefined) return "local";
+  if (inspection.projectValue !== undefined) return "project";
+  if (inspection.userValue !== undefined) return "user";
+  return undefined;
+}
+
+/** What a settings setter wrote: the full key and its section's home scope (D37), which settingWriteResult reports. */
+export interface SettingWrite {
+  readonly key: string;
+  readonly home: SettingsScope;
+}
+
+/**
+ * Writes at `home` (D37: the section's scope), or where the value that wins is read from when that file ranks higher, so
+ * the change always takes effect. `folder` is the chat's for a key read per chat, else undefined. A store reports a local
+ * value only where it can write one.
+ */
 export async function updateConfigAtEffectiveScope<T>(
   platform: Pick<Platform, "settings">,
-  section: string,
   key: string,
-  value: T
-): Promise<void> {
-  const fullKey = `${section}.${key}`;
-  const inspection = platform.settings.inspect<T>(fullKey);
-
-  let scope: SettingsScope;
-  if (inspection.localValue !== undefined) {
-    scope = "local";
-  } else if (inspection.projectValue !== undefined) {
-    scope = "project";
-  } else {
-    scope = "user";
-  }
-
-  await platform.settings.update(fullKey, value, scope);
+  value: T,
+  options: { home?: SettingsScope; folder?: SettingsFolder | undefined } = {},
+): Promise<SettingWrite> {
+  const home = options.home ?? "user";
+  const held = effectiveScope(platform, key, options.folder);
+  const scope = held !== undefined && SCOPE_RANK[held] > SCOPE_RANK[home] ? held : home;
+  await platform.settings.update(key, value, scope, options.folder);
+  return { key, home };
 }
 
 function formatPermissionPattern(rule: PermissionRuleValue): string {

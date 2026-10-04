@@ -1,12 +1,26 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { chatTab, expect, nextTab, panelIdOf, tabById, test } from './support/fixtures';
+import type { ElectronApplication, Page } from '@playwright/test';
+import { activeChat, expect, test } from './support/fixtures';
+import { shellState } from './support/shell';
 import { seedStubModel } from './support/hermetic';
 import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
 import { addProject, answerMessageBoxes, chatInput, messageBoxes, postFromWebview, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 // Project instructions (AGENTS.md) are project-scope input; the system prompt sent to the stub shows whether they loaded.
 const MARKER = 'PROJECT-SCOPE-MARKER-7c1e';
+
+/** Adds a project and returns the chat main selects in it. */
+async function openProjectChat(app: ElectronApplication, dir: string, trust: boolean): Promise<Page> {
+  await addProject(app, dir, trust);
+  await expect.poll(async () => {
+    const state = await shellState(app);
+    return state.projects.find((p) => p.key === state.selected.projectKey)?.fsPath;
+  }).toBe(dir);
+  const chat = await activeChat(app);
+  await expect(chatInput(chat)).toBeVisible();
+  return chat;
+}
 
 function requestFor(stub: OpenAIStub, prompt: string): string {
   const request = chatRequests(stub).find((r) => JSON.stringify(r.body).includes(`"text":"${prompt}"`));
@@ -25,14 +39,9 @@ test('trust per folder: untrusted loads no project input, granting applies live,
     const trustedFolders = (): string[] => (fs.existsSync(trustFile) ? (JSON.parse(fs.readFileSync(trustFile, 'utf8')) as { folders: string[] }).folders : []);
 
     let desktop = await launch();
-    const homeTab = await chatTab(desktop.app);
-    await expect(chatInput(homeTab)).toBeVisible();
+    await expect(chatInput(await activeChat(desktop.app))).toBeVisible();
 
-    const opened = nextTab(desktop.app, [homeTab]);
-    await addProject(desktop.app, home.project, false);
-    const alpha = await opened;
-    const alphaId = panelIdOf(alpha);
-    await expect(chatInput(alpha)).toBeVisible();
+    const alpha = await openProjectChat(desktop.app, home.project, false);
     expect((await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(1);
     expect(trustedFolders()).toEqual([]);
 
@@ -51,19 +60,19 @@ test('trust per folder: untrusted loads no project input, granting applies live,
       return requestFor(stub, prompt).includes(MARKER);
     }, { timeout: 60_000, intervals: [0] }).toBe(true);
 
+    const alphaChatId = (await shellState(desktop.app)).selected.chatId;
     await desktop.close();
     desktop = await launch();
     await answerMessageBoxes(desktop.app);
-    const restored = await tabById(desktop.app, alphaId);
+    // The selected chat comes back selected, resumed from its session file.
+    await expect.poll(async () => (await shellState(desktop.app)).selected.chatId).toBe(alphaChatId);
+    const restored = await activeChat(desktop.app);
     await expect(chatInput(restored)).toBeVisible();
     await sendAndAwaitEcho(restored, 'after restart');
     expect(requestFor(stub, 'after restart')).toContain(MARKER);
     expect((await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(0);
 
-    const subOpened = nextTab(desktop.app, desktop.app.windows());
-    await addProject(desktop.app, sub, false);
-    const subTab = await subOpened;
-    await expect(chatInput(subTab)).toBeVisible();
+    const subTab = await openProjectChat(desktop.app, sub, false);
     const prompts = (await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT));
     expect(prompts.map((b) => b.message)).toEqual([`${TRUST_PROMPT} ${sub}?`]);
     await sendAndAwaitEcho(subTab, 'subfolder turn');

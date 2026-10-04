@@ -71,9 +71,6 @@
     "tokens": "tokens",
     "noFile": "No file",
     "settings": "Settings",
-    "note": "Note",
-    "navigate": "navigate",
-    "select": "select",
     "close": "close",
     "collapse": "Collapse",
     "expand": "Expand",
@@ -93,24 +90,21 @@
     "dayAgo": "{n} day ago | {n} days ago"
   },
   "chatInput": {
-    "placeholder": "Ask Damocles anything...",
-    "placeholderQueued": "Type to queue next message...",
+    "placeholder": "Ask Damocles anything… ({'@'} to mention, / for commands)",
+    "placeholderQueued": "Type to queue your next message…",
     "willQueue": "Will queue",
     "lineCount": "{n} line | {n} lines",
     "includeContext": "Click to include context",
     "excludeContext": "Click to exclude context",
     "permissionModes": {
       "default": {
-        "label": "Ask before edits",
-        "short": "Ask"
+        "label": "Ask before edits"
       },
       "acceptEdits": {
-        "label": "Accept edits",
-        "short": "Accept"
+        "label": "Accept edits"
       },
       "plan": {
-        "label": "Plan mode",
-        "short": "Plan"
+        "label": "Plan mode"
       }
     },
     "yolo": {
@@ -154,7 +148,7 @@
     "statusError": "Error",
     "openLicense": "Open license page in browser",
     "licenseGatedNote": "Some models require accepting a license before download can complete.",
-    "cancel": "Cancel"
+    "cancel": "Cancel download"
   },
   "voiceFirstRun": {
     "title": "Wake-word voice mode",
@@ -189,12 +183,7 @@
   "jarvisSettings": {
     "title": "Voice",
     "description": "Choose how voice input works. Wake-word runs fully on-device. Push-to-talk uses the cloud STT provider.",
-    "modeLabel": "Voice input",
-    "modeOff": "Off",
-    "modePushToTalk": "Push-to-talk (cloud STT)",
-    "modeWakeWord": "Wake-word (Jarvis, local)",
     "sensitivityLabel": "Wake-word sensitivity",
-    "sensitivityHint": "Lower = triggers more easily. Higher = stricter.",
     "spokenRepliesTitle": "Spoken replies",
     "speakAssistantReplies": "Speak assistant replies",
     "voicePicker": "Voice",
@@ -214,7 +203,6 @@
     "endOfTurn": "End-of-turn pause",
     "maxUtterance": "Max utterance",
     "diagnostics": "Diagnostics logging",
-    "maintenanceTitle": "Diagnostics & maintenance",
     "redownload": "Re-download models",
     "openFolder": "Open models folder",
     "freeDiskSpace": "Free disk space",
@@ -229,14 +217,9 @@
     "workspaceFolder": "Workspace folder",
     "workspaceFolderDescription": "The agent reads and edits files in this folder. Switching starts a new conversation.",
     "defaultWorkspaceFolderDescription": "New panels open in this folder.",
-    "title": "Settings",
-    "thisPanel": "This panel",
-    "defaultForNewPanels": "Default for new panels",
     "workspace": "Workspace",
     "application": "All windows",
     "applicationDescription": "Saved in your user settings and applied everywhere. Workspace and project settings cannot set these.",
-    "teamSection": "Team",
-    "teamSectionDescription": "Models and reasoning effort for each agent team role.",
     "teamLead": "Lead",
     "teamImplementor": "Implementor",
     "teamReviewer": "Reviewer",
@@ -252,21 +235,7 @@
     "ideContextLabel": "Attach active editor as context",
     "ideContextDescription": "When OFF, new chat panels start with the IDE context chip disabled so the opened file/selection is not sent automatically. You can still re-enable it per panel from the chat input.",
     "model": "Model",
-    "budgetLimit": "Budget Limit (USD)",
-    "budgetLimitDescription": "Leave empty for no limit. Warning shown at 80%.",
     "budgetPlaceholder": "Unlimited",
-    "taskBudget": "Task Token Budget (alpha)",
-    "taskBudgetDescription": "Helps the model pace tool use within a token budget. Leave empty to disable.",
-    "taskBudgetPlaceholder": "Disabled",
-    "autoCompact": "Auto-compact",
-    "autoCompactEnabled": "Compact context automatically",
-    "autoCompactTriggerSuffix": "% of context",
-    "autoCompactDescription": "When enabled, the conversation is summarized once usage crosses this percentage of the model's context window.",
-    "cacheWarming": "Prompt cache warming",
-    "cacheWarmingOff": "Off",
-    "cacheWarmingStreaming": "While an agent run is in flight",
-    "cacheWarmingIdle": "While a run is in flight and while idle",
-    "cacheWarmingDescription": "Shortly before the provider drops the prompt cache, Damocles re-sends the last request with a one-token output budget whenever the expected saving is worth the cost, which resets the cache clock so the next request is a cache read instead of a cache rebuild. Small contexts and cheap models often miss that bar, so no warm request goes out. A warm request is billed as a cache read of the full context plus one output token and never enters the conversation. Idle keeps warming for up to 30 minutes after the last request.",
     "extendedThinking": "Extended Thinking",
     "reasoningEffort": "Reasoning Effort",
     "effortNone": "None, no reasoning",
@@ -279,7 +248,6 @@
     "disableThinking": "Disable thinking",
     "thinkingAlwaysOn": "This model always thinks. Use reasoning effort to control how much.",
     "voice": {
-      "title": "Voice Input",
       "provider": "Provider",
       "apiKey": "API Key",
       "apiKeyPlaceholder": "Enter your API key",
@@ -291,7 +259,6 @@
       "languageHint": "Language used for speech-to-text transcription."
     },
     "explore": {
-      "title": "Explore Agent",
       "provider": "Provider",
       "model": "Model",
       "modelPlaceholder": "Model ID (e.g. gemini-2.5-flash)",
@@ -315,53 +282,33 @@
       "effortHigh": "High"
     },
     "imageGeneration": {
-      "title": "Image Generation",
-      "needsOpenRouterKey": "Needs an OpenRouter API key. Add one under OpenRouter Authentication below.",
-      "enabledLabel": "Let the agent generate images",
-      "model": "Model",
       "modelPlaceholder": "Choose an image model",
-      "unknownModel": "{model} is not available for image generation. Choose another model.",
-      "description": "The GenerateImage tool creates an image with an OpenRouter model and saves it as a new file at the path you approve. Each image is billed to your OpenRouter key."
+      "unknownModel": "{model} is not available for image generation. Choose another model."
     },
-    "language": "Language",
     "openVsCodeSettings": "Open VS Code Settings",
     "settingsInfo": "Changes apply to the current session and persist in workspace settings.",
     "permissionOptions": {
       "default": {
-        "label": "Ask before edits",
-        "description": "Prompt for file changes"
+        "label": "Ask before edits"
       },
       "acceptEdits": {
-        "label": "Accept edits",
-        "description": "Auto-approve file changes"
+        "label": "Accept edits"
       },
       "plan": {
-        "label": "Plan mode",
-        "description": "Read-only, no execution"
+        "label": "Plan mode"
       }
     },
     "source": {
-      "project": "Project",
-      "local": "Local",
-      "fromFile": "Set in {path}",
-      "summaryTitle": "Values from project files",
-      "summaryDescription": "These values come from the project's .damocles files and take precedence over your user settings. Changing one here saves it to that file.",
-      "userFileInfo": "Changes are saved to ~/.damocles/settings.json, or to the project's .damocles file when that file already sets the value. A trusted project can override your settings in .damocles/settings.json and .damocles/settings.local.json."
+      "fromFile": "Set in {path}"
     },
     "jsonFiles": {
-      "title": "Settings files",
       "edit": {
         "user": "Edit user settings.json",
         "project": "Edit project settings.json",
         "local": "Edit local settings.local.json"
       },
       "noProject": "No project is open, so there is no project settings file.",
-      "untrusted": "The default project is not trusted, so its settings files do not apply.",
-      "return": {
-        "user": "Back to user settings.json",
-        "project": "Back to project settings.json",
-        "local": "Back to local settings.local.json"
-      }
+      "untrusted": "The default project is not trusted, so its settings files do not apply."
     }
   },
   "session": {
@@ -373,7 +320,6 @@
     "loadMore": "Load more sessions",
     "scrollToBottom": "Scroll to bottom",
     "loadingHistory": "Loading history...",
-    "searchPlaceholder": "Search sessions...",
     "noSearchResults": "No sessions found",
     "noSessions": "No sessions yet",
     "tagSession": "Tag session",
@@ -449,9 +395,7 @@
   "permission": {
     "runCommand": "Run this command?",
     "runCommandAgent": "{agent} wants to run this command:",
-    "createFile": "Create this file",
     "createFileAgent": "{agent} wants to create this file",
-    "editFile": "Make this edit to",
     "editFileAgent": "{agent} wants to edit",
     "generateImage": "Generate an image and save it as this new file?",
     "useTool": "Allow {tool} with this input?",
@@ -462,7 +406,6 @@
     "queuePosition": "{position} of {total} pending",
     "options": {
       "yes": "Yes",
-      "yesAcceptAll": "Yes, accept all edits",
       "alwaysAllow": "Always allow {pattern}",
       "no": "No",
       "alwaysDeny": "Always deny {pattern}",
@@ -482,18 +425,18 @@
       "cancel": "Cancel"
     },
     "sendToClaude": "Send to Damocles",
-    "customPlaceholder": "e.g., Use a different approach, rename the file, add error handling...",
     "ariaLabel": "Permission request"
   },
   "question": {
+    "title": "Damocles has a question",
     "questionTab": "Q{n}",
     "submitTab": "Submit",
-    "reviewAnswers": "Review answers →",
-    "nextQuestion": "Next question →",
+    "reviewAnswers": "Review answers",
+    "nextQuestion": "Next question",
     "reviewHeading": "Review your answers",
     "questionHeader": "Question",
     "otherLabel": "Other",
-    "customPlaceholder": "Type a custom response...",
+    "customPlaceholder": "Or type your own answer…",
     "customTextareaPlaceholder": "Enter your custom response...",
     "noAnswer": "(no answer)",
     "notesPlaceholder": "Add notes (optional)...",
@@ -526,30 +469,26 @@
     "progress": "{current} / {limit} ({percent}%)"
   },
   "status": {
+    "escToInterrupt": "Esc to interrupt",
     "running": "Running {tool}...",
     "hook": "Hook: {event}",
     "hooksCount": "{count} hooks",
     "requiresAction": "Waiting for your answer"
   },
   "subagent": {
-    "running": "Running",
-    "completed": "Completed",
-    "failed": "Failed",
-    "cancelled": "Cancelled",
     "duration": "{seconds}s",
     "tokens": "{n} tokens",
     "toolCalls": "{n} tool call | {n} tool calls"
   },
   "task": {
     "title": "Tasks",
-    "done": "done",
-    "open": "open",
+    "progress": "{done} done, {open} open",
     "inProgress": "In Progress",
-    "blocked": "blocked by",
+    "blocked": "blocked by task {ids} | blocked by tasks {ids}",
     "noTasks": "No tasks"
   },
   "mcp": {
-    "title": "MCP Servers",
+    "title": "MCP servers",
     "description": "View and manage MCP server connections",
     "masterToggle": "Enable MCP",
     "disabledNotice": "MCP servers are disabled.",
@@ -751,11 +690,8 @@
       "noOpenRouterKey": "Unavailable: no OpenRouter API key."
     }
   },
-  "toolsIndicator": {
-    "summary": "Tools: {enabled}/{total} enabled"
-  },
   "usage": {
-    "title": "Usage",
+    "title": "Subscription usage",
     "sectionClaude": "Claude",
     "sectionGpt": "GPT",
     "windows": {
@@ -796,7 +732,7 @@
   "usageStats": {
     "title": "Usage statistics",
     "refresh": "Refresh",
-    "updated": "Updated {time}",
+    "updated": "updated {time}",
     "notIndexed": "Not indexed yet",
     "indexing": "Indexing conversation files",
     "indexingProgress": "{done} of {total} file | {done} of {total} files",
@@ -980,8 +916,6 @@
     "soft": "Context usage very high",
     "critical": "Context nearly full",
     "autoCompacting": "Auto-compacting context...",
-    "compact": "Compact",
-    "viewDetails": "View Details",
     "sessionBusy": "Session is busy",
     "sessionBusyHint": "Try again when the current request completes",
     "noQuery": "No active session",
@@ -1058,10 +992,7 @@
     "cacheHit": "{pct}% cache",
     "cacheHitTooltip": "Cache hit rate: cache read / (uncached input + cache read + cache write)",
     "turns": "{n} turn | {n} turns",
-    "cost": "Cost of this conversation's own requests. Subagent and team spend show on their own cards.",
-    "openPlan": "View session plan",
-    "bindPlan": "Bind plan file to session",
-    "openLog": "Open session log file"
+    "cost": "Cost of this conversation's own requests. Subagent and team spend show on their own cards."
   },
   "agentUsage": {
     "tokens": "{n} token | {n} tokens",
@@ -1070,7 +1001,7 @@
     "cacheHitTooltip": "Cache hit rate: cache read / (uncached input + cache read + cache write)"
   },
   "planView": {
-    "title": "Session Plan",
+    "title": "Session plan",
     "subtitle": "Implementation plan for this session",
     "openInEditor": "Open in editor"
   },
@@ -1238,7 +1169,7 @@
   "planApproval": {
     "readyToCode": "Ready to code?",
     "reviewPlan": "Review the plan before proceeding",
-    "feedbackPlaceholder": "Type feedback to revise the plan...",
+    "feedbackPlaceholder": "Tell Damocles what to change in the plan… (Ctrl+Enter to send)",
     "sendFeedback": "Send Feedback",
     "clearContextAndAccept": "Clear context & auto-accept",
     "manualApprove": "Yes, manually approve",
@@ -1246,8 +1177,7 @@
   },
   "toolCall": {
     "clickToExpand": "Click to expand",
-    "awaitingApproval": "Awaiting your approval",
-    "respondToDialog": "Please respond to the dialog",
+    "awaitingApproval": "Needs approval",
     "notExecuted": "Not executed",
     "changedCourse": "Damocles changed course before running this tool",
     "cancelled": "Stopped",
@@ -1323,15 +1253,18 @@
     "autoAccept": "Auto-accept edits",
     "manualApproval": "Manual approval",
     "waitingApproval": "Waiting for your approval...",
-    "feedbackSent": "Feedback sent to Damocles:",
+    "feedbackSent": "Feedback sent. Damocles is revising the plan.",
     "wasExited": "Plan mode was exited",
-    "clickToReview": "Click to review plan",
+    "clickToReview": "Click to review the plan",
+    "review": "Review",
+    "plan": "Plan",
+    "chipAwaiting": "Awaiting review",
+    "chipApproved": "Approved",
+    "chipRevising": "Revising",
+    "chipExited": "Exited",
     "viewPlan": "View plan"
   },
   "welcome": {
-    "title": "Welcome to Damocles",
-    "message": "Use AI responsibly and always remember, just because something works doesn't mean it's good.",
-    "undoChanges": "Undo file changes after this point",
     "sentMidStream": "↳ sent mid-stream",
     "queued": "queued",
     "commandEcho": "↳ command"
@@ -1362,9 +1295,7 @@
     "tools": "{n} tool | {n} tools",
     "openLog": "Open agent log file",
     "openTemplate": "Open agent template: {path}",
-    "viewPrompt": "View prompt",
     "result": "Result",
-    "working": "Agent is working...",
     "noActivity": "No activity recorded",
     "modelLabel": "Model:",
     "modelDefault": "Default",
@@ -1379,15 +1310,19 @@
     "alreadyFinished": "Already finished",
     "failed": "Delivery failed",
     "notFound": "Not found",
-    "messageLabel": "Message",
-    "targetLabel": "Target"
+    "messageLabel": "Message"
   },
   "diffView": {
-    "noChanges": "No changes",
-    "copyNew": "Copy new content",
-    "reject": "Reject",
-    "approve": "Approve",
-    "hiddenLines": "hidden lines"
+    "hiddenLines": "{n} hidden line | {n} hidden lines",
+    "noNewline": "No newline at end of file",
+    "omitted": {
+      "tooLarge": "Diff too large to show",
+      "binary": "Binary file"
+    },
+    "empty": {
+      "emptyFile": "Empty file",
+      "noChanges": "No changes"
+    }
   },
   "fileTree": {
     "title": "Files Accessed"
@@ -1419,17 +1354,17 @@
   },
   "compactMarker": {
     "boundary": "context boundary",
-    "title": "Context Compacted",
-    "manual": "MANUAL",
-    "threshold": "THRESHOLD",
-    "overflow": "OVERFLOW",
+    "title": "Context compacted",
+    "manual": "Manual",
+    "threshold": "Threshold",
+    "overflow": "Overflow",
     "triggerHintThreshold": "Damocles compacted after context use crossed the configured threshold.",
     "triggerHintOverflow": "Damocles compacted after the context overflowed mid-run.",
+    "tokens": "{tokens} token | {tokens} tokens",
     "billed": "{tokens} tokens billed",
     "billedWithCost": "{tokens} tokens billed (~{cost})",
-    "summary": "Summary",
-    "summaryHeader": "Previous Context Summary",
-    "noSummary": "No summary available for this compaction",
+    "toggleSummary": "Show or hide the summary of the earlier conversation",
+    "noSummary": "No summary was kept for this compaction.",
     "rewindBefore": "Rewind to before compaction",
     "rewindBeforeConfirm": {
       "title": "Rewind to before compaction?",
@@ -1484,7 +1419,6 @@
   "mcpIndicator": {
     "connecting": "MCP: {connected}/{total} connecting",
     "withFailures": "MCP: {connected}/{total} ({failed} failed)",
-    "connected": "MCP: {connected}/{total}",
     "label": "MCP"
   },
   "toolOverlay": {
@@ -1584,18 +1518,22 @@
   },
   "backgroundTask": {
     "title": "Background Tasks",
-    "running": "running",
     "stopTask": "Stop task",
     "dismiss": "Dismiss",
     "noTasks": "No background tasks",
     "noTasksHint": "Agent tasks running in the background will appear here",
-    "task": "task",
-    "tasks": "tasks",
     "taskResult": "Background Task Result",
     "taskCompleted": "Background task completed",
     "taskFailed": "Background task failed",
     "taskStopped": "Background task stopped",
     "background": "Background"
+  },
+  "agentStop": {
+    "stopSubagent": "Stop this subagent",
+    "stopSubagentNamed": "Stop subagent {name}",
+    "stopTeam": "Stop team",
+    "confirmTitle": "Stop the team?",
+    "confirmDescription": "{n} agent is working. Their work so far is kept, and the main agent can resume the team later. | {n} agents are working. Their work so far is kept, and the main agent can resume the team later."
   },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",
@@ -1609,7 +1547,6 @@
     "toolCount": "{n} tool | {n} tools",
     "costEstimate": "~{cost} est.",
     "costEstimateTooltip": "Estimated at API rates. A subscription is not charged per call.",
-    "agentActiveProgress": "Agent {active}/{total} active",
     "status": {
       "running": "running",
       "completed": "completed",
@@ -1621,11 +1558,12 @@
       "monitoring": "monitoring"
     },
     "statusLabel": {
+      "pending": "Pending",
       "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
-      "cancelled": "Cancelled",
-      "awaiting-review": "Awaiting Review",
+      "cancelled": "Stopped",
+      "awaiting-review": "Awaiting review",
       "standby": "Standby",
       "monitoring": "Monitoring"
     },
@@ -1635,15 +1573,8 @@
       "scratchpad": "Scratchpad",
       "result": "Result"
     },
-    "overlay": {
-      "noResult": "No result available",
-      "subtitle": "{agents} agents {'|'} {tools} tools {'|'} {elapsed}"
-    },
     "agentOverlay": {
-      "waitingForActivity": "Waiting for agent activity...",
       "noConversationData": "No conversation data available",
-      "thinking": "THINKING",
-      "agentWorking": "Agent is working...",
       "openLogFile": "Open agent log file",
       "cancelAgent": "Cancel agent"
     },
@@ -1652,7 +1583,8 @@
     },
     "permission": {
       "request": "Permission Request",
-      "wantsToRun": "wants to run",
+      "wantsToRun": "{agent} wants to run",
+      "input": "{tool} input",
       "approve": "Approve",
       "deny": "Deny"
     },
@@ -1664,8 +1596,8 @@
       "gap": "{n}s gap"
     },
     "timelineEntry": {
-      "toAgent": "→ {name}",
-      "toAll": "→ all"
+      "toAgent": "to {name}",
+      "toAll": "to everyone"
     },
     "resumed": "Resumed"
   },
@@ -1710,7 +1642,6 @@
     "sessionExpired": "Your Claude session needs to be renewed. Sign in to continue."
   },
   "openai": {
-    "sectionTitle": "OpenAI Authentication",
     "authRequiredToast": "Sign in to OpenAI to use this model.",
     "codexSessionExpired": "Session expired. Please sign in again.",
     "apiKey": {
@@ -1746,7 +1677,6 @@
     },
     "preferApiKey": {
       "label": "Prefer API key over ChatGPT sign-in",
-      "tooltip": "When both an API key and a ChatGPT sign-in are set up, send GPT requests with the API key, billed per token. The sign-in wins by default.",
       "descriptionEnabled": "Workspace setting. Inverts the default sign-in-first order.",
       "descriptionDisabled": "Add an API key and sign in with ChatGPT to enable this toggle."
     },
@@ -1761,7 +1691,6 @@
     }
   },
   "stepfun": {
-    "sectionTitle": "StepFun Authentication",
     "apiKey": {
       "label": "API Key",
       "configured": "Configured",
@@ -1779,7 +1708,6 @@
     }
   },
   "deepseek": {
-    "sectionTitle": "DeepSeek Authentication",
     "apiKey": {
       "label": "API Key",
       "configured": "Configured",
@@ -1797,7 +1725,6 @@
     }
   },
   "typesafe": {
-    "sectionTitle": "TypeSafe Authentication",
     "apiKey": {
       "label": "API Key",
       "configured": "Configured",
@@ -1829,7 +1756,6 @@
     }
   },
   "openrouter": {
-    "sectionTitle": "OpenRouter Authentication",
     "apiKey": {
       "label": "API Key",
       "configured": "Configured",
@@ -1847,9 +1773,7 @@
     }
   },
   "claudeAuth": {
-    "sectionTitle": "Claude Authentication",
     "status": {
-      "none": "Not configured",
       "apikey": "API key",
       "allowance": "Subscription · allowance",
       "extra": "Subscription · extra usage",
@@ -1870,12 +1794,12 @@
     }
   },
   "promptNavigator": {
+    "copyFailed": "Could not copy the prompt",
     "searchPlaceholder": "Search prompts or tools…",
     "status": "{filtered} of {total} prompts",
     "imagePlaceholder": "[image]",
     "emptySession": "No prompts yet. Send your first message.",
     "noMatches": "No matches for \"{query}\"",
-    "chipTooltip": "Open prompt navigator ({key})",
     "notFound": "Prompt not in current view",
     "kbd": {
       "nav": "↑↓ nav",
@@ -1883,7 +1807,6 @@
       "toggle": "{key} toggle"
     },
     "kebab": {
-      "menuLabel": "Prompt actions",
       "copy": "Copy prompt",
       "copied": "Copied!",
       "editAndResend": "Use as draft",
@@ -2047,12 +1970,6 @@
     "noMatches": "No matching items",
     "ok": "OK"
   },
-  "header": {
-    "viewAside": "View aside",
-    "openBrowser": "Open Browser",
-    "memory": "Memory",
-    "sessionHistory": "Session History"
-  },
   "btw": {
     "title": "Aside",
     "subtitle": "Side question, not part of the main conversation",
@@ -2065,13 +1982,14 @@
     "element": "Element"
   },
   "elicitation": {
+    "title": "{server} needs your input",
     "ariaLabel": "MCP server elicitation",
     "openInBrowser": "Open in Browser",
     "decline": "Decline",
     "accept": "Accept"
   },
   "explore": {
-    "badge": "Explorer ({model})"
+    "kind": "Explore"
   },
   "remoteImage": {
     "label": "🖼️ image from {host}, click to load",
@@ -2122,7 +2040,8 @@
       "all": "All",
       "searching": "Searching…",
       "noResults": "No results found",
-      "hint": "Search code entities by name, qualified name, or file path"
+      "hint": "Search code entities by name, qualified name, or file path",
+      "kindFilter": "Filter by kind"
     },
     "graph": {
       "title": "Knowledge Graph",
@@ -2158,9 +2077,8 @@
     }
   },
   "consolidation": {
-    "indicatorTitle": "Memory consolidation",
     "lastFailed": "Last consolidation failed",
-    "title": "Memory Consolidation",
+    "title": "Memory consolidation",
     "runNowTitle": "Run a full consolidation pass now",
     "runNow": "Run now",
     "retryNow": "Retry now",
@@ -2228,12 +2146,21 @@
       "found": "{n} found",
       "items": "{n} item | {n} items",
       "profilesDone": "project · global",
+      "working": "working…",
+      "label": "Consolidation phases",
       "skippedBecause": "skipped: {reason}",
       "skipped": "skipped",
       "failed": "failed"
     }
   },
   "memoryPanel": {
+    "search": "Search",
+    "kindFilter": "Filter by kind",
+    "scopeFilter": "Filter by scope",
+    "profileHint": "project and global · auto-maintained",
+    "pinned": "pinned",
+    "newTier": "Where the new memory goes",
+    "newKind": "Kind of the new memory",
     "title": "Memory",
     "subtitle": "Browse and manage memories",
     "searchPlaceholder": "Search all memories...",
@@ -2253,8 +2180,6 @@
     "globalStaticPlaceholder": "Stable facts that apply everywhere...",
     "dynamicPlaceholder": "Recent activity...",
     "noMatches": "No memories match the current filters.",
-    "copied": "Copied",
-    "copy": "Copy",
     "copiedAria": "Copied to clipboard",
     "copyAria": "Copy memory to clipboard",
     "versionHistory": "Version history",
@@ -2270,6 +2195,10 @@
     "pin": "Pin",
     "inferred": "inferred",
     "sources": "{n} sources",
+    "stale": "stale",
+    "staleTitle": "Its files changed {n} times since it was recorded",
+    "used": "used {n}×",
+    "version": "v{n}",
     "forgotten": "forgotten",
     "noNotesBefore": "No notes yet. Use",
     "noNotesAfter": "to save one.",
@@ -2292,5 +2221,581 @@
     "turnLost": "Voice turn lost, the sidecar restarted. Try again.",
     "upgradeAvailable": "Voice models update available: {mb} MB",
     "sidecarError": "Voice sidecar error"
+  },
+  "settingsModal": {
+    "title": "Settings",
+    "search": "Search settings",
+    "clearSearch": "Clear search",
+    "empty": "No settings match \"{q}\"",
+    "editSettingsJson": "Edit settings.json",
+    "close": "Close (Esc)",
+    "back": "Back to all settings",
+    "sections": "Settings sections",
+    "searchResults": "Search results",
+    "matching": "{n} matching setting | {n} matching settings",
+    "savedTo": "Saved to {file}",
+    "scopeFile": {
+      "user": "your user settings",
+      "project": "the workspace settings",
+      "local": "this folder's settings"
+    },
+    "imageNeedsKey": "Needs an OpenRouter API key. Add one under Models & accounts.",
+    "workspaceUntrusted": "Trust this folder to save workspace settings.",
+    "workspaceUntrustedProjects": "Trust this project in the Projects list to save workspace settings.",
+    "trustFolder": "Trust folder",
+    "fileValues": {
+      "title": "Values from settings files",
+      "description": "This project's .damocles files set these settings, which have no row of their own.",
+      "open": "Open file"
+    },
+    "groups": {
+      "workspace": "Workspace",
+      "model": "Model",
+      "explore": "Explore & memory",
+      "imageGeneration": "Image generation"
+    },
+    "placeholders": {
+      "none": "none",
+      "unlimited": "unlimited"
+    },
+    "units": {
+      "days": "days"
+    },
+    "invalid": {
+      "integerRange": "Enter a whole number from {min} to {max}.",
+      "amount": "Enter an amount above 0, such as 5 or 2.50.",
+      "positiveInteger": "Enter a whole number above 0.",
+      "required": "Enter a value."
+    },
+    "effort": {
+      "none": "None",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "xhigh": "Extra High",
+      "max": "Max",
+      "ultracode": "Ultracode"
+    },
+    "cacheWarming": {
+      "off": "Off",
+      "streaming": "While streaming",
+      "idle": "Idle (30 min)"
+    },
+    "voiceMode": {
+      "off": "Off",
+      "pushToTalk": "Push to talk",
+      "wakeWord": "Wake word"
+    },
+    "account": {
+      "signIn": "Sign in",
+      "manage": "Manage",
+      "signedIn": "Signed in",
+      "signingIn": "Signing in",
+      "keySaved": "Key saved",
+      "notSetUp": "Not set up",
+      "addKey": "Add key",
+      "replaceKey": "Replace key"
+    },
+    "sectionsMeta": {
+      "chat": {
+        "label": "This chat",
+        "subtitle": "Applies only to the chat that is open now."
+      },
+      "defaults": {
+        "label": "Defaults for new chats",
+        "subtitle": "What every new chat starts with."
+      },
+      "accounts": {
+        "label": "Models & accounts",
+        "subtitle": "Sign in once. Keys stay in your system's secret store."
+      },
+      "teams": {
+        "label": "Teams",
+        "subtitle": "Models for multi-agent teams. Empty uses this chat's model."
+      },
+      "workspace": {
+        "label": "Workspace",
+        "subtitle": "Saved for this project folder."
+      },
+      "application": {
+        "label": "Application",
+        "subtitle": "Applies to every project on this machine."
+      },
+      "integrations": {
+        "label": "Tools & integrations",
+        "subtitle": "What the agent can reach besides your files."
+      },
+      "voice": {
+        "label": "Voice",
+        "subtitle": "Dictate messages or talk hands-free."
+      }
+    },
+    "rows": {
+      "workspaceFolder": {
+        "label": "Workspace folder",
+        "description": "Switching starts a new conversation. This one stays in history."
+      },
+      "model": {
+        "label": "Model",
+        "description": "Used for this chat and its subagents unless a template pins one."
+      },
+      "effort": {
+        "label": "Reasoning effort",
+        "description": "Higher effort thinks longer before answering."
+      },
+      "thinkingTokens": {
+        "label": "Thinking budget",
+        "description": "Tokens the model may spend thinking before it answers."
+      },
+      "disableThinking": {
+        "label": "Disable thinking",
+        "description": "Answer without a thinking step."
+      },
+      "permissionMode": {
+        "label": "Permission mode",
+        "description": "How Damocles asks before changing files. Shift+Tab cycles it from the chat box."
+      },
+      "defaultWorkspaceFolder": {
+        "label": "Workspace folder",
+        "description": "New chats open in this folder."
+      },
+      "defaultModel": {
+        "label": "Default model",
+        "description": "Picked when you start a chat."
+      },
+      "defaultEffort": {
+        "label": "Default reasoning effort",
+        "description": "Remembered per model."
+      },
+      "defaultThinkingTokens": {
+        "label": "Default thinking budget",
+        "description": "Tokens a new chat may spend thinking before it answers."
+      },
+      "defaultDisableThinking": {
+        "label": "Disable thinking",
+        "description": "New chats answer without a thinking step."
+      },
+      "defaultPermissionMode": {
+        "label": "Default permission mode",
+        "description": "The mode a new chat starts in. Each chat can change it."
+      },
+      "defaultYolo": {
+        "label": "Start in YOLO mode",
+        "description": "Auto-approve every tool call except plan approval and questions."
+      },
+      "ideContext": {
+        "label": "Include the active file",
+        "description": "Send the open editor file (or selection) with each message."
+      },
+      "anthropic": {
+        "label": "Anthropic",
+        "description": "Claude subscription or API key. Fable, Opus, Sonnet, Haiku."
+      },
+      "openai": {
+        "label": "OpenAI",
+        "description": "ChatGPT sign-in or an OpenAI API key."
+      },
+      "deepseek": {
+        "label": "DeepSeek",
+        "description": "Per-token API key."
+      },
+      "stepfun": {
+        "label": "StepFun",
+        "description": "Step Plan subscription key."
+      },
+      "openrouter": {
+        "label": "OpenRouter",
+        "description": "API key for OpenRouter models, image generation and memory judges."
+      },
+      "typesafe": {
+        "label": "TypeSafe",
+        "description": "API key for the Jev memory judge."
+      },
+      "exploreProvider": {
+        "label": "Explore model",
+        "description": "Cheap model for the Explore agent and memory extraction."
+      },
+      "exploreModel": {
+        "label": "Explore model ID",
+        "description": "The provider's model ID, such as gemini-2.5-flash."
+      },
+      "exploreEffort": {
+        "label": "Explore reasoning effort",
+        "description": "How long the Explore model thinks."
+      },
+      "exploreApiKey": {
+        "label": "Explore API key",
+        "description": "Stored in your system's secret store."
+      },
+      "teamEnabled": {
+        "label": "Enable teams",
+        "description": "2 to 5 specialists collaborate with a lead on large tasks."
+      },
+      "teamLead": {
+        "label": "Lead",
+        "description": "Plans, spawns specialists and writes the final result."
+      },
+      "teamImplementor": {
+        "label": "Implementors",
+        "description": "Write the code."
+      },
+      "teamReviewer": {
+        "label": "Reviewers",
+        "description": "Check each other's work."
+      },
+      "teamEffort": {
+        "label": "{role} reasoning effort"
+      },
+      "budget": {
+        "label": "Budget limit",
+        "description": "Stop a conversation when its spend reaches this amount. Empty means no limit."
+      },
+      "autoCompact": {
+        "label": "Auto-compact",
+        "description": "Summarize the conversation before the context window fills up."
+      },
+      "autoCompactTrigger": {
+        "label": "Compact when context reaches",
+        "description": "A lower value compacts earlier and keeps replies faster."
+      },
+      "taskBudget": {
+        "label": "Task budget",
+        "description": "Token budget per task, shown to the model. Empty means none."
+      },
+      "cacheWarming": {
+        "label": "Prompt cache warming",
+        "description": "Keeps the provider cache warm so the next request is a cheap cache read."
+      },
+      "checkpointRetention": {
+        "label": "Keep checkpoints for",
+        "description": "Rewind history older than this is removed. 0 keeps it forever."
+      },
+      "panelLanguage": {
+        "label": "Language",
+        "description": "The language of the Damocles chat panel. Applies at once."
+      },
+      "mcp": {
+        "label": "MCP servers",
+        "description": "Connect the MCP servers configured for this folder and your user."
+      },
+      "memory": {
+        "label": "Memory",
+        "description": "Remember facts and preferences across conversations."
+      },
+      "compass": {
+        "label": "Compass",
+        "description": "Index the code so the agent can search symbols and trace their impact."
+      },
+      "browser": {
+        "label": "Browser",
+        "description": "Let the agent open and drive web pages."
+      },
+      "webSearch": {
+        "label": "Web search",
+        "description": "Let the agent search the web and read pages."
+      },
+      "imageGeneration": {
+        "label": "Image generation",
+        "description": "Let the agent create images with an OpenRouter model, billed to your OpenRouter key."
+      },
+      "imageModel": {
+        "label": "Image model",
+        "description": "The OpenRouter model that draws each image."
+      },
+      "voiceMode": {
+        "label": "Voice mode",
+        "description": "Wake word runs fully on-device: no audio leaves your machine."
+      },
+      "voiceProvider": {
+        "label": "Speech-to-text provider",
+        "description": "Used for push to talk."
+      },
+      "voiceApiKey": {
+        "label": "Speech-to-text API key",
+        "description": "Stored in your system's secret store."
+      },
+      "voiceLanguage": {
+        "label": "Spoken language",
+        "description": "Language used for speech-to-text transcription."
+      },
+      "wakeSensitivity": {
+        "label": "Wake-word sensitivity",
+        "description": "Lower triggers more easily. Higher is stricter."
+      },
+      "ttsEnabled": {
+        "label": "Speak assistant replies",
+        "description": "Read replies aloud with an on-device voice."
+      },
+      "ttsVoice": {
+        "label": "Voice",
+        "description": "The voice that reads replies."
+      },
+      "localGpu": {
+        "label": "GPU preference",
+        "description": "Where on-device speech models run."
+      },
+      "autoSubmit": {
+        "label": "Auto-submit transcript",
+        "description": "Send the message as soon as you stop speaking."
+      },
+      "endOfTurn": {
+        "label": "End-of-turn pause",
+        "description": "Silence that ends what you are saying."
+      },
+      "maxUtterance": {
+        "label": "Max utterance",
+        "description": "The longest single recording."
+      },
+      "diagnostics": {
+        "label": "Diagnostics logging",
+        "description": "Write detailed voice logs for troubleshooting."
+      },
+      "voiceFiles": {
+        "label": "Voice files",
+        "description": "The on-device voice runtime and its models."
+      }
+    }
+  },
+  "overlays": {
+    "stats": {
+      "subtitle": "Spend across every project"
+    },
+    "usage": {
+      "subtitle": "Rate-limit windows for your subscriptions"
+    },
+    "consolidation": {
+      "subtitle": "Turns your conversations into durable memories",
+      "lastPass": "Last pass · extracted {n}",
+      "noPass": "Last pass",
+      "nothingExtracted": "The last pass kept nothing new."
+    },
+    "navigator": {
+      "title": "Prompt navigator",
+      "subtitle": "Every prompt in this conversation"
+    },
+    "rewind": {
+      "subtitle": "Go back to an earlier prompt: fork, roll back files, or both"
+    },
+    "team": {
+      "subtitle": "Team of {n} · started by the main agent with create_team",
+      "tabs": "Team views",
+      "resultPending": "Available when the team finishes",
+      "noResult": "The team stopped before writing a result.",
+      "lastTool": "Last tool",
+      "unit": {
+        "agents": "agent | agents",
+        "active": "active"
+      },
+      "role": {
+        "lead": "Lead",
+        "specialist": "Specialist"
+      }
+    },
+    "agent": {
+      "elapsed": "Active time",
+      "log": "Log",
+      "stop": "Stop",
+      "prompt": "Prompt",
+      "promptFrom": "from {from}",
+      "fromMainAgent": "the main agent",
+      "fromLead": "the team lead",
+      "messageFrom": "Message from {name}",
+      "working": "Working…",
+      "steer": "Steer",
+      "steerFailed": "The note was not delivered. The agent may have finished.",
+      "steerMember": "Steer {name}. Delivered before their next step",
+      "steerSubagent": "Steer this subagent. It reads your note before its next step",
+      "subagent": "Subagent",
+      "subagentOfType": "{type} subagent",
+      "inBackground": "running in the background",
+      "startedByMain": "started by the main agent",
+      "openBackgroundTasks": "Open background tasks",
+      "returnedToMain": "returned to the main agent",
+      "effortLevel": "{level} effort",
+      "unit": {
+        "tools": "tool | tools",
+        "tokens": "token | tokens",
+        "cache": "cache",
+        "effort": "effort"
+      }
+    },
+    "bindPlan": {
+      "title": "Bind a plan file",
+      "subtitle": "Inject your own plan into this session",
+      "intro": "Pick a markdown plan. It is copied to this session's plan file, which the system prompt names on every turn.",
+      "listLabel": "Plan files in this folder",
+      "edited": "Edited {time}",
+      "loading": "Looking for plan files…",
+      "listFailed": "Couldn't list this folder's plan files. Use Browse for another file… instead.",
+      "empty": "No plan files in this folder. A plan file is a markdown file under a plans folder or with \"plan\" in its name.",
+      "browse": "Browse for another file…",
+      "overwrite": "The session already has a plan file. Binding overwrites it in place.",
+      "noTurnSpent": "No agent turn is spent.",
+      "bind": "Bind plan"
+    },
+    "btw": {
+      "ask": "Ask a side question",
+      "placeholder": "Ask a side question…"
+    },
+    "closeHint": "Close (Esc)",
+    "mcp": {
+      "reloading": "Reloading…",
+      "sources": "Servers from {n} sources, lowest precedence first. Only ~/.damocles/mcp.json is written.",
+      "noTools": "No tools",
+      "authToLoadTools": "Authenticate to load its tools",
+      "alwaysLoadedCount": "{n} always loaded",
+      "offCount": "{n} off",
+      "available": "{n} of {total} available",
+      "showTools": "Show tools",
+      "hideTools": "Hide tools",
+      "form": {
+        "fixFields": "Fix the highlighted fields to save.",
+        "writtenTo": "Written to ~/.damocles/mcp.json with 0600 permissions."
+      }
+    },
+    "tools": {
+      "enabledCount": "{n}/{total} enabled",
+      "filter": "Filter tools",
+      "noMatch": "No tools match “{query}”.",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "onCount": "{n} of {total} on",
+      "enableAll": "Enable all",
+      "disableAll": "Disable all",
+      "enabledOf": "{n} of {total} enabled",
+      "loading": "Loading tools…"
+    },
+    "bgTasks": {
+      "running": "{n} running",
+      "openSubagent": "Open subagent",
+      "subtitle": "Agent tasks running in the background"
+    },
+    "tool": {
+      "openFile": "Open file",
+      "lines": "{n} line | {n} lines",
+      "copy": "Copy",
+      "copyCommand": "Copy command",
+      "copied": "Copied",
+      "description": "Description"
+    }
+  },
+  "cards": {
+    "plan": {
+      "review": "Review the plan"
+    },
+    "tool": {
+      "showIo": "Show input and output",
+      "hideIo": "Hide input and output"
+    },
+    "team": {
+      "label": "Team",
+      "open": "Open team {name}",
+      "openAgent": "Open agent {name}",
+      "activeOf": "{active} of {total} active",
+      "finished": "finished",
+      "stopped": "stopped"
+    },
+    "subagent": {
+      "open": "Open subagent {name}"
+    },
+    "status": {
+      "running": "Running",
+      "failed": "Failed",
+      "stopped": "Stopped"
+    },
+    "details": "Details",
+    "planBanner": {
+      "title": "Plan ready for review",
+      "version": "Version {n}",
+      "steps": "{n} step | {n} steps",
+      "unchanged": "nothing has been changed yet",
+      "review": "Review plan"
+    }
+  },
+  "prompts": {
+    "keys": {
+      "enter": "Enter",
+      "esc": "Esc"
+    },
+    "permission": {
+      "allowEdit": "Allow this edit?",
+      "allowCreate": "Allow creating this file?",
+      "addedLines": "+{n} line | +{n} lines",
+      "changedLines": "+{added} −{removed} lines",
+      "newLines": "{n} line | {n} lines",
+      "openDiff": "Open diff",
+      "yesAcceptAll": "Yes, and accept all edits this session",
+      "feedbackPlaceholder": "Or tell Damocles what to do instead…"
+    }
+  },
+  "chatHeader": {
+    "newChat": "New chat",
+    "statusWaiting": "Waiting for your answer",
+    "statusWorking": "Working",
+    "branch": "Branch: {branch}",
+    "accountChip": "Billed through: {source}",
+    "account": {
+      "apikey": "API key",
+      "allowance": "Subscription",
+      "extra": "Extra usage"
+    },
+    "promptNavigator": "Prompt navigator ({key})",
+    "promptCount": "{n} prompt | {n} prompts",
+    "consolidation": "Memory consolidation",
+    "plan": "Plan",
+    "viewPlan": "View session plan",
+    "bindPlan": "Bind a plan file…",
+    "memory": "Memory",
+    "openBrowser": "Open browser",
+    "mcp": "MCP servers · {n} connected | MCP servers · {n} connected",
+    "tools": "Tools · {n} enabled | Tools · {n} enabled",
+    "history": "Session history",
+    "more": "More",
+    "viewAside": "Show side answer (/btw)",
+    "mcpCount": "MCP servers · {n}",
+    "toolsCount": "Tools · {n}",
+    "rewind": "Rewind…",
+    "sideQuestion": "Side question (/btw)",
+    "contextUsage": "Context usage",
+    "subscriptionUsage": "Subscription usage",
+    "usageStatistics": "Usage statistics"
+  },
+  "history": {
+    "search": "Search conversations",
+    "clearSearch": "Clear search"
+  },
+  "composer": {
+    "inputLabel": "Message Damocles",
+    "modeCycle": "{mode} (Shift+Tab to cycle)",
+    "attachImage": "Attach image",
+    "send": "Send (Enter)",
+    "stop": "Stop (Esc)",
+    "modelFor": "Model for this chat",
+    "reasoningEffort": "Reasoning effort",
+    "contextMenuHeading": "Context usage · auto-compact at {n}%",
+    "contextMenuHeadingOff": "Context usage · auto-compact off",
+    "viewDetails": "View details",
+    "compactNow": "Compact now",
+    "openLog": "Open session log",
+    "backgroundRunning": "{n} background | {n} background",
+    "backgroundFinished": "{n} finished | {n} finished",
+    "acNavigate": "Navigate",
+    "acSelect": "Select",
+    "acClose": "Close",
+    "mentionList": "Files and agents to mention",
+    "commandList": "Commands",
+    "agentList": "Agents to steer"
+  },
+  "emptyState": {
+    "title": "What should we work on in {project}?",
+    "titleNoProject": "What should we work on?",
+    "subtitle": "Type below, use {'@'} to mention files, or start from one of these.",
+    "explain": "Explain this codebase",
+    "fixBug": "Find and fix a bug",
+    "writeTests": "Write tests"
+  },
+  "pinned": {
+    "you": "You",
+    "prompt": "prompt {n}"
   }
 }

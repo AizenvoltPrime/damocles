@@ -1,17 +1,15 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
-import type { CompactionAbortedNotice } from '@shared/types/session';
 import VirtualizedMessageList from '../VirtualizedMessageList.vue';
+import VirtualItemWrapper from '../VirtualItemWrapper.vue';
 import { i18n } from '@/i18n';
-
-// `vue3-lottie` runs canvas setup at import time, which happy-dom does not provide.
-vi.mock('vue3-lottie', () => ({ Vue3Lottie: { name: 'Vue3Lottie', render: () => null } }));
+import type { VirtualItem } from '@/composables/useVirtualizedMessages';
 
 /**
- * A notice arrives with no message of its own, so the welcome screen has to yield to it. The list is
- * mounted with no scroll container, so nothing is measured and only the welcome branch is under test.
+ * The empty state belongs to App.vue, so the list draws only its canvas when it has nothing. Each row
+ * sits inside the centred chat column while the scroll container stays full width.
  */
 
 function mountList(props: Record<string, unknown>) {
@@ -21,20 +19,48 @@ function mountList(props: Record<string, unknown>) {
   });
 }
 
-describe('the welcome screen against the transcript', () => {
+const row: VirtualItem = {
+  id: 'user-u1',
+  type: 'user-message',
+  message: { id: 'u1', role: 'user', content: 'hello', timestamp: 1 },
+  originalMessageIndex: 0,
+  sourceMessageId: 'u1',
+  spacingLevel: 0,
+};
+
+function wrapperFor(arriving: boolean) {
+  return mount(VirtualItemWrapper, {
+    props: { item: row, top: 0, arriving, canRewind: false, promptIndex: 0 },
+    global: { plugins: [i18n], stubs: { UserMessageBlock: true } },
+  });
+}
+
+describe('the transcript list', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     // happy-dom ships no font loading API, and the list measures text on mount.
     Object.defineProperty(document, 'fonts', { value: { ready: Promise.resolve() }, configurable: true });
   });
 
-  it('shows the welcome screen when the session has nothing at all', () => {
-    expect(mountList({}).text()).toContain('Welcome to Damocles');
+  it('draws no welcome screen of its own when the session has nothing at all', () => {
+    const list = mountList({});
+
+    expect(list.text()).toBe('');
+    expect(list.find('img').exists()).toBe(false);
   });
 
-  it('yields to a compaction-aborted notice that arrived before any message', () => {
-    const aborted: CompactionAbortedNotice = { id: '500-0', trigger: 'threshold', willRetry: true, timestamp: 500 };
+  it('measures rows against an element carrying the chat column class', () => {
+    expect(mountList({}).find('.chat-column[aria-hidden="true"]').exists()).toBe(true);
+  });
+});
 
-    expect(mountList({ compactionAbortedNotices: [aborted] }).text()).not.toContain('Welcome to Damocles');
+describe('a transcript row', () => {
+  it('sits in the chat column', () => {
+    expect(wrapperFor(false).classes()).toContain('chat-column');
+  });
+
+  it('enters only while it is arriving live', () => {
+    expect(wrapperFor(true).classes()).toContain('d-arrive');
+    expect(wrapperFor(false).classes()).not.toContain('d-arrive');
   });
 });

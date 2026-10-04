@@ -403,10 +403,6 @@ export class AgentRunner {
         });
         break;
       }
-      case 'turn_end': {
-        config.onMessage({ type: 'teamAgentTurnComplete', teamId: config.teamId, agentId: config.agentId });
-        break;
-      }
       default:
         break;
     }

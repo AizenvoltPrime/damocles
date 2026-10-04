@@ -41,6 +41,23 @@ describe('hardenWebContents', () => {
     expect(opened).toEqual(['https://example.test/']);
   });
 
+  it('locks the overlay page to its own URL and refuses a <webview> in it', async () => {
+    const web = contents();
+    hardenWebContents(web as unknown as WebContents, async () => true, () => undefined);
+    await loadAppPage(web as unknown as WebContents, 'app://damocles/overlay/index.html');
+
+    const reload = { url: 'app://damocles/overlay/index.html', preventDefault: vi.fn() };
+    const shell = { url: 'app://damocles/shell/index.html', preventDefault: vi.fn() };
+    const attach = { preventDefault: vi.fn() };
+    web.emit('will-navigate', reload);
+    web.emit('will-navigate', shell);
+    web.emit('will-attach-webview', attach);
+
+    expect(reload.preventDefault).not.toHaveBeenCalled();
+    expect(shell.preventDefault).toHaveBeenCalled();
+    expect(attach.preventDefault).toHaveBeenCalled();
+  });
+
   it('logs a link the OS could not open instead of leaving an unhandled rejection', async () => {
     const web = contents();
     const lines: string[] = [];

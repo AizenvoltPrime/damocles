@@ -16,13 +16,6 @@ import type { AgentUsageTotals } from '../../../shared/usage-accounting';
 
 export type { ThinkingLevel };
 
-/** The thinking levels a spawn may request, which the `Agent` schema advertises. */
-export const THINKING_OVERRIDES: readonly ['minimal', 'low', 'medium', 'high', 'xhigh'] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-
-export function isThinkingOverride(value: unknown): value is (typeof THINKING_OVERRIDES)[number] {
-  return typeof value === 'string' && (THINKING_OVERRIDES as readonly string[]).includes(value);
-}
-
 /** Agent type: any string name (built-in defaults or user-defined). */
 export type SubagentType = string;
 

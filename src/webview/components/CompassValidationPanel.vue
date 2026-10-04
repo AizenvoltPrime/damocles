@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { IconCompass } from '@/components/icons';
+import type { Component } from 'vue';
+import { ChevronRight, CircleX, Compass, Info, RefreshCw, TriangleAlert } from 'lucide-vue-next';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import OverlayShell from './OverlayShell.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
@@ -33,26 +34,21 @@ function toggleCategory(category: string): void {
 	}
 }
 
-function severityColor(severity: string): string {
-	if (severity === 'error') return 'text-[color:var(--color-error)]';
-	if (severity === 'warning') return 'text-[color:var(--color-warning)]';
-	return 'text-[color:var(--color-info)]';
+// `chip` is the tone's `.d-tone-*` class (style.css), for the count on its tint.
+function severityColor(severity: string): { icon: string; chip: string } {
+	if (severity === 'error') return { icon: 'text-(--d-danger)', chip: 'd-tone-danger' };
+	if (severity === 'warning') return { icon: 'text-(--d-warning)', chip: 'd-tone-warning' };
+	return { icon: 'text-(--d-info)', chip: 'd-tone-info' };
 }
 
-function severityBg(severity: string): string {
-	if (severity === 'error') return 'bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[color:var(--color-error)]';
-	if (severity === 'warning') return 'bg-[color-mix(in_srgb,var(--color-warning)_15%,transparent)] text-[color:var(--color-warning)]';
-	return 'bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[color:var(--color-info)]';
-}
-
-function severityIcon(severity: string): string {
-	if (severity === 'error') return '✕';
-	if (severity === 'warning') return '⚠';
-	return 'ℹ';
+function severityIcon(severity: string): Component {
+	if (severity === 'error') return CircleX;
+	if (severity === 'warning') return TriangleAlert;
+	return Info;
 }
 
 function ratioClass(ratio: number): string {
-	return ratio < 1.0 ? 'text-[color:var(--color-warning)]' : 'text-foreground';
+	return ratio < 1.0 ? 'text-(--d-warning)' : 'text-(--d-text)';
 }
 
 onMounted(() => {
@@ -63,94 +59,139 @@ onMounted(() => {
 </script>
 
 <template>
-	<OverlayShell
-		:title="t('compassValidation.title')"
-		:icon="IconCompass"
-		icon-class="text-emerald-400"
-		@close="store.setActivePanel(null)"
-	>
-		<template #header-actions>
-			<button
-				class="px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0 disabled:cursor-not-allowed disabled:opacity-50"
-				:disabled="store.validationLoading"
-				@click="store.requestValidation()"
-			>
-				{{ t('compassValidation.revalidate') }}
-			</button>
-		</template>
+  <OverlayShell
+    fill
+    :title="t('compassValidation.title')"
+    :icon="Compass"
+    icon-class="text-(--d-success)"
+    @close="store.setActivePanel(null)"
+  >
+    <template #header-actions>
+      <OverlayHeaderAction
+        :label="t('compassValidation.revalidate')"
+        :icon="RefreshCw"
+        :busy="store.validationLoading"
+        :disabled="store.validationLoading"
+        @click="store.requestValidation()"
+      />
+    </template>
 
-		<div v-if="store.validationLoading" class="flex flex-col items-center justify-center gap-2 py-12">
-			<LoadingSpinner :size="24" />
-			<span v-if="store.buildProgress" class="text-xs text-muted-foreground">
-				{{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
-			</span>
-			<span v-else class="text-xs text-muted-foreground">{{ t('compassValidation.running') }}</span>
-		</div>
+    <div
+      v-if="store.validationLoading"
+      class="flex flex-col items-center justify-center gap-2 py-12"
+    >
+      <LoadingSpinner class="size-6" />
+      <span
+        v-if="store.buildProgress"
+        class="text-xs text-(--d-muted)"
+      >
+        {{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
+      </span>
+      <span
+        v-else
+        class="text-xs text-(--d-muted)"
+      >{{ t('compassValidation.running') }}</span>
+    </div>
 
-		<div v-else-if="store.validationResult" class="flex flex-col">
-			<div class="px-3 py-2.5 border-b border-border bg-muted/30">
-				<div class="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-					<span class="text-muted-foreground">{{ t('compassValidation.nodes') }}</span>
-					<span>{{ store.validationResult.summary.nodeCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compassValidation.edges') }}</span>
-					<span>{{ store.validationResult.summary.edgeCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compassValidation.ratio') }}</span>
-					<span :class="ratioClass(store.validationResult.summary.edgeToNodeRatio)">
-						{{ store.validationResult.summary.edgeToNodeRatio.toFixed(2) }}
-					</span>
-					<span class="text-muted-foreground">{{ t('compassValidation.coverage') }}</span>
-					<span>{{ store.validationResult.summary.coveragePercent }}%</span>
-				</div>
-				<div class="text-[10px] text-muted-foreground mt-1">
-					{{ t('compassValidation.checkedIn', { ms: store.validationResult.durationMs }) }}
-				</div>
-				<p v-if="store.buildProgress" class="text-xs text-muted-foreground mt-1">{{ t('compassValidation.reindexing') }}</p>
-			</div>
+    <div
+      v-else-if="store.validationResult"
+      class="flex flex-col"
+    >
+      <div class="mx-4 mt-3 mb-2 rounded-xl border border-(--d-border) bg-(--d-card) px-3 py-2.5">
+        <div class="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1 text-12.5">
+          <span class="text-(--d-muted)">{{ t('compassValidation.nodes') }}</span>
+          <span>{{ store.validationResult.summary.nodeCount.toLocaleString() }}</span>
+          <span class="text-(--d-muted)">{{ t('compassValidation.edges') }}</span>
+          <span>{{ store.validationResult.summary.edgeCount.toLocaleString() }}</span>
+          <span class="text-(--d-muted)">{{ t('compassValidation.ratio') }}</span>
+          <span :class="ratioClass(store.validationResult.summary.edgeToNodeRatio)">
+            {{ store.validationResult.summary.edgeToNodeRatio.toFixed(2) }}
+          </span>
+          <span class="text-(--d-muted)">{{ t('compassValidation.coverage') }}</span>
+          <span>{{ store.validationResult.summary.coveragePercent }}%</span>
+        </div>
+        <div class="text-10 text-(--d-muted) mt-1">
+          {{ t('compassValidation.checkedIn', { ms: store.validationResult.durationMs }) }}
+        </div>
+        <p
+          v-if="store.buildProgress"
+          class="text-xs text-(--d-muted) mt-1"
+        >
+          {{ t('compassValidation.reindexing') }}
+        </p>
+      </div>
 
-			<div v-if="isHealthy" class="px-3 py-6 text-center">
-				<div class="text-sm text-emerald-400 font-medium">{{ t('compassValidation.healthy') }}</div>
-			</div>
+      <div
+        v-if="isHealthy"
+        class="px-3 py-6 text-center"
+      >
+        <div class="text-sm text-(--d-success) font-medium">
+          {{ t('compassValidation.healthy') }}
+        </div>
+      </div>
 
-			<ScrollArea v-else class="flex-1">
-				<div class="divide-y divide-border">
-					<div v-for="issue in sortedIssues" :key="issue.category">
-						<button
-							type="button"
-							class="w-full px-3 py-2 text-left hover:bg-accent transition-colors cursor-pointer border-0 bg-transparent flex items-center gap-2"
-							@click="toggleCategory(issue.category)"
-						>
-							<span
-								class="text-xs font-medium w-4 text-center"
-								:class="severityColor(issue.severity)"
-							>
-								{{ severityIcon(issue.severity) }}
-							</span>
-							<span class="text-xs text-foreground flex-1 truncate">{{ issue.category }}</span>
-							<Badge v-if="issue.count > 0" variant="secondary" :class="severityBg(issue.severity)" class="text-[9px] px-1.5 py-0 shrink-0">
-								{{ issue.count }}
-							</Badge>
-							<span class="text-[10px] text-muted-foreground shrink-0">
-								{{ expandedCategories.has(issue.category) ? '▾' : '▸' }}
-							</span>
-						</button>
-						<div v-if="expandedCategories.has(issue.category)" class="px-3 pb-2">
-							<p class="text-[10px] text-muted-foreground mb-1.5">{{ issue.description }}</p>
-							<div v-if="issue.entities.length > 0" class="max-h-48 overflow-y-auto rounded bg-muted/40 p-1.5">
-								<div
-									v-for="(entity, idx) in issue.entities"
-									:key="idx"
-									class="text-[10px] text-foreground/80 font-mono py-0.5 px-1 truncate"
-								>
-									{{ entity }}
-								</div>
-								<div v-if="issue.truncated" class="text-[10px] text-muted-foreground italic px-1 pt-0.5">
-									{{ t('compassValidation.andMore') }}
-								</div>
-							</div>
-						</div>
-					</div>
-				</div>
-			</ScrollArea>
-		</div>
-	</OverlayShell>
+      <ScrollArea
+        v-else
+        class="flex-1"
+      >
+        <div class="divide-y divide-(--d-border)">
+          <div
+            v-for="issue in sortedIssues"
+            :key="issue.category"
+          >
+            <button
+              type="button"
+              class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-(--d-hover)"
+              :aria-expanded="expandedCategories.has(issue.category)"
+              @click="toggleCategory(issue.category)"
+            >
+              <component
+                :is="severityIcon(issue.severity)"
+                class="size-3.25 flex-none"
+                :class="severityColor(issue.severity).icon"
+                aria-hidden="true"
+              />
+              <span class="min-w-0 flex-1 truncate text-12.5 text-(--d-text)">{{ issue.category }}</span>
+              <span
+                v-if="issue.count > 0"
+                class="flex-none rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_14%,transparent)] px-1.75 font-mono text-10.5/4"
+                :class="severityColor(issue.severity).chip"
+              >{{ issue.count }}</span>
+              <ChevronRight
+                class="size-3.25 flex-none text-(--d-faint) transition-transform duration-200"
+                :class="expandedCategories.has(issue.category) && 'rotate-90'"
+                aria-hidden="true"
+              />
+            </button>
+            <div
+              v-if="expandedCategories.has(issue.category)"
+              class="px-4 pb-3 pl-10.5"
+            >
+              <p class="mb-1.5 text-11.5 text-(--d-muted)">
+                {{ issue.description }}
+              </p>
+              <div
+                v-if="issue.entities.length > 0"
+                class="max-h-48 overflow-y-auto rounded-lg border border-(--d-border) bg-(--d-code) p-1.5"
+              >
+                <div
+                  v-for="(entity, idx) in issue.entities"
+                  :key="idx"
+                  class="truncate px-1 py-0.5 font-mono text-11 text-(--d-text)"
+                >
+                  {{ entity }}
+                </div>
+                <div
+                  v-if="issue.truncated"
+                  class="text-10 text-(--d-muted) italic px-1 pt-0.5"
+                >
+                  {{ t('compassValidation.andMore') }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </ScrollArea>
+    </div>
+  </OverlayShell>
 </template>

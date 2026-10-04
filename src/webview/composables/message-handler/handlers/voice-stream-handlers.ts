@@ -102,9 +102,5 @@ export function createVoiceStreamHandlers(): Partial<HandlerRegistry> {
       const mb = (total / 1_000_000).toFixed(0);
       toast.info(t("voiceToast.upgradeAvailable", { mb }));
     },
-
-    voiceFilesSizeUpdate: (msg, ctx) => {
-      ctx.stores.voiceJarvisStore.setVoiceFilesBytes(msg.bytes);
-    },
   };
 }

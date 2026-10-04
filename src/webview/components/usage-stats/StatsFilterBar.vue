@@ -3,7 +3,7 @@ import { computed, ref, shallowRef } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { CalendarDate, getLocalTimeZone, today, type DateValue } from '@internationalized/date';
 import type { AcceptableValue, DateRange } from 'reka-ui';
-import { Button } from '@/components/ui/button';
+import { Calendar, Cpu, Folder } from 'lucide-vue-next';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { RangeCalendar } from '@/components/ui/range-calendar';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
@@ -92,72 +92,91 @@ const projectOptions = computed<StatsSelectOption[]>(() =>
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-2">
-    <div class="flex items-center gap-1">
-      <Select :model-value="selectValue" @update:model-value="onPreset">
-        <SelectTrigger class="h-8 w-auto min-w-32 gap-1 px-2 text-xs" :aria-label="`${t('usageStats.filters.range')}: ${presetLabel}`">
-          <span>{{ presetLabel }}</span>
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem v-for="option in presetOptions" :key="option.preset" :value="option.preset" class="text-xs">
-            {{ option.label }}
-          </SelectItem>
-        </SelectContent>
-      </Select>
-
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="size-8"
+  <div class="flex flex-wrap items-center gap-1.5">
+    <div class="flex h-7 items-stretch rounded-md border border-(--d-border2)">
+      <button
+        type="button"
+        class="flex w-6.5 items-center justify-center border-r border-(--d-border2) text-(--d-text) transition-colors enabled:hover:bg-(--d-hover) disabled:text-(--d-faint)"
         :disabled="!store.activeRange?.canStepPrev"
         :aria-label="t('usageStats.filters.previousPeriod')"
         :title="t('usageStats.filters.previousPeriod')"
         @click="store.step(-1)"
       >
-        <IconChevronLeft :size="14" />
-      </Button>
-
-      <Popover :open="calendarOpen" @update:open="onCalendarOpen">
-        <PopoverTrigger as-child>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-8 px-2 text-xs font-normal tabular-nums"
-            :aria-label="`${t('usageStats.filters.pickRange')}: ${rangeLabel}`"
-            :title="t('usageStats.filters.pickRange')"
-          >
-            {{ rangeLabel }}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent class="w-auto p-0" align="start">
-          <RangeCalendar
-            :model-value="draft"
-            :locale="locale"
-            :week-starts-on="1"
-            :min-value="minDate"
-            :max-value="maxDate"
-            :prev-page-label="t('usageStats.filters.previousMonth')"
-            :next-page-label="t('usageStats.filters.nextMonth')"
-            @update:model-value="onCalendarUpdate"
+        <IconChevronLeft class="size-3.25" />
+      </button>
+      <Select
+        :model-value="selectValue"
+        @update:model-value="onPreset"
+      >
+        <SelectTrigger
+          class="h-full w-auto gap-1.5 rounded-none border-0 bg-transparent px-2.5 text-xs shadow-none hover:bg-(--d-hover)"
+          :aria-label="`${t('usageStats.filters.range')}: ${presetLabel}`"
+        >
+          <Calendar
+            class="size-3 text-(--d-faint)"
+            aria-hidden="true"
           />
-        </PopoverContent>
-      </Popover>
-
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="size-8"
+          <span>{{ presetLabel }}</span>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem
+            v-for="option in presetOptions"
+            :key="option.preset"
+            :value="option.preset"
+            class="text-xs"
+          >
+            {{ option.label }}
+          </SelectItem>
+        </SelectContent>
+      </Select>
+      <button
+        type="button"
+        class="flex w-6.5 items-center justify-center border-l border-(--d-border2) text-(--d-text) transition-colors enabled:hover:bg-(--d-hover) disabled:text-(--d-faint)"
         :disabled="!store.activeRange?.canStepNext"
         :aria-label="t('usageStats.filters.nextPeriod')"
         :title="t('usageStats.filters.nextPeriod')"
         @click="store.step(1)"
       >
-        <IconChevronRight :size="14" />
-      </Button>
+        <IconChevronRight class="size-3.25" />
+      </button>
     </div>
+
+    <Popover
+      :open="calendarOpen"
+      @update:open="onCalendarOpen"
+    >
+      <PopoverTrigger as-child>
+        <button
+          type="button"
+          class="rounded-md px-1.5 py-1 font-mono text-11.5 whitespace-nowrap text-(--d-faint) transition-colors hover:bg-(--d-hover) hover:text-(--d-text)"
+          :aria-label="`${t('usageStats.filters.pickRange')}: ${rangeLabel}`"
+          :title="t('usageStats.filters.pickRange')"
+        >
+          {{ rangeLabel }}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        class="w-auto p-0"
+        align="start"
+      >
+        <RangeCalendar
+          :model-value="draft"
+          :locale="locale"
+          :week-starts-on="1"
+          :min-value="minDate"
+          :max-value="maxDate"
+          :prev-page-label="t('usageStats.filters.previousMonth')"
+          :next-page-label="t('usageStats.filters.nextMonth')"
+          @update:model-value="onCalendarUpdate"
+        />
+      </PopoverContent>
+    </Popover>
+
+    <span class="flex-1" />
 
     <StatsMultiSelect
       :label="t('usageStats.filters.models')"
+      :icon="Cpu"
       :all-label="t('usageStats.filters.allModels')"
       :options="modelOptions"
       :model-value="store.modelKeys"
@@ -165,6 +184,7 @@ const projectOptions = computed<StatsSelectOption[]>(() =>
     />
     <StatsMultiSelect
       :label="t('usageStats.filters.projects')"
+      :icon="Folder"
       :all-label="t('usageStats.filters.allProjects')"
       :options="projectOptions"
       :model-value="store.projectKeys"
@@ -172,12 +192,16 @@ const projectOptions = computed<StatsSelectOption[]>(() =>
     />
 
     <label
-      class="flex items-center gap-2 text-xs text-muted-foreground"
-      :class="compareDisabled ? 'cursor-not-allowed' : 'cursor-pointer'"
+      class="flex h-7 items-center gap-1.75 rounded-md border border-(--d-border2) px-2.25 text-xs whitespace-nowrap transition-colors hover:bg-(--d-hover)"
+      :class="compareDisabled ? 'opacity-50' : ''"
       :title="t(compareDisabled ? 'usageStats.filters.compareAllTime' : 'usageStats.filters.compareHint')"
     >
-      <Switch :checked="store.compare" :disabled="compareDisabled" @update:checked="store.setCompare" />
-      <span :class="{ 'opacity-50': compareDisabled }">{{ t('usageStats.filters.compare') }}</span>
+      <Switch
+        :checked="store.compare"
+        :disabled="compareDisabled"
+        @update:checked="store.setCompare"
+      />
+      {{ t('usageStats.filters.compare') }}
     </label>
   </div>
 </template>

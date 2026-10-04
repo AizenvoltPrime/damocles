@@ -75,13 +75,13 @@ const rows = computed(() => {
 </script>
 
 <template>
-  <section class="min-w-0 space-y-2 rounded-md border border-border/50 bg-card p-3 text-card-foreground" data-heatmap>
+  <section class="min-w-0 space-y-2 rounded-lg border border-(--d-border) p-3" data-heatmap>
     <div class="flex flex-wrap items-baseline gap-2">
-      <h3 :id="titleId" class="flex-1 truncate text-xs font-medium text-muted-foreground">{{ t('usageStats.heatmap.title') }}</h3>
-      <span class="text-[10px] text-muted-foreground">{{ t(metric === 'cost' ? 'usageStats.heatmap.byCost' : 'usageStats.heatmap.byTokens') }}</span>
+      <h3 :id="titleId" class="flex-1 truncate text-xs font-semibold">{{ t('usageStats.heatmap.title') }}</h3>
+      <span class="text-10 text-(--d-muted)">{{ t(metric === 'cost' ? 'usageStats.heatmap.byCost' : 'usageStats.heatmap.byTokens') }}</span>
     </div>
 
-    <table class="w-full table-fixed border-separate border-spacing-px text-[10px] text-muted-foreground" :aria-labelledby="titleId">
+    <table class="w-full table-fixed border-separate border-spacing-px text-10 text-(--d-muted)" :aria-labelledby="titleId">
       <thead>
         <tr>
           <td class="w-8 p-0" />
@@ -100,8 +100,8 @@ const rows = computed(() => {
           <td
             v-for="cell in day.cells"
             :key="cell.hour"
-            class="h-4 rounded-[2px] p-0"
-            :class="cell.active ? 'bg-[color-mix(in_srgb,var(--chart-1)_var(--heat),transparent)]' : 'bg-muted/40'"
+            class="h-4 rounded-[0.125rem] p-0"
+            :class="cell.active ? 'bg-[color-mix(in_srgb,var(--chart-1)_var(--heat),transparent)]' : 'bg-[color-mix(in_srgb,var(--d-hover)_40%,transparent)]'"
             :style="cell.style"
             :title="cell.title"
             :data-cell="`${day.weekday}-${cell.hour}`"

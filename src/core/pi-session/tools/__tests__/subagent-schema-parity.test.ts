@@ -31,7 +31,7 @@ describe('subagent tools — schema shape', () => {
     const t = tools.get(TOOL_AGENT)!;
     expect(t.executionMode).toBe('parallel');
     const props = Object.keys(t.parameters.properties ?? {}).sort();
-    expect(props).toEqual(['description', 'message', 'prompt', 'resume', 'run_in_background', 'subagent_type', 'thinking']);
+    expect(props).toEqual(['description', 'message', 'prompt', 'resume', 'run_in_background', 'subagent_type']);
     // A top-level anyOf is what providers handle poorly, so the two forms are not expressed in the schema.
     expect(t.parameters.required ?? []).toEqual([]);
     expect(t.parameters).not.toHaveProperty('anyOf');

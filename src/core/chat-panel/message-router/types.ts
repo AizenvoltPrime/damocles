@@ -4,6 +4,7 @@ import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { IdeContextManager } from "../ide-context-manager";
 import type { StorageManager } from "../storage-manager";
+import type { SessionCatalog } from "../session-catalog";
 import type { HistoryManager } from "../history-manager";
 import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
@@ -12,7 +13,7 @@ import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { UsageStatsService } from "../../usage-stats";
-import type { HostInstance } from "../types";
+import type { AttachedView, HostInstance } from "../types";
 import type { PanelHost } from "../../../platform/window-service";
 import type { FolderTarget, WorkspaceFolderRegistry } from "../../workspace-folders/folder-registry";
 import type { AfterFolderSwitch, FolderSwitchReason } from "../panel-manager";
@@ -26,6 +27,8 @@ export interface HandlerContext {
   ideContextManager: IdeContextManager;
   panelId: string;
   folder: FolderTarget;
+  /** The attached settings view that sent the message, for a message from `PanelManager.dispatchFromView`; replies still go to `host`, which copies the view's types to it. */
+  view?: AttachedView;
 }
 
 export type MessageHandler = (
@@ -44,6 +47,7 @@ export interface HandlerDependencies {
   postMessage: PostMessageFn;
   getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
+  sessionCatalog: SessionCatalog;
   historyManager: HistoryManager;
   settingsManager: SettingsManager;
   workspaceManager: WorkspaceManager;
@@ -59,6 +63,7 @@ export interface HandlerDependencies {
   voiceService?: VoiceService;
   usageStatsService: UsageStatsService;
   markUserTypedDuringTurn?: () => void;
+  postSettingsFileAvailability?: (ctx: HandlerContext) => void;
   folderRegistry: WorkspaceFolderRegistry;
   /**
    * Resolves to the panel's instance on its new folder; a handler continues with it, never with `ctx.session`.

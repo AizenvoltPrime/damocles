@@ -90,9 +90,9 @@ describe('runPermissionGate', () => {
     expect(result?.reason).toContain(FEEDBACK_MARKER);
   });
 
-  it('blocks write/shell in plan mode without prompting (defense in depth)', async () => {
+  it('blocks a non-plan-file Edit in plan mode without prompting', async () => {
     const { panel, canUseTool } = makePanel({ plan: true });
-    const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined);
+    const result = await runPermissionGate(ev('Edit', 'c1', { file_path: '/repo/app.ts', old_string: 'a', new_string: 'b' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(canUseTool).not.toHaveBeenCalled();
   });
@@ -145,13 +145,20 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('blocks a non-read-only shell command in plan mode with a teaching reason (no prompt fallback)', async () => {
+  it('routes a shell command the classifier cannot prove read-only in plan mode to the approval flow', async () => {
     const { panel, canUseTool } = makePanel({ plan: true });
-    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git commit -m x' }), panel, undefined);
+    const command = 'curl -s http://127.0.0.1:9001/v1/models && systemctl list-units';
+    const result = await runPermissionGate(ev('bash', 'c1', { command }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0]?.[0]).toBe('Bash');
+  });
+
+  it('attributes a rejected plan-mode shell prompt to the user', async () => {
+    const { panel } = makePanel({ plan: true, canUse: async () => ({ behavior: 'deny', message: 'User rejected the command' }) });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'systemctl list-units' }), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
-    expect(result?.reason).toContain('not recognized as read-only');
-    expect(canUseTool).not.toHaveBeenCalled();
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
   });
 
   it('auto-allows a provably read-only PowerShell command in plan mode without prompting', async () => {
@@ -162,13 +169,11 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('blocks a non-read-only PowerShell command in plan mode with a teaching reason (no prompt fallback)', async () => {
+  it('routes a PowerShell command the classifier cannot prove read-only in plan mode to the approval flow', async () => {
     const { panel, canUseTool } = makePanel({ plan: true });
-    const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Set-Content a.txt x' }), panel, undefined);
-    expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
-    expect(result?.reason).toContain('not recognized as read-only');
-    expect(canUseTool).not.toHaveBeenCalled();
+    const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Invoke-WebRequest http://127.0.0.1:9001' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
   });
 
   it('routes a shell command through canUseTool in non-plan mode (normal mode unchanged)', async () => {
@@ -530,7 +535,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
   });
 });
 
-describe('runPermissionGate — read-only agents (readOnlyShell, outside plan mode)', () => {
+describe('runPermissionGate — read-only agents (readOnlyShell)', () => {
   it('auto-allows a provably read-only command without prompting', async () => {
     const { panel, canUseTool } = makePanel({ readOnlyShell: true });
     const result = await runPermissionGate(ev('bash', 't1', { command: 'git status' }), panel, undefined);
@@ -545,21 +550,26 @@ describe('runPermissionGate — read-only agents (readOnlyShell, outside plan mo
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
-  it('blocks the shell write vectors the Explore/Plan prompts promise are unavailable', async () => {
+  it('routes every shell write vector to the approval flow, never running one unasked', async () => {
     const { panel, canUseTool } = makePanel({ readOnlyShell: true });
-    for (const command of [
+    const commands = [
       'echo hi > /tmp/out.txt',
       'cat <<EOF > notes.md\nx\nEOF',
       'echo hi | tee /tmp/out.txt',
       'cp a.ts b.ts',
       'rm -rf build',
-    ]) {
-      const result = await runPermissionGate(ev('bash', 't1', { command }), panel, undefined);
-      expect(result?.block, command).toBe(true);
-      expect(result?.reason).toContain('read-only agent');
+    ];
+    for (const command of commands) {
+      expect(await runPermissionGate(ev('bash', 't1', { command }), panel, undefined), command).toBeUndefined();
     }
-    // Never routed to approval: under dangerouslySkipPermissions that would auto-approve the write.
-    expect(canUseTool).not.toHaveBeenCalled();
+    expect(canUseTool).toHaveBeenCalledTimes(commands.length);
+  });
+
+  it('asks for a non-read-only command in plan mode as well', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true, plan: true });
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'npm test' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
   });
 
   it('blocks a write tool outright — the plan-file carve-out is plan mode only', async () => {
@@ -583,7 +593,7 @@ describe('block attribution — an automatic block must never claim the user ref
 
   it('does not attribute a read-only-agent block to the user', async () => {
     const { panel, canUseTool } = makePanel({ readOnlyShell: true });
-    const result = await runPermissionGate(ev('bash', 't1', { command: 'echo x > f.txt' }), panel, undefined);
+    const result = await runPermissionGate(ev('write', 't1', { path: '/repo/f.txt', content: 'x' }), panel, undefined);
     // The human was never asked — canUseTool was not even reached — so a model reading this must not
     // conclude a person overruled it and stop to ask.
     expect(canUseTool).not.toHaveBeenCalled();
@@ -595,7 +605,7 @@ describe('block attribution — an automatic block must never claim the user ref
 
   it('does not attribute a plan-mode block to the user', async () => {
     const { panel } = makePanel({ plan: true });
-    const result = await runPermissionGate(ev('bash', 't1', { command: 'git commit -m x' }), panel, undefined);
+    const result = await runPermissionGate(ev('write', 't1', { path: '/repo/app.ts', content: 'x' }), panel, undefined);
     expect(result?.reason).not.toContain(USER_CLAIM);
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
   });
@@ -757,9 +767,9 @@ describe('terminate — an unexplained Deny ends the turn, an explained one does
     expect(result).not.toHaveProperty('terminate');
   });
 
-  it('does not terminate a read-only-agent shell block so the model can rephrase the command', async () => {
+  it('does not terminate a read-only-agent write block so the model can re-plan', async () => {
     const { panel } = makePanel({ readOnlyShell: true });
-    const result = await runPermissionGate(ev('bash', 't1', { command: 'echo x > f.txt' }), panel, undefined);
+    const result = await runPermissionGate(ev('write', 't1', { path: '/repo/f.txt', content: 'x' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(result).not.toHaveProperty('terminate');
   });
@@ -948,21 +958,20 @@ describe('nested gate — a read-only agent MAY call a non-annotated MCP tool: D
     expect(canUseTool.mock.calls[0]![2].parentToolUseId).toBe('agent-tool-call-7');
   });
 
-  it('DECIDED: the same agent IS still blocked on write and on a non-read-only shell command', async () => {
-    // The other half of the pin, and what makes the first half a scoped decision rather than a hole:
-    // the read-only guarantee is fully intact for the categories it was written for.
+  it('DECIDED: the same agent IS still blocked on write, and a non-read-only shell command asks', async () => {
+    // The other half of the pin: write tools are blocked outright, and a shell write cannot run without
+    // passing the approval flow on the agent's card.
     const { ctx, canUseTool } = nestedGate({ readOnlyShell: true });
 
     const write = await runPermissionGate(ev('write', 'w1', { path: '/repo/app.ts', content: 'x' }), ctx, undefined, 'agent-tool-call-7');
     expect(write?.block).toBe(true);
     expect(write?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(write?.reason).toContain('read-only agent');
-
-    const shell = await runPermissionGate(ev('bash', 'b1', { command: 'echo hi > /repo/app.ts' }), ctx, undefined, 'agent-tool-call-7');
-    expect(shell?.block).toBe(true);
-    expect(shell?.reason).toContain('read-only agent');
-
     expect(canUseTool).not.toHaveBeenCalled();
+
+    await runPermissionGate(ev('bash', 'b1', { command: 'echo hi > /repo/app.ts' }), ctx, undefined, 'agent-tool-call-7');
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0]?.[2]).toMatchObject({ parentToolUseId: 'agent-tool-call-7' });
   });
 
   it('DECIDED: an ANNOTATED read-only MCP tool still auto-allows for a read-only agent', async () => {
@@ -1178,10 +1187,10 @@ describe('ask rules through the real PermissionHandler — the prompt runs where
       const pending = runPermissionGate(ev('read', 'r1', { path: 'notes/a.txt' }), panel, undefined);
       await expect.poll(() => prompts.length).toBe(1);
       expect(prompts[0]).toMatchObject({ toolUseId: 'r1', toolName: 'Read', toolInput: { file_path: 'notes/a.txt' } });
-      expect(handler.hasPendingPrompts()).toBe(true);
+      expect(handler.pendingPromptKinds().size > 0).toBe(true);
       await handler.resolveApproval('r1', true);
       expect(await pending).toBeUndefined();
-      expect(handler.hasPendingPrompts()).toBe(false);
+      expect(handler.pendingPromptKinds().size > 0).toBe(false);
       expect(await runPermissionGate(ev('read', 'r2', { path: 'other/a.txt' }), panel, undefined)).toBeUndefined();
       expect(prompts).toHaveLength(1);
     });
@@ -1190,6 +1199,39 @@ describe('ask rules through the real PermissionHandler — the prompt runs where
   it('Read under YOLO runs without a prompt', async () => {
     const { panel, prompts } = askingPanel('default', true);
     expect(await runPermissionGate(ev('read', 'r1', { path: 'notes/a.txt' }), panel, undefined)).toBeUndefined();
+    expect(prompts).toEqual([]);
+  });
+
+  it('plan mode prompts for a shell command it cannot prove read-only and runs it once approved', async () => {
+    const { panel, handler, prompts } = askingPanel('plan');
+    const pending = runPermissionGate(ev('bash', 's1', { command: 'systemctl list-units' }), panel, undefined);
+    await expect.poll(() => prompts.length).toBe(1);
+    expect(prompts[0]).toMatchObject({ toolUseId: 's1', toolName: 'Bash' });
+    await handler.resolveApproval('s1', true);
+    expect(await pending).toBeUndefined();
+  });
+
+  it('a read-only agent prompts for a shell command it cannot prove read-only, and YOLO runs it without one', async () => {
+    const asked = askingPanel('default');
+    Object.assign(asked.panel, { readOnlyShell: true });
+    const pending = runPermissionGate(ev('bash', 's1', { command: 'npm test' }), asked.panel, undefined, 'agent-1');
+    await expect.poll(() => asked.prompts.length).toBe(1);
+    expect(asked.prompts[0]).toMatchObject({ toolUseId: 's1', toolName: 'Bash' });
+    await asked.handler.resolveApproval('s1', true);
+    expect(await pending).toBeUndefined();
+
+    const yolo = askingPanel('default', true);
+    Object.assign(yolo.panel, { readOnlyShell: true });
+    expect(await runPermissionGate(ev('bash', 's2', { command: 'npm test' }), yolo.panel, undefined, 'agent-1')).toBeUndefined();
+    expect(yolo.prompts).toEqual([]);
+  });
+
+  it('plan mode under YOLO runs that shell command without a prompt but still blocks an Edit', async () => {
+    const { panel, prompts } = askingPanel('plan', true);
+    expect(await runPermissionGate(ev('bash', 's1', { command: 'systemctl list-units' }), panel, undefined)).toBeUndefined();
+    const edit = await runPermissionGate(ev('Edit', 'e1', { file_path: sourceFile, old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(edit?.block).toBe(true);
+    expect(edit?.reason).toContain('Plan mode is active');
     expect(prompts).toEqual([]);
   });
 
@@ -1207,7 +1249,8 @@ describe('ask rules through the real PermissionHandler — the prompt runs where
     const { panel, handler, prompts } = askingPanel('acceptEdits');
     const pending = runPermissionGate(ev('Edit', 'e1', { file_path: sourceFile, old_string: 'a', new_string: 'b' }), panel, undefined);
     await expect.poll(() => prompts.length).toBe(1);
-    expect(prompts[0]).toMatchObject({ toolName: 'Edit', filePath: sourceFile, proposedContent: 'b' });
+    expect(prompts[0]).toMatchObject({ toolName: 'Edit', filePath: sourceFile, patch: expect.stringContaining('\n-a\n') });
+    expect(prompts[0]!.patch).toContain('\n+b\n');
     await handler.resolveApproval('e1', true);
     expect(await pending).toBeUndefined();
   });

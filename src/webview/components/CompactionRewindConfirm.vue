@@ -3,11 +3,9 @@ import { useI18n } from 'vue-i18n';
 import {
   AlertDialog,
   AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
 } from '@/components/ui/alert-dialog';
-import { Button } from '@/components/ui/button';
+import { History } from 'lucide-vue-next';
+import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 
 const { t } = useI18n();
 
@@ -26,22 +24,20 @@ function handleOpenUpdate(next: boolean): void {
 </script>
 
 <template>
-  <AlertDialog :open="open" @update:open="handleOpenUpdate">
-    <AlertDialogContent class="bg-card border-border max-w-md">
-      <AlertDialogHeader>
-        <AlertDialogTitle>{{ t('compactMarker.rewindBeforeConfirm.title') }}</AlertDialogTitle>
-        <AlertDialogDescription>
-          {{ t('compactMarker.rewindBeforeConfirm.description') }}
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <div class="flex justify-end gap-2 pt-2">
-        <Button variant="outline" @click="emit('cancel')">
-          {{ t('compactMarker.rewindBeforeConfirm.cancel') }}
-        </Button>
-        <Button @click="emit('confirm')">
-          {{ t('compactMarker.rewindBeforeConfirm.confirm') }}
-        </Button>
-      </div>
+  <AlertDialog
+    :open="open"
+    @update:open="handleOpenUpdate"
+  >
+    <AlertDialogContent class="max-w-md gap-0 overflow-hidden p-0">
+      <ConfirmDialogLayout
+        :icon="History"
+        :title="t('compactMarker.rewindBeforeConfirm.title')"
+        :description="t('compactMarker.rewindBeforeConfirm.description')"
+        :cancel-label="t('compactMarker.rewindBeforeConfirm.cancel')"
+        :confirm-label="t('compactMarker.rewindBeforeConfirm.confirm')"
+        @cancel="emit('cancel')"
+        @confirm="emit('confirm')"
+      />
     </AlertDialogContent>
   </AlertDialog>
 </template>

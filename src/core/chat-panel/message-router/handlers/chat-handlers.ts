@@ -7,6 +7,7 @@ import { createQueuedMessage } from "../../queue-manager";
 import { resumeStoredSession } from "./resume-session";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { t } from "../../../l10n";
+import { settingsFolderOf } from "../../../workspace-folders/folder-registry";
 
 /** Build the echo of a locally-handled slash command that bypasses sendMessage. It commits no user
  *  entry, so it is injected: it names no prompt and carries the latest prompt's index, as a cancel note does. */
@@ -215,8 +216,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     clearSession: async (_msg, ctx) => {
       ctx.session.clear();
-      ctx.permissionHandler.resetForNewConversation();
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      ctx.permissionHandler.resetForNewConversation(settingsFolderOf(ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
       postMessage(ctx.host, { type: "conversationCleared" });
     },
 

@@ -44,14 +44,14 @@ function openInPanel(): void {
       variant="ghost"
       size="icon-sm"
       class="size-6"
-      :class="isPinned && 'text-warning'"
+      :class="isPinned && 'text-(--d-warning)'"
       :aria-label="t(isPinned ? 'contextInjection.action.unpinFor' : 'contextInjection.action.pinFor', { label })"
       :title="t(isPinned ? 'contextInjection.action.unpinHint' : 'contextInjection.action.pinHint')"
       :data-action="isPinned ? 'unpin' : 'pin'"
       @click="togglePin"
     >
-      <PinOff v-if="isPinned" :size="12" />
-      <Pin v-else :size="12" />
+      <PinOff v-if="isPinned" class="size-3" />
+      <Pin v-else class="size-3" />
     </Button>
 
     <Popover v-if="!forgotten" v-model:open="confirmOpen">
@@ -64,10 +64,10 @@ function openInPanel(): void {
           :title="t('contextInjection.action.forget')"
           data-action="forget"
         >
-          <EyeOff :size="12" />
+          <EyeOff class="size-3" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent class="w-64 space-y-3 p-3 text-xs leading-relaxed" align="end">
+      <PopoverContent class="w-64 space-y-3 p-3 text-xs/relaxed" align="end">
         <p>{{ t('contextInjection.action.forgetConfirm') }}</p>
         <div class="flex justify-end gap-2">
           <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-action="forget-cancel" @click="confirmOpen = false">
@@ -89,7 +89,7 @@ function openInPanel(): void {
       data-action="open-in-panel"
       @click="openInPanel"
     >
-      <IconExternalLink :size="12" />
+      <IconExternalLink class="size-3" />
     </Button>
   </div>
 </template>

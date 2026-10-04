@@ -53,6 +53,11 @@ export function hasOpenOverlay(): boolean {
   return stack.value.length > 0;
 }
 
+/** Every open overlay, modal layers included. */
+export function openOverlayCount(): number {
+  return stack.value.length;
+}
+
 export interface OverlayOptions {
   /** A host prompt that must cover every overlay: it paints on MODAL_Z_INDEX and stays on top of overlays opened after it. */
   readonly modal?: boolean;

@@ -10,20 +10,19 @@ import { perfSpan, type PerfSpan } from "../perf";
 import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
-import type { HostInstance } from "./types";
+import type { AttachedView, HostInstance } from "./types";
 import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
-import type { FolderChange, FolderTarget, WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
+import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import { HOST_THEME_STYLE_ID } from "../../shared/host-theme";
+import { PanelActivity, type PanelActivityListener, type PanelTurnSettledListener } from "./activity";
+import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
 
 /** Why a panel changes folder. Only `'user'` asks before discarding a conversation. */
 export type FolderSwitchReason = "user" | "resume" | "restore" | "folderRemoved";
 
-/**
- * Runs on the panel's instance inside the folder task, before queued webview messages are delivered.
- * Resolves true when it bound the panel to a stored session; the switch then leaves starting that session to the caller.
- */
-export type AfterFolderSwitch = (instance: HostInstance) => Promise<boolean>;
+/** Runs on the panel's instance inside the folder task, before queued webview messages are delivered and before a replacement session starts. */
+export type AfterFolderSwitch = (instance: HostInstance) => Promise<void>;
 
 /** The folder key the chat webview persisted; the panel manager accepts it only if that folder is open. */
 export function restoredWorkspaceFolderKey(state: unknown): string | undefined {
@@ -61,10 +60,10 @@ async function settledOrAborted(work: Promise<unknown>, signal: AbortSignal | un
   }
 }
 
-/** Webview messages that arrive while the panel has no usable session wait here, in order. */
+/** Webview messages that arrive while the panel has no usable session wait here, in order; `view` marks one from an attached view. */
 interface MessageGate {
   open: boolean;
-  queue: WebviewToExtensionMessage[];
+  queue: Array<{ message: WebviewToExtensionMessage; view?: AttachedView }>;
 }
 
 export interface PanelManagerConfig {
@@ -81,14 +80,15 @@ export interface PanelManagerConfig {
   sendFolderState: (instance: HostInstance) => Promise<void>;
   /** Release a folder that left the workspace, once no panel targets it any more. */
   releaseFolder: (key: string) => Promise<void>;
-  handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
-  sendCurrentSettings: (host: PanelHost, permissionHandler: PermissionHandler) => Promise<void>;
+  /** `view` is set for a message an attached view sent through `dispatchFromView`. */
+  handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string, view?: AttachedView) => Promise<void>;
+  sendCurrentSettings: (host: PanelHost, permissionHandler: PermissionHandler, folder: FolderTarget) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
   initPanelModel: (panelId: string) => void;
   cleanupPanelModel: (panelId: string) => void;
   cleanupPanelThinking: (panelId: string) => void;
-  sendThinkingForPanel: (host: PanelHost, panelId: string) => void;
+  sendThinkingForPanel: (host: PanelHost, panelId: string, folder: FolderTarget) => void;
   getInitialMessages: (folder: FolderTarget) => ExtensionToWebviewMessage[];
   /** Fires when the last-focused panel, or that panel's folder, changes. */
   onActivePanelChanged?: () => void;
@@ -127,6 +127,10 @@ export class PanelManager {
   private readonly closingSessions = new Set<Promise<void>>();
   /** One entry per panel being opened or set up, removed as it settles; a host prompt waits for these before opening a panel. */
   private readonly opening = new Set<Promise<void>>();
+  private readonly activity = new PanelActivity();
+  /** At most one settings view per panel. */
+  private readonly attachments = new Map<string, AttachedView>();
+  private readonly attachmentListeners = new Set<(panelId: string) => void>();
 
   constructor(config: PanelManagerConfig) {
     this.platform = config.platform;
@@ -153,6 +157,24 @@ export class PanelManager {
 
   getPanels(): Map<string, HostInstance> {
     return this.panels;
+  }
+
+  /** Fires once each time a panel's session is bound, then on every change of its activity or stored session id. */
+  onActivity(listener: PanelActivityListener): Disposable {
+    return this.activity.onActivity(listener);
+  }
+
+  onTurnSettled(listener: PanelTurnSettledListener): Disposable {
+    return this.activity.onTurnSettled(listener);
+  }
+
+  /** The stored session whose file the panel is on or is about to open; undefined while none exists. */
+  sessionIdOf(panelId: string): string | undefined {
+    return this.panels.get(panelId)?.session.storedSessionId ?? undefined;
+  }
+
+  hasConversation(panelId: string): boolean {
+    return this.panels.get(panelId)?.session.hasConversation() ?? false;
   }
 
   onAllPanelsClosed(callback: () => void): Disposable {
@@ -315,7 +337,7 @@ export class PanelManager {
         if (gate.open) {
           this.handleWebviewMessage(message, panelId);
         } else {
-          gate.queue.push(message);
+          gate.queue.push({ message });
         }
       }),
     );
@@ -327,6 +349,7 @@ export class PanelManager {
         closed = true;
         const instance = this.panels.get(panelId);
         if (!instance) return;
+        this.detachPanelView(panelId);
         this.releasePanel(panelId, instance);
         this.panels.delete(panelId);
         this.messageGates.delete(panelId);
@@ -346,19 +369,19 @@ export class PanelManager {
       }),
     );
 
-    const permissionHandler = new PermissionHandler(this.platform, panelId);
-    permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
-
     const source = options?.sourcePanelId ? this.panels.get(options.sourcePanelId) : undefined;
+    // A fork continues its source's conversation, whose session file lives under the source's folder.
+    const folder = source?.folder
+      ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
+      ?? this.folderRegistry.defaultTarget();
+
+    const permissionHandler = new PermissionHandler(this.platform, panelId, settingsFolderOf(folder));
+    permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
     if (source) {
       permissionHandler.setPermissionMode(source.permissionHandler.getPermissionMode());
       permissionHandler.setDangerouslySkipPermissions(source.permissionHandler.getDangerouslySkipPermissions());
     }
 
-    // A fork continues its source's conversation, whose session file lives under the source's folder.
-    const folder = source?.folder
-      ?? (options?.initialFolderKey !== undefined ? this.folderRegistry.resolve(options.initialFolderKey) : undefined)
-      ?? this.folderRegistry.defaultTarget();
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
 
@@ -394,8 +417,8 @@ export class PanelManager {
       this.messageGates.delete(panelId);
       return panelId;
     }
-    this.bindSessionCallbacks(instance);
     this.panels.set(panelId, instance);
+    this.bindSessionCallbacks(panelId, instance);
     this.applyFolderTitle(instance);
 
     if (host.active) {
@@ -445,14 +468,21 @@ export class PanelManager {
 
     disposables.push(
       this.platform.settings.onDidChange("damocles", (e) => {
-        void this.sendCurrentSettings(host, permissionHandler);
+        const current = this.panels.get(panelId);
+        if (!current) return;
+        void this.sendCurrentSettings(host, permissionHandler, current.folder);
         if (
           e.affects("damocles.thinkingDisabled") ||
           e.affects("damocles.effortByModel") ||
           e.affects("damocles.maxThinkingTokens")
         ) {
-          this.sendThinkingForPanel(host, panelId);
+          this.sendThinkingForPanel(host, panelId, current.folder);
         }
+      }),
+      // A grant changes whether the Workspace section can be written even when no setting changed.
+      this.platform.trust.onDidGrantTrust(() => {
+        const current = this.panels.get(panelId);
+        if (current) void this.sendCurrentSettings(host, permissionHandler, current.folder);
       }),
     );
 
@@ -470,6 +500,7 @@ export class PanelManager {
   }
 
   private disposeSession(session: ChatSession): Promise<void> {
+    this.activity.unbind(session);
     const disposed = session.dispose();
     const settled = disposed.then(() => undefined, () => undefined);
     this.closingSessions.add(settled);
@@ -481,18 +512,20 @@ export class PanelManager {
     const gate = this.messageGates.get(panelId);
     if (!gate) return;
     gate.open = true;
-    for (const msg of gate.queue.splice(0)) {
-      this.handleWebviewMessage(msg, panelId);
+    for (const { message, view } of gate.queue.splice(0)) {
+      if (view !== undefined && this.attachments.get(panelId) !== view) continue;
+      this.handleWebviewMessage(message, panelId, view);
     }
   }
 
-  /** The plan-mode hook drives the session it was bound with, so it is re-bound whenever the session is replaced. */
-  private bindSessionCallbacks(instance: HostInstance): void {
+  /** The plan-mode hook and the activity forwarding drive the session they were bound with, so both are re-bound whenever the session is replaced. */
+  private bindSessionCallbacks(panelId: string, instance: HostInstance): void {
     const { session, host, permissionHandler } = instance;
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
-      await this.sendCurrentSettings(host, permissionHandler);
+      await this.sendCurrentSettings(host, permissionHandler, instance.folder);
     });
+    this.activity.bind(panelId, session);
   }
 
   /** The folder of the last-focused panel, if that panel is still open. */
@@ -619,7 +652,8 @@ export class PanelManager {
         session = await this.createSessionForPanel(instance.host, instance.permissionHandler, panelId, target);
       } catch (err) {
         this.reportSessionFailure(panelId, instance, target, err);
-        if (open()) await this.recoverSession(panelId, instance, previousSessionId);
+        const recovered = open() ? await this.recoverSession(panelId, instance, previousSessionId) : undefined;
+        if (recovered && open() && reason !== "restore") await recovered.initializeEarly();
         return undefined;
       }
       if (!open()) {
@@ -629,10 +663,10 @@ export class PanelManager {
       // A restore lands in a webview that has just loaded, so it has no conversation on screen to clear.
       await this.adoptSession(panelId, instance, session, target, reason !== "restore");
       if (!open()) return undefined;
-      const claimed = (await afterSwitch?.(instance)) ?? false;
+      await afterSwitch?.(instance);
       if (!open()) return undefined;
-      // The `ready` handler starts a restored panel's session after posting its lists; a claimed resume starts at the first send.
-      if (!claimed && reason !== "restore") await session.initializeEarly();
+      // The `ready` handler starts a restored panel's session after posting its lists.
+      if (reason !== "restore") await session.initializeEarly();
       return open() ? instance : undefined;
     } finally {
       this.openGate(panelId);
@@ -654,10 +688,10 @@ export class PanelManager {
     const { permissionHandler, host } = instance;
     permissionHandler.setWorkspacePath(folder.projectScope ? folder.fsPath : null);
     permissionHandler.setCwd(folder.fsPath);
-    this.bindSessionCallbacks(instance);
+    this.bindSessionCallbacks(panelId, instance);
     // A new conversation resets what clearing does; mode, model and reasoning stay.
-    permissionHandler.resetForNewConversation();
-    await this.sendCurrentSettings(host, permissionHandler);
+    permissionHandler.resetForNewConversation(settingsFolderOf(folder));
+    await this.sendCurrentSettings(host, permissionHandler, folder);
     this.applyFolderTitle(instance);
     this.postWorkspaceFolderUpdate(instance, switched);
     await this.sendFolderState(instance);
@@ -677,9 +711,9 @@ export class PanelManager {
   /**
    * The old session is already disposed when a switch fails to create the new one, and the webview never
    * re-sends the folder it already shows. The panel resumes the conversation on screen, or starts fresh
-   * and resets the webview when there is none it can resume.
+   * and resets the webview when there is none it can resume. Resolves to the session it installed, if any.
    */
-  private async recoverSession(panelId: string, instance: HostInstance, previousSessionId: string | null): Promise<void> {
+  private async recoverSession(panelId: string, instance: HostInstance, previousSessionId: string | null): Promise<ChatSession | undefined> {
     // A removed folder is already released, so a session there would build a runtime nobody releases.
     const folder = this.folderRegistry.resolve(instance.folder.key) ?? this.folderRegistry.defaultTarget();
     let session: ChatSession;
@@ -688,11 +722,11 @@ export class PanelManager {
     } catch (err) {
       this.reportSessionFailure(panelId, instance, folder, err);
       if (this.panels.get(panelId) === instance) this.postWorkspaceFolderUpdate(instance, false);
-      return;
+      return undefined;
     }
     if (this.panels.get(panelId) !== instance) {
       await this.disposeSession(session);
-      return;
+      return undefined;
     }
     // The conversation's file is in its own folder's session dir, so it resumes only there.
     const resumed = previousSessionId !== null
@@ -700,14 +734,15 @@ export class PanelManager {
       && claimStoredSession(this.platform.notifications, this.panels, { panelId, session }, previousSessionId) === undefined;
     if (!resumed) {
       await this.adoptSession(panelId, instance, session, folder, true);
-      return;
+      return session;
     }
     instance.session = session;
-    this.bindSessionCallbacks(instance);
+    this.bindSessionCallbacks(panelId, instance);
     // The old session unsubscribed before its turn aborted, so the webview never heard the turn end.
     this.postMessage(instance.host, { type: "sessionCancelled" });
     this.postMessage(instance.host, { type: "processing", isProcessing: false });
     this.postWorkspaceFolderUpdate(instance, false);
+    return session;
   }
 
   private async onFoldersChanged(change: FolderChange): Promise<void> {
@@ -760,6 +795,85 @@ export class PanelManager {
     } catch {
       // Host was disposed - will be cleaned up by onDidDispose handler
     }
+    if (this.attachments.size > 0 && SETTINGS_VIEW_MESSAGE_TYPES.has(message.type)) this.viewOfHost(host)?.post(message);
+  }
+
+  /**
+   * Attaches a settings view to an open panel, replacing (and detaching) any view attached before. From then on the
+   * panel's messages of a SETTINGS_VIEW_MESSAGES type are copied to the view. Disposing the result detaches it.
+   */
+  attachView(panelId: string, view: AttachedView): Disposable {
+    if (!this.panels.has(panelId)) throw new Error(`No open chat panel ${panelId}`);
+    const previous = this.attachments.get(panelId);
+    this.attachments.set(panelId, view);
+    if (previous !== view) {
+      previous?.detached();
+      this.notifyAttachmentChanged(panelId);
+    }
+    return { dispose: (): void => this.detachView(panelId, view) };
+  }
+
+  attachedView(panelId: string): AttachedView | undefined {
+    return this.attachments.get(panelId);
+  }
+
+  /** Fires after a panel's attached view changed: attached, replaced or detached. */
+  onDidChangeAttachment(listener: (panelId: string) => void): Disposable {
+    this.attachmentListeners.add(listener);
+    return { dispose: (): void => { this.attachmentListeners.delete(listener); } };
+  }
+
+  /**
+   * Runs a message from the panel's attached view through the router with the panel's context, after messages the
+   * chat queued before it. Only SETTINGS_VIEW_REQUESTS types run; anything else, or a panel with no view, is dropped.
+   */
+  async dispatchFromView(panelId: string, message: WebviewToExtensionMessage): Promise<void> {
+    const view = this.attachments.get(panelId);
+    const gate = this.messageGates.get(panelId);
+    if (!view || !gate) {
+      log("[PanelManager] dropping a settings view message for %s, which has no attached view", panelId);
+      return;
+    }
+    // The type is the only part logged: view messages carry API keys and prompt answers.
+    if (!SETTINGS_VIEW_REQUEST_TYPES.has(message.type)) {
+      log("[PanelManager] refusing a settings view message of type %s", JSON.stringify(String(message.type).slice(0, 64)));
+      return;
+    }
+    if (!gate.open) {
+      gate.queue.push({ message, view });
+      return;
+    }
+    await this.handleWebviewMessage(message, panelId, view);
+  }
+
+  private detachView(panelId: string, view: AttachedView): void {
+    if (this.attachments.get(panelId) !== view) return;
+    this.detachPanelView(panelId);
+  }
+
+  private detachPanelView(panelId: string): void {
+    const view = this.attachments.get(panelId);
+    if (!view) return;
+    this.attachments.delete(panelId);
+    view.detached();
+    this.notifyAttachmentChanged(panelId);
+  }
+
+  private notifyAttachmentChanged(panelId: string): void {
+    for (const listener of [...this.attachmentListeners]) {
+      try {
+        listener(panelId);
+      } catch (err) {
+        log("[PanelManager] attachment listener error: %O", err);
+      }
+    }
+  }
+
+  private viewOfHost(host: PanelHost): AttachedView | undefined {
+    for (const [panelId, view] of this.attachments) {
+      if (this.panels.get(panelId)?.host === host) return view;
+    }
+    return undefined;
   }
 
   broadcast(message: ExtensionToWebviewMessage): void {
@@ -842,8 +956,12 @@ export class PanelManager {
 </html>`;
   }
 
+  // Reads the desktop design tokens from the host theme style first and VS Code's theme variables otherwise.
   private getErrorHtml(host: PanelHost): string {
     const logoUri = host.asResourceUri(path.join(this.resourceRoot, "resources", "icon.png"));
+    const themeCss = host.themeCssSource();
+    const themeStyle = themeCss === "" ? "" : `
+  <style id="${HOST_THEME_STYLE_ID}">${themeCss}</style>`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -852,12 +970,12 @@ export class PanelManager {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${host.cspSource};">
   <title>Damocles</title>
   <style>
-    body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
+    body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: var(--d-bg, var(--vscode-editor-background)); color: var(--d-text, var(--vscode-foreground)); font-family: var(--d-font, var(--vscode-font-family, system-ui, sans-serif)); }
     .error-container { text-align: center; max-width: 360px; }
     img { width: 48px; height: 48px; opacity: 0.5; margin-bottom: 16px; }
     h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
     p { font-size: 12px; opacity: 0.7; margin: 0; }
-  </style>
+  </style>${themeStyle}
 </head>
 <body>
   <div class="error-container">
@@ -889,6 +1007,7 @@ export class PanelManager {
    */
   dispose(): Promise<void> {
     this.folderChangeSubscription.dispose();
+    for (const panelId of [...this.attachments.keys()]) this.detachPanelView(panelId);
     for (const [panelId, instance] of this.panels) {
       this.releasePanel(panelId, instance);
       instance.host.close();

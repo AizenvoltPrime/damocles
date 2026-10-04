@@ -27,6 +27,12 @@ const editSchema = Type.Object(
 const stripBom = (s: string): string => (s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);
 const toLF = (s: string): string => s.replace(/\r\n/g, '\n');
 
+/** `replace_all` on LF text: every exact occurrence of `oldString` replaced, or null when there is none. The approval diff shows this same result. */
+export function replaceEveryOccurrence(content: string, oldString: string, newString: string): string | null {
+  const oldText = toLF(oldString);
+  return content.includes(oldText) ? content.split(oldText).join(toLF(newString)) : null;
+}
+
 /**
  * Translate the CC Edit input into pi's `{ path, edits }` shape.
  *
@@ -55,11 +61,11 @@ async function buildPiEditInput(
     return { path: params.file_path, edits: [{ oldText: params.old_string, newText: params.new_string }] };
   }
   const content = toLF(stripBom((await readFile(resolvePath(cwd, params.file_path))).toString('utf-8')));
-  const oldText = toLF(params.old_string);
-  if (!content.includes(oldText)) {
+  const newText = replaceEveryOccurrence(content, params.old_string, params.new_string);
+  if (newText === null) {
     throw new Error(`String to replace not found in file: ${params.file_path}`);
   }
-  return { path: params.file_path, edits: [{ oldText: content, newText: content.split(oldText).join(toLF(params.new_string)) }] };
+  return { path: params.file_path, edits: [{ oldText: content, newText }] };
 }
 
 /**

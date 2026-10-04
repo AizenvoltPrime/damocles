@@ -239,19 +239,19 @@ export class ApprovalManager {
     }
 
     const filePath = input.file_path;
+    const editInput = input as FileEditInput;
     const diffInput = toolName === TOOL_WRITE
       ? { content: (input as FileWriteInput).content }
-      : { old_string: (input as FileEditInput).old_string, new_string: (input as FileEditInput).new_string };
+      : { old_string: editInput.old_string, new_string: editInput.new_string, ...(editInput.replace_all ? { replace_all: true } : {}) };
 
     const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, filePath, diffInput);
     if (!diffResult && toolName === TOOL_EDIT) {
       return { approved: false, customMessage: 'Could not find the text to replace in the file' };
     }
 
-    const originalContent = diffResult?.originalContent || '';
-    const proposedContent = diffResult?.proposedContent || '';
-
-    await this.diffManager.showDiffView(toolUseId, filePath, originalContent, proposedContent);
+    if (diffResult?.originalContent !== undefined) {
+      await this.diffManager.showDiffView(toolUseId, filePath, diffResult.originalContent, diffResult.proposedContent);
+    }
 
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
@@ -278,8 +278,7 @@ export class ApprovalManager {
         toolName: toolName as 'Write' | 'Edit',
         toolInput: input as unknown as Record<string, unknown>,
         filePath,
-        originalContent,
-        proposedContent,
+        ...diffResult?.patch,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
         ...(suggestions.length ? { suggestions } : {}),

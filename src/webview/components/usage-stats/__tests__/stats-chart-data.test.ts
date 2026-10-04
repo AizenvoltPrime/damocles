@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CHART_COLOR_COUNT, OTHER_MODELS_SERIES, chartColor, chartRows, rankModels } from '../stats-chart-data';
+import { CHART_COLOR_COUNT, OTHER_MODELS_SERIES, UNKNOWN_MODEL_SERIES, chartColor, chartRows, modelProvider, rankModels } from '../stats-chart-data';
 import type { UsageStatsModelRow, UsageStatsSeriesPoint } from '@shared/types/usage-stats';
 
 function point(bucket: string, modelKey: string | null, cost: number): UsageStatsSeriesPoint {
@@ -54,5 +54,16 @@ describe('rankModels', () => {
     const { series } = rankModels(byModel);
     expect(series.map((s) => s.key)).toEqual(byModel.map((m) => m.key));
     expect(series.map((s) => s.color)).toEqual(byModel.map((_, rank) => chartColor(rank)));
+  });
+});
+
+describe('modelProvider', () => {
+  it('reads the provider of a model key and none for the series keys that are not models', () => {
+    expect(modelProvider('anthropic/claude-sonnet-4-5')).toBe('anthropic');
+    expect(modelProvider('openrouter/deepseek/deepseek-chat')).toBe('openrouter');
+    expect(modelProvider(null)).toBeNull();
+    expect(modelProvider(UNKNOWN_MODEL_SERIES)).toBeNull();
+    expect(modelProvider(OTHER_MODELS_SERIES)).toBeNull();
+    expect(modelProvider('/gpt-5')).toBeNull();
   });
 });

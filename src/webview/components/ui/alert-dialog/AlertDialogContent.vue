@@ -10,6 +10,11 @@ import {
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 import { definedProps } from "@/lib/definedProps"
+import { usePopperZIndex } from "@/composables/useOverlayEscape"
+
+defineOptions({
+  inheritAttrs: false,
+})
 
 const props = defineProps<AlertDialogContentProps & { class?: HTMLAttributes["class"] }>()
 const emits = defineEmits<AlertDialogContentEmits>()
@@ -17,18 +22,25 @@ const emits = defineEmits<AlertDialogContentEmits>()
 const delegatedProps = reactiveOmit(props, "class")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
+
+// Portalled to `body`, so a confirmation opened from an overlay must paint above it, as popper content does.
+const popperZIndex = usePopperZIndex()
 </script>
 
 <template>
   <AlertDialogPortal>
     <AlertDialogOverlay
-      class="fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0"
+      class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
+      :class="popperZIndex === undefined && 'z-50'"
+      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
     />
     <AlertDialogContent
-      v-bind="definedProps(forwarded)"
+      v-bind="{ ...definedProps(forwarded), ...$attrs }"
+      :style="popperZIndex === undefined ? undefined : { zIndex: popperZIndex }"
       :class="
         cn(
-          'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg',
+          popperZIndex === undefined && 'z-50',
+          'd-dialog fixed left-1/2 top-1/2 grid w-full max-w-lg -translate-1/2 gap-4 rounded-2xl border border-(--d-border2) bg-(--d-card) p-6 text-(--d-text) shadow-(--d-shadow)',
           props.class,
         )
       "

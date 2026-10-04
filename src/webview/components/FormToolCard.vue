@@ -4,16 +4,9 @@ import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
 import type { FormFieldSchema, FormResult } from '@shared/types/forms';
 
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import {
-  IconPencilSquare,
-  IconCheckCircle,
-  IconXCircle,
-  IconBan,
-  IconLock,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
-import { useToolCardStatus } from '@/composables/useToolCardStatus';
+import { Ban, CircleCheck, CircleX, Lock, SquarePen } from 'lucide-vue-next';
+import ToolCardFrame from './ToolCardFrame.vue';
+import ToolCardNote from './ToolCardNote.vue';
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -89,14 +82,10 @@ const hasSubmitSelector = computed(() => {
   return typeof input?.submitSelector === 'string' && input.submitSelector.length > 0;
 });
 
-const isPending = computed(() => props.toolCall.status === 'pending');
-const isRunning = computed(() => props.toolCall.status === 'running');
 const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_approval');
 const isFailed = computed(() => props.toolCall.status === 'failed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
-
-const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.toolCall.status);
 
 const headerText = computed(() => {
   const title = schema.value.title;
@@ -107,90 +96,108 @@ const headerText = computed(() => {
 </script>
 
 <template>
-  <Card class="text-sm overflow-hidden" :class="cardClass">
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-primary/10 border-b border-border/50 space-y-0">
-      <IconPencilSquare :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium flex-1">{{ headerText }}</span>
-
-      <LoadingSpinner v-if="isPending || isRunning || isAwaitingApproval" :size="16" :class="statusClass" class="shrink-0" />
-      <component v-else-if="statusIcon" :is="statusIcon" :size="16" :class="statusClass" class="shrink-0" />
-    </CardHeader>
-
-    <CardContent class="p-0">
-      <!-- Per-field list -->
-      <div class="divide-y divide-border/30">
+  <ToolCardFrame
+    :icon="SquarePen"
+    :name="headerText"
+    :status="toolCall.status"
+    data-testid="form-tool-card"
+  >
+    <div
+      v-for="(field, idx) in fieldRows"
+      :key="idx"
+      class="flex items-start gap-2 border-t border-(--d-border) px-3 py-2"
+    >
+      <span class="flex h-4.5 w-4 flex-none items-center justify-center">
+        <CircleCheck
+          v-if="field.ok === true && !field.skipped"
+          class="size-3 text-(--d-success)"
+          aria-hidden="true"
+        />
+        <CircleX
+          v-else-if="field.ok === false"
+          class="size-3 text-(--d-danger)"
+          aria-hidden="true"
+        />
+        <span
+          v-else
+          class="size-1.5 rounded-full bg-(--d-faint)"
+          aria-hidden="true"
+        />
+      </span>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-1.5">
+          <Lock
+            v-if="field.masked"
+            class="size-2.75 flex-none text-(--d-faint)"
+            aria-hidden="true"
+          />
+          <span class="truncate text-12.5">{{ field.label }}</span>
+          <span class="flex-none rounded-5 bg-(--d-hover) px-1.5 font-mono text-10.5 text-(--d-muted)">{{ field.type }}</span>
+        </div>
+        <!-- Value slot: masked fields render dots; there are never raw values to show. -->
         <div
-          v-for="(field, idx) in fieldRows"
-          :key="idx"
-          class="px-3 py-2 flex items-center gap-2"
+          v-if="field.masked && !field.skipped"
+          class="mt-0.5 text-xs tracking-widest text-(--d-faint)"
         >
-          <!-- Field state icon -->
-          <span class="shrink-0 w-4 flex items-center justify-center">
-            <span v-if="field.skipped" class="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-            <IconCheckCircle v-else-if="field.ok === true" :size="12" class="text-success" />
-            <IconXCircle v-else-if="field.ok === false" :size="12" class="text-error" />
-            <span v-else class="w-1.5 h-1.5 rounded-full bg-muted-foreground/50" />
-          </span>
-
-          <!-- Label + type -->
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-1.5">
-              <IconLock v-if="field.masked" :size="11" class="text-muted-foreground shrink-0" />
-              <span class="text-xs text-foreground/90 truncate">{{ field.label }}</span>
-              <span class="inline-flex items-center px-1 py-0.5 rounded text-[10px] bg-muted text-muted-foreground shrink-0">
-                {{ field.type }}
-              </span>
-            </div>
-            <!-- Value slot: masked fields render dots; there are never raw values to show. -->
-            <div v-if="field.masked && !field.skipped" class="text-xs text-muted-foreground tracking-widest mt-0.5">••••</div>
-            <!-- Optional field the user intentionally left blank. -->
-            <div v-if="field.skipped" class="text-xs text-muted-foreground/70 mt-0.5">{{ t('formTool.skipped') }}</div>
-            <!-- Value-free failure reason (safe by contract). -->
-            <div v-if="field.ok === false && field.reason" class="text-xs text-error/80 mt-0.5">
-              {{ field.reason }}
-            </div>
-          </div>
+          ••••
+        </div>
+        <div
+          v-if="field.skipped"
+          class="mt-0.5 text-xs text-(--d-faint)"
+        >
+          {{ t('formTool.skipped') }}
+        </div>
+        <div
+          v-if="field.ok === false && field.reason"
+          class="mt-0.5 text-xs text-(--d-danger)"
+        >
+          {{ field.reason }}
         </div>
       </div>
+    </div>
 
-      <!-- Result footer -->
-      <div v-if="result" class="px-3 py-2 border-t border-border/30 flex items-center gap-3 text-xs text-muted-foreground">
-        <span>{{ t('formTool.filled', { filled: filledCount, total: totalCount }) }}</span>
-        <span v-if="hasSubmitSelector" class="flex items-center gap-1">
-          <IconCheckCircle v-if="submitted" :size="12" class="text-success" />
-          <IconBan v-else :size="12" class="text-muted-foreground" />
-          {{ submitted ? t('formTool.submitted') : t('formTool.notSubmitted') }}
-        </span>
-      </div>
+    <div
+      v-if="result"
+      class="flex items-center gap-3 border-t border-(--d-border) px-3 py-1.5 font-mono text-11 text-(--d-faint)"
+    >
+      <span>{{ t('formTool.filled', { filled: filledCount, total: totalCount }) }}</span>
+      <span
+        v-if="hasSubmitSelector"
+        class="flex items-center gap-1"
+      >
+        <component
+          :is="submitted ? CircleCheck : Ban"
+          class="size-3"
+          :class="submitted ? 'text-(--d-success)' : 'text-(--d-faint)'"
+          aria-hidden="true"
+        />
+        {{ submitted ? t('formTool.submitted') : t('formTool.notSubmitted') }}
+      </span>
+    </div>
 
-      <!-- Status messages -->
-      <div v-if="isAwaitingApproval" class="px-3 py-2 bg-primary/10 border-t border-primary/20">
-        <div class="flex items-center gap-2 text-xs text-primary">
-          <span class="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span>{{ t('formTool.waiting') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isDenied" class="px-3 py-2 bg-error/10 border-t border-error/20">
-        <div class="flex items-center gap-2 text-xs text-error/80">
-          <IconXCircle :size="12" />
-          <span>{{ t('formTool.cancelled') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isFailed" class="px-3 py-2 bg-error/10 border-t border-error/20">
-        <div class="flex items-center gap-2 text-xs text-error/80">
-          <IconXCircle :size="12" />
-          <span>{{ t('formTool.failed') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isAbandoned" class="px-3 py-2 bg-muted/30 border-t border-border/30">
-        <div class="flex items-center gap-2 text-xs text-muted-foreground">
-          <IconBan :size="12" />
-          <span>{{ t('formTool.movedOn') }}</span>
-        </div>
-      </div>
-    </CardContent>
-  </Card>
+    <ToolCardNote
+      v-if="isAwaitingApproval"
+      tone="text-(--d-warning)"
+      waiting
+      :text="t('formTool.waiting')"
+    />
+    <ToolCardNote
+      v-else-if="isDenied"
+      tone="text-(--d-danger)"
+      :icon="CircleX"
+      :text="t('formTool.cancelled')"
+    />
+    <ToolCardNote
+      v-else-if="isFailed"
+      tone="text-(--d-danger)"
+      :icon="CircleX"
+      :text="t('formTool.failed')"
+    />
+    <ToolCardNote
+      v-else-if="isAbandoned"
+      tone="text-(--d-muted)"
+      :icon="Ban"
+      :text="t('formTool.movedOn')"
+    />
+  </ToolCardFrame>
 </template>

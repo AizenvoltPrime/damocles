@@ -1,26 +1,30 @@
 <script setup lang="ts">
-import { h, computed, watch } from 'vue';
+import { computed, nextTick, shallowRef, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
-import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { IconCheck, IconXCircle } from '@/components/icons';
+import { Activity, Database, Receipt, Square, Timer, Users, Wrench, Zap } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
+import StopTeamConfirm from './StopTeamConfirm.vue';
+import SlidingIndicator from './SlidingIndicator.vue';
+import AgentChip from './agent-view/AgentChip.vue';
 import TeamAgentCard from './TeamAgentCard.vue';
 import TeamTimeline from './TeamTimeline.vue';
 import TeamScratchpad from './TeamScratchpad.vue';
+import MarkdownRenderer from './MarkdownRenderer.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
-import { formatElapsed } from '@/composables/useTeamFormatting';
+import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
+import { agentStatusChip, formatElapsed, formatTokenCount, workingAgentCount } from '@/composables/useTeamFormatting';
 import { useCostLabel } from '@/composables/useCostLabel';
-import { addAgentUsage, emptyAgentUsage } from '@shared/usage-accounting';
-import AgentUsageStats from './AgentUsageStats.vue';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
+import { useStopTeam } from '@/composables/useStopTeam';
+import { cacheHitPercent } from '@/utils/cacheHitPercent';
+import { addAgentUsage, agentCacheHitRate, agentTotalTokens, emptyAgentUsage } from '@shared/usage-accounting';
 import { runsStopwatch } from '@shared/team-stopwatch';
-import MarkdownRenderer from './MarkdownRenderer.vue';
 
-const { t } = useI18n();
-const { teamDollarBilled } = useCostLabel();
+const { t, locale } = useI18n();
+const { teamDollarBilled, costLabel, costTitle } = useCostLabel();
 const { postMessage } = usePlatformBridge();
 
 const teamStore = useTeamStore();
@@ -30,41 +34,61 @@ watch([selectedTeam, isOverlayOpen], ([team, open]) => {
   if (open && team && team.teamId.startsWith('pending-') && team.toolUseId) {
     postMessage({ type: 'requestTeamDataByToolUse', toolUseId: team.toolUseId });
   }
-});
+}, { immediate: true });
 
-function close(): void {
-  teamStore.closeOverlay();
+const TABS = ['agents', 'timeline', 'scratchpad', 'result'] as const;
+type Tab = (typeof TABS)[number];
+
+const isRunning = computed(() => selectedTeam.value?.status === 'running');
+
+// The result exists only once the team finishes; a team that ended without one says so on the tab.
+function isTabDisabled(tab: Tab): boolean {
+  return tab === 'result' && !selectedTeam.value?.result && isRunning.value;
 }
 
-const tabs = ['agents', 'timeline', 'scratchpad', 'result'] as const;
-
-function tabLabel(tab: typeof tabs[number]): string {
-  return t(`team.tabs.${tab}`);
+function tabCount(tab: Tab): number {
+  const team = selectedTeam.value;
+  if (!team) return 0;
+  if (tab === 'agents') return team.agents.length;
+  if (tab === 'timeline') return team.messages.length;
+  if (tab === 'scratchpad') return team.scratchpad.length;
+  return 0;
 }
 
-function isTabDisabled(tab: typeof tabs[number]): boolean {
-  if (tab === 'result') return !selectedTeam.value?.result;
-  return false;
+const tablist = shallowRef<HTMLElement | null>(null);
+const activeIndex = computed(() => TABS.indexOf(activeTab.value));
+const { box: tabBox, animate: tabAnimate } = useSlidingIndicator(tablist, '[role="tab"]', activeIndex);
+// The reference underline: 2px, inset 8px from each side of the tab, on its bottom edge.
+const underline = computed(() => tabBox.value && { x: tabBox.value.x + 8, y: tabBox.value.y + tabBox.value.height - 2, width: tabBox.value.width - 16, height: 2 });
+
+function selectTab(tab: Tab): void {
+  if (!isTabDisabled(tab)) teamStore.setActiveTab(tab);
+}
+
+function onTabKeydown(event: KeyboardEvent): void {
+  const enabled = TABS.filter((tab) => !isTabDisabled(tab));
+  const current = enabled.indexOf(activeTab.value);
+  let next: Tab | undefined;
+  if (event.key === 'ArrowRight') next = enabled[(current + 1) % enabled.length];
+  else if (event.key === 'ArrowLeft') next = enabled[(current - 1 + enabled.length) % enabled.length];
+  else if (event.key === 'Home') next = enabled[0];
+  else if (event.key === 'End') next = enabled.at(-1);
+  if (!next) return;
+  event.preventDefault();
+  selectTab(next);
+  const index = TABS.indexOf(next);
+  void nextTick(() => tablist.value?.querySelectorAll<HTMLElement>('[role="tab"]')[index]?.focus());
 }
 
 const statusBadge = computed(() => {
-  if (!selectedTeam.value) return undefined;
-  const team = selectedTeam.value;
-  switch (team.status) {
-    case 'running':
-      return { label: t('team.statusLabel.running'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
-    case 'completed':
-      return { label: t('team.statusLabel.completed'), class: 'bg-success/30 text-success border-success/30', icon: IconCheck };
-    case 'failed':
-    case 'cancelled':
-      return { label: t('team.statusLabel.' + team.status), class: 'bg-error/30 text-error border-error/30', icon: IconXCircle };
-    default:
-      return undefined;
-  }
+  const status = selectedTeam.value?.status;
+  if (!status) return undefined;
+  const chip = agentStatusChip(status);
+  return { label: t(chip.labelKey), class: chip.color, pulse: chip.live };
 });
 
 const { elapsedMs } = useElapsedTimer(
-  () => selectedTeam.value?.status === 'running',
+  () => isRunning.value,
   () => (selectedTeam.value ? runsStopwatch(selectedTeam.value.runs) : null),
 );
 
@@ -72,84 +96,152 @@ const totalUsage = computed(() => (selectedTeam.value?.agents ?? []).reduce(addA
 // Each agent carries its own flag and a reload restores it, so the total is labelled from the agents
 // rather than from the panel account.
 const totalBilled = computed(() => teamDollarBilled(selectedTeam.value?.agents ?? []));
-
-const subtitle = computed(() => {
-  if (!selectedTeam.value) return '';
-  const team = selectedTeam.value;
-  return t('team.overlay.subtitle', { agents: team.agents.length, tools: team.totalToolCount, elapsed: formatElapsed(elapsedMs.value) });
+const totalTokens = computed(() => agentTotalTokens(totalUsage.value));
+const cachePct = computed(() => {
+  const rate = agentCacheHitRate(totalUsage.value);
+  return rate === null ? 0 : cacheHitPercent(rate);
 });
+const activeCount = computed(() => workingAgentCount(selectedTeam.value?.agents ?? []));
 
-const TeamIcon = {
-  render() {
-    return h('svg', {
-      xmlns: 'http://www.w3.org/2000/svg', width: '20', height: '20', viewBox: '0 0 24 24',
-      fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'
-    }, [
-      h('path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }),
-      h('circle', { cx: '9', cy: '7', r: '4' }),
-      h('path', { d: 'M22 21v-2a4 4 0 0 0-3-3.87' }),
-      h('path', { d: 'M16 3.13a4 4 0 0 1 0 7.75' }),
-    ]);
-  },
-};
+const stopTeam = useStopTeam(() => selectedTeam.value);
+
+function close(): void {
+  teamStore.closeOverlay();
+}
 </script>
 
 <template>
   <OverlayShell
     v-if="selectedTeam"
+    max-width="56.25rem"
     :title="selectedTeam.title"
-    :icon="TeamIcon"
-    icon-class="text-primary"
+    :subtitle="t('overlays.team.subtitle', { n: selectedTeam.agents.length })"
+    :icon="Users"
     :status-badge="statusBadge"
     @close="close"
   >
-    <template #subtitle>
-      <span>{{ subtitle }}</span>
-      <AgentUsageStats :usage="totalUsage" :dollar-billed="totalBilled" variant="subtitle" separator="·" />
+    <template #header-actions>
+      <OverlayHeaderAction
+        v-if="stopTeam.canStop.value"
+        :label="stopTeam.stopping.value ? t('toolCall.stopping') : t('agentStop.stopTeam')"
+        :icon="Square"
+        :busy="stopTeam.stopping.value"
+        :disabled="stopTeam.stopping.value"
+        data-testid="team-stop"
+        @click="stopTeam.request"
+      />
     </template>
 
-    <div class="flex flex-col h-full">
-      <div class="flex border-b border-border/30 px-4 shrink-0">
+    <div class="sticky top-0 z-3 bg-(--d-bg)">
+      <div class="flex gap-1.5 overflow-x-auto px-4.5 pt-3 [scrollbar-width:none] @min-[35rem]/overlay:flex-wrap">
+        <AgentChip
+          :icon="Users"
+          :value="selectedTeam.agents.length"
+          :unit="t('overlays.team.unit.agents', selectedTeam.agents.length)"
+        />
+        <AgentChip
+          :icon="Activity"
+          icon-class="text-(--d-accent)"
+          :value="activeCount"
+          :unit="t('overlays.team.unit.active')"
+        />
+        <AgentChip
+          :icon="Timer"
+          data-part="elapsed"
+          :value="formatElapsed(elapsedMs)"
+          mono
+          :title="t('overlays.agent.elapsed')"
+        />
+        <AgentChip
+          :icon="Wrench"
+          :value="selectedTeam.totalToolCount"
+          :unit="t('overlays.agent.unit.tools', selectedTeam.totalToolCount)"
+        />
+        <AgentChip
+          v-if="totalTokens > 0"
+          :icon="Database"
+          data-part="tokens"
+          :value="formatTokenCount(totalTokens, locale)"
+          :unit="t('overlays.agent.unit.tokens', totalTokens)"
+        />
+        <AgentChip
+          v-if="cachePct > 0"
+          :icon="Zap"
+          data-part="cache"
+          :value="`${cachePct}%`"
+          :unit="t('overlays.agent.unit.cache')"
+          :title="t('agentUsage.cacheHitTooltip')"
+        />
+        <AgentChip
+          v-if="totalUsage.costUsd > 0"
+          :icon="Receipt"
+          data-part="cost"
+          :value="costLabel(totalUsage.costUsd, totalBilled)"
+          mono
+          :title="costTitle(totalBilled)"
+        />
+      </div>
+      <div
+        ref="tablist"
+        role="tablist"
+        class="relative mt-2.5 flex gap-0.5 overflow-x-auto border-b border-(--d-border) px-3 [scrollbar-width:none]"
+        :aria-label="t('overlays.team.tabs')"
+        @keydown="onTabKeydown"
+      >
+        <SlidingIndicator
+          :box="underline"
+          :radius="1"
+          :animate="tabAnimate"
+          class="text-(--d-accent)"
+        />
         <button
-          v-for="tab in tabs"
+          v-for="tab in TABS"
+          :id="`team-tab-${tab}`"
           :key="tab"
-          :disabled="isTabDisabled(tab)"
-          class="px-3 py-2 text-xs font-medium transition-colors relative"
-          :class="[
-            activeTab === tab
-              ? 'text-primary cursor-default'
-              : isTabDisabled(tab)
-                ? 'text-foreground/20 cursor-not-allowed'
-                : 'text-foreground/60 hover:text-foreground cursor-pointer',
-          ]"
-          @click="!isTabDisabled(tab) && teamStore.setActiveTab(tab)"
+          type="button"
+          role="tab"
+          class="relative flex h-9.5 flex-none items-center gap-1.5 whitespace-nowrap px-2.5 text-12.5 font-medium transition-colors aria-disabled:opacity-45"
+          :class="activeTab === tab ? 'text-(--d-text)' : 'text-(--d-muted) hover:text-(--d-text) aria-disabled:hover:text-(--d-muted)'"
+          :aria-selected="activeTab === tab"
+          :aria-controls="activeTab === tab ? `team-panel-${tab}` : undefined"
+          :aria-disabled="isTabDisabled(tab) || undefined"
+          :tabindex="activeTab === tab ? 0 : -1"
+          :title="isTabDisabled(tab) ? t('overlays.team.resultPending') : undefined"
+          :data-testid="`team-tab-${tab}`"
+          @click="selectTab(tab)"
         >
-          {{ tabLabel(tab) }}
-          <Badge
-            v-if="tab === 'timeline' && selectedTeam.messages.length > 0"
-            variant="secondary"
-            class="ml-1 text-[10px] px-1 py-0 bg-foreground/10"
-          >
-            {{ selectedTeam.messages.length }}
-          </Badge>
-          <div
-            v-if="activeTab === tab"
-            class="absolute bottom-0 left-0 right-0 h-0.5 bg-primary"
-          />
+          {{ t(`team.tabs.${tab}`) }}
+          <span
+            v-if="tabCount(tab) > 0"
+            class="rounded-full bg-(--d-hover) px-1.5 font-mono text-10.5 text-(--d-muted) @max-[34.9375rem]/overlay:hidden"
+          >{{ tabCount(tab) }}</span>
         </button>
       </div>
+    </div>
 
-      <div class="flex-1 min-h-0">
-        <ScrollArea v-if="activeTab === 'agents'" class="h-full">
-          <div class="p-3 grid gap-2">
-            <TeamAgentCard
-              v-for="(agent, idx) in selectedTeam.agents"
-              :key="agent.agentId"
-              :agent="agent"
-              :index="idx"
-            />
-          </div>
-        </ScrollArea>
+    <Transition
+      name="t-fade"
+      mode="out-in"
+    >
+      <div
+        :id="`team-panel-${activeTab}`"
+        :key="activeTab"
+        role="tabpanel"
+        :aria-labelledby="`team-tab-${activeTab}`"
+        class="px-4.5 pt-3.5 pb-4.5"
+      >
+        <div
+          v-if="activeTab === 'agents'"
+          class="grid grid-cols-[repeat(auto-fill,minmax(15.625rem,1fr))] gap-2.5"
+        >
+          <TeamAgentCard
+            v-for="(agent, idx) in selectedTeam.agents"
+            :key="agent.agentId"
+            :agent="agent"
+            :index="idx"
+            @stop-team="stopTeam.request"
+          />
+        </div>
 
         <TeamTimeline
           v-else-if="activeTab === 'timeline'"
@@ -163,17 +255,27 @@ const TeamIcon = {
           :agents="selectedTeam.agents"
         />
 
-        <ScrollArea v-else-if="activeTab === 'result'" class="h-full">
-          <div class="p-4">
-            <div v-if="selectedTeam.result" class="text-sm text-foreground">
-              <MarkdownRenderer :content="selectedTeam.result" />
-            </div>
-            <div v-else class="text-sm text-foreground/40 text-center py-8">
-              {{ t('team.overlay.noResult') }}
-            </div>
-          </div>
-        </ScrollArea>
+        <template v-else>
+          <MarkdownRenderer
+            v-if="selectedTeam.result"
+            :content="selectedTeam.result"
+            class="text-13/relaxed"
+          />
+          <p
+            v-else
+            class="py-6.5 text-center text-(--d-faint)"
+          >
+            {{ t('overlays.team.noResult') }}
+          </p>
+        </template>
       </div>
-    </div>
+    </Transition>
+
+    <StopTeamConfirm
+      :open="stopTeam.confirming.value"
+      :working-count="stopTeam.workingCount.value"
+      @confirm="stopTeam.confirm"
+      @cancel="stopTeam.cancel"
+    />
   </OverlayShell>
 </template>

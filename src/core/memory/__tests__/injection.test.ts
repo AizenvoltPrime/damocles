@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -20,7 +20,9 @@ const WORKSPACE = '/repo/damocles';
 const SESSION = 'session-1';
 
 // Isolate injection-DB files in a throwaway dir so tests never touch the real ~/.damocles store.
-setInjectionDbDirForTests(fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-injection-test-')));
+const INJECTION_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-injection-test-'));
+setInjectionDbDirForTests(INJECTION_DB_DIR);
+afterAll(() => fs.rmSync(INJECTION_DB_DIR, { recursive: true, force: true }));
 
 interface SeedFields {
   id?: string;

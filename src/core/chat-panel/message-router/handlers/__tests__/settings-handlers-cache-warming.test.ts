@@ -18,7 +18,7 @@ const settings = {
     record[bare(key)] = value;
     return Promise.resolve();
   },
-  inspect: () => ({}),
+  inspect: (key: string) => (Object.hasOwn(record, bare(key)) ? { userValue: record[bare(key)] } : {}),
   onDidChange: () => ({ dispose: () => {} }),
   scopeFile: () => undefined,
 } as SettingsStore;
@@ -47,6 +47,7 @@ function route() {
     postMessage,
     settingsManager: settingsManager as SettingsManager,
     getPanels: () => new Map(),
+    platform: { ...createFakePlatform(), settings },
   } as Partial<HandlerDependencies> as HandlerDependencies;
   const ctx = { host: {}, permissionHandler: {} } as unknown as HandlerContext;
 

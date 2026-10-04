@@ -143,6 +143,9 @@ export const useSubagentStore = defineStore('subagent', () => {
   const subagents = ref<Record<string, SubagentState>>({});
   const expandedSubagentId = ref<string | null>(null);
   const streamingMessages = ref<Record<string, StreamingSubagentMessage>>({});
+  // Agents the user asked to stop, by the record id the stop names, which is also a background task's
+  // `taskId`. A card or task reads as stopping only while it still runs, so its own end clears it.
+  const stopRequested = ref<ReadonlySet<string>>(new Set());
 
   const expandedSubagent = computed((): SubagentState | undefined => {
     if (!expandedSubagentId.value) return undefined;
@@ -192,6 +195,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     isBackground?: boolean,
     details?: { description?: string; resumedFrom?: string },
   ): void {
+    // A resume reuses the agent's id, so a stop requested of its earlier run must not mark this one.
+    clearStopRequest(sdkAgentId);
     if (!toolUseId) return;
 
     const subagent = subagents.value[toolUseId];
@@ -235,6 +240,22 @@ export const useSubagentStore = defineStore('subagent', () => {
       ...subagents.value,
       [targetKey]: { ...subagent, lastAssistantMessage },
     };
+  }
+
+  function markStopRequested(agentId: string): void {
+    stopRequested.value = new Set(stopRequested.value).add(agentId);
+  }
+
+  function isStopRequested(agentId: string): boolean {
+    return stopRequested.value.has(agentId);
+  }
+
+  /** The agent began a new run, or the extension stopped nothing because the agent had already finished. */
+  function clearStopRequest(agentId: string): void {
+    if (!stopRequested.value.has(agentId)) return;
+    const kept = new Set(stopRequested.value);
+    kept.delete(agentId);
+    stopRequested.value = kept;
   }
 
   function resetToRunning(toolId: string, description?: string, isBackground?: boolean): void {
@@ -779,6 +800,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     subagents.value = {};
     streamingMessages.value = {};
     expandedSubagentId.value = null;
+    stopRequested.value = new Set();
   }
 
   return {
@@ -791,6 +813,9 @@ export const useSubagentStore = defineStore('subagent', () => {
     resetToRunning,
     startSubagent,
     stopSubagent,
+    markStopRequested,
+    isStopRequested,
+    clearStopRequest,
     endSubagent,
     completeSubagent,
     failSubagent,

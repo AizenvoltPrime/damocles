@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
-import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
   AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
 } from '@/components/ui/alert-dialog';
-import { IconWarning } from '@/components/icons';
+import { Trash2 } from 'lucide-vue-next';
+import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 
 const { t } = useI18n();
 
@@ -32,38 +29,34 @@ function handleCancel() {
 </script>
 
 <template>
-  <AlertDialog :open="visible" @update:open="(open: boolean) => !open && handleCancel()">
-    <AlertDialogContent class="bg-card border-border max-w-md max-h-[85vh] overflow-y-auto">
-      <AlertDialogHeader>
-        <AlertDialogTitle class="flex items-center gap-2">
-          <IconWarning :size="20" class="text-error" />
-          {{ t('deleteSession.title') }}
-        </AlertDialogTitle>
-        <AlertDialogDescription>
-          <p class="text-foreground">
-            {{ t('deleteSession.warning') }}
-          </p>
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-
-      <div v-if="sessionName" class="p-3 rounded bg-muted text-sm">
-        <div class="text-xs text-muted-foreground mb-1">{{ t('deleteSession.sessionLabel') }}</div>
-        <div class="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
-          {{ sessionName }}
-        </div>
-      </div>
-
-      <div class="flex justify-end gap-2 mt-4">
-        <Button variant="ghost" @click="handleCancel">
-          {{ t('common.cancel') }}
-        </Button>
-        <Button
-          class="bg-destructive hover:bg-destructive/80 text-destructive-foreground"
-          @click="handleConfirm"
+  <AlertDialog
+    :open="visible"
+    @update:open="(open: boolean) => !open && handleCancel()"
+  >
+    <AlertDialogContent class="max-h-[85vh] max-w-md gap-0 overflow-hidden p-0">
+      <ConfirmDialogLayout
+        :icon="Trash2"
+        tone="danger"
+        :title="t('deleteSession.title')"
+        :description="t('deleteSession.warning')"
+        :cancel-label="t('common.cancel')"
+        :confirm-label="t('common.delete')"
+        danger
+        @cancel="handleCancel"
+        @confirm="handleConfirm"
+      >
+        <div
+          v-if="sessionName"
+          class="rounded-10 border border-(--d-border) bg-(--d-bg) px-3 py-2"
         >
-          {{ t('common.delete') }}
-        </Button>
-      </div>
+          <div class="mb-1 text-10.5 font-semibold tracking-[.06em] text-(--d-faint) uppercase">
+            {{ t('deleteSession.sessionLabel') }}
+          </div>
+          <div class="max-h-40 overflow-y-auto text-12.5 wrap-break-word whitespace-pre-wrap">
+            {{ sessionName }}
+          </div>
+        </div>
+      </ConfirmDialogLayout>
     </AlertDialogContent>
   </AlertDialog>
 </template>

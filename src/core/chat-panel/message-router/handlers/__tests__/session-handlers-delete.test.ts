@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as lockfile from 'proper-lockfile';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createSessionHandlers } from '../session-handlers';
+import { createSessionCatalog } from '../../../session-catalog';
 import { createFakePlatform, type FakePlatform } from '../../../../../__mocks__/fake-platform';
 import { SESSION_LEASE_DIR, sessionLeasePath } from '../../../../pi-session/session-store/session-lease';
 import { claimStoredSession, type ClaimRefusal } from '../../../session-ownership';
@@ -78,18 +79,25 @@ describe('deleteSession — detaches the owning writer before removing the file'
         },
       });
     }
-    const sessionFolder = opts.sessionFolder;
+    const sessionFolder = opts.sessionFolder ?? '/ws';
+    const storageManager = {
+      folderOf: async () => {
+        if (opts.recordLookup) H.order.push('folder-lookup');
+        return { key: sessionFolder, fsPath: sessionFolder };
+      },
+      invalidateSessionsCache: () => undefined,
+      markSessionsChanged: () => undefined,
+      getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
+    };
     const deps = {
       postMessage: () => undefined,
       getPanels: () => panels,
-      storageManager: {
-        folderOf: async () => {
-          if (opts.recordLookup) H.order.push('folder-lookup');
-          return sessionFolder ? { key: sessionFolder, fsPath: sessionFolder } : undefined;
-        },
-        invalidateSessionsCache: () => undefined,
-        getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
-      },
+      storageManager,
+      sessionCatalog: createSessionCatalog({
+        storage: storageManager as unknown as Parameters<typeof createSessionCatalog>[0]['storage'],
+        getPanels: () => panels as never,
+        notifications: platform.notifications,
+      }),
       settingsManager: {},
       getLanguagePreference: () => 'en',
       platform,

@@ -11,6 +11,7 @@ import { wrapSteerMessage } from '@shared/steer';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
+import { useDiffStore } from '@/stores/useDiffStore';
 import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
 import { i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
@@ -26,21 +27,12 @@ vi.mock('@/composables/usePlatformBridge', () => ({
 }));
 
 /**
- * The seam between the agent transcript and the tool overlay. The two suites next door cover the
- * halves: the store builds `ToolCall`s, and the resolver reads the store its source names. This covers
- * what neither can see, that the overlay renders one card per call and that the card's `expand` emit
- * carries the `'team'` source. A binding that passed `'session'` would leave both halves green and
- * still open nothing. `ToolCallCard` is stubbed to its emit; everything after the emit is real.
+ * The seam between the agent transcript and the tool and diff overlays: the overlay renders one real
+ * `ToolCallCard` per call with the `'team'` source. A card given `'session'` would open nothing.
  */
 
 const TEAM_ID = 'team-1';
 const AGENT_ID = 'agent-1';
-
-const ToolCallCardStub = defineComponent({
-  props: { toolCall: { type: Object as () => ToolCall, required: true } },
-  emits: ['expand'],
-  template: `<button class="tool-card" @click="$emit('expand', toolCall.id)">{{ toolCall.name }}</button>`,
-});
 
 const PassThroughStub = defineComponent({ template: '<div><slot /></div>' });
 
@@ -110,8 +102,9 @@ function mountOverlay(options: { attachTo?: HTMLElement } = {}) {
     global: {
       plugins: [i18n],
       stubs: {
-        ToolCallCard: ToolCallCardStub,
         OverlayShell: PassThroughStub,
+        LiveOutputPane: true,
+        DiffView: true,
         ScrollArea: PassThroughStub,
         Button: true,
         MarkdownRenderer: true,
@@ -177,19 +170,17 @@ describe('a steering message inside a team agent overlay', () => {
 });
 
 describe('a member history loaded from its session file', () => {
-  /** How the overlay presented each message, read from the wrapper around its rendered text. */
+  /** How the overlay presented each message, read from the block around its rendered text. */
   function rendered(wrapper: ReturnType<typeof mountOverlay>): Array<[string, string | undefined]> {
     return wrapper.findAll('markdown-renderer-stub').map((stub) => {
-      const within = (cls: string): boolean => {
-        for (let el: Element | null = stub.element; el; el = el.parentElement) if (el.classList.contains(cls)) return true;
-        return false;
-      };
-      const kind = within('border-warning/50') ? 'steer' : within('border-foreground/20') ? 'user' : 'assistant';
+      const kind = stub.element.closest('[data-testid="agent-steer-message"]') ? 'steer'
+        : stub.element.closest('[data-testid="agent-peer-message"]') ? 'peer'
+          : 'assistant';
       return [kind, stub.attributes('content')];
     });
   }
 
-  it('shows the task and a peer message as user text, a steer as Steered, and the reply as output', () => {
+  it('opens with the task as the prompt, a peer message from its sender, a steer as Steered, and the reply as output', () => {
     useTeamStore().handleAgentDataLoaded(AGENT_ID, [
       { id: '0:a1', role: 'user', content: [{ type: 'text', text: 'fix the parser' }] },
       { id: '0:a2', role: 'user', content: [{ type: 'text', text: '[Message from lead]: go' }] },
@@ -199,12 +190,13 @@ describe('a member history loaded from its session file', () => {
 
     const wrapper = mountOverlay();
 
+    expect(wrapper.get('[data-testid="agent-prompt"]').text()).toContain('fix the parser');
     expect(rendered(wrapper)).toEqual([
-      ['user', 'fix the parser'],
-      ['user', '[Message from lead]: go'],
+      ['peer', 'go'],
       ['steer', 'check the tests'],
       ['assistant', 'On it.'],
     ]);
+    expect(wrapper.get('[data-testid="agent-peer-message"]').text()).toContain('Message from lead');
     expect(wrapper.text()).toContain('Steered');
   });
 });
@@ -232,24 +224,35 @@ describe('tool calls inside a team agent overlay', () => {
       { id: 't-2', name: 'Read', input: { file_path: 'c:/x.ts' }, status: 'completed' },
     ]);
 
-    const cards = wrapper.findAll('.tool-card');
+    const cards = wrapper.findAll('[data-testid="tool-card"]');
     expect(cards).toHaveLength(2);
-    expect(cards.map((c) => c.text())).toEqual(['Bash', 'Read']);
+    expect(cards.map((c) => c.get('[role="button"]').text())).toEqual(['Bash', 'Read']);
   });
 
   it('expands the clicked call against the team store', async () => {
     const wrapper = open([{ id: 't-1', name: 'Bash', input: { command: 'ls' }, status: 'running' }]);
 
-    await at(wrapper.findAll('.tool-card'), 0).trigger('click');
+    await at(wrapper.findAll('[data-testid="tool-card"]'), 0).trigger('click');
 
     expect(useUIStore().expandedToolSource).toBe('team');
     expect(useUIStore().expandedToolId).toBe('t-1');
     expect(defined(useExpandedTool().tool.value).name).toBe('Bash');
   });
+
+  it.each([
+    ['an Edit', { id: 't-edit', name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'a', new_string: 'b' }, status: 'completed' }],
+    ['a Write', { id: 't-write', name: 'Write', input: { file_path: '/w/a.ts', content: 'one\n' }, status: 'completed', metadata: { created: true } }],
+  ] as Array<[string, ToolCall]>)('opens the diff of %s it made', async (_label, tool) => {
+    const wrapper = open([tool]);
+
+    await wrapper.get(`[aria-label="${i18n.global.t('toolCall.clickToExpand')}"]`).trigger('click');
+
+    expect(useDiffStore().expandedDiff).toMatchObject({ filePath: '/w/a.ts', tool: tool.name });
+  });
 });
 
-describe('the team agent overlay subtitle', () => {
-  const SubtitleShell = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
+describe('the team agent overlay meta chips', () => {
+  const Shell = defineComponent({ template: '<div><slot name="header-actions" /><slot /><slot name="footer" /></div>' });
 
   it('counts every prompt token and shows the cache hit rate next to the cost', () => {
     const store = useTeamStore();
@@ -259,12 +262,12 @@ describe('the team agent overlay subtitle', () => {
     });
     store.openOverlay(TEAM_ID);
     store.openAgentOverlay(AGENT_ID);
-    const text = mount(TeamAgentOverlay, {
-      global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, ScrollArea: PassThroughStub, Button: true, MarkdownRenderer: true, LoadingSpinner: true, ToolCallCard: ToolCallCardStub } },
-    }).get('.subtitle').text();
+    const wrapper = mount(TeamAgentOverlay, {
+      global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ToolCallCard: true } },
+    });
 
-    expect(text).toContain('10.0K tokens');
-    expect(text).toContain('77% cache');
-    expect(text).toContain('$1.50');
+    expect(wrapper.get('[data-part="tokens"]').text()).toBe('10.0K tokens');
+    expect(wrapper.get('[data-part="cache"]').text()).toBe('77% cache');
+    expect(wrapper.get('[data-part="cost"]').text()).toBe('$1.50');
   });
 });

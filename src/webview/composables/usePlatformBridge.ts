@@ -33,15 +33,22 @@ function desktopBridge(bridge: DamoclesBridge): PlatformBridge {
 }
 
 function selectBridge(): PlatformBridge {
-  // acquireVsCodeApi may be called only once per webview, so selection runs at module load.
+  // acquireVsCodeApi may be called only once per webview, so selection runs once, on first use.
   if (typeof acquireVsCodeApi === 'function') return vscodeBridge(acquireVsCodeApi());
   const bridge = window.damoclesBridge;
   if (!bridge) throw new Error('No host bridge: neither acquireVsCodeApi nor window.damoclesBridge is defined');
   return desktopBridge(bridge);
 }
 
-const bridge = selectBridge();
+let bridge: PlatformBridge | null = null;
+
+/** A page with neither host bridge (the desktop overlay) installs its own before anything uses the bridge. */
+export function installPlatformBridge(pageBridge: PlatformBridge): void {
+  if (bridge) throw new Error('The platform bridge is already in use');
+  bridge = pageBridge;
+}
 
 export function usePlatformBridge(): PlatformBridge {
+  bridge ??= selectBridge();
   return bridge;
 }

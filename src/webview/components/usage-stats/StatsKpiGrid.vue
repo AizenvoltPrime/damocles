@@ -90,7 +90,7 @@ const kpis = computed<Kpi[]>(() => {
 </script>
 
 <template>
-  <div class="grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @xl:grid-cols-3 @4xl:grid-cols-4">
+  <div class="flex flex-wrap gap-px overflow-hidden rounded-lg border border-(--d-border) bg-(--d-border)">
     <KpiCard
       v-for="k in kpis"
       :id="k.id"
@@ -105,8 +105,8 @@ const kpis = computed<Kpi[]>(() => {
       <template v-if="k.delta" #delta>
         <span
           data-kpi-delta
-          class="text-xs tabular-nums"
-          :class="k.delta.tone === 'success' ? 'text-success' : 'text-muted-foreground'"
+          class="font-mono text-10.5 tabular-nums"
+          :class="k.delta.tone === 'success' ? 'text-(--d-success)' : 'text-(--d-faint)'"
           :title="k.delta.title"
         >{{ k.delta.text }}</span>
       </template>

@@ -1,5 +1,8 @@
 // Shared by the shell preload, main and (as types only) the shell app; the shell never sees panel channels.
 
+import type { OverlayAnswer, OverlayRequest } from './overlay-channels';
+import type { SettingsSectionId } from '../../shared/settings-sections';
+
 export const SHELL_CHANNELS = {
   // renderer → main, invoke
   getState: 'damocles:shell:get-state',
@@ -7,72 +10,127 @@ export const SHELL_CHANNELS = {
   removeProject: 'damocles:shell:remove-project',
   selectProject: 'damocles:shell:select-project',
   grantTrust: 'damocles:shell:grant-trust',
-  newTab: 'damocles:shell:new-tab',
-  selectTab: 'damocles:shell:select-tab',
-  closeTab: 'damocles:shell:close-tab',
-  moveTab: 'damocles:shell:move-tab',
   togglePane: 'damocles:shell:toggle-pane',
+  chatsList: 'damocles:shell:chats:list',
+  chatsSearch: 'damocles:shell:chats:search',
+  chatsSelect: 'damocles:shell:chats:select',
+  chatsNew: 'damocles:shell:chats:new',
+  chatsRename: 'damocles:shell:chats:rename',
+  chatsTag: 'damocles:shell:chats:tag',
+  chatsDelete: 'damocles:shell:chats:delete',
+  overlayRequest: 'damocles:shell:overlay:request',
+  appMenu: 'damocles:shell:window:app-menu',
+  toggleTheme: 'damocles:shell:window:toggle-theme',
+  toggleSidebar: 'damocles:shell:window:toggle-sidebar',
+  // section?: a SettingsSectionId; opens the settings modal in the overlay
+  openSettings: 'damocles:shell:window:open-settings',
   // renderer → main, send
   contentBounds: 'damocles:shell:content-bounds',
-  resolveToast: 'damocles:shell:resolve-toast',
+  layout: 'damocles:shell:layout',
+  focusedPart: 'damocles:shell:focused-part',
   // main → renderer
   state: 'damocles:shell:state',
-  toast: 'damocles:shell:toast',
-  toastDismiss: 'damocles:shell:toast-dismiss',
-  // the user asked to move keyboard focus into the tab strip (F6)
-  focusTabStrip: 'damocles:shell:focus-tab-strip',
+  // projectKey whose chat list changed; the shell refetches when it shows that project
+  chatsChanged: 'damocles:shell:chats:changed',
+  // F6 landed on the sidebar; the shell focuses the sidebar's current row
+  focusPart: 'damocles:shell:focus-part',
   // main → renderer, PanelTheme; the preload applies it to the page itself
   theme: 'damocles:shell:theme',
 } as const;
 
 // Bounds the shell may send; main clamps nothing, it rejects anything outside these.
 export const MAX_ID_LENGTH = 200;
-export const MAX_ACTION_LENGTH = 500;
+export const MAX_SEARCH_LENGTH = 200;
+export const MAX_CHAT_NAME_LENGTH = 200;
+export const MAX_TAG_LENGTH = 50;
+// Larger than any real display in CSS px; a coordinate or size outside [0, MAX_SHELL_COORDINATE] is malformed.
+export const MAX_SHELL_COORDINATE = 100_000;
+// AD7 layout minimums, CSS px.
+export const MIN_SIDEBAR_WIDTH = 220;
+export const MIN_SECTION_SIZE = 60;
+
+// Prefix of the id of a loaded chat that has no session file yet; a stored chat's id is its sessionId.
+export const NEW_CHAT_ID_PREFIX = 'new:';
 
 export type ShellLocale = 'en' | 'el';
 export type ShellPlatform = 'win32' | 'darwin' | 'linux';
+
+// waiting = the chat needs the user (requires_action)
+export type ChatStatus = 'running' | 'waiting' | 'idle';
 
 export interface ShellProject {
   readonly key: string;
   readonly name: string;
   readonly fsPath: string;
   readonly trusted: boolean;
-  readonly isDefault: boolean;
+  // the project's branch from git's HEAD file (D42); undefined outside git
+  readonly branch?: string;
+  // loaded chats of this project by status
+  readonly running: number;
+  readonly waiting: number;
 }
 
-// Every tab is a chat tab; its browser pages live in its side pane.
-export interface ShellTab {
+export interface ShellChat {
+  // issued by main; the shell passes it back verbatim
   readonly id: string;
-  // conversation title; '' is a new conversation, which the shell labels itself
+  // '' is a new conversation, which the shell labels itself
   readonly title: string;
-  readonly projectKey?: string;
-  readonly projectName?: string;
-  readonly busy?: boolean;
+  // epoch ms of the last activity, for the Today / Yesterday / Earlier groups
+  readonly timestamp: number;
+  readonly tag?: string;
+  readonly model?: { readonly provider: string; readonly id: string };
+  readonly status: ChatStatus;
+  readonly loaded: boolean;
 }
 
-// The selected chat tab's browser pane, for the top bar's toggle button.
+export interface ShellChatList {
+  readonly projectKey: string;
+  // newest first
+  readonly chats: readonly ShellChat[];
+  // every tag used in the project, sorted
+  readonly tags: readonly string[];
+}
+
+export type SelectChatResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'leased' | 'missing' };
+export type ChatMutationResult = { readonly ok: true } | { readonly ok: false; readonly reason: 'leased' | 'missing' | 'failed' };
+
+export interface ShellSectionLayout {
+  readonly collapsed: boolean;
+  // CSS px, >= MIN_SECTION_SIZE
+  readonly size: number;
+}
+
+export interface ShellLayout {
+  readonly sidebarVisible: boolean;
+  // CSS px, >= MIN_SIDEBAR_WIDTH
+  readonly sidebarWidth: number;
+  // Chats takes the height Projects leaves, so only Projects has a size.
+  readonly sections: { readonly projects: ShellSectionLayout; readonly chats: { readonly collapsed: boolean } };
+}
+
+// The selected chat's browser pane, for the title bar's toggle button.
 export interface ShellPane {
   readonly open: boolean;
 }
+
+export type ShellFocusPart = 'sidebar';
 
 export interface ShellState {
   readonly locale: ShellLocale;
   readonly platform: ShellPlatform;
   readonly projects: readonly ShellProject[];
-  // in strip order
-  readonly tabs: readonly ShellTab[];
-  readonly selectedTabId?: string;
-  // present only when damocles.browser.enabled is on and a tab is selected
+  // projectKey is absent until main knows a project: before the core starts and nothing is selected yet
+  readonly selected: { readonly projectKey?: string; readonly chatId?: string };
+  // the breadcrumb's chat
+  readonly selectedChat?: { readonly id: string; readonly title: string };
+  readonly effectiveTheme: 'dark' | 'light';
+  readonly layout: ShellLayout;
+  // present only when damocles.browser.enabled is on and a chat is selected
   readonly pane?: ShellPane;
-  // display label of the menu accelerator that toggles the pane, e.g. "Ctrl+Alt+B" or "⌥⌘B"
+  // display label of the menu accelerator that toggles the pane, e.g. "Ctrl+Shift+B" or "⇧⌘B"
   readonly paneShortcutLabel: string;
-}
-
-export interface ShellToast {
-  readonly id: string;
-  readonly severity: 'info' | 'warning' | 'error';
-  readonly message: string;
-  readonly actions: readonly string[];
+  // display labels of menu accelerators, e.g. "Ctrl+N"
+  readonly shortcuts: { readonly newChat: string; readonly toggleSidebar: string; readonly settings: string };
 }
 
 // CSS px relative to the window's content area; main scales by the shell's zoom factor.
@@ -91,21 +149,33 @@ export interface DamoclesShellApi {
   onState(listener: (state: ShellState) => void): () => void;
   addProject(): Promise<void>;
   removeProject(key: string): Promise<RemoveProjectResult>;
-  // sets the default project for new tabs; open tabs keep their project
+  // selects the project's last viewed chat, or a new chat in it
   selectProject(key: string): Promise<void>;
   grantTrust(key: string): Promise<void>;
-  // chat tab in projectKey, or in the default project when omitted
-  newTab(projectKey?: string): Promise<void>;
-  selectTab(id: string): Promise<void>;
-  closeTab(id: string): Promise<void>;
-  moveTab(id: string, toIndex: number): Promise<void>;
-  // opens or collapses the chat tab's browser pane
-  togglePane(id: string): Promise<void>;
+  // opens or collapses the selected chat's browser pane
+  togglePane(): Promise<void>;
+  listChats(projectKey: string): Promise<ShellChatList>;
+  searchChats(projectKey: string, query: string): Promise<ShellChatList>;
+  onChatsChanged(listener: (projectKey: string) => void): () => void;
+  selectChat(chatId: string): Promise<SelectChatResult>;
+  // a new chat in projectKey, or in the selected project when omitted
+  newChat(projectKey?: string): Promise<void>;
+  renameChat(chatId: string, name: string): Promise<ChatMutationResult>;
+  // null removes the tag
+  tagChat(chatId: string, tag: string | null): Promise<ChatMutationResult>;
+  // the shell has already asked the user to confirm
+  deleteChat(chatId: string): Promise<ChatMutationResult>;
+  // shows a menu or dialog in the overlay and resolves with the user's answer
+  requestOverlay(request: OverlayRequest): Promise<OverlayAnswer>;
+  // pops the application menu up at a point in CSS px
+  openAppMenu(anchor: { readonly x: number; readonly y: number }): Promise<void>;
+  toggleTheme(): Promise<void>;
+  toggleSidebar(): Promise<void>;
+  // the title-bar gear; resolves once main started opening the modal
+  openSettings(section?: SettingsSectionId): Promise<void>;
   reportContentBounds(bounds: ContentBounds): void;
-  onToast(listener: (toast: ShellToast) => void): () => void;
-  // main timed the toast out or it was answered elsewhere
-  onToastDismiss(listener: (id: string) => void): () => void;
-  // undefined action = dismissed
-  resolveToast(id: string, action?: string): void;
-  onFocusTabStrip(listener: () => void): () => void;
+  reportLayout(layout: ShellLayout): void;
+  // the shell part holding keyboard focus, null when focus left the sidebar
+  reportFocusedPart(part: ShellFocusPart | null): void;
+  onFocusPart(listener: (part: ShellFocusPart) => void): () => void;
 }

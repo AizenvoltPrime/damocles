@@ -11,8 +11,7 @@ import { PaneHost, type PaneActions } from './pane';
 import type { PanelStateStore, PersistedPane } from './panel-state-store';
 import { APP_ORIGIN, panelPageUrl } from './protocol';
 import { isHttpUrl, loadAppPage, loggableUrl, registerPanelContents } from './security';
-import { currentTheme, currentThemeKind } from './theme';
-import { ChatTabTitle } from './tab-title';
+import { currentTheme, currentThemeKind, THEME_BACKGROUND } from './theme';
 
 export interface SenderEvent {
   readonly sender: unknown;
@@ -59,9 +58,7 @@ export function isWebviewState(value: unknown): boolean {
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 
-export const THEME_BACKGROUND = { dark: '#1f1f1f', light: '#ffffff' } as const;
-
-// CSP worker-src of a chat tab: the directory the app:// handler serves the built webview assets from (protocol.ts SERVED_ROOTS).
+// CSP worker-src of a chat: the directory the app:// handler serves the built webview assets from (protocol.ts SERVED_ROOTS).
 export const CHAT_WORKER_SRC: string = `${APP_ORIGIN}/webview/assets/`;
 
 // A favicon larger than this is not inlined into the pane state that is resent on every change.
@@ -84,14 +81,6 @@ export async function iconDataUrl(iconPath: string): Promise<string | undefined>
   const stat = await fs.stat(iconPath);
   if (!stat.isFile() || stat.size > MAX_ICON_BYTES) return undefined;
   return `data:${mime};base64,${(await fs.readFile(iconPath)).toString('base64')}`;
-}
-
-function restoredTitle(state: unknown): { sessionId?: string; sessionName?: string } {
-  const raw = (state ?? {}) as { sessionId?: unknown; sessionName?: unknown };
-  return {
-    ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
-    ...(typeof raw.sessionName === 'string' ? { sessionName: raw.sessionName } : {}),
-  };
 }
 
 class Listeners<A extends unknown[]> {
@@ -145,7 +134,7 @@ export function observePageMessage(page: ObservedPage, message: unknown): boolea
   return false;
 }
 
-// One chat tab's browser pane.
+// One chat's browser pane.
 export interface ChatPane {
   // pane order
   pages: DesktopPanel[];
@@ -162,7 +151,7 @@ export interface PaneContext {
   readonly platform: PanePlatform;
   readonly toggleShortcutLabel: string;
   browserEnabled(): boolean;
-  // opens a blank page beside the chat tab (core refuses it while the browser is disabled)
+  // opens a blank page beside the chat (core refuses it while the browser is disabled)
   newPage(chat: DesktopPanel): Promise<void>;
   // ShellService.openExternal, which opens only canonical http and https
   openExternal(url: string): Promise<boolean>;
@@ -174,10 +163,16 @@ interface PanelViewsDeps {
   readonly panePreloadPath: string;
   readonly states: PanelStateStore;
   readonly log: (line: string) => void;
-  // A tab was added, removed, moved, selected, its title or busy state changed, or its pane changed.
+  // A chat was added, removed or selected, its project may have changed, or its pane changed.
   readonly onChange: () => void;
-  // The tab's page crashed more than MAX_CRASHES_IN_WINDOW times within CRASH_WINDOW_MS and is left dead.
+  // A view was added or moved to the top; the overlay restacks above it.
+  readonly onRestack: () => void;
+  // core revealed a chat (a host dialog, a file shown to it); the owner selects it
+  readonly onReveal: (chat: DesktopPanel) => void;
+  // The chat's page crashed more than MAX_CRASHES_IN_WINDOW times within CRASH_WINDOW_MS and is left dead.
   readonly onRendererGaveUp: (panel: DesktopPanel) => void;
+  // The stored session a chat's saved state names changed.
+  readonly onSavedSessionChange: (chat: DesktopPanel) => void;
   // The pane page crashed the same way.
   readonly onPaneGaveUp: () => void;
   readonly paneContext: () => PaneContext;
@@ -193,15 +188,14 @@ export class DesktopPanel implements PanelHost {
   readonly panelId: string;
   readonly kind: PanelOptions['kind'];
   readonly pageUrl: string;
-  // Monaco's workers load from the built webview assets; only a chat tab renders editors.
+  // Monaco's workers load from the built webview assets; only a chat renders editors.
   readonly workerSrc?: string;
   readonly view: WebContentsView;
   html: string | undefined;
   title: string;
-  // chat tabs only
-  readonly chatTitle: ChatTabTitle | undefined;
+  // chats only
   readonly pane: ChatPane | undefined;
-  // browser pages only: the chat tab whose pane shows the page, and what the pane shows about it
+  // browser pages only: the chat whose pane shows the page, and what the pane shows about it
   readonly chat: DesktopPanel | undefined;
   readonly page: ObservedPage | undefined;
   iconDataUrl: string | undefined;
@@ -223,7 +217,6 @@ export class DesktopPanel implements PanelHost {
     this.kind = request.options.kind;
     this.title = request.options.title;
     this.state = request.restore?.state ?? null;
-    this.chatTitle = this.kind === 'chat' ? new ChatTabTitle(restoredTitle(this.state)) : undefined;
     this.pane = this.kind === 'chat'
       ? { pages: [], activePageId: undefined, open: pane?.open ?? false, maximized: pane?.maximized ?? false, restoring: false }
       : undefined;
@@ -266,9 +259,12 @@ export class DesktopPanel implements PanelHost {
         deps.log(`[views] panel ${this.panelId}: dropped a malformed webview state`);
         return;
       }
+      const savedSession = this.savedSessionId;
       this.state = state ?? null;
       // A page's address persists from what core reports (observePageMessage), never from the page renderer.
-      if (this.kind === 'chat') deps.states.set({ panelId: this.panelId, state: this.state });
+      if (this.kind !== 'chat') return;
+      deps.states.set({ panelId: this.panelId, state: this.state });
+      if (this.savedSessionId !== savedSession) deps.onSavedSessionChange(this);
     });
 
     const contents = this.view.webContents;
@@ -311,6 +307,14 @@ export class DesktopPanel implements PanelHost {
     return this.disposed;
   }
 
+  // The stored session the chat's saved state names, which its webview's `ready` asks core to restore.
+  get savedSessionId(): string | undefined {
+    const state = this.state;
+    if (this.kind !== 'chat' || typeof state !== 'object' || state === null || !Object.hasOwn(state, 'sessionId')) return undefined;
+    const sessionId = (state as { sessionId: unknown }).sessionId;
+    return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
+  }
+
   themeCssSource(): string {
     return currentTheme().css;
   }
@@ -322,8 +326,8 @@ export class DesktopPanel implements PanelHost {
 
   postMessage(message: unknown): Promise<boolean> {
     // A crashed renderer has no frame to receive it; the reload's ready replays what the page needs.
-    // A folder update may move the tab to another project, which the tab strip labels.
-    if (this.chatTitle?.observe(message) || (message as { type?: unknown } | null)?.type === 'workspaceFolderUpdate') this.owner.changed();
+    // A folder update may move the chat to another project.
+    if (this.kind === 'chat' && (message as { type?: unknown } | null)?.type === 'workspaceFolderUpdate') this.owner.changed();
     if (this.page && observePageMessage(this.page, message)) this.owner.pageChanged(this);
     if (this.disposed || this.webContents.isDestroyed() || this.webContents.isCrashed()) return Promise.resolve(false);
     this.webContents.send(PANEL_CHANNELS.message, message);
@@ -360,7 +364,7 @@ export class DesktopPanel implements PanelHost {
     return this.owner.resourceUri(absolutePath);
   }
 
-  // Only a browser page shows an icon (its favicon, in the pane's page tab); the shell draws the chat tab icon itself.
+  // Only a browser page shows an icon (its favicon, in the pane's page tab).
   setIcon(iconPath: string | undefined): void {
     if (this.kind !== 'browser') return;
     const request = ++this.iconRequest;
@@ -386,14 +390,14 @@ export class DesktopPanel implements PanelHost {
     else this.owner.changed();
   }
 
-  // The shell labels every tab with its project, so the folder label adds nothing here.
+  // The shell shows every chat under its project, so the folder label adds nothing here.
   setFolderLabel(): void {}
 
-  // A chat tab is selected and focused; a browser page is selected in its chat's pane, which opens, and takes no focus.
+  // A chat is selected and focused; a browser page is selected in its chat's pane, which opens, and takes no focus.
   reveal(): void {
     if (this.disposed) return;
     if (this.chat) this.owner.revealPage(this);
-    else this.owner.show(this.panelId, { focus: true });
+    else this.owner.reveal(this);
   }
 
   // After the page gave up crashing, at the user's request: a fresh crash budget and a new load.
@@ -441,7 +445,7 @@ export class DesktopPanel implements PanelHost {
   }
 }
 
-/** The pane state of one chat tab, bounded for the pane view. */
+/** The pane state of one chat, bounded for the pane view. */
 export function paneSnapshot(chat: DesktopPanel | undefined, layout: PaneLayout, context: PaneContext): PaneState {
   const pages = chat?.pane?.pages.map((page): PanePage => ({
     id: page.panelId,
@@ -470,20 +474,19 @@ export function paneSnapshot(chat: DesktopPanel | undefined, layout: PaneLayout,
 }
 
 /**
- * One WebContentsView per chat tab, placed in the content rectangle the shell reports; only the selected tab is visible.
- * Each chat tab has a browser pane: its pages are views owned by the tab, drawn in the one pane view's page rectangle,
- * stacked chat < pane < active page. A page view never takes keyboard focus from main.
+ * One WebContentsView per loaded chat, placed on the chat slot rectangle the shell reports; only the selected chat is
+ * visible. Each chat has a browser pane: its pages are views owned by the chat, drawn in the one pane view's page
+ * rectangle, stacked chat < pane < active page < overlay. A page view never takes keyboard focus from main.
  */
 export class PanelViews {
   private readonly panels = new Map<string, DesktopPanel>();
-  // chat tabs in strip order; browser pages are in their chat's pane
+  // loaded chats in load order; browser pages are in their chat's pane
   private order: string[] = [];
   private selectedId: string | undefined;
   private retainStates = false;
-  private focusFallbackOnClose = true;
-  // DIP rectangle of the content area; undefined until the shell first reports it
+  // DIP rectangle of the chat slot; undefined until the shell first reports it
   private contentBounds: Rectangle | undefined;
-  // Every chat tab's pane width, divider included; the layout clamps it to the window without rewriting it.
+  // Every chat's pane width, divider included; the layout clamps it to the window without rewriting it.
   private paneWidth: number;
   // The layout numbers the pane view last got, so a layout that changes them (a resize into overlay) pushes a state.
   private shownLayout = '';
@@ -508,8 +511,8 @@ export class PanelViews {
     return this.paneHost;
   }
 
-  // A browser page must name its open chat tab as owner. A new chat tab is selected and focused; a restored one is
-  // not, because `restore` selects the saved tab.
+  // A browser page must name its loaded chat as owner. A chat is created hidden; the caller selects it. A restored
+  // chat lays out when first shown: Chromium sends a view's size to its page only once the view has been visible.
   create(request: CreatePanelRequest): DesktopPanel {
     if (request.restore && this.panels.has(request.restore.panelId)) throw new Error(`Panel ${request.restore.panelId} is already open`);
     if (request.options.kind === 'browser') return this.createPage(request);
@@ -518,20 +521,9 @@ export class PanelViews {
     this.panels.set(panel.panelId, panel);
     this.order.push(panel.panelId);
     this.deps.window.contentView.addChildView(panel.view);
-    if (request.restore) this.deps.onChange();
-    else this.show(panel.panelId, { focus: true });
+    this.deps.onRestack();
+    this.deps.onChange();
     return panel;
-  }
-
-  // Every saved chat tab joins the strip in its saved place, and the saved selection, else the first tab, is selected
-  // before any of them loads. Returns them in load order, selected tab first. The others lay out when first shown:
-  // Chromium sends a view's size to its page only once the view has been visible.
-  restore(saved: readonly { readonly panelId: string; readonly state: unknown }[], selectedId: string | undefined, options: PanelOptions): DesktopPanel[] {
-    const tabs = saved.map((panel) => this.create({ options, restore: panel }));
-    const selected = tabs.find((tab) => tab.panelId === selectedId) ?? tabs[0];
-    if (!selected) return [];
-    this.show(selected.panelId, { focus: true });
-    return [selected, ...tabs.filter((tab) => tab !== selected)];
   }
 
   htmlFor(panelId: string): string | undefined {
@@ -542,13 +534,13 @@ export class PanelViews {
     return this.panels.get(panelId);
   }
 
-  // chat tabs in strip order
+  // loaded chats in load order
   panelIds(): readonly string[] {
     return [...this.order];
   }
 
-  // In strip order.
-  tabs(): readonly DesktopPanel[] {
+  // In load order.
+  chats(): readonly DesktopPanel[] {
     return this.order.flatMap((panelId) => this.panels.get(panelId) ?? []);
   }
 
@@ -556,15 +548,15 @@ export class PanelViews {
     return this.selectedId === undefined ? undefined : this.panels.get(this.selectedId);
   }
 
-  // The selected chat tab's active page while its pane is open.
+  // The selected chat's active page while its pane is open.
   activePage(): DesktopPanel | undefined {
     const pane = this.selected()?.pane;
     if (!pane?.open || pane.activePageId === undefined) return undefined;
     return this.panels.get(pane.activePageId);
   }
 
-  // focus moves keyboard focus into the tab's page, or into its pane when the pane is maximized over the chat;
-  // without it focus stays where it is, as after a close from the tab strip.
+  // focus moves keyboard focus into the chat's page, or into its pane when the pane is maximized over the chat;
+  // without it focus stays where it is, as after a selection from the sidebar.
   show(panelId: string, options: { readonly focus: boolean }): void {
     const next = this.panels.get(panelId);
     if (!next?.pane) return;
@@ -582,38 +574,13 @@ export class PanelViews {
       else next.webContents.focus();
     }
     next.fireViewState();
-    this.deps.states.select(panelId);
     this.paneHost.stateChanged();
     this.deps.onChange();
   }
 
-  // delta 1 selects the next tab, -1 the previous one, wrapping around.
-  selectRelative(delta: 1 | -1): void {
-    if (this.order.length === 0) return;
-    const current = this.selectedId === undefined ? -1 : this.order.indexOf(this.selectedId);
-    const target = this.order[(current + delta + this.order.length) % this.order.length];
-    if (target !== undefined) this.show(target, { focus: true });
-  }
-
-  // A close made in the tab strip leaves keyboard focus there, so a keyboard user can close tab after tab.
-  close(panelId: string, options: { readonly focusFallback: boolean }): void {
-    const panel = this.panels.get(panelId);
-    if (!panel) return;
-    this.focusFallbackOnClose = options.focusFallback;
-    try {
-      panel.close();
-    } finally {
-      this.focusFallbackOnClose = true;
-    }
-  }
-
-  move(panelId: string, toIndex: number): void {
-    const from = this.order.indexOf(panelId);
-    if (from < 0 || toIndex < 0 || toIndex >= this.order.length || from === toIndex) return;
-    this.order.splice(from, 1);
-    this.order.splice(toIndex, 0, panelId);
-    this.deps.states.reorder(this.order);
-    this.deps.onChange();
+  // A chat core reveals is selected through the owner, which tracks the selected project.
+  reveal(chat: DesktopPanel): void {
+    this.deps.onReveal(chat);
   }
 
   setContentBounds(bounds: Rectangle): void {
@@ -627,9 +594,13 @@ export class PanelViews {
     this.paneHost.sendTheme(theme);
   }
 
-  // Panels closed while the host tears down keep their persisted state, so the next start restores them.
+  // Chats closed while the host tears down keep their persisted state, so the next start restores them.
   retainStatesOnClose(retain: boolean): void {
     this.retainStates = retain;
+  }
+
+  get retainingStates(): boolean {
+    return this.retainStates;
   }
 
   resourceUri(absolutePath: string): string {
@@ -647,7 +618,7 @@ export class PanelViews {
     this.deps.onChange();
   }
 
-  // Opens or collapses a chat tab's pane (the top bar button and the menu shortcut); focus stays where it is unless it
+  // Opens or collapses a chat's pane (the title bar button and the menu shortcut); focus stays where it is unless it
   // sat in the pane that closed.
   togglePane(chatId: string): void {
     const chat = this.panels.get(chatId);
@@ -655,12 +626,12 @@ export class PanelViews {
     this.setPaneOpen(chat, !chat.pane.open);
   }
 
-  // While set, the chat tab's restored pages keep the pane as it was saved.
+  // While set, the chat's restored pages keep the pane as it was saved.
   setRestoring(chat: DesktopPanel, restoring: boolean): void {
     if (chat.pane) chat.pane.restoring = restoring;
   }
 
-  // Keyboard focus sits in the selected tab's pane chrome or its active page.
+  // Keyboard focus sits in the selected chat's pane chrome or its active page.
   paneFocused(): boolean {
     return this.paneHost.focused || (this.activePage()?.webContents.isFocused() ?? false);
   }
@@ -669,7 +640,7 @@ export class PanelViews {
     return this.selected()?.webContents.isFocused() ?? false;
   }
 
-  // The pane view is shown for the selected chat tab.
+  // The pane view is shown for the selected chat.
   paneVisible(): boolean {
     const layout = this.currentLayout();
     return layout !== undefined && layout.mode !== 'collapsed';
@@ -709,18 +680,11 @@ export class PanelViews {
     const index = this.order.indexOf(panel.panelId);
     if (index >= 0) this.order.splice(index, 1);
     if (!this.retainStates) this.deps.states.delete(panel.panelId);
-    // A page never outlives the chat tab it is shown beside.
+    // A page never outlives the chat it is shown beside.
     for (const page of [...(panel.pane?.pages ?? [])]) page.close();
     if (this.selectedId === panel.panelId) {
       this.selectedId = undefined;
       this.layout();
-      // The neighbour that slid into the closed tab's place, as browsers do. A host teardown closes every tab in core's
-      // order and must leave the persisted selection as it was, so it shows none.
-      const fallback = this.retainStates ? undefined : this.order[Math.min(Math.max(index, 0), this.order.length - 1)];
-      if (fallback !== undefined) {
-        this.show(fallback, { focus: this.focusFallbackOnClose });
-        return;
-      }
     }
     this.paneHost.stateChanged();
     this.deps.onChange();
@@ -734,10 +698,11 @@ export class PanelViews {
   private createPage(request: CreatePanelRequest): DesktopPanel {
     const owner = request.options.owner;
     const chat = [...this.panels.values()].find((panel) => panel === owner);
-    if (!chat?.pane) throw new Error('A browser page opens only beside an open chat tab');
+    if (!chat?.pane) throw new Error('A browser page opens only beside a loaded chat');
     const page = new DesktopPanel(this, this.deps, request, chat, undefined);
     this.panels.set(page.panelId, page);
     this.deps.window.contentView.addChildView(page.view);
+    this.deps.onRestack();
     chat.pane.pages.push(page);
     chat.pane.activePageId = page.panelId;
     if (!chat.pane.restoring) chat.pane.open = true;
@@ -747,7 +712,7 @@ export class PanelViews {
 
   private pageRemoved(page: DesktopPanel, chat: DesktopPanel): void {
     const pane = chat.pane;
-    // The chat tab itself is closing, or the page was never added.
+    // The chat itself is closing, or the page was never added.
     if (!pane || !this.panels.has(chat.panelId)) return;
     const index = pane.pages.indexOf(page);
     if (index < 0) return;
@@ -852,6 +817,7 @@ export class PanelViews {
     this.deps.window.contentView.addChildView(this.paneHost.view);
     const active = this.activePage();
     if (active) this.deps.window.contentView.addChildView(active.view);
+    this.deps.onRestack();
   }
 
   private pageOf(id: string): DesktopPanel {
@@ -862,7 +828,7 @@ export class PanelViews {
 
   private selectedChat(): DesktopPanel {
     const chat = this.selected();
-    if (!chat) throw new Error('No chat tab is selected');
+    if (!chat) throw new Error('No chat is selected');
     return chat;
   }
 

@@ -2,7 +2,7 @@ import type { Disposable } from "../../../../platform/disposable";
 import type { Platform } from "../../../../platform/platform";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
-import { updateConfigAtEffectiveScope, getContextWindowForModel } from "../utils";
+import { updateConfigAtEffectiveScope, getContextWindowForModel, type SettingWrite } from "../utils";
 import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL, migrateLegacyModelValue } from "../../../../shared/types/constants";
 
 export class ModelManager {
@@ -58,9 +58,9 @@ export class ModelManager {
     return true;
   }
 
-  async setDefaultModel(model: string): Promise<void> {
+  async setDefaultModel(model: string): Promise<SettingWrite> {
     this.defaultModel = model;
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "model", model);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.model", model);
   }
 
   sendModelForPanel(host: PanelHost, panelId: string): void {

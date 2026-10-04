@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { nextTick } from 'vue';
-import { mount } from '@vue/test-utils';
+import { mount, type VueWrapper } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import UsageStatsOverlay from '../UsageStatsOverlay.vue';
 import { i18n } from '@/i18n';
@@ -38,14 +38,22 @@ async function open() {
   const store = useUsageStatsStore();
   store.openOverlay();
   const wrapper = mount(UsageStatsOverlay, { global: { plugins: [i18n] }, attachTo: document.body });
+  mounted.push(wrapper);
   await nextTick();
   return { store, wrapper };
 }
+
+// A wrapper left mounted keeps re-rendering on the shared i18n locale after its DOM is gone.
+const mounted: VueWrapper[] = [];
 
 beforeEach(() => {
   posted.length = 0;
   setActivePinia(createPinia());
   document.body.innerHTML = '';
+});
+
+afterEach(() => {
+  while (mounted.length) mounted.pop()?.unmount();
 });
 
 describe('UsageStatsOverlay', () => {
@@ -63,7 +71,7 @@ describe('UsageStatsOverlay', () => {
     store.handleResult({ type: 'usageStats', requestId: id, final: true, report: report(5, 2_000) });
     await nextTick();
     expect(wrapper.find('[data-kpi="cost"]').exists()).toBe(true);
-    expect(wrapper.text()).toContain('Updated');
+    expect(wrapper.text()).toContain('updated');
   });
 
   it('shows cached numbers at once while a later scan runs', async () => {
@@ -235,7 +243,7 @@ describe('UsageStatsOverlay', () => {
     store.handleResult({ type: 'usageStats', requestId: latestId(), final: true, report: report(5, 1_000) });
     await nextTick();
 
-    await wrapper.find('button[aria-label="Refresh"]').trigger('click');
+    await wrapper.find('[data-testid="stats-refresh"]').trigger('click');
     const msg = posted[posted.length - 1];
     expect(msg?.type === 'requestUsageStats' && msg.query.scan).toBe(true);
   });

@@ -3,7 +3,7 @@ import type { DesktopLocalizationService } from './platform/localization-service
 
 export const TRAY_IDS = {
   toggleWindow: 'damocles.tray.toggleWindow',
-  newConversation: 'damocles.tray.newConversation',
+  newChat: 'damocles.tray.newChat',
   quit: 'damocles.tray.quit',
 } as const;
 
@@ -11,7 +11,7 @@ export interface TrayActions {
   // true when the window exists and is visible
   windowVisible(): boolean;
   toggleWindow(): void;
-  newConversation(): void;
+  newChat(): void;
   quit(): void;
 }
 
@@ -45,7 +45,7 @@ export class AppTray {
         label: this.actions.windowVisible() ? t('Hide Damocles') : t('Show Damocles'),
         click: () => this.actions.toggleWindow(),
       },
-      { id: TRAY_IDS.newConversation, label: t('New Conversation'), click: () => this.actions.newConversation() },
+      { id: TRAY_IDS.newChat, label: t('New Chat'), click: () => this.actions.newChat() },
       { type: 'separator' },
       { id: TRAY_IDS.quit, label: t('Quit Damocles'), click: () => this.actions.quit() },
     ]);

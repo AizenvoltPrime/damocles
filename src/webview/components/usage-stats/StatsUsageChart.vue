@@ -4,11 +4,13 @@ import { useI18n } from 'vue-i18n';
 import type { AcceptableValue } from 'reka-ui';
 import { VisAxis, VisStackedBar, VisXYContainer } from '@unovis/vue';
 import { ChartCrosshair, ChartTooltip } from '@/components/ui/chart';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import SegmentedToggle from '../SegmentedToggle.vue';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useStatsFormat } from '@/composables/useStatsFormat';
+import { remPx } from '@/composables/useRemPx';
 import type { UsageStatsBucket, UsageStatsModelRow, UsageStatsRange, UsageStatsSeries } from '@shared/types/usage-stats';
-import { bucketStartMs, bucketTotals, chartRows, type BucketTotal, type StatsMetric, type StatsSplit, type TokenType } from './stats-chart-data';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
+import { bucketStartMs, bucketTotals, chartRows, modelProvider, type BucketTotal, type StatsMetric, type StatsSplit, type TokenType } from './stats-chart-data';
 import { useStatsLabels } from './stats-labels';
 
 const props = defineProps<{
@@ -28,7 +30,7 @@ const headingId = useId();
 const tableId = useId();
 
 const TITLE_KEY = 'title';
-const CHART_HEIGHT = 200;
+const CHART_HEIGHT_REM = 12.5;
 
 const shaped = computed(() => chartRows(props.series, props.range, props.byModel, metric.value, split.value));
 const categories = computed(() => shaped.value.categories);
@@ -38,6 +40,10 @@ const modelLabels = computed(() => new Map(props.byModel.map((m) => [m.key ?? ''
 function categoryLabel(key: string): string {
   if (split.value === 'tokenType') return labels.tokenType(key as TokenType);
   return labels.model(key, modelLabels.value.get(key));
+}
+
+function categoryProvider(key: string): string | null {
+  return split.value === 'model' ? modelProvider(key) : null;
 }
 
 const dateFormats = computed(() => ({
@@ -108,6 +114,7 @@ const tableRows = computed(() =>
 );
 
 const legendItems = computed(() => categories.value.map((c) => ({ name: c.key, color: c.color })));
+const legend = computed(() => categories.value.map((c) => ({ ...c, label: categoryLabel(c.key), provider: categoryProvider(c.key) })));
 
 // Mounted by Unovis in a bare app, so it receives plain formatting closures rather than injected i18n.
 const Tooltip = defineComponent({
@@ -117,14 +124,31 @@ const Tooltip = defineComponent({
   },
   setup(p) {
     return () => {
-      const rows = p.data
+      const series = p.data
         .filter((d): d is { name: string | number; color?: string; value: number } => typeof d.value === 'number' && d.value > 0 && d.name !== undefined)
-        .map((d) => ({ name: categoryLabel(String(d.name)), color: d.color ?? 'transparent', value: formatValue(d.value) }));
+        .map((d) => ({ key: String(d.name), color: d.color ?? 'transparent', value: d.value }));
+      const rows = series.map((s) => ({ name: categoryLabel(s.key), color: s.color, value: formatValue(s.value) }));
       rows.push({ name: t('usageStats.chart.total'), color: 'transparent', value: formatTotal(totalsByTitle.value.get(p.title) ?? NO_TOTAL) });
-      return h(ChartTooltip, { title: p.title, data: rows });
+      // The total row has no series, so it gets no logo.
+      const providers = series.map((s) => categoryProvider(s.key));
+      return h(ChartTooltip, { title: p.title, data: rows }, {
+        icon: ({ index }: { index: number }) => {
+          const provider = providers[index];
+          return provider ? h(ProviderLogo, { provider, class: 'size-3' }) : null;
+        },
+      });
     };
   },
 });
+
+const metricOptions = computed(() => [
+  { value: 'cost' as const, label: t('usageStats.chart.metric.cost') },
+  { value: 'tokens' as const, label: t('usageStats.chart.metric.tokens') },
+]);
+const splitOptions = computed(() => [
+  { value: 'model' as const, label: t('usageStats.chart.split.model') },
+  { value: 'tokenType' as const, label: t('usageStats.chart.split.tokenType') },
+]);
 
 function onMetric(value: AcceptableValue): void {
   if (value === 'cost' || value === 'tokens') metric.value = value;
@@ -143,42 +167,36 @@ const tableCaption = computed(() => t('usageStats.chart.tableCaption', labelPart
 </script>
 
 <template>
-  <section class="space-y-2 rounded-md border border-border/50 bg-card p-3 text-card-foreground" :aria-labelledby="headingId">
+  <section class="space-y-2 rounded-lg border border-(--d-border) px-3 pt-2.5 pb-2" :aria-labelledby="headingId">
     <div class="flex flex-wrap items-center gap-2">
-      <h3 :id="headingId" class="flex-1 truncate text-xs font-medium text-muted-foreground">{{ t('usageStats.chart.title') }}</h3>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
+      <h3 :id="headingId" class="min-w-30 flex-1 truncate text-xs font-semibold">{{ t('usageStats.chart.title') }}</h3>
+      <SegmentedToggle
         :model-value="metric"
+        :options="metricOptions"
+        class="border border-(--d-border)"
+        indicator-class="text-[color-mix(in_srgb,var(--d-text)_8%,var(--d-bg))]"
         :aria-label="t('usageStats.chart.metricLabel')"
         data-toggle="metric"
         @update:model-value="onMetric"
-      >
-        <ToggleGroupItem value="cost" class="h-7 px-2 text-xs">{{ t('usageStats.chart.metric.cost') }}</ToggleGroupItem>
-        <ToggleGroupItem value="tokens" class="h-7 px-2 text-xs">{{ t('usageStats.chart.metric.tokens') }}</ToggleGroupItem>
-      </ToggleGroup>
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
+      />
+      <SegmentedToggle
         :model-value="split"
+        :options="splitOptions"
+        class="border border-(--d-border)"
+        indicator-class="text-[color-mix(in_srgb,var(--d-text)_8%,var(--d-bg))]"
         :aria-label="t('usageStats.chart.splitLabel')"
         data-toggle="split"
         @update:model-value="onSplit"
-      >
-        <ToggleGroupItem value="model" class="h-7 px-2 text-xs">{{ t('usageStats.chart.split.model') }}</ToggleGroupItem>
-        <ToggleGroupItem value="tokenType" class="h-7 px-2 text-xs">{{ t('usageStats.chart.split.tokenType') }}</ToggleGroupItem>
-      </ToggleGroup>
+      />
     </div>
 
     <div
       role="img"
       :aria-label="chartLabel"
       :aria-describedby="tableId"
-      class="text-xs [--vis-axis-grid-color:var(--chart-grid)] [--vis-axis-tick-label-color:var(--muted-foreground)] [--vis-axis-label-color:var(--muted-foreground)] [--vis-axis-domain-color:var(--chart-grid)] [--vis-axis-tick-color:var(--chart-grid)] [--vis-font-family:var(--vscode-font-family)] [--vis-axis-font-family:var(--vscode-font-family)] [--vis-crosshair-line-stroke-color:var(--muted-foreground)] [--vis-crosshair-circle-stroke-color:var(--card)] [--vis-tooltip-background-color:transparent] [--vis-tooltip-border-color:transparent] [--vis-tooltip-padding:0px] [--vis-tooltip-text-color:var(--popover-foreground)] [--vis-stacked-bar-stroke-color:transparent]"
+      class="text-xs [--vis-axis-grid-color:var(--chart-grid)] [--vis-axis-tick-label-color:var(--muted-foreground)] [--vis-axis-label-color:var(--muted-foreground)] [--vis-axis-domain-color:var(--chart-grid)] [--vis-axis-tick-color:var(--chart-grid)] [--vis-font-family:var(--d-font)] [--vis-axis-font-family:var(--d-font)] [--vis-axis-tick-label-font-size:0.75rem] [--vis-crosshair-line-stroke-color:var(--muted-foreground)] [--vis-crosshair-circle-stroke-color:var(--card)] [--vis-tooltip-background-color:transparent] [--vis-tooltip-border-color:transparent] [--vis-tooltip-padding:0px] [--vis-tooltip-text-color:var(--popover-foreground)] [--vis-stacked-bar-stroke-color:transparent]"
     >
-      <VisXYContainer :data="data" :height="CHART_HEIGHT" :duration="0" :y-domain="allZero ? [0, 1] : undefined">
+      <VisXYContainer :data="data" :height="remPx(CHART_HEIGHT_REM)" :duration="0" :y-domain="allZero ? [0, 1] : undefined">
         <VisStackedBar :x="x" :y="y" :color="color" :bar-padding="0.2" :rounded-corners="2" />
         <VisAxis type="x" :tick-values="tickValues" :tick-format="xTick" :grid-line="false" :tick-line="false" :domain-line="false" />
         <VisAxis type="y" :num-ticks="4" :tick-format="yTick" :tick-line="false" :domain-line="false" />
@@ -204,10 +222,11 @@ const tableCaption = computed(() => t('usageStats.chart.tableCaption', labelPart
       </tbody>
     </table>
 
-    <ul class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground" data-chart-legend>
-      <li v-for="c in categories" :key="c.key" class="flex min-w-0 items-center gap-1.5" :title="c.key.includes('/') ? c.key : undefined">
+    <ul class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-(--d-muted)" data-chart-legend>
+      <li v-for="c in legend" :key="c.key" class="flex min-w-0 items-center gap-1.5" :title="c.key.includes('/') ? c.key : undefined">
         <span class="size-2.5 shrink-0 rounded-sm" :style="{ backgroundColor: c.color }" aria-hidden="true" />
-        <span class="truncate">{{ categoryLabel(c.key) }}</span>
+        <ProviderLogo v-if="c.provider" :provider="c.provider" class="size-3.5" data-model-logo />
+        <span class="truncate">{{ c.label }}</span>
       </li>
     </ul>
   </section>

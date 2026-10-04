@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { createApp, ref } from 'vue';
+import { createApp } from 'vue';
 import { createHandlerRegistry } from '../../handler-registry';
 import { createMessageDispatcher } from '../../index';
 import type { HandlerRegistry, HandlerContext } from '../../types';
@@ -210,9 +210,8 @@ describe('what a compaction summary removes from the transcript', () => {
   it('removes the replay items that arrived before the summary', () => {
     const ctx = {
       stores: { sessionStore: useSessionStore(), streamingStore: useStreamingStore(), uiStore: useUIStore() },
-      refs: { messageContainerRef: ref(null) },
     } as unknown as HandlerContext;
-    const deliver = createMessageDispatcher(buildRegistry(), ctx);
+    const deliver = createMessageDispatcher(buildRegistry(), ctx, () => {});
     const now = vi.spyOn(Date, 'now');
 
     now.mockReturnValue(100);

@@ -140,6 +140,7 @@ const H = vi.hoisted(() => {
     createPowerShellToolDefinition: vi.fn(() => ({ name: 'powershell', label: 'powershell', description: 'pi powershell', parameters: {}, execute: vi.fn(async () => ({ content: [], details: undefined })) })),
     createGrepToolDefinition: vi.fn(() => ({ name: 'grep', label: 'grep', description: 'pi grep', parameters: {}, execute: vi.fn() })),
     createFindToolDefinition: vi.fn(() => ({ name: 'find', label: 'find', description: 'pi find', parameters: {}, execute: vi.fn() })),
+    createWriteToolDefinition: vi.fn(() => ({ name: 'write', label: 'write', description: 'pi write', parameters: {}, execute: vi.fn() })),
   };
 
   return {
@@ -183,7 +184,8 @@ import { PiRuntime } from '../pi-runtime';
 import { PermissionHandler } from '../../permission-handler';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import type { WebviewExtensionUIContext } from '../extension-ui-context';
-import { deriveSessionState } from '../session-state';
+import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type TurnOutcome } from '../session-state';
+import { TeamService } from '../../team';
 import { TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_SKILL } from '../../../shared/tool-names';
 
 type StateMessage = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>;
@@ -216,7 +218,7 @@ function ctx(toolUseID: string): CanUseToolContext {
 }
 
 /** A live panel: a real PermissionHandler and a real PiSession posting into one message list. */
-async function startPanel(): Promise<{
+async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
   session: PiSession;
   permissionHandler: PermissionHandler;
   messages: ExtensionToWebviewMessage[];
@@ -227,11 +229,13 @@ async function startPanel(): Promise<{
   permissionHandler.setPostMessage((m) => messages.push(m));
   const options: SessionOptions = {
     cwd: '/cwd',
+    settingsFolder: undefined,
     platform,
     permissionHandler,
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
+    ...extra,
   };
   const session = new PiSession(options);
   await session.initializeEarly();
@@ -282,7 +286,7 @@ describe('session state publisher', () => {
 
     // A shell approval, through the real canUseTool path that fills pendingApprovals.
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     await permissionHandler.resolveApproval('t1', true);
     await approval;
 
@@ -316,7 +320,7 @@ describe('session state publisher', () => {
     const sessionId = session.currentSessionId;
     const finish = await openTurn(session);
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     await permissionHandler.resolveApproval('t1', true);
     await approval;
     await finish();
@@ -342,7 +346,7 @@ describe('session state publisher', () => {
       },
       ctx('q1'),
     );
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     permissionHandler.resolveQuestion('q1', { Pick: 'a' });
     await question;
     await finish();
@@ -360,7 +364,7 @@ describe('session state publisher', () => {
       { title: 'Log in', fields: [{ id: 'user', label: 'User', selector: '#user', type: 'text' }] },
       ctx('f1'),
     );
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     permissionHandler.resolveForm('f1', { user: 'me' });
     await form;
     await finish();
@@ -376,7 +380,7 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const plan = permissionHandler.canUseTool(TOOL_EXIT_PLAN_MODE, {}, ctx('p1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     permissionHandler.resolvePlanApproval('p1', true);
     await plan;
     await finish();
@@ -390,7 +394,7 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const skill = permissionHandler.canUseTool(TOOL_SKILL, { skill: 'simplify' }, ctx('s1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     permissionHandler.resolveSkillApproval('s1', true);
     await skill;
     await finish();
@@ -419,7 +423,7 @@ describe('session state publisher', () => {
 
     // One from each owner, so the single requires_action spans both maps rather than one of them.
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     const dialog = uiOf(session).confirm('Sure?', 'really?');
     await tick();
     expect(states(messages)).toEqual(['running', 'requires_action']);
@@ -443,7 +447,7 @@ describe('session state publisher', () => {
 
     for (const id of ['t1', 't2'] as const) {
       const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx(id));
-      await waitFor(() => permissionHandler.hasPendingPrompts());
+      await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
       await permissionHandler.resolveApproval(id, true);
       await approval;
     }
@@ -487,7 +491,7 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     // The reload leaves the five permission maps holding their live awaiters, so the session is still
@@ -521,7 +525,7 @@ describe('session state publisher', () => {
     while (!session.processing) await tick();
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     // The adapter settles the turn, and `prompt()` has NOT resolved yet, so `processingFlag` is still
@@ -624,18 +628,117 @@ describe('session state publisher', () => {
       { command: 'echo hi' },
       { signal: controller.signal, toolUseID: 't1', parentToolUseId: null },
     );
-    await waitFor(() => permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     session.cancel();
     controller.abort();
     await approval;
-    await waitFor(() => !permissionHandler.hasPendingPrompts());
+    await waitFor(() => permissionHandler.pendingPromptKinds().size === 0);
 
     // No `running` in between: the turn was already down when the last prompt cleared.
     expect(states(messages)).toEqual(['running', 'requires_action', 'idle']);
     await finish();
     await session.dispose();
+  });
+});
+
+/** Every activity the session reports from here on; the first is the report the bind itself owes. */
+function watchActivity(session: PiSession): ChatActivity[] {
+  const seen: ChatActivity[] = [];
+  session.setActivityListener((activity) => seen.push(activity));
+  return seen;
+}
+
+const privOf = (o: object): Record<string, unknown> => o as unknown as Record<string, unknown>;
+
+describe('panel activity, from the same publisher', () => {
+  beforeEach(() => {
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+    vi.restoreAllMocks();
+  });
+
+  it('reports every state sessionStateChanged carries, with the kinds of what is pending', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const finish = await openTurn(session);
+
+    const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
+    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await permissionHandler.resolveApproval('t1', true);
+    await approval;
+    const dialog = uiOf(session).input('Which path?');
+    await tick();
+    session.resolveExtensionUiResponse(lastUiRequest(messages).requestId, '/a.ts');
+    await dialog;
+    await finish();
+
+    // The bind publishes too, so the webview hears the same idle the activity starts from.
+    expect(states(messages)).toEqual(['idle', 'running', 'requires_action', 'running', 'requires_action', 'running', 'idle']);
+    expect(activity.map((a) => a.state)).toEqual(states(messages));
+    expect(activity.map((a) => a.pendingKinds)).toEqual([[], [], ['approval'], [], ['input'], [], []]);
+    expect(activity.every((a) => !a.background)).toBe(true);
+    await session.dispose();
+  });
+
+  it('reports the first write of the session file, which changes the stored session id and not the state', async () => {
+    const { session } = await startPanel();
+    const finish = await openTurn(session);
+    const activity = watchActivity(session);
+    expect(session.storedSessionId).toBeNull();
+
+    H.getLastSession()!.sessionManager.getSessionFile.mockReturnValue(__filename);
+    await finish();
+
+    expect(session.storedSessionId).toBe(session.currentSessionId);
+    expect(activity.map((a) => a.state)).toEqual(['running', 'idle', 'idle']);
+    await session.dispose();
+  });
+
+  it('background is true while a subagent run or a team has not settled, reported as each starts and settles', async () => {
+    const teamService = new TeamService({} as ConstructorParameters<typeof TeamService>[0]);
+    const { session } = await startPanel({ teamService });
+    const activity = watchActivity(session);
+    const subagents = privOf(session)['subagentManager'] as { hasUnsettledRuns(): boolean };
+    const runsChanged = (privOf(subagents)['engine'] as { onRunsChanged(): void }).onRunsChanged;
+    const unsettled = vi.spyOn(subagents, 'hasUnsettledRuns');
+    const setActiveTeam = (id: string | null): void => (privOf(teamService)['setActiveTeam'] as (id: string | null, runner: null) => void).call(teamService, id, null);
+
+    unsettled.mockReturnValue(true);
+    runsChanged();
+    unsettled.mockReturnValue(false);
+    runsChanged();
+    setActiveTeam('team-1');
+    setActiveTeam(null);
+
+    expect(activity.map((a) => a.background)).toEqual([false, true, false, true, false]);
+    expect(activity.every((a) => a.state === 'idle')).toBe(true);
+    await session.dispose();
+  });
+
+  it('a running turn that goes idle reports how it settled, once', async () => {
+    const { session } = await startPanel();
+    const outcomes: TurnOutcome[] = [];
+    session.setTurnSettledListener((outcome) => outcomes.push(outcome));
+
+    await (await openTurn(session))();
+    const stopped = await openTurn(session);
+    session.cancel();
+    await stopped();
+    session.reset();
+
+    expect(outcomes).toEqual([{ kind: 'completed' }, { kind: 'cancelled' }]);
+    await session.dispose();
+  });
+
+  it('classifies a provider rate or usage limit apart from any other error', () => {
+    expect(turnOutcomeOfError('429 {"type":"rate_limit_error"}')).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError('Too Many Requests')).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError('subscription_sharing_usage_limit_exceeded')).toEqual({ kind: 'rateLimit' });
+    expect(turnOutcomeOfError('invalid x-api-key')).toEqual({ kind: 'error', message: 'invalid x-api-key' });
   });
 });
 
@@ -670,5 +773,18 @@ describe('single-writer discipline', () => {
     );
 
     expect(emitters.map((f) => f.rel)).toEqual(['src/core/pi-session/pi-session.ts']);
+  });
+
+  // A second reporter could tell main a chat is idle while its webview shows a prompt, or the reverse.
+  it('builds the panel activity only inside publishSessionState, from the state it publishes', () => {
+    const reporters = backendSourceFiles().filter((f) => /\{\s*state,\s*pendingKinds,\s*background\s*\}/.test(readFileSync(f.path, 'utf8')));
+    expect(reporters.map((f) => f.rel)).toEqual(['src/core/pi-session/pi-session.ts']);
+
+    const source = readFileSync(reporters[0]!.path, 'utf8');
+    const start = source.indexOf('private publishSessionState(): void {');
+    const body = source.slice(start, source.indexOf('\n  }\n', start));
+    expect(body).toContain('listener({ state, pendingKinds, background })');
+    expect(body).toContain('this.emit({ type: "sessionStateChanged", state, sessionId })');
+    expect(source.match(/\{\s*state,\s*pendingKinds,\s*background\s*\}/g)).toHaveLength(1);
   });
 });

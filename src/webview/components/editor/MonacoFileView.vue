@@ -51,6 +51,6 @@ onBeforeUnmount(() => {
 <style>
 /* Monaco renders this decoration's element itself, so a Tailwind class cannot reach it. */
 .damocles-editor-highlight-line {
-  background-color: color-mix(in srgb, var(--vscode-focusBorder) 25%, transparent);
+  background-color: color-mix(in srgb, var(--d-accent) 25%, transparent);
 }
 </style>

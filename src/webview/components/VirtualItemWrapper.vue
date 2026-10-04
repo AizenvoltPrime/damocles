@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { CircleAlert, Loader } from 'lucide-vue-next';
 import type { VirtualItem } from '@/composables/useVirtualizedMessages';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
 import type { ChatMessage } from '@shared/types/session';
-import type { ExpandedDiff } from '@/stores/useDiffStore';
 import UserMessageBlock from './UserMessageBlock.vue';
 import ToolCallRouter from './ToolCallRouter.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
@@ -15,6 +15,7 @@ import CacheMissNotice from './CacheMissNotice.vue';
 import CompactionAbortedNotice from './CompactionAbortedNotice.vue';
 import ThinkingDroppedNotice from './ThinkingDroppedNotice.vue';
 import RefusalCard from './RefusalCard.vue';
+import TranscriptNotice from './TranscriptNotice.vue';
 import EffortBadge from './EffortBadge.vue';
 import ErrorMessageText from './ErrorMessageText.vue';
 
@@ -23,7 +24,8 @@ const { t } = useI18n();
 const props = defineProps<{
   item: VirtualItem;
   top: number;
-  isNew: boolean;
+  /** True only briefly after the row arrived live; never true for a row mounted by scrolling or replayed history. */
+  arriving: boolean;
   canRewind: boolean;
   promptIndex: number;
   subagents?: Record<string, SubagentState> | undefined;
@@ -35,8 +37,6 @@ const emit = defineEmits<{
   (e: 'rewind', message: ChatMessage): void;
   (e: 'rewindToCompaction', entryId: string): void;
   (e: 'expandSubagent', subagentId: string): void;
-  (e: 'expandTool', toolId: string): void;
-  (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'viewContext', promptIndex: number): void;
   (e: 'openLightbox', block: ImageBlock): void;
   (e: 'toggleUserMessageExpanded'): void;
@@ -52,14 +52,9 @@ const userMessageId = computed<string | null>(() => {
 });
 
 const animationClass = computed(() => {
-  if (!props.isNew) return '';
-  if (props.item.isStreaming) return 'animate-fade-in';
-  return 'animate-message-enter';
-});
-
-const wrapperClass = computed(() => {
-  const base = props.item.type === 'user-message' ? 'absolute w-full' : 'absolute w-full px-4';
-  return props.isPinnedInSticky ? `${base} invisible` : base;
+  if (!props.arriving) return '';
+  if (props.item.isStreaming) return 'animate-[o-fade_.2s_var(--ease-out)]';
+  return 'd-arrive';
 });
 
 onMounted(() => {
@@ -74,7 +69,7 @@ onUnmounted(() => {
 <template>
   <div
     ref="wrapperRef"
-    :class="[wrapperClass, animationClass]"
+    :class="['chat-column absolute inset-x-0', animationClass, isPinnedInSticky && 'invisible']"
     :style="{ top: `${top}px` }"
     :data-index="item.originalMessageIndex"
     :data-type="item.type"
@@ -118,32 +113,38 @@ onUnmounted(() => {
       :effort="item.effort"
     />
 
-    <div v-else-if="item.type === 'text-block'" class="pl-4">
+    <div v-else-if="item.type === 'text-block'">
       <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
       <MessageContent :content="item.text ?? ''" :is-streaming="false" :is-thinking-phase="false" />
     </div>
 
-    <div v-else-if="item.type === 'streaming-text'" class="pl-4">
+    <div v-else-if="item.type === 'streaming-text'">
       <EffortBadge v-if="item.effort" :effort="item.effort" class="mb-1" />
       <MessageContent :content="item.text ?? ''" :is-streaming="true" :is-thinking-phase="item.message.isThinkingPhase ?? false" />
     </div>
 
-    <div v-else-if="item.type === 'tool-call' && item.toolCall" class="pl-4">
+    <div v-else-if="item.type === 'tool-call' && item.toolCall">
       <ToolCallRouter
         :tool-call="item.toolCall"
         :tool-use-id="item.toolCall.id"
         :tool-name="item.toolCall.name"
         :message="item.message"
         :subagents="subagents"
-        @expand-tool="emit('expandTool', $event)"
-        @expand-diff="emit('expandDiff', $event)"
         @expand-subagent="emit('expandSubagent', $event)"
       />
     </div>
 
-    <div v-else-if="item.type === 'error-message'" class="pl-4 text-error">
-      {{ t('common.error') }}: <ErrorMessageText :text="item.text ?? ''" />
-    </div>
+    <TranscriptNotice
+      v-else-if="item.type === 'error-message'"
+      tone="danger"
+      :icon="CircleAlert"
+      :title="t('common.error')"
+    >
+      <ErrorMessageText
+        class="text-12.5 wrap-break-word whitespace-pre-wrap text-(--d-text)"
+        :text="item.text ?? ''"
+      />
+    </TranscriptNotice>
 
     <RefusalCard
       v-else-if="item.type === 'refusal-message'"
@@ -151,9 +152,15 @@ onUnmounted(() => {
       :category="item.message.refusalCategory ?? null"
     />
 
-    <div v-else-if="item.type === 'background-label'" class="pl-4 flex items-center gap-2 mb-1">
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/25">
-        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+    <div
+      v-else-if="item.type === 'background-label'"
+      class="mb-1 flex items-center gap-2"
+    >
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] px-2.5 py-1 text-xs font-medium text-(--d-info-text)">
+        <Loader
+          class="size-3"
+          aria-hidden="true"
+        />
         {{ item.text || t('backgroundTask.taskResult') }}
       </span>
     </div>

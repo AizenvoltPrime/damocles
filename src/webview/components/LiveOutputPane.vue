@@ -1,9 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from 'vue';
+import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-
-/** A reader who scrolled up keeps their position; only a view already at the bottom follows the tail. */
-const TAIL_FOLLOW_THRESHOLD_PX = 24;
+import { useStickToBottom } from '@/composables/useStickToBottom';
 
 /** Every frame is a full snapshot, so the pane caps what it lays out rather than trusting the producer. */
 const TAIL_LINE_LIMIT = 400;
@@ -42,31 +40,20 @@ const rendered = computed(() => {
 
 const showTruncationHint = computed(() => props.truncated || rendered.value.sliced);
 
-function scrollToTail(): void {
-  const el = pane.value;
-  if (el) el.scrollTop = el.scrollHeight;
-}
-
-// Covers a mount that already has output: the overlay opens over a command that has been running a while.
-onMounted(scrollToTail);
-
-watch(
-  () => props.output,
-  () => {
-    const el = pane.value;
-    // Measured before the DOM patch, so the decision uses the position the reader is looking at.
-    const atTail = el === null || el.scrollHeight - el.scrollTop - el.clientHeight <= TAIL_FOLLOW_THRESHOLD_PX;
-    if (!atTail) return;
-    void nextTick(scrollToTail);
-  },
-);
+useStickToBottom(pane);
 </script>
 
 <template>
   <!-- The height belongs to the wrapper, not the pre: the hint line must not change the pane's total
        height, which would re-fire the message list ResizeObserver on every frame. -->
-  <div :class="heightClass" class="flex flex-col gap-1">
-    <p v-if="showTruncationHint" class="shrink-0 text-[11px] italic text-muted-foreground">
+  <div
+    :class="heightClass"
+    class="flex flex-col gap-1"
+  >
+    <p
+      v-if="showTruncationHint"
+      class="shrink-0 text-11 text-(--d-faint) italic"
+    >
       {{ t('liveOutput.truncated') }}
     </p>
     <!-- aria-live is off because a frame replaces the whole text node, so any live setting would re-read the entire buffer several times a second. -->
@@ -77,12 +64,12 @@ watch(
       role="log"
       aria-live="off"
       :aria-label="t('liveOutput.regionLabel')"
-      class="flex-1 min-h-0 m-0 rounded bg-foreground/5 p-2 text-xs font-mono text-foreground/80 whitespace-pre-wrap break-all overflow-y-auto overscroll-contain"
+      class="m-0 min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-lg border border-(--d-border) bg-(--d-code) px-2.5 py-2 font-mono text-11 leading-[1.6] break-all whitespace-pre-wrap text-(--d-muted)"
     >{{ rendered.text }}</pre>
     <div
       v-else
       role="status"
-      class="flex-1 min-h-0 flex items-center justify-center rounded bg-foreground/5 p-2 text-xs italic text-muted-foreground"
+      class="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-(--d-border) bg-(--d-code) p-2 text-xs text-(--d-faint) italic"
     >
       {{ t('liveOutput.waiting') }}
     </div>

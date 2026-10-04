@@ -1,15 +1,19 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ContextUsageOverlay from '../ContextUsageOverlay.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
-import { useSettingsStore } from '@/stores/useSettingsStore';
-import { VSCODE_HOST_CAPABILITIES } from '@shared/types/messages';
 import { at } from '@/__tests__/helpers';
 import { i18n, applyLocale } from '@/i18n';
 import type { ContextUsageData } from '@shared/types/session';
+import type { WebviewToExtensionMessage } from '@shared/types/messages';
+
+const posted: WebviewToExtensionMessage[] = [];
+vi.mock('@/composables/usePlatformBridge', () => ({
+  usePlatformBridge: () => ({ postMessage: (m: WebviewToExtensionMessage) => posted.push(m), onMessage: () => () => {}, getState: () => undefined, setState: () => {} }),
+}));
 
 function make(overrides: Partial<ContextUsageData> = {}): ContextUsageData {
   return {
@@ -48,7 +52,7 @@ async function sectionNames(
   if (trigger.attributes('aria-expanded') !== 'true') await trigger.trigger('click');
   const contentId = trigger.element.getAttribute('aria-controls');
   const content = wrapper.find(`#${contentId}`);
-  return content.findAll(':scope > div > div').map(row => row.find('span').text());
+  return content.findAll('[data-context-row]').map(row => row.find('span').text());
 }
 
 beforeEach(() => setActivePinia(createPinia()));
@@ -272,7 +276,7 @@ describe('ContextUsageOverlay — detail section ordering', () => {
 
 /** The stacked overview bar element, or null when the component renders no bar at all. */
 function bar(wrapper: ReturnType<typeof mountWithData>) {
-  const el = wrapper.find('.flex.h-2\\.5');
+  const el = wrapper.find('[data-testid="context-bar"]');
   return el.exists() ? el : null;
 }
 
@@ -292,8 +296,8 @@ function barSegmentWidths(wrapper: ReturnType<typeof mountWithData>): number[] {
 
 /** Breakdown-legend rows in render order, with the fields a reader actually sees. */
 function legendRows(wrapper: ReturnType<typeof mountWithData>) {
-  return wrapper.findAll('.space-y-1\\.5 > .flex.items-center.gap-2.text-xs').map(row => ({
-    name: row.find('span').text(),
+  return wrapper.findAll('[data-testid="context-legend-row"]').map(row => ({
+    name: row.get('[data-testid="context-legend-name"]').text(),
     muted: row.classes().includes('opacity-60'),
     text: row.text(),
   }));
@@ -387,7 +391,7 @@ describe('ContextUsageOverlay — deferred built-in tool badges', () => {
     if (!trigger) throw new Error(`section not found: ${label}`);
     if (trigger.attributes('aria-expanded') !== 'true') await trigger.trigger('click');
     const content = wrapper.find(`#${trigger.element.getAttribute('aria-controls')}`);
-    return content.findAll(':scope > div > div').map(row => ({
+    return content.findAll('[data-context-row]').map(row => ({
       name: row.find('span').text(),
       text: row.text(),
     }));
@@ -434,19 +438,25 @@ describe('ContextUsageOverlay — deferred built-in tool badges', () => {
   });
 });
 
-describe('ContextUsageOverlay — markdown preview capability', () => {
-  async function systemPromptRow(markdownPreview: boolean) {
-    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, markdownPreview });
-    const wrapper = mountWithData(make({ systemPromptSections: [{ name: 'base', tokens: 5 }] }));
-    const trigger = wrapper.findAll('button').find(b => b.text().startsWith(i18n.global.t('context.systemPromptSections')))!;
+describe('ContextUsageOverlay — opening a row', () => {
+  async function rowsOf(label: string, data: Partial<ContextUsageData>) {
+    const wrapper = mountWithData(make(data));
+    const trigger = wrapper.findAll('button').find(b => b.text().startsWith(label))!;
     await trigger.trigger('click');
-    const contentId = trigger.element.getAttribute('aria-controls');
-    return wrapper.get(`#${contentId}`).get(':scope > div > div');
+    return wrapper.get(`#${trigger.element.getAttribute('aria-controls')}`).findAll('[data-testid="context-row-open"]');
   }
 
-  it('offers to open a section only when the host can preview markdown', async () => {
-    expect((await systemPromptRow(true)).classes()).toContain('cursor-pointer');
-    setActivePinia(createPinia());
-    expect((await systemPromptRow(false)).classes()).not.toContain('cursor-pointer');
+  it('opens the info of an MCP tool by its pi name from a real button', async () => {
+    const [row] = await rowsOf(i18n.global.t('context.details.mcpTools'), { mcpTools: [{ name: 'mcp__docs__search', serverName: 'docs', tokens: 40 }] });
+    expect(row!.element.tagName).toBe('BUTTON');
+    await row!.trigger('click');
+    expect(posted).toContainEqual({ type: 'openMcpToolInfo', piName: 'mcp__docs__search' });
+  });
+
+  it('opens the system prompt from a section row', async () => {
+    const [row] = await rowsOf(i18n.global.t('context.systemPromptSections'), { systemPromptSections: [{ name: 'base', tokens: 5 }] });
+    expect(row!.element.tagName).toBe('BUTTON');
+    await row!.trigger('click');
+    expect(posted).toContainEqual({ type: 'openSystemPrompt' });
   });
 });

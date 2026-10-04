@@ -3,18 +3,10 @@ import type { ElectronApplication, Locator, Page } from '@playwright/test';
 // Leading text of the desktop trust prompt (src/desktop/main/trust-store.ts).
 export const TRUST_PROMPT = 'Do you trust the authors of the files in';
 
-export const CHAT_PLACEHOLDER = 'Ask Damocles anything...';
+export const CHAT_PLACEHOLDER = 'Ask Damocles anything…';
 
 export function chatInput(tab: Page): Locator {
   return tab.getByPlaceholder(CHAT_PLACEHOLDER);
-}
-
-/** Opens the session history popover and returns the row for `sessionId`. */
-export async function sessionRow(tab: Page, sessionId: string): Promise<Locator> {
-  const history = tab.getByRole('button', { name: 'Session History' });
-  const row = tab.locator(`[data-session-id="${sessionId}"]`);
-  if (!(await row.isVisible())) await history.click();
-  return row;
 }
 
 export async function setThemeSource(app: ElectronApplication, source: 'dark' | 'light' | 'system'): Promise<void> {
@@ -78,7 +70,6 @@ export async function addProject(app: ElectronApplication, dir: string, trust: b
   await clickMenu(app, 'damocles.addProject');
 }
 
-
 /** Sends `text` from the tab and waits for the stub's echo of it to render. */
 export async function sendAndAwaitEcho(tab: Page, text: string): Promise<void> {
   await chatInput(tab).fill(text);
@@ -110,9 +101,20 @@ export async function hostMessages(tab: Page, type: string): Promise<HostMessage
   return tab.evaluate((t) => ((window as unknown as { __e2eHost?: HostMessage[] }).__e2eHost ?? []).filter((m) => m.type === t), type);
 }
 
-/** Picks a session in the history popover, as a user does, and waits for the popover to close. */
-export async function selectSession(tab: Page, sessionId: string): Promise<void> {
-  const row = await sessionRow(tab, sessionId);
-  await row.getByRole('button').first().click();
-  await row.waitFor({ state: 'hidden' });
+/**
+ * The ids of the first page of stored sessions the host lists for the tab, from the reply to this call's own request.
+ * Desktop shows them in the sidebar's Chats list, not in the chat (HostCapabilities.historyInPanel false), so this asks
+ * the host as the VS Code history dropdown does.
+ */
+export async function listedSessionIds(tab: Page): Promise<string[]> {
+  await recordHostMessages(tab);
+  const before = (await hostMessages(tab, 'storedSessions')).length;
+  await postFromWebview(tab, { type: 'requestMoreSessions', offset: 0 });
+  await tab.waitForFunction(
+    (count) => ((window as unknown as { __e2eHost?: HostMessage[] }).__e2eHost ?? []).filter((m) => m.type === 'storedSessions').length > count,
+    before,
+  );
+  const lists = await hostMessages(tab, 'storedSessions');
+  const sessions = (lists.at(-1)?.['sessions'] ?? []) as { id: string }[];
+  return sessions.map((session) => session.id);
 }

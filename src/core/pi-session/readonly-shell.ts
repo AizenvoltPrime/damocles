@@ -4,14 +4,16 @@
  * Leaf module (imports NOTHING from pi-session, same discipline as `plan-mode-guidance.ts`) so the
  * permission gate and tests can use it without an import cycle.
  *
- * Purpose: in plan mode the model may run provably read-only shell commands with no prompt. This
- * classifier is the sole arbiter of "read-only": it FAILS CLOSED at every stage — any command that is
- * not POSITIVELY recognized as read-only is denied with a category-naming reason. Every disputed
- * classification resolves toward DENY.
+ * Purpose: in plan mode and for a read-only agent (a subagent with no write tool, a team reviewer) a
+ * provably read-only shell command runs with no prompt while any other asks the user, and the
+ * checkpoint baseline wait skips proven reads in every mode. This classifier is the sole arbiter of "read-only": it FAILS CLOSED at every stage — any
+ * command that is not POSITIVELY recognized as read-only gets a not-read-only verdict, which the gate routes to the approval flow.
+ * Every disputed classification resolves toward not-read-only.
  *
  * Trust boundary: the adversary is the MODEL'S COMMAND STRING, not the user's machine configuration.
  * Git commands may invoke user-configured helpers (pager, textconv, fsmonitor) — trusted because the
- * model cannot create or modify that config in plan mode (all writes are blocked). The classifier's
+ * model cannot change that config in plan mode or as a read-only agent without a shell command passing
+ * the approval flow (which YOLO approves). The classifier's
  * SOLE job is to prevent the model from MUTATING STATE or EXECUTING ARBITRARY PROGRAMS without approval.
  */
 

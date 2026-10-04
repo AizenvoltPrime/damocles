@@ -587,7 +587,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     let names = ['BrowserOpen', 'CompassSearch'];
     const panel = { deferrableTools: () => ({ names, loaded: new Set<string>(), mcpGroups: new Map() }) } as unknown as PanelGateContext;
     let republish: (() => void) | undefined;
-    createDamoclesExtensionFactory(readerOf(panel), noCheckpoints(), undefined, undefined, (fn) => { republish = fn; return () => {}; })(pi as never);
+    createDamoclesExtensionFactory(readerOf(panel), noCheckpoints(), undefined, (_pi, fn) => { republish = fn ?? undefined; return () => {}; })(pi as never);
 
     expect(wraps()).toHaveLength(1);
     expect(wraps()[0]).toContain('CompassSearch');
@@ -610,7 +610,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     // handed over must stay the object the active set and any in-flight call are bound to.
     const { pi, tool, registrySize, wraps } = piCapturingToolSearch();
     let republish: (() => void) | undefined;
-    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints(), undefined, undefined, (fn) => { republish = fn; return () => {}; })(pi as never);
+    createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints(), undefined, (_pi, fn) => { republish = fn ?? undefined; return () => {}; })(pi as never);
 
     const first = tool();
     const sizeAfterFirst = registrySize();
@@ -640,19 +640,24 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
    * silent no-op, and never disposing leaves an orphan that keeps "succeeding" against nothing.
    */
   describe('republisher registration and retirement', () => {
-    /** Stands in for `PiRuntime.registerToolSearchRepublisher`: records the closure, returns a disposer. */
+    /** Stands in for `FolderRuntime.attachExtensionInstance`: records the instance and its republisher,
+     *  returns a detach. */
     function republisherSeam(): {
-      onToolSearchRepublish: (republish: () => void) => () => void;
+      attachInstance: (pi: unknown, republish: (() => void) | null) => () => void;
+      attached: () => unknown[];
       registered: () => Array<() => void>;
       disposeCalls: () => number;
     } {
+      const attached: unknown[] = [];
       const registered: Array<() => void> = [];
       let disposeCalls = 0;
       return {
-        onToolSearchRepublish: (republish) => {
-          registered.push(republish);
+        attachInstance: (pi, republish) => {
+          attached.push(pi);
+          if (republish) registered.push(republish);
           return () => { disposeCalls++; };
         },
+        attached: () => [...attached],
         registered: () => [...registered],
         disposeCalls: () => disposeCalls,
       };
@@ -664,8 +669,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         readerOf(panelWith(['BrowserOpen'])),
         noCheckpoints(),
         undefined,
-        undefined,
-        seam.onToolSearchRepublish,
+        seam.attachInstance,
       )(capture.pi as never);
       return capture;
     };
@@ -675,9 +679,10 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       // microtask AFTER `bindSession` already ran `refreshActiveTools` → `republishToolSearch`. Every
       // session's first republish would fire against an empty registry — silent, worse than the bug.
       const seam = republisherSeam();
-      const { wraps } = build(seam);
+      const { pi, wraps } = build(seam);
 
       // No event has been emitted yet: the factory call alone is the whole precondition.
+      expect(seam.attached()).toEqual([pi]);
       expect(seam.registered()).toHaveLength(1);
       // ...and the initial publish already happened, so a republish is a RE-wrap, not the first one.
       expect(wraps()).toHaveLength(1);
@@ -745,7 +750,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     });
 
     it('shutdown is inert when no republisher seam was supplied', async () => {
-      // `onToolSearchRepublish` is optional (subagent/test wiring omits it). No disposer exists, so the
+      // `attachInstance` is optional (subagent/test wiring omits it). No disposer exists, so the
       // handler must be a no-op rather than throwing through pi's emit loop.
       const { pi, emit } = piCapturingToolSearch();
       createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])), noCheckpoints())(pi as never);
@@ -764,10 +769,11 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
       expect(handlerCount('session_shutdown')).toBe(1);
     });
 
-    it('does not register a republisher when the initial publish throws', () => {
-      // Registration is deliberately conditional on the first `registerTool` succeeding. Registering
+    it('attaches the instance without a republisher when the initial publish throws', () => {
+      // The republisher is deliberately conditional on the first `registerTool` succeeding. Registering
       // regardless would seat a closure in the runtime's set that re-throws on every settings toggle for
       // the life of the window, and the per-call catch in `republishToolSearch` would log it every time.
+      // The instance itself still attaches, so its MCP registrations keep one owner.
       const seam = republisherSeam();
       const pi = {
         on: () => () => undefined,
@@ -780,11 +786,11 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
           readerOf(panelWith(['BrowserOpen'])),
           noCheckpoints(),
           undefined,
-          undefined,
-          seam.onToolSearchRepublish,
+          seam.attachInstance,
         )(pi as never),
       ).not.toThrow();
 
+      expect(seam.attached()).toEqual([pi]);
       expect(seam.registered()).toEqual([]);
     });
   });
@@ -826,8 +832,7 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         readerOf(panel),
         noCheckpoints(),
         undefined,
-        undefined,
-        (republish) => folder.registerToolSearchRepublisher(republish),
+        (extensionApi, republish) => folder.attachExtensionInstance(extensionApi, republish),
       )(pi as never);
 
       // Ordering, not just identity: each wrap must carry the inventory as of the moment it happened.

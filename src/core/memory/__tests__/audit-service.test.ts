@@ -1,7 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DatabaseInstance } from '../types';
@@ -44,6 +41,7 @@ vi.mock('../query-expansion', () => ({
 
 import { MemoryService } from '../index';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createTestDbPath } from './test-helpers';
 
 const WS = '/ws/panel';
 
@@ -80,7 +78,7 @@ describe('MemoryService quality audit lifecycle', () => {
   }
 
   beforeEach(async () => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-audit-service-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     subcall.describe = () => MODEL;
     subcall.run = null;
     sent = [];
@@ -91,9 +89,7 @@ describe('MemoryService quality audit lifecycle', () => {
   });
 
   afterEach(async () => {
-    service.dispose();
-    await vi.waitFor(() => expect(internals().db).toBeNull());
-    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(dbHolder.path + suffix, { force: true });
+    await service.dispose();
   });
 
   it('refuses to start without a sub-call model, and records no run', async () => {

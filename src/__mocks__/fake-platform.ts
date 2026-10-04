@@ -15,7 +15,7 @@ import type { LogSink, LogSinkFactory } from '../platform/log-sink';
 import type { NotificationOptions, NotificationService } from '../platform/notification-service';
 import type { Platform } from '../platform/platform';
 import type { SecretsStore } from '../platform/secrets-store';
-import type { SettingInspection, SettingsChange, SettingsScope, SettingsStore } from '../platform/settings-store';
+import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../platform/settings-store';
 import type { ShellService } from '../platform/shell-service';
 import type { TrustService } from '../platform/trust-service';
 import type { PanelHost, PanelOptions, WindowService } from '../platform/window-service';
@@ -33,6 +33,8 @@ export interface FakePlatformInit {
     readonly user?: SettingsLayer;
     readonly project?: SettingsLayer;
     readonly local?: SettingsLayer;
+    /** Project and local layers per folder path, for reads and writes that pass a folder. */
+    readonly folders?: Readonly<Record<string, { readonly project?: SettingsLayer; readonly local?: SettingsLayer }>>;
     /** What scopeFile answers per scope; absent scopes answer undefined, as on VS Code. */
     readonly scopeFiles?: Readonly<Partial<Record<SettingsScope, string>>>;
   };
@@ -165,6 +167,11 @@ export interface FakeOpenedFile {
   readonly options: OpenFileOptions | undefined;
 }
 
+export interface FakeMarkdownPreview {
+  readonly path: string;
+  readonly options: Parameters<EditorService['showMarkdownPreview']>[1];
+}
+
 export interface FakeUntitledDocument {
   readonly content: string;
   readonly language: string;
@@ -176,7 +183,7 @@ export interface FakeEditorService extends EditorService {
   readonly untitled: readonly FakeUntitledDocument[];
   /** Every showDiff view, oldest first, each carrying the DiffRequest it was opened with. */
   readonly diffs: readonly FakeDiffView[];
-  readonly markdownPreviews: readonly string[];
+  readonly markdownPreviews: readonly FakeMarkdownPreview[];
   readonly settingsQueries: readonly (string | undefined)[];
   readonly extensionSearches: readonly string[];
   /** Host extensions start inactive. */
@@ -224,6 +231,8 @@ export interface FakePanelHost extends PanelHost {
 export interface FakeWindowService extends WindowService {
   /** Every panel created, newest last; tests may reset it with `panels.length = 0`. */
   readonly panels: FakePanelHost[];
+  /** The section of every openAppSettings call, oldest first. */
+  readonly appSettingsOpened: (string | undefined)[];
 }
 
 export interface FakePlatform extends Platform {
@@ -268,27 +277,39 @@ function affectsFor(changedKey: string): SettingsChange {
 
 function createSettingsStore(init: FakePlatformInit['settings']): SettingsStore {
   const defaults = layerMap(init?.defaults);
-  const layers: Record<SettingsScope, Map<string, unknown>> = {
-    user: layerMap(init?.user),
-    project: layerMap(init?.project),
-    local: layerMap(init?.local),
-  };
+  const user = layerMap(init?.user);
+  const windowLayers = { project: layerMap(init?.project), local: layerMap(init?.local) };
+  // Per-folder project and local layers, keyed by the folder path that owns each file (D34: local by personalPath).
+  const folderProject = new Map(Object.entries(init?.folders ?? {}).map(([folder, layers]) => [folder, layerMap(layers.project)]));
+  const folderLocal = new Map(Object.entries(init?.folders ?? {}).map(([folder, layers]) => [folder, layerMap(layers.local)]));
   const listeners = listenerSet<[SettingsChange]>();
 
-  // Object values merge across layers, as VS Code merges them.
-  const effective = (key: string): unknown =>
-    mergeSettingValues([defaults, layers.user, layers.project, layers.local].filter((layer) => layer.has(key)).map((layer) => layer.get(key)));
+  const folderLayer = (layers: Map<string, Map<string, unknown>>, folder: string): Map<string, unknown> => {
+    let layer = layers.get(folder);
+    if (!layer) {
+      layer = new Map();
+      layers.set(folder, layer);
+    }
+    return layer;
+  };
+  const layersFor = (folder: SettingsFolder | undefined): Record<SettingsScope, Map<string, unknown>> =>
+    folder === undefined
+      ? { user, ...windowLayers }
+      : { user, project: folderLayer(folderProject, folder.path), local: folderLayer(folderLocal, folder.personalPath ?? folder.path) };
 
-  function get<T>(key: string): T | undefined;
-  function get<T>(key: string, defaultValue: T): T;
-  function get<T>(key: string, defaultValue?: T): T | undefined {
-    const value = effective(key);
+  function get<T>(key: string, defaultValue?: undefined, folder?: SettingsFolder): T | undefined;
+  function get<T>(key: string, defaultValue: T, folder?: SettingsFolder): T;
+  function get<T>(key: string, defaultValue?: T, folder?: SettingsFolder): T | undefined {
+    const layers = layersFor(folder);
+    // Object values merge across layers, as VS Code merges them.
+    const value = mergeSettingValues([defaults, layers.user, layers.project, layers.local].filter((layer) => layer.has(key)).map((layer) => layer.get(key)));
     return value === undefined ? defaultValue : (value as T);
   }
 
   return {
     get,
-    inspect: <T>(key: string): SettingInspection<T> => {
+    inspect: <T>(key: string, folder?: SettingsFolder): SettingInspection<T> => {
+      const layers = layersFor(folder);
       const out: { defaultValue?: T; userValue?: T; projectValue?: T; localValue?: T } = {};
       if (defaults.has(key)) out.defaultValue = defaults.get(key) as T;
       if (layers.user.has(key)) out.userValue = layers.user.get(key) as T;
@@ -296,8 +317,8 @@ function createSettingsStore(init: FakePlatformInit['settings']): SettingsStore 
       if (layers.local.has(key)) out.localValue = layers.local.get(key) as T;
       return out;
     },
-    update: (key, value, scope) => {
-      const layer = layers[scope];
+    update: (key, value, scope, folder) => {
+      const layer = layersFor(folder)[scope];
       const before = layer.has(key) ? JSON.stringify(layer.get(key)) : undefined;
       if (value === undefined) layer.delete(key);
       else layer.set(key, value);
@@ -310,7 +331,11 @@ function createSettingsStore(init: FakePlatformInit['settings']): SettingsStore 
       listeners.add((change) => {
         if (change.affects(section)) cb(change);
       }),
-    scopeFile: (scope) => init?.scopeFiles?.[scope],
+    // A folder's files are named after it, as the desktop store names them; window files come from scopeFiles.
+    scopeFile: (scope, folder) => {
+      if (folder === undefined || scope === 'user' || init?.scopeFiles === undefined) return init?.scopeFiles?.[scope];
+      return `${scope === 'project' ? folder.path : folder.personalPath ?? folder.path}/.damocles/${scope === 'project' ? 'settings.json' : 'settings.local.json'}`;
+    },
   };
 }
 
@@ -632,7 +657,7 @@ function createFakeDiffView(request: DiffRequest): FakeDiffView {
 function createEditor(): FakeEditorService {
   const openedFiles: FakeOpenedFile[] = [];
   const diffs: FakeDiffView[] = [];
-  const markdownPreviews: string[] = [];
+  const markdownPreviews: FakeMarkdownPreview[] = [];
   const settingsQueries: (string | undefined)[] = [];
   const extensionSearches: string[] = [];
   const activeExtensions = new Set<string>();
@@ -661,8 +686,8 @@ function createEditor(): FakeEditorService {
       diffs.push(view);
       return Promise.resolve(view);
     },
-    showMarkdownPreview: (p) => {
-      markdownPreviews.push(p);
+    showMarkdownPreview: (p, opts) => {
+      markdownPreviews.push({ path: p, options: opts });
       return Promise.resolve();
     },
     getActiveContext: () => activeContext,
@@ -816,13 +841,16 @@ function createFakePanelHost(options: PanelOptions, ownColumn: boolean): FakePan
 function createWindow(chatBrowserPane: boolean): FakeWindowService {
   const panels: FakePanelHost[] = [];
   const kindColumns = new Map<PanelOptions['kind'], number>();
+  const appSettingsOpened: (string | undefined)[] = [];
   const add = (panel: FakePanelHost): FakePanelHost => {
     panels.push(panel);
     return panel;
   };
   return {
     panels,
+    appSettingsOpened,
     chatBrowserPane,
+    openAppSettings: (section) => { appSettingsOpened.push(section); },
     createPanel: (opts) => add(createFakePanelHost(opts, false)),
     // Each kind keeps one column, allocated past every column a live panel occupies.
     createPanelInOwnColumn: (opts) => {

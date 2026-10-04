@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import { Badge } from "@/components/ui/badge";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import type { SettingSource } from "@shared/types/messages";
 
-// A value set in a project or local .damocles file wins over the user file the panel writes to.
-// Several keys under one label show one badge per distinct file.
-const props = defineProps<{ settingKey: string | readonly string[] }>();
+// A value set in a project or local .damocles file wins over the user file; the badge names that file.
+// Several keys under one row show one badge per distinct file.
+const props = defineProps<{
+  settingKey: string | readonly string[];
+  /** Grows with each confirmed write, so the badge replays its pop (M7). */
+  popSeq?: number;
+}>();
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
 
@@ -20,17 +23,21 @@ const sources = computed(() => {
   }
   return [...distinct.values()];
 });
+
+/** The folder and file name, e.g. ".damocles/settings.local.json"; the full path is in the title. */
+function shortName(path: string): string {
+  return path.split(/[\\/]/).slice(-2).join("/");
+}
 </script>
 
 <template>
-  <Badge
+  <span
     v-for="source in sources"
-    :key="`${source.scope}:${source.path}`"
-    variant="outline"
-    class="ml-1.5 px-1.5 py-0 align-middle text-[10px] font-normal text-muted-foreground"
+    :key="`${source.scope}:${source.path}:${popSeq ?? 0}`"
+    class="sm-badge sm-badge-file"
+    :class="{ 'sm-badge-pop': (popSeq ?? 0) > 0 }"
+    data-testid="setting-source"
+    :data-scope="source.scope"
     :title="t('settings.source.fromFile', { path: source.path })"
-  >
-    {{ source.scope === "local" ? t("settings.source.local") : t("settings.source.project") }}
-    <span class="sr-only">{{ t('settings.source.fromFile', { path: source.path }) }}</span>
-  </Badge>
+  >{{ shortName(source.path) }}<span class="sr-only">{{ t('settings.source.fromFile', { path: source.path }) }}</span></span>
 </template>

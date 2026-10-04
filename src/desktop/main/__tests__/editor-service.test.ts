@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PanelHost } from '../../../platform/window-service';
-import type { ShellService } from '../../../platform/shell-service';
+import type { SettingsSectionId } from '../../../shared/settings-sections';
 import { EDITOR_MAX_DOCUMENT_BYTES, type ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { resolveChatTab, type ChatTabSources } from '../chat-tab-target';
 import { fileBody, fileDocument, languageIdForName, memoryDocument, textBody } from '../platform/editor-document';
@@ -104,7 +104,7 @@ describe('editor documents', () => {
     const handle = fs.openSync(huge, 'w');
     fs.ftruncateSync(handle, EDITOR_MAX_DOCUMENT_BYTES + 1);
     fs.closeSync(handle);
-    const service = createDesktopEditorService({} as ShellService, {} as ChatTabMessenger);
+    const service = createDesktopEditorService({} as ChatTabMessenger, () => undefined);
 
     await expect(service.readText(write('read.ts', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('const a = 1;\n')])))).resolves.toBe('const a = 1;\n');
     await expect(service.readText(huge)).rejects.toThrow('over the');
@@ -128,12 +128,12 @@ function fakeHost(name: string): PanelHost {
   return { reveal: vi.fn(), name } as unknown as PanelHost;
 }
 
-function sources(init: { panels: Array<[string, PanelHost]>; selected?: unknown; tabs: unknown[]; opened?: PanelHost }): ChatTabSources & { openChat: ReturnType<typeof vi.fn> } {
+function sources(init: { panels: Array<[string, PanelHost]>; selected?: unknown; chats: unknown[]; opened?: PanelHost }): ChatTabSources & { openChat: ReturnType<typeof vi.fn> } {
   const panels = new Map(init.panels.map(([id, host]) => [id, { host }]));
   return {
     panels: () => panels,
     selected: () => init.selected,
-    tabs: () => init.tabs,
+    chats: () => init.chats,
     openChat: vi.fn(async () => {
       if (!init.opened) throw new Error('unexpected open');
       panels.set('host-9', { host: init.opened, webviewReady: Promise.resolve() } as { host: PanelHost });
@@ -145,31 +145,37 @@ function sources(init: { panels: Array<[string, PanelHost]>; selected?: unknown;
 describe('resolveChatTab', () => {
   const a = fakeHost('a');
   const b = fakeHost('b');
-  // A tab whose chat panel core has not registered yet, or no longer holds.
+  // A chat whose panel core has not registered yet, or no longer holds.
   const unregistered = fakeHost('closing');
 
-  it('picks the requesting tab while it is open', async () => {
-    const s = sources({ panels: [['host-1', a], ['host-2', b]], selected: a, tabs: [a, b] });
+  it('picks the requesting chat while it is loaded', async () => {
+    const s = sources({ panels: [['host-1', a], ['host-2', b]], selected: a, chats: [a, b] });
     expect(await resolveChatTab(s, 'host-2')).toEqual({ panelId: 'host-2', host: b });
   });
 
-  it('falls back to the selected chat tab, then the first chat tab', async () => {
-    expect(await resolveChatTab(sources({ panels: [['host-1', a], ['host-2', b]], selected: b, tabs: [a, b] }), 'host-7')).toEqual({ panelId: 'host-2', host: b });
-    expect(await resolveChatTab(sources({ panels: [['host-1', a], ['host-2', b]], tabs: [unregistered, b, a] }), undefined)).toEqual({ panelId: 'host-2', host: b });
+  it('falls back to the selected chat, then the first loaded chat', async () => {
+    expect(await resolveChatTab(sources({ panels: [['host-1', a], ['host-2', b]], selected: b, chats: [a, b] }), 'host-7')).toEqual({ panelId: 'host-2', host: b });
+    expect(await resolveChatTab(sources({ panels: [['host-1', a], ['host-2', b]], chats: [unregistered, b, a] }), undefined)).toEqual({ panelId: 'host-2', host: b });
   });
 
-  it('opens a chat tab on the default project when none is open, after its webview is ready', async () => {
+  it('opens a chat in the selected project when none is loaded, after its webview is ready', async () => {
     const opened = fakeHost('new');
-    const s = sources({ panels: [], selected: unregistered, tabs: [unregistered], opened });
+    const s = sources({ panels: [], selected: unregistered, chats: [unregistered], opened });
     expect(await resolveChatTab(s, 'host-1')).toEqual({ panelId: 'host-9', host: opened });
     expect(s.openChat).toHaveBeenCalledOnce();
   });
 });
 
 describe('desktop editor service', () => {
-  function service(): { editor: ReturnType<typeof createDesktopEditorService>; shown: Array<[string | undefined, ExtensionToWebviewMessage]>; posted: Array<[string, ExtensionToWebviewMessage]> } {
+  function service(): {
+    editor: ReturnType<typeof createDesktopEditorService>;
+    shown: Array<[string | undefined, ExtensionToWebviewMessage]>;
+    posted: Array<[string, ExtensionToWebviewMessage]>;
+    settingsOpened: Array<SettingsSectionId | undefined>;
+  } {
     const shown: Array<[string | undefined, ExtensionToWebviewMessage]> = [];
     const posted: Array<[string, ExtensionToWebviewMessage]> = [];
+    const settingsOpened: Array<SettingsSectionId | undefined> = [];
     const tabs: ChatTabMessenger = {
       show: async (panelId, message) => {
         shown.push([panelId, message]);
@@ -177,9 +183,19 @@ describe('desktop editor service', () => {
       },
       post: (panelId, message) => { posted.push([panelId, message]); },
     };
-    const shell = { revealPath: vi.fn() } as unknown as ShellService;
-    return { editor: createDesktopEditorService(shell, tabs), shown, posted };
+    return { editor: createDesktopEditorService(tabs, (section) => { settingsOpened.push(section); }), shown, posted, settingsOpened };
   }
+
+  it('opens a markdown preview read-only in the chat that asked, through the in-app editor', async () => {
+    const { editor, shown } = service();
+    const file = write('damocles-system-prompt.md', '# System prompt\n');
+
+    await editor.showMarkdownPreview(file, { panelId: 'host-4' });
+
+    const [[panelId, message]] = shown as [[string | undefined, Extract<ExtensionToWebviewMessage, { type: 'editorOpenFile' }>]];
+    expect(panelId).toBe('host-4');
+    expect(message).toMatchObject({ type: 'editorOpenFile', title: 'damocles-system-prompt.md', document: { name: 'damocles-system-prompt.md', path: file } });
+  });
 
   it('posts a proposal diff to the requesting tab and closes it in the tab it went to, once', async () => {
     const { editor, shown, posted } = service();
@@ -228,9 +244,11 @@ describe('desktop editor service', () => {
     expect(shown[1]?.[1]).toMatchObject({ document: { body: { languageId: 'plaintext' } } });
   });
 
-  it('routes host settings to the in-app settings panel', async () => {
-    const { editor, shown } = service();
-    await editor.openHostSettings('damocles.model');
-    expect(shown).toEqual([[undefined, { type: 'openSettingsPanel' }]]);
+  it('opens host settings in the app settings at the section asked for, without a round trip through a chat', async () => {
+    const { editor, shown, settingsOpened } = service();
+    await editor.openHostSettings('damocles.browser.devToolsPort', 'integrations');
+    await editor.openHostSettings('damocles');
+    expect(settingsOpened).toEqual(['integrations', undefined]);
+    expect(shown).toEqual([]);
   });
 });

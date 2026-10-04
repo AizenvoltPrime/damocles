@@ -14,7 +14,13 @@ import {
   typesafeAuthStatus,
 } from "../../settings-manager/managers/explore-manager";
 import { log } from "../../../logger";
+import { isSwitchableToolGroup, TOOL_GROUP_SETTINGS } from "../../../../shared/types/tools";
+import { IMAGE_ENABLED_SETTING, IMAGE_MODEL_SETTING } from "../../../pi-session/tools/image-tool-specs";
+import { writeSetting } from "../setting-write";
 import { t } from "../../../l10n";
+import { claudeAuthStatusMessage } from "./claude-auth-handlers";
+import { openaiAuthStatusMessage } from "./openai-handlers";
+import { postVoiceFilesSize } from "./voice-stream-handlers";
 
 const EXPOSURE_SCOPES: readonly string[] = ["user", "project", "local"] satisfies McpToolExposureScope[];
 
@@ -68,9 +74,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       instance.session.setMcpServers(settingsManager.getEnabledMcpServers(instance.folder.key));
     }
   }
-
-  /** Each write reads its scope's map only after the previous write landed, so quick changes never overwrite each other. */
-  let toolExposureWrites: Promise<void> = Promise.resolve();
 
   async function writeToolExposure(
     msg: Extract<WebviewToExtensionMessage, { type: "mcpSetToolExposure" }>,
@@ -161,8 +164,35 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
   }
 
   return {
-    requestModels: async (_msg, ctx) => {
+    // The settings modal sends only this, once per open and per attachment, and renders what it posts plus the changes
+    // pushed after; its sections send no requests of their own.
+    requestSettingsState: async (_msg, ctx) => {
+      // First: the view's handlers read the capabilities (settingsFileAvailability is dropped without monaco).
+      postMessage(ctx.host, { type: "hostCapabilities", capabilities: platform.capabilities });
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
+      deps.postWorkspaceFolderState(ctx.panelId);
+      // PiSession judges project scope by its working folder, which is the panel's folder.
+      postMessage(ctx.host, { type: "projectTrust", trusted: platform.trust.isTrusted(ctx.folder.fsPath) });
+      ctx.session.publishAccountInfo();
+      // The view mounts after main attached it, so host prompts redirected to it before then are posted again.
+      if (ctx.view) deps.webviewPrompts.repost(ctx.panelId, ctx.view);
+      deps.postSettingsFileAvailability?.(ctx);
+      postMessage(ctx.host, claudeAuthStatusMessage());
+      postMessage(ctx.host, await openaiAuthStatusMessage(platform));
+      await settingsManager.sendStepfunAuthStatus(ctx.host);
+      await settingsManager.sendDeepseekAuthStatus(ctx.host);
+      postMessage(ctx.host, await typesafeAuthStatus(platform));
+      postMessage(ctx.host, await openrouterAuthStatus(platform));
+      settingsManager.sendExploreConfig(ctx.host);
+      await settingsManager.sendExploreKeyStatus(ctx.host);
+      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+      settingsManager.sendImageGenerationSettings(ctx.host);
+      await settingsManager.sendVoiceConfig(ctx.host);
       await settingsManager.sendAvailableModels(ctx.session, ctx.host);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
+      await postVoiceFilesSize(deps, ctx.host);
     },
 
     setPinnedHeaderHidden: async (msg, ctx) => {
@@ -176,14 +206,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: t("Failed to save pinned header setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
       }
     },
 
     setPanelThinkingDisabled: (msg, ctx) => {
       if (msg.type !== "setPanelThinkingDisabled") return;
       settingsManager.handleSetPanelThinkingDisabled(ctx.panelId, msg.disabled);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setPanelEffort: (msg, ctx) => {
@@ -198,207 +228,117 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           notificationType: "error",
         });
       }
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setPanelMaxThinkingTokens: (msg, ctx) => {
       if (msg.type !== "setPanelMaxThinkingTokens") return;
       settingsManager.handleSetPanelMaxThinkingTokens(ctx.panelId, msg.model, msg.tokens);
-      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setDefaultThinkingDisabled: async (msg, ctx) => {
       if (msg.type !== "setDefaultThinkingDisabled") return;
-      try {
-        await settingsManager.handleSetDefaultThinkingDisabled(msg.disabled);
-      } catch (err) {
-        log("[MessageRouter] Error setting default thinking disabled:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save default thinking setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.thinkingDisabled", (detail) => t("Failed to save default thinking setting: {0}", detail), () =>
+        settingsManager.handleSetDefaultThinkingDisabled(msg.disabled, ctx.folder));
+      if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setDefaultEffort: async (msg, ctx) => {
       if (msg.type !== "setDefaultEffort") return;
-      try {
-        await settingsManager.handleSetDefaultEffort(msg.effort, msg.model);
-      } catch (err) {
-        log("[MessageRouter] Error setting default effort:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save default effort: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.effortByModel", (detail) => t("Failed to save default effort: {0}", detail), () =>
+        settingsManager.handleSetDefaultEffort(msg.effort, msg.model, ctx.folder));
+      if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setTeamRoleModel: async (msg, ctx) => {
       if (msg.type !== "setTeamRoleModel") return;
-      try {
-        await settingsManager.handleSetTeamRoleModel(msg.role, msg.model);
-      } catch (err) {
-        log("[MessageRouter] Error setting team role model:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save team role model: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-      }
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await writeSetting(deps, ctx, `damocles.team.${msg.role}Model`, (detail) => t("Failed to save team role model: {0}", detail), () =>
+        settingsManager.handleSetTeamRoleModel(msg.role, msg.model, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setTeamRoleEffort: async (msg, ctx) => {
       if (msg.type !== "setTeamRoleEffort") return;
-      try {
-        await settingsManager.handleSetTeamRoleEffort(msg.role, msg.effort);
-      } catch (err) {
-        log("[MessageRouter] Error setting team role effort:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save team role effort: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-      }
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await writeSetting(deps, ctx, `damocles.team.${msg.role}Effort`, (detail) => t("Failed to save team role effort: {0}", detail), () =>
+        settingsManager.handleSetTeamRoleEffort(msg.role, msg.effort, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setDefaultMaxThinkingTokens: async (msg, ctx) => {
       if (msg.type !== "setDefaultMaxThinkingTokens") return;
-      try {
-        await settingsManager.handleSetDefaultMaxThinkingTokens(msg.tokens);
-      } catch (err) {
-        log("[MessageRouter] Error setting default max thinking tokens:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save default thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.maxThinkingTokens", (detail) => t("Failed to save default thinking tokens: {0}", detail), () =>
+        settingsManager.handleSetDefaultMaxThinkingTokens(msg.tokens, ctx.folder));
+      if (!saved) settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId, ctx.folder);
     },
 
     setBudgetLimit: async (msg, ctx) => {
       if (msg.type !== "setBudgetLimit") return;
-      try {
-        await settingsManager.handleSetBudgetLimit(msg.budgetUsd);
-      } catch (err) {
-        log("[MessageRouter] Error setting budget limit:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save budget limit: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.maxBudgetUsd", (detail) => t("Failed to save budget limit: {0}", detail), () =>
+        settingsManager.handleSetBudgetLimit(msg.budgetUsd, ctx.folder));
+      if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setTaskBudget: async (msg, ctx) => {
       if (msg.type !== "setTaskBudget") return;
-      try {
-        await settingsManager.handleSetTaskBudget(msg.budget);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      } catch (err) {
-        log("[MessageRouter] Error setting task budget:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save task budget: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      await writeSetting(deps, ctx, "damocles.taskBudget", (detail) => t("Failed to save task budget: {0}", detail), () =>
+        settingsManager.handleSetTaskBudget(msg.budget, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setAutoCompact: async (msg, ctx) => {
       if (msg.type !== "setAutoCompact") return;
-      try {
-        await settingsManager.handleSetAutoCompact(msg.config);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      } catch (err) {
-        log("[MessageRouter] Error setting auto-compact:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save auto-compact settings: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      await writeSetting(deps, ctx, "damocles.autoCompact", (detail) => t("Failed to save auto-compact settings: {0}", detail), () =>
+        settingsManager.handleSetAutoCompact(msg.config, ctx.folder));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setCacheWarming: async (msg, ctx) => {
       if (msg.type !== "setCacheWarming") return;
-      try {
-        await settingsManager.handleSetCacheWarming(parseCacheWarmingMode(msg.mode));
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      } catch (err) {
-        log("[MessageRouter] Error setting cache warming:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save cache warming setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      await writeSetting(deps, ctx, "damocles.cacheWarming", (detail) => t("Failed to save cache warming setting: {0}", detail), () =>
+        settingsManager.handleSetCacheWarming(parseCacheWarmingMode(msg.mode)));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
+    },
+
+    setCheckpointRetentionDays: async (msg, ctx) => {
+      if (msg.type !== "setCheckpointRetentionDays") return;
+      await writeSetting(deps, ctx, "damocles.checkpoints.retentionDays", (detail) => t("Failed to save checkpoint retention: {0}", detail), () =>
+        settingsManager.handleSetCheckpointRetentionDays(msg.days));
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setPermissionMode") return;
       await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, msg.mode);
+      // The chat's own composer and an attached settings view both show the mode from this.
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setDefaultPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setDefaultPermissionMode") return;
-      try {
-        await settingsManager.handleSetDefaultPermissionMode(msg.mode);
-      } catch (err) {
-        log("[MessageRouter] Error setting default permission mode:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save default permission mode: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.permissionMode", (detail) => t("Failed to save default permission mode: {0}", detail), () =>
+        settingsManager.handleSetDefaultPermissionMode(msg.mode, ctx.folder));
+      if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setDefaultDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDefaultDangerouslySkipPermissions") return;
-      try {
-        await settingsManager.handleSetDefaultDangerouslySkipPermissions(msg.enabled);
-      } catch (err) {
-        log("[MessageRouter] Error setting default YOLO mode:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save default YOLO mode: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.dangerouslySkipPermissions", (detail) => t("Failed to save default YOLO mode: {0}", detail), () =>
+        settingsManager.handleSetDefaultDangerouslySkipPermissions(msg.enabled, ctx.folder));
+      if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     setIdeContextEnabled: async (msg, ctx) => {
       if (msg.type !== "setIdeContextEnabled") return;
-      try {
-        await settingsManager.handleSetIdeContextEnabled(msg.enabled);
-      } catch (err) {
-        log("[MessageRouter] Error setting IDE context default:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save IDE context setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.ideContext.enabled", (detail) => t("Failed to save IDE context setting: {0}", detail), () =>
+        settingsManager.handleSetIdeContextEnabled(msg.enabled));
+      if (!saved) await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.folder);
     },
 
     toggleMcpServer: async (msg, ctx) => {
@@ -522,21 +462,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setMcpEnabled: async (msg, ctx) => {
       if (msg.type !== "setMcpEnabled") return;
-      try {
-        await updateConfigAtEffectiveScope(platform, "damocles", "mcp.enabled", msg.enabled);
-        // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
-        // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
-        feedMcpScopes();
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
-      } catch (err) {
-        log("[MessageRouter] Error setting MCP enabled:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save MCP setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
-      }
+      const saved = await writeSetting(deps, ctx, "damocles.mcp.enabled", (detail) => t("Failed to save MCP setting: {0}", detail), () =>
+        updateConfigAtEffectiveScope(platform, "damocles.mcp.enabled", msg.enabled));
+      // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
+      // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
+      if (saved) feedMcpScopes();
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host, ctx.folder.key);
     },
 
     /**
@@ -547,11 +478,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
      */
     mcpSetToolExposure: async (msg, ctx) => {
       if (msg.type !== "mcpSetToolExposure") return;
-      const write = toolExposureWrites.then(() => writeToolExposure(msg, ctx));
-      // The chain only orders writes; this handler reports the failure.
-      toolExposureWrites = write.catch(() => undefined);
       try {
-        await write;
+        await settingsManager.serializeSettingWrite(() => writeToolExposure(msg, ctx));
       } catch (err) {
         log("[MessageRouter] Error setting MCP tool exposure:", err);
         postMessage(ctx.host, {
@@ -586,17 +514,11 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     toggleToolGroup: async (msg, ctx) => {
       if (msg.type !== "toggleToolGroup") return;
-      try {
-        await settingsManager.setToolGroupEnabled(msg.group, msg.enabled);
-        ctx.session.refreshActiveTools();
-      } catch (err) {
-        log("[MessageRouter] Error toggling tool group:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save tool group setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-      }
+      const group = msg.group;
+      if (!isSwitchableToolGroup(group)) throw new Error(`The ${String(group)} tool group has no switch`);
+      const saved = await writeSetting(deps, ctx, TOOL_GROUP_SETTINGS[group], (detail) => t("Failed to save tool group setting: {0}", detail), () =>
+        settingsManager.setToolGroupEnabled(group, msg.enabled));
+      if (saved) ctx.session.refreshActiveTools();
       if (msg.group === "image") broadcastImageGenerationState();
       else postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
@@ -607,36 +529,16 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setImageGenerationEnabled: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationEnabled") return;
-      try {
-        await settingsManager.setImageGenerationEnabled(msg.enabled);
-      } catch (err) {
-        log("[MessageRouter] Error setting image generation:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save image generation setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-      }
+      await writeSetting(deps, ctx, IMAGE_ENABLED_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
+        settingsManager.setImageGenerationEnabled(msg.enabled));
       broadcastImageGenerationState();
     },
 
     setImageGenerationModel: async (msg, ctx) => {
       if (msg.type !== "setImageGenerationModel") return;
-      try {
-        await settingsManager.setImageGenerationModel(msg.model);
-      } catch (err) {
-        log("[MessageRouter] Error setting image generation model:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: t("Failed to save image generation setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-      }
+      await writeSetting(deps, ctx, IMAGE_MODEL_SETTING, (detail) => t("Failed to save image generation setting: {0}", detail), () =>
+        settingsManager.setImageGenerationModel(msg.model));
       broadcastImageGenerationState();
-    },
-
-    requestImageGenerationSettings: (_msg, ctx) => {
-      settingsManager.sendImageGenerationSettings(ctx.host);
     },
 
     setProjectTrusted: async (_msg, ctx) => {
@@ -681,20 +583,23 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     setExploreProvider: async (msg, ctx) => {
       if (msg.type !== "setExploreProvider") return;
-      await settingsManager.setExploreProvider(msg.provider);
+      await writeSetting(deps, ctx, "damocles.explore.provider", (detail) => t("Failed to save the Explore provider: {0}", detail), () =>
+        settingsManager.setExploreProvider(msg.provider));
       settingsManager.sendExploreConfig(ctx.host);
       await settingsManager.sendExploreKeyStatus(ctx.host);
     },
 
     setExploreModel: async (msg, ctx) => {
       if (msg.type !== "setExploreModel") return;
-      await settingsManager.setExploreModel(msg.model);
+      await writeSetting(deps, ctx, "damocles.explore.modelByProvider", (detail) => t("Failed to save the Explore model: {0}", detail), () =>
+        settingsManager.setExploreModel(msg.model));
       settingsManager.sendExploreConfig(ctx.host);
     },
 
     setExploreEffort: async (msg, ctx) => {
       if (msg.type !== "setExploreEffort") return;
-      await settingsManager.setExploreEffort(msg.effort);
+      await writeSetting(deps, ctx, "damocles.explore.effort", (detail) => t("Failed to save the Explore effort: {0}", detail), () =>
+        settingsManager.setExploreEffort(msg.effort));
       settingsManager.sendExploreConfig(ctx.host);
     },
 
@@ -731,10 +636,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    getStepfunAuthStatus: async (_msg, ctx) => {
-      await settingsManager.sendStepfunAuthStatus(ctx.host);
-    },
-
     setDeepseekApiKey: async (msg, ctx) => {
       if (msg.type !== "setDeepseekApiKey") return;
       const key = msg.key.trim();
@@ -764,10 +665,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    getDeepseekAuthStatus: async (_msg, ctx) => {
-      await settingsManager.sendDeepseekAuthStatus(ctx.host);
-    },
-
     setTypesafeApiKey: async (msg, ctx) => {
       if (msg.type !== "setTypesafeApiKey") return;
       const key = msg.key.trim();
@@ -793,10 +690,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         log("[SettingsHandlers] Failed to clear TypeSafe key:", err);
         postMessage(ctx.host, { type: "clearTypesafeApiKeyAck", requestId: msg.requestId, ok: false, error: t("Failed to clear API key") });
       }
-    },
-
-    getTypesafeAuthStatus: async (_msg, ctx) => {
-      postMessage(ctx.host, await typesafeAuthStatus(platform));
     },
 
     setOpenrouterApiKey: async (msg, ctx) => {
@@ -828,10 +721,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         return;
       }
       await broadcastOpenrouterStatus();
-    },
-
-    getOpenrouterAuthStatus: async (_msg, ctx) => {
-      postMessage(ctx.host, await openrouterAuthStatus(platform));
     },
 
   };

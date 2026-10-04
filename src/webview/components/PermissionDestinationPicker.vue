@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { User, FolderGit, Globe } from 'lucide-vue-next';
+import { AlertDialog, AlertDialogContent } from '@/components/ui/alert-dialog';
+import { User, FolderGit, Globe, ShieldCheck, ShieldX } from 'lucide-vue-next';
+import { useOpenerFocus } from '@/composables/useOpenerFocus';
+import ConfirmDialogLayout from './ConfirmDialogLayout.vue';
 import type { PermissionUpdateDestination, PermissionBehavior } from '@shared/types/permissions';
 
 const { t } = useI18n();
@@ -26,6 +27,8 @@ const emit = defineEmits<{
   (e: 'select', destination: PermissionUpdateDestination): void;
   (e: 'cancel'): void;
 }>();
+
+const returnFocus = useOpenerFocus(() => props.open);
 
 const destinations = [
   {
@@ -50,35 +53,61 @@ const destinations = [
 </script>
 
 <template>
-  <Dialog :open="open" @update:open="(v) => !v && emit('cancel')">
-    <DialogContent class="max-w-md" @escape-key-down="emit('cancel')">
-      <DialogHeader>
-        <DialogTitle>{{ t(titleKey) }}</DialogTitle>
-        <DialogDescription>
+  <AlertDialog
+    :open="open"
+    @update:open="(next: boolean) => !next && emit('cancel')"
+  >
+    <AlertDialogContent
+      class="max-w-md gap-0 overflow-hidden p-0"
+      data-testid="permission-destination-picker"
+      @close-auto-focus="returnFocus"
+    >
+      <ConfirmDialogLayout
+        :icon="behavior === 'deny' ? ShieldX : ShieldCheck"
+        :tone="behavior === 'deny' ? 'danger' : 'accent'"
+        :title="t(titleKey)"
+      >
+        <template #description>
           {{ t(descriptionKey) }}
-          <code class="bg-muted px-1 rounded text-xs">{{ pattern }}</code>
-        </DialogDescription>
-      </DialogHeader>
+          <span class="rounded-5 bg-(--d-hover) px-1.5 font-mono text-xs break-all text-(--d-accent-text)">{{ pattern }}</span>
+        </template>
 
-      <div class="flex flex-col gap-2 mt-4">
-        <Button
-          v-for="dest in destinations"
-          :key="dest.value"
-          variant="outline"
-          class="h-auto py-3 justify-start text-left"
-          @click="emit('select', dest.value)"
-        >
-          <component :is="dest.icon" class="w-4 h-4 mr-3 shrink-0" />
-          <div class="flex flex-col">
-            <span class="font-medium">{{ t(dest.labelKey) }}</span>
-            <span class="text-xs text-muted-foreground">{{ t(dest.descriptionKey) }}</span>
-          </div>
-        </Button>
-      </div>
+        <div class="flex flex-col gap-2">
+          <button
+            v-for="dest in destinations"
+            :key="dest.value"
+            type="button"
+            class="d-press flex items-center gap-2.5 rounded-11 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-left transition-colors hover:border-(--d-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)"
+            :data-testid="`permission-destination-${dest.value}`"
+            @click="emit('select', dest.value)"
+          >
+            <span
+              class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+              aria-hidden="true"
+            >
+              <component
+                :is="dest.icon"
+                class="size-3.5"
+              />
+            </span>
+            <span class="flex min-w-0 flex-col">
+              <span class="text-13 font-medium">{{ t(dest.labelKey) }}</span>
+              <span class="text-xs text-(--d-muted)">{{ t(dest.descriptionKey) }}</span>
+            </span>
+          </button>
+        </div>
 
-      <div class="flex justify-end mt-4">
-        <Button variant="ghost" @click="emit('cancel')">{{ t('permission.destination.cancel') }}</Button>
-      </div>
-    </DialogContent>
-  </Dialog>
+        <template #footer>
+          <button
+            type="button"
+            class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+            data-testid="permission-destination-cancel"
+            @click="emit('cancel')"
+          >
+            {{ t('permission.destination.cancel') }}
+          </button>
+        </template>
+      </ConfirmDialogLayout>
+    </AlertDialogContent>
+  </AlertDialog>
 </template>

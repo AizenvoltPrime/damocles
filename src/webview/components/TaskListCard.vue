@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { IconClipboard } from '@/components/icons';
-import { Badge } from '@/components/ui/badge';
+import { ChevronDown, Circle, CircleCheck, ListChecks, LoaderCircle } from 'lucide-vue-next';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { IconChevronDown, IconChevronUp } from '@/components/icons';
 import type { Task } from '@shared/types/subagents';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const props = defineProps<{
   tasks: Task[];
@@ -18,124 +16,97 @@ const emit = defineEmits<{
   'update:isCollapsed': [value: boolean];
 }>();
 
-const completedCount = computed(() =>
-  props.tasks.filter(t => t.status === 'completed').length
-);
-
+const completedCount = computed(() => props.tasks.filter(task => task.status === 'completed').length);
 const totalCount = computed(() => props.tasks.length);
-
 const openCount = computed(() => totalCount.value - completedCount.value);
+const progress = computed(() => (totalCount.value === 0 ? 0 : completedCount.value / totalCount.value));
 
-const hasInProgress = computed(() =>
-  props.tasks.some(t => t.status === 'in_progress')
-);
-
-function getStatusEmoji(status: Task['status']): string {
-  switch (status) {
-    case 'completed':
-      return '✓';
-    case 'in_progress':
-      return '●';
-    case 'pending':
-    default:
-      return '○';
-  }
-}
-
-function getStatusClass(status: Task['status']): string {
-  switch (status) {
-    case 'completed':
-      return 'text-success';
-    case 'in_progress':
-      return 'text-warning animate-pulse';
-    case 'pending':
-    default:
-      return 'text-muted-foreground';
-  }
-}
-
-function getBlockedByIds(task: Task): string[] {
-  return task.blockedBy ?? [];
-}
-
-function formatBlockedBy(task: Task): string {
-  const ids = getBlockedByIds(task);
-  return ids.map(id => `#${id}`).join(', ');
+function blockedBy(task: Task): string {
+  const ids = (task.blockedBy ?? []).map(id => `#${id}`);
+  return t('task.blocked', { ids: new Intl.ListFormat(locale.value).format(ids) }, ids.length);
 }
 </script>
 
 <template>
   <Collapsible
     :open="!isCollapsed"
+    class="overflow-hidden rounded-xl border border-(--d-border) bg-(--d-card)"
+    data-testid="task-list-card"
     @update:open="emit('update:isCollapsed', !$event)"
-    class="border border-border rounded-lg bg-card overflow-hidden"
   >
-    <CollapsibleTrigger class="w-full px-3 py-2 flex items-center gap-2 bg-foreground/5 hover:bg-foreground/10 transition-colors cursor-pointer">
-      <IconClipboard :size="16" class="text-primary" />
-      <span class="font-medium text-sm">{{ t('task.title') }}</span>
+    <CollapsibleTrigger class="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold transition-colors hover:bg-(--d-hover)">
+      <ListChecks
+        class="size-3.5 flex-none text-(--d-accent)"
+        aria-hidden="true"
+      />
+      <span>{{ t('task.title') }}</span>
       <span
-        :class="[
-          'ml-auto text-xs',
-          completedCount === totalCount && totalCount > 0
-            ? 'text-success'
-            : hasInProgress
-              ? 'text-warning'
-              : 'text-muted-foreground'
-        ]"
+        class="font-mono text-11 font-normal text-(--d-faint)"
+        :title="t('task.progress', { done: completedCount, open: openCount })"
+        data-testid="task-list-progress"
+      >{{ completedCount }}/{{ totalCount }}</span>
+      <span
+        class="ml-1.5 h-0.75 flex-1 overflow-hidden rounded-full bg-(--d-hover)"
+        aria-hidden="true"
       >
-        ({{ completedCount }} {{ t('task.done') }}, {{ openCount }} {{ t('task.open') }})
+        <span
+          class="block h-full origin-left rounded-full bg-(--d-accent) transition-transform duration-500 ease-out rtl:origin-right"
+          :style="{ transform: `scaleX(${progress})` }"
+        />
       </span>
-      <component
-        :is="isCollapsed ? IconChevronDown : IconChevronUp"
-        :size="14"
-        class="text-muted-foreground"
+      <ChevronDown
+        class="size-3.5 flex-none text-(--d-faint) transition-transform duration-200"
+        :class="!isCollapsed && 'rotate-180'"
+        aria-hidden="true"
       />
     </CollapsibleTrigger>
 
     <CollapsibleContent>
-      <div class="px-3 pb-2 space-y-1 max-h-48 overflow-y-auto">
-        <div
+      <ul class="max-h-48 space-y-0.5 overflow-y-auto px-3 pb-2.5">
+        <li
           v-for="task in tasks"
           :key="task.id"
-          class="flex items-center gap-2 py-1 text-sm"
+          class="flex items-center gap-2.25 py-0.75 text-12.5 transition-colors duration-300"
+          :class="task.status === 'pending' ? 'text-(--d-muted)' : 'text-(--d-text)'"
         >
+          <CircleCheck
+            v-if="task.status === 'completed'"
+            class="size-3.5 flex-none text-(--d-success)"
+            aria-hidden="true"
+          />
+          <LoaderCircle
+            v-else-if="task.status === 'in_progress'"
+            class="size-3.5 flex-none d-spinning text-(--d-accent)"
+            aria-hidden="true"
+          />
+          <Circle
+            v-else
+            class="size-3.5 flex-none text-(--d-faint)"
+            aria-hidden="true"
+          />
           <span
-            class="w-4 text-center shrink-0"
-            :class="getStatusClass(task.status)"
+            class="min-w-0 flex-1"
+            :class="task.status === 'completed' && 'line-through'"
           >
-            {{ getStatusEmoji(task.status) }}
+            <span class="text-(--d-faint)">#{{ task.id }}</span> {{ task.subject }}
           </span>
           <span
-            :class="[
-              'flex-1',
-              task.status === 'completed' && 'line-through opacity-50'
-            ]"
-          >
-            <span class="text-muted-foreground">#{{ task.id }}</span> {{ task.subject }}
-          </span>
-          <Badge
             v-if="task.status === 'in_progress'"
-            variant="outline"
-            class="text-xs px-1.5 py-0.5 bg-warning/20 text-warning border-warning/30 animate-pulse"
-          >
-            {{ task.activeForm || t('task.inProgress') }}
-          </Badge>
-          <Badge
-            v-else-if="getBlockedByIds(task).length > 0"
-            variant="outline"
-            class="text-xs px-1.5 py-0.5 bg-muted text-muted-foreground border-muted-foreground/30"
-          >
-            {{ t('task.blocked') }} {{ formatBlockedBy(task) }}
-          </Badge>
-        </div>
-
-        <div
+            class="max-w-[45%] flex-none truncate rounded-full bg-(--d-accent-soft) px-2 text-11/4.5 text-(--d-accent-text)"
+          >{{ task.activeForm || t('task.inProgress') }}</span>
+          <span
+            v-else-if="(task.blockedBy ?? []).length > 0"
+            class="flex-none rounded-full border border-(--d-border2) px-2 text-11/4.5 text-(--d-muted)"
+            data-testid="task-blocked-by"
+          >{{ blockedBy(task) }}</span>
+        </li>
+        <li
           v-if="tasks.length === 0"
-          class="text-xs text-muted-foreground text-center py-2"
+          class="py-2 text-center text-xs text-(--d-faint)"
         >
           {{ t('task.noTasks') }}
-        </div>
-      </div>
+        </li>
+      </ul>
     </CollapsibleContent>
   </Collapsible>
 </template>

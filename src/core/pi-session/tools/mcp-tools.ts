@@ -266,11 +266,15 @@ export function buildNestedMcpToolset(
 }
 
 /**
- * Registers MCP tools into the shared Damocles extension's live `pi` (US-014.3). `registerAll` runs
- * inside the extension factory on every runtime reload (fresh `pi` → fresh registry), so the cached
- * tools survive reloads. `syncRegistration` is the mid-session top-up: when a server connects or fires
- * `list_changed`, newly-discovered tools are registered on the captured `pi` (pi has no `unregisterTool`,
- * so removed tools are simply excluded from the per-session active set).
+ * Registers MCP tools into every attached Damocles extension instance (US-014.3). Each instance has its
+ * own tool registry, so registration is tracked per instance. `attach` runs inside the extension factory
+ * and registers the current descriptors; `syncRegistration` tops up every attached instance when a server
+ * connects or fires `list_changed`. pi has no `unregisterTool`, so removed tools are excluded from the
+ * per-session active set instead.
+ *
+ * An instance must be detached before pi invalidates it (its `session_shutdown`, or `FolderRuntime`
+ * superseding an unbound one): pi's `registerTool` throws on an invalidated instance. See
+ * docs/invariants.md "Deferred tools / ToolSearch" for the ownership rules.
  *
  * Limitation (M6): because pi exposes no unregister/replace, a tool re-advertised under the SAME name
  * with a CHANGED `inputSchema` keeps its first-registered schema for the session's lifetime — routing
@@ -279,40 +283,44 @@ export function buildNestedMcpToolset(
 export class McpToolRegistrar {
   private readonly pi: PiCodingAgentModule;
   private readonly manager: McpToolSource;
-  private livePi: ExtensionAPI | null = null;
-  private registered = new Set<string>();
+  /** Attached instances and the tool names already registered on each. */
+  private readonly instances = new Map<ExtensionAPI, Set<string>>();
 
   constructor(pi: PiCodingAgentModule, manager: McpToolSource) {
     this.pi = pi;
     this.manager = manager;
   }
 
-  /** Called inside the extension factory body on each run. A reload mints a fresh `pi`/registry. */
-  registerAll(extensionApi: ExtensionAPI): void {
-    this.livePi = extensionApi;
-    this.registered.clear();
-    for (const descriptor of this.manager.getAllToolDescriptors()) {
-      this.registerOne(extensionApi, descriptor);
-    }
+  /** Track `extensionApi`, register the current descriptors on it, and return its detach. */
+  attach(extensionApi: ExtensionAPI): () => void {
+    const registered = new Set<string>();
+    this.instances.set(extensionApi, registered);
+    this.registerMissing(extensionApi, registered);
+    return () => {
+      if (this.instances.get(extensionApi) === registered) this.instances.delete(extensionApi);
+    };
   }
 
-  /** Register any descriptors not yet registered on the captured `pi` (cold connect / list_changed). */
+  /** Register descriptors not yet registered on each attached instance (cold connect / list_changed). */
   syncRegistration(): void {
-    if (!this.livePi) return;
-    for (const descriptor of this.manager.getAllToolDescriptors()) {
-      if (!this.registered.has(descriptor.piName)) {
-        this.registerOne(this.livePi, descriptor);
-      }
-    }
+    for (const [extensionApi, registered] of this.instances) this.registerMissing(extensionApi, registered);
   }
 
-  private registerOne(extensionApi: ExtensionAPI, descriptor: McpToolDescriptor): void {
-    if (this.registered.has(descriptor.piName)) return;
-    try {
-      extensionApi.registerTool(buildMcpPiTool(this.pi, descriptor, this.manager));
-      this.registered.add(descriptor.piName);
-    } catch (err) {
-      log('[McpToolRegistrar] failed to register %s: %O', descriptor.piName, err);
+  /** Forget every attached instance (folder teardown). */
+  clear(): void {
+    this.instances.clear();
+  }
+
+  private registerMissing(extensionApi: ExtensionAPI, registered: Set<string>): void {
+    for (const descriptor of this.manager.getAllToolDescriptors()) {
+      if (registered.has(descriptor.piName)) continue;
+      // Per tool: a server-supplied schema pi rejects must not keep the other servers' tools out.
+      try {
+        extensionApi.registerTool(buildMcpPiTool(this.pi, descriptor, this.manager));
+        registered.add(descriptor.piName);
+      } catch (err) {
+        log('[McpToolRegistrar] failed to register %s: %O', descriptor.piName, err);
+      }
     }
   }
 }

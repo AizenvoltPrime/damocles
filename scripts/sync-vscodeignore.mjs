@@ -199,12 +199,15 @@ function assertNoDevOnlyPackages(topLevel, requirers) {
 /**
  * Packages only the desktop app uses: its externals that the extension lacks (Electron, the native
  * watcher, the updater), undici, which the desktop bundle inlines while pi ships its own nested copy,
- * and the desktop editor, test and packaging tooling.
+ * and the desktop editor, fonts, test and packaging tooling.
  */
 export const DESKTOP_ONLY_PACKAGES = [
   ...DESKTOP_EXTERNALS.filter((name) => !EXTENSION_EXTERNALS.includes(name)),
   'undici',
   'monaco-editor',
+  '@fontsource-variable/geist',
+  '@fontsource-variable/geist-mono',
+  '@fontsource-variable/inter',
   '@playwright/test',
   'playwright',
   'playwright-core',

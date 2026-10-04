@@ -10,7 +10,7 @@ import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
 import { joinResultText, resultImageCount } from './tool-result-text';
 import { ToolOutputCoalescer } from './tool-output-coalescer';
 import { log } from '../logger';
-import type { TurnState } from './session-state';
+import { turnOutcomeOfError, type TurnChange, type TurnOutcome } from './session-state';
 import { usageOfEntry } from '../../shared/usage-accounting';
 import { publishedEffort, type EffortBadgeLevel } from '../../shared/effort-badge';
 import { sessionUsageMessage } from './session-usage';
@@ -54,7 +54,7 @@ export interface PiStreamAdapterDeps {
   promptEntryId: () => string | null;
   /** The turn's own lifecycle moved. PiSession derives and emits `sessionStateChanged` from it, so
    *  the adapter never emits that message itself and a pending prompt can outrank this. */
-  onTurnStateChanged: (state: TurnState) => void;
+  onTurnStateChanged: (...change: TurnChange) => void;
   onAssistantTextFinal?: (text: string) => void;
 }
 
@@ -112,6 +112,54 @@ function explainThinkingDroppedReason(reason: string): string {
   }
 }
 
+interface ThinkingDrop {
+  /** Wire-request position (`messages.4.content.0`), stable while history only grows. */
+  path: string | undefined;
+  reason: string | undefined;
+}
+
+/** The `thinking_dropped` transformations pi copied from the Anthropic response onto this message. */
+function thinkingDropsOf(message: AssistantMessage): ThinkingDrop[] {
+  // pi passes the diagnostic through untouched, so every field here is `unknown` and each one is narrowed.
+  return (message.diagnostics ?? []).flatMap((diagnostic): ThinkingDrop[] => {
+    if (diagnostic.type !== 'anthropic_input_transformations') return [];
+    const transformations = diagnostic.details?.['transformations'];
+    if (!Array.isArray(transformations)) return [];
+    return transformations.flatMap((transformation): ThinkingDrop[] => {
+      if (typeof transformation !== 'object' || transformation === null) return [];
+      const details = transformation as Record<string, unknown>;
+      if (details['type'] !== 'thinking_dropped') return [];
+      return [{
+        path: typeof details['path'] === 'string' ? details['path'] : undefined,
+        reason: typeof details['reason'] === 'string' ? details['reason'] : undefined,
+      }];
+    });
+  });
+}
+
+/**
+ * The drops Anthropic already reported on the previous request of this history, read from the persisted
+ * branch (pi persists a message after `message_end`, so the branch ends at the previous request). A stale
+ * block is re-sent and re-dropped on every later request, so only drops beyond this set are news.
+ * Anything that renumbers the wire request between the two (a compaction, or a context edit that omits
+ * a message) makes the earlier paths incomparable, so the baseline is empty.
+ */
+function previouslyDroppedPaths(session: AgentSession): Set<string> {
+  const sm = session.sessionManager;
+  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (!entry) continue;
+    if (entry.type === 'compaction' || (entry.type === 'context_edit' && entry.replacement === null)) break;
+    if (entry.type !== 'message' || entry.message.role !== 'assistant') continue;
+    // An aborted or failed request carries no diagnostics even when Anthropic reported drops.
+    const { stopReason } = entry.message;
+    if (stopReason === 'aborted' || stopReason === 'error' || stopReason === 'pending') continue;
+    return new Set(thinkingDropsOf(entry.message).flatMap((drop) => (drop.path === undefined ? [] : [drop.path])));
+  }
+  return new Set();
+}
+
 /**
  * The id of the latest `compaction` entry on the active branch — the tree node the boundary card
  * branches at (its parent is the last pre-compaction message) for rewind-to-before-compaction. Mirrors
@@ -156,6 +204,8 @@ export class PiStreamAdapter {
   /** Whether `budgetExceeded` was already emitted for the current over-limit state. Re-armed per turn in
    *  `beginTurn`, and at turn end once spend is back below the limit. */
   private _budgetExceededEmitted = false;
+  /** The error the turn's latest assistant message ended on; a retry that succeeds clears it. */
+  private _lastAssistantError: string | null = null;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
@@ -267,6 +317,7 @@ export class PiStreamAdapter {
     // started after the user raised the limit with no in-flight bound at all. The host's pre-prompt gate
     // returns before this, so a still-over-limit session never reaches here and cannot re-emit.
     this._budgetExceededEmitted = false;
+    this._lastAssistantError = null;
     this._streamingText = '';
     this._streamingBlocks = [];
     this._committedTextLength = 0;
@@ -343,14 +394,20 @@ export class PiStreamAdapter {
    *  inside `prompt()`, which emits no terminal event. Releases the spinner and returns the session to
    *  idle without a phantom result card. */
   endTurnWithoutAgentRun(): void {
-    this.lowerSpinner();
+    this.lowerSpinner({ kind: 'completed' });
   }
 
   /** The one lifecycle transition every turn-ending path owes the webview, kept in one place so
    *  "lower the spinner exactly once" is greppable rather than restated per path. */
-  private lowerSpinner(): void {
+  private lowerSpinner(outcome: TurnOutcome): void {
     this.emit({ type: 'processing', isProcessing: false });
-    this.deps.onTurnStateChanged('idle');
+    this.deps.onTurnStateChanged('idle', outcome);
+  }
+
+  /** Read at settle, after the turn-end budget check: a crossed limit outranks the turn's last error. */
+  private settledOutcome(): TurnOutcome {
+    if (this._budgetExceededEmitted) return { kind: 'budget' };
+    return this._lastAssistantError === null ? { kind: 'completed' } : turnOutcomeOfError(this._lastAssistantError);
   }
 
   /**
@@ -454,11 +511,12 @@ export class PiStreamAdapter {
           });
         }
         if (event.message.role === 'assistant') {
+          this._lastAssistantError = event.message.stopReason === 'error' ? event.message.errorMessage ?? 'Unknown error' : null;
           this.emitAssistantMessage(event.message.content, publishedEffort(event.message.thinkingLevel, session.model?.reasoning));
           this.emitContextSnapshot(contextSnapshotOf(event.message));
           this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
-          this.maybeEmitThinkingDroppedNotice(event.message);
+          this.maybeEmitThinkingDroppedNotice(session, event.message);
         } else if (event.message.role === 'user' && !this._aborted) {
           // pi emits this for a run's opening prompt too, which the session reports as its own only
           // when a cancel note opened the run. Collapse the queued chips now, and if a real batch or a
@@ -791,39 +849,36 @@ export class PiStreamAdapter {
   }
 
   /**
-   * Emit a transcript notice when Anthropic dropped thinking blocks from this turn's request. Wrapped in
-   * try/catch for the same reason as the cache-miss notice above: a cosmetic notice runs in the
-   * message_end hot path and must NOT throw out of the listener, which would break pi's subscription
+   * Emit a transcript notice when Anthropic dropped thinking blocks this request had not already lost.
+   * Wrapped in try/catch for the same reason as the cache-miss notice above: a cosmetic notice runs in
+   * the message_end hot path and must NOT throw out of the listener, which would break pi's subscription
    * chain. The notice is keyed to the message's own timestamp so its id is stable and it sorts correctly.
    */
-  private maybeEmitThinkingDroppedNotice(message: AssistantMessage): void {
+  private maybeEmitThinkingDroppedNotice(session: AgentSession, message: AssistantMessage): void {
     try {
       // The setting read lives inside the try too, so a config-read failure cannot break the listener.
       if (!this.deps.showThinkingDroppedNotices()) return;
-      for (const diagnostic of message.diagnostics ?? []) {
-        if (diagnostic.type !== 'anthropic_input_transformations') continue;
-        const transformations = diagnostic.details?.['transformations'];
-        if (!Array.isArray(transformations)) continue;
-        // Anthropic returns `thinking_dropped` in the transformation's own `type` field and pi passes the
-        // diagnostic through untouched, so every field here is `unknown` and each one is narrowed.
-        // `path` is deliberately dropped: it indexes the wire request (`messages.4.content.0`), not the
-        // transcript, so it names nothing the reader of this card can find.
-        const dropped = transformations.flatMap((transformation): string[] => {
-          if (typeof transformation !== 'object' || transformation === null) return [];
-          const details = transformation as Record<string, unknown>;
-          if (details['type'] !== 'thinking_dropped') return [];
-          const reason = details['reason'];
-          return [typeof reason === 'string' ? explainThinkingDroppedReason(reason) : 'unknown reason'];
-        });
-        if (dropped.length === 0) continue;
-        log('[PiStreamAdapter] anthropic dropped %d thinking block(s): %s', dropped.length, dropped.join('; '));
-        this.emit({
-          type: 'thinkingDroppedNotice',
-          count: dropped.length,
-          reasons: dropped,
-          timestamp: message.timestamp,
-        });
-      }
+      const drops = thinkingDropsOf(message);
+      if (drops.length === 0) return;
+      const seen = previouslyDroppedPaths(session);
+      // A drop without a path cannot be matched to an earlier report, so it counts as new.
+      // The path itself is never rendered: it indexes the wire request, not anything the reader can find.
+      const reasons = drops
+        .filter((drop) => drop.path === undefined || !seen.has(drop.path))
+        .map((drop) => (drop.reason === undefined ? 'unknown reason' : explainThinkingDroppedReason(drop.reason)));
+      if (reasons.length === 0) return;
+      log(
+        '[PiStreamAdapter] anthropic dropped %d new thinking block(s), %d in the request: %s',
+        reasons.length,
+        drops.length,
+        reasons.join('; '),
+      );
+      this.emit({
+        type: 'thinkingDroppedNotice',
+        count: reasons.length,
+        reasons,
+        timestamp: message.timestamp,
+      });
     } catch {
       // Cosmetic hint only, so a malformed diagnostic must never disrupt the turn.
     }
@@ -845,7 +900,7 @@ export class PiStreamAdapter {
     this._accumulatedCost += Math.max(0, ownCost - this._lastCumulativeCost);
     this._lastCumulativeCost = ownCost;
     if (this._aborted) {
-      this.lowerSpinner();
+      this.lowerSpinner({ kind: 'cancelled' });
       return;
     }
 
@@ -862,7 +917,7 @@ export class PiStreamAdapter {
     };
     this.emit({ type: 'done', data: result });
     this.emit({ type: 'processing', isProcessing: false });
-    this.deps.onTurnStateChanged('idle');
+    this.deps.onTurnStateChanged('idle', this.settledOutcome());
     this.emit({ type: 'stopInfo', ...(finalText ? { lastAssistantMessage: finalText } : {}) });
   }
 

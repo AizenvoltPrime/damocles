@@ -39,7 +39,7 @@ function mountPanel(initial: Status = status()) {
   return wrapper;
 }
 
-const typesPosted = () => posted.map((m) => m.type).filter((t) => t !== 'getOpenAIAuthStatus');
+const typesPosted = () => posted.map((m) => m.type);
 
 beforeEach(() => {
   posted.length = 0;
@@ -177,7 +177,7 @@ describe('OpenAIAuthPanel prefer-API-key toggle', () => {
     ['ChatGPT only', status({ chatgpt: true }), true],
   ] as const)('with %s the toggle disabled is %s', (_case, initial, disabled) => {
     const wrapper = mountPanel(initial);
-    const toggle = wrapper.get('#openai-prefer-apikey');
+    const toggle = wrapper.get('[role="switch"]');
     expect(toggle.attributes('disabled') !== undefined).toBe(disabled);
   });
 });

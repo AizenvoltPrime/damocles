@@ -588,7 +588,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     expect(() => live.appendTo(VERIFICATION_SECTION, '- A | tree abc | full-suite | PASS')).not.toThrow();
 
     expectEventLogUnderTestHome(cwd);
-    w.runner.cancel();
+    w.runner.cancel('user');
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
@@ -617,7 +617,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     expect(w.factoryMcpSnapshots[0]).toBe(w.toolsetSnapshots[0]);
 
     expectEventLogUnderTestHome(cwd);
-    w.runner.cancel();
+    w.runner.cancel('user');
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });
@@ -1212,7 +1212,7 @@ describe('team wiring: a redispatch is a fresh attempt, and each agent carries i
     expect(agentOf(w, 'A').dollarBilled).toBe(true);
 
     expectEventLogUnderTestHome(cwd);
-    w.runner.cancel();
+    w.runner.cancel('user');
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 });

@@ -42,6 +42,7 @@ import type {
   TeamLogSpawn,
   TeamMessage,
   TeamRunResult,
+  TeamStop,
   UndeliveredMessage,
   OperatorSteer,
   NoteSink,
@@ -214,6 +215,8 @@ export class TeamRunner {
   private specialistAborts = new Map<string, AbortController>();
   private phase: TeamPhase = 'initializing';
   private status: TeamStatus = 'running';
+  // Set with status 'cancelled' by the cancel that stopped the run unfinished; a later cancel keeps it.
+  private cancelledBy: TeamStop | null = null;
   private teamAbort = new AbortController();
   private completionResolve: ((result: string) => void) | null = null;
   private completionResolved = false;
@@ -676,9 +679,9 @@ export class TeamRunner {
         run: endedRun,
       });
 
-      return finalStatus === 'cancelled'
-        ? { status: finalStatus, text: synthesizedResult, resumable: this.writtenCheckpoint !== null }
-        : { status: finalStatus, text: synthesizedResult };
+      return this.cancelledBy === null
+        ? { status: 'completed', text: synthesizedResult }
+        : { status: 'cancelled', text: synthesizedResult, stop: this.cancelledBy, resumable: this.writtenCheckpoint !== null };
     } finally {
       if (!this.teamAbort.signal.aborted) {
         this.teamAbort.abort();
@@ -1382,11 +1385,8 @@ export class TeamRunner {
     if (agent.status !== 'running' && agent.status !== 'pending' && agent.status !== 'awaiting-review' && agent.status !== 'standby') {
       throw new Error(`Agent "${agent.name}" is not active (status: ${agent.status})`);
     }
-    if (agent.role === 'lead') {
-      this.cancel();
-    } else {
-      this.cancelSpecialist(agent.name);
-    }
+    if (agent.role === 'lead') throw new Error(`"${agent.name}" leads the team and stops only with it`);
+    this.cancelSpecialist(agent.name);
   }
 
   getActiveSpecialistNames(): string[] {
@@ -1945,15 +1945,16 @@ export class TeamRunner {
   }
 
   /**
-   * True when it stopped an unfinished team. A 'user' stop leaves a checkpoint for a resume; a 'reset'
-   * stop leaves none, since the conversation that could resume the team is gone.
+   * True when it stopped an unfinished team. Every stop but 'reset' leaves a checkpoint for a resume that
+   * records why; a 'reset' stop leaves none, since the conversation that could resume the team is gone.
    */
-  cancel(stop: 'user' | 'reset' = 'user'): boolean {
+  cancel(stop: TeamStop): boolean {
     this.writeCheckpointOnCancel(stop);
     // A cancel after the synthesis only cuts the drain short: the team completed, and nothing is left to resume.
     const unfinished = !this.completionResolved;
     if (unfinished) {
       this.status = 'cancelled';
+      this.cancelledBy = stop;
       // A reload can kill the drain before `team-completed`, and then this is the run's only record of its work.
       const run = this.runTotals(this.runSummary());
       this.appendEntry({ type: 'team-cancelled', teamId: this.config.teamId, run, timestamp: new Date().toISOString() });
@@ -1975,11 +1976,11 @@ export class TeamRunner {
    * reload that kills the drain still leaves it. The synthesis that follows sets completionResolved,
    * which keeps it to one cancel per run.
    */
-  private writeCheckpointOnCancel(stop: 'user' | 'reset'): void {
+  private writeCheckpointOnCancel(stop: TeamStop): void {
     if (this.completionResolved || stop === 'reset') return;
     // Unique per team, even for a cancel in the same millisecond as the resume it follows.
     const cancelledAt = Math.max(Date.now(), (this.restoredCheckpointAt ?? -1) + 1);
-    const checkpoint = this.buildCheckpoint(cancelledAt);
+    const checkpoint = { ...this.buildCheckpoint(cancelledAt), stoppedBy: stop };
     if (this.persistence.writeCheckpoint(checkpoint)) this.writtenCheckpoint = checkpoint;
   }
 

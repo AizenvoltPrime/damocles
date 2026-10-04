@@ -3,7 +3,9 @@ import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { IconChartBar, IconRotateLeft, IconWarning } from '@/components/icons';
+import { ChartLine, RefreshCw } from 'lucide-vue-next';
+import { IconChartBar, IconWarning } from '@/components/icons';
+import OverlayHeaderAction from '../OverlayHeaderAction.vue';
 import LoadingSpinner from '../LoadingSpinner.vue';
 import OverlayShell from '../OverlayShell.vue';
 import StatsFilterBar from './StatsFilterBar.vue';
@@ -47,36 +49,35 @@ const progressPercent = computed(() => {
 const updatedText = computed(() => {
   if (!store.report) return undefined;
   const at = store.updatedAtMs;
-  return at === null ? t('usageStats.notIndexed') : t('usageStats.updated', { time: format.dateTime(at) });
+  return `${t('overlays.stats.subtitle')} · ${at === null ? t('usageStats.notIndexed') : t('usageStats.updated', { time: format.dateTime(at) })}`;
 });
 </script>
 
 <template>
   <OverlayShell
+    max-width="62.5rem"
     :title="t('usageStats.title')"
     :subtitle="updatedText"
-    :icon="IconChartBar"
-    icon-class="text-info"
+    :icon="ChartLine"
+    data-testid="usage-stats-overlay"
     @close="$emit('close')"
   >
     <template #header-actions>
-      <Button
-        variant="ghost"
-        size="icon-sm"
+      <OverlayHeaderAction
+        :label="t('usageStats.refresh')"
+        :icon="RefreshCw"
+        :busy="busy"
         :disabled="busy"
-        :aria-label="t('usageStats.refresh')"
-        :title="t('usageStats.refresh')"
+        data-testid="stats-refresh"
         @click="store.refresh()"
-      >
-        <IconRotateLeft :size="16" :class="{ 'animate-spin-reverse': busy }" />
-      </Button>
+      />
     </template>
 
-    <div class="@container space-y-4 p-4" :aria-busy="busy">
+    <div class="@container flex flex-col gap-3 px-4 pt-3 pb-4.5 tabular-nums" :aria-busy="busy">
       <StatsFilterBar />
 
       <div v-if="store.status === 'indexing' && store.progress" class="space-y-1.5" role="status">
-        <div class="flex items-center gap-2 text-xs text-muted-foreground">
+        <div class="flex items-center gap-2 text-xs text-(--d-muted)">
           <span class="flex-1">{{ t('usageStats.indexing') }}</span>
           <span class="tabular-nums">
             {{ t('usageStats.indexingProgress', { done: format.integer(store.progress.filesDone), total: format.integer(store.progress.filesTotal) }, store.progress.filesTotal) }}
@@ -86,26 +87,26 @@ const updatedText = computed(() => {
       </div>
 
       <div v-if="store.status === 'error'" class="flex flex-col items-center gap-3 py-12 text-center" role="alert">
-        <IconWarning :size="28" class="text-error" />
+        <IconWarning class="size-7 text-(--d-danger)" />
         <div class="space-y-1">
-          <p class="text-sm font-medium text-foreground">{{ t('usageStats.error') }}</p>
-          <p v-if="store.error" class="break-words text-xs text-muted-foreground">{{ store.error }}</p>
+          <p class="text-sm font-medium text-(--d-text)">{{ t('usageStats.error') }}</p>
+          <p v-if="store.error" class="wrap-break-word text-xs text-(--d-muted)">{{ store.error }}</p>
         </div>
         <Button variant="outline" size="sm" @click="store.retry()">{{ t('usageStats.retry') }}</Button>
       </div>
 
-      <div v-else-if="!shownReport" class="flex flex-col items-center gap-3 py-12 text-muted-foreground" role="status">
-        <LoadingSpinner v-if="store.status === 'loading'" :size="28" />
+      <div v-else-if="!shownReport" class="flex flex-col items-center gap-3 py-12 text-(--d-muted)" role="status">
+        <LoadingSpinner v-if="store.status === 'loading'" class="size-7" />
         <p v-if="store.status === 'loading'" class="text-xs">{{ t('usageStats.loading') }}</p>
       </div>
 
-      <div v-else-if="isEmpty" class="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground transition-opacity" :class="{ 'opacity-60': busy }" data-empty>
-        <IconChartBar :size="28" class="opacity-40" />
+      <div v-else-if="isEmpty" class="flex flex-col items-center gap-2 py-12 text-center text-(--d-muted) transition-opacity" :class="{ 'opacity-60': busy }" data-empty>
+        <IconChartBar class="size-7 opacity-40" />
         <p class="text-sm font-medium">{{ t('usageStats.empty') }}</p>
         <p class="text-xs">{{ t('usageStats.emptyHint') }}</p>
       </div>
 
-      <div v-else class="space-y-4 transition-opacity" :class="{ 'opacity-60': busy }">
+      <div v-else class="flex flex-col gap-3 transition-opacity" :class="{ 'opacity-60': busy }">
         <StatsKpiGrid :totals="shownReport.totals" :previous="shownReport.previousTotals" />
         <StatsUsageChart
           v-if="shownReport.series"

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
 import { createChatHandlers } from "../chat-handlers";
 import { createSessionHandlers } from "../session-handlers";
+import { createSessionCatalog } from "../../../session-catalog";
 import { findStoredSessionHolder } from "../../../session-ownership";
 import { renamePiSession, tagPiSession } from "../../../../pi-session/session-store";
 import type { FolderTarget } from "../../../../workspace-folders/folder-registry";
@@ -64,7 +65,7 @@ function harness(...panels: Panel[]) {
     panelId: string,
     key: string,
     _reason: string,
-    afterSwitch?: (instance: HostInstance) => Promise<boolean>,
+    afterSwitch?: (instance: HostInstance) => Promise<void>,
   ): Promise<HostInstance | undefined> => {
     const panel = byId.get(panelId)!;
     const instance = panel.instance as unknown as { session: unknown; folder: FolderTarget };
@@ -77,8 +78,18 @@ function harness(...panels: Panel[]) {
     order.push("gate-open");
     return panel.instance;
   });
+  const getPanels = () => new Map(panels.map((p) => [p.panelId, p.instance]));
+  const storageManager = {
+    folderOf: async (id: string) => folderOfSession.get(id),
+    getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
+    getPromptHistory: async () => ({ history: [], hasMore: false }),
+    broadcastPromptHistoryEntry: vi.fn(),
+    invalidateSessionsCache: vi.fn(),
+    markSessionsChanged: vi.fn(),
+    updateSessionTag: vi.fn(),
+  };
   const deps = {
-    getPanels: () => new Map(panels.map((p) => [p.panelId, p.instance])),
+    getPanels,
     switchPanelFolder,
     postWorkspaceFolderState: vi.fn(),
     folderRegistry: { resolve: (key: string) => [FOLDER_A, FOLDER_B].find((f) => f.key === key) },
@@ -87,14 +98,12 @@ function harness(...panels: Panel[]) {
       order.push(message.type);
     },
     historyManager: { loadSessionHistory },
-    storageManager: {
-      folderOf: async (id: string) => folderOfSession.get(id),
-      getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),
-      getPromptHistory: async () => ({ history: [], hasMore: false }),
-      broadcastPromptHistoryEntry: vi.fn(),
-      invalidateSessionsCache: vi.fn(),
-      updateSessionTagInCache: vi.fn(),
-    },
+    storageManager,
+    sessionCatalog: createSessionCatalog({
+      storage: storageManager as unknown as Parameters<typeof createSessionCatalog>[0]["storage"],
+      getPanels: getPanels as never,
+      notifications: platform.notifications,
+    }),
     settingsManager: {
       sendCurrentSettings: async () => undefined,
       sendAvailableModels: () => undefined,
@@ -292,21 +301,6 @@ describe("resuming a conversation stored under another folder", () => {
     expect(h.loadSessionHistory).toHaveBeenCalledWith("/b", "sess-x", mine.host, mine.session);
   });
 
-  it("reports the claim to the switch, so the resumed session is not started early", async () => {
-    const mine = makePanel("host-1", null);
-    const h = harness(mine);
-    h.folderOfSession.set("sess-b", FOLDER_B);
-    let claimed: boolean | undefined;
-    h.switchPanelFolder.mockImplementationOnce(async (_panelId, _key, _reason, afterSwitch) => {
-      claimed = await afterSwitch?.(mine.instance);
-      return mine.instance;
-    });
-
-    await h.chat.resumeSession!(resume("sess-b"), mine.ctx);
-
-    expect(claimed).toBe(true);
-  });
-
   it("reveals the holder before any switch when the session is already open elsewhere", async () => {
     const mine = makePanel("host-1", null);
     const other = makePanel("host-2", "sess-b");
@@ -385,6 +379,7 @@ describe("a conversation another Damocles window holds", () => {
   it("rename and tag: refused, and the file is not written", async () => {
     const mine = makePanel("host-1", "sess-mine");
     const h = harness(mine);
+    h.folderOfSession.set("sess-held", FOLDER_A);
     heldByAnotherWindow("sess-held");
     vi.mocked(renamePiSession).mockClear();
     vi.mocked(tagPiSession).mockClear();

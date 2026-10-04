@@ -30,6 +30,13 @@ export function modelSeriesKey(modelKey: string | null): string {
   return modelKey ?? UNKNOWN_MODEL_SERIES;
 }
 
+/** The pi provider of a `provider/model` key; null for the unknown and other series and token-type keys. */
+export function modelProvider(key: string | null): string | null {
+  if (key === null) return null;
+  const slash = key.indexOf('/');
+  return slash > 0 ? key.slice(0, slash) : null;
+}
+
 export interface RankedModel {
   /** Series key: the model key, `UNKNOWN_MODEL_SERIES`, or `OTHER_MODELS_SERIES` for the grouped tail. */
   key: string;

@@ -112,7 +112,7 @@ function attachPanel(internals: Internals, panelId: string, fsPath: string, disp
   const posted: Posted[] = [];
   internals.panelManager.getPanels().set(panelId, {
     host: { postMessage: async (m: Posted) => { posted.push(m); return true; }, close: () => {}, setFolderLabel: () => {} },
-    session: { dispose, hasConversation: () => false, persistenceSessionId: null },
+    session: { dispose, hasConversation: () => false, persistenceSessionId: null, setActivityListener: () => {}, setTurnSettledListener: () => {} },
     folder: { key: folderKey(fsPath), fsPath, name: path.basename(fsPath), label: path.basename(fsPath), projectScope: true },
     permissionHandler: { dispose: async () => {} },
     ideContextManager: { dispose: () => {} },

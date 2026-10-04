@@ -2,18 +2,9 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import {
-  IconClipboard,
-  IconXCircle,
-  IconBan,
-  IconCheck,
-  IconPencil,
-  IconMessageSquare,
-  IconEye,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { Ban, CheckCheck, ChevronRight, ClipboardList, Eye, MessageSquare, Pencil } from 'lucide-vue-next';
 import { useToolCardStatus } from '@/composables/useToolCardStatus';
+import { usePlanSummary } from '@/composables/usePlanSummary';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -29,14 +20,39 @@ const permissionStore = usePermissionStore();
 const approvedPlan = computed(() => permissionStore.getApprovedPlan(props.toolCall.id));
 const approvalMode = computed(() => approvedPlan.value?.approvalMode ?? null);
 
-const isPending = computed(() => props.toolCall.status === 'pending');
-const isRunning = computed(() => props.toolCall.status === 'running');
 const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_approval');
 const isCompleted = computed(() => props.toolCall.status === 'completed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
 
-const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.toolCall.status);
+const planSummary = usePlanSummary(() => props.toolCall.id);
+const subtitle = computed(() => [t('exitPlanMode.plan'), ...planSummary.value].join(' · '));
+
+const { statusIcon, statusMotion, cardClass } = useToolCardStatus(() => props.toolCall.status);
+
+// The reference's plan card rings in accent while it awaits review, where a tool row borders in warning.
+const frameClass = computed(() => (isAwaitingApproval.value
+  ? 'border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] shadow-[0_0_0_3px_var(--d-accent-soft)]'
+  : cardClass.value));
+
+const SUCCESS_CHIP = 'bg-[color-mix(in_srgb,var(--d-success)_14%,transparent)] text-(--d-success-text)';
+const WARNING_CHIP = 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)';
+const NEUTRAL_CHIP = 'bg-(--d-hover) text-(--d-muted)';
+
+const CHIPS: Record<ToolCall['status'], { labelKey: string; class: string }> = {
+  awaiting_approval: { labelKey: 'exitPlanMode.chipAwaiting', class: WARNING_CHIP },
+  approved: { labelKey: 'exitPlanMode.chipApproved', class: SUCCESS_CHIP },
+  completed: { labelKey: 'exitPlanMode.chipApproved', class: SUCCESS_CHIP },
+  denied: { labelKey: 'exitPlanMode.chipRevising', class: WARNING_CHIP },
+  abandoned: { labelKey: 'exitPlanMode.chipExited', class: NEUTRAL_CHIP },
+  cancelled: { labelKey: 'cards.status.stopped', class: NEUTRAL_CHIP },
+  failed: { labelKey: 'cards.status.failed', class: NEUTRAL_CHIP },
+  unrecorded: { labelKey: 'toolCall.outcomeUnrecorded', class: NEUTRAL_CHIP },
+  pending: { labelKey: 'cards.status.running', class: NEUTRAL_CHIP },
+  running: { labelKey: 'cards.status.running', class: NEUTRAL_CHIP },
+};
+
+const chip = computed(() => CHIPS[props.toolCall.status]);
 
 const headerText = computed(() => {
   if (isCompleted.value) return t('exitPlanMode.approved');
@@ -52,7 +68,7 @@ const approvalModeLabel = computed(() => {
 
 const approvalModeIcon = computed(() => {
   if (!approvalMode.value) return null;
-  return approvalMode.value === 'acceptEdits' ? IconCheck : IconPencil;
+  return approvalMode.value === 'acceptEdits' ? CheckCheck : Pencil;
 });
 
 const isClickable = computed(() => isAwaitingApproval.value && permissionStore.pendingPlanApproval !== null);
@@ -69,64 +85,120 @@ function handleViewPlan() {
 </script>
 
 <template>
-  <Card class="text-sm overflow-hidden" :class="[cardClass, isClickable && 'cursor-pointer hover:border-primary/70 transition-colors ring-1 ring-primary/30']" @click="handleCardClick">
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-primary/10 border-b border-border/50 space-y-0">
-      <IconClipboard :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium flex-1">{{ headerText }}</span>
-
-      <LoadingSpinner v-if="isPending || isRunning || isAwaitingApproval" :size="16" :class="statusClass" class="shrink-0" />
-      <component v-else-if="statusIcon" :is="statusIcon" :size="16" :class="statusClass" class="shrink-0" />
-    </CardHeader>
-
-    <CardContent class="p-0">
-      <!-- View plan button (when completed) — opens the full on-disk plan in the plan overlay -->
-      <div v-if="isCompleted" class="px-3 py-2">
-        <button
-          type="button"
-          class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer"
-          @click="handleViewPlan"
-        >
-          <IconEye :size="14" />
-          <span>{{ t('exitPlanMode.viewPlan') }}</span>
-        </button>
-      </div>
-
-      <!-- Approval mode indicator (when completed) -->
-      <div v-if="isCompleted && approvalModeLabel" class="px-3 py-2 bg-success/10 border-t border-success/20">
-        <div class="flex items-center gap-2 text-xs text-success">
-          <component :is="approvalModeIcon" :size="12" />
-          <span>{{ approvalModeLabel }}</span>
+  <div
+    class="overflow-hidden rounded-xl border bg-(--d-card) transition-[border-color,box-shadow] duration-200"
+    :class="[
+      frameClass,
+      isClickable && 'cursor-pointer hover:border-(--d-border2) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--d-accent)',
+    ]"
+    :role="isClickable ? 'button' : undefined"
+    :tabindex="isClickable ? 0 : undefined"
+    :aria-label="isClickable ? t('cards.plan.review') : undefined"
+    data-testid="plan-card"
+    @click="handleCardClick"
+    @keydown.enter.self="handleCardClick"
+    @keydown.space.self.prevent="handleCardClick"
+  >
+    <div class="flex items-center gap-2.5 px-3 py-2.25">
+      <span
+        class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+        aria-hidden="true"
+      >
+        <ClipboardList class="size-3.5" />
+      </span>
+      <div class="flex min-w-0 flex-1 flex-col gap-px">
+        <div class="truncate text-13 font-semibold">
+          {{ headerText }}
+        </div>
+        <div class="truncate text-11 text-(--d-faint)">
+          {{ subtitle }}
         </div>
       </div>
+      <span
+        class="flex flex-none items-center gap-1.25 rounded-full px-2 py-0.5 text-11 font-medium"
+        :class="chip.class"
+        data-testid="plan-card-status"
+      >
+        <component
+          :is="statusIcon"
+          class="size-2.75"
+          :class="statusMotion"
+          aria-hidden="true"
+        />
+        {{ t(chip.labelKey) }}
+      </span>
+    </div>
 
-      <!-- Status messages -->
-      <div v-if="isAwaitingApproval" class="px-3 py-2 bg-primary/10 border-t border-primary/20">
-        <div class="flex items-center gap-2 text-xs text-primary">
-          <span class="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span>{{ isClickable ? t('exitPlanMode.clickToReview') : t('exitPlanMode.waitingApproval') }}</span>
-        </div>
-      </div>
+    <div
+      v-if="isAwaitingApproval"
+      class="flex items-center gap-2 border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs text-(--d-accent)"
+    >
+      <span
+        class="d-pulsing size-1.75 flex-none rounded-full bg-(--d-accent)"
+        aria-hidden="true"
+      />
+      <span class="flex-1">{{ isClickable ? t('exitPlanMode.clickToReview') : t('exitPlanMode.waitingApproval') }}</span>
+      <span
+        v-if="isClickable"
+        class="flex items-center gap-1 font-semibold"
+        aria-hidden="true"
+      >
+        {{ t('exitPlanMode.review') }}
+        <ChevronRight class="size-3" />
+      </span>
+    </div>
 
-      <div v-else-if="isDenied" class="px-3 py-2 bg-error/10 border-t border-error/20">
-        <div v-if="toolCall.feedback" class="space-y-1">
-          <div class="flex items-center gap-2 text-xs text-error/80">
-            <IconMessageSquare :size="12" />
-            <span>{{ t('exitPlanMode.feedbackSent') }}</span>
-          </div>
-          <p class="text-xs text-foreground/80 pl-5 italic">"{{ toolCall.feedback }}"</p>
-        </div>
-        <div v-else class="flex items-center gap-2 text-xs text-error/80">
-          <IconXCircle :size="12" />
-          <span>{{ t('exitPlanMode.revisionRequested') }}</span>
-        </div>
-      </div>
+    <div
+      v-else-if="isCompleted"
+      class="flex flex-wrap items-center gap-x-3.5 gap-y-1.5 border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs"
+    >
+      <span
+        v-if="approvalModeLabel"
+        class="flex items-center gap-1.5 text-(--d-success)"
+      >
+        <component
+          :is="approvalModeIcon"
+          class="size-3"
+          aria-hidden="true"
+        />{{ approvalModeLabel }}
+      </span>
+      <span class="flex-1" />
+      <button
+        type="button"
+        class="flex items-center gap-1.25 rounded-md text-(--d-accent) hover:underline focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+        @click.stop="handleViewPlan"
+      >
+        <Eye
+          class="size-3"
+          aria-hidden="true"
+        />{{ t('exitPlanMode.viewPlan') }}
+      </button>
+    </div>
 
-      <div v-else-if="isAbandoned" class="px-3 py-2 bg-muted/30 border-t border-border/30">
-        <div class="flex items-center gap-2 text-xs text-muted-foreground">
-          <IconBan :size="12" />
-          <span>{{ t('exitPlanMode.wasExited') }}</span>
-        </div>
-      </div>
-    </CardContent>
-  </Card>
+    <div
+      v-else-if="isDenied"
+      class="flex flex-col gap-0.75 border-t border-(--d-border) pt-1.75 pr-3 pb-2.25 pl-12.5 text-xs"
+    >
+      <span class="flex items-center gap-1.5 text-(--d-warning)">
+        <MessageSquare
+          class="size-3"
+          aria-hidden="true"
+        />{{ toolCall.feedback ? t('exitPlanMode.feedbackSent') : t('exitPlanMode.revisionRequested') }}
+      </span>
+      <span
+        v-if="toolCall.feedback"
+        class="text-pretty text-(--d-muted) italic"
+      >“{{ toolCall.feedback }}”</span>
+    </div>
+
+    <div
+      v-else-if="isAbandoned"
+      class="flex items-center gap-1.5 border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs text-(--d-muted)"
+    >
+      <Ban
+        class="size-3"
+        aria-hidden="true"
+      />{{ t('exitPlanMode.wasExited') }}
+    </div>
+  </div>
 </template>

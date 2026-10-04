@@ -322,3 +322,42 @@ describe('useVirtualizedMessages effort badge placement', () => {
     expect(badges([user('u1'), reply('a1', undefined), reply('a2', undefined)])).toEqual([]);
   });
 });
+
+/** The engine keys measured heights by row id, so a reply that changed id on commit would lose its height. */
+describe('useVirtualizedMessages streaming text identity', () => {
+  function rowOf(message: ChatMessage, streaming: boolean) {
+    const { items } = useVirtualizedMessages({
+      messages: ref([message]),
+      compactMarkers: ref<CompactMarker[]>([]),
+      cacheMissNotices: ref<CacheMissNotice[]>([]),
+      compactionAbortedNotices: ref<CompactionAbortedNotice[]>([]),
+      thinkingDroppedNotices: ref<ThinkingDroppedNotice[]>([]),
+      streamingMessageId: ref<string | null>(streaming ? message.id : null),
+    });
+    return items.value.filter((item) => item.type === 'streaming-text' || item.type === 'text-block').map((item) => `${item.type}:${item.id}`);
+  }
+
+  it('keeps the row id when the text of a message with no blocks yet is committed', () => {
+    const streaming: ChatMessage = { id: 'a1', role: 'assistant', content: 'partial', contentBlocks: [], timestamp: 1 };
+    const committed: ChatMessage = { ...streaming, content: 'partial reply', contentBlocks: [{ type: 'text', text: 'partial reply' }] };
+
+    expect(rowOf(streaming, true)).toEqual(['streaming-text:text-a1-0']);
+    expect(rowOf(committed, false)).toEqual(['text-block:text-a1-0']);
+  });
+
+  it('keeps the row id when trailing text after a tool call is committed as the next block', () => {
+    const tool = { type: 'tool_use' as const, id: 't1', name: 'Read', input: {} };
+    const streaming: ChatMessage = {
+      id: 'a1',
+      role: 'assistant',
+      content: 'beforeafter',
+      contentBlocks: [{ type: 'text', text: 'before' }, tool],
+      toolCalls: [{ id: 't1', name: 'Read', input: {}, status: 'completed' }],
+      timestamp: 1,
+    };
+    const committed: ChatMessage = { ...streaming, contentBlocks: [{ type: 'text', text: 'before' }, tool, { type: 'text', text: 'after' }] };
+
+    expect(rowOf(streaming, true)).toEqual(['text-block:text-a1-0', 'streaming-text:text-a1-2']);
+    expect(rowOf(committed, false)).toEqual(['text-block:text-a1-0', 'text-block:text-a1-2']);
+  });
+});

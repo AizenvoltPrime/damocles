@@ -3,6 +3,8 @@ import tseslint from 'typescript-eslint';
 import vue from 'eslint-plugin-vue';
 import vueParser from 'vue-eslint-parser';
 import globals from 'globals';
+import betterTailwindcss from 'eslint-plugin-better-tailwindcss';
+import { getDefaultSelectors } from 'eslint-plugin-better-tailwindcss/defaults';
 
 const VSCODE_ONLY = 'Only src/vscode may import vscode; core code reaches the host through src/platform.';
 const NO_ELECTRON = 'Only src/desktop may import electron.';
@@ -31,6 +33,24 @@ function electronBan(message) {
 }
 const OUTSIDE_DESKTOP = electronBan(NO_ELECTRON);
 const IN_SHELL = electronBan(NO_ELECTRON_SHELL);
+
+// Webview sizes are rem so they follow the host font (docs/invariants.md "Design tokens"). A px arbitrary value is banned in a
+// variant or a utility, except a border, ring or outline width up to 1.5px, a blur, or a shadow.
+const NONZERO_PX = String.raw`(?<![\d.])(?:\d*\.)?\d*[1-9]\d*px`;
+const PX_EXEMPT = String.raw`(?:(?:border|ring|outline)(?:-[a-z]+)?-\[(?:0?\.\d+|1(?:\.[0-5]0*)?)px\]|(?:backdrop-)?blur-\[[^\]]*\]|(?:drop-|inset-)?shadow-\[[^\]]*\])`;
+const PX_CLASS = [
+  String.raw`\[[^\]]*${NONZERO_PX}[^\]]*\](?:\/[\w-]+)?:`,
+  String.raw`(?:^|:)(?!!?-?${PX_EXEMPT}(?:\/[\w.-]+)?!?$)[^:\[]*\[[^\]]*${NONZERO_PX}[^\]]*\][^:]*$`,
+].join('|');
+const PX_MESSAGE = 'Use rem (px / 16) so the size follows the host font; px is only for border, ring and outline widths up to 1.5px, blur and shadows (docs/invariants.md "Design tokens").';
+// A viewport variant compiles to a media query, whose rem ignores the root font; a container variant (@…) follows it.
+const VIEWPORT_VARIANT = String.raw`(?:^|:)(?:(?:max-)?(?:sm|md|lg|xl|2xl)|(?:min|max)-\[[^\]]*\]|\[@media[^\]]*\]):`;
+const VIEWPORT_MESSAGE = 'Use a container variant (@min-[…]/app: for the panel width) instead of a viewport one: a media query ignores the host font (docs/invariants.md "Design tokens").';
+// Components whose `size` prop is a variant name, never a px number.
+const SIZE_VARIANT_COMPONENTS = ['Button', 'Toggle', 'ToggleGroup', 'ToggleGroupItem', 'ToggleSwitch', 'SegmentedToggle'];
+const NOT_SIZE_VARIANT = `/^(?!(?:${SIZE_VARIANT_COMPONENTS.join('|')})$)/`;
+const ICON_SIZE_MESSAGE = 'Size an icon with a size-* class (px / 4) so it follows the host font, never a size prop (docs/invariants.md "Design tokens").';
+const OFFSET_MESSAGE = 'A popper offset is px; pass remPx(rem) from @/composables/useRemPx so it follows the host font (docs/invariants.md "Design tokens").';
 
 export default [
   {
@@ -140,6 +160,39 @@ export default [
         patterns: [OUTSIDE_DESKTOP.pattern],
       }],
       'no-restricted-syntax': ['error', ...OUTSIDE_DESKTOP.syntax],
+    },
+  },
+  {
+    files: ['src/webview/**/*.{ts,vue}'],
+    ignores: ['src/webview/**/__tests__/**'],
+    plugins: { 'better-tailwindcss': betterTailwindcss },
+    settings: {
+      'better-tailwindcss': {
+        entryPoint: 'src/webview/style.css',
+        rootFontSize: 16,
+        // The defaults (class attributes, cn, cva, ...) plus UPPER_SNAKE constants that hold class strings or maps of them.
+        selectors: [
+          ...getDefaultSelectors(),
+          { kind: 'variable', name: '^[A-Z][A-Z0-9_]*$', match: [{ type: 'strings' }, { type: 'objectValues' }] },
+        ],
+      },
+    },
+    rules: {
+      // Tailwind folds a 0.25rem radius into rounded-lg, which is 6px in this theme; the 4px radius is rounded-md.
+      'better-tailwindcss/enforce-canonical-classes': ['error', { ignore: [String.raw`^(?:.*:)?rounded(?:-[a-z]+)?-\[0?\.25rem\]$`] }],
+      'better-tailwindcss/no-restricted-classes': ['error', {
+        restrict: [{ pattern: PX_CLASS, message: PX_MESSAGE }, { pattern: VIEWPORT_VARIANT, message: VIEWPORT_MESSAGE }],
+      }],
+      'vue/no-restricted-v-bind': ['error', { argument: 'size', element: NOT_SIZE_VARIANT, message: ICON_SIZE_MESSAGE }],
+      'vue/no-restricted-static-attribute': ['error', { key: 'size', value: '/^[0-9]/', message: ICON_SIZE_MESSAGE }],
+      'vue/no-restricted-syntax': ['error', {
+        selector: "VAttribute[directive=true][key.argument.name=/^(?:side|align)-offset$/] > VExpressionContainer > Literal[value!=0]",
+        message: OFFSET_MESSAGE,
+      }],
+      'no-restricted-syntax': ['error', ...VSCODE_SYNTAX, ...OUTSIDE_DESKTOP.syntax,
+        { selector: `CallExpression[callee.name='h'][arguments.0.name=${NOT_SIZE_VARIANT}] > ObjectExpression > Property[key.name='size']`, message: ICON_SIZE_MESSAGE },
+        { selector: "Property[key.name=/^(?:side|align)Offset$/] > Literal[value!=0]", message: OFFSET_MESSAGE },
+      ],
     },
   },
 ];

@@ -53,7 +53,7 @@ describe("ConfigManager — team role settings", () => {
       // deepseek-v4-pro supports only ['high','max']; a stored 'xhigh' must be cleared.
       record["team.implementorEffort"] = "xhigh";
 
-      await manager.handleSetTeamRoleModel("implementor", "deepseek-v4-pro");
+      await manager.handleSetTeamRoleModel("implementor", "deepseek-v4-pro", undefined);
 
       expect(record["team.implementorModel"]).toBe("deepseek-v4-pro");
       expect(record["team.implementorEffort"]).toBe("");
@@ -62,7 +62,7 @@ describe("ConfigManager — team role settings", () => {
     it("preserves a sibling effort the new model still supports", async () => {
       record["team.leadEffort"] = "high";
 
-      await manager.handleSetTeamRoleModel("lead", "deepseek-v4-pro");
+      await manager.handleSetTeamRoleModel("lead", "deepseek-v4-pro", undefined);
 
       expect(record["team.leadModel"]).toBe("deepseek-v4-pro");
       expect(record["team.leadEffort"]).toBe("high");
@@ -70,12 +70,12 @@ describe("ConfigManager — team role settings", () => {
 
     it("throws on an unknown model", async () => {
       await expect(
-        manager.handleSetTeamRoleModel("reviewer", "not-a-real-model"),
+        manager.handleSetTeamRoleModel("reviewer", "not-a-real-model", undefined),
       ).rejects.toThrow(/not a known model/);
     });
 
     it("accepts empty string (active panel model) without throwing", async () => {
-      await manager.handleSetTeamRoleModel("lead", "");
+      await manager.handleSetTeamRoleModel("lead", "", undefined);
       expect(record["team.leadModel"]).toBe("");
     });
   });
@@ -84,46 +84,46 @@ describe("ConfigManager — team role settings", () => {
     it("throws on an unsupported effort for the effective model", async () => {
       record["team.reviewerModel"] = "deepseek-v4-pro"; // supports only ['high','max']
       await expect(
-        manager.handleSetTeamRoleEffort("reviewer", "low"),
+        manager.handleSetTeamRoleEffort("reviewer", "low", undefined),
       ).rejects.toThrow(/not supported/);
     });
 
     it("writes empty string for a null effort", async () => {
       record["team.leadModel"] = "gpt-6.1-sol";
-      await manager.handleSetTeamRoleEffort("lead", null);
+      await manager.handleSetTeamRoleEffort("lead", null, undefined);
       expect(record["team.leadEffort"]).toBe("");
     });
 
     it("writes the effort string for a supported (model, effort) pair", async () => {
       record["team.leadModel"] = "gpt-6.1-sol"; // supports xhigh
-      await manager.handleSetTeamRoleEffort("lead", "xhigh");
+      await manager.handleSetTeamRoleEffort("lead", "xhigh", undefined);
       expect(record["team.leadEffort"]).toBe("xhigh");
     });
 
     it("falls back to the active panel model when the role model is empty", async () => {
       record["model"] = "gpt-6.1-sol";
       // role model empty → effective model is the active panel model (gpt-6.1-sol, supports high)
-      await manager.handleSetTeamRoleEffort("implementor", "high");
+      await manager.handleSetTeamRoleEffort("implementor", "high", undefined);
       expect(record["team.implementorEffort"]).toBe("high");
     });
 
     it("fresh install (no workspace model, empty role model) validates against the fallback model", async () => {
       // Regression: with damocles.model unset AND the role model empty, the effective model must fall
       // back to DEFAULT_FALLBACK_MODEL (Opus) instead of "" — validating against "" threw before.
-      await manager.handleSetTeamRoleEffort("lead", "ultracode"); // Opus supports ultracode
+      await manager.handleSetTeamRoleEffort("lead", "ultracode", undefined); // Opus supports ultracode
       expect(record["team.leadEffort"]).toBe("ultracode");
     });
 
     it("fresh install still rejects an effort the fallback model does not support", async () => {
       // DeepSeek-only 'low' is unsupported by the Opus fallback → must still throw loudly.
-      await expect(manager.handleSetTeamRoleEffort("reviewer", "none")).rejects.toThrow(/not supported/);
+      await expect(manager.handleSetTeamRoleEffort("reviewer", "none", undefined)).rejects.toThrow(/not supported/);
     });
 
     it("migrates a stored DeepSeek xhigh to max at read time (parity with runtime resolver)", async () => {
       record["team.reviewerModel"] = "deepseek-v4-pro"; // xhigh renamed to max in pi 0.80.6
       record["team.reviewerEffort"] = "xhigh";
 
-      await manager.sendCurrentSettings(hostStub, permStub);
+      await manager.sendCurrentSettings(hostStub, permStub, undefined);
 
       const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;
@@ -136,7 +136,7 @@ describe("ConfigManager — team role settings", () => {
       record["team.leadModel"] = "gpt-5.5"; // legacy → gpt-6.1-sol
       record["team.leadEffort"] = "ultracode"; // gpt-6.1-sol does NOT support ultracode
 
-      await manager.sendCurrentSettings(hostStub, permStub);
+      await manager.sendCurrentSettings(hostStub, permStub, undefined);
 
       expect(postMessage).toHaveBeenCalledTimes(1);
       const [, msg] = postMessage.mock.calls[0]!;
@@ -150,7 +150,7 @@ describe("ConfigManager — team role settings", () => {
       record["team.reviewerModel"] = "deepseek-v4-pro";
       record["team.reviewerEffort"] = "max";
 
-      await manager.sendCurrentSettings(hostStub, permStub);
+      await manager.sendCurrentSettings(hostStub, permStub, undefined);
 
       const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;
@@ -159,7 +159,7 @@ describe("ConfigManager — team role settings", () => {
     });
 
     it("defaults all roles to empty model + null effort when nothing is stored", async () => {
-      await manager.sendCurrentSettings(hostStub, permStub);
+      await manager.sendCurrentSettings(hostStub, permStub, undefined);
 
       const [, msg] = postMessage.mock.calls[0]!;
       const team = (msg.settings as ExtensionSettings).team;

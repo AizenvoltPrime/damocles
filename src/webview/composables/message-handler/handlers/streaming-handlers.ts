@@ -1,12 +1,12 @@
 import { i18n } from "@/i18n";
-import type { HandlerRegistry, ScrollBehavior } from "../types";
+import type { HandlerRegistry } from "../types";
 import type { ChatMessage } from "@shared/types/session";
 import { endReplayIngest } from "@/utils/perf";
 
 export function createStreamingHandlers(): Partial<HandlerRegistry> {
   const { t } = i18n.global;
   return {
-    userMessage: (msg, ctx): ScrollBehavior => {
+    userMessage: (msg, ctx) => {
       ctx.stores.streamingStore.addUserMessage(
         msg.contentBlocks ?? msg.content,
         false,
@@ -17,7 +17,6 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         undefined,
         msg.isCommandEcho,
       );
-      return { forceScrollToBottom: true };
     },
 
     userMessageIdAssigned: (msg, ctx) => {

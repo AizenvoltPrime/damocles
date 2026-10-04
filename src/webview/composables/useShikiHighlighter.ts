@@ -6,11 +6,18 @@ import {
   bundledLanguages,
 } from 'shiki';
 import { perfSpan, resourceFields } from '@/utils/perf';
+import { DAMOCLES_SHIKI_THEME, damoclesShikiTheme } from './damoclesShikiTheme';
 
 export type ExtendedLanguage = BundledLanguage | 'txt';
 
 type SupportedTheme = Extract<BundledTheme,
   'github-dark' | 'github-light' | 'solarized-dark' | 'solarized-light' | 'nord' | 'min-dark' | 'min-light'>;
+
+export type HighlightTheme = SupportedTheme | typeof DAMOCLES_SHIKI_THEME;
+
+function themeInput(theme: HighlightTheme): SupportedTheme | typeof damoclesShikiTheme {
+  return theme === DAMOCLES_SHIKI_THEME ? damoclesShikiTheme : theme;
+}
 
 const languageAliases: Record<string, ExtendedLanguage> = {
   text: 'txt',
@@ -79,8 +86,8 @@ const state: {
   initPromise: Promise<Highlighter> | null;
   loadedLanguages: Set<ExtendedLanguage>;
   pendingLanguages: Map<ExtendedLanguage, Promise<void>>;
-  loadedThemes: Set<SupportedTheme>;
-  pendingThemes: Map<SupportedTheme, Promise<void>>;
+  loadedThemes: Set<HighlightTheme>;
+  pendingThemes: Map<HighlightTheme, Promise<void>>;
 } = {
   initPromise: null,
   loadedLanguages: new Set(['txt']),
@@ -90,7 +97,7 @@ const state: {
 };
 
 /** Whether `getHighlighter(language, theme)` would resolve without loading anything. */
-export function isHighlighterReady(language: string, theme: SupportedTheme): boolean {
+export function isHighlighterReady(language: string, theme: HighlightTheme): boolean {
   return state.loadedThemes.has(theme) && state.loadedLanguages.has(normalizeLanguage(language));
 }
 
@@ -107,14 +114,14 @@ function loadOnce<K>(key: K, loaded: Set<K>, pending: Map<K, Promise<void>>, loa
 }
 
 /** A highlighter with `language` and `theme` loaded. */
-export async function getHighlighter(language: string | undefined, theme: SupportedTheme): Promise<Highlighter> {
+export async function getHighlighter(language: string | undefined, theme: HighlightTheme): Promise<Highlighter> {
   const lang = normalizeLanguage(language);
   const firstHighlightSpan = state.initPromise ? null : perfSpan('shiki.firstHighlight');
   let initMs: number | undefined;
 
   if (!state.initPromise) {
     const initStart = performance.now();
-    state.initPromise = createHighlighter({ themes: [theme], langs: [] }).then(
+    state.initPromise = createHighlighter({ themes: [themeInput(theme)], langs: [] }).then(
       (instance) => {
         initMs = Math.round(performance.now() - initStart);
         state.loadedThemes.add(theme);
@@ -141,7 +148,7 @@ export async function getHighlighter(language: string | undefined, theme: Suppor
       }),
       loadOnce(theme, state.loadedThemes, state.pendingThemes, async () => {
         try {
-          await instance.loadTheme(theme);
+          await instance.loadTheme(themeInput(theme));
         } catch (error) {
           console.error(`[Shiki] Failed to load theme ${theme}:`, error);
           throw error;
@@ -155,6 +162,11 @@ export async function getHighlighter(language: string | undefined, theme: Suppor
     firstHighlightSpan?.end({ lang, theme, failed: true });
     throw error;
   }
+}
+
+/** The desktop's token-fed theme (HostCapabilities.damoclesTheme), else one matched to the VS Code theme. */
+export function codeHighlightTheme(damoclesTheme: boolean): HighlightTheme {
+  return damoclesTheme ? DAMOCLES_SHIKI_THEME : getShikiTheme();
 }
 
 export function getShikiTheme(): SupportedTheme {

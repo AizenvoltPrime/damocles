@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 import PermissionPrompt from '../PermissionPrompt.vue';
 import { i18n } from '@/i18n';
 
@@ -11,7 +12,7 @@ const mounted: VueWrapper[] = [];
 function prompt(props: { toolName: string; toolInput: Record<string, unknown>; agentDescription?: string }): VueWrapper {
   const wrapper = mount(PermissionPrompt, {
     props: { visible: true, toolUseId: 'r-1', ...props },
-    global: { plugins: [i18n], stubs: { PermissionDestinationPicker: true } },
+    global: { plugins: [i18n, createPinia()], stubs: { PermissionDestinationPicker: true } },
     attachTo: document.body,
   });
   mounted.push(wrapper);
@@ -27,8 +28,14 @@ describe('PermissionPrompt for a tool with no dedicated view', () => {
     const wrapper = prompt({ toolName: 'Read', toolInput: { file_path: 'secrets/key.pem' } });
 
     expect(wrapper.text()).toContain(i18n.global.t('permission.useTool', { tool: 'Read' }));
-    expect(wrapper.text()).not.toContain(i18n.global.t('permission.editFile'));
+    expect(wrapper.text()).not.toContain(i18n.global.t('prompts.permission.allowEdit'));
     expect(JSON.parse(wrapper.get('[data-testid="tool-permission-input"]').text())).toEqual({ file_path: 'secrets/key.pem' });
+  });
+
+  it('names the tool once, in the title, with no subtitle repeating it', () => {
+    const wrapper = prompt({ toolName: 'Read', toolInput: { file_path: 'secrets/key.pem' } });
+
+    expect(wrapper.find('[data-testid="permission-subtitle"]').exists()).toBe(false);
   });
 
   it('names the subagent asking', () => {

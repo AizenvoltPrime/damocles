@@ -37,7 +37,7 @@ const { zIndex, root, titleId } = useOverlayDialog(() => emit('close'));
         class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
         @click="emit('close')"
       >
-        <IconArrowLeft :size="18" />
+        <IconArrowLeft class="size-4.5" />
       </Button>
       <div class="flex-1 min-w-0">
         <h2

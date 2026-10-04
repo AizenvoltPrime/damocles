@@ -56,7 +56,7 @@ describe('StatsActivityHeatmap', () => {
     expect(shade(byCost, 0, 9)).toBe(100);
     expect(shade(byCost, 6, 23)).toBeLessThan(shade(byCost, 0, 9));
     expect(cell(byCost, 3, 3).attributes('style')).toBeUndefined();
-    expect(cell(byCost, 3, 3).classes()).toContain('bg-muted/40');
+    expect(cell(byCost, 3, 3).classes()).toContain('bg-[color-mix(in_srgb,var(--d-hover)_40%,transparent)]');
     expect(cell(byCost, 0, 9).classes().join(' ')).toContain('var(--chart-1)');
 
     const byTokens = mountHeatmap('tokens');

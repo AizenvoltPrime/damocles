@@ -1,26 +1,31 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-vi.mock('vue3-lottie', () => ({ Vue3Lottie: { name: 'Vue3Lottie', render: () => null } }));
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createApp, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import { i18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { createHandlerRegistry } from '@/composables/message-handler/handler-registry';
 import type { HandlerContext, HandlerRegistry } from '@/composables/message-handler/types';
 import ChatInput from '@/components/ChatInput.vue';
-import SettingsPanel from '@/components/SettingsPanel.vue';
+import SettingsModal from '@/components/settings/SettingsModal.vue';
+import { NO_HOST_SETTINGS } from '@/components/settings/settings-rows';
+import type { SettingsSectionId } from '@shared/settings-sections';
 import { VSCODE_HOST_CAPABILITIES, type ExtensionToWebviewMessage, type HostCapabilities } from '@shared/types/messages';
 
 const DESKTOP_MAC: HostCapabilities = {
   voice: false,
   hostSpeechExtensions: false,
   hostSettingsEditor: false,
-  markdownPreview: false,
   diffReview: true,
   settingsSources: true,
   monaco: true,
   ideContext: false,
+  damoclesTheme: true,
+  settingsInPanel: false,
+  historyInPanel: false,
+  folderPickerInPanel: false,
 };
 
 function buildRegistry(): HandlerRegistry {
@@ -58,11 +63,14 @@ describe('host capabilities', () => {
       voice: true,
       hostSpeechExtensions: true,
       hostSettingsEditor: true,
-      markdownPreview: true,
       diffReview: true,
       settingsSources: false,
       monaco: false,
       ideContext: true,
+      damoclesTheme: false,
+      settingsInPanel: true,
+      historyInPanel: true,
+      folderPickerInPanel: true,
     });
   });
 
@@ -83,11 +91,33 @@ describe('host capabilities', () => {
   it('settingsUpdate stores the source files and clears them when a later update has none', () => {
     const store = useSettingsStore();
     const settings = { ...store.currentSettings, maxBudgetUsd: 3 };
-    dispatch({ type: 'settingsUpdate', settings, settingSources: { 'damocles.maxBudgetUsd': { scope: 'project', path: '/w/a/.damocles/settings.json' } } });
-    expect(store.settingSources).toEqual({ 'damocles.maxBudgetUsd': { scope: 'project', path: '/w/a/.damocles/settings.json' } });
+    dispatch({ type: 'settingsUpdate', settings, workspaceWritable: true, settingSources: { 'damocles.maxBudgetUsd': { scope: 'project', path: '/w/a/.damocles/settings.json', value: 3 } } });
+    expect(store.settingSources).toEqual({ 'damocles.maxBudgetUsd': { scope: 'project', path: '/w/a/.damocles/settings.json', value: 3 } });
 
-    dispatch({ type: 'settingsUpdate', settings });
+    dispatch({ type: 'settingsUpdate', settings, workspaceWritable: true });
     expect(store.settingSources).toEqual({});
+  });
+
+  it('openSettingsPanel opens the section it names, in the page or through the host', () => {
+    const settingsStore = useSettingsStore();
+    const uiStore = useUIStore();
+    const posted: unknown[] = [];
+    const ctx = { stores: { settingsStore, uiStore }, bridge: { postMessage: (m: unknown) => posted.push(m) } } as unknown as HandlerContext;
+    const open = buildRegistry().openSettingsPanel as (m: ExtensionToWebviewMessage, c: HandlerContext) => void;
+
+    open({ type: 'openSettingsPanel', section: 'integrations' }, ctx);
+    expect(uiStore.settingsTarget).toEqual({ section: 'integrations' });
+    settingsStore.setHostCapabilities(DESKTOP_MAC);
+    open({ type: 'openSettingsPanel', section: 'integrations' }, ctx);
+    expect(posted).toEqual([{ type: 'openAppSettings', section: 'integrations' }]);
+  });
+
+  it('settingsUpdate stores whether the Workspace section can be written', () => {
+    const store = useSettingsStore();
+    dispatch({ type: 'settingsUpdate', settings: store.currentSettings, workspaceWritable: false });
+    expect(store.workspaceWritable).toBe(false);
+    dispatch({ type: 'settingsUpdate', settings: store.currentSettings, workspaceWritable: true });
+    expect(store.workspaceWritable).toBe(true);
   });
 });
 
@@ -112,72 +142,37 @@ describe('capability consumers', () => {
     expect(micButton(wrapper).exists()).toBe(false);
   });
 
-  async function settingsPanel(): Promise<void> {
-    const store = useSettingsStore();
-    mounted.push(mount(SettingsPanel, {
-      props: {
-        settings: store.currentSettings,
-        availableModels: [],
-        visible: true,
-        activeModel: '',
-        defaultModel: '',
-        panelThinking: null,
-        panelThinkingModel: '',
-        defaultThinking: null,
-        defaultThinkingModel: '',
-        voiceConfig: store.voiceConfig,
-        voiceHasApiKey: false,
-        exploreHasApiKey: false,
-        exploreProvider: '',
-        exploreModel: '',
-        exploreEffort: '',
-      },
+  it('hide the composer\'s active-file chip when the host has no editor context', async () => {
+    const wrapper = composer();
+    expect(wrapper.find('[data-testid="composer-ide"]').exists()).toBe(true);
+
+    useSettingsStore().setHostCapabilities(DESKTOP_MAC);
+    await nextTick();
+    expect(wrapper.find('[data-testid="composer-ide"]').exists()).toBe(false);
+  });
+
+  async function settingsModal(section: SettingsSectionId): Promise<void> {
+    mounted.push(mount(SettingsModal, {
+      props: { host: NO_HOST_SETTINGS, footer: { kind: 'hostSettings' }, backdrop: 'blur', target: { section } },
       attachTo: document.body,
       global: { plugins: [i18n] },
-    }) as VueWrapper);
+    }));
     await nextTick();
   }
+  const settingsRow = (id: string) => document.body.querySelector(`[data-testid="settings-row-${id}"]`);
+  const voiceNav = () => document.body.querySelector('[data-testid="settings-nav-voice"]');
 
-  it('leave the VS Code settings panel as it was', async () => {
-    await settingsPanel();
-    const text = document.body.textContent ?? '';
-
-    expect(text).toContain(i18n.global.t('settings.openVsCodeSettings'));
-    expect(text).toContain(i18n.global.t('settings.voice.title'));
-    expect(text).not.toContain(i18n.global.t('settings.source.userFileInfo'));
-    expect(text).toContain(i18n.global.t('settings.ideContext'));
-    expect(document.body.querySelector('[data-testid="setting-sources"]')).toBeNull();
+  it('keep Include active file and the Voice section in the VS Code settings modal', async () => {
+    await settingsModal('defaults');
+    expect(settingsRow('damocles.ideContext.enabled')).not.toBeNull();
+    expect(voiceNav()).not.toBeNull();
   });
 
-  it('describe the .damocles files only on a host that keeps them', async () => {
-    useSettingsStore().setHostCapabilities({ ...VSCODE_HOST_CAPABILITIES, hostSettingsEditor: false });
-    await settingsPanel();
-
-    expect(document.body.textContent ?? '').not.toContain(i18n.global.t('settings.source.userFileInfo'));
-  });
-
-  it('show each project-supplied value with its file, and drop VS Code-only and voice affordances', async () => {
-    const store = useSettingsStore();
-    store.setHostCapabilities(DESKTOP_MAC);
-    store.updateSettings(store.currentSettings, {
-      'damocles.maxBudgetUsd': { scope: 'project', path: '/w/a/.damocles/settings.json' },
-      'damocles.memory.enabled': { scope: 'local', path: '/w/a/.damocles/settings.local.json' },
-    });
-    await settingsPanel();
-    const text = document.body.textContent ?? '';
-
-    expect(text).not.toContain(i18n.global.t('settings.openVsCodeSettings'));
-    expect(text).not.toContain(i18n.global.t('settings.voice.title'));
-    expect(text).not.toContain(i18n.global.t('settings.ideContext'));
-    expect(text).toContain(i18n.global.t('settings.source.userFileInfo'));
-    const sources = document.body.querySelector('[data-testid="setting-sources"]')!.textContent ?? '';
-    expect(sources).toContain('damocles.maxBudgetUsd');
-    expect(sources).toContain('/w/a/.damocles/settings.json');
-    expect(sources).toContain('damocles.memory.enabled');
-    expect(sources).toContain('/w/a/.damocles/settings.local.json');
-
-    const budgetLabel = [...document.body.querySelectorAll('label')].find((l) => l.textContent?.startsWith(i18n.global.t('settings.budgetLimit')))!;
-    expect(budgetLabel.textContent).toContain(i18n.global.t('settings.source.project'));
-    expect(budgetLabel.textContent).toContain(i18n.global.t('settings.source.fromFile', { path: '/w/a/.damocles/settings.json' }));
+  it('drop Include active file and the Voice section from the settings modal on a host without them', async () => {
+    useSettingsStore().setHostCapabilities(DESKTOP_MAC);
+    await settingsModal('defaults');
+    expect(settingsRow('damocles.ideContext.enabled')).toBeNull();
+    expect(settingsRow('damocles.dangerouslySkipPermissions')).not.toBeNull();
+    expect(voiceNav()).toBeNull();
   });
 });

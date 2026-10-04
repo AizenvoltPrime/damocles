@@ -3,6 +3,8 @@ import { computed, ref, shallowRef, onMounted, onUnmounted, watch, nextTick } fr
 import { useI18n } from 'vue-i18n';
 import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
+import { Maximize, RefreshCw } from 'lucide-vue-next';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import CompassHelpDialog from './CompassHelpDialog.vue';
 import CompassEdgeFilterPopover from './CompassEdgeFilterPopover.vue';
@@ -16,6 +18,7 @@ import type { ZoomBehavior } from 'd3-zoom';
 // the interface the same way. Both only apply when the module is in the program.
 import type {} from 'd3-transition';
 import type { CompassGraphNode, CompassEdgeKind } from '@shared/types/compass';
+import { isEditableTarget } from '@/utils/editable-target';
 
 const store = useCompassStore();
 const { postMessage } = usePlatformBridge();
@@ -156,7 +159,7 @@ async function loadD3(): Promise<void> {
 }
 
 function communityColor(communityId: number | null): string {
-	if (communityId == null) return 'var(--foreground)';
+	if (communityId == null) return 'var(--d-text)';
 	const communities = store.graphData?.communities ?? [];
 	const idx = communities.findIndex(c => c.id === communityId);
 	return idx >= 0 ? FALLBACK_COLORS[idx % FALLBACK_COLORS.length]! : FALLBACK_COLORS[communityId % FALLBACK_COLORS.length]!;
@@ -233,13 +236,6 @@ function handleSvgFocusIn(event: FocusEvent): void {
 	}
 	const firstQn = firstNodeQnInTabOrder();
 	if (firstQn) focusNodeByQn(firstQn);
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-	if (!(target instanceof HTMLElement)) return false;
-	if (target.isContentEditable) return true;
-	const tag = target.tagName;
-	return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
 function handleSvgKeyDown(event: KeyboardEvent): void {
@@ -360,7 +356,7 @@ function buildGraph(): void {
 		.selectAll<SVGLineElement, SimLink>('line')
 		.data(simLinks)
 		.join('line')
-		.attr('stroke', (d: SimLink) => EDGE_STYLE[d.kind]?.stroke ?? 'color-mix(in srgb, var(--muted-foreground) 40%, transparent)')
+		.attr('stroke', (d: SimLink) => EDGE_STYLE[d.kind]?.stroke ?? 'color-mix(in srgb, var(--d-muted) 40%, transparent)')
 		.attr('stroke-width', 1.5)
 		.attr('stroke-opacity', (d: SimLink) => EDGE_STYLE[d.kind]?.opacity ?? 0.6)
 		.attr('stroke-dasharray', (d: SimLink) => EDGE_STYLE[d.kind]?.dash ?? '')
@@ -410,7 +406,7 @@ function buildGraph(): void {
 		.join('text')
 		.text((d: SimNode) => d.name)
 		.attr('font-size', 9)
-		.attr('fill', 'var(--foreground)')
+		.attr('fill', 'var(--d-text)')
 		.attr('text-anchor', 'middle')
 		.attr('dy', labelOffset)
 		.attr('pointer-events', 'none')
@@ -524,79 +520,88 @@ function handleFitToView(): void {
 </script>
 
 <template>
-	<OverlayShell
-		:title="t('compass.graph.title')"
-		:subtitle="nodeCountText || undefined"
-		:icon="IconCompass"
-		icon-class="text-emerald-400"
-		@close="store.setActivePanel(null)"
-	>
-		<template #header-actions>
-			<div class="flex items-center gap-1">
-				<Select
-					:model-value="store.graphCommunityFilter != null ? String(store.graphCommunityFilter) : 'all'"
-					@update:model-value="(v) => store.graphCommunityFilter = v === 'all' ? null : Number(v)"
-				>
-					<SelectTrigger class="h-auto text-[10px] bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border-0 gap-1 w-auto">
-						<SelectValue :placeholder="t('compass.graph.allCommunities')" />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="all">{{ t('compass.graph.allCommunities') }}</SelectItem>
-						<SelectItem
-							v-for="c in (store.graphData?.communities ?? [])"
-							:key="c.id"
-							:value="String(c.id)"
-						>
-							{{ c.name }} ({{ c.size }})
-						</SelectItem>
-					</SelectContent>
-				</Select>
-				<button
-					class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-					@click="handleFitToView"
-				>
-					{{ t('compass.graph.fit') }}
-				</button>
-				<button
-					class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-					@click="requestGraph"
-				>
-					{{ t('compass.graph.refresh') }}
-				</button>
-				<CompassEdgeFilterPopover />
-			</div>
-		</template>
+  <OverlayShell
+    fill
+    max-width="62.5rem"
+    :title="t('compass.graph.title')"
+    :subtitle="nodeCountText || undefined"
+    :icon="IconCompass"
+    icon-class="text-(--d-success)"
+    @close="store.setActivePanel(null)"
+  >
+    <template #header-actions>
+      <div class="flex items-center gap-1.5">
+        <Select
+          :model-value="store.graphCommunityFilter != null ? String(store.graphCommunityFilter) : 'all'"
+          @update:model-value="(v) => store.graphCommunityFilter = v === 'all' ? null : Number(v)"
+        >
+          <SelectTrigger class="flex h-7.5 items-center gap-1.5 rounded-9 border border-(--d-border2) px-2.75 text-xs font-medium text-(--d-text) transition-colors hover:bg-(--d-hover) w-auto bg-transparent">
+            <SelectValue :placeholder="t('compass.graph.allCommunities')" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">
+              {{ t('compass.graph.allCommunities') }}
+            </SelectItem>
+            <SelectItem
+              v-for="c in (store.graphData?.communities ?? [])"
+              :key="c.id"
+              :value="String(c.id)"
+            >
+              {{ c.name }} ({{ c.size }})
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        <OverlayHeaderAction
+          :label="t('compass.graph.fit')"
+          :icon="Maximize"
+          @click="handleFitToView"
+        />
+        <OverlayHeaderAction
+          :label="t('compass.graph.refresh')"
+          :icon="RefreshCw"
+          :busy="store.graphLoading"
+          @click="requestGraph"
+        />
+        <CompassEdgeFilterPopover />
+      </div>
+    </template>
 
-		<div class="flex flex-col h-full">
-			<div
-				v-if="store.hasBlastRadius"
-				class="px-3 py-1.5 bg-red-500/10 text-red-400 text-[10px] flex items-center justify-between border-b border-border shrink-0"
-			>
-				<span>{{ t('compass.graph.blastRadiusActive', { count: store.blastRadius?.total_impacted ?? 0 }) }}</span>
-				<button
-					class="text-[10px] underline cursor-pointer bg-transparent border-0 text-red-400"
-					@click="store.dismissBlastRadius()"
-				>
-					{{ t('common.dismiss') }}
-				</button>
-			</div>
+    <div class="flex flex-col h-full">
+      <div
+        v-if="store.hasBlastRadius"
+        class="flex shrink-0 items-center justify-between border-b border-(--d-border) bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-4 py-2 text-xs text-(--d-danger-text)"
+      >
+        <span>{{ t('compass.graph.blastRadiusActive', { count: store.blastRadius?.total_impacted ?? 0 }) }}</span>
+        <button
+          class="font-semibold text-(--d-danger-text) underline"
+          @click="store.dismissBlastRadius()"
+        >
+          {{ t('common.dismiss') }}
+        </button>
+      </div>
 
-			<div
-				ref="containerRef"
-				tabindex="-1"
-				class="flex-1 relative outline-none"
-			>
-				<div
-					v-if="loading || store.graphLoading"
-					class="absolute inset-0 flex items-center justify-center bg-background/50"
-				>
-					<span v-if="store.buildProgress" class="text-xs text-muted-foreground">
-						{{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
-					</span>
-					<span v-else class="text-xs text-muted-foreground">{{ t('compass.graph.loading') }}</span>
-				</div>
-			</div>
-		</div>
-		<CompassHelpDialog />
-	</OverlayShell>
+      <div
+        ref="containerRef"
+        tabindex="-1"
+        class="relative min-h-0 flex-1 overflow-hidden outline-none [&>svg]:block"
+      >
+        <div
+          v-if="loading || store.graphLoading"
+          class="absolute inset-0 flex items-center justify-center bg-[color-mix(in_srgb,var(--d-bg)_50%,transparent)]"
+        >
+          <span
+            v-if="store.buildProgress"
+            class="text-xs text-(--d-muted)"
+          >
+            {{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
+          </span>
+          <span
+            v-else
+            class="text-xs text-(--d-muted)"
+          >{{ t('compass.graph.loading') }}</span>
+        </div>
+      </div>
+    </div>
+    <CompassHelpDialog />
+  </OverlayShell>
 </template>

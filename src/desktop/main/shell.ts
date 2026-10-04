@@ -1,32 +1,60 @@
 import { randomBytes } from 'node:crypto';
-import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle } from 'electron';
+import { ipcMain, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle, type WebContents } from 'electron';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { isSettingsSectionId, type SettingsSectionId } from '../../shared/settings-sections';
+import type { OverlayAnswer, OverlayRequest } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
-import { MAX_ACTION_LENGTH, MAX_ID_LENGTH, SHELL_CHANNELS, type RemoveProjectResult, type ShellState, type ShellToast } from '../preload/shell-channels';
-import type { ToastSink } from './platform/notification-service';
+import {
+  MAX_CHAT_NAME_LENGTH,
+  MAX_ID_LENGTH,
+  MAX_SEARCH_LENGTH,
+  MAX_SHELL_COORDINATE,
+  MAX_TAG_LENGTH,
+  SHELL_CHANNELS,
+  type ChatMutationResult,
+  type RemoveProjectResult,
+  type SelectChatResult,
+  type ShellChatList,
+  type ShellFocusPart,
+  type ShellLayout,
+  type ShellState,
+} from '../preload/shell-channels';
+import { parseOverlayRequest } from './overlay';
 import { APP_ORIGIN, SHELL_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl } from './security';
 import { isPanelSender } from './views';
+import { parseShellLayout } from './window-layout-store';
 
-// What the shell may ask for; every key and id is resolved against main's own lists by the implementation.
+// What the shell may ask for; every key and chat id is resolved against main's own lists by the implementation.
 export interface ShellActions {
   state(): ShellState;
   addProject(): Promise<void>;
   removeProject(key: string): Promise<RemoveProjectResult>;
   selectProject(key: string): Promise<void>;
   grantTrust(key: string): Promise<void>;
-  newTab(projectKey: string | undefined): Promise<void>;
-  selectTab(id: string): void;
-  closeTab(id: string): void;
-  togglePane(id: string): void;
-  moveTab(id: string, toIndex: number): void;
+  togglePane(): void;
+  listChats(projectKey: string): Promise<ShellChatList>;
+  searchChats(projectKey: string, query: string): Promise<ShellChatList>;
+  selectChat(chatId: string): Promise<SelectChatResult>;
+  newChat(projectKey: string | undefined): Promise<void>;
+  // name is trimmed and within bounds
+  renameChat(chatId: string, name: string): Promise<ChatMutationResult>;
+  // tag is trimmed and within bounds; null removes it
+  tagChat(chatId: string, tag: string | null): Promise<ChatMutationResult>;
+  deleteChat(chatId: string): Promise<ChatMutationResult>;
+  // request is a validated copy; focus returns to the shell page when the popup closes
+  requestOverlay(request: OverlayRequest, returnFocus: WebContents): Promise<OverlayAnswer>;
+  // window DIP
+  openAppMenu(anchor: { readonly x: number; readonly y: number }): void;
+  toggleTheme(): void;
+  toggleSidebar(): void;
+  openSettings(section: SettingsSectionId | undefined): void;
   setContentBounds(bounds: Rectangle): void;
-  resolveToast(id: string, action: string | undefined): void;
-  pendingToasts(): readonly ShellToast[];
+  setLayout(layout: ShellLayout): void;
+  setFocusedPart(part: ShellFocusPart | null): void;
 }
 
-// Larger than any real display in DIP; anything above is a malformed report.
-const MAX_BOUND = 100_000;
+const MAX_BOUND = MAX_SHELL_COORDINATE;
 
 // A shell page that kills its renderer on every load is left dead rather than reloaded in a loop.
 const MAX_CRASHES_IN_WINDOW = 3;
@@ -40,8 +68,28 @@ export function isShellId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH;
 }
 
-export function isToastAction(value: unknown): value is string | undefined {
-  return value === undefined || (typeof value === 'string' && value.length <= MAX_ACTION_LENGTH);
+/** A chat name from the shell, trimmed, or undefined when it is not a string of 1..MAX_CHAT_NAME_LENGTH characters after trimming. */
+export function chatName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const name = value.trim();
+  return name.length > 0 && name.length <= MAX_CHAT_NAME_LENGTH ? name : undefined;
+}
+
+/** A tag from the shell, trimmed, null to remove; undefined when malformed. */
+export function chatTag(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const tag = value.trim();
+  return tag.length > 0 && tag.length <= MAX_TAG_LENGTH ? tag : undefined;
+}
+
+/** A point in CSS px from the shell, or undefined when malformed. */
+export function shellPoint(raw: unknown): { readonly x: number; readonly y: number } | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const x = Object.hasOwn(raw, 'x') ? (raw as Record<string, unknown>)['x'] : undefined;
+  const y = Object.hasOwn(raw, 'y') ? (raw as Record<string, unknown>)['y'] : undefined;
+  const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_BOUND;
+  return valid(x) && valid(y) ? { x, y } : undefined;
 }
 
 /** The shell's CSS-pixel content rectangle as window DIPs, or undefined for a malformed report. */
@@ -58,13 +106,16 @@ export function contentBoundsToDip(raw: unknown, zoomFactor: number): Rectangle 
   return { x: left, y: top, width: Math.max(0, Math.ceil(dx + dw) - left), height: Math.max(0, Math.ceil(dy + dh) - top) };
 }
 
-/** A shell action whose failure the page cannot show: report logs it and tells the user, and the call resolves. */
-export function reportFailure<A extends unknown[]>(action: (...args: A) => Promise<void>, report: (err: unknown) => void): (...args: A) => Promise<void> {
+/** A shell action whose failure the page cannot show: report logs it and tells the user, and the call resolves (with `fallback`). */
+export function reportFailure<A extends unknown[]>(action: (...args: A) => Promise<void>, report: (err: unknown) => void): (...args: A) => Promise<void>;
+export function reportFailure<A extends unknown[], R>(action: (...args: A) => Promise<R>, report: (err: unknown) => void, fallback: R): (...args: A) => Promise<R>;
+export function reportFailure<A extends unknown[], R>(action: (...args: A) => Promise<R>, report: (err: unknown) => void, fallback?: R): (...args: A) => Promise<R | undefined> {
   return async (...args) => {
     try {
-      await action(...args);
+      return await action(...args);
     } catch (err) {
       report(err);
+      return fallback;
     }
   };
 }
@@ -74,7 +125,7 @@ export function shellHtml(theme: PanelTheme): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -90,12 +141,12 @@ export function shellHtml(theme: PanelTheme): string {
 </html>`;
 }
 
-/** The window's own page: the project list and tab strip, talking to main only through the damocles:shell: channels. */
-export class ShellHost implements ToastSink {
+/** The window's own page: the title bar and sidebar, talking to main only through the damocles:shell: channels. */
+export class ShellHost {
   private readonly window: BrowserWindow;
   private readonly actions: ShellActions;
   private readonly log: (line: string) => void;
-  // The page crashed more than MAX_CRASHES_IN_WINDOW times within CRASH_WINDOW_MS and is left dead; it cannot show a toast itself.
+  // The page crashed more than MAX_CRASHES_IN_WINDOW times within CRASH_WINDOW_MS and is left dead.
   private readonly onRendererGaveUp: () => void;
   private readonly invokeChannels: string[] = [];
   private readonly sendHandlers: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = [];
@@ -116,13 +167,41 @@ export class ShellHost implements ToastSink {
     this.handle(SHELL_CHANNELS.removeProject, (key) => this.actions.removeProject(this.id(key)));
     this.handle(SHELL_CHANNELS.selectProject, (key) => this.actions.selectProject(this.id(key)));
     this.handle(SHELL_CHANNELS.grantTrust, (key) => this.actions.grantTrust(this.id(key)));
-    this.handle(SHELL_CHANNELS.newTab, (key) => this.actions.newTab(key === undefined ? undefined : this.id(key)));
-    this.handle(SHELL_CHANNELS.selectTab, (id) => this.actions.selectTab(this.id(id)));
-    this.handle(SHELL_CHANNELS.closeTab, (id) => this.actions.closeTab(this.id(id)));
-    this.handle(SHELL_CHANNELS.togglePane, (id) => this.actions.togglePane(this.id(id)));
-    this.handle(SHELL_CHANNELS.moveTab, (id, toIndex) => {
-      if (!Number.isInteger(toIndex)) throw new Error('moveTab needs an integer index');
-      this.actions.moveTab(this.id(id), toIndex as number);
+    this.handle(SHELL_CHANNELS.togglePane, () => this.actions.togglePane());
+    this.handle(SHELL_CHANNELS.chatsList, (key) => this.actions.listChats(this.id(key)));
+    this.handle(SHELL_CHANNELS.chatsSearch, (key, query) => {
+      if (typeof query !== 'string' || query.length > MAX_SEARCH_LENGTH) throw new Error('Malformed search from the shell');
+      return this.actions.searchChats(this.id(key), query);
+    });
+    this.handle(SHELL_CHANNELS.chatsSelect, (id) => this.actions.selectChat(this.id(id)));
+    this.handle(SHELL_CHANNELS.chatsNew, (key) => this.actions.newChat(key === undefined ? undefined : this.id(key)));
+    this.handle(SHELL_CHANNELS.chatsRename, (id, raw) => {
+      const name = chatName(raw);
+      if (name === undefined) throw new Error('Malformed chat name from the shell');
+      return this.actions.renameChat(this.id(id), name);
+    });
+    this.handle(SHELL_CHANNELS.chatsTag, (id, raw) => {
+      const tag = chatTag(raw);
+      if (tag === undefined) throw new Error('Malformed tag from the shell');
+      return this.actions.tagChat(this.id(id), tag);
+    });
+    this.handle(SHELL_CHANNELS.chatsDelete, (id) => this.actions.deleteChat(this.id(id)));
+    this.handle(SHELL_CHANNELS.overlayRequest, (raw) => {
+      const request = parseOverlayRequest(raw);
+      if (!request) throw new Error('Malformed overlay request from the shell');
+      return this.actions.requestOverlay(request, this.window.webContents);
+    });
+    this.handle(SHELL_CHANNELS.appMenu, (raw) => {
+      const anchor = shellPoint(raw);
+      if (!anchor) throw new Error('Malformed menu anchor from the shell');
+      const zoom = this.window.webContents.getZoomFactor();
+      this.actions.openAppMenu({ x: Math.round(anchor.x * zoom), y: Math.round(anchor.y * zoom) });
+    });
+    this.handle(SHELL_CHANNELS.toggleTheme, () => this.actions.toggleTheme());
+    this.handle(SHELL_CHANNELS.toggleSidebar, () => this.actions.toggleSidebar());
+    this.handle(SHELL_CHANNELS.openSettings, (section) => {
+      if (section !== undefined && !isSettingsSectionId(section)) throw new Error('Unknown settings section from the shell');
+      this.actions.openSettings(section);
     });
     this.on(SHELL_CHANNELS.contentBounds, (raw) => {
       const bounds = contentBoundsToDip(raw, this.window.webContents.getZoomFactor());
@@ -133,23 +212,31 @@ export class ShellHost implements ToastSink {
       }
       this.actions.setContentBounds(bounds);
     });
-    this.on(SHELL_CHANNELS.resolveToast, (id, action) => {
-      if (!isShellId(id) || !isToastAction(action)) {
-        this.log('[shell] ignoring a malformed toast answer');
+    this.on(SHELL_CHANNELS.layout, (raw) => {
+      const layout = parseShellLayout(raw);
+      if (!layout) {
+        this.log('[shell] ignoring a malformed layout');
         return;
       }
-      this.actions.resolveToast(id, action);
+      this.actions.setLayout(layout);
+    });
+    this.on(SHELL_CHANNELS.focusedPart, (part) => {
+      if (part !== 'sidebar' && part !== null) {
+        this.log('[shell] ignoring a malformed focused part');
+        return;
+      }
+      this.actions.setFocusedPart(part);
     });
 
     const contents = window.webContents;
     contents.on('did-finish-load', () => {
       this.loaded = true;
       this.sendState();
-      for (const toast of this.actions.pendingToasts()) this.show(toast);
     });
     contents.on('render-process-gone', (_event, details) => {
       this.loaded = false;
       this.log(`[shell] renderer gone (${details.reason})`);
+      this.actions.setFocusedPart(null);
       if (this.disposed || details.reason === 'clean-exit') return;
       const now = Date.now();
       this.crashes = [...this.crashes.filter((at) => now - at < CRASH_WINDOW_MS), now];
@@ -176,7 +263,7 @@ export class ShellHost implements ToastSink {
     this.load();
   }
 
-  // Coalesces bursts (a session list broadcast touches every tab) into one snapshot per turn of the event loop.
+  // Coalesces bursts (an activity event per chat) into one snapshot per turn of the event loop.
   stateChanged(): void {
     if (this.stateScheduled || this.disposed) return;
     this.stateScheduled = true;
@@ -190,24 +277,19 @@ export class ShellHost implements ToastSink {
     this.send(SHELL_CHANNELS.theme, theme);
   }
 
-  show(toast: ShellToast): void {
-    this.send(SHELL_CHANNELS.toast, toast);
+  chatsChanged(projectKey: string): void {
+    this.send(SHELL_CHANNELS.chatsChanged, projectKey);
   }
 
-  dismiss(id: string): void {
-    this.send(SHELL_CHANNELS.toastDismiss, id);
-  }
-
-  // Keyboard focus moves to the window's own page; the shell then focuses its roving tab.
-  focusTabStrip(): void {
+  // Keyboard focus moves to the window's own page; the shell then focuses the sidebar's current row.
+  focusSidebar(): void {
     if (this.disposed || this.window.isDestroyed()) return;
     this.window.webContents.focus();
-    this.send(SHELL_CHANNELS.focusTabStrip, undefined);
+    this.send(SHELL_CHANNELS.focusPart, 'sidebar');
   }
 
-  // Undefined until the page has loaded, so toasts wait in the notification service and replay on load.
-  get toastSink(): ToastSink | undefined {
-    return this.loaded && !this.disposed ? this : undefined;
+  get focused(): boolean {
+    return !this.disposed && !this.window.isDestroyed() && this.window.webContents.isFocused();
   }
 
   dispose(): void {

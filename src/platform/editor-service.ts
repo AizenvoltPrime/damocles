@@ -1,4 +1,5 @@
 import type { Disposable } from './disposable';
+import type { SettingsSectionId } from '../shared/settings-sections';
 
 export interface OpenFileOptions {
   // 1-based; the cursor goes to the start of the line
@@ -61,13 +62,14 @@ export interface EditorService {
   // opened as text (missing, binary, or over the host's document size limit).
   readText(path: string): Promise<string>;
   showDiff(req: DiffRequest): Promise<DiffView>;
-  showMarkdownPreview(path: string): Promise<void>;
+  /** panelId names the chat that asked, so a host that shows documents per chat opens it there. */
+  showMarkdownPreview(path: string, opts?: { panelId?: string }): Promise<void>;
   // context of the focused text editor; undefined when none has focus
   getActiveContext(): ActiveEditorContext | undefined;
   // fires when the focused text editor changes or any text editor's selection changes, with that editor's context (undefined: no editor)
   onDidChangeActiveContext(listener: (context: ActiveEditorContext | undefined) => void): Disposable;
-  // query filters the settings view, e.g. a setting key
-  openHostSettings(query?: string): Promise<void>;
+  // query filters the host's settings editor, e.g. a setting key; a host without one opens the app settings at section
+  openHostSettings(query?: string, section?: SettingsSectionId): Promise<void>;
   // installed and activated
   isHostExtensionActive(id: string): boolean;
   searchHostExtensions(query: string): Promise<void>;

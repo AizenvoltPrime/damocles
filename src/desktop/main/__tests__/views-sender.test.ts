@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { on: vi.fn(), removeListener: vi.fn() }, WebContentsView: vi.fn(), nativeTheme: { shouldUseDarkColors: true, on: vi.fn(), off: vi.fn() }, protocol: {} }));
 
 import { asJsonValue, isPanelSender, isWebviewMessage, isWebviewState } from '../views';
-import { panelPageUrl } from '../protocol';
+import { OVERLAY_PAGE_URL, SHELL_PAGE_URL, panelPageUrl } from '../protocol';
 
 const ownContents = { id: 1 };
 const otherContents = { id: 2 };
@@ -23,6 +23,13 @@ describe('isPanelSender', () => {
     expect(isPanelSender({ sender: ownContents, senderFrame: { url: page, parent: {} } }, ownContents, page)).toBe(false);
     expect(isPanelSender({ sender: ownContents, senderFrame: null }, ownContents, page)).toBe(false);
     expect(isPanelSender({ sender: ownContents, senderFrame: { url: 'https://example.com/', parent: null } }, ownContents, page)).toBe(false);
+  });
+
+  it('pins the overlay to its own view on the exact overlay page', () => {
+    expect(isPanelSender({ sender: ownContents, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } }, ownContents, OVERLAY_PAGE_URL)).toBe(true);
+    expect(isPanelSender({ sender: ownContents, senderFrame: { url: SHELL_PAGE_URL, parent: null } }, ownContents, OVERLAY_PAGE_URL)).toBe(false);
+    expect(isPanelSender({ sender: ownContents, senderFrame: { url: `${OVERLAY_PAGE_URL}?x`, parent: null } }, ownContents, OVERLAY_PAGE_URL)).toBe(false);
+    expect(isPanelSender({ sender: otherContents, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } }, ownContents, OVERLAY_PAGE_URL)).toBe(false);
   });
 });
 

@@ -68,10 +68,11 @@ describe('the generated .vscodeignore allowlist', () => {
     expect(block).toContain(`!node_modules/${piMcpLicense}`);
   });
 
-  // The desktop app's runtime and its editor, test and packaging tooling never ship in the VSIX.
+  // The desktop app's runtime and its editor, fonts, test and packaging tooling never ship in the VSIX.
   it('carries no desktop-only package', () => {
     expect(DESKTOP_ONLY_PACKAGES).toEqual(expect.arrayContaining([
       'electron', '@parcel/watcher', 'electron-updater', 'undici', 'monaco-editor', '@playwright/test', 'electron-builder', '@electron/fuses',
+      '@fontsource-variable/geist', '@fontsource-variable/geist-mono', '@fontsource-variable/inter',
     ]));
     const shipped = block.map((line) => line.slice('!node_modules/'.length).replace(/\/\*\*$/, ''));
     expect(desktopOnlyIn(shipped)).toEqual([]);

@@ -1,7 +1,17 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
+import { applyHostTheme } from './apply-theme';
 import type { PanelTheme } from './panel-channels';
-import { SHELL_CHANNELS, type ContentBounds, type DamoclesShellApi, type ShellState, type ShellToast } from './shell-channels';
+import type { OverlayAnswer } from './overlay-channels';
+import {
+  SHELL_CHANNELS,
+  type ChatMutationResult,
+  type ContentBounds,
+  type DamoclesShellApi,
+  type SelectChatResult,
+  type ShellChatList,
+  type ShellFocusPart,
+  type ShellState,
+} from './shell-channels';
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
   const handler = (_event: IpcRendererEvent, value: T): void => listener(value);
@@ -11,14 +21,8 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   };
 }
 
-// The shell HTML carries the theme from its creation; this keeps it current after an OS theme change.
-ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => {
-  const style = document.getElementById(HOST_THEME_STYLE_ID);
-  if (style) style.textContent = theme.css;
-  document.body.classList.remove('vscode-dark', 'vscode-light');
-  document.body.classList.add(`vscode-${theme.kind}`);
-  document.body.dataset['vscodeThemeKind'] = `vscode-${theme.kind}`;
-});
+// The shell HTML carries the theme from its creation; this keeps it current after a theme change.
+ipcRenderer.on(SHELL_CHANNELS.theme, (_event, theme: PanelTheme) => applyHostTheme(theme));
 
 const api: DamoclesShellApi = {
   getState: () => ipcRenderer.invoke(SHELL_CHANNELS.getState) as Promise<ShellState>,
@@ -27,20 +31,30 @@ const api: DamoclesShellApi = {
   removeProject: (key) => ipcRenderer.invoke(SHELL_CHANNELS.removeProject, key) as ReturnType<DamoclesShellApi['removeProject']>,
   selectProject: (key) => ipcRenderer.invoke(SHELL_CHANNELS.selectProject, key) as Promise<void>,
   grantTrust: (key) => ipcRenderer.invoke(SHELL_CHANNELS.grantTrust, key) as Promise<void>,
-  newTab: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.newTab, projectKey) as Promise<void>,
-  selectTab: (id) => ipcRenderer.invoke(SHELL_CHANNELS.selectTab, id) as Promise<void>,
-  closeTab: (id) => ipcRenderer.invoke(SHELL_CHANNELS.closeTab, id) as Promise<void>,
-  togglePane: (id) => ipcRenderer.invoke(SHELL_CHANNELS.togglePane, id) as Promise<void>,
-  moveTab: (id, toIndex) => ipcRenderer.invoke(SHELL_CHANNELS.moveTab, id, toIndex) as Promise<void>,
+  togglePane: () => ipcRenderer.invoke(SHELL_CHANNELS.togglePane) as Promise<void>,
+  listChats: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.chatsList, projectKey) as Promise<ShellChatList>,
+  searchChats: (projectKey, query) => ipcRenderer.invoke(SHELL_CHANNELS.chatsSearch, projectKey, query) as Promise<ShellChatList>,
+  onChatsChanged: (listener) => subscribe<string>(SHELL_CHANNELS.chatsChanged, listener),
+  selectChat: (chatId) => ipcRenderer.invoke(SHELL_CHANNELS.chatsSelect, chatId) as Promise<SelectChatResult>,
+  newChat: (projectKey) => ipcRenderer.invoke(SHELL_CHANNELS.chatsNew, projectKey) as Promise<void>,
+  renameChat: (chatId, name) => ipcRenderer.invoke(SHELL_CHANNELS.chatsRename, chatId, name) as Promise<ChatMutationResult>,
+  tagChat: (chatId, tag) => ipcRenderer.invoke(SHELL_CHANNELS.chatsTag, chatId, tag) as Promise<ChatMutationResult>,
+  deleteChat: (chatId) => ipcRenderer.invoke(SHELL_CHANNELS.chatsDelete, chatId) as Promise<ChatMutationResult>,
+  requestOverlay: (request) => ipcRenderer.invoke(SHELL_CHANNELS.overlayRequest, request) as Promise<OverlayAnswer>,
+  openAppMenu: (anchor) => ipcRenderer.invoke(SHELL_CHANNELS.appMenu, { x: anchor.x, y: anchor.y }) as Promise<void>,
+  toggleTheme: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleTheme) as Promise<void>,
+  toggleSidebar: () => ipcRenderer.invoke(SHELL_CHANNELS.toggleSidebar) as Promise<void>,
+  openSettings: (section) => ipcRenderer.invoke(SHELL_CHANNELS.openSettings, section) as Promise<void>,
   reportContentBounds: (bounds: ContentBounds) => {
     ipcRenderer.send(SHELL_CHANNELS.contentBounds, { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
   },
-  onToast: (listener) => subscribe<ShellToast>(SHELL_CHANNELS.toast, listener),
-  onToastDismiss: (listener) => subscribe<string>(SHELL_CHANNELS.toastDismiss, listener),
-  resolveToast: (id, action) => {
-    ipcRenderer.send(SHELL_CHANNELS.resolveToast, id, action);
+  reportLayout: (layout) => {
+    ipcRenderer.send(SHELL_CHANNELS.layout, layout);
   },
-  onFocusTabStrip: (listener) => subscribe<void>(SHELL_CHANNELS.focusTabStrip, () => listener()),
+  reportFocusedPart: (part) => {
+    ipcRenderer.send(SHELL_CHANNELS.focusedPart, part);
+  },
+  onFocusPart: (listener) => subscribe<ShellFocusPart>(SHELL_CHANNELS.focusPart, listener),
 };
 
 contextBridge.exposeInMainWorld('damoclesShell', api);

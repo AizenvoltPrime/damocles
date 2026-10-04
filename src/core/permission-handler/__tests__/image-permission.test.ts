@@ -37,11 +37,11 @@ describe('GenerateImage approval', () => {
       imageModel: 'openai/gpt-image-1',
       parentToolUseId: null,
     });
-    expect(handler.hasPendingPrompts()).toBe(true);
+    expect(handler.pendingPromptKinds().size > 0).toBe(true);
 
     await handler.resolveApproval('g1', true);
     expect(await pending).toEqual({ behavior: 'allow', updatedInput: INPUT });
-    expect(handler.hasPendingPrompts()).toBe(false);
+    expect(handler.pendingPromptKinds().size > 0).toBe(false);
   });
 
   it('binds the call to the model its prompt showed, even when the setting changes before the user answers', async () => {
@@ -80,7 +80,7 @@ describe('GenerateImage approval', () => {
     const result = await pending;
     expect(result.behavior).toBe('deny');
     expect(messages[1]).toEqual({ type: 'permissionAutoResolved', toolUseId: 'g3', outcome: 'withdrawn', parentToolUseId: null });
-    expect(handler.hasPendingPrompts()).toBe(false);
+    expect(handler.pendingPromptKinds().size > 0).toBe(false);
   });
 
   it.each([
@@ -95,7 +95,7 @@ describe('GenerateImage approval', () => {
   it('a bare deny ends the turn, like any unexplained user rejection', async () => {
     const { handler } = handlerWith();
     const pending = handler.canUseTool('GenerateImage', INPUT, ctx('g5'));
-    await expect.poll(() => handler.hasPendingPrompts()).toBe(true);
+    await expect.poll(() => handler.pendingPromptKinds().size > 0).toBe(true);
     await handler.resolveApproval('g5', false);
     expect(await pending).toMatchObject({ behavior: 'deny', interrupt: true });
   });

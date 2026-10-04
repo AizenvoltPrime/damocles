@@ -6,16 +6,19 @@ import type { ModelInfo } from '../../../shared/types/settings';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
-/** A session stub carrying the seams the compaction and message_end handlers read. */
-function fakeSession(events: unknown[]) {
+const USER_ENTRY = { type: 'message', id: 'u-entry', parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } };
+
+/**
+ * A session stub carrying the seams the compaction and message_end handlers read. `branch` is what pi
+ * has persisted when `message_end` fires, which never includes the message being ended.
+ */
+function fakeSession(events: unknown[], branch: unknown[] = [USER_ENTRY]) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
     sessionManager: {
       getLeafId: () => 'u-entry',
-      getBranch: () => [
-        { type: 'message', id: 'u-entry', parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
-      ],
+      getBranch: () => branch,
       getEntries: () => [],
       getHeader: () => null,
     },
@@ -57,10 +60,10 @@ function makeAdapter(
 }
 
 /** Run the events through a subscribed adapter and return everything that reached the webview. */
-function drive(events: unknown[], gates?: Parameters<typeof makeAdapter>[1]): ExtensionToWebviewMessage[] {
+function drive(events: unknown[], gates?: Parameters<typeof makeAdapter>[1], branch?: unknown[]): ExtensionToWebviewMessage[] {
   const out: ExtensionToWebviewMessage[] = [];
   const adapter = makeAdapter(out, gates);
-  const session = fakeSession(events);
+  const session = fakeSession(events, branch);
   adapter.subscribe(session as never);
   adapter.beginTurn('c');
   out.length = 0;
@@ -235,7 +238,8 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
     // The log line is what tells a drop apart from a 400 or a compaction in a user's log.
     expect(log).toHaveBeenCalledWith(
-      '[PiStreamAdapter] anthropic dropped %d thinking block(s): %s',
+      '[PiStreamAdapter] anthropic dropped %d new thinking block(s), %d in the request: %s',
+      1,
       1,
       'the conversation changed since the reasoning was written',
     );
@@ -358,5 +362,90 @@ describe('PiStreamAdapter: dropped thinking blocks reach the transcript (3B)', (
     const out = drive([assistantMessageEnd(undefined)]);
 
     expect(out.some((m) => m.type === 'thinkingDroppedNotice')).toBe(false);
+  });
+});
+
+/**
+ * A stale block stays in the transcript, so every later request re-sends it and Anthropic reports it
+ * again. The notice reports a drop once, on the request that first lost it, measured against the
+ * previous request's report as pi persisted it on the branch.
+ */
+describe('PiStreamAdapter: a dropped thinking block is reported once', () => {
+  const prefix = 'prefix_binding_mismatch';
+  const dropsAt = (...paths: (string | undefined)[]) => [
+    {
+      type: 'anthropic_input_transformations',
+      timestamp: 1,
+      details: { transformations: paths.map((path) => ({ type: 'thinking_dropped', path, reason: prefix })) },
+    },
+  ];
+  const earlierRequest = (diagnostics: unknown, stopReason = 'toolUse') => ({
+    type: 'message',
+    id: `a-${stopReason}`,
+    parentId: 'u-entry',
+    timestamp: '',
+    message: { role: 'assistant', content: [], stopReason, timestamp: 1, diagnostics },
+  });
+  const notice = (out: ExtensionToWebviewMessage[]) => out.find((m) => m.type === 'thinkingDroppedNotice');
+
+  it('stays silent when the previous request already lost the same blocks', () => {
+    const out = drive(
+      [assistantMessageEnd(dropsAt('messages.2.content.0', 'messages.5.content.0'))],
+      undefined,
+      [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0', 'messages.5.content.0'))],
+    );
+
+    expect(notice(out)).toBeUndefined();
+  });
+
+  it('counts only the blocks the previous request still had', () => {
+    const out = drive(
+      [assistantMessageEnd(dropsAt('messages.2.content.0', 'messages.5.content.0', 'messages.9.content.0'))],
+      undefined,
+      [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0'))],
+    );
+
+    expect(notice(out)).toMatchObject({ count: 2 });
+  });
+
+  it('compares with the last completed request, past an aborted one that carries no diagnostics', () => {
+    const out = drive(
+      [assistantMessageEnd(dropsAt('messages.2.content.0'))],
+      undefined,
+      [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0')), earlierRequest(undefined, 'aborted')],
+    );
+
+    expect(notice(out)).toBeUndefined();
+  });
+
+  it('reports every drop after a compaction, which renumbers the request', () => {
+    const out = drive(
+      [assistantMessageEnd(dropsAt('messages.2.content.0', 'messages.5.content.0'))],
+      undefined,
+      [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0', 'messages.5.content.0')), { type: 'compaction', id: 'c', parentId: 'a-toolUse', timestamp: '' }],
+    );
+
+    expect(notice(out)).toMatchObject({ count: 2 });
+  });
+
+  it('reports every drop after a context edit that omits a message, and none after one that only replaces content', () => {
+    const before = [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0'))];
+    const edit = (replacement: unknown) => ({ type: 'context_edit', id: 'e', parentId: 'a-toolUse', timestamp: '', targetId: 'a-toolUse', replacement });
+
+    const omitted = drive([assistantMessageEnd(dropsAt('messages.2.content.0'))], undefined, [...before, edit(null)]);
+    const replaced = drive([assistantMessageEnd(dropsAt('messages.2.content.0'))], undefined, [...before, edit({ content: 'x' })]);
+
+    expect(notice(omitted)).toMatchObject({ count: 1 });
+    expect(notice(replaced)).toBeUndefined();
+  });
+
+  it('counts a drop without a path as new, since nothing can match it to an earlier report', () => {
+    const out = drive(
+      [assistantMessageEnd(dropsAt('messages.2.content.0', undefined))],
+      undefined,
+      [USER_ENTRY, earlierRequest(dropsAt('messages.2.content.0', undefined))],
+    );
+
+    expect(notice(out)).toMatchObject({ count: 1, reasons: ['the conversation changed since the reasoning was written'] });
   });
 });

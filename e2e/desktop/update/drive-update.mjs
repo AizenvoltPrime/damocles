@@ -9,10 +9,11 @@ import { chromium } from 'playwright-core';
 import { startFeedServer } from '../../../scripts/desktop-update-feed.mjs';
 import { writeOverride } from '../../../scripts/desktop-update-override.mjs';
 import { isEntryPoint } from '../../../scripts/entry-point.mjs';
+import { noticeAction, OVERLAY_URL, RELEASE_PAGE_ACTION, RESTART_ACTION, SHELL_URL } from './update-notice.mjs';
 
 // Installs version N of the packaged desktop app, points it at a loopback feed holding N+1, and checks the
 // update end to end. Windows and Linux: N+1 must end up installed, and "Restart Now" must relaunch it. macOS:
-// the update notice must appear and its action must target the N+1 release page. Drives the real shell UI over
+// the update notice must appear and its action must target the N+1 release page. Drives the real renderers over
 // --remote-debugging-port, which reaches renderers only; the app itself carries no test hook.
 
 const USAGE = `Usage: node e2e/desktop/update/drive-update.mjs --platform <win32|linux|darwin> --installer <file>
@@ -33,7 +34,6 @@ uninstalls what it installed when it finishes, pass or fail.
 
 Exits 0 on success, 1 on a failed check, 2 on a usage error.`;
 
-const SHELL_URL = 'app://damocles/shell/index.html';
 const RELEASES_URL = 'https://github.com/AizenvoltPrime/damocles/releases';
 const POLKIT_RULE = '/etc/polkit-1/rules.d/00-damocles-update-test.rules';
 
@@ -266,7 +266,7 @@ function failOnUpdaterError(logFile) {
   };
 }
 
-async function shellPage(port, timeoutMs, failFast) {
+async function appPages(port, timeoutMs, failFast) {
   const browser = await waitFor(`the app's debugging port ${port}`, timeoutMs, async () => {
     try {
       return await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 5_000 });
@@ -275,12 +275,14 @@ async function shellPage(port, timeoutMs, failFast) {
       return undefined;
     }
   }, failFast);
-  const page = await waitFor('the shell page', timeoutMs, () => browser.contexts().flatMap((context) => context.pages()).find((p) => p.url() === SHELL_URL), failFast);
-  return { browser, page };
+  const pageAt = (url) => browser.contexts().flatMap((context) => context.pages()).find((p) => p.url() === url);
+  const shell = await waitFor('the shell page', timeoutMs, () => pageAt(SHELL_URL), failFast);
+  const overlay = await waitFor('the overlay page', timeoutMs, () => pageAt(OVERLAY_URL), failFast);
+  return { browser, shell, overlay };
 }
 
-async function clickToastAction(page, label, timeoutMs, failFast) {
-  const button = page.getByRole('button', { name: label, exact: true });
+async function clickToastAction(overlay, label, timeoutMs, failFast) {
+  const button = noticeAction(overlay, label);
   await waitFor(`the "${label}" toast action`, timeoutMs, () => button.isVisible(), failFast);
   say(`toast action "${label}" is showing`);
   return button;
@@ -337,14 +339,14 @@ async function selfUpdate(target, options, work) {
     const port = await freePort();
     const { logFile, child: app } = launch(target.executable(installDir), work, port);
     const failFast = failOnUpdaterError(logFile);
-    const shell = await shellPage(port, options.timeoutMs, failFast);
-    browser = shell.browser;
-    const restart = await clickToastAction(shell.page, 'Restart Now', options.timeoutMs, failFast);
+    const pages = await appPages(port, options.timeoutMs, failFast);
+    browser = pages.browser;
+    const restart = await clickToastAction(pages.overlay, RESTART_ACTION, options.timeoutMs, failFast);
     if (options.mode === 'restart') {
-      await actionThatQuits(shell, () => restart.click({ timeout: options.timeoutMs }));
+      await actionThatQuits({ browser, page: pages.overlay }, () => restart.click({ timeout: options.timeoutMs }));
     } else {
       say('closing the window so install-on-quit runs');
-      await actionThatQuits(shell, () => shell.page.evaluate(() => window.close()));
+      await actionThatQuits({ browser, page: pages.shell }, () => pages.shell.evaluate(() => window.close()));
     }
     await disconnect(browser);
     browser = undefined;
@@ -390,9 +392,9 @@ async function macNotice(options, work) {
     const launched = launch(mac.executable(appDir), work, port);
     child = launched.child;
     const failFast = failOnUpdaterError(launched.logFile);
-    const shell = await shellPage(port, options.timeoutMs, failFast);
-    browser = shell.browser;
-    const open = await clickToastAction(shell.page, 'Open Release Page', options.timeoutMs, failFast);
+    const pages = await appPages(port, options.timeoutMs, failFast);
+    browser = pages.browser;
+    const open = await clickToastAction(pages.overlay, RELEASE_PAGE_ACTION, options.timeoutMs, failFast);
     await open.click();
     const expected = `[updater] opening the release page ${RELEASES_URL}/tag/v${options.toVersion}`;
     await waitFor(`the log line "${expected}"`, options.timeoutMs, () => readLog(launched.logFile).split('\n').some((line) => line.endsWith(expected)), failFast);

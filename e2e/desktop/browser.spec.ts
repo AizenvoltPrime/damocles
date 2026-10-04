@@ -1,11 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
-import { chatTab, expect, panelIdOf, test } from './support/fixtures';
+import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { seedStubModel, writeUserSettings } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { chromeEnv, panePage, paneState, startSite, systemChrome } from './support/pane';
-import { answerToast, pressKeys, recordedToasts, recordToasts, shellState } from './support/shell';
+import { closeSettingsModal, settingsNav } from './support/settings';
+import { listChats } from './support/shell-ui';
+import { answerToast, overlayPage, pressKeys, recordedToasts, recordToasts, shellState } from './support/shell';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 
 const PAGE_TITLE = 'E2E Browser Page';
@@ -40,7 +42,7 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
     seedStubModel(home, stub.baseUrl);
     writeUserSettings(home, { 'damocles.browser.enabled': true });
     const { app } = await launch({ env: chromeEnv() });
-    const homeTab = await chatTab(app);
+    const homeTab = await activeChat(app);
     await expect(chatInput(homeTab)).toBeVisible();
     await recordHostMessages(homeTab);
     await recordToasts(app);
@@ -62,19 +64,22 @@ test('browser page in the side pane: opens, screencasts, picks an element, downl
       });
     });
     await expect.poll(() => framesReceived(browserPage), { timeout: 60_000 }).toBeGreaterThan(0);
-    // The page lives in the chat's side pane, never as a top-level tab, and the chat stays selected.
+    // The page lives in the chat's side pane, never as a chat of its own, and the chat stays selected.
     await expect.poll(async () => (await paneState(app)).pages).toMatchObject([{ id: browserId, title: PAGE_TITLE }]);
-    const shellTabs = await shellState(app);
-    expect(shellTabs.tabs.map((t) => t.id)).toEqual([homeId]);
-    expect(shellTabs.selectedTabId).toBe(homeId);
+    const homeChatId = (await shellState(app)).selected.chatId;
+    expect(panelIdOf(await activeChat(app))).toBe(homeId);
+    const listed = (await listChats(app)).chats.filter((chat) => chat.loaded).map((chat) => chat.id);
+    expect(listed).toEqual([homeChatId]);
 
-    // F12 is bound while the chat's pane shows a page; with the debugging port off it offers the settings, which open in the chat tab.
+    // F12 is bound while the chat's pane shows a page; with the debugging port off it offers the settings, which open on Tools & integrations.
     await pressKeys(app, `/panel/${homeId}/`, 'F12');
     await expect.poll(async () => (await recordedToasts(app)).find((t) => t.message.startsWith(DEVTOOLS_OFF))?.actions).toEqual(['Open Settings']);
     const devtools = (await recordedToasts(app)).find((t) => t.message.startsWith(DEVTOOLS_OFF))!;
     await answerToast(app, devtools.id, 'Open Settings');
-    await expect.poll(async () => (await hostMessages(homeTab, 'openSettingsPanel')).length).toBe(1);
-    await expect.poll(async () => (await shellState(app)).selectedTabId).toBe(homeId);
+    const settingsOverlay = await overlayPage(app);
+    await expect(settingsNav(settingsOverlay, 'integrations')).toHaveAttribute('aria-selected', 'true');
+    await closeSettingsModal(settingsOverlay);
+    await expect.poll(async () => (await shellState(app)).selected.chatId).toBe(homeChatId);
 
     // Element picker: the pane's pick button, then a click on the page through the screencast input path.
     const pane = await panePage(app);

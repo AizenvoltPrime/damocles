@@ -289,10 +289,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         streamingStore.updateToolElapsedTime(msg.toolUseId, msg.elapsedTimeSeconds);
       }
 
-      if (msg.output === undefined) {
-        // An elapsed-only frame keeps today's scroll behaviour, which is to return nothing.
-        return;
-      }
+      if (msg.output === undefined) return;
       const output = msg.output;
       const truncated = msg.outputTruncated === true;
       if (inSubagent) {
@@ -300,8 +297,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       } else {
         streamingStore.updateToolLiveOutput(msg.toolUseId, output, truncated);
       }
-      // The pane has a fixed height, so an output frame never grows the card and nothing needs following.
-      return { skipScroll: true };
     },
 
     toolUseSummary: (msg, ctx) => {

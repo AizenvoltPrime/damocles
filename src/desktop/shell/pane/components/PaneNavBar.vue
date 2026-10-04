@@ -114,7 +114,7 @@ const ICON_BUTTON = 'size-7 shrink-0 rounded-md text-muted-foreground hover:bg-m
       @click="page && api.reload(page.id)"
     >
       <RotateCw
-        :class="page?.loading && 'animate-spin'"
+        :class="page?.loading && 'd-spinning'"
         aria-hidden="true"
       />
     </Button>

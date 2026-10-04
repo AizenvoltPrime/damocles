@@ -6,6 +6,10 @@
       "env": {
         "DEFAULT_MINIMUM_TOKENS": "6000"
       }
+    },
+    "magnific": {
+      "type": "http",
+      "url": "https://mcp.magnific.com"
     }
   }
 }

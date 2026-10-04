@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { promises as fsp } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -32,8 +32,8 @@ const fakeSession = { on: () => {} };
 
 /**
  * Create a REAL file of `bytes` via `truncate`, so `fsp.stat(await download.path()).size` in the
- * production handler measures a real size. `truncate` makes a sparse file: a 105 MB fixture costs
- * ~1 ms and (on NTFS) no allocated blocks, which is what makes the 100 MB cap testable at all.
+ * production handler measures a real size. `truncate` writes no data, so a 105 MB fixture costs ~1 ms,
+ * though NTFS still allocates the full size.
  */
 async function sparseFile(dir: string, name: string, bytes: number): Promise<string> {
   const path = join(dir, name);
@@ -96,17 +96,19 @@ const MB = 1024 * 1024;
 
 describe('Slice 5 — downloads ring buffer', () => {
   let downloadsDir = '';
+  let sourceDir = '';
   let sourceFile = '';
 
   beforeAll(async () => {
     downloadsDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-'));
     // Slice 5 gave the handler a size budget, so it now stats Playwright's temp file before saving.
     // A real (tiny) source file is what makes that measurement meaningful.
-    sourceFile = await sparseFile(await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-src-')), 'src.bin', 16);
+    sourceDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-src-'));
+    sourceFile = await sparseFile(sourceDir, 'src.bin', 16);
   });
   afterAll(async () => {
-    if (downloadsDir) await fsp.rm(downloadsDir, { recursive: true, force: true }).catch(() => {});
-    if (sourceFile) await fsp.rm(sourceFile, { force: true }).catch(() => {});
+    await fsp.rm(downloadsDir, { recursive: true, force: true });
+    await fsp.rm(sourceDir, { recursive: true, force: true });
   });
 
   it('caps at DOWNLOADS_MAX (50), dropping the oldest, and reports absolute saved paths', async () => {
@@ -170,10 +172,13 @@ describe('Slice 5 — download size budget (S3)', () => {
     tempDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-temp-'));
   });
   afterAll(async () => {
-    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(tempDir, { recursive: true, force: true });
   });
   beforeEach(async () => {
     downloadsDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-budget-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(downloadsDir, { recursive: true, force: true });
   });
 
   const dirEntries = (): Promise<string[]> => fsp.readdir(downloadsDir);
@@ -235,12 +240,12 @@ describe('Slice 5 — download size budget (S3)', () => {
     expect(await dirEntries()).toEqual(['at-cap.bin']);
 
     const overDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-dl-budget-'));
+    onTestFinished(() => fsp.rm(overDir, { recursive: true, force: true }));
     const over = await serviceWithDownloads(overDir);
     const overTemp = await sparseFile(tempDir, 'over-cap.bin', DOWNLOAD_MAX_BYTES + 1);
     await over.onDownload(fakeDownload({ filename: 'over-cap.bin', tempPath: overTemp }).download);
     expect(over.service.getDownloads()[0]!.state).toBe('rejected');
     expect(await fsp.readdir(overDir)).toEqual([]);
-    await fsp.rm(overDir, { recursive: true, force: true });
   });
 
   it('(b) a download that would cross the remaining launch budget is rejected even though it is under the per-file cap', async () => {
@@ -643,14 +648,16 @@ describe('Slice 5 — listTabs formatting (scope-scoped)', () => {
 });
 
 describe('Slice 5 — BrowserUpload path validation (fail-soft, no browser)', () => {
+  let existingDir = '';
   let existing = '';
 
   beforeAll(async () => {
-    existing = join(await fsp.mkdtemp(join(tmpdir(), 'damocles-up-')), 'real.txt');
+    existingDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-up-'));
+    existing = join(existingDir, 'real.txt');
     await fsp.writeFile(existing, 'hello');
   });
   afterAll(async () => {
-    await fsp.rm(existing, { force: true }).catch(() => {});
+    await fsp.rm(existingDir, { recursive: true, force: true });
   });
 
   type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };

@@ -25,7 +25,7 @@ describe('createMemorySubCallRunner', () => {
     runStructuredCompletion.mockResolvedValue({ rank: [1, 2, 3] });
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
-    const runner = createMemorySubCallRunner();
+    const runner = createMemorySubCallRunner(new AbortController().signal);
     const result = await runner.run<{ rank: number[] }>({
       prompt: 'p',
       systemPrompt: 's',
@@ -42,7 +42,7 @@ describe('createMemorySubCallRunner', () => {
     hasAuthedSubCallModel.mockReturnValue(false);
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
-    const runner = createMemorySubCallRunner();
+    const runner = createMemorySubCallRunner(new AbortController().signal);
     const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'rerank' });
 
     expect(result).toEqual({ value: null, failure: 'no-model' });
@@ -55,7 +55,7 @@ describe('createMemorySubCallRunner', () => {
     runStructuredCompletion.mockResolvedValue(null);
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
-    const runner = createMemorySubCallRunner();
+    const runner = createMemorySubCallRunner(new AbortController().signal);
     const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
 
     expect(result).toEqual({ value: null, failure: 'transient' });
@@ -67,10 +67,48 @@ describe('createMemorySubCallRunner', () => {
     runClassification.mockResolvedValue({ q: { type: 'bool', probability: 0.9 } });
 
     const { createMemorySubCallRunner } = await import('../subcall-runner');
-    const runner = createMemorySubCallRunner();
+    const runner = createMemorySubCallRunner(new AbortController().signal);
     const questions = { q: { type: 'bool' as const, instructions: 'i', criteria: { true: 't', false: 'f' } } };
     expect(runner.hasClassifier?.()).toBe(true);
     expect(await runner.classify?.({ purpose: 'merge', state: { a: 'x' }, questions, timeoutMs: 5 })).toEqual({ q: { type: 'bool', probability: 0.9 } });
-    expect(runClassification).toHaveBeenCalledWith({ state: { a: 'x' }, questions, purpose: 'memory-merge', timeoutMs: 5 });
+    expect(runClassification).toHaveBeenCalledWith({ state: { a: 'x' }, questions, purpose: 'memory-merge', timeoutMs: 5, abortSignal: expect.any(AbortSignal) });
+  });
+
+  it('after the lifetime aborts, resolves without a value and never reaches the runtime', async () => {
+    mockPiRuntime();
+    hasAuthedSubCallModel.mockReturnValue(true);
+    hasClassifier.mockReturnValue(true);
+    runClassification.mockReset();
+    const lifetime = new AbortController();
+    lifetime.abort();
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(lifetime.signal);
+    const questions = { q: { type: 'bool' as const, instructions: 'i', criteria: { true: 't', false: 'f' } } };
+
+    expect(await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' })).toEqual({ value: null, failure: 'transient' });
+    expect(runner.hasClassifier?.()).toBe(false);
+    expect(await runner.classify?.({ purpose: 'merge', state: {}, questions, timeoutMs: 5 })).toBeNull();
+    expect(runStructuredCompletion).not.toHaveBeenCalled();
+    expect(runClassification).not.toHaveBeenCalled();
+  });
+
+  it('aborting the lifetime cancels a call in flight, alongside the caller signal', async () => {
+    mockPiRuntime();
+    hasAuthedSubCallModel.mockReturnValue(true);
+    runStructuredCompletion.mockResolvedValue(null);
+    const lifetime = new AbortController();
+    const caller = new AbortController();
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(lifetime.signal);
+    await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract', abortSignal: caller.signal });
+    await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
+
+    const [withCaller, withoutCaller] = runStructuredCompletion.mock.calls.map((call) => (call[0] as { abortSignal: AbortSignal }).abortSignal);
+    expect(withCaller!.aborted).toBe(false);
+    lifetime.abort();
+    expect(withCaller!.aborted).toBe(true);
+    expect(withoutCaller!.aborted).toBe(true);
   });
 });

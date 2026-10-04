@@ -1,5 +1,6 @@
 import type { SecretsStore } from '../platform/secrets-store';
 import type { Platform } from '../platform/platform';
+import type { SettingsFolder } from '../platform/settings-store';
 import type { PanelHost } from '../platform/window-service';
 import type { PermissionHandler } from './permission-handler';
 import type { ExtensionToWebviewMessage } from '../shared/types/messages';
@@ -25,6 +26,8 @@ export interface McpScope {
 /** Options for creating a chat session. */
 export interface SessionOptions {
   cwd: string;
+  /** The folder the chat's per-chat settings are read for; undefined on the home target, which reads user settings. */
+  settingsFolder: SettingsFolder | undefined;
   platform: Platform;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;

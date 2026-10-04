@@ -1,7 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { DatabaseInstance } from '../types';
@@ -29,17 +26,19 @@ vi.mock('../database', async (importActual) => {
 // The sub-call runner reaches PiRuntime; stub it so init never touches the model layer. A test may
 // swap `runnerHolder.run` to make extraction succeed.
 const runnerHolder = vi.hoisted(() => ({
-  run: null as null | ((req: { purpose: string }) => Promise<{ value: unknown; failure?: string }>),
+  run: null as null | ((req: { purpose: string }, lifetime: AbortSignal) => Promise<{ value: unknown; failure?: string }>),
 }));
 vi.mock('../subcall-runner', () => ({
-  createMemorySubCallRunner: () => ({
+  createMemorySubCallRunner: (lifetime: AbortSignal) => ({
     run: vi.fn(async (req: { purpose: string }) =>
-      runnerHolder.run ? runnerHolder.run(req) : { value: null, failure: 'no-model' as const }),
+      runnerHolder.run ? runnerHolder.run(req, lifetime) : { value: null, failure: 'no-model' as const }),
   }),
 }));
 
 import { MemoryService } from '../index';
+import { openDatabaseAsync } from '../database';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createTestDbPath } from './test-helpers';
 
 /** A Windows fsPath with a drive letter and backslashes, which must reach the DB unchanged. */
 const RAW_FS_PATH = String.raw`C:\Repos\App`;
@@ -71,19 +70,12 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-preinit-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   it('replays candidates enqueued before init into memory_candidates after init completes', async () => {
@@ -171,6 +163,17 @@ describe('MemoryService pre-init turn-candidate buffering', () => {
     const memRow = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE session_id = 'sess-buffer'").get() as { n: number };
     expect(memRow.n).toBe(0);
   });
+
+  it('dispose during init closes the database that opens afterwards and starts nothing on it', async () => {
+    const init = service.ensureInitialized();
+    const disposed = service.dispose();
+    await init;
+    await disposed;
+
+    const { db } = (await vi.mocked(openDatabaseAsync).mock.results.at(-1)!.value) as { db: DatabaseInstance };
+    expect(() => db.prepare('SELECT 1').get()).toThrow();
+    expect(service as unknown as Record<string, unknown>).toMatchObject({ db: null, fileChangeTracker: null, startJitterTimer: null });
+  });
 });
 
 // The mocked subcall-runner always returns no-model, so every forced pass fails (extract → no-model
@@ -188,7 +191,7 @@ describe('MemoryService C9 — consolidation failure backoff', () => {
   }
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-backoff-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
     scheduledDelays = [];
     // Spy the real timer (no fake clock) to read the delays armIdleTimer requests; callbacks never
@@ -199,16 +202,9 @@ describe('MemoryService C9 — consolidation failure backoff', () => {
     }) as unknown as typeof setTimeout);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     setTimeoutSpy.mockRestore();
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+    await service.dispose();
   });
 
   it('bumps the failure counter and re-arms the idle timer with a strictly longer delay on each failed pass', async () => {
@@ -268,7 +264,7 @@ describe('MemoryService — consolidation files memories under the folder its co
   }
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-folder-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     let n = 0;
     runnerHolder.run = async (req) => {
       if (req.purpose === 'extract') {
@@ -286,17 +282,10 @@ describe('MemoryService — consolidation files memories under the folder its co
     }) as unknown as typeof setTimeout);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     setTimeoutSpy.mockRestore();
     runnerHolder.run = null;
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+    await service.dispose();
   });
 
   it('files every turn under its own folder, and a manual run takes every folder in one go', async () => {
@@ -344,5 +333,33 @@ describe('MemoryService — consolidation files memories under the folder its co
     await service.triggerConsolidation();
     expect(projectMemoryWorkspaces(db)).toEqual(['/home/user']);
     expect(service.getPanelMemories(null, '/home/user').map((m) => m.content)).toEqual(['bundler fact number 1']);
+  });
+
+  it('dispose cancels an in-flight extraction, releases its batch, then closes the database', async () => {
+    service.setFallbackWorkspace(() => '/ws/default');
+    await service.ensureInitialized();
+    seed(service.database!, '/ws/b', 1);
+    let extractStarted!: () => void;
+    const extracting = new Promise<void>((resolve) => { extractStarted = resolve; });
+    // Settles only on abort, as the real runner's model call does once its signal fires.
+    runnerHolder.run = (req, lifetime) => {
+      if (req.purpose !== 'extract') return Promise.resolve({ value: null, failure: 'transient' });
+      extractStarted();
+      return new Promise((resolve) => lifetime.addEventListener('abort', () => resolve({ value: null, failure: 'transient' }), { once: true }));
+    };
+
+    const pass = service.triggerConsolidation();
+    await extracting;
+    await service.dispose();
+    await pass;
+
+    expect(service.database).toBeNull();
+    expect(service.getLastConsolidationResult()).toMatchObject({ status: 'failed' });
+    const raw = new DatabaseSync(dbHolder.path, { readOnly: true });
+    try {
+      expect(raw.prepare('SELECT consumed FROM memory_candidates').all()).toEqual([{ consumed: 0 }]);
+    } finally {
+      raw.close();
+    }
   });
 });

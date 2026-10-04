@@ -2,7 +2,6 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
-import { Button } from '@/components/ui/button';
 import { IconMcp } from '@/components/icons';
 
 const { t } = useI18n();
@@ -16,58 +15,40 @@ defineEmits<{
   (e: 'click'): void;
 }>();
 
-const statusSummary = computed(() => {
-  if (props.servers.length === 0) {
-    return { label: '', color: '' };
-  }
-
-  const enabled = props.servers.filter(s => s.enabled).length;
-  const connected = props.servers.filter(s => s.status === 'connected').length;
-  const failed = props.servers.filter(s => s.status === 'failed').length;
-  const pending = props.servers.filter(s => s.status === 'pending').length;
+const summary = computed(() => {
   const total = props.servers.length;
-
-  if (pending > 0) {
-    return {
-      label: t('mcpIndicator.connecting', { connected, total }),
-      color: 'text-warning',
-    };
-  }
-
-  if (failed > 0) {
-    return {
-      label: t('mcpIndicator.withFailures', { connected, total, failed }),
-      color: 'text-error',
-    };
-  }
-
-  if (enabled === 0) {
-    return {
-      label: t('mcpIndicator.connected', { connected, total }),
-      color: 'text-muted-foreground',
-    };
-  }
-
-  return {
-    label: t('mcpIndicator.connected', { connected, total }),
-    color: 'text-success',
-  };
+  const connected = props.servers.filter((s) => s.status === 'connected').length;
+  const failed = props.servers.filter((s) => s.status === 'failed').length;
+  const pending = props.servers.filter((s) => s.status === 'pending').length;
+  const head = t('chatHeader.mcp', { n: connected }, connected);
+  if (pending > 0) return { connected, label: `${head} · ${t('mcpIndicator.connecting', { connected, total })}`, dot: 'bg-(--d-warning) d-pulsing' };
+  if (failed > 0) return { connected, label: `${head} · ${t('mcpIndicator.withFailures', { connected, total, failed })}`, dot: 'bg-(--d-danger)' };
+  return { connected, label: head, dot: connected > 0 ? 'bg-(--d-success)' : 'bg-(--d-faint)' };
 });
-
-const hasServers = computed(() => props.servers.length > 0);
 </script>
 
 <template>
-  <Button
-    v-if="hasServers"
-    variant="ghost"
-    size="icon-sm"
-    :class="[statusSummary.color, { 'opacity-50 cursor-not-allowed': disabled }]"
-    class="hover:bg-muted"
-    :title="statusSummary.label"
+  <button
+    type="button"
+    class="d-tool-btn px-1.75"
+    :title="summary.label"
+    :aria-label="summary.label"
     :disabled="disabled"
+    data-testid="chat-header-mcp"
     @click="$emit('click')"
   >
-    <IconMcp :size="16" />
-  </Button>
+    <IconMcp
+      class="size-3.5"
+      aria-hidden="true"
+    />
+    <span
+      class="size-1.5 rounded-full"
+      :class="summary.dot"
+      aria-hidden="true"
+    />
+    <span
+      class="font-mono text-11 tabular-nums"
+      aria-hidden="true"
+    >{{ summary.connected }}</span>
+  </button>
 </template>

@@ -24,9 +24,9 @@ const TEAM_ID = 'team-1';
 const AGENT_ID = 'agent-1';
 const ESTIMATE_TOOLTIP = 'Estimated at API rates. A subscription is not charged per call.';
 
-/** Renders the named subtitle slot, which the real OverlayShell puts in its header. */
+/** Renders the shell's slots; the usage figures sit in the overlay's meta chips. */
 const ShellStub = defineComponent({
-  template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>',
+  template: '<div><slot name="header-actions" /><slot /><slot name="footer" /></div>',
 });
 
 function agent(over: Partial<TeamAgent> = {}): TeamAgent {
@@ -145,11 +145,10 @@ describe('agent cost labels', () => {
     expect(titled(wrapper)).toBeUndefined();
   });
 
-  it('explains the estimate marker in the agent overlay subtitle', () => {
+  it('explains the estimate marker in the agent overlay chips', () => {
     panelBilling(true);
     const wrapper = mountAgentOverlay(agent({ dollarBilled: false }));
-    const subtitle = wrapper.get('.subtitle');
-    expect(subtitle.text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-part="cost"]').text()).toBe('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 });
@@ -159,26 +158,26 @@ describe('a live specialist label', () => {
     panelBilling(true);
     // The team list reaches the webview before any specialist spawns, so the card starts on the placeholder.
     const wrapper = mountAgentOverlay(agent({ dollarBilled: true }));
-    expect(wrapper.get('.subtitle').text()).toContain('$26.45');
+    expect(wrapper.get('[data-part="cost"]').text()).toContain('$26.45');
     expect(titled(wrapper)).toBeUndefined();
 
     useTeamStore().handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'running', undefined, undefined, 'sonnet', false);
     await nextTick();
 
-    expect(wrapper.get('.subtitle').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 
   it('keeps the flag when a later status update omits it', async () => {
     panelBilling(true);
     const wrapper = mountAgentOverlay(agent({ dollarBilled: false }));
-    expect(wrapper.get('.subtitle').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
 
     useTeamStore().handleAgentStatusUpdate(TEAM_ID, AGENT_ID, 'completed');
     await nextTick();
 
     // A partial delta that says nothing about billing must not relabel a subscription cost as a charge.
-    expect(wrapper.get('.subtitle').text()).toContain('~$26.45 est.');
+    expect(wrapper.get('[data-part="cost"]').text()).toContain('~$26.45 est.');
     expect(defined(titled(wrapper)).text()).toBe('~$26.45 est.');
   });
 });
@@ -289,15 +288,14 @@ describe('agent and team usage', () => {
     await nextTick();
 
     expect(card.get('[data-part="tokens"]').text()).toBe('12.9K tokens');
-    expect(card.get('[data-part="tokens"]').text()).toBe(overlay.get('.subtitle [data-part="tokens"]').text());
-    expect(card.get('[data-part="cache"]').text()).toBe(overlay.get('.subtitle [data-part="cache"]').text());
+    expect(card.get('[data-part="tokens"]').text()).toBe(overlay.get('[data-part="tokens"]').text());
+    expect(card.get('[data-part="cache"]').text()).toBe(overlay.get('[data-part="cache"]').text());
   });
 
   it('the team overlay totals every agent’s tokens, cache hit rate and cost', () => {
     const wrapper = mountTeamOverlay([busy(), busy({ agentId: 'agent-2', totalInputTokens: 950, cacheReadTokens: 1000, cacheCreationTokens: 0 })]);
-    const subtitle = wrapper.get('.subtitle').text();
-    expect(subtitle).toContain('12.9K tokens');
-    expect(subtitle).toContain('72% cache');
-    expect(subtitle).toContain('$3.00');
+    expect(wrapper.get('[data-part="tokens"]').text()).toBe('12.9K tokens');
+    expect(wrapper.get('[data-part="cache"]').text()).toBe('72% cache');
+    expect(wrapper.get('[data-part="cost"]').text()).toBe('$3.00');
   });
 });

@@ -1,4 +1,4 @@
-import { chatTab, expect, test } from './support/fixtures';
+import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
 import { chatInput } from './support/ui';
@@ -12,7 +12,7 @@ test('a message streams a reply from pi in main against the stub', async ({ home
     stub.replies.push({ chunks: ['First streamed words', ' and the rest arrives later.'], holdAfterFirst: held });
 
     const { app } = await launch();
-    const tab = await chatTab(app);
+    const tab = await activeChat(app);
     await chatInput(tab).fill('Say something in two parts');
     await chatInput(tab).press('Enter');
 

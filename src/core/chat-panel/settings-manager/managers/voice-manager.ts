@@ -9,7 +9,7 @@ import type {
 import { TTS_VOICE_IDS, DEFAULT_TTS_VOICE } from "../../../../shared/types/voice";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
-import { updateConfigAtEffectiveScope } from "../utils";
+import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
 import { log } from "../../../logger";
 
 const SECRET_PREFIX = "damocles.voice.apiKey:";
@@ -41,43 +41,50 @@ export class VoiceManager {
     };
   }
 
-  async setProvider(provider: VoiceProvider): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.provider", provider);
+  async setProvider(provider: VoiceProvider): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.provider", provider);
     log("[VoiceManager] setProvider:", provider);
+    return written;
   }
 
-  async setLanguage(language: string): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.language", language);
+  async setLanguage(language: string): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.language", language);
     log("[VoiceManager] setLanguage:", language);
+    return written;
   }
 
-  async setMode(mode: VoiceMode): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.mode", mode);
+  async setMode(mode: VoiceMode): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.mode", mode);
     log("[VoiceManager] setMode:", mode);
+    return written;
   }
 
-  async setWakeWord(wakeWord: string): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.wakeWord", wakeWord);
+  async setWakeWord(wakeWord: string): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.wakeWord", wakeWord);
     log("[VoiceManager] setWakeWord:", wakeWord);
+    return written;
   }
 
-  async setWakeWordSensitivity(sensitivity: number): Promise<void> {
+  async setWakeWordSensitivity(sensitivity: number): Promise<SettingWrite> {
     if (sensitivity < 0.1 || sensitivity > 0.95) {
       throw new Error(`wakeWordSensitivity out of range [0.1, 0.95]: ${sensitivity}`);
     }
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.wakeWordSensitivity", sensitivity);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.wakeWordSensitivity", sensitivity);
     log("[VoiceManager] setWakeWordSensitivity:", sensitivity);
+    return written;
   }
 
-  async setTtsEnabled(enabled: boolean): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.tts.enabled", enabled);
+  async setTtsEnabled(enabled: boolean): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.tts.enabled", enabled);
     log("[VoiceManager] setTtsEnabled:", enabled);
+    return written;
   }
 
-  async setTtsVoice(voice: TtsVoiceId): Promise<void> {
+  async setTtsVoice(voice: TtsVoiceId): Promise<SettingWrite> {
     const safe = this.coerceVoice(voice);
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.tts.voice", safe);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.tts.voice", safe);
     log("[VoiceManager] setTtsVoice:", safe);
+    return written;
   }
 
   private coerceVoice(value: string): TtsVoiceId {
@@ -86,35 +93,40 @@ export class VoiceManager {
       : DEFAULT_TTS_VOICE;
   }
 
-  async setGpuPreference(pref: GpuPreference): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.localGpu", pref);
+  async setGpuPreference(pref: GpuPreference): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.localGpu", pref);
     log("[VoiceManager] setGpuPreference:", pref);
+    return written;
   }
 
-  async setEndOfTurnSilenceMs(ms: number): Promise<void> {
+  async setEndOfTurnSilenceMs(ms: number): Promise<SettingWrite> {
     if (!Number.isInteger(ms) || ms < 300 || ms > 3000) {
       throw new Error(`endOfTurnSilenceMs out of range [300, 3000]: ${ms}`);
     }
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.endOfTurnSilenceMs", ms);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.endOfTurnSilenceMs", ms);
     log("[VoiceManager] setEndOfTurnSilenceMs:", ms);
+    return written;
   }
 
-  async setMaxUtteranceMs(ms: number): Promise<void> {
+  async setMaxUtteranceMs(ms: number): Promise<SettingWrite> {
     if (!Number.isInteger(ms) || ms < 5000 || ms > 120000) {
       throw new Error(`maxUtteranceMs out of range [5000, 120000]: ${ms}`);
     }
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.maxUtteranceMs", ms);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.maxUtteranceMs", ms);
     log("[VoiceManager] setMaxUtteranceMs:", ms);
+    return written;
   }
 
-  async setAutoSubmit(autoSubmit: boolean): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.autoSubmit", autoSubmit);
+  async setAutoSubmit(autoSubmit: boolean): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.autoSubmit", autoSubmit);
     log("[VoiceManager] setAutoSubmit:", autoSubmit);
+    return written;
   }
 
-  async setDiagnostics(diagnostics: boolean): Promise<void> {
-    await updateConfigAtEffectiveScope(this.platform, "damocles", "voice.diagnostics", diagnostics);
+  async setDiagnostics(diagnostics: boolean): Promise<SettingWrite> {
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.voice.diagnostics", diagnostics);
     log("[VoiceManager] setDiagnostics:", diagnostics);
+    return written;
   }
 
   async storeApiKey(provider: VoiceProvider, apiKey: string): Promise<void> {

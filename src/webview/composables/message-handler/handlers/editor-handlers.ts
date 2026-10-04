@@ -25,11 +25,11 @@ export function createEditorHandlers(): Partial<HandlerRegistry> {
     settingsFileSaveResult: (msg, ctx) => {
       if (monacoEnabled(msg.type, ctx)) useEditorStore().setSaveResult(msg);
     },
+    openSettingsFileEditor: (msg, ctx) => {
+      if (monacoEnabled(msg.type, ctx)) useEditorStore().openSettingsEditor(msg.scope);
+    },
     settingsFileChanged: (msg, ctx) => {
       if (monacoEnabled(msg.type, ctx)) useEditorStore().noteSettingsFileChanged(msg.scope, msg.version);
-    },
-    settingsFileAvailability: (msg, ctx) => {
-      if (monacoEnabled(msg.type, ctx)) useEditorStore().setSettingsFileAvailability(msg.files);
     },
   };
 }

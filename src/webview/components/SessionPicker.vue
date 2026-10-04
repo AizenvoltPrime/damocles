@@ -1,18 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  IconCheck,
-  IconXMark,
-  IconPencil,
-  IconTrash,
-  IconChevronDown,
-  IconSearch,
-} from '@/components/icons';
-import { Folder, Tag } from 'lucide-vue-next';
+import { Check, ChevronDown, Folder, Pencil, Search, Tag, Trash2, X } from 'lucide-vue-next';
 import { storeToRefs } from 'pinia';
 import DeleteSessionModal from './DeleteSessionModal.vue';
 import { useSettingsStore } from '@/stores/useSettingsStore';
@@ -222,152 +211,241 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <!-- Search input -->
-    <div class="p-2 border-b border-border/30">
-      <div class="relative">
-        <IconSearch :size="14" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          v-model="searchQuery"
-          type="text"
-          :placeholder="t('session.searchPlaceholder')"
-          class="h-8 pl-8 pr-8 text-xs"
-          @input="handleSearchInput"
+    <div class="relative mb-1">
+      <Search
+        class="size-3.25 pointer-events-none absolute inset-s-2.5 top-1/2 -translate-y-1/2 text-(--d-faint)"
+        aria-hidden="true"
+      />
+      <input
+        v-model="searchQuery"
+        type="search"
+        :placeholder="t('history.search')"
+        :aria-label="t('history.search')"
+        class="h-8 w-full rounded-lg border border-(--d-border) bg-(--d-input) ps-8 pe-8 text-12.5 text-(--d-text) outline-none transition-colors placeholder:text-(--d-faint) focus:border-(--d-accent) [&::-webkit-search-cancel-button]:hidden"
+        data-testid="history-search"
+        @input="handleSearchInput"
+      >
+      <button
+        v-if="searchQuery"
+        type="button"
+        class="absolute inset-e-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)"
+        :aria-label="t('history.clearSearch')"
+        :title="t('history.clearSearch')"
+        @click="clearSearch"
+      >
+        <X
+          class="size-3"
+          aria-hidden="true"
         />
-        <Button
-          v-if="searchQuery"
-          variant="ghost"
-          size="icon-sm"
-          class="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
-          @click="clearSearch"
-        >
-          <IconXMark :size="12" />
-        </Button>
-      </div>
+      </button>
     </div>
 
-    <!-- Sessions list -->
-    <div ref="sessionsListRef" class="max-h-52 overflow-y-auto overflow-x-hidden" @scroll="handleScroll">
-      <!-- Empty state -->
+    <div
+      ref="sessionsListRef"
+      class="max-h-[min(21.25rem,55vh)] overflow-y-auto overflow-x-hidden"
+      @scroll="handleScroll"
+    >
       <div
         v-if="sessions.length === 0"
-        class="p-4 text-center text-xs text-muted-foreground"
+        class="px-3 py-5 text-center text-xs text-(--d-muted)"
       >
         {{ searchQuery ? t('session.noSearchResults') : t('session.noSessions') }}
       </div>
 
-      <!-- Session items -->
-      <div v-for="session in sessions" :key="session.id" :data-session-id="session.id" class="group relative">
-        <!-- Rename mode -->
-        <div v-if="renamingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
+      <div
+        v-for="session in sessions"
+        :key="session.id"
+        :data-session-id="session.id"
+        class="group relative"
+      >
+        <div
+          v-if="renamingSessionId === session.id"
+          class="flex items-center gap-1 rounded-lg bg-(--d-hover) p-1"
+        >
           <input
-            ref="renameInputRef"
+            :ref="(el) => { renameInputRef = el as HTMLInputElement | null }"
             v-model="renameInputValue"
             type="text"
-            class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent)"
             :placeholder="t('session.enterNewName')"
+            :aria-label="t('session.renameSession')"
             @keyup.enter="submitRename"
             @keyup.escape="cancelRename"
           />
-          <Button size="sm" class="h-6 px-2" @click="submitRename"><IconCheck :size="14" /></Button>
-          <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelRename"><IconXMark :size="14" /></Button>
+          <button
+            type="button"
+            class="d-tool-btn h-7 min-w-7 px-0 text-(--d-accent)"
+            :aria-label="t('common.save')"
+            :title="t('common.save')"
+            @click="submitRename"
+          >
+            <Check
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            type="button"
+            class="d-tool-btn h-7 min-w-7 px-0"
+            :aria-label="t('common.cancel')"
+            :title="t('common.cancel')"
+            @click="cancelRename"
+          >
+            <X
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </button>
         </div>
 
-        <!-- Tag mode -->
-        <div v-else-if="taggingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
+        <div
+          v-else-if="taggingSessionId === session.id"
+          class="flex items-center gap-1 rounded-lg bg-(--d-hover) p-1"
+        >
           <input
-            ref="tagInputRef"
+            :ref="(el) => { tagInputRef = el as HTMLInputElement | null }"
             v-model="tagInputValue"
             type="text"
-            class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+            class="h-7 min-w-0 flex-1 rounded-md border border-(--d-border2) bg-(--d-input) px-2 text-xs text-(--d-text) outline-none focus:border-(--d-accent)"
             :placeholder="t('session.tagPlaceholder')"
+            :aria-label="t('session.tagSession')"
             @keyup.enter="submitTag"
             @keyup.escape="cancelTag"
           />
-          <Button size="sm" class="h-6 px-2" @click="submitTag"><IconCheck :size="14" /></Button>
-          <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelTag"><IconXMark :size="14" /></Button>
+          <button
+            type="button"
+            class="d-tool-btn h-7 min-w-7 px-0 text-(--d-accent)"
+            :aria-label="t('common.save')"
+            :title="t('common.save')"
+            @click="submitTag"
+          >
+            <Check
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </button>
+          <button
+            type="button"
+            class="d-tool-btn h-7 min-w-7 px-0"
+            :aria-label="t('common.cancel')"
+            :title="t('common.cancel')"
+            @click="cancelTag"
+          >
+            <X
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </button>
         </div>
 
-        <!-- Normal display mode -->
-        <div v-else class="flex items-center gap-1 pr-1">
-          <Button
-            variant="ghost"
-            class="flex-1 min-w-0 h-auto justify-start text-left p-2 text-xs text-foreground"
-            :class="[
-              selectedSessionId === session.id
-                ? 'bg-primary/20 border-l-2 border-primary'
-                : ''
-            ]"
+        <div
+          v-else
+          class="flex items-center rounded-lg transition-colors hover:bg-(--d-hover)"
+          :class="{ 'bg-(--d-accent-soft)': selectedSessionId === session.id }"
+        >
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2.25 rounded-lg px-2.25 py-1.75 text-start text-13 text-(--d-text)"
+            :aria-current="selectedSessionId === session.id ? 'true' : undefined"
+            data-testid="session-select"
             @click="handleSelect(session.id)"
           >
-            <div class="min-w-0 w-full">
-              <div class="font-medium truncate flex items-center gap-1">
-                <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
+            <span
+              class="size-1.5 shrink-0 rounded-full"
+              :class="selectedSessionId === session.id ? 'bg-(--d-accent)' : 'bg-(--d-faint)'"
+              aria-hidden="true"
+            />
+            <span class="flex min-w-0 flex-1 flex-col">
+              <span class="flex min-w-0 items-center gap-1.5">
                 <span class="truncate">{{ getDisplayName(session) }}</span>
-                <Badge
+                <span
                   v-if="session.tag"
-                  variant="outline"
-                  class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
-                >
-                  {{ session.tag }}
-                </Badge>
-              </div>
-              <div class="text-muted-foreground flex items-center gap-1.5 min-w-0" :class="{ 'ml-4': selectedSessionId === session.id }">
-                <span class="shrink-0">{{ formatTime(session.timestamp) }}</span>
-                <Badge
-                  v-if="folderLabel(session)"
-                  variant="outline"
-                  class="min-w-0 gap-0.5 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
-                  :title="t('session.folderLabel', { folder: folderLabel(session) })"
-                  data-testid="session-folder-badge"
-                >
-                  <Folder :size="10" class="shrink-0" />
-                  <span class="truncate">{{ folderLabel(session) }}</span>
-                </Badge>
-              </div>
-            </div>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="shrink-0 text-muted-foreground hover:text-primary hover:bg-muted"
-            :title="t('session.renameSession')"
-            @click.stop="startRename(session.id, getDisplayName(session))"
-          ><IconPencil :size="12" /></Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="shrink-0 text-muted-foreground hover:text-primary hover:bg-muted"
-            :title="session.tag ? t('session.removeTag') : t('session.tagSession')"
-            @click.stop="startTag(session.id, session.tag)"
-          ><Tag :size="12" /></Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/20"
-            :title="t('session.deleteSession')"
-            @click.stop="startDelete(session.id)"
-          ><IconTrash :size="12" /></Button>
+                  class="shrink-0 rounded-5 border border-(--d-border2) px-1.5 text-10.5/4 text-(--d-muted)"
+                  data-testid="session-tag-label"
+                >{{ session.tag }}</span>
+              </span>
+              <span
+                v-if="folderLabel(session)"
+                class="flex min-w-0 items-center gap-1 text-11"
+                :class="selectedSessionId === session.id ? 'text-(--d-faint-text)' : 'text-(--d-faint) group-hover:text-(--d-faint-text)'"
+                :title="t('session.folderLabel', { folder: folderLabel(session) })"
+                data-testid="session-folder-badge"
+              >
+                <Folder
+                  class="size-2.5 shrink-0"
+                  aria-hidden="true"
+                />
+                <span class="truncate">{{ folderLabel(session) }}</span>
+              </span>
+            </span>
+            <span
+              class="shrink-0 text-11 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+              :class="selectedSessionId === session.id ? 'text-(--d-faint-text)' : 'text-(--d-faint)'"
+            >{{ formatTime(session.timestamp) }}</span>
+          </button>
+          <span class="absolute inset-e-1 flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <button
+              type="button"
+              class="d-tool-btn h-6 min-w-6 px-0"
+              :title="t('session.renameSession')"
+              :aria-label="t('session.renameSession')"
+              data-testid="session-rename"
+              @click.stop="startRename(session.id, getDisplayName(session))"
+            ><Pencil
+              class="size-3"
+              aria-hidden="true"
+            /></button>
+            <button
+              type="button"
+              class="d-tool-btn h-6 min-w-6 px-0"
+              :title="session.tag ? t('session.removeTag') : t('session.tagSession')"
+              :aria-label="session.tag ? t('session.removeTag') : t('session.tagSession')"
+              data-testid="session-tag"
+              @click.stop="startTag(session.id, session.tag)"
+            ><Tag
+              class="size-3"
+              aria-hidden="true"
+            /></button>
+            <button
+              type="button"
+              class="d-tool-btn h-6 min-w-6 px-0 hover:text-(--d-danger)"
+              :title="t('session.deleteSession')"
+              :aria-label="t('session.deleteSession')"
+              data-testid="session-delete"
+              @click.stop="startDelete(session.id)"
+            ><Trash2
+              class="size-3"
+              aria-hidden="true"
+            /></button>
+          </span>
         </div>
       </div>
 
-      <!-- Load more -->
-      <div v-if="!searchQuery && (hasMore || loading)" class="text-center py-2">
-        <Button
+      <div
+        v-if="!searchQuery && (hasMore || loading)"
+        class="flex justify-center py-1.5"
+      >
+        <button
           v-if="!loading"
-          variant="link"
-          size="sm"
-          class="text-xs text-primary hover:text-foreground flex items-center gap-1"
+          type="button"
+          class="d-tool-btn gap-1 px-2 text-xs"
+          data-testid="session-load-more"
           @click="$emit('loadMore')"
         >
-          <IconChevronDown :size="12" /> {{ t('session.loadMore') }}
-        </Button>
-        <div v-else class="text-xs text-muted-foreground animate-pulse">
+          <ChevronDown
+            class="size-3"
+            aria-hidden="true"
+          />{{ t('session.loadMore') }}
+        </button>
+        <div
+          v-else
+          class="animate-[d-pulse_1.4s_ease-in-out_infinite] text-xs text-(--d-muted)"
+        >
           {{ t('common.loading') }}
         </div>
       </div>
     </div>
 
-    <!-- Delete confirmation modal -->
     <DeleteSessionModal
       :visible="!!deletingSessionId"
       :session-name="getDeletingSessionName()"

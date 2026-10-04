@@ -1,37 +1,19 @@
 <script setup lang="ts">
-import { ref, computed, type Component } from 'vue';
+import { ref, computed, useId, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall, ToolResultOwner } from '@shared/types/session';
 import { isShellTool, LIVE_OUTPUT_TOOLS, TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import { cronToIntervalLabel } from '@shared/utils/cron';
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import {
-  IconCheck,
-  IconXCircle,
-  IconWarning,
-  IconBan,
-  IconQuestionCircle,
-  IconRobot,
-  IconChevronDown,
-  IconFile,
-  IconFileText,
-  IconTerminal,
-  IconSearch,
-  IconGlobe,
-  IconClock,
-  IconCode,
-  IconImage,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+  Bot, Check, ChevronRight, CircleCheck, CircleX, Clock, Code, Copy, CornerDownRight, ExternalLink, FileText, Globe,
+  ImagePlus, LoaderCircle, Search, SquareTerminal,
+} from 'lucide-vue-next';
 import LiveOutputPane from './LiveOutputPane.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import ToolCancelControl from './ToolCancelControl.vue';
 import ToolResultImages from './ToolResultImages.vue';
 import ImageLightbox from './ImageLightbox.vue';
@@ -39,23 +21,25 @@ import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { sanitizeUrl } from '@/lib/sanitize-url';
 import { ownEntry } from '@/utils/ownEntry';
 import { useUIStore, type ExpandedToolSource } from '@/stores/useUIStore';
+import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
+import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
 
 const TOOL_ICON_MAP: Record<string, Component> = {
-  Bash: IconTerminal,
-  PowerShell: IconTerminal,
-  Read: IconFile,
-  Grep: IconSearch,
-  Glob: IconSearch,
-  WebFetch: IconGlobe,
-  WebSearch: IconSearch,
-  CodeSearch: IconCode,
-  FeedRead: IconGlobe,
-  YouTubeTranscript: IconFileText,
-  ToolSearch: IconSearch,
-  CronCreate: IconClock,
-  CronDelete: IconClock,
-  CronList: IconClock,
-  [TOOL_GENERATE_IMAGE]: IconImage,
+  Bash: SquareTerminal,
+  PowerShell: SquareTerminal,
+  Read: FileText,
+  Grep: Search,
+  Glob: Search,
+  WebFetch: Globe,
+  WebSearch: Search,
+  CodeSearch: Code,
+  FeedRead: Globe,
+  YouTubeTranscript: FileText,
+  ToolSearch: Search,
+  CronCreate: Clock,
+  CronDelete: Clock,
+  CronList: Clock,
+  [TOOL_GENERATE_IMAGE]: ImagePlus,
 };
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -68,6 +52,7 @@ const EXT_LANG_MAP: Record<string, string> = {
 };
 
 const { t } = useI18n();
+const displayPath = useFolderRelativePath();
 const { postMessage } = usePlatformBridge();
 const uiStore = useUIStore();
 
@@ -89,14 +74,14 @@ const teamToolLabel = computed(() => ownEntry(TEAM_TOOL_LABELS, props.tool.name)
 const isTeamTool = computed(() => teamToolLabel.value !== undefined);
 
 const toolIcon = computed((): Component => {
-  if (isTeamTool.value) return IconRobot;
-  return ownEntry(TOOL_ICON_MAP, props.tool.name) ?? IconSearch;
+  if (isTeamTool.value) return Bot;
+  return ownEntry(TOOL_ICON_MAP, props.tool.name) ?? Search;
 });
 
 const subtitle = computed(() => {
   const input = props.tool.input;
   if (isShellTool(props.tool.name) && input.description) return input.description as string;
-  if ((props.tool.name === 'Read' || props.tool.name === TOOL_GENERATE_IMAGE) && input.file_path) return input.file_path as string;
+  if ((props.tool.name === 'Read' || props.tool.name === TOOL_GENERATE_IMAGE) && input.file_path) return displayPath(input.file_path as string);
   if (props.tool.name === 'Grep' && input.pattern) return `/${input.pattern as string}/`;
   if (props.tool.name === 'Glob' && input.pattern) return input.pattern as string;
   if (props.tool.name === 'WebFetch' && input.url) return input.url as string;
@@ -126,22 +111,12 @@ const showLiveOutput = computed(() =>
 const liveOutputText = computed(() => props.tool.liveOutput ?? '');
 
 const statusBadge = computed(() => {
-  if (isRunning.value) {
-    return { label: t('toolOverlay.statusRunning'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
-  }
-  if (isCompleted.value) {
-    return { label: t('toolOverlay.statusCompleted'), class: 'bg-success/30 text-success border-success/30', icon: IconCheck };
-  }
-  if (isFailed.value) {
-    return { label: t('toolOverlay.statusFailed'), class: 'bg-error/30 text-error border-error/30', icon: IconXCircle };
-  }
-  if (isCancelled.value) {
-    return { label: t('toolOverlay.statusCancelled'), class: 'bg-muted text-muted-foreground border-muted', icon: IconBan };
-  }
-  if (isUnrecorded.value) {
-    return { label: t('toolOverlay.statusUnrecorded'), class: 'bg-muted text-muted-foreground border-muted', icon: IconQuestionCircle };
-  }
-  return { label: props.tool.status, class: 'bg-muted text-muted-foreground border-muted', icon: IconWarning };
+  if (isRunning.value) return { label: t('toolOverlay.statusRunning'), class: 'd-tone-accent', pulse: true };
+  if (isCompleted.value) return { label: t('toolOverlay.statusCompleted'), class: 'd-tone-success' };
+  if (isFailed.value) return { label: t('toolOverlay.statusFailed'), class: 'd-tone-danger' };
+  if (isCancelled.value) return { label: t('toolOverlay.statusCancelled'), class: 'd-tone-muted' };
+  if (isUnrecorded.value) return { label: t('toolOverlay.statusUnrecorded'), class: 'd-tone-muted' };
+  return { label: props.tool.status, class: 'd-tone-warning' };
 });
 
 const hasResult = computed(() => Boolean(props.tool.result?.trim()) || (props.tool.imageCount ?? 0) > 0);
@@ -301,6 +276,106 @@ const intervalLabel = computed(() => {
   return label !== cron ? label : null;
 });
 
+interface InputRow {
+  key: string;
+  label: string;
+  value: string;
+  kind: 'plain' | 'code' | 'file' | 'badge';
+  tone?: string;
+}
+
+const shellCommand = computed(() => (isShellTool(props.tool.name) ? String(props.tool.input.command ?? '') : ''));
+
+function present(value: unknown): value is string | number | boolean {
+  return value !== undefined && value !== null && value !== '';
+}
+
+/** The tool's input as the reference's label/value grid; tools without a known shape list their raw fields. */
+const inputRows = computed<InputRow[]>(() => {
+  const input = props.tool.input;
+  const rows: InputRow[] = [];
+  const add = (key: string, label: string, value: unknown, kind: InputRow['kind'] = 'plain', tone?: string): void => {
+    if (present(value)) rows.push({ key, label, value: String(value), kind, ...(tone ? { tone } : {}) });
+  };
+  switch (props.tool.name) {
+    case 'Read':
+      add('file', t('toolOverlay.filePath'), input.file_path, 'file');
+      add('offset', t('toolOverlay.offset'), input.offset);
+      add('limit', t('toolOverlay.limit'), input.limit);
+      break;
+    case 'Grep':
+      add('pattern', t('toolOverlay.pattern'), input.pattern, 'code');
+      add('path', t('toolOverlay.searchPath'), input.path);
+      add('glob', t('toolOverlay.globFilter'), input.glob, 'code');
+      add('mode', t('toolOverlay.outputMode'), input.output_mode);
+      add('after', '-A', input['-A']);
+      add('before', '-B', input['-B']);
+      add('context', '-C', input['-C'] ?? input.context);
+      break;
+    case 'Glob':
+      add('pattern', t('toolOverlay.pattern'), input.pattern, 'code');
+      add('path', t('toolOverlay.searchPath'), input.path);
+      break;
+    case 'Ls':
+      add('path', t('toolOverlay.searchPath'), (input.path as string | undefined) || '.');
+      break;
+    case 'WebFetch':
+      add('url', t('toolOverlay.url'), webFetchTargets.value);
+      add('prompt', t('toolOverlay.prompt'), input.prompt);
+      break;
+    case 'WebSearch':
+      add('query', t('toolOverlay.query'), webSearchQueries.value, 'code');
+      add('allowed', t('toolOverlay.allowedDomains'), (input.allowed_domains as string[] | undefined)?.join(', '));
+      add('blocked', t('toolOverlay.blockedDomains'), (input.blocked_domains as string[] | undefined)?.join(', '));
+      break;
+    case 'CodeSearch':
+      add('query', t('toolOverlay.query'), input.query, 'code');
+      break;
+    case 'FeedRead':
+      add('url', t('toolOverlay.url'), input.url);
+      add('limit', t('toolOverlay.limit'), input.limit);
+      break;
+    case 'YouTubeTranscript':
+      add('url', t('toolOverlay.url'), input.url);
+      add('lang', t('toolOverlay.language'), input.lang);
+      break;
+    case 'ToolSearch':
+      add('tools', t('tools.title'), Array.isArray(input.tools) ? (input.tools as string[]).join(', ') : undefined, 'code');
+      break;
+    case 'CronCreate':
+      add('cron', t('toolOverlay.cronInfo.cronExpression'), input.cron, 'code');
+      add('prompt', t('toolOverlay.cronInfo.prompt'), input.prompt);
+      add('kind', ' ', input.recurring !== false ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot'), 'badge', input.recurring !== false ? 'd-tone-accent' : 'd-tone-warning');
+      if (input.durable) add('durable', ' ', t('toolOverlay.cronInfo.durable'), 'badge', 'd-tone-success');
+      break;
+    case 'CronDelete':
+      add('id', t('toolOverlay.cronInfo.jobId'), input.id, 'code');
+      break;
+    case 'CronList':
+      add('list', ' ', t('toolOverlay.cronInfo.listJobs'));
+      break;
+    default:
+      if (isShellTool(props.tool.name)) {
+        add('description', t('overlays.tool.description'), input.description);
+        break;
+      }
+      for (const [key, value] of Object.entries(input)) {
+        add(key, key, typeof value === 'string' ? value : JSON.stringify(value), typeof value === 'string' && key.endsWith('path') ? 'file' : typeof value === 'string' ? 'plain' : 'code');
+      }
+  }
+  return rows;
+});
+
+/** A file the header's Open file action opens: the path a Read or an image tool named. */
+const openableFile = computed(() => {
+  const path = props.tool.input.file_path;
+  return (props.tool.name === 'Read' || props.tool.name === TOOL_GENERATE_IMAGE) && typeof path === 'string' && path ? path : null;
+});
+
+const { hasCopied: copied, copyToClipboard: copy } = useCopyToClipboard();
+const { hasCopied: commandCopied, copyToClipboard: copyCommand } = useCopyToClipboard();
+const ids = useId();
+
 function handleFilePathClick(filePath: string): void {
   const line = readMeta.value?.startLine ?? 1;
   postMessage({ type: 'openFile', filePath, line });
@@ -309,6 +384,7 @@ function handleFilePathClick(filePath: string): void {
 
 <template>
   <OverlayShell
+    max-width="47.5rem"
     :title="tool.name"
     :subtitle="subtitle"
     :icon="toolIcon"
@@ -320,412 +396,430 @@ function handleFilePathClick(filePath: string): void {
         :tool-call="tool"
         :source="cancelSource"
       />
+      <OverlayHeaderAction
+        v-if="openableFile"
+        :label="t('overlays.tool.openFile')"
+        :title="openableFile"
+        :icon="ExternalLink"
+        @click="handleFilePathClick(openableFile)"
+      />
     </template>
 
-    <div class="p-4 space-y-4">
-      <!-- Running state, until the first output frame arrives for a shell call -->
-      <div v-if="isRunning && !showLiveOutput" class="text-center text-muted-foreground text-sm py-8">
-        <LoadingSpinner :size="24" class="mx-auto mb-2" />
-        <p>{{ t('toolOverlay.running') }}</p>
-      </div>
-
-      <!-- Error state -->
-      <div v-else-if="isFailed && tool.errorMessage" class="text-error">
-        <div class="flex items-center gap-2 mb-2 text-xs font-medium">
-          <IconXCircle :size="14" />
-          <span>{{ t('common.error') }}</span>
-        </div>
-        <div class="pl-2 font-mono text-sm">{{ tool.errorMessage }}</div>
-      </div>
-
-      <!-- Normal state -->
-      <template v-else>
-        <!-- Input Section -->
-        <Collapsible v-model:open="isInputExpanded">
-          <CollapsibleTrigger
-            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
-          >
-            <IconChevronDown
-              :size="14"
-              class="text-muted-foreground transition-transform duration-200"
-              :class="{ '-rotate-90': !isInputExpanded }"
-            />
-            <span class="text-xs font-medium text-muted-foreground">{{ t('toolOverlay.input') }}</span>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div class="mt-2 space-y-2">
-              <!-- Bash / PowerShell -->
-              <template v-if="isShellTool(tool.name)">
-                <div v-if="tool.input.description" class="text-xs text-muted-foreground italic pl-2">
-                  {{ tool.input.description }}
-                </div>
-                <CodeBlock :code="(tool.input.command as string) || ''" :language="tool.name === 'PowerShell' ? 'powershell' : 'bash'" />
-              </template>
-
-              <!-- Read -->
-              <template v-else-if="tool.name === 'Read'">
-                <div v-if="tool.input.file_path" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.filePath') }}</span>
-                  <span
-                    class="text-xs font-mono text-primary cursor-pointer hover:underline"
-                    @click="handleFilePathClick(tool.input.file_path as string)"
-                  >{{ tool.input.file_path }}</span>
-                </div>
-                <div v-if="tool.input.offset != null || tool.input.limit != null" class="flex items-center gap-4 pl-2 text-xs text-muted-foreground">
-                  <span v-if="tool.input.offset != null">{{ t('toolOverlay.offset') }}: {{ tool.input.offset }}</span>
-                  <span v-if="tool.input.limit != null">{{ t('toolOverlay.limit') }}: {{ tool.input.limit }}</span>
-                </div>
-              </template>
-
-              <!-- Grep -->
-              <template v-else-if="tool.name === 'Grep'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.pattern') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.pattern }}</code>
-                </div>
-                <div v-if="tool.input.path" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.searchPath') }}</span>
-                  <span class="text-xs font-mono text-foreground/70">{{ tool.input.path }}</span>
-                </div>
-                <div v-if="tool.input.glob" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.globFilter') }}</span>
-                  <code class="text-xs font-mono text-foreground/70">{{ tool.input.glob }}</code>
-                </div>
-                <div v-if="tool.input.output_mode" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.outputMode') }}</span>
-                  <span class="text-xs text-foreground/70">{{ tool.input.output_mode }}</span>
-                </div>
-                <div v-if="tool.input['-A'] != null || tool.input['-B'] != null || tool.input['-C'] != null || tool.input.context != null" class="flex items-center gap-4 pl-2 text-xs text-muted-foreground">
-                  <span v-if="tool.input['-A'] != null">-A {{ tool.input['-A'] }}</span>
-                  <span v-if="tool.input['-B'] != null">-B {{ tool.input['-B'] }}</span>
-                  <span v-if="tool.input['-C'] != null || tool.input.context != null">-C {{ tool.input['-C'] ?? tool.input.context }}</span>
-                </div>
-              </template>
-
-              <!-- Glob -->
-              <template v-else-if="tool.name === 'Glob'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.pattern') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.pattern }}</code>
-                </div>
-                <div v-if="tool.input.path" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.searchPath') }}</span>
-                  <span class="text-xs font-mono text-foreground/70">{{ tool.input.path }}</span>
-                </div>
-              </template>
-
-              <!-- Ls -->
-              <template v-else-if="tool.name === 'Ls'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.searchPath') }}</span>
-                  <span class="text-xs font-mono text-foreground/70">{{ (tool.input.path as string) || '.' }}</span>
-                </div>
-              </template>
-
-              <!-- WebFetch -->
-              <template v-else-if="tool.name === 'WebFetch'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
-                  <span class="text-xs font-mono text-foreground/70 break-all">{{ webFetchTargets }}</span>
-                </div>
-                <div v-if="tool.input.prompt" class="pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.prompt') }}</span>
-                  <p class="text-xs text-foreground/70 italic mt-1">{{ tool.input.prompt }}</p>
-                </div>
-              </template>
-
-              <!-- WebSearch -->
-              <template v-else-if="tool.name === 'WebSearch'">
-                <div class="flex items-start gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ webSearchQueries }}</code>
-                </div>
-                <div v-if="(tool.input.allowed_domains as string[] | undefined)?.length" class="pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.allowedDomains') }}</span>
-                  <span class="text-xs text-foreground/70 ml-1">{{ (tool.input.allowed_domains as string[]).join(', ') }}</span>
-                </div>
-                <div v-if="(tool.input.blocked_domains as string[] | undefined)?.length" class="pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.blockedDomains') }}</span>
-                  <span class="text-xs text-foreground/70 ml-1">{{ (tool.input.blocked_domains as string[]).join(', ') }}</span>
-                </div>
-              </template>
-
-              <!-- CodeSearch -->
-              <template v-else-if="tool.name === 'CodeSearch'">
-                <div class="flex items-start gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ tool.input.query }}</code>
-                </div>
-              </template>
-
-              <!-- FeedRead -->
-              <template v-else-if="tool.name === 'FeedRead'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
-                  <span class="text-xs font-mono text-foreground/70 break-all">{{ tool.input.url }}</span>
-                </div>
-                <div v-if="tool.input.limit != null" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.limit') }}</span>
-                  <span class="text-xs text-foreground/70">{{ tool.input.limit }}</span>
-                </div>
-              </template>
-
-              <!-- YouTubeTranscript -->
-              <template v-else-if="tool.name === 'YouTubeTranscript'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
-                  <span class="text-xs font-mono text-foreground/70 break-all">{{ tool.input.url }}</span>
-                </div>
-                <div v-if="tool.input.lang" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.language') }}</span>
-                  <span class="text-xs text-foreground/70">{{ tool.input.lang }}</span>
-                </div>
-              </template>
-
-              <!-- ToolSearch -->
-              <template v-else-if="tool.name === 'ToolSearch' && Array.isArray(tool.input.tools)">
-                <div class="flex items-start gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('tools.title') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ (tool.input.tools as string[]).join(', ') }}</code>
-                </div>
-              </template>
-
-              <!-- CronCreate -->
-              <template v-else-if="tool.name === 'CronCreate'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.cronExpression') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.cron }}</code>
-                </div>
-                <div v-if="tool.input.prompt" class="pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.prompt') }}</span>
-                  <p class="text-xs text-foreground/70 mt-1 whitespace-pre-wrap">{{ tool.input.prompt }}</p>
-                </div>
-                <div class="flex items-center gap-3 pl-2">
-                  <code class="text-xs px-1.5 py-0.5 rounded" :class="tool.input.recurring !== false ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
-                    {{ tool.input.recurring !== false ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
-                  </code>
-                  <code v-if="tool.input.durable" class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
-                    {{ t('toolOverlay.cronInfo.durable') }}
-                  </code>
-                </div>
-              </template>
-
-              <!-- CronDelete -->
-              <template v-else-if="tool.name === 'CronDelete'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.jobId') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.id }}</code>
-                </div>
-              </template>
-
-              <!-- CronList -->
-              <template v-else-if="tool.name === 'CronList'">
-                <div class="text-xs text-muted-foreground italic pl-2">{{ t('toolOverlay.cronInfo.listJobs') }}</div>
-              </template>
-
-              <!-- Fallback -->
-              <div v-else class="text-sm text-muted-foreground italic pl-2">
-                {{ t('toolOverlay.noInput') }}
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
-
-        <!-- Live Output Section -->
-        <div v-if="showLiveOutput" class="space-y-2">
-          <div class="flex items-center gap-2 py-1.5">
-            <LoadingSpinner :size="14" class="text-primary" />
-            <span class="text-xs font-medium text-primary">{{ t('toolOverlay.liveOutput') }}</span>
-          </div>
-          <LiveOutputPane
-            :output="liveOutputText"
-            :truncated="tool.liveOutputTruncated === true"
-            height-class="h-[45vh]"
+    <div class="flex flex-col gap-3 px-4.5 pt-3.5 pb-4.5 text-13">
+      <section class="overflow-hidden rounded-10 border border-(--d-border) bg-(--d-card)">
+        <button
+          type="button"
+          class="flex h-8.5 w-full items-center gap-2 px-3 text-left text-xs font-semibold text-(--d-muted) transition-colors hover:bg-(--d-hover)"
+          :aria-expanded="isInputExpanded"
+          :aria-controls="isInputExpanded ? `${ids}-input` : undefined"
+          @click="isInputExpanded = !isInputExpanded"
+        >
+          <ChevronRight
+            class="size-3.25 transition-transform duration-200"
+            :class="isInputExpanded && 'rotate-90'"
+            aria-hidden="true"
           />
-        </div>
-
-        <!-- Read File Info Card -->
-        <div v-if="readMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
-          <div class="flex items-center gap-3 px-3 py-2.5">
-            <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
-              <IconFileText :size="14" class="text-primary" />
-            </div>
-
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-3 text-xs">
-                <span class="text-foreground font-medium">
-                  {{ readMeta.isPartial
-                    ? t('toolOverlay.readInfo.linesRange', { start: readMeta.startLine, end: readMeta.endLine })
-                    : t('toolOverlay.readInfo.allLines')
-                  }}
-                </span>
-                <span class="text-muted-foreground">
-                  {{ t('toolOverlay.readInfo.ofTotal', { total: readMeta.totalLines }) }}
-                </span>
-              </div>
-
-              <div v-if="readMeta.isPartial" class="mt-1.5 flex items-center gap-2">
-                <div class="flex-1 h-1 rounded-full bg-muted overflow-hidden">
-                  <div
-                    class="h-full rounded-full bg-primary/60 transition-all duration-300"
-                    :style="{ width: readMeta.percentage + '%' }"
-                  />
-                </div>
-                <span class="text-xs tabular-nums text-muted-foreground font-medium shrink-0">{{ readMeta.percentage }}%</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ToolSearch Info Card -->
-        <div v-if="toolSearchMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
-          <div class="px-3 py-2.5 space-y-2">
-            <div class="flex items-center gap-3">
-              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
-                <IconSearch :size="14" class="text-primary" />
-              </div>
-              <span class="text-xs text-foreground font-medium">
-                {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
-              </span>
-            </div>
-
-            <div v-if="toolSearchMeta.matches.length > 0" class="flex flex-wrap gap-1.5 pl-10">
-              <code
-                v-for="name in toolSearchMeta.matches"
-                :key="name"
-                class="text-xs font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded"
-              >{{ name }}</code>
-            </div>
-
-            <div v-if="toolSearchMeta.pendingMcpServers?.length" class="pl-10">
-              <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.toolSearchInfo.pendingServers') }}:</span>
-              <span class="text-xs text-foreground/70 ml-1">{{ toolSearchMeta.pendingMcpServers.join(', ') }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- CronCreate Info Card -->
-        <div v-if="cronCreateMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
-          <div class="px-3 py-2.5 space-y-3">
-            <div class="flex items-center gap-3">
-              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
-                <IconClock :size="14" class="text-primary" />
-              </div>
-              <span class="text-xs text-foreground font-medium">{{ cronCreateMeta.humanSchedule }}</span>
-              <code class="text-xs px-1.5 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
-                {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
-              </code>
-              <code v-if="cronCreateMeta.durable" class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
-                {{ t('toolOverlay.cronInfo.durable') }}
-              </code>
-            </div>
-
-            <!-- Interval label -->
-            <div v-if="intervalLabel" class="pl-10 flex items-center gap-1.5 text-xs">
-              <span class="text-muted-foreground">{{ t('toolOverlay.cronInfo.interval') }}:</span>
-              <span class="font-medium text-foreground">{{ intervalLabel }}</span>
-            </div>
-
-            <div class="flex items-center gap-2 pl-10 text-xs">
-              <span class="text-muted-foreground">{{ t('toolOverlay.cronInfo.jobId') }}:</span>
-              <code class="font-mono text-foreground/70 bg-muted px-1.5 py-0.5 rounded">{{ cronCreateMeta.jobId }}</code>
-            </div>
-          </div>
-        </div>
-
-        <!-- CronList Info Card -->
-        <div v-if="cronListMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
-          <div class="px-3 py-2.5 space-y-2">
-            <div class="flex items-center gap-3">
-              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
-                <IconClock :size="14" class="text-primary" />
-              </div>
-              <span class="text-xs text-foreground font-medium">
-                {{ cronListMeta.jobs.length > 0
-                  ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.jobs.length })
-                  : t('toolOverlay.cronInfo.noJobs')
-                }}
-              </span>
-            </div>
-
-            <div v-if="cronListMeta.jobs.length > 0" class="space-y-1.5 pl-10">
-              <div
-                v-for="job in cronListMeta.jobs"
-                :key="job.id"
-                class="flex items-start gap-2 rounded-md bg-muted/30 px-2 py-1.5"
-              >
-                <div class="flex-1 min-w-0 space-y-0.5">
-                  <div class="flex items-center gap-2">
-                    <span class="text-xs text-foreground font-medium">{{ job.humanSchedule }}</span>
-                    <code class="text-xs font-mono text-muted-foreground">{{ job.cron }}</code>
-                    <code v-if="job.recurring" class="text-xs px-1 py-0.5 rounded bg-primary/15 text-primary">
-                      {{ t('toolOverlay.cronInfo.recurring') }}
-                    </code>
-                  </div>
-                  <p class="text-xs text-foreground/60 truncate">{{ job.prompt }}</p>
-                </div>
-                <code class="text-xs font-mono text-muted-foreground shrink-0">{{ job.id }}</code>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Response Section -->
-        <Collapsible v-if="hasResult" v-model:open="isResponseExpanded">
-          <CollapsibleTrigger
-            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
+          <CornerDownRight
+            class="size-3 text-(--d-faint)"
+            aria-hidden="true"
+          />
+          {{ t('toolOverlay.input') }}
+        </button>
+        <Transition name="t-fade">
+          <div
+            v-if="isInputExpanded"
+            :id="`${ids}-input`"
           >
-            <IconChevronDown
-              :size="14"
-              class="text-primary transition-transform duration-200"
-              :class="{ '-rotate-90': !isResponseExpanded }"
-            />
-            <span class="text-xs font-medium text-primary">{{ t('toolOverlay.response') }}</span>
-            <IconCheck :size="14" class="text-primary" />
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div class="mt-2 space-y-3">
-              <template v-if="tool.result?.trim()">
-                <div v-if="useMarkdownResponse" class="pl-2">
-                  <MarkdownRenderer :content="tool.result ?? ''" :base-url="webFetchBaseUrl" />
-                </div>
-                <template v-else-if="isCodeSearch">
-                  <div v-if="codeSearchBlocks.length" class="space-y-4">
-                    <div v-for="(block, i) in codeSearchBlocks" :key="i" class="space-y-1.5">
-                      <a
-                        v-if="block.url"
-                        :href="sanitizeUrl(block.url)"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="text-xs font-medium text-primary hover:underline break-all"
-                      >{{ block.title }}</a>
-                      <div v-else class="text-xs font-medium text-foreground break-all">{{ block.title }}</div>
-                      <div v-if="block.meta" class="text-[11px] text-muted-foreground">{{ block.meta }}</div>
-                      <CodeBlock :code="block.code" :language="block.language" />
-                    </div>
-                  </div>
-                  <CodeBlock v-else :code="tool.result ?? ''" language="text" />
-                </template>
-                <template v-else-if="isResultTooLarge">
-                  <div class="text-xs text-muted-foreground mb-1">
-                    {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}
-                  </div>
-                  <pre class="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded-md p-3 max-h-[60vh] overflow-auto">{{ tool.result }}</pre>
-                </template>
-                <CodeBlock v-else :code="tool.result ?? ''" :language="responseLanguage" />
+            <dl
+              v-if="inputRows.length"
+              class="grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4.5 gap-y-2 pt-0.5 pr-3.5 pb-3 pl-8.25 text-xs"
+            >
+              <template
+                v-for="row in inputRows"
+                :key="row.key"
+              >
+                <dt class="text-(--d-faint)">
+                  {{ row.label }}
+                </dt>
+                <dd class="m-0 min-w-0">
+                  <button
+                    v-if="row.kind === 'file'"
+                    type="button"
+                    class="font-mono text-11.5 break-all text-(--d-accent) hover:underline"
+                    :title="row.value"
+                    @click="handleFilePathClick(row.value)"
+                  >
+                    {{ displayPath(row.value) }}
+                  </button>
+                  <code
+                    v-else-if="row.kind === 'code'"
+                    class="rounded-5 bg-(--d-hover) px-1.75 py-px font-mono text-11.5 break-all text-(--d-text)"
+                  >{{ row.value }}</code>
+                  <span
+                    v-else-if="row.kind === 'badge'"
+                    class="rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_14%,transparent)] px-2 py-px text-11 font-medium"
+                    :class="row.tone"
+                  >{{ row.value }}</span>
+                  <span
+                    v-else
+                    class="whitespace-pre-wrap wrap-break-word text-(--d-text) text-pretty"
+                  >{{ row.value }}</span>
+                </dd>
               </template>
-              <ToolResultImages :tool="tool" :owner="owner" @open="lightboxImageUrl = $event" />
+            </dl>
+            <p
+              v-else-if="!shellCommand"
+              class="pt-0.5 pr-3.5 pb-3 pl-8.25 text-xs text-(--d-faint) italic"
+            >
+              {{ t('toolOverlay.noInput') }}
+            </p>
+            <div
+              v-if="shellCommand"
+              class="mx-3 mb-3 ml-8.25 flex items-start gap-2 rounded-lg border border-(--d-border) bg-(--d-code) py-2.25 pr-1.5 pl-3"
+            >
+              <span
+                class="min-w-0 flex-1 font-mono text-xs break-all whitespace-pre-wrap"
+                data-testid="tool-overlay-command"
+              ><span
+                class="text-(--d-accent) select-none"
+                aria-hidden="true"
+              >{{ tool.name === 'PowerShell' ? 'PS> ' : '$ ' }}</span><span>{{ shellCommand }}</span></span>
+              <button
+                type="button"
+                class="-my-1 flex flex-none rounded-md p-1.25 transition-colors hover:bg-(--d-border) hover:text-(--d-text)"
+                :class="commandCopied ? 'text-(--d-success)' : 'text-(--d-faint)'"
+                :title="commandCopied ? t('overlays.tool.copied') : t('overlays.tool.copyCommand')"
+                :aria-label="commandCopied ? t('overlays.tool.copied') : t('overlays.tool.copyCommand')"
+                data-testid="tool-overlay-copy-command"
+                @click="copyCommand(shellCommand)"
+              >
+                <component
+                  :is="commandCopied ? Check : Copy"
+                  class="size-3"
+                  aria-hidden="true"
+                />
+              </button>
             </div>
-          </CollapsibleContent>
-        </Collapsible>
+          </div>
+        </Transition>
+      </section>
 
-        <!-- No Response State -->
-        <div v-else-if="!isFailed && !isRunning" class="text-center text-muted-foreground text-sm py-8">
-          <p>{{ isUnrecorded ? t('toolOverlay.outcomeUnrecorded') : t('toolOverlay.noResponse') }}</p>
+      <div
+        v-if="readMeta"
+        class="flex items-center gap-3 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5"
+      >
+        <span class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)">
+          <FileText
+            class="size-3.5"
+            aria-hidden="true"
+          />
+        </span>
+        <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div class="flex items-baseline gap-2 text-xs">
+            <span class="font-semibold">{{ readMeta.isPartial
+              ? t('toolOverlay.readInfo.linesRange', { start: readMeta.startLine, end: readMeta.endLine })
+              : t('toolOverlay.readInfo.allLines') }}</span>
+            <span class="text-(--d-faint)">{{ t('toolOverlay.readInfo.ofTotal', { total: readMeta.totalLines }) }}</span>
+            <span
+              v-if="readMeta.isPartial"
+              class="ms-auto font-mono text-11 text-(--d-faint)"
+            >{{ readMeta.percentage }}%</span>
+          </div>
+          <div class="h-1 overflow-hidden rounded-full bg-(--d-hover)">
+            <div
+              class="d-bar h-full origin-left rounded-full bg-(--d-accent) opacity-75"
+              :style="{ transform: `scaleX(${readMeta.percentage / 100})`, animation: 'none' }"
+            />
+          </div>
         </div>
-      </template>
+      </div>
+
+      <div
+        v-if="toolSearchMeta"
+        class="flex flex-col gap-2 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5"
+      >
+        <div class="flex items-center gap-3 text-xs font-semibold">
+          <span class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)">
+            <Search
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </span>
+          {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
+        </div>
+        <div
+          v-if="toolSearchMeta.matches.length > 0"
+          class="flex flex-wrap gap-1.5 pl-10"
+        >
+          <code
+            v-for="name in toolSearchMeta.matches"
+            :key="name"
+            class="rounded-5 bg-(--d-accent-soft) px-1.5 py-px font-mono text-11.5 text-(--d-accent-text)"
+          >{{ name }}</code>
+        </div>
+        <div
+          v-if="toolSearchMeta.pendingMcpServers?.length"
+          class="pl-10 text-xs"
+        >
+          <span class="text-(--d-faint)">{{ t('toolOverlay.toolSearchInfo.pendingServers') }}:</span>
+          <span class="ml-1">{{ toolSearchMeta.pendingMcpServers.join(', ') }}</span>
+        </div>
+      </div>
+
+      <div
+        v-if="cronCreateMeta"
+        class="flex flex-col gap-2 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-xs"
+      >
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)">
+            <Clock
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </span>
+          <span class="font-semibold">{{ cronCreateMeta.humanSchedule }}</span>
+          <span
+            class="rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_14%,transparent)] px-2 py-px text-11 font-medium"
+            :class="cronCreateMeta.recurring ? 'd-tone-accent' : 'd-tone-warning'"
+          >{{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}</span>
+          <span
+            v-if="cronCreateMeta.durable"
+            class="rounded-full bg-[color-mix(in_srgb,var(--tone,currentColor)_14%,transparent)] px-2 py-px text-11 font-medium d-tone-success"
+          >{{ t('toolOverlay.cronInfo.durable') }}</span>
+        </div>
+        <div
+          v-if="intervalLabel"
+          class="flex items-center gap-1.5 pl-10"
+        >
+          <span class="text-(--d-faint)">{{ t('toolOverlay.cronInfo.interval') }}:</span>
+          <span class="font-medium">{{ intervalLabel }}</span>
+        </div>
+        <div class="flex items-center gap-2 pl-10">
+          <span class="text-(--d-faint)">{{ t('toolOverlay.cronInfo.jobId') }}:</span>
+          <code class="rounded-5 bg-(--d-hover) px-1.5 py-px font-mono text-11.5">{{ cronCreateMeta.jobId }}</code>
+        </div>
+      </div>
+
+      <div
+        v-if="cronListMeta"
+        class="flex flex-col gap-2 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2.5 text-xs"
+      >
+        <div class="flex items-center gap-3 font-semibold">
+          <span class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)">
+            <Clock
+              class="size-3.5"
+              aria-hidden="true"
+            />
+          </span>
+          {{ cronListMeta.jobs.length > 0 ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.jobs.length }) : t('toolOverlay.cronInfo.noJobs') }}
+        </div>
+        <div
+          v-if="cronListMeta.jobs.length > 0"
+          class="flex flex-col gap-1.5 pl-10"
+        >
+          <div
+            v-for="job in cronListMeta.jobs"
+            :key="job.id"
+            class="flex items-start gap-2 rounded-lg bg-(--d-hover) px-2 py-1.5"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-medium">{{ job.humanSchedule }}</span>
+                <code class="font-mono text-11 text-(--d-faint)">{{ job.cron }}</code>
+                <span
+                  v-if="job.recurring"
+                  class="rounded-full bg-(--d-accent-soft) px-1.5 text-10.5 text-(--d-accent-text)"
+                >{{ t('toolOverlay.cronInfo.recurring') }}</span>
+              </div>
+              <p class="truncate text-(--d-muted)">
+                {{ job.prompt }}
+              </p>
+            </div>
+            <code class="flex-none font-mono text-11 text-(--d-faint)">{{ job.id }}</code>
+          </div>
+        </div>
+      </div>
+
+      <div
+        v-if="showLiveOutput"
+        class="flex flex-col gap-1.5"
+      >
+        <p class="flex items-center gap-1.5 text-10 tracking-[.06em] text-(--d-faint) uppercase">
+          <span
+            class="d-pulsing size-1.5 rounded-full bg-(--d-accent)"
+            aria-hidden="true"
+          />{{ t('toolOverlay.liveOutput') }}
+        </p>
+        <LiveOutputPane
+          :output="liveOutputText"
+          :truncated="tool.liveOutputTruncated === true"
+          height-class="h-[45vh]"
+        />
+      </div>
+      <div
+        v-else-if="isRunning"
+        class="flex items-center justify-center gap-2.25 py-6.5 text-12.5 text-(--d-muted)"
+      >
+        <LoaderCircle
+          class="size-4 d-spinning text-(--d-accent)"
+          aria-hidden="true"
+        />{{ t('toolOverlay.running') }}
+      </div>
+
+      <div
+        v-if="isFailed && tool.errorMessage"
+        role="alert"
+        class="flex items-start gap-2.25 rounded-10 border border-[color-mix(in_srgb,var(--d-danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-danger)_8%,transparent)] px-3 py-2.25 text-(--d-danger-text)"
+      >
+        <CircleX
+          class="size-3.5 mt-0.5 flex-none"
+          aria-hidden="true"
+        />
+        <span class="font-mono text-xs wrap-break-word">{{ tool.errorMessage }}</span>
+      </div>
+
+      <section
+        v-if="hasResult"
+        class="overflow-hidden rounded-10 border border-(--d-border) bg-(--d-card)"
+      >
+        <div class="flex h-8.5 items-center gap-2 pr-2 pl-3">
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left text-xs font-semibold text-(--d-muted)"
+            :aria-expanded="isResponseExpanded"
+            :aria-controls="isResponseExpanded ? `${ids}-output` : undefined"
+            @click="isResponseExpanded = !isResponseExpanded"
+          >
+            <ChevronRight
+              class="size-3.25 flex-none transition-transform duration-200"
+              :class="isResponseExpanded && 'rotate-90'"
+              aria-hidden="true"
+            />
+            <component
+              :is="isFailed ? CircleX : CircleCheck"
+              class="size-3 flex-none"
+              :class="isFailed ? 'text-(--d-danger)' : 'text-(--d-success)'"
+              aria-hidden="true"
+            />
+            {{ t('toolOverlay.response') }}
+            <span
+              v-if="resultLineCount > 0"
+              class="min-w-0 truncate font-mono text-11 font-normal text-(--d-faint)"
+            >{{ t('overlays.tool.lines', { n: resultLineCount }, resultLineCount) }}</span>
+          </button>
+          <button
+            v-if="tool.result?.trim()"
+            type="button"
+            class="flex flex-none rounded-md p-1.25 transition-colors hover:bg-(--d-border) hover:text-(--d-text)"
+            :class="copied ? 'text-(--d-success)' : 'text-(--d-faint)'"
+            :title="copied ? t('overlays.tool.copied') : t('overlays.tool.copy')"
+            :aria-label="copied ? t('overlays.tool.copied') : t('overlays.tool.copy')"
+            @click="copy(tool.result ?? '')"
+          >
+            <component
+              :is="copied ? Check : Copy"
+              class="size-3"
+              aria-hidden="true"
+            />
+          </button>
+        </div>
+        <Transition name="t-fade">
+          <div
+            v-if="isResponseExpanded"
+            :id="`${ids}-output`"
+            class="flex flex-col gap-3 border-t border-(--d-border) bg-(--d-code)"
+          >
+            <template v-if="tool.result?.trim()">
+              <MarkdownRenderer
+                v-if="useMarkdownResponse"
+                class="px-3.5 py-2.5"
+                :content="tool.result ?? ''"
+                :base-url="webFetchBaseUrl"
+              />
+              <template v-else-if="isCodeSearch">
+                <div
+                  v-if="codeSearchBlocks.length"
+                  class="flex flex-col gap-4 px-3.5 py-2.5"
+                >
+                  <div
+                    v-for="(block, i) in codeSearchBlocks"
+                    :key="i"
+                    class="flex flex-col gap-1.5"
+                  >
+                    <a
+                      v-if="block.url"
+                      :href="sanitizeUrl(block.url)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-xs font-medium break-all text-(--d-accent) hover:underline"
+                    >{{ block.title }}</a>
+                    <div
+                      v-else
+                      class="text-xs font-medium break-all"
+                    >
+                      {{ block.title }}
+                    </div>
+                    <div
+                      v-if="block.meta"
+                      class="text-11 text-(--d-faint)"
+                    >
+                      {{ block.meta }}
+                    </div>
+                    <CodeBlock
+                      :code="block.code"
+                      :language="block.language"
+                    />
+                  </div>
+                </div>
+                <CodeBlock
+                  v-else
+                  :code="tool.result ?? ''"
+                  language="text"
+                />
+              </template>
+              <template v-else-if="isResultTooLarge">
+                <p class="px-3.5 pt-2.5 text-xs text-(--d-faint)">
+                  {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}
+                </p>
+                <div class="max-h-[46vh] overflow-auto px-3.5 pb-2.5 font-mono text-11.5 leading-[1.7] break-all whitespace-pre-wrap">
+                  <span>{{ tool.result }}</span>
+                </div>
+              </template>
+              <div
+                v-else-if="responseLanguage === 'text'"
+                class="max-h-[46vh] overflow-auto px-3.5 py-2.5 font-mono text-11.5 leading-[1.7] whitespace-pre"
+                data-testid="tool-overlay-output-text"
+              >
+                <span>{{ tool.result }}</span>
+              </div>
+              <CodeBlock
+                v-else
+                bare
+                :code="tool.result ?? ''"
+                :language="responseLanguage"
+              />
+            </template>
+            <ToolResultImages
+              :tool="tool"
+              :owner="owner"
+              @open="lightboxImageUrl = $event"
+            />
+          </div>
+        </Transition>
+      </section>
+
+      <p
+        v-else-if="!isFailed && !isRunning"
+        class="py-6.5 text-center text-12.5 text-(--d-muted)"
+      >
+        {{ isUnrecorded ? t('toolOverlay.outcomeUnrecorded') : t('toolOverlay.noResponse') }}
+      </p>
     </div>
 
-    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
+    <ImageLightbox
+      :open="lightboxImageUrl !== null"
+      :image-url="lightboxImageUrl ?? ''"
+      @close="lightboxImageUrl = null"
+    />
   </OverlayShell>
 </template>

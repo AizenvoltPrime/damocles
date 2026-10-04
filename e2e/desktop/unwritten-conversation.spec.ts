@@ -1,27 +1,27 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Page } from '@playwright/test';
-import { chatTab, expect, test } from './support/fixtures';
+import { activeChat, expect, firstChatPage, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { chatInput, hostMessages, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
-// pi writes a conversation's file when it commits the first prompt, so a new tab's conversation has an id and no file until then.
+// pi writes a conversation's file when it commits the first prompt, so a new chat's conversation has an id and no file until then.
 
 const MISSING_FILE = /could not be found|δεν βρέθηκε/;
-const GREEK_PLACEHOLDER = 'Ρωτήστε τον Damocles οτιδήποτε...';
+const GREEK_PLACEHOLDER = 'Ρωτήστε τον Damocles οτιδήποτε…';
 
 async function savedSessionId(tab: Page): Promise<string | undefined> {
   return tab.evaluate(() => (window.damoclesBridge!.getState() as { sessionId?: string } | undefined)?.sessionId);
 }
 
-/** The conversation the tab shows, from the host's last announcement or, failing that, the persisted id. */
+/** The conversation the chat shows, from the host's last announcement or, failing that, the persisted id. */
 async function liveSessionId(tab: Page): Promise<string | undefined> {
   const announced = (await hostMessages(tab, 'sessionStarted')).at(-1)?.['sessionId'];
   return typeof announced === 'string' && announced !== '' ? announced : savedSessionId(tab);
 }
 
-/** Resolves once the tab's session has started, which is when the host names its conversation. */
+/** Resolves once the chat's session has started, which is when the host names its conversation. */
 async function startedSessionId(tab: Page): Promise<string> {
   await expect.poll(() => liveSessionId(tab), { timeout: 60_000 }).toBeTruthy();
   return (await liveSessionId(tab))!;
@@ -33,13 +33,13 @@ function sessionFiles(root: string, sessionId: string): string[] {
     .map((entry) => path.join(root, entry));
 }
 
-test('reloading a tab that holds a new, empty conversation reopens that conversation with no error', async ({ home, launch }) => {
+test('reloading a chat that holds a new, empty conversation reopens that conversation with no error', async ({ home, launch }) => {
   test.setTimeout(180_000);
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
     const { app } = await launch();
-    const tab = await chatTab(app);
+    const tab = await firstChatPage(app);
     await recordHostMessages(tab);
     const unwritten = await startedSessionId(tab);
     expect(sessionFiles(home.agentDir, unwritten)).toEqual([]);
@@ -49,7 +49,7 @@ test('reloading a tab that holds a new, empty conversation reopens that conversa
     await sendAndAwaitEcho(tab, 'after the reload');
 
     await expect(tab.getByText(MISSING_FILE)).toHaveCount(0);
-    // The prompt wrote the same conversation the tab held before the reload, and made it the tab's restore target.
+    // The prompt wrote the same conversation the chat held before the reload, and made it the chat's restore target.
     await expect.poll(() => savedSessionId(tab)).toBe(unwritten);
     expect(sessionFiles(home.agentDir, unwritten)).toHaveLength(1);
   } finally {
@@ -66,7 +66,7 @@ test('the first prompt writes the conversation and makes it the restore target b
     seedStubModel(home, stub.baseUrl);
     stub.replies.push({ chunks: ['Held reply', ' finished.'], holdAfterFirst: held });
     const { app } = await launch();
-    const tab = await chatTab(app);
+    const tab = await firstChatPage(app);
     await recordHostMessages(tab);
     const sessionId = await startedSessionId(tab);
     await chatInput(tab).fill('written before the reply');
@@ -85,19 +85,19 @@ test('the first prompt writes the conversation and makes it the restore target b
   }
 });
 
-test('restarting with a tab whose conversation was never written opens a fresh conversation with no error', async ({ home, launch }) => {
+test('restarting with a chat whose conversation was never written opens a fresh conversation with no error', async ({ home, launch }) => {
   test.setTimeout(180_000);
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
     let desktop = await launch();
-    let tab = await chatTab(desktop.app);
+    let tab = await firstChatPage(desktop.app);
     await recordHostMessages(tab);
     const unwritten = await startedSessionId(tab);
     await desktop.close();
 
     desktop = await launch();
-    tab = await chatTab(desktop.app);
+    tab = await activeChat(desktop.app);
     await expect(chatInput(tab)).toBeVisible();
     await sendAndAwaitEcho(tab, 'after the restart');
 
@@ -109,13 +109,13 @@ test('restarting with a tab whose conversation was never written opens a fresh c
   }
 });
 
-test('restoring a tab whose written conversation was deleted meanwhile says so in the UI language', async ({ home, launch }) => {
+test('restoring a chat whose written conversation was deleted meanwhile says so in the UI language', async ({ home, launch }) => {
   test.setTimeout(180_000);
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
     let desktop = await launch({ args: ['--lang=el-GR'] });
-    let tab = await chatTab(desktop.app);
+    let tab = await activeChat(desktop.app);
     const input = tab.getByPlaceholder(GREEK_PLACEHOLDER);
     await input.fill('soon deleted');
     await input.press('Enter');
@@ -129,7 +129,7 @@ test('restoring a tab whose written conversation was deleted meanwhile says so i
     fs.rmSync(files[0]!);
 
     desktop = await launch({ args: ['--lang=el-GR'] });
-    tab = await chatTab(desktop.app);
+    tab = await activeChat(desktop.app);
     await expect(tab.getByText('Το αρχείο αυτής της συνομιλίας δεν βρέθηκε. Μπορεί να έχει διαγραφεί.')).toBeVisible();
   } finally {
     await stub.close();

@@ -103,13 +103,14 @@ describe('pane page', () => {
   });
 
   it('locks script-src to a fresh nonce and allows images only as data: URLs', () => {
-    const first = paneHtml({ kind: 'dark', css: '' });
+    const first = paneHtml({ kind: 'dark', css: '', reducedMotion: false });
     const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(first)?.[1] ?? '';
     const nonce = /'nonce-([^']+)'/.exec(csp)?.[1];
     expect(csp).toBe(`default-src 'none'; style-src app://damocles 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src app://damocles; img-src data:; base-uri 'none'; form-action 'none';`);
     expect(first).toContain(`<script nonce="${nonce}" type="module" src="app://damocles/desktop-shell/assets/pane.js"></script>`);
     expect(first).toContain('<link href="app://damocles/desktop-shell/assets/pane.css" rel="stylesheet">');
-    expect(paneHtml({ kind: 'light', css: '' })).not.toContain(`'nonce-${nonce}'`);
+    expect(paneHtml({ kind: 'light', css: '', reducedMotion: false })).not.toContain(`'nonce-${nonce}'`);
+    expect(paneHtml({ kind: 'light', css: '', reducedMotion: true })).toContain('<html lang="en" data-reduced-motion>');
   });
 
   it('runs sandboxed and isolated with its own preload, on a transparent background, and loads the pane URL', () => {

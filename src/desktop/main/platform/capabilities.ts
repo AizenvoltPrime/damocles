@@ -6,10 +6,13 @@ export function desktopHostCapabilities(platform: NodeJS.Platform): HostCapabili
     voice: platform !== 'darwin',
     hostSpeechExtensions: false,
     hostSettingsEditor: false,
-    markdownPreview: false,
     diffReview: true,
     settingsSources: true,
     monaco: true,
     ideContext: false,
+    damoclesTheme: true,
+    settingsInPanel: false,
+    historyInPanel: false,
+    folderPickerInPanel: false,
   };
 }

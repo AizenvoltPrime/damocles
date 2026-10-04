@@ -346,6 +346,8 @@ export interface StoredSession {
   messageCount?: number;
   tag?: string;
   createdAt?: number;
+  /** The model the conversation resumes on: its branch's latest model change or assistant reply. */
+  model?: { provider: string; id: string };
   /** The open folder whose session dir holds this session, with that folder's disambiguated label. */
   workspaceFolder?: { key: string; label: string };
 }

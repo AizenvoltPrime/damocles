@@ -1,11 +1,15 @@
 import { i18n } from "@/i18n";
+import { settleOverlaySteer } from "@/composables/useOverlaySteer";
 import type { HandlerRegistry } from "../types";
 
 export function createSubagentHandlers(): Partial<HandlerRegistry> {
   return {
     subagentSteered: (msg, ctx) => {
       const delivered = msg.status === "steered" || msg.status === "queued";
-      if (msg.requestId) ctx.refs.chatInputRef.value?.settleSteer(msg.requestId, delivered);
+      if (msg.requestId) {
+        ctx.refs.chatInputRef.value?.settleSteer(msg.requestId, delivered);
+        settleOverlaySteer(msg.requestId, delivered);
+      }
       if (delivered) {
         ctx.stores.streamingStore.addSteerChip(
           msg.message,
@@ -35,6 +39,10 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
       ctx.stores.subagentStore.stopSubagent(msg.toolUseId, msg.agentId, msg.lastAssistantMessage);
     },
 
+    subagentStopRejected: (msg, ctx) => {
+      ctx.stores.subagentStore.clearStopRequest(msg.agentId);
+    },
+
     subagentModelUpdate: (msg, ctx) => {
       ctx.stores.subagentStore.updateSubagentModel(msg.agentToolId, msg.model, msg.effort);
     },
@@ -45,7 +53,6 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
 
     subagentUsageUpdate: (msg, ctx) => {
       ctx.stores.subagentStore.updateSubagentUsage(msg.agentToolId, msg.usage, msg.dollarBilled);
-      return { skipScroll: true };
     },
 
     subagentMessagesUpdate: (msg, ctx) => {

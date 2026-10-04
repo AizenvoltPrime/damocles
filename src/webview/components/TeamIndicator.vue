@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
-import { useTeamStore } from '@/stores/useTeamStore';
 import { storeToRefs } from 'pinia';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { Users } from 'lucide-vue-next';
+import { useTeamStore } from '@/stores/useTeamStore';
 
 const { t } = useI18n();
 
@@ -20,10 +20,15 @@ function openFirstActive(): void {
 <template>
   <button
     v-if="activeTeamCount > 0"
-    class="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-primary hover:bg-foreground/5 transition-colors cursor-pointer"
+    type="button"
+    class="flex shrink-0 items-center gap-1.25 rounded-full border border-transparent bg-(--d-accent-soft) px-2 py-0.5 text-(--d-accent-text) transition-colors hover:border-(--d-accent)"
+    data-testid="composer-team"
     @click="openFirstActive"
   >
-    <LoadingSpinner :size="12" class="text-primary" />
-    <span>{{ t('team.indicator.label', { n: activeTeamCount }) }}</span>
+    <Users
+      class="size-2.75 animate-[d-pulse_1.6s_ease-in-out_infinite]"
+      aria-hidden="true"
+    />
+    <span class="@max-[43rem]:sr-only">{{ t('team.indicator.label', { n: activeTeamCount }) }}</span>
   </button>
 </template>

@@ -16,7 +16,29 @@ const QUIT_TIMEOUT_MS = 30_000;
 
 // The packaged binary's enableNodeCliInspectArguments fuse is off, so Playwright's Electron driver (which attaches over --inspect) cannot reach its main process.
 const NO_MAIN_PROCESS =
-  'needs the Electron main process, which a packaged app does not expose (its enableNodeCliInspectArguments fuse is off); keep this spec out of PACKAGED_SPECS in playwright.desktop.config.ts';
+  'needs the Electron main process, which a packaged app does not expose (its enableNodeCliInspectArguments fuse is off); keep this spec out of PACKAGED_SPECS in e2e/desktop/support/packaged-app.ts';
+
+// Specs that need no Electron main-process access, the only kind a packaged app (inspect fuse off) can run. The dev
+// project runs them without main-process access too (withoutMainProcess), so a main call fails there first.
+// network.spec.ts stays out: the disabled nodeOptions fuse makes Electron drop NODE_EXTRA_CA_CERTS, which both its tests set.
+export const PACKAGED_SPECS: readonly string[] = ['packaged-assets.spec.ts', 'chat-stream.spec.ts', 'auth-refresh.spec.ts', 'quit.spec.ts'];
+
+const MAIN_PROCESS_CALLS = new Set<PropertyKey>(['evaluate', 'evaluateHandle', 'browserWindow']);
+
+/** `app` with the main-process calls a packaged app cannot serve throwing as they do there. */
+export function withoutMainProcess(app: ElectronApplication): ElectronApplication {
+  return new Proxy(app, {
+    get(target, property) {
+      if (MAIN_PROCESS_CALLS.has(property)) {
+        return () => {
+          throw new Error(`${String(property)}() ${NO_MAIN_PROCESS}`);
+        };
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 const SAMPLE_LINES = 300;
 

@@ -70,8 +70,19 @@ describe('usePlatformBridge host selection', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('fails loudly at load when neither host bridge exists', async () => {
+  it('fails loudly on first use when neither host bridge exists', async () => {
     delete g.acquireVsCodeApi;
-    await expect(import('../usePlatformBridge')).rejects.toThrow(/No host bridge/);
+    const { usePlatformBridge } = await import('../usePlatformBridge');
+    expect(() => usePlatformBridge()).toThrow(/No host bridge/);
+  });
+
+  it('uses a bridge the page installs before first use, such as the desktop overlay, and refuses a second one', async () => {
+    delete g.acquireVsCodeApi;
+    const page = { postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };
+    const { installPlatformBridge, usePlatformBridge } = await import('../usePlatformBridge');
+    installPlatformBridge(page);
+    usePlatformBridge().postMessage({ type: 'requestSettingsState' });
+    expect(page.postMessage).toHaveBeenCalledWith({ type: 'requestSettingsState' });
+    expect(() => installPlatformBridge(page)).toThrow(/already in use/);
   });
 });

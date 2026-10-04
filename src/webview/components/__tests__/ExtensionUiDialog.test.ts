@@ -5,8 +5,8 @@ import { defineComponent, h, markRaw, nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import ExtensionUiDialog from '../ExtensionUiDialog.vue';
 import OverlayShell from '../OverlayShell.vue';
-import { Sheet, SheetContent } from '@/components/ui/sheet';
-import { MODAL_Z_INDEX } from '@/composables/useOverlayEscape';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { MODAL_Z_INDEX, hasOpenOverlay } from '@/composables/useOverlayEscape';
 import { i18n } from '@/i18n';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
 import type { WebviewToExtensionMessage } from '@shared/types/messages';
@@ -118,6 +118,60 @@ describe('ExtensionUiDialog — queue rendering', () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.get('h3').classes()).toContain('whitespace-pre-wrap');
+  });
+
+  it('stays mounted with an empty queue without holding the modal layer, and gives the layer back on the last answer', async () => {
+    const store = useExtensionUiStore();
+    const wrapper = mountDialog();
+    expect(hasOpenOverlay()).toBe(false);
+
+    store.setRequest(req('a'));
+    await nextTick();
+    expect(hasOpenOverlay()).toBe(true);
+
+    await option(wrapper, 'Continue').trigger('click');
+    await nextTick();
+
+    expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: 'Continue' }]);
+    expect(hasOpenOverlay()).toBe(false);
+  });
+
+  it('never answers the request it keeps on screen while it closes', async () => {
+    const store = useExtensionUiStore();
+    store.setRequest(req('a'));
+    const wrapper = mountDialog();
+    await nextTick();
+    const decline = option(wrapper, 'Decline');
+
+    store.cancel('a');
+    await nextTick();
+    if (decline.element.isConnected) await decline.trigger('click');
+
+    expect(posted).toEqual([]);
+  });
+
+  it('keeps a quick pick list on screen while the dialog plays its exit', async () => {
+    // happy-dom runs no CSS, so the exit animation reka waits for is reported here.
+    const realStyle = window.getComputedStyle.bind(window);
+    const style = vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => new Proxy(realStyle(el, pseudo), {
+      get: (target, key) => (key === 'animationName' && (el as Element).matches('.d-dialog') ? 'd-zoom' : Reflect.get(target, key)),
+    }));
+    try {
+      const store = useExtensionUiStore();
+      store.setRequest(req('a'));
+      const wrapper = mountDialog();
+      await nextTick();
+
+      store.cancel('a');
+      await nextTick();
+      await nextTick();
+
+      expect(wrapper.find('[data-testid="extension-ui-dialog"]').attributes('data-state')).toBe('closed');
+      expect(wrapper.findAll('[role="option"]').map((o) => o.text())).toEqual(['Continue', 'Decline']);
+      expect(wrapper.text()).not.toContain('No matches');
+    } finally {
+      style.mockRestore();
+    }
   });
 
   it('answering the head posts the response and promotes the next request', async () => {
@@ -448,15 +502,15 @@ describe('ExtensionUiDialog over the layer it opened on', () => {
     await new Promise((r) => setTimeout(r, 0));
   };
 
-  it('takes pointer events, focus and Escape from an open Settings sheet, which stays open', async () => {
-    const sheetClosed = vi.fn();
-    const SheetHarness = defineComponent({
-      setup: () => () => h(Sheet, { open: true, 'onUpdate:open': (open: boolean) => { if (!open) sheetClosed(); } }, {
-        default: () => h(SheetContent, null, { default: () => h('button', { type: 'button' }, 'inside the sheet') }),
+  it('takes pointer events, focus and Escape from an open modal dialog, which stays open', async () => {
+    const dialogClosed = vi.fn();
+    const DialogHarness = defineComponent({
+      setup: () => () => h(Dialog, { open: true, 'onUpdate:open': (open: boolean) => { if (!open) dialogClosed(); } }, {
+        default: () => h(DialogContent, null, { default: () => h('button', { type: 'button' }, 'inside the dialog') }),
       }),
     });
-    const sheet = mount(SheetHarness, { attachTo: document.body });
-    mounted.push(sheet as VueWrapper);
+    const dialog = mount(DialogHarness, { global: { plugins: [i18n] }, attachTo: document.body });
+    mounted.push(dialog as VueWrapper);
     await settle();
     expect(document.body.style.pointerEvents).toBe('none');
 
@@ -473,7 +527,7 @@ describe('ExtensionUiDialog over the layer it opened on', () => {
     await settle();
 
     expect(posted).toEqual([{ type: 'extensionUiResponse', requestId: 'a', value: null }]);
-    expect(sheetClosed).not.toHaveBeenCalled();
+    expect(dialogClosed).not.toHaveBeenCalled();
   });
 
   it('keeps Escape for itself over a stack overlay, which stays open', async () => {

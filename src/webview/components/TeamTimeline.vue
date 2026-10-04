@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { MessagesSquare } from 'lucide-vue-next';
 import type { TeamMessage, TeamAgent } from '@shared/types/team';
 import TeamTimelineEntry from './TeamTimelineEntry.vue';
-import { ScrollArea } from '@/components/ui/scroll-area';
 
 const { t } = useI18n();
 
@@ -39,26 +39,35 @@ const timelineItems = computed((): TimelineItem[] => {
 </script>
 
 <template>
-  <ScrollArea class="h-full">
-    <div class="p-3 space-y-0">
-      <template v-if="timelineItems.length === 0">
-        <div class="flex flex-col items-center justify-center py-12 text-foreground/40">
-          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          <span class="text-sm">{{ t('team.timeline.empty') }}</span>
-        </div>
-      </template>
-      <template v-for="(item, idx) in timelineItems" :key="item.message?.messageId ?? `sep-${idx}`">
-        <div v-if="item.type === 'separator'" class="flex items-center gap-2 py-2">
-          <div class="flex-1 h-px bg-border/30" />
-          <span class="text-[10px] text-foreground/30">{{ item.label }}</span>
-          <div class="flex-1 h-px bg-border/30" />
-        </div>
-        <TeamTimelineEntry
-          v-else-if="item.message"
-          :message="item.message"
-          :agents="agents"
-        />
-      </template>
+  <div class="flex flex-col">
+    <div
+      v-if="timelineItems.length === 0"
+      class="flex flex-col items-center gap-2 py-10 text-12.5 text-(--d-faint)"
+    >
+      <MessagesSquare
+        class="size-5.5"
+        aria-hidden="true"
+      />
+      {{ t('team.timeline.empty') }}
     </div>
-  </ScrollArea>
+    <template
+      v-for="(item, idx) in timelineItems"
+      :key="item.message?.messageId ?? `sep-${idx}`"
+    >
+      <div
+        v-if="item.type === 'separator'"
+        class="flex items-center gap-2 pb-3.5 text-10.5 text-(--d-faint)"
+      >
+        <span class="h-px flex-1 bg-(--d-border)" />
+        <span class="font-mono">{{ item.label }}</span>
+        <span class="h-px flex-1 bg-(--d-border)" />
+      </div>
+      <TeamTimelineEntry
+        v-else-if="item.message"
+        :message="item.message"
+        :agents="agents"
+        :style="{ animationDelay: `${Math.min(idx, 12) * 30}ms` }"
+      />
+    </template>
+  </div>
 </template>

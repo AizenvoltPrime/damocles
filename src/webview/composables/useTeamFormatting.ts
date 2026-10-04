@@ -1,14 +1,17 @@
-import type { TeamAgentStatus } from '@shared/types/team';
+import type { Component } from 'vue';
+import { Ban, CircleCheck, CircleX, Clock, Eye, LoaderCircle } from 'lucide-vue-next';
+import type { TeamAgent, TeamAgentStatus } from '@shared/types/team';
 
+// `avatar` colours an initial on a tint of its own colour (style.css `.d-tone-*`).
 const AGENT_COLORS = [
-  { border: 'border-blue-500', dot: 'bg-blue-500', text: 'text-blue-400', stripe: 'bg-blue-500' },
-  { border: 'border-violet-500', dot: 'bg-violet-500', text: 'text-violet-400', stripe: 'bg-violet-500' },
-  { border: 'border-amber-500', dot: 'bg-amber-500', text: 'text-amber-400', stripe: 'bg-amber-500' },
-  { border: 'border-emerald-500', dot: 'bg-emerald-500', text: 'text-emerald-400', stripe: 'bg-emerald-500' },
-  { border: 'border-rose-500', dot: 'bg-rose-500', text: 'text-rose-400', stripe: 'bg-rose-500' },
+  { border: 'border-(--d-accent)', dot: 'bg-(--d-accent)', text: 'text-(--d-accent)', avatar: 'd-tone-accent', stripe: 'bg-(--d-accent)' },
+  { border: 'border-(--d-info)', dot: 'bg-(--d-info)', text: 'text-(--d-info)', avatar: 'd-tone-info', stripe: 'bg-(--d-info)' },
+  { border: 'border-(--d-warning)', dot: 'bg-(--d-warning)', text: 'text-(--d-warning)', avatar: 'd-tone-warning', stripe: 'bg-(--d-warning)' },
+  { border: 'border-(--d-success)', dot: 'bg-(--d-success)', text: 'text-(--d-success)', avatar: 'd-tone-success', stripe: 'bg-(--d-success)' },
+  { border: 'border-(--d-danger)', dot: 'bg-(--d-danger)', text: 'text-(--d-danger)', avatar: 'd-tone-danger', stripe: 'bg-(--d-danger)' },
 ];
 
-const UNKNOWN_COLOR = { border: 'border-foreground/30', dot: 'bg-foreground/40', text: 'text-foreground/50', stripe: 'bg-foreground/30' };
+const UNKNOWN_COLOR = { border: 'border-(--d-border2)', dot: 'bg-(--d-faint)', text: 'text-(--d-faint)', avatar: 'd-tone-faint', stripe: 'bg-(--d-border2)' };
 
 export function getAgentColor(index: number) {
   if (index < 0) return UNKNOWN_COLOR;
@@ -60,24 +63,36 @@ export function formatCost(cost: number, locale: string): string {
   return (cost !== 0 && Math.abs(cost) < 0.01 ? subCent : cents).format(cost);
 }
 
-export function statusBadgeClass(status: TeamAgentStatus): string {
-  switch (status) {
-    case 'running':
-      return 'bg-primary/30 text-primary border-primary/30';
-    case 'completed':
-      return 'bg-success/30 text-success border-success/30';
-    case 'failed':
-      return 'bg-error/30 text-error border-error/30';
-    case 'cancelled':
-      return 'bg-warning/30 text-warning border-warning/30';
-    case 'awaiting-review':
-      return 'bg-amber-500/30 text-amber-400 border-amber-500/30';
-    case 'standby':
-      return 'bg-cyan-500/30 text-cyan-400 border-cyan-500/30';
-    case 'monitoring':
-      return 'bg-blue-500/30 text-blue-300 border-blue-500/30';
-    case 'pending':
-    default:
-      return 'bg-foreground/10 text-foreground/50 border-foreground/20';
-  }
+export interface AgentStatusChip {
+  icon: Component;
+  /** A `.d-tone-*` class (style.css): chips and the result box tint from its `--tone`, and the text takes the tone's AA shade. */
+  color: string;
+  /** The agent is working now: its icon turns and a header dot breathes. */
+  live: boolean;
+  labelKey: `team.statusLabel.${TeamAgentStatus}`;
+}
+
+type ChipStyle = Omit<AgentStatusChip, 'labelKey'>;
+
+/** The one status presentation for subagents, teams and team members (Chat Panel.dc.html `STATUS`), on every card and overlay. */
+const AGENT_STATUS_CHIPS: Record<TeamAgentStatus, ChipStyle> = {
+  pending: { icon: Clock, color: 'd-tone-muted', live: false },
+  running: { icon: LoaderCircle, color: 'd-tone-accent', live: true },
+  completed: { icon: CircleCheck, color: 'd-tone-success', live: false },
+  failed: { icon: CircleX, color: 'd-tone-danger', live: false },
+  cancelled: { icon: Ban, color: 'd-tone-muted', live: false },
+  'awaiting-review': { icon: Clock, color: 'd-tone-warning', live: false },
+  standby: { icon: Clock, color: 'd-tone-info', live: false },
+  monitoring: { icon: Eye, color: 'd-tone-info', live: false },
+};
+
+export function agentStatusChip(status: TeamAgentStatus): AgentStatusChip {
+  return { ...AGENT_STATUS_CHIPS[status], labelKey: `team.statusLabel.${status}` };
+}
+
+const WORKING: ReadonlySet<TeamAgentStatus> = new Set(['pending', 'running', 'awaiting-review', 'standby', 'monitoring']);
+
+/** The members a team is still working with: the overlay's and card's active count and the Stop team confirmation. */
+export function workingAgentCount(agents: readonly Pick<TeamAgent, 'status'>[]): number {
+  return agents.filter((agent) => WORKING.has(agent.status)).length;
 }

@@ -1,5 +1,6 @@
 @import "tailwindcss";
-@plugin "tailwindcss-animate";
+@import "./styles/tokens.css";
+@import "./styles/motion.css";
 
 @theme {
   --color-background: var(--background);
@@ -22,138 +23,170 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --color-success: var(--vscode-terminal-ansiGreen, #4caf50);
-  --color-warning: var(--vscode-editorWarning-foreground, #ff9800);
-  --color-orange: #f97316;
-  --color-error: var(--vscode-errorForeground, #f44336);
-  --color-info: var(--vscode-editorInfo-foreground, #2196f3);
+  --color-success: var(--d-success);
+  --color-warning: var(--d-warning);
+  --color-error: var(--d-danger);
+  --color-info: var(--d-info);
   --color-switch-track: var(--switch-track);
 
   --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 0.125rem);
+  --radius-sm: calc(var(--radius) - 0.25rem);
+  /* The reference's recurring radii, named like the `--text-*` ramp by their px at the default host font. */
+  --radius-5: 0.3125rem;
+  --radius-7: 0.4375rem;
+  --radius-8: 0.5rem;
+  --radius-9: 0.5625rem;
+  --radius-10: 0.625rem;
+  --radius-11: 0.6875rem;
 
-  --animate-accordion-down: accordion-down 0.2s ease-out;
-  --animate-accordion-up: accordion-up 0.2s ease-out;
-  --animate-collapsible-down: collapsible-down 0.2s ease-out;
-  --animate-collapsible-up: collapsible-up 0.2s ease-out;
-  --animate-message-enter: message-enter 0.2s ease-out;
-  --animate-fade-in: fade-in 0.15s ease-out;
-  --animate-spinner: spinner 0.8s linear infinite;
-  --animate-spin-slow: spinner 2s linear infinite;
-  /* Counterclockwise, to match a left-curving rotate icon. */
-  --animate-spin-reverse: spinner 0.8s linear infinite reverse;
+  /* The reference's font sizes off Tailwind's ramp, named by their px at the default 13px host font (1rem = 16px). */
+  --text-10: 0.625rem;
+  --text-10\.5: 0.65625rem;
+  --text-11: 0.6875rem;
+  --text-11\.5: 0.71875rem;
+  --text-12\.5: 0.78125rem;
+  --text-13: 0.8125rem;
+  --text-13\.5: 0.84375rem;
+  --text-15: 0.9375rem;
+}
 
-  @keyframes accordion-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--reka-accordion-content-height);
-    }
+/* Tailwind v4's preflight leaves buttons on the default cursor. Every enabled clickable control shows the pointer in every renderer (this file is the shell's and overlay's base too); a utility class still overrides it. */
+@layer base {
+  button,
+  summary,
+  /* :where keeps these two at element specificity, so the disabled rule below still wins. */
+  input:where([type="checkbox"], [type="radio"]),
+  label:where(:has(input:where([type="checkbox"], [type="radio"]), [role="switch"])),
+  [role="button"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  [role="menuitemradio"],
+  [role="option"],
+  [role="tab"],
+  [role="radio"],
+  [role="switch"],
+  [role="checkbox"] {
+    cursor: pointer;
   }
 
-  @keyframes accordion-up {
-    from {
-      height: var(--reka-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
-  }
-
-  @keyframes collapsible-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--reka-collapsible-content-height);
-    }
-  }
-
-  @keyframes collapsible-up {
-    from {
-      height: var(--reka-collapsible-content-height);
-    }
-    to {
-      height: 0;
-    }
-  }
-
-  @keyframes message-enter {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes fade-in {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes spinner {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
+  :disabled,
+  [aria-disabled="true"],
+  [data-disabled],
+  label:has(input:disabled, [role="switch"]:disabled) {
+    cursor: default;
   }
 }
 
 @layer base {
   :root {
-    --background: var(--vscode-editor-background);
-    --foreground: var(--vscode-editor-foreground);
-    --card: var(--vscode-sideBar-background, var(--vscode-editor-background));
-    --card-foreground: var(--vscode-editor-foreground);
-    --popover: var(--vscode-menu-background, var(--vscode-editor-background));
-    --popover-foreground: var(--vscode-menu-foreground, var(--vscode-editor-foreground));
-    --muted: var(--vscode-editorWidget-background);
-    --muted-foreground: var(--vscode-descriptionForeground);
-    --border: var(--vscode-panel-border, var(--vscode-widget-border));
-    --input: var(--vscode-input-background);
-    --ring: var(--vscode-focusBorder);
+    --background: var(--d-bg);
+    --foreground: var(--d-text);
+    --card: var(--d-panel);
+    --card-foreground: var(--d-text);
+    --popover: var(--d-card);
+    --popover-foreground: var(--d-text);
+    --muted: var(--d-card);
+    --muted-foreground: var(--d-muted);
+    --border: var(--d-border);
+    --input: var(--d-input);
+    --ring: var(--d-accent);
 
-    --primary: var(--vscode-button-background);
-    --primary-foreground: var(--vscode-button-foreground);
-    --accent: var(--vscode-button-hoverBackground);
-    --accent-foreground: var(--vscode-button-foreground);
+    --primary: var(--d-accent);
+    --primary-foreground: var(--d-on-accent);
+    --accent: var(--d-hover);
+    --accent-foreground: var(--d-text);
 
-    --secondary: var(--vscode-button-secondaryBackground);
-    --secondary-foreground: var(--vscode-button-secondaryForeground);
+    --secondary: var(--d-hover);
+    --secondary-foreground: var(--d-text);
 
-    --destructive: #dc2626;
-    --destructive-foreground: #ffffff;
+    --destructive: var(--d-danger);
+    --destructive-foreground: var(--d-on-danger);
 
-    --switch-track: color-mix(in srgb, var(--vscode-editor-foreground) 20%, var(--vscode-editor-background));
+    --switch-track: color-mix(in srgb, var(--d-text) 20%, var(--d-bg));
 
     /* Series colors in rank order; /stats assigns them by a model's cost rank so the chart and tables agree. */
-    --chart-1: var(--vscode-charts-blue, #3794ff);
-    --chart-2: var(--vscode-charts-red, #f14c4c);
-    --chart-3: var(--vscode-charts-yellow, #cca700);
-    --chart-4: var(--vscode-charts-orange, #d18616);
-    --chart-5: var(--vscode-charts-green, #89d185);
-    --chart-6: var(--vscode-charts-purple, #b180d7);
-    --chart-7: var(--vscode-charts-foreground, #cccccc);
-    /* The charts palette has no eighth hue, and `--vscode-charts-lines` is the gridline color. */
-    --chart-8: var(--vscode-terminal-ansiCyan, #11a8cd);
-    --chart-grid: var(--vscode-charts-lines, rgba(128, 128, 128, 0.5));
+    --chart-1: var(--d-accent);
+    --chart-2: var(--d-danger);
+    --chart-3: var(--d-warning);
+    --chart-4: color-mix(in oklab, var(--d-danger) 50%, var(--d-warning));
+    --chart-5: var(--d-success);
+    --chart-6: color-mix(in oklab, var(--d-info) 50%, var(--d-danger));
+    --chart-7: var(--d-muted);
+    --chart-8: color-mix(in oklab, var(--d-accent) 50%, var(--d-success));
+    --chart-grid: color-mix(in srgb, var(--d-muted) 50%, transparent);
 
     --radius: 0.375rem;
 
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
+    /* 1rem equals the reference's 16px at the 13px base font, and the whole rem scale follows the host's font size. */
+    font-size: calc(var(--d-font-size) * 16 / 13);
+    font-family: var(--d-font);
     line-height: 1.5;
+  }
+}
+
+@layer components {
+  /* The centred chat column (Chat Panel.dc.html): message rows, the empty state, banners and the bottom dock share it, while scroll containers stay panel wide. */
+  .chat-column {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 50rem;
+    margin-inline: auto;
+    padding-inline: 1rem;
+  }
+
+  /* The header's and composer's icon and pill buttons: hover recolours and never moves the control. */
+  .d-tool-btn {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3125rem;
+    height: 1.75rem;
+    min-width: 1.875rem;
+    padding-inline: 0.375rem;
+    border-radius: 0.4375rem;
+    white-space: nowrap;
+    color: var(--d-muted);
+    transition: background-color 0.15s, color 0.15s;
+  }
+  .d-tool-btn:hover:not(:disabled),
+  .d-tool-btn[data-state="open"] {
+    background: var(--d-hover);
+    color: var(--d-text);
+  }
+  .d-tool-btn:disabled {
+    opacity: 0.5;
+  }
+
+  /* A label on a tint of a tone chosen at runtime: the tint mixes from --tone, the tone itself, and the text takes its AA shade. */
+  .d-tone-accent {
+    --tone: var(--d-accent);
+    color: var(--d-accent-text);
+  }
+  .d-tone-success {
+    --tone: var(--d-success);
+    color: var(--d-success-text);
+  }
+  .d-tone-warning {
+    --tone: var(--d-warning);
+    color: var(--d-warning-text);
+  }
+  .d-tone-danger {
+    --tone: var(--d-danger);
+    color: var(--d-danger-text);
+  }
+  .d-tone-info {
+    --tone: var(--d-info);
+    color: var(--d-info-text);
+  }
+  .d-tone-muted {
+    --tone: var(--d-muted);
+    color: var(--d-muted);
+  }
+  .d-tone-faint {
+    --tone: var(--d-faint);
+    color: var(--d-faint-text);
   }
 }
 
@@ -170,6 +203,9 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-size: var(--d-font-size);
+    /* The panel width for any element, portalled ones included, as @min-[…]/app: (a media query's rem ignores the root font). */
+    container: app / inline-size;
   }
 }
 
@@ -179,8 +215,8 @@ body {
   padding: 0;
   height: 100%;
   width: 100%;
-  background-color: var(--vscode-editor-background);
-  color: var(--vscode-editor-foreground);
+  background-color: var(--d-bg);
+  color: var(--d-text);
   overflow: hidden;
 }
 
@@ -201,100 +237,92 @@ body {
   display: none;
 }
 
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(100, 116, 139, 0.5) transparent;
+/* Layered so a utility such as [scrollbar-width:none] can override it. */
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.5) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 0.5rem;
+    height: 0.5rem;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 0.625rem;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.5);
+    border-radius: 0.375rem;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: all 0.2s ease;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background: rgba(100, 116, 139, 0.8);
+  }
+
+  pre::-webkit-scrollbar-thumb,
+  code::-webkit-scrollbar-thumb {
+    background: rgba(71, 85, 105, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+  }
+
+  pre::-webkit-scrollbar-thumb:hover,
+  code::-webkit-scrollbar-thumb:hover {
+    background: rgba(71, 85, 105, 0.7);
+  }
 }
 
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+/* Layered so utilities on a <pre> or <code> override these defaults. */
+@layer base {
+  pre {
+    background: var(--d-code);
+    border-radius: 0.25rem;
+    padding: 0.75rem;
+    overflow-x: auto;
+    margin: 0.5rem 0;
+  }
 
-*::-webkit-scrollbar-track {
-  background: transparent;
-  border-radius: 10px;
-}
+  code {
+    font-family: var(--d-mono);
+    font-size: var(--d-mono-size);
+  }
 
-*::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-*::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.5);
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  transition: all 0.2s ease;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-}
-
-*::-webkit-scrollbar-thumb:active {
-  background: rgba(100, 116, 139, 0.8);
-}
-
-pre::-webkit-scrollbar-thumb,
-code::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-}
-
-pre::-webkit-scrollbar-thumb:hover,
-code::-webkit-scrollbar-thumb:hover {
-  background: rgba(71, 85, 105, 0.7);
-}
-
-pre {
-  background: var(--vscode-textCodeBlock-background);
-  border-radius: 4px;
-  padding: 12px;
-  overflow-x: auto;
-  margin: 8px 0;
-}
-
-code {
-  font-family: var(--vscode-editor-font-family, "Consolas", "Courier New", monospace);
-  font-size: var(--vscode-editor-font-size, 12px);
-}
-
-:not(pre) > code {
-  background: var(--vscode-textCodeBlock-background);
-  padding: 2px 4px;
-  border-radius: 3px;
+  :not(pre) > code {
+    background: var(--d-code);
+    padding: 0.125rem 0.25rem;
+    border-radius: 0.1875rem;
+  }
 }
 
 a {
-  color: var(--vscode-textLink-foreground);
+  color: var(--d-accent);
   text-decoration: underline;
 }
 
 a:hover {
-  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-.animate-pulse {
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  color: var(--d-text);
 }
 
 [data-sonner-toaster] {
   position: absolute !important;
-  top: 12px !important;
-  right: 12px !important;
+  top: 0.75rem !important;
+  right: 0.75rem !important;
   z-index: 100;
 }
 
@@ -336,13 +364,13 @@ a:hover {
 
 [data-sonner-toast] [data-close-button] {
   position: absolute !important;
-  top: 8px !important;
-  right: 8px !important;
+  top: 0.5rem !important;
+  right: 0.5rem !important;
   background: color-mix(in srgb, var(--foreground) 5%, transparent) !important;
   border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-  border-radius: 6px !important;
-  width: 24px !important;
-  height: 24px !important;
+  border-radius: 0.375rem !important;
+  width: 1.5rem !important;
+  height: 1.5rem !important;
   color: color-mix(in srgb, var(--foreground) 50%, transparent) !important;
   opacity: 0;
   transition:
@@ -398,24 +426,25 @@ a:hover {
   }
 }
 
+/* Desktop also sets data-reduced-motion from damocles.desktop.reduceMotion. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
 }
 
-/* Indeterminate progress sweep — honest "working, no ETA" strip (reduced-motion neutralizes it above). */
-@keyframes indeterminate {
-  0% {
-    transform: translateX(-110%);
-  }
-  100% {
-    transform: translateX(310%);
-  }
+[data-reduced-motion] *,
+[data-reduced-motion] *::before,
+[data-reduced-motion] *::after {
+  animation-duration: 0.001ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
 }
-

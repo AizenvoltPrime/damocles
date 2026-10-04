@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch, nextTick } from 'vue';
+import { computed, defineComponent, ref, shallowRef, watch, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui';
@@ -10,15 +10,22 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { useExtensionUiStore, type ExtensionUiRequest } from '@/stores/useExtensionUiStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
-import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import { MODAL_Z_INDEX, useOverlayEscape } from '@/composables/useOverlayEscape';
 
 const { t } = useI18n();
 const store = useExtensionUiStore();
 const { current, queue } = storeToRefs(store);
 const { postMessage } = usePlatformBridge();
 
-// Mounted only while a request is queued (App.vue), so mounting is what takes the modal layer of the overlay stack.
-const { zIndex } = useOverlayEscape(() => cancel(), { modal: true });
+// Holds the modal layer of the overlay stack only while a request is answerable; the closing dialog holds none.
+const ModalStackEntry = defineComponent({
+  props: { onClose: { type: Function, required: true } },
+  setup(props) {
+    useOverlayEscape(() => props.onClose(), { modal: true });
+    return () => null;
+  },
+});
+const zIndex = MODAL_Z_INDEX;
 
 const textValue = ref('');
 const inputRef = ref<{ $el?: HTMLElement } | HTMLElement | null>(null);
@@ -32,6 +39,8 @@ const dialogRef = ref<HTMLElement | null>(null);
  * it — a prompt from a different agent that the user never saw, dismissed as answered.
  */
 const displayed = shallowRef<ExtensionUiRequest | null>(null);
+/** What the markup draws: the last request shown, kept while the dialog plays its exit after the queue empties. Never answered. */
+const shown = shallowRef<ExtensionUiRequest | null>(null);
 
 // Watches the QUEUE HEAD, not a single slot: answering dialog #1 promotes #2, and that head change
 // must re-run focus setup exactly as a null -> value transition does. Pre-flush, so `displayed` moves
@@ -40,6 +49,7 @@ watch(
   current,
   (req) => {
     displayed.value = req;
+    if (req) shown.value = req;
     // A typed value (a password, a pasted OAuth code) never outlives the request it was typed for.
     textValue.value = '';
     if (!req) return;
@@ -62,9 +72,9 @@ watch(
   { immediate: true },
 );
 
-/** Items answer with their id; bare options answer with the label, as they always have. */
+/** Items answer with their id; bare options answer with the label, as they always have. Drawn from `shown`, so the list survives the exit. */
 const selectEntries = computed(() => {
-  const req = displayed.value;
+  const req = shown.value;
   if (req?.kind !== 'select') return [];
   if (req.items) return req.items.map((item) => ({ value: item.id, label: item.label, description: item.description, detail: item.detail }));
   return (req.options ?? []).map((option) => ({ value: option, label: option, description: undefined, detail: undefined }));
@@ -85,27 +95,31 @@ function cancel(): void {
   respond(displayed.value?.kind === 'confirm' ? false : null);
 }
 
-// reka dismisses this dialog on Escape only while the overlay stack yields Escape to an open reka layer beneath it, such as the Settings sheet.
+// reka dismisses this dialog on Escape only while the overlay stack yields Escape to an open reka layer beneath it, such as a modal dialog.
 function onOpenChange(open: boolean): void {
   if (!open) cancel();
 }
 </script>
 
 <template>
-  <DialogRoot
+  <ModalStackEntry
     v-if="displayed"
-    :open="true"
+    :on-close="cancel"
+  />
+  <DialogRoot
+    v-if="shown"
+    :open="displayed !== null"
     @update:open="onOpenChange"
   >
     <DialogPortal>
       <DialogOverlay
-        class="fixed inset-0 bg-black/50"
+        class="d-scrim fixed inset-0 bg-(--d-scrim) backdrop-blur-xs"
         :style="{ zIndex }"
       />
       <DialogContent
         data-overlay-layer
         data-testid="extension-ui-dialog"
-        class="fixed left-1/2 top-1/2 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-background p-4 shadow-lg outline-none"
+        class="d-dialog fixed left-1/2 top-1/2 w-[calc(100%-2rem)] max-w-md -translate-1/2 rounded-2xl border border-(--d-border2) bg-(--d-card) p-4 text-(--d-text) shadow-(--d-shadow) outline-none"
         :style="{ zIndex }"
         :aria-describedby="undefined"
         @pointer-down-outside="(e: Event) => e.preventDefault()"
@@ -122,15 +136,15 @@ function onOpenChange(open: boolean): void {
                and a specialist named "Verified — approved" reads as the panel saying so. Sanitizing stops
                line forging; only a frame stops semantic impersonation. `dir="ltr"` + bidi isolation keep a
                name that survived sanitizing from re-ordering the label it sits next to.
-               The badge reads `displayed` (pinned to what the user was shown) while the counter reads the
+               The badge reads `shown` (pinned to what the user was shown) while the counter reads the
                live queue — deliberately different: the badge is an identity claim that must match the form
                below it, the counter is a live depth indicator that should reflect an arrival. -->
           <div
-            v-if="displayed.agentName || queue.length > 1"
+            v-if="shown.agentName || queue.length > 1"
             class="mb-2 flex items-center gap-2 text-xs"
           >
             <Badge
-              v-if="displayed.agentName"
+              v-if="shown.agentName"
               variant="secondary"
               class="max-w-[16rem] truncate"
             >
@@ -138,7 +152,7 @@ function onOpenChange(open: boolean): void {
               <span
                 dir="ltr"
                 class="[unicode-bidi:isolate]"
-              >{{ displayed.agentName }}</span>
+              >{{ shown.agentName }}</span>
             </Badge>
             <span
               v-if="queue.length > 1"
@@ -157,23 +171,23 @@ function onOpenChange(open: boolean): void {
             as="h3"
             class="mb-2 whitespace-pre-wrap text-sm font-semibold text-foreground"
           >
-            {{ displayed.title }}
+            {{ shown.title }}
           </DialogTitle>
           <p
-            v-if="displayed.message"
+            v-if="shown.message"
             class="mb-3 whitespace-pre-wrap text-sm text-muted-foreground"
           >
-            {{ displayed.message }}
+            {{ shown.message }}
           </p>
 
           <Command
-            v-if="displayed.kind === 'select'"
-            :key="displayed.requestId"
+            v-if="shown.kind === 'select'"
+            :key="shown.requestId"
             highlight-on-hover
             class="rounded-md border border-border bg-background"
             @update:model-value="onSelect"
           >
-            <CommandInput :placeholder="displayed.placeholder ?? t('extensionUi.filterPlaceholder')" />
+            <CommandInput :placeholder="shown.placeholder ?? t('extensionUi.filterPlaceholder')" />
             <CommandList>
               <CommandEmpty>{{ t('extensionUi.noMatches') }}</CommandEmpty>
               <CommandGroup>
@@ -200,7 +214,7 @@ function onOpenChange(open: boolean): void {
           </Command>
 
           <div
-            v-else-if="displayed.kind === 'confirm'"
+            v-else-if="shown.kind === 'confirm'"
             class="flex justify-end gap-2"
           >
             <Button
@@ -215,17 +229,17 @@ function onOpenChange(open: boolean): void {
           </div>
 
           <div
-            v-else-if="displayed.kind === 'input'"
+            v-else-if="shown.kind === 'input'"
             class="flex flex-col gap-3"
           >
             <Input
               ref="inputRef"
               v-model="textValue"
-              :type="displayed.password ? 'password' : 'text'"
-              :autocomplete="displayed.password ? 'new-password' : 'off'"
+              :type="shown.password ? 'password' : 'text'"
+              :autocomplete="shown.password ? 'new-password' : 'off'"
               spellcheck="false"
-              :aria-label="displayed.title"
-              :placeholder="displayed.placeholder ?? ''"
+              :aria-label="shown.title"
+              :placeholder="shown.placeholder ?? ''"
               @keydown.enter="respond(textValue)"
             />
             <div class="flex justify-end gap-2">
@@ -242,7 +256,7 @@ function onOpenChange(open: boolean): void {
           </div>
 
           <div
-            v-else-if="displayed.kind === 'editor'"
+            v-else-if="shown.kind === 'editor'"
             class="flex flex-col gap-3"
           >
             <Textarea
@@ -265,7 +279,7 @@ function onOpenChange(open: boolean): void {
           </div>
 
           <div
-            v-if="displayed.kind === 'select'"
+            v-if="shown.kind === 'select'"
             class="mt-3 flex justify-end"
           >
             <Button

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { reconcileInterruptions, type NoticeMessage } from '../interruption-notice';
+import { reconcileInterruptions, type InterruptionCause, type NoticeMessage } from '../interruption-notice';
 import { readAgentFile, type LiveAgentStatus } from '../agent-records';
 import { SUBAGENT_RESULTS_CUSTOM_TYPE } from '../subagents/background-results';
 
@@ -58,22 +58,22 @@ function invoke(parent: SessionManager, agentId: string, toolCallId: string, opt
   if (opts.details) parent.appendMessage(agentResult(toolCallId, opts.details));
 }
 
-/** The teams a case marked resumable, as `TeamPersistence.isResumable` would report them. */
-const resumableTeams = new Set<string>();
+/** The teams a case marked resumable and why each stopped, as `TeamPersistence.resumableStop` would report them. */
+const resumableTeams = new Map<string, InterruptionCause>();
 afterEach(() => resumableTeams.clear());
 
 async function reconcile(
   parent: SessionManager,
   dir: string,
   live: (id: string) => LiveAgentStatus | undefined = () => undefined,
-  teamResumable: (teamId: string) => Promise<boolean> = async (teamId) => resumableTeams.has(teamId),
+  teamStop: (teamId: string) => Promise<InterruptionCause | null> = async (teamId) => resumableTeams.get(teamId) ?? null,
 ) {
   const sent: NoticeMessage[] = [];
   const announced = await reconcileInterruptions({
     branch: parent.getBranch(),
     subagentDir: dir,
     liveSubagent: live,
-    teamResumable,
+    teamStop,
     send: async (message) => {
       sent.push(message);
       parent.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
@@ -93,7 +93,7 @@ describe('reconcileInterruptions', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ customType: DAMOCLES_INTERRUPTION_NOTICE, display: false, details: { agents: [{ kind: 'subagent', id: A, toolCallId: 'tc1' }] } });
-    expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"): resume with Agent({resume:"${A}"})`);
+    expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"), stopped by the user: resume with Agent({resume:"${A}"})`);
     expect(sent[0]!.content.endsWith('Do not resume unless the user asks to continue.')).toBe(true);
   });
 
@@ -103,9 +103,10 @@ describe('reconcileInterruptions', () => {
     writeAgentFile(dir, A, { status: 'stopped', stopReason: 'shutdown' });
     invoke(parent, A, 'tc1', { details: { agentId: A, status: 'async_launched' } });
 
-    const { announced } = await reconcile(parent, dir);
+    const { announced, sent } = await reconcile(parent, dir);
 
     expect(announced.map((a) => a.id)).toEqual([A]);
+    expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"), stopped when its chat panel closed, switched session or the editor window reloaded: resume with`);
   });
 
   it('crash: an agent with no status anywhere is interrupted and listed', async () => {
@@ -118,6 +119,7 @@ describe('reconcileInterruptions', () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.details.agents).toEqual([{ kind: 'subagent', id: A, toolCallId: 'tc1' }]);
+    expect(sent[0]!.content).toContain(`subagent ${A} ("task of 0a1b"), stopped with no recorded cause: resume with`);
   });
 
   it('no file: an agent stopped before its task was committed is listed with its spawn description', async () => {
@@ -252,7 +254,7 @@ describe('reconcileInterruptions for teams', () => {
     parent.appendCustomEntry(DAMOCLES_AGENT_INVOCATION_ENTRY, { kind: 'team', id: teamId, toolCallId, resume: opts.resume ?? false });
   }
 
-  const leaveUnusedCheckpoint = (teamId: string): void => void resumableTeams.add(teamId);
+  const leaveUnusedCheckpoint = (teamId: string, cause: InterruptionCause = 'user'): void => void resumableTeams.set(teamId, cause);
 
   it('lists a cancelled team once, with its title and resume_team call; a second reconcile repeats nothing', async () => {
     const dir = tempDir();
@@ -265,9 +267,24 @@ describe('reconcileInterruptions for teams', () => {
 
     expect(first.sent).toHaveLength(1);
     expect(first.sent[0]!.details.agents).toEqual([{ kind: 'team', id: T1, toolCallId: 'tc-team' }]);
-    expect(first.sent[0]!.content).toContain(`- team ${T1} ("Slice 5 resume"): resume with resume_team({team_id:"${T1}"})`);
+    expect(first.sent[0]!.content).toContain(`- team ${T1} ("Slice 5 resume"), stopped by the user: resume with resume_team({team_id:"${T1}"})`);
     expect(first.sent[0]!.content.endsWith('Do not resume unless the user asks to continue.')).toBe(true);
     expect(second.sent).toEqual([]);
+  });
+
+  it.each([
+    ['parent', 'cancelled by your cancel_team call'],
+    ['shutdown', 'stopped when its chat panel closed, switched session or the editor window reloaded'],
+    ['unrecorded', 'stopped with no recorded cause'],
+  ] as const)('names a team stopped for %s by its cause', async (cause, text) => {
+    const dir = tempDir();
+    const parent = SessionManager.inMemory('/ws');
+    invokeTeam(parent, T1, 'tc-team', { title: 'why' });
+    leaveUnusedCheckpoint(T1, cause);
+
+    const { sent } = await reconcile(parent, dir);
+
+    expect(sent[0]!.content).toContain(`- team ${T1} ("why"), ${text}: resume with resume_team({team_id:"${T1}"})`);
   });
 
   it('a team with no unused checkpoint (completed, failed or already resumed) is not listed', async () => {
@@ -323,7 +340,7 @@ describe('reconcileInterruptions for teams', () => {
 
     const { sent } = await reconcile(parent, dir, undefined, async (teamId) => {
       if (teamId === T1) throw new Error('EACCES');
-      return resumableTeams.has(teamId);
+      return resumableTeams.get(teamId) ?? null;
     });
 
     expect(sent).toHaveLength(1);

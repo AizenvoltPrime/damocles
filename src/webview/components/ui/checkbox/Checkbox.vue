@@ -35,13 +35,13 @@ const rootProps = computed(() => definedProps({
   <CheckboxRoot
     v-bind="rootProps"
     :class="cn(
-      'peer h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground cursor-pointer',
+      'peer size-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground cursor-pointer',
       props.class,
     )"
     @update:model-value="(val: boolean | 'indeterminate') => emits('update:checked', val === true)"
   >
-    <CheckboxIndicator class="flex h-full w-full items-center justify-center text-current">
-      <Check class="h-3.5 w-3.5" />
+    <CheckboxIndicator class="flex size-full items-center justify-center text-current">
+      <Check class="size-3.5" />
     </CheckboxIndicator>
   </CheckboxRoot>
 </template>

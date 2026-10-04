@@ -251,7 +251,8 @@ function flattenContentBlocks(
     const trailingText = getTrailingStreamingText(msg);
     if (trailingText) {
       result.push({
-        id: `streaming-${msg.id}`,
+        // The id of the block this text is committed as, so the row keeps its measured height (docs/invariants.md#streaming-views).
+        id: `text-${msg.id}-${blocks.length}`,
         type: 'streaming-text',
         message: msg,
         originalMessageIndex: msgIndex,
@@ -287,7 +288,8 @@ function flattenFallback(
 
   if (msg.content) {
     result.push({
-      id: `text-${msg.id}`,
+      // A streaming message's text arrives before its blocks and is committed as block 0.
+      id: `text-${msg.id}-0`,
       type: isStreaming ? 'streaming-text' : 'text-block',
       message: msg,
       originalMessageIndex: msgIndex,

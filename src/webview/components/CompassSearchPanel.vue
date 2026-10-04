@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { onUnmounted } from 'vue';
+import { computed, onUnmounted, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { IconSearch } from '@/components/icons';
+import { Box, Dot, FileCode, FlaskConical, SquareFunction, Search, Shapes } from 'lucide-vue-next';
 import OverlayShell from './OverlayShell.vue';
+import SegmentedToggle, { type SegmentedOption } from './SegmentedToggle.vue';
+import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { ownEntry } from '@/utils/ownEntry';
 import type { CompassNodeKind } from '@shared/types/compass';
 
 const { t } = useI18n();
@@ -23,13 +23,17 @@ const KIND_FILTERS: Array<{ labelKey: string; value: CompassNodeKind | null }> =
 	{ labelKey: 'compass.nodeKind.Test', value: 'Test' },
 ];
 
-const KIND_ICON: Record<string, string> = {
-	File: '📄',
-	Class: '🔷',
-	Function: '⚡',
-	Type: '🔶',
-	Test: '🧪',
+const KIND_ICON: Record<string, Component> = {
+	File: FileCode,
+	Class: Box,
+	Function: SquareFunction,
+	Type: Shapes,
+	Test: FlaskConical,
 };
+
+const displayPath = useFolderRelativePath();
+const kindKey = computed(() => store.searchKind ?? 'all');
+const kindOptions = computed<SegmentedOption<string>[]>(() => KIND_FILTERS.map((f) => ({ value: f.value ?? 'all', label: t(f.labelKey) })));
 
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -75,72 +79,90 @@ onUnmounted(() => {
 	store.searchLoading = false;
 });
 
-function formatPath(filePath: string): string {
-	const parts = filePath.replace(/\\/g, '/').split('/');
-	return parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : filePath;
-}
 </script>
 
 <template>
-	<OverlayShell
-		:title="t('compass.search.title')"
-		:icon="IconSearch"
-		icon-class="text-emerald-400"
-		@close="store.setActivePanel(null)"
-	>
-		<div class="px-3 pt-3 pb-2 space-y-2 border-b border-border">
-			<Input
-				:model-value="store.searchQuery"
-				:placeholder="t('compass.search.placeholder')"
-				class="h-8 text-xs"
-				@update:model-value="onInput($event as string)"
-			/>
-			<div class="flex flex-wrap gap-1">
-				<button
-					v-for="f in KIND_FILTERS"
-					:key="f.labelKey"
-					type="button"
-					class="px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors cursor-pointer border-0"
-					:class="store.searchKind === f.value
-						? 'bg-primary text-primary-foreground'
-						: 'bg-secondary text-secondary-foreground hover:bg-secondary/80'"
-					@click="selectKind(f.value)"
-				>
-					{{ t(f.labelKey) }}
-				</button>
-			</div>
-		</div>
+  <OverlayShell
+    fill
+    :title="t('compass.search.title')"
+    :icon="Search"
+    icon-class="text-(--d-success)"
+    data-testid="compass-search"
+    @close="store.setActivePanel(null)"
+  >
+    <div class="sticky top-0 z-3 flex flex-col gap-2 border-b border-(--d-border) bg-(--d-bg) px-4 pt-3 pb-2.5">
+      <label class="flex h-8.5 items-center gap-2 rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 focus-within:border-(--d-accent)">
+        <Search
+          class="size-3.25 flex-none text-(--d-faint)"
+          aria-hidden="true"
+        />
+        <input
+          :value="store.searchQuery"
+          type="search"
+          class="min-w-0 flex-1 bg-transparent text-12.5 text-(--d-text) outline-none placeholder:text-(--d-faint)"
+          :placeholder="t('compass.search.placeholder')"
+          :aria-label="t('compass.search.placeholder')"
+          data-overlay-initial-focus
+          @input="onInput(($event.target as HTMLInputElement).value)"
+        >
+      </label>
+      <SegmentedToggle
+        :model-value="kindKey"
+        :options="kindOptions"
+        indicator-class="text-(--d-card)"
+        class="self-start bg-(--d-hover)"
+        :aria-label="t('compass.search.kindFilter')"
+        @update:model-value="(key: string) => selectKind(key === 'all' ? null : (key as CompassNodeKind))"
+      />
+    </div>
 
-		<ScrollArea class="flex-1">
-			<div v-if="store.searchLoading" class="p-4 text-center text-xs text-muted-foreground">
-				{{ t('compass.search.searching') }}
-			</div>
-			<div v-else-if="store.searchResults.length === 0 && store.searchQuery.trim()" class="p-4 text-center text-xs text-muted-foreground">
-				{{ t('compass.search.noResults') }}
-			</div>
-			<div v-else-if="!store.searchQuery.trim()" class="p-4 text-center text-xs text-muted-foreground">
-				{{ t('compass.search.hint') }}
-			</div>
-			<div v-else class="divide-y divide-border">
-				<button
-					v-for="result in store.searchResults"
-					:key="result.node.qualified_name"
-					type="button"
-					class="w-full px-3 py-2 text-left hover:bg-accent transition-colors cursor-pointer border-0 bg-transparent"
-					@click="navigateToResult(result.node.file_path, result.node.line_start)"
-				>
-					<div class="flex items-center gap-1.5">
-						<span class="text-xs">{{ KIND_ICON[result.node.kind] ?? '•' }}</span>
-						<span class="text-xs font-medium text-foreground truncate">{{ result.node.name }}</span>
-						<Badge variant="secondary" class="text-[9px] px-1 py-0 shrink-0">
-							{{ result.node.kind }}
-						</Badge>
-					</div>
-					<div class="text-[10px] text-muted-foreground mt-0.5 truncate">
-						{{ formatPath(result.node.file_path) }}:{{ result.node.line_start }}
-					</div>
-				</button>
-			</div>
-		</ScrollArea>
-	</OverlayShell>
+    <p
+      v-if="store.searchLoading"
+      class="p-5 text-center text-12.5 text-(--d-muted)"
+      role="status"
+    >
+      {{ t('compass.search.searching') }}
+    </p>
+    <p
+      v-else-if="store.searchResults.length === 0 && store.searchQuery.trim()"
+      class="p-5 text-center text-12.5 text-(--d-faint)"
+    >
+      {{ t('compass.search.noResults') }}
+    </p>
+    <p
+      v-else-if="!store.searchQuery.trim()"
+      class="p-5 text-center text-12.5 text-(--d-faint)"
+    >
+      {{ t('compass.search.hint') }}
+    </p>
+    <div
+      v-else
+      class="flex flex-col gap-1.5 px-4 pt-3 pb-4"
+    >
+      <button
+        v-for="result in store.searchResults"
+        :key="result.node.qualified_name"
+        type="button"
+        class="flex items-center gap-2.5 rounded-10 border border-(--d-border) bg-(--d-card) px-3 py-2 text-left transition-colors hover:border-(--d-border2) hover:bg-(--d-hover)"
+        :title="result.node.file_path"
+        data-testid="compass-search-result"
+        @click="navigateToResult(result.node.file_path, result.node.line_start)"
+      >
+        <span class="flex size-5.5 flex-none items-center justify-center rounded-md bg-(--d-accent-soft) text-(--d-accent)">
+          <component
+            :is="ownEntry(KIND_ICON, result.node.kind) ?? Dot"
+            class="size-3"
+            aria-hidden="true"
+          />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="flex items-center gap-1.5">
+            <span class="truncate font-mono text-12.5 font-semibold">{{ result.node.name }}</span>
+            <span class="flex-none rounded-5 bg-(--d-hover) px-1.5 text-10.5 text-(--d-muted)">{{ t(`compass.nodeKind.${result.node.kind}`) }}</span>
+          </span>
+          <span class="block truncate font-mono text-11 text-(--d-faint)">{{ displayPath(result.node.file_path) }}:{{ result.node.line_start }}</span>
+        </span>
+      </button>
+    </div>
+  </OverlayShell>
 </template>

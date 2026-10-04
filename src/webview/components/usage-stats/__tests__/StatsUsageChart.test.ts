@@ -118,6 +118,19 @@ describe('StatsUsageChart', () => {
     expect(wrapper.get(`#${section.attributes('aria-labelledby')}`).text()).toBe('Usage over time');
   });
 
+  it('shows provider logos in the legend and tooltip when split by model, and none by token type', async () => {
+    const wrapper = await mountChart();
+    const legendLogos = () => wrapper.findAll('[data-chart-legend] li').map((li) => li.find('[data-model-logo]').exists());
+    expect(legendLogos()).toEqual([true, true]);
+    expect(tooltipHtml(1).match(/<svg/g)).toHaveLength(2);
+
+    const byType = wrapper.findAll('[data-toggle="split"] button').find((b) => b.text() === 'By token type')!;
+    await byType.trigger('click');
+    await nextTick();
+    expect(legendLogos()).toEqual([false, false, false, false]);
+    expect(tooltipHtml(1)).not.toContain('<svg');
+  });
+
   it('describes the chart with a hidden table of every period and category', async () => {
     const wrapper = await mountChart();
     const table = wrapper.get('[data-chart-table]');

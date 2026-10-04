@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { chatTab, expect, nextTab, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { writeUserSettings } from './support/hermetic';
 import { addProject, chatInput } from './support/ui';
 
@@ -10,9 +10,9 @@ test('compass: a newly added project tab shows its index status, and again after
   fs.writeFileSync(path.join(home.project, 'index.ts'), 'export function shared(): number {\n  return 1;\n}\n');
   writeUserSettings(home, { 'damocles.compass.enabled': true });
   const { app } = await launch();
-  const homeTab = await chatTab(app);
+  const homeTab = await activeChat(app);
   await expect(chatInput(homeTab)).toBeVisible();
-  const opened = nextTab(app, [homeTab]);
+  const opened = nextChat(app, [homeTab]);
   await addProject(app, home.project, true);
   const tab = await opened;
   await expect(chatInput(tab)).toBeVisible();

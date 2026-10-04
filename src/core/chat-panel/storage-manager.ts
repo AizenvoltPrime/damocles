@@ -1,3 +1,4 @@
+import type { Disposable } from "../../platform/disposable";
 import type { FileWatcher, FileWatcherFactory } from "../../platform/file-watcher";
 import * as path from "path";
 import * as fs from "fs";
@@ -50,6 +51,29 @@ export interface StorageManagerConfig {
 
 const newestFirst = (a: StoredSession, b: StoredSession): number => b.timestamp - a.timestamp;
 
+/** A change to the stored sessions that a list of them shows; no key when every folder's list reloaded. */
+export interface StoredSessionsChange {
+  readonly projectKey?: string;
+}
+
+/** Whether the fields a session list shows are equal; the timestamp moves on every write, so it is left out. */
+function sameListing(a: StoredSession, b: StoredSession): boolean {
+  return a.customTitle === b.customTitle
+    && a.aiTitle === b.aiTitle
+    && a.preview === b.preview
+    && a.tag === b.tag
+    && a.model?.provider === b.model?.provider
+    && a.model?.id === b.model?.id;
+}
+
+/** Whether the session's shown title or tag, or with `matchFolder` its folder label, contains `query` (lowercased, trimmed). */
+export function sessionMatchesQuery(session: StoredSession, query: string, matchFolder: boolean): boolean {
+  const displayName = session.customTitle || session.aiTitle || session.preview;
+  return displayName.toLowerCase().includes(query)
+    || (session.tag?.toLowerCase().includes(query) ?? false)
+    || (matchFolder && (session.workspaceFolder?.label.toLowerCase().includes(query) ?? false));
+}
+
 function sameRow(a: StoredSession, b: StoredSession): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)] as (keyof StoredSession)[]);
   return [...keys].every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
@@ -75,6 +99,7 @@ export class StorageManager {
   private readonly getPanels: StorageManagerConfig["getPanels"];
   private readonly liveSession: StorageManagerConfig["liveSession"];
   private readonly fileWatchers: FileWatcherFactory;
+  private readonly changeListeners = new Set<(change: StoredSessionsChange) => void>();
 
   constructor(config: StorageManagerConfig) {
     this.folders = config.folders;
@@ -83,6 +108,34 @@ export class StorageManager {
     this.getPanels = config.getPanels;
     this.liveSession = config.liveSession;
     this.fileWatchers = config.fileWatchers;
+  }
+
+  /** Fires when a session is added or removed, or a field a list shows changes; not for timestamp-only writes. */
+  onDidChangeSessions(listener: (change: StoredSessionsChange) => void): Disposable {
+    this.changeListeners.add(listener);
+    return { dispose: (): void => { this.changeListeners.delete(listener); } };
+  }
+
+  private emitChange(change: StoredSessionsChange): void {
+    for (const listener of [...this.changeListeners]) {
+      try {
+        listener(change);
+      } catch (err) {
+        log("[StorageManager] stored sessions listener error: %O", err);
+      }
+    }
+  }
+
+  /** Drop the cached list after a write the watcher reports late, and announce the folder's change now. */
+  markSessionsChanged(folderKey: string): void {
+    this.invalidateSessionsCache();
+    this.emitChange({ projectKey: folderKey });
+  }
+
+  /** One open folder's stored sessions, newest first and complete; empty for a key that is not open. */
+  async sessionsOf(folderKey: string): Promise<StoredSession[]> {
+    const all = await this.ensureSessionsLoaded();
+    return all.filter((s) => s.workspaceFolder?.key === folderKey);
   }
 
   private openFolder(key: string): FolderTarget | undefined {
@@ -212,12 +265,7 @@ export class StorageManager {
     const normalizedQuery = query.toLowerCase().trim();
     // Sessions carry a visible folder label only with two or more folders open; otherwise every one would match.
     const matchFolder = this.isMultiRoot();
-    const allMatches = all.filter((session) => {
-      const displayName = session.customTitle || session.aiTitle || session.preview;
-      return displayName.toLowerCase().includes(normalizedQuery)
-        || session.tag?.toLowerCase().includes(normalizedQuery)
-        || (matchFolder && session.workspaceFolder?.label.toLowerCase().includes(normalizedQuery));
-    });
+    const allMatches = all.filter((session) => sessionMatchesQuery(session, normalizedQuery, matchFolder));
 
     const total = allMatches.length;
     const sessions = allMatches.slice(offset, offset + SESSIONS_PAGE_SIZE);
@@ -258,6 +306,7 @@ export class StorageManager {
     await this.setupSessionWatcher();
     await this.ensureSessionsLoaded();
     this.pushSessionsToAllPanels();
+    this.emitChange({});
   }
 
   invalidateSessionsCache(): void {
@@ -267,16 +316,18 @@ export class StorageManager {
     this.promptHistoryCache = null;
   }
 
-  updateSessionTagInCache(sessionId: string, tag: string | null): void {
-    if (!this.allSessionsCache) return;
-    const session = this.allSessionsCache.find(s => s.id === sessionId);
-    if (!session) return;
-    if (tag) {
-      session.tag = tag;
-    } else {
-      delete session.tag;
+  /** A list not loaded yet reads the tag from the file, so only a loaded one is updated; the change is announced either way. */
+  updateSessionTag(sessionId: string, tag: string | null, folderKey: string): void {
+    const session = this.allSessionsCache?.find(s => s.id === sessionId);
+    if (session) {
+      if (tag) {
+        session.tag = tag;
+      } else {
+        delete session.tag;
+      }
+      this.pushSessionsToAllPanels();
     }
-    this.pushSessionsToAllPanels();
+    this.emitChange({ projectKey: folderKey });
   }
 
   async addOrUpdateSession(sessionId: string, folderKey: string): Promise<void> {
@@ -415,14 +466,16 @@ export class StorageManager {
     this.sessionFolder.set(metadata.id, folder.key);
     const row = this.stamp(metadata, folder);
     const existingIndex = all.findIndex((s) => s.id === row.id);
-    if (existingIndex >= 0) {
-      if (options?.ifChanged && sameRow(all[existingIndex]!, row)) return false;
+    const existing = existingIndex >= 0 ? all[existingIndex]! : undefined;
+    if (existing) {
+      if (options?.ifChanged && sameRow(existing, row)) return false;
       all[existingIndex] = row;
     } else {
       all.push(row);
     }
     all.sort(newestFirst);
     this.pushSessionsToAllPanels();
+    if (!existing || !sameListing(existing, row)) this.emitChange({ projectKey: folder.key });
     return true;
   }
 
@@ -484,6 +537,7 @@ export class StorageManager {
     // Another window's delete, too, leaves the disk cache.
     forgetSessionMetadata(filePath);
     const sessionId = piSessionIdFromFile(filePath);
+    const folderKey = this.sessionFolder.get(sessionId);
     this.sessionFolder.delete(sessionId);
     if (this.allSessionsCache) {
       this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
@@ -492,5 +546,6 @@ export class StorageManager {
       this.invalidateSessionsCache();
     }
     this.pushSessionsToAllPanels();
+    if (folderKey !== undefined) this.emitChange({ projectKey: folderKey });
   }
 }

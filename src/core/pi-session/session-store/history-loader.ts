@@ -152,12 +152,9 @@ export function reconstructMessages(
 
   for (const entry of branch) {
     if (entry.type === 'compaction') {
-      // pi compaction summarizes (and the live view hides) every preceding message. Mirror that on replay:
-      // drop the display messages accumulated so far and surface a summary marker in their place. Prior
-      // markers are kept so a session compacted more than once shows a boundary for each.
-      const keptMarkers = messages.filter((m) => m.kind === 'compaction');
+      // pi compaction summarizes every preceding message, earlier summaries included, and the live view
+      // clears them all (`clearCompactMarkers`). Mirror that on replay: only the latest marker survives.
       messages.length = 0;
-      messages.push(...keptMarkers);
       // pi reads the context size as unknown until a response lands after the compaction.
       usage = emptyContextSnapshot();
       const c = entry as { summary?: unknown; tokensBefore?: unknown; timestamp?: unknown };

@@ -124,7 +124,7 @@ describe('a subagent card’s usage', () => {
     const store = useSubagentStore();
     store.registerAgentTool('sub-1', { subagent_type: 'Explore', description: 'find' });
     store.updateSubagentUsage('sub-1', USAGE, false);
-    const live = mountFromStore('sub-1').find('.leading-none').text();
+    const live = mountFromStore('sub-1').get('[data-testid="subagent-stats"]').text();
 
     setActivePinia(createPinia());
     useSubagentStore().restoreSubagentFromHistory({
@@ -134,7 +134,7 @@ describe('a subagent card’s usage', () => {
       agentUsage: USAGE,
       agentDollarBilled: false,
     });
-    const restored = mountFromStore('sub-1').find('.leading-none').text();
+    const restored = mountFromStore('sub-1').get('[data-testid="subagent-stats"]').text();
 
     expect(restored).toContain('~$0.37 est.');
     expect(restored.replace(/\d+s/, '')).toBe(live.replace(/\d+s/, ''));

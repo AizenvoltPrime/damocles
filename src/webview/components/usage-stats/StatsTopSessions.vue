@@ -83,8 +83,8 @@ function open(s: UsageStatsTopSession): void {
 </script>
 
 <template>
-  <section class="min-w-0 space-y-2 rounded-md border border-border/50 bg-card p-3 text-card-foreground" data-top-sessions>
-    <h3 class="truncate text-xs font-medium text-muted-foreground">{{ t('usageStats.topSessions.title') }}</h3>
+  <section class="min-w-0 space-y-2 rounded-lg border border-(--d-border) p-3" data-top-sessions>
+    <h3 class="truncate text-xs font-semibold">{{ t('usageStats.topSessions.title') }}</h3>
 
     <Table class="text-xs">
       <TableCaption class="sr-only">{{ t('usageStats.topSessions.title') }}</TableCaption>
@@ -99,14 +99,14 @@ function open(s: UsageStatsTopSession): void {
           >
             <button
               type="button"
-              class="inline-flex cursor-pointer items-center gap-1 hover:text-foreground"
+              class="inline-flex cursor-pointer items-center gap-1 hover:text-(--d-text)"
               :class="{ 'flex-row-reverse': col.numeric }"
               :data-sort="col.id"
               @click="toggleSort(col.id)"
             >
               <span>{{ col.label }}</span>
-              <IconArrowDown v-if="ariaSort(col.id) === 'descending'" :size="10" />
-              <IconArrowUp v-else-if="ariaSort(col.id) === 'ascending'" :size="10" />
+              <IconArrowDown v-if="ariaSort(col.id) === 'descending'" class="size-2.5" />
+              <IconArrowUp v-else-if="ariaSort(col.id) === 'ascending'" class="size-2.5" />
             </button>
           </TableHead>
         </TableRow>
@@ -116,7 +116,7 @@ function open(s: UsageStatsTopSession): void {
           v-for="s in rows"
           :key="s.sessionId"
           :data-session="s.sessionId"
-          :class="s.openable ? 'cursor-pointer' : 'text-muted-foreground'"
+          :class="s.openable ? 'cursor-pointer' : 'text-(--d-muted)'"
           :title="blockedReason(s)"
           @click="open(s)"
         >
@@ -136,7 +136,7 @@ function open(s: UsageStatsTopSession): void {
               <Badge
                 v-if="s.unpricedTokens > 0"
                 variant="outline"
-                class="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
+                class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                 :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(s.unpricedTokens) }, s.unpricedTokens)"
                 data-unpriced
               >{{ t('usageStats.breakdown.unpriced') }}</Badge>

@@ -4,13 +4,17 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { IconCheck, IconCopy } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
-import { getHighlighter, getShikiTheme, normalizeLanguage, isHighlighterReady } from "@/composables/useShikiHighlighter";
+import { getHighlighter, codeHighlightTheme, normalizeLanguage, isHighlighterReady } from "@/composables/useShikiHighlighter";
+import { useSettingsStore } from "@/stores/useSettingsStore";
 
 const { t } = useI18n();
+const settingsStore = useSettingsStore();
 
 const props = defineProps<{
   code: string;
   language?: string;
+  /** Only the highlighted code: no frame, language header or copy button, for a host that draws its own. */
+  bare?: boolean;
 }>();
 
 const { hasCopied, copyToClipboard } = useCopyToClipboard();
@@ -31,7 +35,7 @@ async function highlight() {
 
   const fallbackHtml = `<pre style="padding:0;margin:0;color:inherit;"><code class="hljs">${escapeHtml(props.code)}</code></pre>`;
 
-  const theme = getShikiTheme();
+  const theme = codeHighlightTheme(settingsStore.hostCapabilities.damoclesTheme);
   if (!isHighlighterReady(normalizedLang.value, theme)) {
     highlightedHtml.value = fallbackHtml;
   }
@@ -81,7 +85,7 @@ function handleCopy() {
   copyToClipboard(props.code);
 }
 
-watch(() => [props.code, props.language], highlight, { immediate: true });
+watch(() => [props.code, props.language, settingsStore.hostCapabilities.damoclesTheme], highlight, { immediate: true });
 
 onMounted(() => {
   isMounted.value = true;
@@ -93,7 +97,15 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- eslint-disable vue/no-v-html -- Shiki output, or the escaped fallback -->
   <div
+    v-if="bare"
+    class="code-block-content overflow-x-auto"
+    v-html="highlightedHtml"
+  />
+  <!-- eslint-enable vue/no-v-html -->
+  <div
+    v-else
     class="code-block-container group my-2 rounded-xl border border-border overflow-hidden"
     @mouseenter="isHovering = true"
     @mouseleave="isHovering = false"
@@ -107,13 +119,13 @@ onUnmounted(() => {
       <Button
         variant="ghost"
         size="icon-sm"
-        class="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary h-6 w-6 -mr-1"
+        class="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary size-6 -mr-1"
         :class="{ 'opacity-100 text-success': hasCopied }"
         :title="t('codeBlock.copyCode')"
         @click="handleCopy"
       >
-        <IconCheck v-if="hasCopied" :size="14" />
-        <IconCopy v-else :size="14" />
+        <IconCheck v-if="hasCopied" class="size-3.5" />
+        <IconCopy v-else class="size-3.5" />
       </Button>
     </div>
 
@@ -127,9 +139,9 @@ onUnmounted(() => {
 }
 
 .code-block-content {
-  background: var(--vscode-textCodeBlock-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
-  padding: 12px 16px;
-  color: var(--vscode-editor-foreground);
+  background: var(--d-code);
+  padding: 0.75rem 1rem;
+  color: var(--d-text);
 }
 
 .code-block-content :deep(pre) {
@@ -140,7 +152,7 @@ onUnmounted(() => {
 
 .code-block-content :deep(code) {
   font-size: 0.85em;
-  font-family: var(--vscode-editor-font-family, "Consolas", "Monaco", monospace);
+  font-family: var(--d-mono);
   white-space: pre;
   background: transparent !important;
 }

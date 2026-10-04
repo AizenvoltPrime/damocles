@@ -11,6 +11,10 @@ import { log } from "../../../logger";
 /** Sentinel thrown when the user dismisses a sign-in dialog — a benign cancel, not a failure. */
 const SIGN_IN_CANCELLED = "__claude_signin_cancelled__";
 
+export function claudeAuthStatusMessage(): Extract<ExtensionToWebviewMessage, { type: "claudeAuthStatusChanged" }> {
+  return { type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode };
+}
+
 /**
  * Webview-driven Claude auth across all three modes: API key, subscription · allowance (plugin),
  * and subscription · extra usage (built-in). The same OAuth token serves both subscription modes;
@@ -72,10 +76,6 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
   const runtime = (): PiRuntime => PiRuntime.get();
 
   return {
-    getClaudeAuthStatus: (_msg, ctx) => {
-      postMessage(ctx.host, statusChanged(readClaudeAuthFromDisk(PI_AGENT_DIR)));
-    },
-
     claudeSignIn: async (msg, ctx) => {
       if (msg.type !== "claudeSignIn") return;
       const useAllowance = msg.useAllowance;

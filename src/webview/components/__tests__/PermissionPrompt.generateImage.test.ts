@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, afterEach } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
+import { createPinia } from 'pinia';
 import { TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import PermissionPrompt from '../PermissionPrompt.vue';
 import { i18n } from '@/i18n';
@@ -15,7 +16,7 @@ const mounted: VueWrapper[] = [];
 function prompt(props: { filePath: string; prompt: string; imageModel?: string }): VueWrapper {
   const wrapper = mount(PermissionPrompt, {
     props: { visible: true, toolUseId: 'g-1', toolName: TOOL_GENERATE_IMAGE, ...props },
-    global: { plugins: [i18n], stubs: { PermissionDestinationPicker: true } },
+    global: { plugins: [i18n, createPinia()], stubs: { PermissionDestinationPicker: true } },
     attachTo: document.body,
   });
   mounted.push(wrapper);
@@ -33,7 +34,7 @@ describe('PermissionPrompt for GenerateImage', () => {
     expect(wrapper.get('[data-testid="image-permission-path"]').text()).toBe('./assets/../assets/hero image.png');
     expect(wrapper.get('[data-testid="image-permission-prompt"]').text()).toBe('A red fox in snow');
     expect(wrapper.text()).toContain(i18n.global.t('permission.generateImage'));
-    expect(wrapper.text()).not.toContain(i18n.global.t('permission.createFile'));
+    expect(wrapper.text()).not.toContain(i18n.global.t('prompts.permission.allowCreate'));
     expect(wrapper.findComponent({ name: 'DiffView' }).exists()).toBe(false);
   });
 

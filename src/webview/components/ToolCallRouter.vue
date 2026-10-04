@@ -14,7 +14,6 @@ import TeamCard from './TeamCard.vue';
 import SteerSubagentToolCard from './SteerSubagentToolCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useExploreStore } from '@/stores/useExploreStore';
-import type { ExpandedDiff } from '@/stores/useDiffStore';
 import { computed } from 'vue';
 
 const teamStore = useTeamStore();
@@ -29,8 +28,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'expandTool', toolId: string): void;
-  (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'expandSubagent', subagentId: string): void;
 }>();
 
@@ -82,7 +79,5 @@ const agentSubagent = computed(() =>
     v-else-if="toolName !== TEAM_CREATE_TOOL"
     :tool-call="toolCall"
     source="session"
-    @expand="emit('expandTool', $event)"
-    @expand-diff="emit('expandDiff', $event)"
   />
 </template>

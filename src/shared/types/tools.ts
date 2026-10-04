@@ -8,6 +8,23 @@
 /** Subsystem a tool belongs to. `core` tools are always on; the rest gate on a subsystem flag. */
 export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'image' | 'subagents' | 'team';
 
+/** The groups with a master switch. */
+export type SwitchableToolGroup = Extract<ToolGroup, 'memory' | 'compass' | 'browser' | 'web' | 'team' | 'image'>;
+
+/** The damocles.* setting each group's master switch writes. */
+export const TOOL_GROUP_SETTINGS: Readonly<Record<SwitchableToolGroup, string>> = {
+  memory: 'damocles.memory.enabled',
+  compass: 'damocles.compass.enabled',
+  browser: 'damocles.browser.enabled',
+  web: 'damocles.pi.webSearch.enabled',
+  team: 'damocles.team.enabled',
+  image: 'damocles.imageGeneration.enabled',
+};
+
+export function isSwitchableToolGroup(group: ToolGroup): group is SwitchableToolGroup {
+  return Object.hasOwn(TOOL_GROUP_SETTINGS, group);
+}
+
 /** Why the image group cannot run: no model chosen, a model pi's image catalog does not have, or no OpenRouter credential. */
 export type ToolGroupUnavailableReason = 'noModel' | 'unknownModel' | 'noOpenRouterKey';
 
@@ -44,4 +61,9 @@ export interface ToolGroupStatus {
 export interface ToolsSnapshot {
   groups: ToolGroupStatus[];
   tools: ToolStatusInfo[];
+}
+
+/** Every tool the session has on, core included; every enabled-tools summary uses this one count. */
+export function enabledToolCount(snapshot: ToolsSnapshot): number {
+  return snapshot.tools.filter((tool) => tool.enabled).length;
 }

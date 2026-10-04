@@ -14,6 +14,7 @@ export interface PiSessionFields {
   modified: number;
   userRenamed: boolean;
   tag: string | undefined;
+  model: StoredSession['model'];
 }
 
 /** Marker-aware mapping: a user-renamed session's name becomes `customTitle`, else `aiTitle`. */
@@ -26,6 +27,7 @@ export function mapPiFieldsToStored(f: PiSessionFields): StoredSession {
     messageCount: f.messageCount,
     ...(f.name ? (f.userRenamed ? { customTitle: f.name } : { aiTitle: f.name }) : {}),
     ...(f.tag ? { tag: f.tag } : {}),
+    ...(f.model ? { model: f.model } : {}),
   };
 }
 
@@ -33,6 +35,8 @@ interface PiMessageLike {
   role?: string;
   content?: unknown;
   timestamp?: number;
+  provider?: unknown;
+  model?: unknown;
 }
 
 /** Join text blocks of a pi message into a single string (matches pi's `extractTextContent`). */
@@ -84,8 +88,15 @@ export function computePiSessionFields(
   let lastActivity: number | undefined;
   let userRenamed = false;
   let tag: string | undefined;
+  // pi resumes on the branch's latest model change or assistant reply (`getSessionContextSettings`).
+  let model: StoredSession['model'];
 
   for (const entry of branch) {
+    if (entry.type === 'model_change') {
+      // A session file is untrusted input, so a malformed entry never puts a non-string into a listed row.
+      if (typeof entry.provider === 'string' && typeof entry.modelId === 'string') model = { provider: entry.provider, id: entry.modelId };
+      continue;
+    }
     if (entry.type === 'custom' && entry.customType === DAMOCLES_USER_RENAMED_ENTRY) {
       userRenamed = true;
       continue;
@@ -100,6 +111,9 @@ export function computePiSessionFields(
     const message = (entry as { message?: PiMessageLike }).message;
     const role = message?.role;
     if (role !== 'user' && role !== 'assistant') continue;
+    if (role === 'assistant' && typeof message?.provider === 'string' && typeof message.model === 'string') {
+      model = { provider: message.provider, id: message.model };
+    }
     messageCount++;
     const activity = typeof message?.timestamp === 'number' ? message.timestamp : Date.parse(entry.timestamp);
     if (!Number.isNaN(activity)) lastActivity = Math.max(lastActivity ?? 0, activity);
@@ -120,6 +134,7 @@ export function computePiSessionFields(
     modified,
     userRenamed,
     tag,
+    model,
   };
 }
 

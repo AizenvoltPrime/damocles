@@ -6,6 +6,8 @@ export type ThemeKind = 'dark' | 'light';
 export interface PanelTheme {
   readonly kind: ThemeKind;
   readonly css: string;
+  // damocles.desktop.reduceMotion, mirrored as the data-reduced-motion attribute of every renderer's root element
+  readonly reducedMotion: boolean;
 }
 
 // Answer to the synchronous init request the preload sends once at load.
@@ -23,6 +25,6 @@ export const PANEL_CHANNELS = {
   setState: 'damocles:panel:set-state',
   // main → renderer, one host message
   message: 'damocles:panel:message',
-  // main → renderer, PanelTheme after an OS theme change
+  // main → renderer, PanelTheme after a theme or reduce motion change
   theme: 'damocles:panel:theme',
 } as const;

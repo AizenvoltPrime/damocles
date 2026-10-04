@@ -2,10 +2,9 @@
 import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { remPx } from "@/composables/useRemPx";
 
 const { t } = useI18n();
 const { accountInfo } = storeToRefs(useSettingsStore());
@@ -17,39 +16,49 @@ const OPENAI_SOURCE_LABEL_KEYS = new Map<string, string>([
   ["openai-api-key", "openai.chip.apiKey"],
 ]);
 
-const openaiLabel = computed(() => {
-  const source = accountInfo.value?.tokenSource;
-  const key = source === undefined ? undefined : OPENAI_SOURCE_LABEL_KEYS.get(source);
+// Keys are the Claude auth modes (claudeAuthStatusChanged); "none" has no credential, so no chip.
+const CLAUDE_MODE_LABEL_KEYS = new Map<string, string>([
+  ["apikey", "chatHeader.account.apikey"],
+  ["allowance", "chatHeader.account.allowance"],
+  ["extra", "chatHeader.account.extra"],
+]);
+
+const label = computed(() => {
+  const info = accountInfo.value;
+  if (!info) return null;
+  const key = info.subscriptionType !== undefined
+    ? CLAUDE_MODE_LABEL_KEYS.get(info.subscriptionType)
+    : info.tokenSource === undefined ? undefined : OPENAI_SOURCE_LABEL_KEYS.get(info.tokenSource);
   return key === undefined ? null : t(key);
 });
+
+const CHIP = "inline-flex h-4 shrink-0 items-center rounded-5 bg-(--d-accent-soft) px-1.5 text-10.5/4 font-medium text-(--d-accent-text)";
 </script>
 
 <template>
-  <Popover v-if="accountInfo?.subscriptionType">
-    <PopoverTrigger as-child>
-      <Button
-        variant="ghost"
-        size="sm"
-        class="h-auto px-1.5 py-0.5 rounded bg-primary/20 text-primary hover:bg-primary/30 hover:text-primary"
-      >
-        {{ accountInfo.subscriptionType }}
-      </Button>
+  <Popover v-if="label && accountInfo?.email">
+    <PopoverTrigger
+      :class="[CHIP, 'border border-transparent transition-colors hover:border-(--d-accent)']"
+      :aria-label="t('chatHeader.accountChip', { source: label })"
+      data-testid="account-chip"
+    >
+      {{ label }}
     </PopoverTrigger>
     <PopoverContent
-      v-if="accountInfo.email"
-      side="right"
-      :side-offset="8"
-      class="w-auto p-2 text-xs"
+      side="bottom"
+      align="start"
+      :side-offset="remPx(0.375)"
+      class="w-auto rounded-9 border-(--d-border2) bg-(--d-card) px-2.5 py-1.5 text-xs text-(--d-text) shadow-(--d-shadow)"
     >
       {{ accountInfo.email }}
     </PopoverContent>
   </Popover>
-  <Badge
-    v-else-if="openaiLabel"
-    variant="secondary"
-    class="h-auto px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium hover:bg-primary/20"
-    data-testid="account-chip-openai"
+  <span
+    v-else-if="label"
+    :class="CHIP"
+    :title="t('chatHeader.accountChip', { source: label })"
+    data-testid="account-chip"
   >
-    {{ openaiLabel }}
-  </Badge>
+    {{ label }}
+  </span>
 </template>

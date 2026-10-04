@@ -60,11 +60,11 @@ describe('McpRenamedRulesBanner', () => {
     await nextTick();
 
     document.body.querySelector<HTMLButtonElement>('[aria-label="Open ~/repo/.damocles/settings.json"]')!.click();
-    document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-renamed-rules-dismiss"]')!.click();
+    document.body.querySelector<HTMLButtonElement>('[data-testid="mcp-renamed-rules-banner"] [data-testid="banner-dismiss"]')!.click();
 
     expect(wrapper.emitted('openFile')).toEqual([[projectNotice.path]]);
     expect(wrapper.emitted('dismiss')).toHaveLength(1);
-    expect(document.body.querySelector('[data-testid="mcp-renamed-rules-dismiss"]')?.getAttribute('aria-label')).toBe('Dismiss');
+    expect(document.body.querySelector('[data-testid="mcp-renamed-rules-banner"] [data-testid="banner-dismiss"]')?.getAttribute('aria-label')).toBe('Dismiss');
   });
 
   it('is translated into Greek', async () => {

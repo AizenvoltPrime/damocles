@@ -177,13 +177,13 @@ describe('RewindBrowser checkpoint notes', () => {
   ];
 
   it('badges a not-rewindable row and explains the selected one', async () => {
-    const wrapper = mount(RewindBrowser, { props: { isOpen: true, prompts: items }, attachTo: document.body, global: { plugins: [i18n] } });
+    const wrapper = mount(RewindBrowser, { props: { prompts: items }, attachTo: document.body, global: { plugins: [i18n] } });
     mounted.push(wrapper as VueWrapper);
     await flush();
     expect(qa('[data-testid="rewind-row-not-rewindable"]')).toHaveLength(1);
     expect(q('[data-testid="rewind-not-rewindable"]')?.textContent).toContain('Bash waited 30 s');
 
-    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    q('[data-testid="rewind-search"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
     await flush();
     expect(q('[data-testid="rewind-not-rewindable"]')).toBeNull();
     expect(q('[data-testid="rewind-not-restored"]')?.textContent).toContain('6 files');

@@ -52,7 +52,6 @@ function launch(agentId: string): SubagentLaunchData {
     description: 'find things',
     prompt: 'look around',
     background: true,
-    thinkingOverride: 'low',
     templatePath: '/agents/explore.md',
     modelLabel: 'haiku',
   };
@@ -99,7 +98,6 @@ describe('agent-records — custom entries round-trip through a pi session file'
   it('validators reject malformed persisted payloads', () => {
     expect(parseAgentLaunchData(launch('a'))).toEqual(launch('a'));
     expect(parseAgentLaunchData({ ...launch('a'), background: 'yes' })).toBeNull();
-    expect(parseAgentLaunchData({ ...launch('a'), thinkingOverride: 'ultra' })).toBeNull();
     expect(parseAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1, memberName: 'n', role: 'lead', task: 'x' })).not.toBeNull();
     expect(parseAgentLaunchData({ agentId: 'm', kind: 'team-member', teamId: 't', attempt: 1.5, memberName: 'n', role: 'lead', task: 'x' })).toBeNull();
     expect(isAgentStatusData({ status: 'stopped', stopReason: 'user', result: '' })).toBe(true);

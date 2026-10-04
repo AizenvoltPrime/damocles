@@ -123,6 +123,7 @@ afterAll(() => {
     }
   }
   expect(leaked).toEqual([]);
+  fs.rmSync(INJECTION_DB_DIR, { recursive: true, force: true });
 });
 
 describe('injectionDbName filename scheme', () => {

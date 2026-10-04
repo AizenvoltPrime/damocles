@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { MAIN_SCRIPT } from './support/app';
-import { chatTab, expect, panelIdOf, test } from './support/fixtures';
+import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { hermeticEnv } from './support/hermetic';
-import { chatInput, clickMenu } from './support/ui';
+import { OVERLAY_URL, overlayPage, SHELL_URL } from './support/shell';
+import { chatInput } from './support/ui';
 
 // Records shell.openExternal in main instead of launching the OS browser.
 async function recordOpenExternal(app: ElectronApplication): Promise<void> {
@@ -36,12 +37,12 @@ test.describe('renderer security at runtime', () => {
     // Without a capture device Chromium fails getUserMedia with NotFoundError before it asks the permission handler.
     const desktop = await launch({ args: ['--use-fake-device-for-media-stream'] });
     const { app } = desktop;
-    const tab = await chatTab(app);
+    const tab = await activeChat(app);
     await expect(chatInput(tab)).toBeVisible();
     const panelId = panelIdOf(tab);
 
     const prefs = await app.evaluate(({ webContents, BrowserWindow }) => {
-      const views = webContents.getAllWebContents().filter((w) => w.getURL().startsWith('app://damocles/panel/') || w.getURL() === 'app://damocles/pane/index.html');
+      const views = webContents.getAllWebContents().filter((w) => w.getURL().startsWith('app://damocles/panel/') || w.getURL() === 'app://damocles/pane/index.html' || w.getURL() === 'app://damocles/overlay/index.html');
       const windows = BrowserWindow.getAllWindows().map((w) => w.webContents);
       // Undocumented and absent from electron.d.ts, but it is how Electron's own spec suite reads applied preferences.
       type Prefs = { contextIsolation?: boolean; nodeIntegration?: boolean; sandbox?: boolean; webviewTag?: boolean };
@@ -50,7 +51,7 @@ test.describe('renderer security at runtime', () => {
         return { url: w.getURL(), contextIsolation: p?.contextIsolation, nodeIntegration: p?.nodeIntegration, sandbox: p?.sandbox, webviewTag: p?.webviewTag };
       });
     });
-    expect(prefs.length).toBeGreaterThanOrEqual(2);
+    expect(prefs.length).toBeGreaterThanOrEqual(3);
     for (const p of prefs) expect(p, p.url).toMatchObject({ contextIsolation: true, nodeIntegration: false, sandbox: true });
     for (const p of prefs) expect(p.webviewTag, p.url).not.toBe(true);
     if (process.platform !== 'linux') {
@@ -146,32 +147,51 @@ test.describe('renderer security at runtime', () => {
     }
   });
 
-  test('IPC sent to one tab channel from another view is rejected', async ({ launch }) => {
+  test('IPC sent to a chat channel from another view is rejected', async ({ launch }) => {
     const desktop = await launch();
     const { app } = desktop;
-    const first = await chatTab(app);
-    await expect(chatInput(first)).toBeVisible();
-    const firstId = panelIdOf(first);
+    const chat = await activeChat(app);
+    await expect(chatInput(chat)).toBeVisible();
+    const chatId = panelIdOf(chat);
 
-    const second = app.waitForEvent('window', { predicate: (p) => p.url().includes('/panel/') && !p.url().includes(firstId) });
-    await clickMenu(app, 'damocles.openChat');
-    const other = await second;
-    await expect(chatInput(other)).toBeVisible();
-    const otherId = panelIdOf(other);
+    // Each view's messages reach only its own webContents.ipc. A message from the shell or the overlay view delivered to
+    // the chat's handler anyway carries that view's real sender and frame, and the sender check refuses it.
+    for (const fromUrl of [SHELL_URL, OVERLAY_URL]) {
+      const delivered = await app.evaluate(({ webContents }, { targetId, from }) => {
+        const all = webContents.getAllWebContents();
+        const target = all.find((w) => w.getURL().includes(`/panel/${targetId}/`));
+        const sender = all.find((w) => w.getURL() === from);
+        if (!target || !sender) throw new Error('views not found');
+        const event = { sender, senderFrame: sender.mainFrame, processId: sender.getProcessId(), frameId: sender.mainFrame.routingId, returnValue: undefined, reply: () => {} };
+        return target.ipc.emit('damocles:panel:post', event, { type: 'sendMessage', content: 'injected from another view' });
+      }, { targetId: chatId, from: fromUrl });
+      expect(delivered).toBe(true);
+      await expect.poll(() => desktop.output()).toContain(`[views] panel ${chatId}: rejected damocles:panel:post from "${fromUrl}"`);
+    }
+    await expect(chat.getByText('injected from another view')).toHaveCount(0);
+  });
 
-    // Each view's messages reach only its own webContents.ipc. A message from the second view delivered to the first
-    // tab's handler anyway carries the second view's real sender and frame, and the sender check refuses it.
-    const delivered = await app.evaluate(({ webContents }, { targetId, fromId }) => {
+  test('the overlay page has only its own bridge, and its channels refuse every other view', async ({ launch }) => {
+    const desktop = await launch();
+    const { app } = desktop;
+    const chat = await activeChat(app);
+    await expect(chatInput(chat)).toBeVisible();
+    const overlay = await overlayPage(app);
+    expect(await overlay.evaluate(() => ({ shell: typeof window.damoclesShell, pane: typeof window.damoclesPane, panel: typeof window.damoclesBridge, overlay: typeof window.damoclesOverlay }))).toEqual({ shell: 'undefined', pane: 'undefined', panel: 'undefined', overlay: 'object' });
+    expect(await chat.evaluate(() => typeof (window as { damoclesOverlay?: unknown }).damoclesOverlay)).toBe('undefined');
+    const csp = await overlay.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') ?? '');
+    expect(csp).toMatch(/^default-src 'none'; style-src app:\/\/damocles 'unsafe-inline'; script-src 'nonce-[^']+'; font-src app:\/\/damocles; img-src app:\/\/damocles data:; base-uri 'none'; form-action 'none';$/);
+
+    const delivered = await app.evaluate(({ webContents }, { overlayUrl, fromId }) => {
       const all = webContents.getAllWebContents();
-      const target = all.find((w) => w.getURL().includes(`/panel/${targetId}/`));
-      const from = all.find((w) => w.getURL().includes(`/panel/${fromId}/`));
-      if (!target || !from) throw new Error('views not found');
-      const event = { sender: from, senderFrame: from.mainFrame, processId: from.getProcessId(), frameId: from.mainFrame.routingId, returnValue: undefined, reply: () => {} };
-      return target.ipc.emit('damocles:panel:post', event, { type: 'sendMessage', content: 'injected from another view' });
-    }, { targetId: firstId, fromId: otherId });
+      const target = all.find((w) => w.getURL() === overlayUrl);
+      const sender = all.find((w) => w.getURL().includes(`/panel/${fromId}/`));
+      if (!target || !sender) throw new Error('views not found');
+      const event = { sender, senderFrame: sender.mainFrame, processId: sender.getProcessId(), frameId: sender.mainFrame.routingId, returnValue: undefined, reply: () => {} };
+      return target.ipc.emit('damocles:overlay:toast-area', event, { width: 400, height: 400 });
+    }, { overlayUrl: OVERLAY_URL, fromId: panelIdOf(chat) });
     expect(delivered).toBe(true);
-    await expect.poll(() => desktop.output()).toContain(`[views] panel ${firstId}: rejected damocles:panel:post from "app://damocles/panel/${otherId}/index.html"`);
-    await expect(first.getByText('injected from another view')).toHaveCount(0);
+    await expect.poll(() => desktop.output()).toContain(`[overlay] rejected damocles:overlay:toast-area from "app://damocles/panel/${panelIdOf(chat)}/index.html"`);
   });
 
   test('the unpackaged app has its own name, neither "Electron" nor the installed app\'s', async ({ launch }) => {
@@ -181,7 +201,7 @@ test.describe('renderer security at runtime', () => {
 
   test('a second launch focuses the existing window and exits', async ({ home, launch }) => {
     const { app } = await launch();
-    await expect(chatInput(await chatTab(app))).toBeVisible();
+    await expect(chatInput(await activeChat(app))).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.minimize());
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isMinimized())).toBe(true);
     const secondInstance = app.evaluate(({ app: electronApp }) => new Promise<void>((resolve) => electronApp.once('second-instance', () => resolve())));

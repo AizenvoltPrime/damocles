@@ -1,4 +1,4 @@
-import type { SettingsStore } from "../../../../platform/settings-store";
+import type { SettingsFolder, SettingsStore } from "../../../../platform/settings-store";
 import type { EffortLevel, PanelThinkingState } from "../../../../shared/types/settings";
 import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
@@ -64,11 +64,11 @@ export class ThinkingManager {
    * the prompt's no-thinking section. One gate here, because a second place to apply it is a second place
    * to forget it.
    */
-  resolveDisabled(panelId: string, model: string, settings: SettingsStore): boolean {
+  resolveDisabled(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): boolean {
     if (!thinkingDisableAppliesToModel(model)) return false;
     const override = this.perPanelDisabled.get(panelId);
     if (override !== undefined) return override;
-    return settings.get<boolean>("damocles.thinkingDisabled", false);
+    return settings.get<boolean>("damocles.thinkingDisabled", false, folder);
   }
 
   /**
@@ -79,24 +79,24 @@ export class ThinkingManager {
    * options. The catalog default is resolved per request and never written
    * back, so `damocles.effortByModel` stays empty until the user sets a level.
    */
-  resolveEffort(panelId: string, model: string, settings: SettingsStore): EffortLevel | null {
+  resolveEffort(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): EffortLevel | null {
     const panelMap = this.perPanelEffortByModel.get(panelId);
     const panelOverride = panelMap?.[model];
     if (panelOverride !== undefined) {
       return coerceEffortForModel(model, panelOverride) ?? defaultEffortForModel(model);
     }
-    const defaults = settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}) ?? {};
+    const defaults = settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {};
     return coerceEffortForModel(model, defaults[model] ?? null) ?? defaultEffortForModel(model);
   }
 
   /** Resolve max thinking tokens with the per-(panel, model) override above the workspace default. */
-  resolveMaxTokens(panelId: string, model: string, settings: SettingsStore): number | null {
+  resolveMaxTokens(panelId: string, model: string, settings: SettingsStore, folder: SettingsFolder | undefined): number | null {
     const panelMap = this.perPanelMaxTokensByModel.get(panelId);
     const panelOverride = panelMap?.[model];
     if (panelOverride !== undefined) {
       return panelOverride;
     }
-    return settings.get<number | null>("damocles.maxThinkingTokens", null);
+    return settings.get<number | null>("damocles.maxThinkingTokens", null, folder);
   }
 
   /** Set the per-panel disabled override. */
@@ -150,24 +150,25 @@ export class ThinkingManager {
     activeModel: string,
     defaultModel: string,
     settings: SettingsStore,
+    folder: SettingsFolder | undefined,
   ): void {
     const panel: PanelThinkingState = {
-      thinkingDisabled: this.resolveDisabled(panelId, activeModel, settings),
-      effort: this.resolveEffort(panelId, activeModel, settings),
-      maxThinkingTokens: this.resolveMaxTokens(panelId, activeModel, settings),
+      thinkingDisabled: this.resolveDisabled(panelId, activeModel, settings, folder),
+      effort: this.resolveEffort(panelId, activeModel, settings, folder),
+      maxThinkingTokens: this.resolveMaxTokens(panelId, activeModel, settings, folder),
     };
     // The defaults column reads the workspace scope directly rather than through the panel resolvers,
     // so both the disable gate and the catalog default must be applied again here or the column
     // disagrees with what a new panel on the default model actually sends.
     const defaults: PanelThinkingState = {
       thinkingDisabled: thinkingDisableAppliesToModel(defaultModel)
-        ? settings.get<boolean>("damocles.thinkingDisabled", false)
+        ? settings.get<boolean>("damocles.thinkingDisabled", false, folder)
         : false,
       effort: coerceEffortForModel(
         defaultModel,
-        (settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}) ?? {})[defaultModel] ?? null,
+        (settings.get<Record<string, EffortLevel | null>>("damocles.effortByModel", {}, folder) ?? {})[defaultModel] ?? null,
       ) ?? defaultEffortForModel(defaultModel),
-      maxThinkingTokens: settings.get<number | null>("damocles.maxThinkingTokens", null),
+      maxThinkingTokens: settings.get<number | null>("damocles.maxThinkingTokens", null, folder),
     };
     this.postMessage(host, {
       type: "panelThinkingUpdate",

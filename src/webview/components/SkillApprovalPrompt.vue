@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from 'vue';
+import { ref, nextTick, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ListboxRoot, ListboxItem, ListboxContent } from 'reka-ui';
+import { ListboxRoot, ListboxItem } from 'reka-ui';
+import DockPromptOptions from './DockPromptOptions.vue';
 import { Textarea } from '@/components/ui/textarea';
-import { Button } from '@/components/ui/button';
+import { MessageSquare, SendHorizontal, Sparkles } from 'lucide-vue-next';
+import { useDockPromptDigits } from '@/composables/useDockPrompt';
 
 const { t } = useI18n();
 
-const props = defineProps<{
+defineProps<{
   visible: boolean;
   skillName: string;
   skillDescription?: string | undefined;
@@ -20,14 +22,13 @@ const emit = defineEmits<{
 const showCustomInput = ref(false);
 const customMessage = ref('');
 const selectedValue = ref<string>('yes');
-const listboxRef = ref<{ $el?: HTMLElement } | null>(null);
+const cardRef = ref<HTMLElement | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 
-const options = computed(() => [
-  { value: 'yes', label: t('skill.options.yes'), shortcut: '1' },
-  { value: 'yes-always', label: t('skill.options.yesDontAsk'), shortcut: '2' },
-  { value: 'no', label: t('skill.options.no'), shortcut: '3' },
-  { value: 'custom', label: t('skill.options.custom'), shortcut: null },
+const choices = computed(() => [
+  { value: 'yes', label: t('skill.options.yes') },
+  { value: 'yes-always', label: t('skill.options.yesDontAsk') },
+  { value: 'no', label: t('skill.options.no') },
 ] as const);
 
 function handleSelect(value: string) {
@@ -63,9 +64,6 @@ function handleCustomSubmit() {
 function handleCustomBack() {
   showCustomInput.value = false;
   customMessage.value = '';
-  nextTick(() => {
-    listboxRef.value?.$el?.focus();
-  });
 }
 
 function resetState() {
@@ -74,100 +72,118 @@ function resetState() {
   selectedValue.value = 'yes';
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (showCustomInput.value) return;
-
-  const shortcutMap: Record<string, string> = {
-    '1': 'yes',
-    '2': 'yes-always',
-    '3': 'no',
-  };
-
-  const shortcut = shortcutMap[e.key];
-  if (shortcut) {
-    e.preventDefault();
-    handleSelect(shortcut);
-  }
-}
-
-watch(() => props.visible, (visible) => {
-  if (visible) {
-    resetState();
-    nextTick(() => {
-      listboxRef.value?.$el?.focus();
-    });
-  }
+useDockPromptDigits(cardRef, (digit) => {
+  const choice = showCustomInput.value ? undefined : choices.value[digit - 1];
+  if (!choice) return false;
+  handleSelect(choice.value);
+  return true;
 });
 </script>
 
 <template>
   <div
     v-if="visible"
-    class="border-t border-border bg-background"
+    ref="cardRef"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
     role="region"
     :aria-label="t('skill.ariaLabel')"
+    data-dock-prompt
+    data-testid="skill-card"
   >
-    <!-- Header question -->
-    <div class="px-4 py-3 text-sm text-foreground">
-      <div class="font-medium">{{ t('skill.title', { name: skillName }) }}</div>
-      <div class="mt-2 text-muted-foreground text-xs">
-        {{ t('skill.explanation') }}
+    <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-warning)_10%,transparent)] to-transparent px-3 py-2">
+      <span
+        class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-[color-mix(in_srgb,var(--d-warning)_16%,transparent)] text-(--d-warning)"
+        aria-hidden="true"
+      >
+        <Sparkles class="size-3.5" />
+      </span>
+      <div class="min-w-0 flex-1">
+        <div class="truncate font-semibold">
+          {{ t('skill.title', { name: skillName }) }}
+        </div>
+        <div class="truncate text-xs text-(--d-muted)">
+          {{ t('skill.explanation') }}
+        </div>
       </div>
-      <div v-if="skillDescription" class="mt-2 text-muted-foreground text-xs">
-        {{ skillDescription }}
-      </div>
+    </header>
+
+    <p
+      v-if="skillDescription"
+      class="px-3.5 pt-2.5 text-12.5 text-pretty text-(--d-muted)"
+    >
+      {{ skillDescription }}
+    </p>
+
+    <div
+      v-if="!showCustomInput"
+      class="px-1.5 pt-1 pb-1.5"
+    >
+      <ListboxRoot
+        v-model="selectedValue"
+        class="flex flex-col outline-none"
+        orientation="vertical"
+      >
+        <DockPromptOptions :aria-label="t('skill.title', { name: skillName })">
+          <ListboxItem
+            v-for="(option, index) in choices"
+            :key="option.value"
+            :value="option.value"
+            class="group flex items-center gap-2.5 rounded-9 px-2.5 py-1.25 transition-colors outline-none data-highlighted:bg-(--d-accent-soft) data-highlighted:text-(--d-accent-text)"
+            @select="handleSelect(option.value)"
+          >
+            <span
+              class="flex size-5 flex-none items-center justify-center rounded-md border border-(--d-border2) font-mono text-11 group-data-highlighted:border-(--d-accent)"
+              aria-hidden="true"
+            >{{ index + 1 }}</span>
+            <span class="min-w-0 flex-1 truncate font-medium">{{ option.label }}</span>
+          </ListboxItem>
+          <ListboxItem
+            value="custom"
+            class="mx-1 mt-0.75 flex h-7.5 items-center gap-2 rounded-9 border border-(--d-border) bg-(--d-input) px-2.5 text-12.5 text-(--d-faint) transition-colors outline-none data-highlighted:border-(--d-accent)"
+            @select="handleSelect('custom')"
+          >
+            <MessageSquare
+              class="size-3.25 flex-none"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1 truncate">{{ t('skill.options.custom') }}</span>
+          </ListboxItem>
+        </DockPromptOptions>
+      </ListboxRoot>
     </div>
 
-    <!-- Options list using Reka UI Listbox -->
-    <ListboxRoot
-      v-if="!showCustomInput"
-      ref="listboxRef"
-      v-model="selectedValue"
-      class="flex flex-col outline-none"
-      orientation="vertical"
-      @keydown="handleKeydown"
+    <div
+      v-else
+      class="flex flex-col gap-2 px-3 pt-2.5 pb-3"
     >
-      <ListboxContent>
-        <ListboxItem
-          v-for="option in options"
-          :key="option.value"
-          :value="option.value"
-          class="flex items-center gap-2 px-4 py-2.5 text-left text-sm transition-colors cursor-pointer outline-none data-highlighted:bg-primary data-highlighted:text-primary-foreground data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground hover:bg-card"
-          :class="option.value === 'custom' ? 'border-t border-border/30 text-muted-foreground' : 'text-foreground'"
-          @select="handleSelect(option.value as string)"
-        >
-          <span v-if="option.shortcut" class="font-medium w-4">{{ option.shortcut }}</span>
-          <span v-else class="w-4" />
-          <span>{{ option.label }}</span>
-        </ListboxItem>
-      </ListboxContent>
-    </ListboxRoot>
-
-    <!-- Custom input mode -->
-    <div v-else class="px-4 pb-4">
       <Textarea
         ref="textareaRef"
         v-model="customMessage"
-        class="min-h-20 bg-card border-border resize-none focus:border-primary mb-3 max-h-32"
+        class="max-h-32 min-h-20 resize-none rounded-10 border-(--d-border2) bg-(--d-input) text-12.5 focus:border-(--d-accent)"
         :placeholder="t('skill.customPlaceholder')"
         @keydown.enter.ctrl="handleCustomSubmit"
         @keydown.escape="handleCustomBack"
       />
       <div class="flex justify-end gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center rounded-9 px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
           @click="handleCustomBack"
         >
           {{ t('common.back') }}
-        </Button>
-        <Button
-          size="sm"
+        </button>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
           :disabled="!customMessage.trim()"
           @click="handleCustomSubmit"
         >
+          <SendHorizontal
+            class="size-3.25"
+            aria-hidden="true"
+          />
           {{ t('permission.sendToClaude') }}
-        </Button>
+        </button>
       </div>
     </div>
   </div>

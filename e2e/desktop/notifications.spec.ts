@@ -1,9 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { chatTab, expect, nextTab, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { answerToast, dismissedToasts, osNotifications, recordedToasts, recordOsNotifications, recordToasts, shellState } from './support/shell';
+import { overlayToasts, overlayViewState, readyOverlay } from './support/overlay';
 import { addProject, answerMessageBoxes, chatInput, messageBoxes, postFromWebview, sendAndAwaitEcho } from './support/ui';
 
 // Strings from src/core/chat-panel/message-router/handlers/workspace-handlers.ts and panel-manager.ts.
@@ -12,12 +13,12 @@ const SWITCH_PROMPT = 'Switch this panel to beta?';
 // TOAST_TIMEOUT_MS.info in src/desktop/main/platform/notification-service.ts.
 const INFO_TIMEOUT_MS = 8_000;
 
-test('notices are shell toasts that resolve, time out in main and raise an OS notification when unfocused; modal prompts stay native and modal', async ({ home, launch }) => {
+test('notices are overlay toasts that resolve, time out in main and raise an OS notification when unfocused; modal prompts stay native and modal', async ({ home, launch }) => {
   const stub = await startOpenAIStub();
   try {
     seedStubModel(home, stub.baseUrl);
     const { app } = await launch();
-    const homeTab = await chatTab(app);
+    const homeTab = await activeChat(app);
     await expect(chatInput(homeTab)).toBeVisible();
     await recordToasts(app);
     await recordOsNotifications(app);
@@ -29,6 +30,14 @@ test('notices are shell toasts that resolve, time out in main and raise an OS no
     await expect.poll(async () => (await recordedToasts(app)).map((t) => t.message)).toEqual([NO_SESSION]);
     const [first] = await recordedToasts(app);
     expect(first).toMatchObject({ severity: 'info', actions: [] });
+    // The toast renders in the overlay view, which covers only the toast stack, bottom-right and above every other view.
+    const overlay = await readyOverlay(app);
+    await expect(overlayToasts(overlay).filter({ hasText: NO_SESSION })).toBeVisible();
+    await expect.poll(async () => {
+      const view = await overlayViewState(app);
+      return view.topmost && view.bounds.width > 0 && view.bounds.width < view.content.width
+        && view.bounds.x + view.bounds.width === view.content.width && view.bounds.y + view.bounds.height === view.content.height;
+    }).toBe(true);
     if (focused) expect(await osNotifications(app)).toEqual([]);
     await answerToast(app, first!.id);
 
@@ -48,17 +57,18 @@ test('notices are shell toasts that resolve, time out in main and raise an OS no
       delete (BrowserWindow.getAllWindows()[0] as { isFocused?: unknown }).isFocused;
     });
 
-    // A modal prompt stays a native box parented to the window: switching a tab with a conversation to another project.
+    // A modal prompt stays a native box parented to the window: switching a chat with a conversation to another project.
     const beta = path.join(path.dirname(home.project), 'beta');
     fs.mkdirSync(beta, { recursive: true });
-    const alphaOpened = nextTab(app, app.windows());
+    const alphaOpened = nextChat(app, app.windows());
     await addProject(app, home.project, true);
     const alpha = await alphaOpened;
     await expect(chatInput(alpha)).toBeVisible();
-    const betaOpened = nextTab(app, app.windows());
+    // Written before beta's chat is selected, or alpha's empty chat would be dropped when the selection leaves it.
+    await sendAndAwaitEcho(alpha, 'keep this conversation');
+    const betaOpened = nextChat(app, app.windows());
     await addProject(app, beta, true);
     await expect(chatInput(await betaOpened)).toBeVisible();
-    await sendAndAwaitEcho(alpha, 'keep this conversation');
     const betaKey = (await shellState(app)).projects.find((p) => p.name === 'beta')!.key;
     await answerMessageBoxes(app);
     await postFromWebview(alpha, { type: 'setPanelWorkspaceFolder', folderKey: betaKey });

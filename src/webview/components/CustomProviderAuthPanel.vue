@@ -4,11 +4,8 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { usePlatformBridge } from "@/composables/usePlatformBridge";
-import { IconCircleGreen, IconCircleRed } from "@/components/icons";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Eye, EyeOff, Trash2 } from "lucide-vue-next";
+import SettingButton from "@/components/settings/controls/SettingButton.vue";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 
 // Single key-field auth panel shared by the custom (non-first-party) providers. The provider id doubles
@@ -85,15 +82,6 @@ function postClear(requestId: string) {
   }
 }
 
-function postGetStatus() {
-  switch (props.provider) {
-    case "stepfun": postMessage({ type: "getStepfunAuthStatus" }); break;
-    case "deepseek": postMessage({ type: "getDeepseekAuthStatus" }); break;
-    case "typesafe": postMessage({ type: "getTypesafeAuthStatus" }); break;
-    case "openrouter": postMessage({ type: "getOpenrouterAuthStatus" }); break;
-  }
-}
-
 function handleSave() {
   const key = apiKeyInput.value.trim();
   if (!key || saving.value) return;
@@ -142,7 +130,6 @@ let unsubscribe: (() => void) | null = null;
 
 onMounted(() => {
   unsubscribe = onMessage(handleAck);
-  postGetStatus();
 });
 
 onUnmounted(() => {
@@ -151,119 +138,102 @@ onUnmounted(() => {
 
 const messageClass = computed(() => {
   switch (inlineMessage.value?.kind) {
-    case "success": return "text-emerald-500";
-    case "error": return "text-destructive";
+    case "success": return "sm-hint-success";
+    case "error": return "sm-hint-error";
     default: return "";
   }
 });
 </script>
 
 <template>
-  <section class="mb-6">
-    <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
-      {{ tk('sectionTitle') }}
-    </h3>
-
-    <div class="mb-4">
-      <div class="flex items-center gap-1.5 mb-1">
-        <Label class="text-xs text-muted-foreground">{{ tk('apiKey.label') }}</Label>
-        <span class="flex items-center gap-1 text-xs">
-          <IconCircleGreen
-            v-if="configured"
-            :size="8"
-          />
-          <IconCircleRed
-            v-else
-            :size="8"
-          />
-          <span class="text-muted-foreground">
-            {{ configured ? tk('apiKey.configured') : tk('apiKey.notConfigured') }}
-          </span>
-        </span>
+  <div :data-testid="`${provider}-auth-panel`">
+    <div class="sm-field">
+      <div class="sm-field-label">
+        {{ tk('apiKey.label') }}
+        <span class="sm-hint">{{ configured ? tk('apiKey.configured') : tk('apiKey.notConfigured') }}</span>
       </div>
-
-      <div class="flex gap-2">
-        <div class="relative flex-1">
-          <Input
+      <div class="sm-field-row">
+        <div class="sm-input sm-input-wide">
+          <input
             v-model="apiKeyInput"
             :type="showKey ? 'text' : 'password'"
+            autocomplete="new-password"
+            spellcheck="false"
             :placeholder="tk('apiKey.placeholder')"
             :aria-label="tk('apiKey.label')"
-            class="bg-input border-border placeholder:text-muted-foreground pr-9"
             :disabled="saving"
-            @keydown.enter="handleSave"
-          />
+            @keydown.enter.prevent="handleSave"
+          >
           <button
             type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            class="sm-search-clear"
             :title="showKey ? tk('apiKey.hide') : tk('apiKey.show')"
             :aria-label="showKey ? tk('apiKey.hide') : tk('apiKey.show')"
             @click="showKey = !showKey"
           >
             <EyeOff
               v-if="showKey"
-              class="h-4 w-4"
+              class="size-3.5"
+              aria-hidden="true"
             />
             <Eye
               v-else
-              class="h-4 w-4"
+              class="size-3.5"
+              aria-hidden="true"
             />
           </button>
         </div>
-        <Button
-          size="sm"
+        <SettingButton
+          variant="primary"
           :disabled="!apiKeyInput.trim() || saving"
           @click="handleSave"
         >
           {{ saving ? tk('apiKey.saving') : t('common.save') }}
-        </Button>
-        <Button
+        </SettingButton>
+        <SettingButton
           v-if="configured"
-          variant="ghost"
-          size="icon"
-          class="h-9 w-9 shrink-0 text-destructive hover:text-destructive/80 hover:bg-destructive/10"
+          variant="danger"
           :title="tk('apiKey.clear')"
           :aria-label="tk('apiKey.clear')"
           :disabled="saving"
           @click="handleClear"
         >
-          <Trash2 class="h-4 w-4" />
-        </Button>
+          <Trash2
+            class="size-3.25"
+            aria-hidden="true"
+          />
+        </SettingButton>
       </div>
-
       <p
         v-if="inlineMessage"
-        class="text-xs mt-2"
+        class="sm-hint"
         :class="messageClass"
       >
         {{ inlineMessage.text }}
       </p>
       <p
         v-else
-        class="text-xs text-muted-foreground mt-2"
+        class="sm-hint"
       >
         {{ tk('apiKey.hint') }}
       </p>
       <div
         v-if="memoryJudgeText"
         role="status"
-        class="mt-1 space-y-0.5 text-xs"
+        class="sm-hint"
       >
-        <p
-          class="text-muted-foreground"
-          data-testid="memory-judge"
-        >
+        <p data-testid="memory-judge">
           {{ t('typesafe.memoryJudge.label', { judge: memoryJudgeText }) }}
         </p>
         <p
           v-for="line in rejectedJudgeLines"
           :key="line.via"
-          class="text-warning"
+          class="sm-hint-warning"
           data-testid="memory-judge-rejected"
         >
           {{ line.text }}
         </p>
       </div>
     </div>
-  </section>
+  </div>
 </template>

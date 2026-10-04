@@ -10,7 +10,8 @@ import type { BrowserService } from "../browser";
 import { TeamService } from "../team";
 import type { CompassService } from "../compass";
 import type { PanelHost } from "../../platform/window-service";
-import type { FolderTarget } from "../workspace-folders/folder-registry";
+import { settingsFolderOf, type FolderTarget } from "../workspace-folders/folder-registry";
+import type { SettingsFolder } from "../../platform/settings-store";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
 
@@ -21,7 +22,7 @@ export interface SessionManagerConfig {
   getActiveModelForPanel: (panelId: string) => string;
   getDefaultModel: () => string;
   getPreferOpenAIApiKey: () => boolean;
-  resolveThinkingForPanel: (panelId: string, model: string) => {
+  resolveThinkingForPanel: (panelId: string, model: string, folder: SettingsFolder | undefined) => {
     thinkingDisabled: boolean;
     effort: EffortLevel | null;
     maxThinkingTokens: number | null;
@@ -107,6 +108,7 @@ export class SessionManager {
 
     piSession = new PiSession({
       cwd: folder.fsPath,
+      settingsFolder: settingsFolderOf(folder),
       permissionHandler,
       onMessage: (message) => this.postMessage(host, message),
       onSessionIdChange: (sessionId, stored) => {
@@ -135,7 +137,7 @@ export class SessionManager {
       // This folder's scope, so its servers connect at session start. The shared user client reconciles
       // idempotently; an empty union would close servers another panel connected.
       mcpScope: this.getEnabledMcpServers(folder.key),
-      resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
+      resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model, settingsFolderOf(folder)),
       getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
       secrets: this.platform.secrets,
       platform: this.platform,

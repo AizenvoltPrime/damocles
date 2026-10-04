@@ -5,7 +5,8 @@ import { createFakePlatform, type FakePlatform } from '../../../__mocks__/fake-p
 import { WorkspaceFolderRegistry } from '../../workspace-folders/folder-registry';
 import type { FolderTarget } from '../../workspace-folders/folder-registry';
 import type { ChatSession } from '../../chat-session';
-import type { HostInstance } from '../types';
+import type { ChatActivity, TurnOutcome } from '../../pi-session/session-state';
+import type { AttachedView, HostInstance } from '../types';
 import type { PanelHost } from '../../../platform/window-service';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../../shared/types/messages';
 
@@ -17,6 +18,11 @@ export interface FakeSession {
   /** The stored session this session is on or will open, as `persistenceSessionId` reports it. */
   storedId: string | null;
   readonly persistenceSessionId: string | null;
+  readonly storedSessionId: string | null;
+  /** The panel manager's activity forwarding while this session is bound, else null. */
+  activityListener: ((activity: ChatActivity) => void) | null;
+  setActivityListener: (listener: ((activity: ChatActivity) => void) | null) => void;
+  setTurnSettledListener: (listener: ((outcome: TurnOutcome) => void) | null) => void;
   holdsSession: (sessionId: string) => boolean;
   setResumeSession: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
@@ -86,7 +92,7 @@ export interface Harness {
   registry: WorkspaceFolderRegistry;
   sessions: FakeSession[];
   /** Every webview message the router received, with the session the panel held at that moment. */
-  routed: Array<{ message: WebviewToExtensionMessage; panelId: string; session: ChatSession | undefined }>;
+  routed: Array<{ message: WebviewToExtensionMessage; panelId: string; session: ChatSession | undefined; view?: AttachedView }>;
   released: string[];
   /** A folder key here makes its release reject with that error, after it is recorded in `released`. */
   releaseErrors: Map<string, Error>;
@@ -110,7 +116,7 @@ export interface Harness {
 export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harness {
   const openFolders = (folders: ReturnType<typeof folderEntry>[]) => folders.map((f) => ({ fsPath: f.uri.fsPath, name: f.name }));
   const platform = createFakePlatform({ folders: openFolders(initial) });
-  const registry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace);
+  const registry = new WorkspaceFolderRegistry(platform.workspaceFolders, platform.state.workspace, platform.fileWatchers);
 
   const sessions: FakeSession[] = [];
   const routed: Harness['routed'] = [];
@@ -134,6 +140,13 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
         conversation: false,
         storedId: null,
         get persistenceSessionId() { return session.storedId; },
+        get storedSessionId() { return session.storedId; },
+        activityListener: null,
+        setActivityListener: (listener) => {
+          session.activityListener = listener;
+          listener?.({ state: 'idle', pendingKinds: [], background: false });
+        },
+        setTurnSettledListener: () => undefined,
         holdsSession: (id) => session.storedId === id,
         setResumeSession: vi.fn((id: string | null) => { session.storedId = id; }),
         dispose: vi.fn(async () => undefined),
@@ -146,8 +159,8 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
       sessions.push(session);
       return session as unknown as ChatSession;
     },
-    handleWebviewMessage: async (message, panelId) => {
-      routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session });
+    handleWebviewMessage: async (message, panelId, view) => {
+      routed.push({ message, panelId, session: manager.getPanels().get(panelId)?.session, ...(view ? { view } : {}) });
     },
     sendCurrentSettings: async () => undefined,
     getStoredSessions: async () => ({ sessions: [], hasMore: false, nextOffset: 0 }),

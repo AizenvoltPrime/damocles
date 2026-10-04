@@ -115,11 +115,10 @@ describe('ready handler: restores the panel into the right folder', () => {
     const session = makeSession(order);
     const host = { id: 'host' };
     const instance: { host: unknown; session: ReturnType<typeof makeSession>; folder: typeof A } = { host, session, folder: A };
-    const claims: boolean[] = [];
-    const switchPanelFolder = vi.fn(async (_panelId: string, key: string, _reason: string, afterSwitch?: (i: unknown) => Promise<boolean>) => {
+    const switchPanelFolder = vi.fn(async (_panelId: string, key: string, _reason: string, afterSwitch?: (i: unknown) => Promise<void>) => {
       instance.session = makeSession(order);
       instance.folder = key === B.key ? B : A;
-      if (afterSwitch) claims.push(await afterSwitch(instance));
+      await afterSwitch?.(instance);
       order.push('gate-open');
       return instance;
     });
@@ -155,7 +154,7 @@ describe('ready handler: restores the panel into the right folder', () => {
     } as unknown as Parameters<typeof createSessionHandlers>[0];
     const ctx = { session, host, panelId: 'p1', permissionHandler: {}, folder: A } as never;
     const compassPosts = () => posted.filter((m) => m.type === 'compassStatusUpdate');
-    return { deps, ctx, session, instance, switchPanelFolder, loadSessionHistory, postWorkspaceFolderState, order, claims, compassPosts };
+    return { deps, ctx, session, instance, switchPanelFolder, loadSessionHistory, postWorkspaceFolderState, order, compassPosts };
   }
 
   it('tells the webview its folder state', async () => {
@@ -195,15 +194,7 @@ describe('ready handler: restores the panel into the right folder', () => {
     expect(h.instance.session.setResumeSession).toHaveBeenCalledWith('s-b');
     expect(h.session.setResumeSession).not.toHaveBeenCalled();
     expect(h.loadSessionHistory).toHaveBeenCalledWith('/b', 's-b', h.instance.host, h.instance.session);
-    // Reported as claimed, so the switch leaves the start to the handler.
-    expect(h.claims).toEqual([true]);
     expect(h.instance.session.initializeEarly).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports no claim when moving without a saved conversation', async () => {
-    const h = harness();
-    await createSessionHandlers(h.deps).ready!({ type: 'ready', savedWorkspaceFolderKey: B.key } as never, h.ctx);
-    expect(h.claims).toEqual([false]);
   });
 
   it('moves to the persisted folder when there is no saved conversation', async () => {

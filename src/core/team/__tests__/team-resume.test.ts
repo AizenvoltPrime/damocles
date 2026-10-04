@@ -249,7 +249,7 @@ describe('TeamRunner checkpoint on cancel', () => {
   it('cancel() records member statuses and review state as they were before the abort and synthesis', async () => {
     const { h, run } = await interruptedTeam(newCwd('cancel-order'), crypto.randomUUID());
 
-    h.runner.cancel();
+    h.runner.cancel('user');
     const result = await run;
 
     expect(result.status).toBe('cancelled');
@@ -275,7 +275,7 @@ describe('TeamRunner checkpoint on cancel', () => {
   it('keeps every message not yet delivered: runner-local, pi steering and pi follow-up', async () => {
     const { h, run } = await interruptedTeam(newCwd('cancel-undelivered'), crypto.randomUUID());
 
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
 
     const members = new Map((await checkpointOf(persistenceOf(h), h.teamId))!.members.map((m) => [m.name, m]));
@@ -292,8 +292,8 @@ describe('TeamRunner checkpoint on cancel', () => {
     const write = vi.spyOn(TeamPersistence.prototype, 'writeCheckpoint');
     try {
       const { h, run } = await interruptedTeam(newCwd('cancel-once'), crypto.randomUUID());
-      h.runner.cancel();
-      h.runner.cancel();
+      h.runner.cancel('user');
+      h.runner.cancel('user');
       expect(write).toHaveBeenCalledTimes(1);
       await run;
       expect(write).toHaveBeenCalledTimes(2);
@@ -302,7 +302,7 @@ describe('TeamRunner checkpoint on cancel', () => {
       write.mockClear();
       const done = makeTeam({ cwd: newCwd('cancel-after-complete'), teamId: crypto.randomUUID(), specialists: [], behave: {} });
       const result = await done.runner.run();
-      done.runner.cancel();
+      done.runner.cancel('user');
       expect(result.status).toBe('completed');
       expect(write).not.toHaveBeenCalled();
       expect(await checkpointTimes(done)).toEqual([]);
@@ -313,14 +313,14 @@ describe('TeamRunner checkpoint on cancel', () => {
 
   it('round-trips: a restored team cancelled before it resumes writes the checkpoint it read', async () => {
     const { h, run } = await interruptedTeam(newCwd('round-trip'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const written = (await checkpointOf(persistence, h.teamId))!;
 
     const restored = makeTeam({ cwd: h.cwd, teamId: h.teamId, specialists: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'], behave: {} });
     restored.runner.restore(await persistence.readEventLog(h.teamId), written, new Map());
-    restored.runner.cancel();
+    restored.runner.cancel('user');
 
     const rewritten = (await checkpointOf(persistence, h.teamId))!;
     expect(rewritten.cancelledAt).toBeGreaterThan(written.cancelledAt);
@@ -329,7 +329,7 @@ describe('TeamRunner checkpoint on cancel', () => {
 
   it('restores a steer from a checkpoint that recorded no attempt as the member attempt in that checkpoint', async () => {
     const { h, run } = await interruptedTeam(newCwd('steer-no-attempt'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const written = (await checkpointOf(persistence, h.teamId))!;
@@ -354,7 +354,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     const { h, run } = await interruptedTeam(newCwd('cancel-pending'), crypto.randomUUID());
 
     h.runner.cancelSpecialist('B');
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
 
     const members = new Map((await checkpointOf(persistenceOf(h), h.teamId))!.members.map((m) => [m.name, m.status]));
@@ -364,7 +364,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
 
   it('keeps a finished member result from the event log, so a later partial synthesis still shows it', async () => {
     const { h, files, run } = await interruptedTeam(newCwd('last-result'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
 
@@ -372,7 +372,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     after.runner.restore(await persistence.readEventLog(h.teamId), (await checkpointOf(persistence, h.teamId))!, files);
     const done = after.runner.resume('tc-resume');
     await (await opened(after, 'Lead')).whenPrompted(1);
-    after.runner.cancel();
+    after.runner.cancel('user');
 
     expect((await done).text).toContain('### G (specialist, cancelled)\nG found half the answer');
   });
@@ -384,7 +384,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
     ['two leads', (c: TeamCheckpoint): TeamCheckpoint => ({ ...c, members: c.members.map((m) => (m.name === 'D' ? { ...m, role: 'lead' as const } : m)) })],
   ])('refuses a checkpoint with %s', async (_label, corrupt) => {
     const { h, files, run } = await interruptedTeam(newCwd('roster'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const checkpoint = corrupt((await checkpointOf(persistence, h.teamId))!);
@@ -399,7 +399,7 @@ describe('TeamRunner checkpoint and restore edge cases', () => {
 
   it('refuses a member the resume would launch when the log has no launch of it', async () => {
     const { h, files, run } = await interruptedTeam(newCwd('no-launch'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const written = (await checkpointOf(persistence, h.teamId))!;
@@ -440,7 +440,7 @@ describe('TeamRunner steer to a member whose session is still opening', () => {
     expect(h.opened.some((o) => o.name === 'A')).toBe(false);
 
     expect(h.runner.steerMember(h.agent('A').agentId, 'use the v2 schema')).toBe('steered');
-    h.runner.cancel();
+    h.runner.cancel('user');
     open();
     await run;
 
@@ -453,7 +453,7 @@ describe('TeamRunner steer to a member whose session is still opening', () => {
 describe('TeamRunner restore rebuilds the scratchpad and bus from the event log', () => {
   it('equal the live state, with section kinds, owners, cursors and message kinds intact', async () => {
     const { h, run } = await interruptedTeam(newCwd('replay'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const log = await persistence.readEventLog(h.teamId);
@@ -479,7 +479,7 @@ describe('TeamRunner restore rebuilds the scratchpad and bus from the event log'
 
   it('a restored runner emits and persists nothing for the restored history', async () => {
     const { h, run } = await interruptedTeam(newCwd('replay-quiet'), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const before = logEntries(h).length;
@@ -525,7 +525,7 @@ describe('TeamRunner image steer still queued in pi at the cancel', () => {
     await a.whenPrompted(2);
     expect(a.getSteeringMessages()).toEqual([steer]);
     const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     // The checkpoint took the steer, so the aborted run had nothing left to deliver.
     expect(a.drainedOnAbort).toEqual([]);
@@ -546,7 +546,7 @@ describe('TeamRunner image steer still queued in pi at the cancel', () => {
     expect(resumedA.promptOptions[1]?.images).toEqual([{ type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' }]);
     expect(resumedA.promptOptions[1]?.expandPromptTemplates).toBe(false);
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 });
@@ -563,7 +563,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     await a.whenPrompted(2);
     expect(a.getSteeringMessages()).toEqual([peer]);
     const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     expect(a.drainedOnAbort).toEqual([]);
 
@@ -576,7 +576,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     const done = after.runner.resume('tc-resume');
     const resumedA = await opened(after, 'A');
     await resumedA.whenPrompted(2);
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
 
     expect(resumedA.prompts[1]).toBe(peer);
@@ -596,7 +596,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     a.isStreaming = false;
     h.bus().send('Lead', 'A', 'third, held by the runner');
     const files = new Map(['Lead', 'A'].map((n) => [h.agent(n).agentId, h.session(n).sessionFile!]));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     expect(a.drainedOnAbort).toEqual([]);
 
@@ -614,7 +614,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
     const done = after.runner.resume('tc-resume');
     const resumedA = await opened(after, 'A');
     await resumedA.whenPrompted(4);
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
 
     expect(resumedA.prompts.slice(1, 4)).toEqual(expected);
@@ -624,7 +624,7 @@ describe('TeamRunner peer message still queued in pi at the cancel', () => {
 describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by its status at the cancel', () => {
   async function resumed(label: string, behave: Record<string, Behaviour> = {}): Promise<{ before: Harness; after: Harness; done: Promise<{ status: string; text: string }>; checkpoint: TeamCheckpoint }> {
     const { h, files, run } = await interruptedTeam(newCwd(label), crypto.randomUUID());
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const log = await persistence.readEventLog(h.teamId);
@@ -661,7 +661,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     expect(lead.customEntries).toContainEqual({ customType: DAMOCLES_AGENT_SEGMENT_ENTRY, data: expect.objectContaining({ toolCallId: 'tc-resume' }) });
     expect(statusUpdates(after, after.agent('B').agentId)).toContain('running');
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -689,7 +689,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
       expect.objectContaining({ toolUseId: 'tc-resume', message: 'continue please' }),
     ]);
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -708,7 +708,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     expect(statusUpdates(after, aId)).not.toContain('running');
     expect(after.agent('A').status).toBe('completed');
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -720,7 +720,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     expect(after.opened.filter((o) => ['D', 'E', 'G', 'H'].includes(o.name))).toEqual([]);
     for (const n of ['D', 'E', 'G', 'H']) expect(statusUpdates(after, after.agent(n).agentId)).toEqual([]);
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -735,7 +735,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     });
     expect(f.customEntries[0]?.customType).toBe(DAMOCLES_AGENT_LAUNCH_ENTRY);
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -754,7 +754,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     // Woken, it runs, so it can sign off again.
     await status(after, 'C', 'awaiting-review');
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -774,7 +774,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
     expect(b.promptOptions.slice(1).map((o) => o?.streamingBehavior)).toEqual(['steer', 'steer', 'steer']);
     expect(after.agent('B').status).toBe('running');
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -792,7 +792,7 @@ describe('TeamRunner.resume relaunches, parks, restarts or leaves each member by
       expect(rrr.at(-1)).toContain('  - B: no scratchpad section authored\n    user steer: "focus on the parser"');
     });
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 });
@@ -822,7 +822,7 @@ describe('TeamRunner.resume and the review round', () => {
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
     await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, teamId))!;
@@ -848,7 +848,7 @@ describe('TeamRunner.resume and the review round', () => {
     expect(toLead.filter((c) => c.includes(RRR))).toEqual([]);
     expect(newLead.prompts[0]).toBe(buildResumePrompt());
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -867,7 +867,7 @@ describe('TeamRunner.resume and the review round', () => {
     expect(after.agent('Lead').status).not.toBe('completed');
     expect(lead.prompts.some((p) => p.includes('[TEAM FORCE-COMPLETED]'))).toBe(false);
 
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 });
@@ -882,7 +882,7 @@ describe('TeamRunner.resume cost', () => {
     });
     const run = h.runner.run();
     await (await opened(h, 'Lead')).whenPrompted(1);
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     expect(h.costs.reduce((a, b) => a + b, 0)).toBe(2);
     const persistence = persistenceOf(h);
@@ -917,7 +917,7 @@ describe('TeamRunner.resume tool count', () => {
     const run = h.runner.run();
     await (await opened(h, 'Lead')).whenPrompted(1);
     await vi.waitFor(() => expect(h.agent('Lead').toolCallCount).toBe(3));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, teamId))!;
@@ -956,7 +956,7 @@ describe('TeamRunner.resume tool count', () => {
       lead.emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'late', name: 'read', arguments: {} }], usage: { input: 7, output: 4, cacheRead: 0, cacheWrite: 0, cost: { total: 2 } } } });
       await abort();
     };
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
 
@@ -984,7 +984,7 @@ describe('TeamRunner.resume restarts a lead that has no session file', () => {
     const run = h.runner.run();
     const first = await opened(h, 'Lead');
     await first.whenPrompted(1);
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
 
@@ -993,7 +993,7 @@ describe('TeamRunner.resume restarts a lead that has no session file', () => {
     const done = after.runner.resume('tc-resume', message);
     const lead = await opened(after, 'Lead');
     await lead.whenPrompted(1);
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
     return { task: first.prompts[0]!, prompt: lead.prompts[0]! };
   }
@@ -1035,7 +1035,7 @@ describe('TeamRunner.resume active time', () => {
     const firstRun = new Map(['Lead', 'A'].map((n) => [n, minutes(10) - h.agent(n).runningSince!]));
     expect(firstRun.get('Lead')).toBe(600_000);
     vi.setSystemTime(minutes(10));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     for (const name of ['Lead', 'A']) expect(h.agent(name)).toMatchObject({ activeMs: firstRun.get(name), runningSince: null });
 
@@ -1058,7 +1058,7 @@ describe('TeamRunner.resume active time', () => {
     expect(durations).toEqual([['Lead', 660], ['A', 660]]);
 
     vi.setSystemTime(minutes(95));
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
     const reloaded = await persistenceOf(after).loadTeamState(teamId);
     for (const name of ['Lead', 'A']) {
@@ -1108,7 +1108,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     });
     const run = h.runner.run();
     await vi.waitFor(() => expect(logEntries(h).some((e) => e['type'] === 'review-dismissed')).toBe(true));
-    h.runner.cancel();
+    h.runner.cancel('user');
     const result = await run;
     expect(result.text).toMatch(/^REVIEW DISMISSALS \(recorded by the system\)/);
 
@@ -1133,7 +1133,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     const done = after.runner.resume('tc-resume');
     after.runner.approveSpecialist('backend');
     expect(after.agent('backend').status).toBe('completed');
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -1156,7 +1156,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
     await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, teamId))!;
@@ -1169,7 +1169,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     const done = after.runner.resume('tc-resume');
     after.runner.approveSpecialist('A');
     expect(after.agent('A').status).toBe('completed');
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 
@@ -1203,7 +1203,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
       const run = h.runner.run();
       const lead = await opened(h, 'Lead');
       await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
-      h.runner.cancel();
+      h.runner.cancel('user');
       await run;
       return { cwd, teamId };
     }
@@ -1274,7 +1274,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     const run = h.runner.run();
     const lead = await opened(h, 'Lead');
     await vi.waitFor(() => expect(lead.prompts.some((p) => p.includes(RRR))).toBe(true));
-    h.runner.cancel();
+    h.runner.cancel('user');
     await run;
     const persistence = persistenceOf(h);
     const checkpoint = (await checkpointOf(persistence, teamId))!;
@@ -1289,7 +1289,7 @@ describe('TeamRunner.resume keeps review coverage', () => {
     after.scratchpad().markRead('Lead', 'A-api');
     after.runner.startSpecialist('R', 'review A for defects in full', undefined, 'reviewer', ['A']);
     expect(() => after.runner.approveSpecialist('A')).toThrow('its reviewer "R" has not signed off on A\'s latest revision (revision 0; R covers no revision)');
-    after.runner.cancel();
+    after.runner.cancel('user');
     await done;
   });
 });

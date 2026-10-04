@@ -5,6 +5,7 @@ import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
 import type { HandlerContext, HandlerRegistry, ScrollBehavior } from "../types";
 import { beginReplayIngest } from "@/utils/perf";
+import { settingsViewHandlers } from "./settings-handlers";
 
 /** Every path that drops the conversation runs this, so a store added here is cleared on all of them. */
 function resetConversationStores(ctx: HandlerContext): void {
@@ -76,7 +77,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       ctx.stores.sessionStore.setSessionState(msg.state);
     },
 
-    storedSessions: (msg, ctx): ScrollBehavior => {
+    storedSessions: (msg, ctx) => {
       const { sessionStore } = ctx.stores;
       const isFirstPage = msg.isFirstPage ?? sessionStore.storedSessions.length === 0;
       sessionStore.updateStoredSessions(
@@ -85,7 +86,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
         msg.hasMore ?? false,
         msg.nextOffset ?? msg.sessions.length
       );
-      return { skipScroll: true };
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
@@ -100,14 +100,14 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       }
       sessionStore.setResumedSession(null);
 
+      // Another session's transcript starts at its bottom, wherever the reader left the last one.
       if (msg.pendingMessage) {
         streamingStore.addUserMessage(msg.pendingMessage.content, false, undefined, undefined, msg.pendingMessage.correlationId);
         uiStore.setProcessing(true);
-        return { forceScrollToBottom: true };
+      } else {
+        beginReplayIngest();
       }
-
-      beginReplayIngest();
-      return {};
+      return { forceScrollToBottom: true };
     },
 
     conversationCleared: (_msg, ctx) => {
@@ -117,7 +117,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     workspaceFolderUpdate: (msg, ctx) => {
       const { bridge } = ctx;
-      ctx.stores.settingsStore.setWorkspaceFolders(msg.folders, msg.panelFolderKey, msg.defaultFolderKey);
+      settingsViewHandlers.workspaceFolderUpdate(msg, ctx);
       if (msg.switched) {
         resetConversationState(ctx);
         // Project memories and the project profile belong to the folder, so reload them for the new one.

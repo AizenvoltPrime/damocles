@@ -266,7 +266,7 @@ describe('ContextInjectionOverlay', () => {
       global: { plugins: [i18n], stubs: { MarkdownRenderer: true } },
       attachTo: document.body,
     }));
-    const zOf = (w: VueWrapper) => Number((w.element as HTMLElement).style.zIndex);
+    const zOf = (w: VueWrapper) => Number((w.get('[role="dialog"]').element as HTMLElement).style.zIndex);
     expect(zOf(panel)).toBeGreaterThan(zOf(wrapper.findComponent({ name: 'OverlayShell' })));
 
     pressEscape();

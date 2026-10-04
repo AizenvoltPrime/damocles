@@ -138,12 +138,20 @@ const desktopPanePreloadOptions = {
   outfile: 'dist/desktop/preload-pane.js',
 };
 
+/** @type {esbuild.BuildOptions} */
+const desktopOverlayPreloadOptions = {
+  ...desktopPreloadOptions,
+  entryPoints: ['src/desktop/preload/overlay.ts'],
+  outfile: 'dist/desktop/preload-overlay.js',
+};
+
 async function buildDesktop() {
   await Promise.all([
     esbuild.build(desktopMainOptions),
     esbuild.build(desktopPreloadOptions),
     esbuild.build(desktopShellPreloadOptions),
     esbuild.build(desktopPanePreloadOptions),
+    esbuild.build(desktopOverlayPreloadOptions),
     esbuild.build(workerOptions),
     esbuild.build(usageStatsWorkerOptions),
     esbuild.build(sentinelOptions),

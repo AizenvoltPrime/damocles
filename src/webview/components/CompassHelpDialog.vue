@@ -51,10 +51,10 @@ const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`com
       </DialogHeader>
 
       <section class="flex flex-col gap-2">
-        <h3 class="text-sm font-semibold text-foreground">
+        <h3 class="text-10.5 font-normal tracking-[.06em] text-(--d-faint) uppercase">
           {{ t('compass.help.shortcuts') }}
         </h3>
-        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+        <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-12.5">
           <template
             v-for="(s, idx) in shortcuts"
             :key="idx"
@@ -64,14 +64,14 @@ const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`com
                 v-for="(k, i) in s.keys"
                 :key="k"
               >
-                <kbd class="inline-flex items-center justify-center min-w-[1.5rem] px-1.5 py-0.5 rounded border border-border bg-secondary text-secondary-foreground font-mono text-[10px]">{{ k }}</kbd>
+                <kbd class="inline-flex min-w-6 items-center justify-center rounded-sm border border-(--d-border) bg-(--d-card) px-1.5 py-px font-mono text-10.5 text-(--d-muted)">{{ k }}</kbd>
                 <span
                   v-if="i < s.keys.length - 1"
-                  class="text-muted-foreground"
+                  class="text-(--d-muted)"
                 >+</span>
               </template>
             </dt>
-            <dd class="text-muted-foreground self-center">
+            <dd class="text-(--d-muted) self-center">
               {{ t(s.descriptionKey) }}
             </dd>
           </template>
@@ -79,48 +79,44 @@ const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`com
       </section>
 
       <section class="flex flex-col gap-2">
-        <h3 class="text-sm font-semibold text-foreground">
+        <h3 class="text-10.5 font-normal tracking-[.06em] text-(--d-faint) uppercase">
           {{ t('compass.help.nodeLegend') }}
         </h3>
-        <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+        <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-12.5">
           <li
             v-for="n in nodeKinds"
             :key="n.kind"
             class="flex items-center gap-2"
           >
             <svg
-              width="16"
-              height="16"
               viewBox="-10 -10 20 20"
-              class="shrink-0"
+              class="size-4 shrink-0"
             >
               <path
                 :d="nodePathGenerator(n.kind)"
-                fill="var(--foreground)"
-                stroke="var(--background)"
+                fill="var(--d-text)"
+                stroke="var(--d-bg)"
                 stroke-width="1"
               />
             </svg>
-            <span class="text-muted-foreground">{{ n.label }}</span>
+            <span class="text-(--d-muted)">{{ n.label }}</span>
           </li>
         </ul>
       </section>
 
       <section class="flex flex-col gap-2">
-        <h3 class="text-sm font-semibold text-foreground">
+        <h3 class="text-10.5 font-normal tracking-[.06em] text-(--d-faint) uppercase">
           {{ t('compass.help.edgeLegend') }}
         </h3>
-        <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+        <ul class="grid grid-cols-2 gap-x-4 gap-y-2 text-12.5">
           <li
             v-for="e in edgeKinds"
             :key="e.kind"
             class="flex items-center gap-2"
           >
             <svg
-              width="32"
-              height="8"
               viewBox="0 0 32 8"
-              class="shrink-0"
+              class="h-2 w-8 shrink-0"
             >
               <line
                 x1="0"
@@ -133,7 +129,7 @@ const edgeKinds = computed(() => EDGE_KINDS.map((kind) => ({ kind, label: t(`com
                 stroke-width="1.5"
               />
             </svg>
-            <span class="text-muted-foreground">{{ e.label }}</span>
+            <span class="text-(--d-muted)">{{ e.label }}</span>
           </li>
         </ul>
       </section>

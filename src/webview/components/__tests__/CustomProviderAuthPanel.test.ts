@@ -40,9 +40,8 @@ afterEach(() => {
 });
 
 describe('CustomProviderAuthPanel (TypeSafe)', () => {
-  it('asks for its status and names the active memory judge', async () => {
+  it('names the active memory judge', async () => {
     const wrapper = mountPanel('typesafe');
-    expect(bridge.posted).toEqual([{ type: 'getTypesafeAuthStatus' }]);
     const store = useSettingsStore();
 
     store.setTypesafeStatus(false, { kind: 'jev', via: 'openrouter' });
@@ -109,10 +108,8 @@ describe('CustomProviderAuthPanel (TypeSafe)', () => {
 });
 
 describe('CustomProviderAuthPanel (OpenRouter)', () => {
-  it('asks for its status, saves under the OpenRouter message from the keyboard, and shows its own state', async () => {
+  it('saves under the OpenRouter message from the keyboard, and shows its own state', async () => {
     const wrapper = mountPanel('openrouter');
-    expect(bridge.posted).toEqual([{ type: 'getOpenrouterAuthStatus' }]);
-    expect(wrapper.find('h3').text()).toBe('OpenRouter Authentication');
     expect(wrapper.find('input').attributes('aria-label')).toBe('API Key');
     expect(wrapper.find('button[aria-label="Show key"]').exists()).toBe(true);
 
@@ -134,6 +131,6 @@ describe('CustomProviderAuthPanel (OpenRouter)', () => {
     applyLocale('el');
     const wrapper = mountPanel('openrouter');
     await nextTick();
-    expect(wrapper.find('h3').text()).toBe('Έλεγχος ταυτότητας OpenRouter');
+    expect(wrapper.find('input').attributes('aria-label')).toBe('Κλειδί API');
   });
 });

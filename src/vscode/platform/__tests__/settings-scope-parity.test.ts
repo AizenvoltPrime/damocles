@@ -11,8 +11,8 @@ import { VsCodeSettingsStore } from '../settings-store';
 
 type Layer = Readonly<Record<string, unknown>>;
 
-// One set of layered inputs; every key is one a trusted project may set on desktop. No local layer: VS Code
-// reports and writes a folder value only for a resource, which the store never passes, so it has none to compare.
+// One set of layered inputs; every key is one a trusted project may set on desktop. No local layer: these reads pass no
+// folder, and VS Code reports and writes a folder value only for a resource, so it has none to compare.
 const FIXTURE: { readonly defaults: Layer; readonly user: Layer; readonly project: Layer } = {
   defaults: {
     'damocles.model': 'default-model',
@@ -72,6 +72,7 @@ function desktopStore(): DesktopSettingsStore {
     projects: fake.workspaceFolders,
     trust: { isTrusted: () => true, onDidGrantTrust: () => ({ dispose: () => undefined }), requestTrust: () => Promise.resolve(true) },
     defaultProject: { folder: () => folder, onDidChange: () => ({ dispose: () => undefined }) },
+    chatFolders: { folders: () => [], onDidChange: () => ({ dispose: () => undefined }) },
     notifications: fake.notifications,
     localization: fake.localization,
     log: () => undefined,

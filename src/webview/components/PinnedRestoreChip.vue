@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { Pin } from 'lucide-vue-next';
 import type { ChatMessage } from '@shared/types/session';
-import { IconPin } from '@/components/icons';
 
 const props = defineProps<{
   message: ChatMessage;
@@ -26,29 +26,31 @@ const expanded = computed(() => hovered.value && preview.value.length > 0);
 <template>
   <button
     type="button"
-    class="group flex items-center gap-1.5 h-7 rounded-full border border-border bg-muted/95 text-foreground shadow-md overflow-hidden whitespace-nowrap cursor-pointer hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-safe:transition-all motion-safe:duration-200"
-    :class="expanded ? 'px-2.5 max-w-[240px]' : 'px-1.5 max-w-[28px]'"
+    class="flex h-7 items-center gap-1.75 overflow-hidden rounded-full border border-(--d-border2) bg-(--d-card) whitespace-nowrap text-(--d-text) shadow-(--d-shadow) transition-[max-width,padding,background-color] duration-200 ease-out hover:bg-(--d-hover) focus-visible:outline-2 focus-visible:outline-(--d-accent)"
+    :class="expanded ? 'max-w-65 px-2.5' : 'max-w-7 px-1.75'"
     :aria-label="t('userMessage.showPinnedAria')"
     :title="t('userMessage.showPinnedTitle')"
+    data-testid="pinned-restore-chip"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
     @focus="hovered = true"
     @blur="hovered = false"
     @click="emit('restore')"
   >
-    <span class="relative flex items-center shrink-0">
-      <IconPin :size="12" class="text-primary" />
+    <span class="relative flex flex-none">
+      <Pin
+        class="size-3 text-(--d-accent)"
+        aria-hidden="true"
+      />
       <span
         aria-hidden="true"
-        class="absolute -top-0.5 -right-1 h-1.5 w-1.5 rounded-full bg-warning motion-safe:animate-pulse"
+        class="absolute -top-0.5 -right-1 size-1.5 rounded-full bg-(--d-warning) animate-[d-pulse_1.4s_infinite]"
       />
     </span>
     <span
       v-if="preview"
-      class="text-xs text-muted-foreground overflow-hidden text-ellipsis motion-safe:transition-opacity motion-safe:duration-150"
+      class="min-w-0 truncate text-xs text-(--d-muted) transition-opacity duration-150"
       :class="expanded ? 'opacity-100' : 'opacity-0'"
-    >
-      {{ preview }}
-    </span>
+    >{{ preview }}</span>
   </button>
 </template>

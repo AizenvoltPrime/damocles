@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { ChevronRight, Minimize2, RotateCcw } from 'lucide-vue-next';
 import type { CompactMarker as CompactMarkerType } from '@shared/types/session';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { IconChevronDown, IconChevronUp, IconRotateLeft } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import { formatCost } from '@/composables/useTeamFormatting';
+import { formatClock } from '@/utils/clock';
 
 const { t, locale } = useI18n();
 
@@ -33,7 +34,7 @@ function requestRewind() {
 const tokenReduction = computed(() => {
   const format = tokenFormat.value;
   if (props.marker.postTokens) {
-    return `${format.format(props.marker.preTokens)}→${format.format(props.marker.postTokens)}`;
+    return `${format.format(props.marker.preTokens)} → ${format.format(props.marker.postTokens)}`;
   }
   return format.format(props.marker.preTokens);
 });
@@ -60,125 +61,99 @@ const billedText = computed(() => {
   return t('compactMarker.billedWithCost', { tokens, cost: formatCost(billedCost, locale.value) });
 });
 
-function formatTimestamp(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  });
-}
+const triggerChipClass = computed(() => {
+  if (props.marker.trigger === 'overflow') return 'bg-[color-mix(in_srgb,var(--d-warning)_14%,transparent)] text-(--d-warning-text)';
+  if (props.marker.trigger === 'threshold') return 'bg-[color-mix(in_srgb,var(--d-info)_14%,transparent)] text-(--d-info-text)';
+  return 'bg-(--d-accent-soft) text-(--d-accent-text)';
+});
+
+const subtitle = computed(() =>
+  [t('compactMarker.tokens', { tokens: tokenReduction.value }, props.marker.postTokens || props.marker.preTokens), formatClock(props.marker.timestamp, locale.value), billedText.value].filter(Boolean).join(' · '),
+);
 </script>
 
 <template>
-  <Collapsible v-model:open="isExpanded" :disabled="!hasSummary">
-    <!-- Compact boundary indicator line -->
-    <div class="flex items-center gap-3 py-2 px-4">
-      <div class="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent"></div>
-      <span class="text-xs text-muted-foreground uppercase tracking-widest font-medium">{{ t('compactMarker.boundary') }}</span>
-      <div class="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent"></div>
+  <Collapsible
+    v-model:open="isExpanded"
+    :disabled="!hasSummary"
+    class="flex flex-col gap-2 pt-1 pb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+      aria-hidden="true"
+    >
+      <span class="h-px flex-1 bg-(--d-border)" />
+      <span class="text-10.5 font-semibold tracking-[.06em] text-(--d-faint) uppercase">{{ t('compactMarker.boundary') }}</span>
+      <span class="h-px flex-1 bg-(--d-border)" />
     </div>
 
-    <!-- Main compact card -->
-    <div class="mx-4 mb-4 relative">
-      <!-- Card container -->
-      <div class="relative rounded-xl border border-border bg-muted overflow-hidden">
-        <!-- Header with gradient border -->
-        <CollapsibleTrigger
-          :class="[
-            'w-full px-4 py-3 flex items-center justify-between',
-            'border-b border-border/50',
-            'bg-card',
-            hasSummary ? 'cursor-pointer hover:bg-muted transition-all duration-300' : 'cursor-default'
-          ]"
+    <section
+      class="overflow-hidden rounded-xl border border-(--d-border) bg-(--d-card)"
+      :aria-label="t('compactMarker.title')"
+      data-testid="compact-marker"
+    >
+      <CollapsibleTrigger
+        class="flex w-full items-center gap-2.5 px-3 py-2.25 text-left transition-colors enabled:hover:bg-(--d-hover) disabled:cursor-default"
+        :aria-label="hasSummary ? t('compactMarker.toggleSummary') : undefined"
+      >
+        <span
+          class="flex size-7 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+          aria-hidden="true"
         >
-          <div class="flex items-center gap-3">
-            <!-- Icon -->
-            <div class="relative">
-              <div class="w-8 h-8 rounded-lg bg-muted flex items-center justify-center border border-border">
-                <span class="text-base">🗜️</span>
-              </div>
-            </div>
+          <Minimize2 class="size-3.5" />
+        </span>
+        <span class="flex min-w-0 flex-1 flex-col gap-px">
+          <span class="truncate text-13 font-semibold text-(--d-text)">{{ t('compactMarker.title') }}</span>
+          <span class="truncate text-11 text-(--d-faint)">{{ subtitle }}</span>
+        </span>
+        <span
+          class="flex flex-none items-center gap-1.25 rounded-full px-2 py-0.5 text-11 font-medium"
+          :class="triggerChipClass"
+          data-testid="compact-trigger"
+        >{{ triggerLabel }}</span>
+        <ChevronRight
+          v-if="hasSummary"
+          class="size-3.25 flex-none text-(--d-faint) transition-transform duration-200 ease-out"
+          :class="isExpanded && 'rotate-90'"
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
 
-            <div class="flex flex-col items-start">
-              <span class="text-sm font-semibold text-foreground">{{ t('compactMarker.title') }}</span>
-              <div class="flex items-center gap-2 mt-0.5">
-                <span
-                  v-if="marker.trigger === 'manual'"
-                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-primary/20 text-primary border border-primary/30"
-                >
-                  {{ triggerLabel }}
-                </span>
-                <span
-                  v-else-if="marker.trigger === 'overflow'"
-                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-warning/20 text-warning border border-warning/30"
-                >
-                  {{ triggerLabel }}
-                </span>
-                <span
-                  v-else
-                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-info/20 text-info border border-info/30"
-                >
-                  {{ triggerLabel }}
-                </span>
-                <span class="text-xs text-muted-foreground">{{ tokenReduction }} {{ t('common.tokens') }}</span>
-                <span class="text-xs text-muted-foreground">•</span>
-                <span class="text-xs text-muted-foreground">{{ formatTimestamp(marker.timestamp) }}</span>
-                <template v-if="billedText">
-                  <span class="text-xs text-muted-foreground">•</span>
-                  <span class="text-xs text-muted-foreground">{{ billedText }}</span>
-                </template>
-              </div>
-              <span v-if="triggerHint" class="text-xs text-muted-foreground/80 mt-0.5 text-left">{{ triggerHint }}</span>
-            </div>
-          </div>
+      <p
+        v-if="triggerHint"
+        class="border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs text-pretty text-(--d-muted)"
+      >
+        {{ triggerHint }}
+      </p>
 
-          <div v-if="hasSummary" class="flex items-center gap-2">
-            <span class="text-xs text-muted-foreground">{{ isExpanded ? t('common.collapse') : t('common.expand') }} {{ t('compactMarker.summary') }}</span>
-            <div class="w-6 h-6 rounded-full bg-muted flex items-center justify-center border border-border">
-              <component
-                :is="isExpanded ? IconChevronUp : IconChevronDown"
-                :size="14"
-                class="text-foreground"
-              />
-            </div>
-          </div>
-        </CollapsibleTrigger>
-
-        <!-- Collapsible summary content -->
-        <CollapsibleContent v-if="hasSummary">
-          <div class="p-4">
-            <!-- Summary header -->
-            <div class="flex items-center gap-2 mb-3">
-              <div class="w-1 h-4 rounded-full bg-primary"></div>
-              <span class="text-xs font-semibold text-foreground uppercase tracking-wider">{{ t('compactMarker.summaryHeader') }}</span>
-            </div>
-
-            <!-- Summary content with styled scrollbar -->
-            <div class="pl-3 border-l border-border/50">
-              <div class="text-sm text-foreground/90 leading-relaxed prose prose-invert prose-sm max-w-none prose-p:my-2 prose-headings:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded">
-                <MarkdownRenderer :content="marker.summary ?? ''" />
-              </div>
-            </div>
-          </div>
-        </CollapsibleContent>
-
-        <!-- No summary state -->
-        <div v-if="!hasSummary" class="px-4 py-3 text-xs text-muted-foreground italic">
-          {{ t('compactMarker.noSummary') }}
+      <CollapsibleContent v-if="hasSummary">
+        <div class="border-t border-(--d-border) py-2 pr-3 pl-12.5 text-12.5 text-(--d-muted)">
+          <MarkdownRenderer :content="marker.summary ?? ''" />
         </div>
+      </CollapsibleContent>
+      <p
+        v-else
+        class="border-t border-(--d-border) py-1.75 pr-3 pl-12.5 text-xs text-(--d-faint) italic"
+      >
+        {{ t('compactMarker.noSummary') }}
+      </p>
 
-        <!-- Rewind action: only when this boundary carries a resolvable tree anchor -->
-        <div v-if="canRewind" class="px-4 py-3 border-t border-border/50 flex justify-end">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-            @click="requestRewind"
-          >
-            <IconRotateLeft :size="13" />
-            {{ t('compactMarker.rewindBefore') }}
-          </button>
-        </div>
+      <div
+        v-if="canRewind"
+        class="flex justify-end border-t border-(--d-border) px-2 py-1"
+      >
+        <button
+          type="button"
+          class="d-press flex items-center gap-1.25 rounded-md px-2 py-1 text-xs text-(--d-accent) transition-colors hover:bg-(--d-hover) hover:text-(--d-accent-text)"
+          @click="requestRewind"
+        >
+          <RotateCcw
+            class="size-3"
+            aria-hidden="true"
+          />
+          {{ t('compactMarker.rewindBefore') }}
+        </button>
       </div>
-    </div>
+    </section>
   </Collapsible>
 </template>

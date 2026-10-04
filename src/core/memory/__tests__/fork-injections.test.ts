@@ -1,7 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
@@ -30,6 +27,7 @@ import { MemoryService } from '../index';
 import { openDatabaseAsync } from '../database';
 import { deleteInjectionDatabaseFile } from '../injection-database';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { createTestDbPath } from './test-helpers';
 
 function display(promptIndex: number): MemoryInjectionDisplay {
   return {
@@ -59,16 +57,15 @@ describe('MemoryService.copySessionInjections', () => {
   };
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-fork-injections-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     vi.mocked(openDatabaseAsync).mockClear();
     service = new MemoryService(createFakePlatform());
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    service.dispose();
+    await service.dispose();
     for (const id of sessionIds.splice(0)) await deleteInjectionDatabaseFile(id);
-    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(dbHolder.path + suffix, { force: true });
   });
 
   it('gives the fork the records of the prompts it inherits and none after the fork point', async () => {

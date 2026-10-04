@@ -75,11 +75,15 @@ export function writeAuth(h: HermeticHome, auth: Record<string, unknown>): void 
   fs.writeFileSync(path.join(h.agentDir, 'auth.json'), JSON.stringify(auth, null, 2), { mode: 0o600 });
 }
 
-/** Merges flat dotted keys into ~/.damocles/settings.json, the desktop user settings scope. */
-export function writeUserSettings(h: HermeticHome, values: Record<string, unknown>): void {
+/** ~/.damocles/settings.json, the desktop user settings scope; empty until something writes it. Main writes it by rename, so a read never sees half a file. */
+export function readUserSettings(h: HermeticHome): Record<string, unknown> {
   const file = path.join(h.damoclesDir, 'settings.json');
-  const current = fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>) : {};
-  fs.writeFileSync(file, JSON.stringify({ ...current, ...values }, null, 2));
+  return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>) : {};
+}
+
+/** Merges flat dotted keys into ~/.damocles/settings.json. */
+export function writeUserSettings(h: HermeticHome, values: Record<string, unknown>): void {
+  fs.writeFileSync(path.join(h.damoclesDir, 'settings.json'), JSON.stringify({ ...readUserSettings(h), ...values }, null, 2));
 }
 
 /** Set to `1` to let launches reach the developer's Linux keyring (Secret Service over the session D-Bus). */

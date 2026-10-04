@@ -91,7 +91,7 @@ const kpis = computed<Kpi[]>(() => {
 </script>
 
 <template>
-  <div class="grid grid-cols-1 gap-2 @[16rem]:grid-cols-2 @xl:grid-cols-3 @4xl:grid-cols-5">
+  <div class="flex flex-wrap gap-px overflow-hidden rounded-lg border border-(--d-border) bg-(--d-border)">
     <KpiCard
       v-for="k in kpis"
       :id="k.id"
@@ -105,7 +105,7 @@ const kpis = computed<Kpi[]>(() => {
         <p data-kpi-formula>{{ t(`contextInjection.formula.${k.id}`) }}</p>
         <dl v-if="k.details.length > 0" class="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 tabular-nums">
           <template v-for="detail in k.details" :key="detail.id">
-            <dt class="text-muted-foreground">{{ detail.label }}</dt>
+            <dt class="text-(--d-muted)">{{ detail.label }}</dt>
             <dd class="text-right" :data-kpi-detail="detail.id">{{ detail.value }}</dd>
           </template>
         </dl>

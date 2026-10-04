@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { mainLog } from './support/app';
 import { createTestPki } from './support/certs';
 import { startConnectProxy } from './support/connect-proxy';
-import { chatTab, expect, test } from './support/fixtures';
+import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
 import { chatInput, sendAndAwaitEcho } from './support/ui';
@@ -21,7 +21,7 @@ test.describe('network configuration', () => {
       seedStubModel(home, stub.baseUrl);
       expect(stub.baseUrl).toMatch(/^https:\/\/127\.0\.0\.1:/);
       const desktop = await launch({ env: { NODE_EXTRA_CA_CERTS: caFile } });
-      const tab = await chatTab(desktop.app);
+      const tab = await activeChat(desktop.app);
       await expect(chatInput(tab)).toBeVisible();
       await sendAndAwaitEcho(tab, 'over tls with the test ca');
       expect(chatRequests(stub).length).toBeGreaterThan(0);
@@ -41,7 +41,7 @@ test.describe('network configuration', () => {
     try {
       seedStubModel(home, stub.baseUrl);
       const desktop = await launch({ env: { HTTPS_PROXY: proxy.url, NODE_EXTRA_CA_CERTS: caFile } });
-      const tab = await chatTab(desktop.app);
+      const tab = await activeChat(desktop.app);
       await expect(chatInput(tab)).toBeVisible();
       await sendAndAwaitEcho(tab, 'through the proxy');
 

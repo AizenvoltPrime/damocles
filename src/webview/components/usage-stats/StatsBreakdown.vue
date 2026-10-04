@@ -9,7 +9,8 @@ import { useStatsFormat } from '@/composables/useStatsFormat';
 import { useUsageStatsStore } from '@/stores/useUsageStatsStore';
 import { cacheHitRate } from '@shared/usage-accounting';
 import { USAGE_STATS_SOURCES, type UsageStatsAggregate, type UsageStatsReport, type UsageStatsSource } from '@shared/types/usage-stats';
-import { chartColor, type StatsMetric } from './stats-chart-data';
+import ProviderLogo from '@/components/icons/ProviderLogo.vue';
+import { chartColor, modelProvider, type StatsMetric } from './stats-chart-data';
 import { useStatsLabels } from './stats-labels';
 
 const props = defineProps<{
@@ -26,6 +27,8 @@ interface Row {
   title: string | undefined;
   color: string;
   agg: UsageStatsAggregate;
+  /** Set on model rows; picks the logo shown beside the name. */
+  provider?: string | null;
   /** Set on project rows; a click drills into the project. */
   projectKey?: string;
   /** Set on source rows that have more than their own single detail to show. */
@@ -72,6 +75,7 @@ const modelRows = computed<Row[]>(() =>
     title: m.key ?? undefined,
     color: chartColor(rank),
     agg: m,
+    provider: modelProvider(m.key),
   })),
 );
 
@@ -210,11 +214,11 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
       v-for="section in sections"
       :key="section.id"
       :data-breakdown="section.id"
-      class="min-w-0 space-y-2 rounded-md border border-border/50 bg-card p-3 text-card-foreground"
+      class="min-w-0 space-y-2 overflow-hidden rounded-lg border border-(--d-border) p-3"
       :class="{ '@4xl:col-span-2': section.id === 'source' }"
     >
       <div class="flex flex-wrap items-center gap-2">
-        <h3 class="flex-1 truncate text-xs font-medium text-muted-foreground">{{ section.title }}</h3>
+        <h3 class="flex-1 truncate text-xs font-semibold">{{ section.title }}</h3>
         <template v-if="section.id === 'project'">
           <Badge
             v-for="chip in projectChips"
@@ -227,18 +231,18 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
             <span class="truncate">{{ chip.label }}</span>
             <button
               type="button"
-              class="cursor-pointer rounded-sm p-0.5 hover:bg-accent hover:text-accent-foreground"
+              class="cursor-pointer rounded-sm p-0.5 hover:bg-(--d-hover) hover:text-(--d-text)"
               :aria-label="t('usageStats.breakdown.removeProject', { project: chip.label })"
               :title="t('usageStats.breakdown.removeProject', { project: chip.label })"
               @click="removeProject(chip.key)"
             >
-              <IconX :size="10" />
+              <IconX class="size-2.5" />
             </button>
           </Badge>
         </template>
       </div>
 
-      <div class="flex h-2 w-full overflow-hidden rounded-sm bg-muted" aria-hidden="true" data-breakdown-bar>
+      <div class="flex h-2 w-full overflow-hidden rounded-sm bg-(--d-hover)" aria-hidden="true" data-breakdown-bar>
         <span
           v-for="seg in barSegments(section.rows)"
           :key="seg.id"
@@ -251,25 +255,25 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
       <Table class="text-xs">
         <TableCaption class="sr-only">{{ section.title }}</TableCaption>
         <TableHeader>
-          <TableRow class="hover:bg-transparent">
+          <TableRow class="bg-(--d-panel) hover:bg-(--d-panel)">
             <TableHead
               v-for="col in columns"
               :key="col.id"
-              class="h-8 px-2"
+              class="h-6 px-2 text-10.5 font-normal text-(--d-faint)"
               :class="{ 'text-right': col.numeric }"
               :aria-sort="ariaSort(section.id, col.id)"
             >
               <button
                 type="button"
-                class="inline-flex cursor-pointer items-center gap-1 hover:text-foreground"
+                class="inline-flex cursor-pointer items-center gap-1 hover:text-(--d-text)"
                 :class="{ 'flex-row-reverse': col.numeric }"
                 :title="col.id === 'share' ? shareTitle : undefined"
                 :data-sort="col.id"
                 @click="toggleSort(section.id, col.id)"
               >
                 <span>{{ col.label }}</span>
-                <IconArrowDown v-if="ariaSort(section.id, col.id) === 'descending'" :size="10" />
-                <IconArrowUp v-else-if="ariaSort(section.id, col.id) === 'ascending'" :size="10" />
+                <IconArrowDown v-if="ariaSort(section.id, col.id) === 'descending'" class="size-2.5" />
+                <IconArrowUp v-else-if="ariaSort(section.id, col.id) === 'ascending'" class="size-2.5" />
               </button>
             </TableHead>
           </TableRow>
@@ -286,16 +290,17 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                   <button
                     v-if="row.children"
                     type="button"
-                    class="shrink-0 cursor-pointer rounded-sm text-muted-foreground hover:text-foreground"
+                    class="shrink-0 cursor-pointer rounded-sm text-(--d-muted) hover:text-(--d-text)"
                     :aria-expanded="expanded.has(row.id)"
                     :aria-label="t(expanded.has(row.id) ? 'usageStats.breakdown.collapse' : 'usageStats.breakdown.expand', { name: row.label })"
                     data-expand
                     @click.stop="toggleExpanded(row.id)"
                   >
-                    <IconChevronDown v-if="expanded.has(row.id)" :size="12" />
-                    <IconChevronRight v-else :size="12" />
+                    <IconChevronDown v-if="expanded.has(row.id)" class="size-3" />
+                    <IconChevronRight v-else class="size-3" />
                   </button>
                   <span class="size-2 shrink-0 rounded-sm" :style="{ backgroundColor: row.color }" aria-hidden="true" />
+                  <ProviderLogo v-if="row.provider" :provider="row.provider" class="size-3.5" data-model-logo />
                   <button
                     v-if="row.projectKey !== undefined"
                     type="button"
@@ -306,26 +311,30 @@ function barSegments(rows: readonly Row[]): Array<{ id: string; color: string; w
                   <Badge
                     v-if="row.agg.unpricedTokens > 0"
                     variant="outline"
-                    class="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
+                    class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                     :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(row.agg.unpricedTokens) }, row.agg.unpricedTokens)"
                     data-unpriced
                   >{{ t('usageStats.breakdown.unpriced') }}</Badge>
                 </div>
               </TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums" :title="spendTitle(row.agg.cost, tokensOf(row.agg))" data-cost>{{ spendLabel(row.agg.cost, tokensOf(row.agg)) }}</TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums" :title="format.integer(tokensOf(row.agg))">{{ format.tokens(tokensOf(row.agg)) }}</TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{{ percentText(share(row.agg)) }}</TableCell>
-              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">{{ percentText(hitRate(row.agg)) }}</TableCell>
+              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 tabular-nums" :title="spendTitle(row.agg.cost, tokensOf(row.agg))" data-cost>{{ spendLabel(row.agg.cost, tokensOf(row.agg)) }}</TableCell>
+              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11.5 text-(--d-muted) tabular-nums" :title="format.integer(tokensOf(row.agg))">{{ format.tokens(tokensOf(row.agg)) }}</TableCell>
+              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11 text-(--d-muted) tabular-nums">
+                <span class="inline-flex items-center justify-end gap-1.5">
+                  <span class="h-0.75 w-7.5 overflow-hidden rounded-xs bg-(--d-hover)" aria-hidden="true"><span class="block h-full origin-left bg-(--d-muted) rtl:origin-right" :style="{ transform: `scaleX(${share(row.agg) ?? 0})` }" /></span>{{ percentText(share(row.agg)) }}
+                </span>
+              </TableCell>
+              <TableCell class="whitespace-nowrap px-2 py-1.5 text-right font-mono text-11 text-(--d-muted) tabular-nums">{{ percentText(hitRate(row.agg)) }}</TableCell>
             </TableRow>
             <template v-if="row.children && expanded.has(row.id)">
-              <TableRow v-for="child in row.children" :key="child.id" :data-row="child.id" data-source-detail class="bg-muted/30">
+              <TableRow v-for="child in row.children" :key="child.id" :data-row="child.id" data-source-detail class="bg-[color-mix(in_srgb,var(--d-hover)_30%,transparent)]">
                 <TableCell class="w-full max-w-0 py-1 pl-8 pr-2">
                   <div class="flex min-w-0 items-center gap-1.5">
                     <span class="truncate" :title="child.title">{{ child.label }}</span>
                     <Badge
                       v-if="child.agg.unpricedTokens > 0"
                       variant="outline"
-                      class="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
+                      class="shrink-0 px-1.5 py-0 text-10 font-normal text-(--d-muted)"
                       :title="t('usageStats.breakdown.unpricedTitle', { tokens: format.integer(child.agg.unpricedTokens) }, child.agg.unpricedTokens)"
                       data-unpriced
                     >{{ t('usageStats.breakdown.unpriced') }}</Badge>

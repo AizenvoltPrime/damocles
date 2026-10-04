@@ -45,25 +45,64 @@ function looksLikePath(value: string): boolean {
 </script>
 
 <template>
-  <MarkdownRenderer v-if="kind === 'string'" :content="value as string" class="text-sm" />
-  <span v-else-if="kind === 'scalar'" class="text-sm text-foreground">{{ String(value) }}</span>
+  <MarkdownRenderer
+    v-if="kind === 'string'"
+    :content="value as string"
+    class="text-12.5"
+  />
+  <span
+    v-else-if="kind === 'scalar'"
+    class="text-12.5 text-(--d-text)"
+  >{{ String(value) }}</span>
 
-  <ul v-else-if="kind === 'string-array'" class="space-y-1 text-sm">
-    <li v-for="(item, index) in stringItems" :key="index" class="flex gap-2">
-      <span class="text-muted-foreground/50 select-none leading-relaxed">•</span>
-      <code v-if="looksLikePath(item)" class="text-xs bg-foreground/5 rounded px-1.5 py-0.5 break-all text-foreground/80">{{ item }}</code>
-      <span v-else class="text-foreground/90 leading-relaxed">{{ item }}</span>
+  <ul
+    v-else-if="kind === 'string-array'"
+    class="flex flex-col gap-1 text-12.5"
+  >
+    <li
+      v-for="(item, index) in stringItems"
+      :key="index"
+      class="flex gap-2"
+    >
+      <span
+        class="mt-2 size-1.25 flex-none rounded-full bg-(--d-accent)"
+        aria-hidden="true"
+      />
+      <code
+        v-if="looksLikePath(item)"
+        class="rounded-5 bg-(--d-hover) px-1.5 py-px font-mono text-11.5 break-all text-(--d-accent-text)"
+      >{{ item }}</code>
+      <span
+        v-else
+        class="leading-relaxed text-(--d-text) text-pretty"
+      >{{ item }}</span>
     </li>
   </ul>
 
-  <div v-else-if="kind === 'array'" class="space-y-2">
-    <StructuredResult v-for="(item, index) in arrayItems" :key="index" :value="item" />
+  <div
+    v-else-if="kind === 'array'"
+    class="flex flex-col gap-2"
+  >
+    <StructuredResult
+      v-for="(item, index) in arrayItems"
+      :key="index"
+      :value="item"
+    />
   </div>
 
-  <div v-else-if="kind === 'object'" class="space-y-2.5">
-    <div v-for="[key, val] in entries" :key="key" class="space-y-1">
-      <p class="text-xs font-semibold uppercase tracking-wide text-primary/80">{{ humanize(key) }}</p>
-      <div class="pl-3 border-l border-border/40">
+  <div
+    v-else-if="kind === 'object'"
+    class="flex flex-col gap-2.5"
+  >
+    <div
+      v-for="[key, val] in entries"
+      :key="key"
+      class="flex flex-col gap-1"
+    >
+      <p class="text-10.5 font-semibold tracking-[.06em] text-(--d-faint) uppercase">
+        {{ humanize(key) }}
+      </p>
+      <div class="border-l-2 border-(--d-border2) pl-3">
         <StructuredResult :value="val" />
       </div>
     </div>

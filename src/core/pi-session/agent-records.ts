@@ -16,7 +16,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { initPiLoader, type PiCodingAgentModule } from './pi-loader';
 import { log } from '../logger';
 import {
@@ -113,7 +112,6 @@ export type AgentTerminalStatus = Exclude<AgentRecord['status'], 'queued' | 'run
 
 const STOP_REASONS: ReadonlySet<string> = new Set<AgentStopReason>(['user', 'budget', 'shutdown', 'reset']);
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set<AgentTerminalStatus>(['completed', 'steered', 'aborted', 'stopped', 'error']);
-const THINKING_LEVELS: ReadonlySet<string> = new Set<ThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 export function isAgentTerminalStatus(value: unknown): value is AgentTerminalStatus {
   return typeof value === 'string' && TERMINAL_STATUSES.has(value);
@@ -139,7 +137,6 @@ export interface SubagentLaunchData {
   description: string;
   prompt: string;
   background: boolean;
-  thinkingOverride?: ThinkingLevel;
   templatePath?: string;
   /** Short model label shown on the card, when the spawn resolved one. */
   modelLabel?: string;
@@ -244,7 +241,6 @@ function isAgentLaunchShape(value: unknown): value is AgentLaunchData {
       isString(value['description']) &&
       isString(value['prompt']) &&
       typeof value['background'] === 'boolean' &&
-      isOptional(value['thinkingOverride'], (v) => typeof v === 'string' && THINKING_LEVELS.has(v)) &&
       isOptional(value['templatePath'], isString) &&
       isOptional(value['modelLabel'], isString) &&
       isOptional(value['dollarBilled'], (v) => typeof v === 'boolean')

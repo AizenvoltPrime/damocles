@@ -21,27 +21,26 @@ const label = computed(() => memoryLabel(props.memory.title, props.memory.snippe
 
 <template>
   <li
-    class="flex min-w-0 items-center gap-2 rounded-md border border-border/60 px-3 py-1.5 text-xs"
+    class="flex min-w-0 items-center gap-2 rounded-md border border-(--d-border) px-3 py-1.5 text-xs"
     :class="forgotten && 'opacity-60'"
     :data-memory-id="memory.id"
     :data-forgotten="forgotten || undefined"
   >
     <Pin
       v-if="pinned"
-      :size="12"
-      class="shrink-0 text-warning"
+      class="size-3 shrink-0 text-(--d-warning)"
       role="img"
       :aria-label="t('contextInjection.badge.pinned')"
       data-badge="pinned"
     />
-    <span class="min-w-0 flex-1 truncate text-foreground/90" :title="memory.title ?? memory.snippet">{{ memory.title ?? memory.snippet }}</span>
-    <Badge v-if="forgotten" variant="outline" class="shrink-0 border-destructive/40 px-1 py-0 text-[10px] text-destructive" data-badge="forgotten">
+    <span class="min-w-0 flex-1 truncate text-(--d-text)" :title="memory.title ?? memory.snippet">{{ memory.title ?? memory.snippet }}</span>
+    <Badge v-if="forgotten" variant="outline" class="shrink-0 border-[color-mix(in_srgb,var(--d-danger)_40%,transparent)] px-1 py-0 text-10 text-(--d-danger)" data-badge="forgotten">
       {{ t('contextInjection.badge.forgotten') }}
     </Badge>
-    <Badge variant="outline" class="shrink-0 px-1 py-0 text-[10px]" :class="scopeBadgeClass(memory.scope)">
+    <Badge variant="outline" class="shrink-0 px-1 py-0 text-10" :class="scopeBadgeClass(memory.scope)">
       {{ t(`memory.scope.${memory.scope}`) }} · {{ t(`memory.kind.${memory.kind}`) }} · {{ t(`contextInjection.tier.${memory.tier}`) }}
     </Badge>
-    <span class="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+    <span class="shrink-0 text-10 text-(--d-muted) tabular-nums">
       {{ t('contextInjection.fromPrompt', { n: memory.injectedAtPrompt + 1 }) }}
     </span>
     <InjectedMemoryActions

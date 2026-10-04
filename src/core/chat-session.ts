@@ -7,6 +7,7 @@ import type { SlashCommandInfo } from '../shared/types/commands';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
 import type { SteerTargetInfo } from '../shared/types/subagents';
 import type { TeamService } from './team';
+import type { ActivitySource } from './chat-panel/activity';
 
 /**
  * The session seam consumed by the rest of the extension (panels, message-router
@@ -15,7 +16,7 @@ import type { TeamService } from './team';
  * deferred subsystems are still part of the contract and degrade gracefully (never throwing
  * into a live handler).
  */
-export interface ChatSession {
+export interface ChatSession extends ActivitySource {
   readonly currentSessionId: string | null;
   readonly persistenceSessionId: string | null;
   readonly memorySessionId: string;
@@ -52,6 +53,8 @@ export interface ChatSession {
   hasConversation(): boolean;
   /** Whether the started session has its file on disk; pi writes none before the conversation's first prompt. */
   hasSessionFile(): boolean;
+  /** The stored session whose file this session is on, or opens at start (a resume or fork target); null while it has no file. */
+  readonly storedSessionId: string | null;
   setResumeSession(sessionId: string | null): void;
   initializeEarly(): Promise<void>;
   /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
@@ -75,7 +78,8 @@ export interface ChatSession {
   reset(): void;
   clear(): void;
   dispose(): Promise<void>;
-  stopTask(taskId: string): Promise<void>;
+  /** The user's stop of one subagent; false when it had already finished. */
+  stopSubagent(agentId: string): boolean;
   steerSubagent(agentId: string, message: string, images?: ImageBlock[], requestId?: string): Promise<void>;
   /** Routes a user `/steer` to a subagent or, failing that, a live team member. */
   steerTarget(agentId: string, message: string, images: ImageBlock[] | undefined, requestId: string): Promise<void>;

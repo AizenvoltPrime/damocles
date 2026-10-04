@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { defineComponent, h } from 'vue';
 import { mount, type VueWrapper } from '@vue/test-utils';
-import { hasOpenOverlay, useOverlayEscape, MODAL_Z_INDEX } from '../useOverlayEscape';
+import { hasOpenOverlay, useOverlayEscape, MODAL_Z_INDEX, type OverlayOptions } from '../useOverlayEscape';
 
 /**
  * Escape must reach exactly one overlay: the one the user is looking at.
@@ -15,11 +15,11 @@ import { hasOpenOverlay, useOverlayEscape, MODAL_Z_INDEX } from '../useOverlayEs
 
 const mounted: VueWrapper[] = [];
 
-function openOverlay(onClose: () => void): VueWrapper {
+function openOverlay(onClose: () => void, options?: OverlayOptions): VueWrapper {
   const wrapper = mount(
     defineComponent({
       setup() {
-        useOverlayEscape(onClose);
+        useOverlayEscape(onClose, options);
         return () => null;
       },
     }),

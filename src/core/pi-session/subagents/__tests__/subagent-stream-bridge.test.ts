@@ -95,22 +95,22 @@ describe('SubagentStreamBridge streaming', () => {
     expect(assistant!.data.message.content).toEqual([{ type: 'text', text: 'hello world' }]);
   });
 
-  it('emits subagentStart + model + template path on start (template only when provided, once)', () => {
+  it('emits the template path once', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
 
-    bridge.start('GPT-5.4', 'C:\\Users\\me\\.claude\\agents\\engineering\\code-reviewer.md');
-    bridge.start('GPT-5.4', 'C:\\Users\\me\\.claude\\agents\\engineering\\code-reviewer.md');
+    bridge.emitTemplate('C:\\Users\\me\\.claude\\agents\\engineering\\code-reviewer.md');
+    bridge.emitTemplate('C:\\Users\\me\\.claude\\agents\\engineering\\code-reviewer.md');
 
     const templates = sent.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'subagentTemplateUpdate' }> => m.type === 'subagentTemplateUpdate');
     expect(templates).toHaveLength(1);
     expect(templates[0]).toMatchObject({ agentToolId: 'toolu_parent', templatePath: 'C:\\Users\\me\\.claude\\agents\\engineering\\code-reviewer.md' });
   });
 
-  it('omits the template update when the agent has no template file (embedded default)', () => {
+  it('announces the agent alone on start, so a queued card learns its id before any model or template exists', () => {
     const sent: ExtensionToWebviewMessage[] = [];
-    makeBridge(sent).start('haiku');
-    expect(sent.some((m) => m.type === 'subagentTemplateUpdate')).toBe(false);
+    makeBridge(sent).start();
+    expect(sent.map((m) => m.type)).toEqual(['subagentStart']);
   });
 
   it('maps pi toolCall blocks to tool_use in the sealed assistant message', () => {
@@ -234,7 +234,8 @@ describe('SubagentStreamBridge usage', () => {
     const readings: AgentUsageTotals[] = [];
     const bridge = makeBridge(sent, readings);
     const session = makeFakeSession();
-    bridge.start('sonnet');
+    bridge.start();
+    bridge.emitModel('sonnet');
     bridge.attach(session as never, false);
 
     session.emit(assistantEnd({ input: 10, output: 20, cacheRead: 300, cacheWrite: 40 }, 0.5));
@@ -305,7 +306,8 @@ describe('SubagentStreamBridge model and effort', () => {
   it('sends the model at start, then the same model with its effort once the session exists', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    bridge.start('Haiku 4.5');
+    bridge.start();
+    bridge.emitModel('Haiku 4.5');
     bridge.attach(makeFakeSession() as never, true, 'medium');
 
     expect(modelUpdates(sent)).toEqual([
@@ -317,7 +319,8 @@ describe('SubagentStreamBridge model and effort', () => {
   it('guards on the (model, effort) pair, so a repeat of either pair sends nothing', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    bridge.start('Haiku 4.5');
+    bridge.start();
+    bridge.emitModel('Haiku 4.5');
     bridge.emitModel('Haiku 4.5');
     bridge.attach(makeFakeSession() as never, true, 'medium');
     bridge.emitModel('Haiku 4.5', 'medium');
@@ -328,7 +331,8 @@ describe('SubagentStreamBridge model and effort', () => {
   it('sends no second message when the session publishes no effort', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    bridge.start('Haiku 4.5');
+    bridge.start();
+    bridge.emitModel('Haiku 4.5');
     bridge.attach(makeFakeSession() as never, true, undefined);
 
     expect(modelUpdates(sent)).toEqual([{ type: 'subagentModelUpdate', agentToolId: 'toolu_parent', model: 'Haiku 4.5' }]);
@@ -337,7 +341,8 @@ describe('SubagentStreamBridge model and effort', () => {
   it('sends the effort of a reopened agent whose launch recorded no model label, as its reloaded card shows it', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);
-    bridge.start(undefined);
+    bridge.start();
+    bridge.emitModel(undefined);
     bridge.attach(makeFakeSession() as never, true, 'high');
 
     expect(modelUpdates(sent)).toEqual([{ type: 'subagentModelUpdate', agentToolId: 'toolu_parent', effort: 'high' }]);

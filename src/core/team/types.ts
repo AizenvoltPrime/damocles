@@ -307,10 +307,17 @@ export interface TeamPersistenceWriter {
   flush(): Promise<void>;
 }
 
+/**
+ * Why a team stopped before it finished: the user (Stop team or Esc), the parent model's `cancel_team`,
+ * its panel closing or switching session, or a conversation clear. Every stop but 'reset' is resumable.
+ */
+export type TeamStop = 'user' | 'parent' | 'shutdown' | 'reset';
+export type TeamResumableStop = Exclude<TeamStop, 'reset'>;
+
 export type TeamRunResult =
   | { status: 'completed'; text: string }
   /** `resumable` is false when the cancel wrote no checkpoint. */
-  | { status: 'cancelled'; text: string; resumable: boolean };
+  | { status: 'cancelled'; text: string; stop: TeamStop; resumable: boolean };
 
 /** Reader name to its per-section read versions. Entry arrays, because names are model-chosen. */
 export type ScratchpadCursors = Array<[reader: string, sections: Array<[section: string, version: number]>]>;
@@ -339,6 +346,8 @@ export interface TeamCheckpoint {
   teamId: string;
   /** Epoch ms of the cancel; also the file name, and unique per team. */
   cancelledAt: number;
+  /** Why the team stopped; absent from a checkpoint written before the cause was recorded. */
+  stoppedBy?: TeamResumableStop;
   members: TeamCheckpointMember[];
   readerCursors: ScratchpadCursors;
   review: {

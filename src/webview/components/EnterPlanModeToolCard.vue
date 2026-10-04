@@ -1,17 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { Ban, CircleCheck, CircleX, Compass, MessageSquare } from 'lucide-vue-next';
 import type { ToolCall } from '@shared/types/session';
-import { Card, CardHeader, CardContent } from '@/components/ui/card';
-import {
-  IconCompass,
-  IconCheckCircle,
-  IconXCircle,
-  IconBan,
-  IconMessageSquare,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
-import { useToolCardStatus } from '@/composables/useToolCardStatus';
+import ToolCardFrame from './ToolCardFrame.vue';
+import ToolCardNote from './ToolCardNote.vue';
 
 const { t } = useI18n();
 
@@ -19,69 +12,47 @@ const props = defineProps<{
   toolCall: ToolCall;
 }>();
 
-const isPending = computed(() => props.toolCall.status === 'pending');
-const isRunning = computed(() => props.toolCall.status === 'running');
-const isAwaitingApproval = computed(() => props.toolCall.status === 'awaiting_approval');
-const isCompleted = computed(() => props.toolCall.status === 'completed');
-const isDenied = computed(() => props.toolCall.status === 'denied');
-const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
-
-const { statusIcon, statusClass, cardClass } = useToolCardStatus(() => props.toolCall.status);
+const status = computed(() => props.toolCall.status);
 
 const headerText = computed(() => {
-  if (isCompleted.value) return t('planModeTool.entered');
-  if (isDenied.value) return t('planModeTool.declined');
-  if (isAbandoned.value) return t('planModeTool.skipped');
+  if (status.value === 'completed') return t('planModeTool.entered');
+  if (status.value === 'denied') return t('planModeTool.declined');
+  if (status.value === 'abandoned') return t('planModeTool.skipped');
   return t('planModeTool.enterPlanMode');
 });
 </script>
 
 <template>
-  <Card class="text-sm overflow-hidden" :class="cardClass">
-    <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-primary/10 border-b border-border/50 space-y-0">
-      <IconCompass :size="18" class="text-primary shrink-0" />
-      <span class="text-foreground font-medium flex-1">{{ headerText }}</span>
-
-      <LoadingSpinner v-if="isPending || isRunning || isAwaitingApproval" :size="16" :class="statusClass" class="shrink-0" />
-      <component v-else-if="statusIcon" :is="statusIcon" :size="16" :class="statusClass" class="shrink-0" />
-    </CardHeader>
-
-    <CardContent class="p-0">
-      <!-- Status messages -->
-      <div v-if="isAwaitingApproval" class="px-3 py-2 bg-primary/10 border-t border-primary/20">
-        <div class="flex items-center gap-2 text-xs text-primary">
-          <span class="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span>{{ t('planModeTool.waitingApproval') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isCompleted" class="px-3 py-2 bg-success/10 border-t border-success/20">
-        <div class="flex items-center gap-2 text-xs text-success">
-          <IconCheckCircle :size="12" />
-          <span>{{ t('planModeTool.nowExploring') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isDenied" class="px-3 py-2 bg-error/10 border-t border-error/20">
-        <div v-if="toolCall.feedback" class="space-y-1">
-          <div class="flex items-center gap-2 text-xs text-error/80">
-            <IconMessageSquare :size="12" />
-            <span>{{ t('planModeTool.feedbackSent') }}</span>
-          </div>
-          <p class="text-xs text-foreground/80 pl-5 italic">"{{ toolCall.feedback }}"</p>
-        </div>
-        <div v-else class="flex items-center gap-2 text-xs text-error/80">
-          <IconXCircle :size="12" />
-          <span>{{ t('planModeTool.implementDirectly') }}</span>
-        </div>
-      </div>
-
-      <div v-else-if="isAbandoned" class="px-3 py-2 bg-muted/30 border-t border-border/30">
-        <div class="flex items-center gap-2 text-xs text-muted-foreground">
-          <IconBan :size="12" />
-          <span>{{ t('planModeTool.requestSkipped') }}</span>
-        </div>
-      </div>
-    </CardContent>
-  </Card>
+  <ToolCardFrame
+    :icon="Compass"
+    :name="headerText"
+    :status="toolCall.status"
+    data-testid="enter-plan-tool-card"
+  >
+    <ToolCardNote
+      v-if="status === 'awaiting_approval'"
+      tone="text-(--d-warning)"
+      waiting
+      :text="t('planModeTool.waitingApproval')"
+    />
+    <ToolCardNote
+      v-else-if="status === 'completed'"
+      tone="text-(--d-success)"
+      :icon="CircleCheck"
+      :text="t('planModeTool.nowExploring')"
+    />
+    <ToolCardNote
+      v-else-if="status === 'denied'"
+      tone="text-(--d-danger)"
+      :icon="toolCall.feedback ? MessageSquare : CircleX"
+      :text="toolCall.feedback ? t('planModeTool.feedbackSent') : t('planModeTool.implementDirectly')"
+      :quote="toolCall.feedback"
+    />
+    <ToolCardNote
+      v-else-if="status === 'abandoned'"
+      tone="text-(--d-muted)"
+      :icon="Ban"
+      :text="t('planModeTool.requestSkipped')"
+    />
+  </ToolCardFrame>
 </template>

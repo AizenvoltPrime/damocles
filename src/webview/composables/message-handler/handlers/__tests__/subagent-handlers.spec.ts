@@ -152,11 +152,11 @@ describe('subagentUsageUpdate', () => {
   const update = (msg: Extract<ExtensionToWebviewMessage, { type: 'subagentUsageUpdate' }>, ctx: HandlerContext) =>
     defined(createSubagentHandlers().subagentUsageUpdate, 'subagentUsageUpdate handler')(msg, ctx);
 
-  it('stores the usage and billing flag on the card without scrolling the chat', () => {
+  it('stores the usage and billing flag on the card', () => {
     const ctx = context();
     ctx.stores.subagentStore.registerAgentTool('toolu_1', { subagent_type: 'Explore', description: 'find' });
 
-    expect(update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage, dollarBilled: false }, ctx)).toEqual({ skipScroll: true });
+    update({ type: 'subagentUsageUpdate', agentToolId: 'toolu_1', usage, dollarBilled: false }, ctx);
     expect(ctx.stores.subagentStore.subagents['toolu_1']).toMatchObject({ usage, dollarBilled: false });
   });
 

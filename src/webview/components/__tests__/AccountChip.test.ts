@@ -21,7 +21,7 @@ describe('AccountChip', () => {
     ['openai-api-key', 'OpenAI API key'],
   ])('labels the OpenAI token source %s as %s', (tokenSource, label) => {
     const wrapper = mountWith({ model: 'gpt-6.1-sol', tokenSource, dollarBilled: tokenSource === 'openai-api-key' });
-    expect(wrapper.get('[data-testid="account-chip-openai"]').text()).toBe(label);
+    expect(wrapper.get('[data-testid="account-chip"]').text()).toBe(label);
   });
 
   it('shows no chip for a custom provider token source', () => {
@@ -34,9 +34,23 @@ describe('AccountChip', () => {
     expect(wrapper.text()).toBe('');
   });
 
-  it('keeps the Claude subscription chip', () => {
-    const wrapper = mountWith({ model: 'claude-sonnet-5-5', subscriptionType: 'allowance', dollarBilled: false });
-    expect(wrapper.get('button').text()).toBe('allowance');
-    expect(wrapper.find('[data-testid="account-chip-openai"]').exists()).toBe(false);
+  it.each([
+    ['allowance', 'Subscription'],
+    ['extra', 'Extra usage'],
+    ['apikey', 'API key'],
+  ])('labels the Claude auth mode %s as %s', (subscriptionType, label) => {
+    const wrapper = mountWith({ model: 'claude-sonnet-5-5', subscriptionType, dollarBilled: subscriptionType !== 'allowance' });
+    expect(wrapper.get('[data-testid="account-chip"]').text()).toBe(label);
+    expect(wrapper.get('[data-testid="account-chip"]').attributes('title')).toBe(`Billed through: ${label}`);
+  });
+
+  it('shows no chip while Claude has no credential', () => {
+    const wrapper = mountWith({ model: 'claude-sonnet-5-5', subscriptionType: 'none', dollarBilled: true });
+    expect(wrapper.text()).toBe('');
+  });
+
+  it('names the signed-in account in a popover behind the chip', () => {
+    const wrapper = mountWith({ model: 'claude-sonnet-5-5', subscriptionType: 'allowance', email: 'dev@example.com', dollarBilled: false });
+    expect(wrapper.get('[data-testid="account-chip"]').attributes('aria-label')).toBe('Billed through: Subscription');
   });
 });

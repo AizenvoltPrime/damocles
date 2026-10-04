@@ -55,10 +55,17 @@ export function describeMemorySubCallModel(): ReturnType<PiRuntime['describeSubC
 /**
  * Construct a memory sub-call runner that issues one-shot structured-output LLM completions through the
  * pi small/fast model. The runner never throws; every path resolves a `MemorySubCallResult`.
+ *
+ * `lifetime` is the owning service's: once it aborts, in-flight calls are cancelled and new ones resolve
+ * without a value, which every caller already treats as "no answer, decide later". A retired PiRuntime
+ * is never re-created by a call made after the abort.
  */
-export function createMemorySubCallRunner(): MemorySubCallRunner {
+export function createMemorySubCallRunner(lifetime: AbortSignal): MemorySubCallRunner {
+  const signalFor = (req: { abortSignal?: AbortSignal }): AbortSignal =>
+    req.abortSignal ? AbortSignal.any([req.abortSignal, lifetime]) : lifetime;
   return {
     async run<T>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> {
+      if (lifetime.aborted) return { value: null, failure: 'transient' };
       const timeoutMs = req.timeoutMs ?? defaultTimeoutMs(req.purpose);
       const runtime = PiRuntime.get();
       if (!runtime.hasAuthedSubCallModel()) return { value: null, failure: 'no-model' };
@@ -70,22 +77,23 @@ export function createMemorySubCallRunner(): MemorySubCallRunner {
         schema: req.schema,
         // No `attribution`: memory spans workspace roots, so its sub-calls belong to no project.
         purpose: `memory-${req.purpose}`,
-        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        abortSignal: signalFor(req),
         timeoutMs,
       });
       if (value === null) return { value: null, failure: 'transient' };
       return { value };
     },
     hasClassifier(): boolean {
-      return PiRuntime.get().hasClassifier();
+      return !lifetime.aborted && PiRuntime.get().hasClassifier();
     },
-    classify(req: MemoryClassifyRequest): Promise<Record<string, ClassifierAnswer> | null> {
+    async classify(req: MemoryClassifyRequest): Promise<Record<string, ClassifierAnswer> | null> {
+      if (lifetime.aborted) return null;
       return PiRuntime.get().runClassification({
         state: req.state,
         questions: req.questions,
         purpose: `memory-${req.purpose}`,
         timeoutMs: req.timeoutMs,
-        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        abortSignal: signalFor(req),
       });
     },
   };

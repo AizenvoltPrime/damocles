@@ -7,27 +7,24 @@ import { CANCELLED_TOOL_DETAIL_KEY } from '@shared/types/session';
 import { TEAM_TOOL_LABELS } from '@shared/team-tool-labels';
 import ToolCallCard from '../ToolCallCard.vue';
 import ToolOverlay from '../ToolOverlay.vue';
+import SkillToolCard from '../SkillToolCard.vue';
 import LoadingSpinner from '../LoadingSpinner.vue';
-import { IconCheck, IconBan } from '../icons';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useUIStore } from '@/stores/useUIStore';
 import { i18n } from '@/i18n';
 
 /**
  * What the card puts on screen for a tool the user is reading after the fact.
  *
- * The two glyphs are compared by their path data rather than by a class, because the card picks a
- * component and colours it separately: asserting only the colour would pass on a green-coloured check
- * and asserting only the component would pass on a red one.
+ * The two glyphs are compared by their lucide glyph name rather than by a colour class, because the card
+ * picks a component and colours it separately: asserting only the colour would pass on a green-coloured
+ * check and asserting only the component would pass on a red one.
  */
 
-function pathOf(icon: { render?: unknown } | ((...args: never[]) => unknown)): string {
-  const vnode = (icon as (props: object) => { children: { props: { d: string } }[] })({});
-  const first = vnode.children[0];
-  if (!first) throw new Error('icon rendered no path');
-  return first.props.d;
-}
 
-const CHECK_PATH = pathOf(IconCheck);
-const BAN_PATH = pathOf(IconBan);
+const CHECK_PATH = 'circle-check';
+const BAN_PATH = 'ban';
+const SPINNER_PATH = 'loader-circle';
 
 function card(toolCall: ToolCall): VueWrapper {
   return mount(ToolCallCard, {
@@ -39,8 +36,9 @@ function card(toolCall: ToolCall): VueWrapper {
   });
 }
 
+/** The lucide glyph name of every icon the card rendered, e.g. `ban` or `circle-check`. */
 function headerPaths(wrapper: VueWrapper): string[] {
-  return wrapper.findAll('svg path').map((p) => p.attributes('d') ?? '');
+  return wrapper.findAll('svg').map((svg) => svg.classes().find((c) => c.startsWith('lucide-') && !c.endsWith('-icon'))?.slice('lucide-'.length) ?? '');
 }
 
 beforeEach(() => setActivePinia(createPinia()));
@@ -74,8 +72,8 @@ describe('a cancelled tool call', () => {
     const wrapper = card(cancelled);
 
     expect(wrapper.text()).toContain('Stopped');
-    expect(wrapper.html()).not.toContain('text-error');
-    expect(wrapper.html()).not.toContain('text-success');
+    expect(wrapper.html()).not.toContain('--d-danger');
+    expect(wrapper.html()).not.toContain('--d-success');
   });
 
   it('does not reuse the abandoned card copy', () => {
@@ -103,12 +101,18 @@ describe('a tool call whose outcome was never recorded', () => {
   }
 
   it('renders no spinner, so the card does not read as a tool still running', () => {
-    expect(card(unrecorded).findComponent(LoadingSpinner).exists()).toBe(false);
+    const wrapper = card(unrecorded);
+
+    expect(headerPaths(wrapper)).not.toContain(SPINNER_PATH);
+    expect(wrapper.find('.d-spinning').exists()).toBe(false);
   });
 
   it('renders the spinner for the pre-terminal status it must not be confused with', () => {
     // Pins the contrast: without this, a card that never renders a spinner at all would pass the case above.
-    expect(card({ ...unrecorded, status: 'pending' }).findComponent(LoadingSpinner).exists()).toBe(true);
+    const wrapper = card({ ...unrecorded, status: 'pending' });
+
+    expect(headerPaths(wrapper)).toContain(SPINNER_PATH);
+    expect(wrapper.find('.d-spinning').exists()).toBe(true);
   });
 
   it('takes neither the success check nor the glyph the stopped and abandoned cards use', () => {
@@ -130,8 +134,8 @@ describe('a tool call whose outcome was never recorded', () => {
     const html = card(unrecorded).html();
 
     expect(html).toContain('opacity-60');
-    expect(html).not.toContain('text-success');
-    expect(html).not.toContain('text-error');
+    expect(html).not.toContain('--d-success');
+    expect(html).not.toContain('--d-danger');
   });
 
   it('opens an overlay that shows the input instead of short-circuiting to a running body', () => {
@@ -139,8 +143,7 @@ describe('a tool call whose outcome was never recorded', () => {
 
     expect(wrapper.find('h2').text()).toBe('Bash');
     expect(wrapper.text()).toContain('Input');
-    // The command rides into the stubbed code block as a prop, so the rendered text never holds it.
-    expect(wrapper.html()).toContain('ls');
+    expect(wrapper.get('[data-testid="tool-overlay-command"]').text()).toBe('$ ls');
     expect(wrapper.text()).not.toContain('Tool is running');
     expect(wrapper.findComponent(LoadingSpinner).exists()).toBe(false);
   });
@@ -152,13 +155,13 @@ describe('a tool call whose outcome was never recorded', () => {
     expect(text).not.toContain('Running');
   });
 
-  it('short-circuits the overlay for the pre-terminal status it must not be confused with', () => {
-    // Pins the contrast: the overlay really does hide the input and badge "Running" for a live call.
+  it('shows the input above a waiting line for the pre-terminal status it must not be confused with', () => {
+    // Pins the contrast: a live call says it is running, and still shows what it was asked to run.
     const wrapper = overlay({ ...unrecorded, status: 'pending' });
 
     expect(wrapper.text()).toContain('Tool is running');
-    expect(wrapper.text()).not.toContain('Input');
-    expect(wrapper.html()).not.toContain('ls');
+    expect(wrapper.text()).toContain('Input');
+    expect(wrapper.get('[data-testid="tool-overlay-command"]').text()).toBe('$ ls');
   });
 });
 
@@ -182,7 +185,7 @@ describe('team tool cards', () => {
 
     await wrapper.trigger('click');
 
-    expect(wrapper.emitted('expand')).toEqual([['t-1']]);
+    expect(useUIStore()).toMatchObject({ expandedToolId: 't-1', expandedToolSource: 'session' });
   });
 
   it('gives a team tool an icon of its own rather than the generic wrench fallback', () => {
@@ -335,7 +338,8 @@ describe('the expand affordance', () => {
       const wrapper = card(expandable);
       await wrapper.get('[role="button"]').trigger('keydown', { key });
 
-      expect(wrapper.emitted('expand')).toEqual([['t-1']]);
+      expect(useUIStore()).toMatchObject({ expandedToolId: 't-1', expandedToolSource: 'session' });
+      useUIStore().collapseTool();
     }
   });
 
@@ -343,7 +347,7 @@ describe('the expand affordance', () => {
     const wrapper = card(expandable);
     await wrapper.get('[role="button"]').trigger('keydown', { key: 'a' });
 
-    expect(wrapper.emitted('expand')).toBeUndefined();
+    expect(useUIStore().expandedToolId).toBeNull();
   });
 
   it('offers no keyboard target for a card that does not expand', () => {
@@ -351,5 +355,41 @@ describe('the expand affordance', () => {
 
     expect(wrapper.find('[role="button"]').exists()).toBe(false);
     expect(wrapper.text()).toContain('SomeUnmappedTool');
+  });
+});
+
+describe('a file path in the row', () => {
+  const FOLDER = '/home/a/proj';
+  const FILE = `${FOLDER}/src/auth.ts`;
+
+  beforeEach(() => {
+    useSettingsStore().setWorkspaceFolders([{ key: 'k', name: 'proj', label: 'proj', path: FOLDER }], 'k', 'k');
+  });
+
+  it.each(['Read', 'Edit'])('shows %s folder-relative with the full path in its tooltip', (name) => {
+    const arg = card({ id: 't-1', name, input: { file_path: FILE }, status: 'completed' }).get(`[title="${FILE}"]`);
+
+    expect(arg.text()).toBe('src/auth.ts');
+  });
+});
+
+describe('the card frame', () => {
+  const skill = (status: ToolCall['status']): VueWrapper =>
+    mount(SkillToolCard, { props: { toolCall: { id: 's-1', name: 'Skill', input: { skill: 'demo' }, status } }, global: { plugins: [i18n] } });
+
+  it.each<ToolCall['status']>(['awaiting_approval', 'running', 'failed', 'cancelled'])('draws a %s call the way the specialised cards do', (status) => {
+    const tool = card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status });
+    const special = skill(status);
+
+    expect(tool.classes()).toEqual(special.classes());
+    // The skill card draws no body glyph for these statuses, so its last glyph is the status icon.
+    expect(headerPaths(tool)).toContain(headerPaths(special).at(-1));
+    expect(tool.find('.d-spinning').exists()).toBe(special.find('.d-spinning').exists());
+  });
+
+  it('animates only through the motion.css classes', () => {
+    for (const status of ['pending', 'running', 'awaiting_approval'] as const) {
+      expect(card({ id: 't-1', name: 'Bash', input: { command: 'ls' }, status, liveOutput: 'x' }).html()).not.toContain('animate-[');
+    }
   });
 });

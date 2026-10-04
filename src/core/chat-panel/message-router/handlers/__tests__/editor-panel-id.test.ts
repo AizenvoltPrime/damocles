@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
+import * as path from 'path';
 import { createFakePlatform } from '../../../../../__mocks__/fake-platform';
 import { createBrowserHandlers } from '../browser-handlers';
 import { createCompassHandlers } from '../compass-handlers';
+import { createWorkspaceHandlers } from '../workspace-handlers';
 import type { HandlerContext, HandlerDependencies } from '../../types';
 
 vi.mock('../../../../logger', () => ({ log: vi.fn() }));
@@ -30,5 +32,15 @@ describe('editor requests from the router name the originating panel', () => {
     await handlers.compassNavigateToNode!({ type: 'compassNavigateToNode', filePath: file, line: 4 }, ctx(root));
 
     expect(platform.editor.openedFiles).toEqual([{ path: file, options: { editor: 'text', line: 4, panelId: 'host-3' } }]);
+  });
+
+  it('openMcpToolInfo', async () => {
+    const platform = createFakePlatform();
+    const handlers = createWorkspaceHandlers({ platform, postMessage: () => undefined } as unknown as HandlerDependencies);
+    const session = { getMcpToolInfoMarkdown: () => '# lookup' };
+
+    await handlers.openMcpToolInfo!({ type: 'openMcpToolInfo', piName: 'mcp-docs-lookup' }, { ...ctx(os.tmpdir()), session } as unknown as HandlerContext);
+
+    expect(platform.editor.markdownPreviews).toEqual([{ path: path.join(os.tmpdir(), 'damocles-mcp-docs-lookup.md'), options: { panelId: 'host-3' } }]);
   });
 });

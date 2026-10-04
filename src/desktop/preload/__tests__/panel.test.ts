@@ -31,7 +31,7 @@ describe('panel preload', () => {
     H.initAnswers.push(null);
     expect(bridge.getState()).toBeUndefined();
 
-    H.initAnswers.push({ state: { sessionId: 's1' }, theme: { kind: 'dark', css: '' } });
+    H.initAnswers.push({ state: { sessionId: 's1' }, theme: { kind: 'dark', css: '', reducedMotion: false } });
     expect(bridge.getState()).toEqual({ sessionId: 's1' });
     bridge.setState({ sessionId: 's2' });
     expect(bridge.getState()).toEqual({ sessionId: 's2' });

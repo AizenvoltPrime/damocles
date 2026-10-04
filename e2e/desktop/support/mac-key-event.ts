@@ -9,10 +9,12 @@ const KEYS: Record<string, { code: number; chars: string; shifted?: string; func
   B: { code: 0x0b, chars: 'b' },
   C: { code: 0x08, chars: 'c' },
   K: { code: 0x28, chars: 'k' },
+  N: { code: 0x2d, chars: 'n' },
   T: { code: 0x11, chars: 't' },
   U: { code: 0x20, chars: 'u' },
   V: { code: 0x09, chars: 'v' },
   W: { code: 0x0d, chars: 'w' },
+  ',': { code: 0x2b, chars: ',', shifted: '<' },
   Tab: { code: 0x30, chars: '\t', shifted: '\x19' },
   Escape: { code: 0x35, chars: '\x1b' },
   F6: { code: 0x61, chars: '\uf709', functionKey: true },
@@ -43,7 +45,7 @@ interface MacKeyEvent {
 }
 
 /** The NSEvents a keyboard produces for `key` with `modifiers` held; the character rules follow cocoa_test_event_utils.mm. */
-function macKeySequence(key: string, modifiers: readonly Modifier[]): MacKeyEvent[] {
+export function macKeySequence(key: string, modifiers: readonly Modifier[]): MacKeyEvent[] {
   const spec = KEYS[key];
   if (!spec) throw new Error(`no macOS key code for ${key}; add it to KEYS`);
   if (modifiers.includes('alt') && !spec.functionKey) throw new Error('Option changes the characters by layout; not modeled');

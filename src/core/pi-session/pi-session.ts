@@ -37,7 +37,7 @@ import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
 import { dispatchObserveOnly } from "./hooks/dispatch";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
-import { deriveSessionState, type SessionState, type TurnState } from "./session-state";
+import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingKind, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
 import {
   piSupportedModels,
   resolvePiModel,
@@ -310,6 +310,10 @@ export class PiSession implements ChatSession {
   private turnState: TurnState = "idle";
   /** The session last announced with `stored`, so its file's first write is announced once. */
   private announcedStoredId: string | null = null;
+  private activityListener: ((activity: ChatActivity) => void) | null = null;
+  private turnSettledListener: ((outcome: TurnOutcome) => void) | null = null;
+  /** The last activity reported, keyed with the stored session id, so a change to that id reports too. */
+  private lastActivityKey: string | null = null;
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
@@ -424,21 +428,22 @@ export class PiSession implements ChatSession {
       permissionMode: () => this.permissionMode,
       budgetLimit: () => this.budgetLimitForEnforcement(),
       showCacheMissNotices: () =>
-        options.platform.settings.get<boolean>('damocles.showCacheMissNotices', false),
+        options.platform.settings.get<boolean>('damocles.showCacheMissNotices', false, options.settingsFolder),
       showThinkingDroppedNotices: () =>
-        options.platform.settings.get<boolean>('damocles.showThinkingDroppedNotices', true),
+        options.platform.settings.get<boolean>('damocles.showThinkingDroppedNotices', true, options.settingsFolder),
       sessionCost: () => this.ownSessionCost(),
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: (deliveredText) => this.onQueuedInputsDelivered(deliveredText),
       onMidStreamEntryCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
       promptEntryId: () => this.promptEntry?.entry()?.id ?? null,
-      onTurnStateChanged: (state) => this.setTurnState(state),
+      onTurnStateChanged: (...change) => this.setTurnState(...change),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
     // Wired here and not at bind time: a prompt outranks the turn lifecycle even before start().
     this.uiContext.setPendingChangedListener(() => this.publishSessionState());
     options.permissionHandler.setPendingPromptsListener(() => this.publishSessionState());
+    options.teamService?.setRunListener(() => this.publishSessionState());
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -681,7 +686,7 @@ export class PiSession implements ChatSession {
     PiRuntime.get().registerSessionMutator(sessionId, this);
     // On MCP tools-changed, re-apply this session's active set and push fresh MCP status (no manual
     // refresh). `reloadForMcpToolChange` also rebuilds an orphaned-runtime session whose registry never
-    // got the new tools (multi-panel); it's a plain refresh when not orphaned.
+    // got the new tools (its extension instance is no longer attached); it's a plain refresh otherwise.
     const refreshTools = (): void => {
       this.reloadForMcpToolChange();
       this._mcpStatusListener?.();
@@ -744,6 +749,8 @@ export class PiSession implements ChatSession {
 
     // The latest scope, never the creation-time one: a live feed may have arrived before the folder existed.
     if (this.mcpScope) this.applyMcpScope(this.mcpScope);
+    // The status source is now this folder; servers already connected under an unchanged scope fire no tools-changed event.
+    this._mcpStatusListener?.();
     // A fresh session has no file until pi's first write; its lease is taken here, on the path pi will write.
     this.syncSessionLeases();
   }
@@ -982,6 +989,8 @@ export class PiSession implements ChatSession {
     this.adapter.beginTurn(correlationId);
 
     const images = extractImages(prompt);
+    // Reaches the turn lifecycle only when no pi event already settled the turn.
+    let outcome: TurnOutcome = { kind: "completed" };
     // The prompt's own entry is the earliest point its turn's checkpoint baseline can start.
     const committed = watchPromptEntry(session, (entry) => {
       const service = this.checkpointService;
@@ -1028,14 +1037,18 @@ export class PiSession implements ChatSession {
       if (userBroadcast && entry) this.enqueueMemoryCandidate(session, entry.id);
     } catch (err) {
       if (err instanceof StoppedBeforeRunError) {
+        outcome = { kind: "cancelled" };
         this.returnUnsentMessage(correlationId, userBroadcast);
       } else if (this._aborting) {
         // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
         // so swallow the rejection here rather than stacking a spurious error card on top of it.
+        outcome = { kind: "cancelled" };
         log("[PiSession] prompt aborted by user");
       } else {
         log("[PiSession] prompt failed: %O", err);
-        this.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        outcome = turnOutcomeOfError(message);
+        this.emit({ type: "error", message });
         this.emit({ type: "processing", isProcessing: false });
       }
     } finally {
@@ -1045,7 +1058,7 @@ export class PiSession implements ChatSession {
       this.inFlightPromptIndex = null;
       // The turn is over however it ended. A rejection that never reached an agent run emits no pi
       // event, so without this the lifecycle would stay `running` with nothing left to move it.
-      this.setTurnState("idle");
+      this.setTurnState("idle", outcome);
       this._aborting = false;
       this._budgetStopRequested = false;
     }
@@ -1125,7 +1138,7 @@ export class PiSession implements ChatSession {
         branch: session.sessionManager.getBranch(),
         subagentDir: subagentsDir(ensurePiSessionDir(this.cwd), session.sessionId),
         liveSubagent: (id) => this.subagentManager?.liveStatus(id),
-        teamResumable: (teamId) => new TeamPersistence(this.cwd, session.sessionId).isResumable(teamId),
+        teamStop: (teamId) => new TeamPersistence(this.cwd, session.sessionId).resumableStop(teamId),
         // A replaced session's file may already be deleted, and an append would recreate it header-less.
         send: async (message) => {
           if (this.runtime?.session !== session) return;
@@ -1521,7 +1534,7 @@ export class PiSession implements ChatSession {
     this.processingFlag = false;
     // An abort during a long tool with no model stream open produces no aborted assistant event, so
     // this is the only thing that tells the webview the turn is over.
-    this.setTurnState("idle");
+    this.setTurnState("idle", { kind: "cancelled" });
     this._budgetStopRequested = false;
     const session = this.runtime?.session;
     const leafAtStop = session?.sessionManager.getLeafId() ?? null;
@@ -1530,7 +1543,7 @@ export class PiSession implements ChatSession {
     this.subagentManager?.abortAll("user");
     this.interruptionCheckPending = true;
     // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
-    this.options.teamService?.cancelActiveTeam();
+    this.options.teamService?.cancelActiveTeam("user");
     this.withdrawQueue(session, t("Stopping the turn discarded your cancel note before the agent read it."));
     this.emit({ type: "sessionCancelled" });
     this.emit({ type: "processing", isProcessing: false });
@@ -1617,7 +1630,7 @@ export class PiSession implements ChatSession {
 
   /** The `damocles.autoCompact` config, read live so a mid-session change applies on the next call. */
   private autoCompactConfig(): AutoCompactConfig {
-    return this.options.platform.settings.get<AutoCompactConfig>("damocles.autoCompact", { enabled: false, triggerPercent: 80 });
+    return this.options.platform.settings.get<AutoCompactConfig>("damocles.autoCompact", { enabled: false, triggerPercent: 80 }, this.options.settingsFolder);
   }
 
   /**
@@ -1683,7 +1696,7 @@ export class PiSession implements ChatSession {
     this.stopPromptBeforeRun();
     this.processingFlag = false;
     // The replacement session disposes the old one, which aborts whatever turn it was running.
-    this.setTurnState("idle");
+    this.setTurnState("idle", { kind: "cancelled" });
     this._budgetStopRequested = false;
     this.queuedInputs = [];
     this.screeningInputs = [];
@@ -1713,7 +1726,11 @@ export class PiSession implements ChatSession {
     // A fresh session reads the now-current tool set on build, so any deferred MCP reload is moot.
     this.mcpReloadPendingAfterTurn = false;
     const runtime = this.runtime;
-    if (!runtime) return;
+    if (!runtime) {
+      // The dropped resume or fork target was the stored session id; with a runtime, the rebind republishes.
+      this.publishSessionState();
+      return;
+    }
     // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
     // fresh idle one via setRebindSession. Track the promise so a sendMessage that follows
     // synchronously (plan "clear context & start fresh") waits for the fresh session.
@@ -1775,6 +1792,9 @@ export class PiSession implements ChatSession {
     // supplied by the caller) would keep publishing into a webview that is gone.
     this.options.permissionHandler.setPendingPromptsListener(null);
     this.uiContext.setPendingChangedListener(null);
+    this.options.teamService?.setRunListener(null);
+    this.activityListener = null;
+    this.turnSettledListener = null;
     this.uiContext.cancelAll();
     // Tear down any active team (aborts its agents + resolves the create_team tool) — the service is
     // owned by the panel, so the panel disposes it.
@@ -1839,12 +1859,11 @@ export class PiSession implements ChatSession {
     this.ownedBrowserScopes.clear();
   }
 
-  /** Stop a running background subagent (the Background Tasks panel "stop" button). Aborting the
-   *  record drives `AgentManager.emitBackgroundTaskCompleted` (status `stopped`) — the authoritative
-   *  completion — so the handler must not also post one. No-op if the task already finished. It requests
-   *  no interruption notice: the keep-alive injection already gives the model the stop note and resume call. */
-  async stopTask(taskId: string): Promise<void> {
-    this.subagentManager?.abort(taskId, "user");
+  /** The user's stop of one subagent, foreground or background; the turn goes on. The record's completion is
+   *  the authoritative card and task outcome, so the caller posts none. It requests no interruption notice:
+   *  the agent's result already carries the stop note and resume call. */
+  stopSubagent(agentId: string): boolean {
+    return this.subagentManager?.abort(agentId, "user") ?? false;
   }
 
   /** Running + queued subagents, then live team members, for the `/steer` second-stage picker. */
@@ -2067,6 +2086,13 @@ export class PiSession implements ChatSession {
     if (!sessionId || this.announcedStoredId === sessionId || !this.hasSessionFile()) return;
     this.announcedStoredId = sessionId;
     this.emit({ type: "sessionStarted", sessionId, stored: true });
+    this.publishSessionState();
+  }
+
+  get storedSessionId(): string | null {
+    if (!this.runtime) return this.pendingSessionId;
+    const sessionId = this.runtime.session.sessionId;
+    return this.announcedStoredId === sessionId ? sessionId : null;
   }
 
   hasConversation(): boolean {
@@ -2120,6 +2146,8 @@ export class PiSession implements ChatSession {
   setResumeSession(sessionId: string | null): void {
     this.resumeSessionId = sessionId;
     this.syncSessionLeases();
+    // Before start the target is the stored session id; a started panel republishes when its switch rebinds.
+    if (!this.runtime) this.publishSessionState();
     // `start()` honors the target on a not-yet-started panel. If the runtime is already live on a
     // different session (the resumeSession message can land on a running panel), switch it to the
     // resume target now. Chained onto resetPromise so a following sendMessage awaits the switch.
@@ -2161,15 +2189,15 @@ export class PiSession implements ChatSession {
   /**
    * Retire the bound session's subagents and team before another session is bound, as a panel close
    * does: the manager caches only the bound session's agents, and a team's events belong to the panel
-   * showing its session. Subagents are killed as `shutdown` and the team is cancelled as a user stop,
-   * so each stays resumable or deliverable from its files at that session's next bind.
+   * showing its session. Subagents are killed and the team is cancelled as a `shutdown`, so each stays
+   * resumable or deliverable from its files at that session's next bind.
    */
   private async retireAgents(session: AgentSession): Promise<void> {
     this.retiringAgents = true;
     try {
       const mgr = this.subagentManager;
       mgr?.abortAll("shutdown");
-      this.options.teamService?.cancelActiveTeam();
+      this.options.teamService?.cancelActiveTeam("shutdown");
       // Stopped before the wait, so the turn spawns nothing while the runs settle. Not raced against the
       // timeout: pi's switch awaits this same abort again before it tears the session down.
       await session.abort();
@@ -2547,7 +2575,7 @@ export class PiSession implements ChatSession {
 
   /**
    * Requested MCP tool names absent from the live session's registry — non-empty only when the session
-   * is bound to an orphaned runtime that never got the new descriptors (multi-panel first-connect).
+   * is bound to an extension instance `FolderRuntime` no longer has attached, or pi rejected a tool.
    */
   private missingMcpRegistryNames(session: AgentSession): string[] {
     const requested = new Set(this.fullActiveToolNames().filter(isMcpToolName));
@@ -2663,7 +2691,7 @@ export class PiSession implements ChatSession {
 
   /** The background-subagent concurrency cap (`damocles.subagents.maxConcurrent`, default 4, clamped 1–16). */
   private maxConcurrentSetting(): number {
-    const n = this.options.platform.settings.get<number>("damocles.subagents.maxConcurrent", 4);
+    const n = this.options.platform.settings.get<number>("damocles.subagents.maxConcurrent", 4, this.options.settingsFolder);
     return Math.min(16, Math.max(1, Number.isFinite(n) ? Math.floor(n) : 4));
   }
 
@@ -2766,6 +2794,7 @@ export class PiSession implements ChatSession {
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
       modelDollarBilled: (model) => piModelDollarBilled(model, this.modelBillingDeps()),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
+      onRunsChanged: () => this.publishSessionState(),
       getHooksDispatch: () => folder.getHooksDispatchDeps(),
     };
   }
@@ -3008,7 +3037,7 @@ export class PiSession implements ChatSession {
       const explore = resolveExploreSectionModel(registry, this.options.platform.settings);
       if (explore && !scopeError(explore.model)) {
         const { model, thinkingLevel } = explore;
-        return { model, modelLabel: label(model), ...billed(model), ...(thinkingLevel ? { thinkingLevel, enforceThinking: true } : {}) };
+        return { model, modelLabel: label(model), ...billed(model), ...(thinkingLevel ? { thinkingLevel } : {}) };
       }
       const cheap = resolveCheapModelFor(this.modelValue, registry, openai, preferApiKey);
       if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model), ...billed(cheap.model) };
@@ -3016,7 +3045,7 @@ export class PiSession implements ChatSession {
 
     // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
     //    Its effort comes with it, or pi falls back to whatever default it last persisted, which varies
-    //    by machine. A template's own `thinking:` still wins, and a per-spawn `thinking` beats both.
+    //    by machine. A template's own `thinking:` still wins. The spawning model never picks the level.
     if (this.desiredModel) {
       const err = scopeError(this.desiredModel);
       if (err) return { error: err };
@@ -3689,11 +3718,11 @@ export class PiSession implements ChatSession {
     const settings = this.options.platform.settings;
     const activeModel = this.modelValue;
     const roleSetting = (role: TeamRole): TeamRoleSetting => {
-      const model = migrateLegacyModelValue(settings.get<string>(`damocles.team.${role}Model`, ''));
+      const model = migrateLegacyModelValue(settings.get<string>(`damocles.team.${role}Model`, '', this.options.settingsFolder));
       // Validate the stored effort (no unchecked cast) and apply the effective model's pi-metadata rename
       // (e.g. DeepSeek xhigh → max in 0.80.6) so a renamed level migrates instead of silently coercing to
       // null. The effort applies against the role's model if set, else the active panel model.
-      const parsed = parseEffortLevel(settings.get<string>(`damocles.team.${role}Effort`, ''));
+      const parsed = parseEffortLevel(settings.get<string>(`damocles.team.${role}Effort`, '', this.options.settingsFolder));
       const effort: EffortLevel | null =
         parsed === null ? null : migrateLegacyEffortValue(model !== '' ? model : activeModel, parsed);
       return { model, effort };
@@ -3911,7 +3940,7 @@ export class PiSession implements ChatSession {
    */
   private budgetLimitForEnforcement(): number | null {
     if (!this.dollarBilled()) return null;
-    const max = this.options.platform.settings.get<number | null>("damocles.maxBudgetUsd", null);
+    const max = this.options.platform.settings.get<number | null>("damocles.maxBudgetUsd", null, this.options.settingsFolder);
     return max && max > 0 ? max : null;
   }
 
@@ -4022,30 +4051,60 @@ export class PiSession implements ChatSession {
    * `prompt()` that rejected before any agent run). `compacting` is deliberately not folded in: a
    * manual compaction opens no prompt and the adapter reports no turn lifecycle for it.
    */
-  private setTurnState(turn: TurnState): void {
+  private setTurnState(...[turn, outcome]: TurnChange): void {
+    const settled = this.turnState === "running" && turn === "idle";
     this.turnState = turn;
     this.publishSessionState();
-    if (turn === "idle") this.announceIfNewlyStored();
+    if (turn !== "idle") return;
+    this.announceIfNewlyStored();
+    if (settled) this.turnSettledListener?.(outcome);
   }
 
-  /** Whether `PermissionState` or `WebviewExtensionUIContext` still holds an unanswered prompt. */
-  private hasPendingPrompts(): boolean {
-    return this.options.permissionHandler.hasPendingPrompts() || this.uiContext.hasPendingDialogs();
+  /** The kinds of the prompts `PermissionState` and `WebviewExtensionUIContext` still hold, sorted. */
+  private pendingKinds(): PendingKind[] {
+    const kinds = this.options.permissionHandler.pendingPromptKinds();
+    if (this.uiContext.hasPendingDialogs()) kinds.add("input");
+    return [...kinds].sort();
+  }
+
+  /** A subagent or team run that has not settled; their owners call the publisher as one starts or settles. */
+  private backgroundRunning(): boolean {
+    return (this.subagentManager?.hasUnsettledRuns() ?? false) || (this.options.teamService?.running ?? false);
   }
 
   /**
-   * Publish the session state to the webview. Its two inputs, the turn lifecycle and the prompt maps
-   * owned by `PermissionState` and `WebviewExtensionUIContext`, change independently of each other, so
-   * every mutation of either calls this and nothing else emits `sessionStateChanged`. Rebuilt on each
-   * call, never cached.
+   * Publish the session state to the webview and the panel's activity. The inputs, the turn lifecycle,
+   * the prompt maps owned by `PermissionState` and `WebviewExtensionUIContext`, the subagent and team
+   * runs and the stored session id, change independently of each other, so every mutation of one calls
+   * this and nothing else emits `sessionStateChanged` or reports activity. Rebuilt on each call, never cached.
    */
   private publishSessionState(): void {
     const sessionId = this.runtime?.session.sessionId ?? "";
-    const state: SessionState = deriveSessionState(this.turnState, this.hasPendingPrompts());
+    const pendingKinds = this.pendingKinds();
+    const state: SessionState = deriveSessionState(this.turnState, pendingKinds.length > 0);
     const key = `${state}:${sessionId}`;
-    if (this.lastSessionState === key) return;
-    this.lastSessionState = key;
-    this.emit({ type: "sessionStateChanged", state, sessionId });
+    if (this.lastSessionState !== key) {
+      this.lastSessionState = key;
+      this.emit({ type: "sessionStateChanged", state, sessionId });
+    }
+    const listener = this.activityListener;
+    if (!listener) return;
+    const background = this.backgroundRunning();
+    const activityKey = `${state}:${pendingKinds.join(",")}:${background}:${this.storedSessionId ?? ""}`;
+    if (this.lastActivityKey === activityKey) return;
+    this.lastActivityKey = activityKey;
+    listener({ state, pendingKinds, background });
+  }
+
+  /** Reports the current activity at once, then every change; null stops the reports. */
+  setActivityListener(listener: ((activity: ChatActivity) => void) | null): void {
+    this.activityListener = listener;
+    this.lastActivityKey = null;
+    if (listener) this.publishSessionState();
+  }
+
+  setTurnSettledListener(listener: ((outcome: TurnOutcome) => void) | null): void {
+    this.turnSettledListener = listener;
   }
 
   /** Whether the user opted to prefer the OpenAI API key over a ChatGPT or Codex sign-in when both are configured. */

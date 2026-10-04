@@ -20,5 +20,8 @@ const renderedContent = computed(() =>
 </script>
 
 <template>
-  <MarkdownRenderer :content="renderedContent" />
+  <MarkdownRenderer
+    class="text-13.5 leading-[1.65]"
+    :content="renderedContent"
+  />
 </template>

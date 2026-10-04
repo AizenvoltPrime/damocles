@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { dialog, Notification, type BrowserWindow, type MessageBoxOptions } from 'electron';
 import type { NotificationOptions, NotificationService } from '../../../platform/notification-service';
-import type { ShellToast } from '../../preload/shell-channels';
+import type { OverlayToast } from '../../preload/overlay-channels';
 
-type Severity = ShellToast['severity'];
+type Severity = OverlayToast['severity'];
 
-// How long main keeps a toast before resolving it undefined; the shell only renders and reports.
+// How long main keeps a toast before resolving it undefined; the overlay only renders and reports.
 export const TOAST_TIMEOUT_MS: Readonly<Record<Severity | 'withActions', number>> = {
   info: 8_000,
   warning: 12_000,
@@ -15,14 +15,16 @@ export const TOAST_TIMEOUT_MS: Readonly<Record<Severity | 'withActions', number>
 };
 
 export interface ToastSink {
-  show(toast: ShellToast): void;
+  show(toast: OverlayToast): void;
   dismiss(id: string): void;
 }
 
 export interface NotificationDeps {
   readonly window: () => BrowserWindow | undefined;
-  // undefined while the shell page is loading or gone
+  // undefined while the overlay page is loading or gone
   readonly toasts: () => ToastSink | undefined;
+  // damocles.desktop.notifications.enabled: whether an OS notification accompanies a toast while the window is unfocused
+  readonly osNotifications: () => boolean;
   // brings the window forward when the user clicks an OS notification
   readonly showWindow: () => void;
   readonly t: (message: string) => string;
@@ -30,16 +32,16 @@ export interface NotificationDeps {
 }
 
 export interface DesktopNotificationService extends NotificationService {
-  // The shell's answer: an action label of that toast, or undefined for a dismissal.
+  // The overlay's answer: an action label of that toast, or undefined for a dismissal.
   resolveToast(id: string, action: string | undefined): void;
-  // Toasts still waiting for an answer, for a shell page that has just (re)loaded and shows them; their countdowns start now.
-  pendingToasts(): readonly ShellToast[];
+  // Toasts still waiting for an answer, for an overlay page that has just (re)loaded and shows them; their countdowns start now.
+  pendingToasts(): readonly OverlayToast[];
 }
 
 interface PendingToast {
-  readonly toast: ShellToast;
+  readonly toast: OverlayToast;
   readonly resolve: (action: string | undefined) => void;
-  // set once a shell has been handed the toast
+  // set once an overlay has been handed the toast
   timer: NodeJS.Timeout | undefined;
 }
 
@@ -63,7 +65,7 @@ export function createDesktopNotificationService(deps: NotificationDeps): Deskto
 
   const notifyOs = (message: string): void => {
     const window = deps.window();
-    if (window?.isFocused() || !Notification.isSupported()) return;
+    if (window?.isFocused() || !deps.osNotifications() || !Notification.isSupported()) return;
     const notification = new Notification({ title: 'Damocles', body: message });
     notification.on('click', () => deps.showWindow());
     notification.show();
@@ -94,11 +96,11 @@ export function createDesktopNotificationService(deps: NotificationDeps): Deskto
     }, actions.length > 0 ? TOAST_TIMEOUT_MS.withActions : TOAST_TIMEOUT_MS[severity]);
   };
 
-  // A toast raised before the window exists, while its shell loads or while it is closed waits in main for the next
-  // shell to load; its countdown starts once a shell has it.
+  // A toast raised before the window exists, while its overlay loads or while it is closed waits in main for the next
+  // overlay to load; its countdown starts once an overlay has it.
   const toast = (severity: Severity, message: string, actions: string[]): Promise<string | undefined> => {
     notifyOs(message);
-    const shown: ShellToast = { id: randomUUID(), severity, message, actions };
+    const shown: OverlayToast = { id: randomUUID(), severity, message, actions };
     return new Promise((resolve) => {
       const entry: PendingToast = { toast: shown, resolve, timer: undefined };
       pending.set(shown.id, entry);

@@ -1,4 +1,4 @@
-// usePlatformBridge selects its host at import time, so the VS Code API must exist before any module loads.
+// usePlatformBridge selects its host on first use, so the VS Code API must exist before any test runs.
 const vscodeStub: VsCodeApi = {
   postMessage: () => {},
   getState: () => undefined,

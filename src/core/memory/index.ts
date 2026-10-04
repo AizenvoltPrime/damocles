@@ -134,6 +134,8 @@ export class MemoryService {
   /** This window's quality audit, from the moment it starts taking the lease until the run settles. */
   private audit: { abort: AbortController; done: Promise<void> } | null = null;
   private disposed = false;
+  /** Aborted by `dispose()`; cancels every sub-call the runner makes, so teardown never waits on a model. */
+  private readonly lifetime = new AbortController();
   /** Folders whose observations the file-change tracker indexes. */
   private workspaceRoots: readonly string[] = [];
   private fallbackWorkspace: () => string = homeDirectory;
@@ -282,6 +284,10 @@ export class MemoryService {
     const opened = await openDatabaseAsync({
       onPersistFailure: (n) => this.handlePersistFailure(n),
     });
+    if (this.disposed) {
+      opened?.db.close();
+      return;
+    }
     if (!opened) {
       this._initFailed = true;
       log('[MemoryService] Database open failed — disabling memory system');
@@ -306,7 +312,7 @@ export class MemoryService {
     const db = opened.db;
     const writeQueue = new MemoryWriteQueue(db, { isAhead: () => isSchemaAhead(db), onAhead: () => this.enterReadOnly() }, this.readOnly);
     this.writeQueue = this.readOnly ? null : writeQueue;
-    this.runner = createMemorySubCallRunner();
+    this.runner = createMemorySubCallRunner(this.lifetime.signal);
     this.factGraph = new FactGraphManager(this.db, writeQueue, this.runner);
     this.profileManager = new ProfileManager(this.db, writeQueue, this.runner, this.settings);
 
@@ -1200,8 +1206,10 @@ export class MemoryService {
     return revertAuditRun({ db, writeQueue, profileManager, tracker: this.fileChangeTracker }, runId);
   }
 
-  dispose(): void {
+  /** Resolves once in-flight init, consolidation, audit and queued writes have settled and the database is closed. */
+  dispose(): Promise<void> {
     this.disposed = true;
+    this.lifetime.abort();
     this.audit?.abort.abort();
     this.backfillAbort?.abort();
     this.backfillAbort = null;
@@ -1232,9 +1240,9 @@ export class MemoryService {
     const writeQueue = this.writeQueue;
     const inFlight = this.consolidationInFlight;
     const auditDone = this.audit?.done ?? Promise.resolve();
-    const settled = Promise.all([inFlight ? inFlight.catch(() => undefined) : undefined, auditDone]);
+    const settled = Promise.all([this._initPromise, inFlight ? inFlight.catch(() => undefined) : undefined, auditDone]);
     const drained = writeQueue ? settled.then(() => writeQueue.drain()) : settled;
-    void drained.finally(closeDb);
     this._initPromise = null;
+    return drained.then(closeDb);
   }
 }

@@ -68,7 +68,7 @@ function context(): HandlerContext {
   let state: Record<string, unknown> = {};
   return {
     stores,
-    refs: { messageContainerRef: { value: null }, chatInputRef: { value: null } },
+    refs: { chatInputRef: { value: null } },
     bridge: {
       postMessage: vi.fn(),
       getState: <T,>() => state as T,
@@ -557,7 +557,7 @@ describe('ready', () => {
     vi.spyOn(api, 'postMessage').mockImplementation((m: unknown) => void posted.push(m));
     const Host = defineComponent({
       setup() {
-        useMessageHandler({ messageContainerRef: ref(null), chatInputRef: ref(null) });
+        useMessageHandler({ chatInputRef: ref(null), followTranscript: () => {} });
         return () => null;
       },
     });
@@ -576,5 +576,32 @@ describe('ready', () => {
     const posted = mountHandler(undefined);
 
     expect(posted).toContainEqual({ type: 'ready' });
+  });
+});
+
+/** Only another session's transcript forces the follow; the user's own submit re-engages it in App.vue. */
+describe('which host messages make the transcript follow again', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function handle(msg: ExtensionToWebviewMessage): unknown {
+    const handler = buildRegistry()[msg.type] as
+      | ((m: ExtensionToWebviewMessage, c: HandlerContext) => unknown)
+      | undefined;
+    if (!handler) throw new Error(`no handler registered for ${msg.type}`);
+    return handler(msg, context());
+  }
+
+  it.each([
+    ['a pending first prompt', { type: 'sessionCleared', pendingMessage: { content: 'hi', correlationId: 'c-1' } } as const],
+    ['a replay', { type: 'sessionCleared' } as const],
+  ])('sessionCleared forces it for %s', (_name, msg) => {
+    expect(handle(msg)).toEqual({ forceScrollToBottom: true });
+  });
+
+  it.each([
+    ['userMessage', { type: 'userMessage', content: 'injected', correlationId: 'c-2', promptIndex: 0, isInjected: true } as const],
+    ['backgroundTaskResult', { type: 'backgroundTaskResult', taskId: 't-1', toolUseId: 'tool-1', result: 'done', summary: 'task' } as const],
+  ])('%s leaves a reader who scrolled up where they are', (_name, msg) => {
+    expect(handle(msg)).toBeUndefined();
   });
 });

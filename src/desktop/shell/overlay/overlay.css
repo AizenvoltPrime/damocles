@@ -1,0 +1,32 @@
+@import "../style.css";
+/* Tailwind emits only the utilities it finds in scanned files, and the overlay renders webview components outside this directory. */
+@source "../../../webview/components";
+
+/* The overlay view lies over the whole window; only its popups and toasts paint, the rest shows the views beneath. */
+html,
+body {
+  background-color: transparent;
+}
+
+/* The reference's toast entrance; the global reduced-motion rules shorten it to nothing. */
+.overlay-toast-enter {
+  animation: nt-in 0.34s var(--ease-out) both;
+}
+
+/* A popup animates out before its answer reaches main, which hides the overlay on it (plan section 7). */
+.overlay-pop-leave-active {
+  pointer-events: none;
+  transition: opacity 0.12s var(--ease-out);
+}
+
+.overlay-pop-leave-active > * {
+  transition: transform 0.12s var(--ease-out);
+}
+
+.overlay-pop-leave-to {
+  opacity: 0;
+}
+
+.overlay-pop-leave-to > * {
+  transform: scale(0.98);
+}

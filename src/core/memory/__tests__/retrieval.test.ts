@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as crypto from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { createTestMemoryDb } from './test-helpers';
+import { createTestDbPath, createTestMemoryDb } from './test-helpers';
 import type { DatabaseInstance } from '../types';
 import type { MemorySubCallRunner, MemorySubCallResult } from '../subcall-runner';
 
@@ -313,21 +309,14 @@ describe('MemoryService.getMemoryDetails — forgotten rows resolve on explicit 
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-getdetails-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
     mockedExpandQuery.mockReset();
     mockedExpandQuery.mockResolvedValue([]);
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   it('resolves a forgotten hit and does NOT bump its access_count', async () => {
@@ -351,19 +340,12 @@ describe('memory tools record retrievals on success', () => {
   let service: MemoryService;
 
   beforeEach(() => {
-    dbHolder.path = path.join(os.tmpdir(), `damocles-tool-retrieval-${crypto.randomUUID()}.db`);
+    dbHolder.path = createTestDbPath();
     service = new MemoryService(createFakePlatform());
   });
 
-  afterEach(() => {
-    service.dispose();
-    for (const suffix of ['', '-wal', '-shm']) {
-      try {
-        fs.unlinkSync(dbHolder.path + suffix);
-      } catch {
-        /* already gone */
-      }
-    }
+  afterEach(async () => {
+    await service.dispose();
   });
 
   async function runTool(name: string, input: Record<string, unknown>): Promise<void> {

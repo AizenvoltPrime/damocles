@@ -112,7 +112,7 @@ function onKeydown(event: KeyboardEvent, page: PanePage, index: number): void {
     >
       <LoaderCircle
         v-if="page.loading"
-        class="size-3.5 shrink-0 animate-spin text-info"
+        class="size-3.5 shrink-0 d-spinning text-info"
         aria-hidden="true"
       />
       <img

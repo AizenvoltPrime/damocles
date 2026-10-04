@@ -79,7 +79,6 @@ describe('single-folder parity', () => {
           createDamoclesExtensionFactory(
             { get: () => undefined, values: () => [] },
             { get: () => undefined },
-            () => undefined,
             undefined,
             () => () => undefined,
           ),

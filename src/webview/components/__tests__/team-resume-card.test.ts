@@ -9,7 +9,6 @@ import { emptyAgentUsage, type AgentUsageTotals } from '@shared/usage-accounting
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/types/messages';
 import ToolCallRouter from '../ToolCallRouter.vue';
 import TeamCard from '../TeamCard.vue';
-import LoadingSpinner from '../LoadingSpinner.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
@@ -95,12 +94,14 @@ function resumedLive(): void {
   store.handleAgentUsageUpdate(TEAM_ID, LEAD, { totalInputTokens: 1_600, totalOutputTokens: 700, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.75 });
 }
 
+const statusChip = (wrapper: VueWrapper) => card(wrapper).get('[data-testid="team-status"]');
+
 function expectEnded(wrapper: VueWrapper, status: string, figures: string[]): void {
   const text = card(wrapper).text();
-  expect(text).toContain(status);
+  expect(statusChip(wrapper).text()).toBe(status);
   for (const figure of figures) expect(text).toContain(figure);
   expect(text).not.toContain('active');
-  expect(card(wrapper).findComponent(LoadingSpinner).exists()).toBe(false);
+  expect(statusChip(wrapper).find('.d-spinning').exists()).toBe(false);
 }
 
 beforeEach(() => setActivePinia(createPinia()));
@@ -109,14 +110,14 @@ describe('the cards of a resumed team', () => {
   it('while the resume runs, the create_team card shows its own cancelled run and only the resume card is live', async () => {
     resumedLive();
 
-    expectEnded(await route(createCall), 'cancelled', ['3 tools', '1:00', '1.5K tokens', '$0.50']);
+    expectEnded(await route(createCall), 'Stopped', ['3 tools', '1:00', '1.5K tokens', '$0.50']);
     const resumed = card(await route(resumeCall()));
-    expect(resumed.text()).toContain('running');
+    expect(resumed.text()).toContain('Running');
     expect(resumed.text()).toContain('2 tools');
     expect(resumed.text()).toContain('800 tokens');
     expect(resumed.text()).toContain('$0.25');
-    expect(resumed.text()).toContain('Agent 1/1 active');
-    expect(resumed.findComponent(LoadingSpinner).exists()).toBe(true);
+    expect(resumed.text()).toContain('1 of 1 active');
+    expect(resumed.get('[data-testid="team-status"]').find('.d-spinning').exists()).toBe(true);
     expect(useTeamStore().activeTeamCount).toBe(1);
   });
 
@@ -132,8 +133,8 @@ describe('the cards of a resumed team', () => {
 
     useTeamStore().handleTeamCompleted(TEAM_ID, 'completed', 'done', RESUME_RUN);
 
-    expectEnded(await route(createCall), 'cancelled', ['3 tools', '1:00', '1.5K tokens', '$0.50']);
-    expectEnded(await route(resumeCall({ status: 'completed' })), 'completed', ['2 tools', '30s', '800 tokens', '$0.25']);
+    expectEnded(await route(createCall), 'Stopped', ['3 tools', '1:00', '1.5K tokens', '$0.50']);
+    expectEnded(await route(resumeCall({ status: 'completed' })), 'Completed', ['2 tools', '30s', '800 tokens', '$0.25']);
     expect(useTeamStore().activeTeamCount).toBe(0);
   });
 
@@ -204,8 +205,8 @@ describe('a resumed team replayed from history', () => {
 
     expect(card(await route(createCall)).text()).toBe(liveCreate);
     expect(card(await route(resumeCall({ status: 'completed' }))).text()).toBe(liveResume);
-    expect(liveCreate).toContain('cancelled');
-    expect(liveResume).toContain('completed');
+    expect(liveCreate).toContain('Stopped');
+    expect(liveResume).toContain('Completed');
   });
 
   it('asks nothing for a resume call that errored', () => {

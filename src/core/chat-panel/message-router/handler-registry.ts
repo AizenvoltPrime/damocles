@@ -24,6 +24,8 @@ import { log } from "../../logger";
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
   const voiceStream = createVoiceStreamHandlers(deps);
   const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
+  const settingsFiles = createSettingsFileHandlers(deps);
+  const settingsDeps: HandlerDependencies = { ...deps, postSettingsFileAvailability: settingsFiles.postAvailability };
   return {
     log: (msg) => {
       if (msg.type === "log") log("[Webview]", msg.message);
@@ -33,7 +35,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
 
     ...createChatHandlers(chatDeps),
     ...createPermissionHandlers(deps),
-    ...createSettingsHandlers(deps),
+    ...createSettingsHandlers(settingsDeps),
     ...createSessionHandlers(deps),
     ...createHistoryHandlers(deps),
     ...createWorkspaceHandlers(deps),
@@ -50,6 +52,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createUsageHandlers(deps),
     ...createUsageStatsHandlers(deps),
     ...createWorkspaceFolderHandlers(deps),
-    ...createSettingsFileHandlers(deps),
+    ...settingsFiles.handlers,
   };
 }

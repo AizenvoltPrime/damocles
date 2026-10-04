@@ -194,7 +194,6 @@ function buildPanelExtension(): ReturnType<typeof fakePi> & {
   createDamoclesExtensionFactory(
     registry,
     checkpoints,
-    undefined,
     hooksWiring(),
     () => () => { disposeCalls++; },
   )(pi.api as never);

@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import McpServerFormDialog from '../McpServerFormDialog.vue';
+import OverlayShell from '../OverlayShell.vue';
 import { i18n, applyLocale } from '@/i18n';
 import type { McpServerConfig, McpWriteErrorInfo } from '@shared/types/mcp';
 import type { McpCollisionServer } from '../mcp-server-form-logic';
@@ -33,7 +34,6 @@ function mountForm(overrides: {
 } = {}) {
   return track(mount(McpServerFormDialog, {
     props: {
-      visible: true,
       editingName: overrides.editingName ?? null,
       editingConfig: overrides.editingConfig ?? null,
       servers: overrides.servers ?? [],
@@ -482,9 +482,6 @@ describe('McpServerFormDialog — secret values', () => {
 
 describe('McpServerFormDialog — write acknowledgement', () => {
   it('refuses to send a second time while a write is in flight', async () => {
-    // reka keeps DialogContent mounted through its exit animation, so Save stays clickable; without
-    // the guard a double-click sends twice and the second is refused as "already exists" — by the row
-    // the first one just created.
     const wrapper = mountForm({ submitting: true });
     await nextTick();
     await type(byPlaceholder('my-server'), 'weather');
@@ -533,6 +530,32 @@ describe('McpServerFormDialog — discarding work', () => {
     await click(buttonByText('Cancel'));
 
     expect(wrapper.emitted('cancel')).toHaveLength(1);
+  });
+
+  it('reports a draft while it holds typed text or a write is in flight, so a scrim click leaves it open', async () => {
+    const wrapper = mountForm();
+    await nextTick();
+    const shell = wrapper.findComponent(OverlayShell);
+    expect(shell.props('hasDraft')).toBe(false);
+
+    await type(byPlaceholder('my-server'), 'weather');
+    expect(shell.props('hasDraft')).toBe(true);
+    await click(document.body.querySelector<HTMLElement>('[data-testid="overlay-scrim"]')!);
+    expect(wrapper.emitted('cancel')).toBeUndefined();
+    expect(bodyText()).not.toContain('Discard your changes?');
+
+    const pristineSaving = mountForm({ editingName: 'weather', editingConfig: { command: 'node' }, submitting: true });
+    await nextTick();
+    expect(pristineSaving.findComponent(OverlayShell).props('hasDraft')).toBe(true);
+  });
+});
+
+describe('McpServerFormDialog — focus', () => {
+  it('opens with focus on the Name field', async () => {
+    mountForm();
+    await nextTick();
+
+    expect(document.activeElement).toBe(byPlaceholder('my-server'));
   });
 });
 

@@ -4,9 +4,10 @@ import type { PanelHost } from "../../../../platform/window-service";
 import type { PostMessageFn } from "../types";
 import type { ExploreThirdPartyProvider } from "../../../pi-session/explore-providers";
 import { DEFAULT_EXPLORE_MODELS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../pi-session/explore-providers";
-import { updateConfigAtEffectiveScope } from "../utils";
+import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
 import { parseEffortLevel, exploreSupportedEffortLevels } from "../../../../shared/types/constants";
 import { log } from "../../../logger";
+import { t } from "../../../l10n";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { TYPESAFE_SECRET_KEY } from "../../../pi-session/custom-providers";
 import { CLASSIFIER_ENV_KEYS, JEV_VIA_OPENROUTER, JEV_VIA_TYPESAFE, memoryJudgeOf } from "../../../pi-session/classifier-model";
@@ -97,41 +98,38 @@ export class ExploreManager {
     void PiRuntime.get().syncCustomProviders((k) => this.platform.secrets.get(k));
   }
 
-  async setProvider(provider: string): Promise<void> {
+  async setProvider(provider: string): Promise<SettingWrite> {
     if (provider === DEFAULT_PROVIDER_ID) {
-      await updateConfigAtEffectiveScope(this.platform, "damocles.explore", "enabled", false);
+      const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.enabled", false);
       log("[ExploreManager] setProvider: default (interception disabled)");
-      return;
+      return written;
     }
-    if (!VALID_PROVIDERS.has(provider as ExploreThirdPartyProvider)) {
-      log("[ExploreManager] setProvider: rejected unknown provider=%s", provider);
-      return;
-    }
-    await updateConfigAtEffectiveScope(this.platform, "damocles.explore", "provider", provider);
-    await updateConfigAtEffectiveScope(this.platform, "damocles.explore", "enabled", true);
+    if (!VALID_PROVIDERS.has(provider as ExploreThirdPartyProvider)) throw new Error(t("{0} is not an Explore provider.", provider));
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.provider", provider);
+    await updateConfigAtEffectiveScope(this.platform, "damocles.explore.enabled", true);
     log("[ExploreManager] setProvider: %s (effective model: %s, interception enabled)", provider, getEffectiveModel(this.platform.settings));
+    return written;
   }
 
-  async setModel(model: string): Promise<void> {
+  async setModel(model: string): Promise<SettingWrite> {
     const provider = getProvider(this.platform.settings);
     const current = this.platform.settings.get<Record<string, string>>("damocles.explore.modelByProvider", {});
     const next: Record<string, string> = { ...current, [provider]: model };
-    await updateConfigAtEffectiveScope(this.platform, "damocles.explore", "modelByProvider", next);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.modelByProvider", next);
     log("[ExploreManager] setModel: provider=%s model=%s", provider, model);
+    return written;
   }
 
-  async setEffort(effort: string): Promise<void> {
+  async setEffort(effort: string): Promise<SettingWrite> {
     const parsed = effort === "" ? null : parseEffortLevel(effort);
-    if (effort !== "" && !parsed) {
-      log("[ExploreManager] setEffort: rejected invalid effort=%s", effort);
-      return;
-    }
+    if (effort !== "" && !parsed) throw new Error(t("{0} is not an effort level.", effort));
     // Persist only a level the currently-selected model advertises (same catalog double-match as the
     // resolver + UI); an unsupported level is stored as unset so settings.json never holds a value the
     // model can't honor. Passing `undefined` removes the override at the effective scope.
     const next = parsed && exploreSupportedEffortLevels(getProvider(this.platform.settings), getEffectiveModel(this.platform.settings)).includes(parsed) ? parsed : undefined;
-    await updateConfigAtEffectiveScope(this.platform, "damocles.explore", "effort", next);
+    const written = await updateConfigAtEffectiveScope(this.platform, "damocles.explore.effort", next);
     log("[ExploreManager] setEffort: %s", next ?? "(cleared)");
+    return written;
   }
 
   async sendExploreKeyStatus(host: PanelHost): Promise<void> {

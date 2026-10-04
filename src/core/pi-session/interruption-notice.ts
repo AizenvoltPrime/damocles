@@ -21,7 +21,11 @@ import {
   type LiveAgentStatus,
 } from './agent-records';
 import { DAMOCLES_INTERRUPTION_NOTICE } from './session-store/constants';
+import type { TeamResumableStop } from '../team/types';
 import { log } from '../logger';
+
+/** Why an agent stopped; 'unrecorded' when nothing persisted a cause (a kill, or a file from before causes were recorded). */
+export type InterruptionCause = TeamResumableStop | 'unrecorded';
 
 /** One interrupted invocation. A later interruption of the same agent is a new invocation. */
 export interface InterruptedAgent {
@@ -29,6 +33,7 @@ export interface InterruptedAgent {
   id: string;
   toolCallId: string;
   description: string;
+  cause: InterruptionCause;
 }
 
 export interface InterruptionNoticeDetails {
@@ -42,8 +47,8 @@ export interface InterruptionSources {
   subagentDir: string;
   /** The in-memory status of a subagent, when this panel still tracks it. */
   liveSubagent: (id: string) => LiveAgentStatus | undefined;
-  /** Whether a team has a checkpoint that `resume_team` would continue from. */
-  teamResumable: (teamId: string) => Promise<boolean>;
+  /** Why a team stopped, when it has a checkpoint that `resume_team` would continue from; else null. */
+  teamStop: (teamId: string) => Promise<InterruptionCause | null>;
 }
 
 export interface NoticeMessage {
@@ -91,7 +96,9 @@ export async function collectInterruptedSubagents(sources: InterruptionSources):
     if (!state || !isResumableSubagentStatus(state)) continue;
     const spawnArgs = state.spawn ? toolCallArgumentsOnBranch(sources.branch, state.spawn.toolCallId) : undefined;
     const description = file?.launch.kind === 'subagent' ? file.launch.description : spawnArgs?.['description'];
-    out.push({ kind: 'subagent', id, toolCallId: state.latest.toolCallId, description: typeof description === 'string' ? description : '' });
+    // isResumableSubagentStatus admits only a 'user' or 'shutdown' stop, or a status with no recorded cause.
+    const cause = state.status === 'stopped' && (state.stopReason === 'user' || state.stopReason === 'shutdown') ? state.stopReason : 'unrecorded';
+    out.push({ kind: 'subagent', id, toolCallId: state.latest.toolCallId, description: typeof description === 'string' ? description : '', cause });
   }
   return out;
 }
@@ -101,19 +108,19 @@ export async function collectInterruptedTeams(sources: InterruptionSources): Pro
   const invocations = agentInvocationsOnBranch(sources.branch).filter((inv) => inv.kind === 'team');
   const out: InterruptedAgent[] = [];
   for (const id of new Set(invocations.map((inv) => inv.id))) {
-    let resumable: boolean;
+    let cause: InterruptionCause | null;
     try {
-      resumable = await sources.teamResumable(id);
+      cause = await sources.teamStop(id);
     } catch (err) {
       // A resume of it would fail on the same read, so it is not offered.
       log('[interruption-notice] skipping team %s: reading its resume state failed: %O', id, err);
       continue;
     }
-    if (!resumable) continue;
+    if (cause === null) continue;
     const mine = invocations.filter((inv) => inv.id === id);
     const created = mine.find((inv) => !inv.resume);
     const title = created ? toolCallArgumentsOnBranch(sources.branch, created.toolCallId)?.['title'] : undefined;
-    out.push({ kind: 'team', id, toolCallId: mine.at(-1)!.toolCallId, description: typeof title === 'string' ? title : '' });
+    out.push({ kind: 'team', id, toolCallId: mine.at(-1)!.toolCallId, description: typeof title === 'string' ? title : '', cause });
   }
   return out;
 }
@@ -143,14 +150,21 @@ export function resumeCall(agent: InterruptedAgent): string {
   return agent.kind === 'team' ? `resume_team({team_id:"${agent.id}"})` : `Agent({resume:"${agent.id}"})`;
 }
 
+const CAUSE_TEXT: Record<InterruptionCause, string> = {
+  user: 'stopped by the user',
+  parent: 'cancelled by your cancel_team call',
+  shutdown: 'stopped when its chat panel closed, switched session or the editor window reloaded',
+  unrecorded: 'stopped with no recorded cause',
+};
+
 /** Model-facing text. Descriptions are model-written, so each is flattened onto its own line. */
 export function formatInterruptionNotice(agents: readonly InterruptedAgent[]): string {
   const lines = agents.map((agent) => {
     const description = agent.description.replace(/\s+/g, ' ').trim();
-    return `- ${agent.kind} ${agent.id}${description ? ` ("${description}")` : ''}: resume with ${resumeCall(agent)}`;
+    return `- ${agent.kind} ${agent.id}${description ? ` ("${description}")` : ''}, ${CAUSE_TEXT[agent.cause]}: resume with ${resumeCall(agent)}`;
   });
   return [
-    'These agents were interrupted before they finished and are not running now:',
+    'These agents stopped before they finished and are not running now:',
     ...lines,
     'Do not resume unless the user asks to continue.',
   ].join('\n');

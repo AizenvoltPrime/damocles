@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { Disposable } from '../../platform/disposable';
-import type { SettingInspection, SettingsChange, SettingsScope, SettingsStore } from '../../platform/settings-store';
+import type { SettingInspection, SettingsChange, SettingsFolder, SettingsScope, SettingsStore } from '../../platform/settings-store';
 
 function configurationTarget(scope: SettingsScope): vscode.ConfigurationTarget {
   switch (scope) {
@@ -10,8 +10,13 @@ function configurationTarget(scope: SettingsScope): vscode.ConfigurationTarget {
   }
 }
 
+// VS Code has no personal per-folder file, so a worktree's personalPath has nothing to name; the folder is the resource.
+function configuration(folder: SettingsFolder | undefined): vscode.WorkspaceConfiguration {
+  return folder === undefined ? vscode.workspace.getConfiguration() : vscode.workspace.getConfiguration(undefined, vscode.Uri.file(folder.path));
+}
+
 // A property VS Code reports as undefined is omitted, so absent stays distinct from a present undefined.
-// VS Code reports workspaceFolderValue, and writes WorkspaceFolder, only for a resource, which this store never passes.
+// VS Code reports workspaceFolderValue, and writes WorkspaceFolder, only for a configuration scoped to a resource.
 function toInspection<T>(raw: { defaultValue?: T; globalValue?: T; workspaceValue?: T; workspaceFolderValue?: T } | undefined): SettingInspection<T> {
   if (!raw) return {};
   return {
@@ -23,19 +28,19 @@ function toInspection<T>(raw: { defaultValue?: T; globalValue?: T; workspaceValu
 }
 
 export class VsCodeSettingsStore implements SettingsStore {
-  get<T>(key: string): T | undefined;
-  get<T>(key: string, defaultValue: T): T;
-  get<T>(key: string, defaultValue?: T): T | undefined {
-    const config = vscode.workspace.getConfiguration();
+  get<T>(key: string, defaultValue?: undefined, folder?: SettingsFolder): T | undefined;
+  get<T>(key: string, defaultValue: T, folder?: SettingsFolder): T;
+  get<T>(key: string, defaultValue?: T, folder?: SettingsFolder): T | undefined {
+    const config = configuration(folder);
     return defaultValue === undefined ? config.get<T>(key) : config.get<T>(key, defaultValue);
   }
 
-  inspect<T>(key: string): SettingInspection<T> {
-    return toInspection(vscode.workspace.getConfiguration().inspect<T>(key));
+  inspect<T>(key: string, folder?: SettingsFolder): SettingInspection<T> {
+    return toInspection(configuration(folder).inspect<T>(key));
   }
 
-  async update(key: string, value: unknown, scope: SettingsScope): Promise<void> {
-    await vscode.workspace.getConfiguration().update(key, value, configurationTarget(scope));
+  async update(key: string, value: unknown, scope: SettingsScope, folder?: SettingsFolder): Promise<void> {
+    await configuration(folder).update(key, value, configurationTarget(scope));
   }
 
   onDidChange(section: string, cb: (change: SettingsChange) => void): Disposable {

@@ -1,7 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, inject } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type { SessionManager } from '@earendil-works/pi-coding-agent';
 import { getPiCodingAgent, initPiLoader } from '../../pi-loader';
@@ -85,8 +84,9 @@ async function finalized(p: AutoCheckpointProducer, userEntryId: string, during:
 }
 
 beforeAll(async () => {
-  // Short, because the legacy repo's GIT_DIR nests the encoded cwd under the test home (see AC5 below).
-  root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rw-'));
+  // Short and outside the sandboxed os.tmpdir(), because the legacy repo's GIT_DIR nests the encoded
+  // cwd under the test home (see AC5 below).
+  root = await fs.promises.mkdtemp(path.join(inject('realTmpDir'), 'rw-'));
   cwd = root;
 });
 

@@ -13,6 +13,7 @@ describe('mapPiFieldsToStored', () => {
     modified: 2000,
     userRenamed: false,
     tag: undefined,
+    model: undefined,
   };
 
   test('auto title (no rename marker) maps name to aiTitle', () => {
@@ -68,6 +69,24 @@ describe('computePiSessionFields', () => {
     expect(fields.firstMessage).toBe('first question');
     expect(fields.modified).toBe(3_000);
     expect(fields.userRenamed).toBe(false);
+  });
+
+  test('the model is the latest model change or assistant reply on the branch, as pi resumes it', () => {
+    const reply = (provider: string, model: string, timestamp: number): SessionEntry => ({
+      type: 'message',
+      id: `a-${timestamp}`,
+      parentId: null,
+      timestamp: new Date(timestamp).toISOString(),
+      message: { role: 'assistant', content: [{ type: 'text', text: 'a' }], provider, model, timestamp },
+    } as unknown as SessionEntry);
+    const change = { type: 'model_change', id: 'mc-1', parentId: null, timestamp: new Date(3_000).toISOString(), provider: 'openai', modelId: 'gpt-5.5' } as unknown as SessionEntry;
+
+    expect(computePiSessionFields(header, [msg('user', 'q', 1_000)], undefined, 9_999).model).toBeUndefined();
+    expect(computePiSessionFields(header, [msg('user', 'q', 1_000), reply('anthropic', 'claude-opus-4-8', 2_000)], undefined, 9_999).model)
+      .toEqual({ provider: 'anthropic', id: 'claude-opus-4-8' });
+    expect(computePiSessionFields(header, [reply('anthropic', 'claude-opus-4-8', 2_000), change], undefined, 9_999).model)
+      .toEqual({ provider: 'openai', id: 'gpt-5.5' });
+    expect(mapPiFieldsToStored(computePiSessionFields(header, [change], undefined, 9_999)).model).toEqual({ provider: 'openai', id: 'gpt-5.5' });
   });
 
   test('falls back to "(no messages)" when there is no user text', () => {

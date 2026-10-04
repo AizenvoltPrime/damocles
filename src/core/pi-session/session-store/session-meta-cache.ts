@@ -6,7 +6,7 @@ import { SESSION_META_CACHE_DIR } from '../../paths';
 import { log } from '../../logger';
 
 /** Bump when `sessionFileMeta`'s output or this file's layout changes; the extension version covers releases. */
-const SESSION_META_SCHEMA = 2;
+const SESSION_META_SCHEMA = 3;
 const FLUSH_DEBOUNCE_MS = 2000;
 /** Another app version's cache file for the same dir is pruned once it has not been written for this long. */
 const FOREIGN_VERSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;

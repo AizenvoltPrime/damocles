@@ -25,10 +25,5 @@ export function createVoiceHandlers(): Partial<HandlerRegistry> {
       }
       toast.error(msg.message);
     },
-
-    voiceConfigUpdate: (msg, ctx) => {
-      if (msg.type !== "voiceConfigUpdate") return;
-      ctx.stores.settingsStore.setVoiceConfig(msg.config, msg.hasApiKey);
-    },
   };
 }

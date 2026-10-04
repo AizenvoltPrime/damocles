@@ -2,6 +2,7 @@ import { ref, watch, shallowRef, type Ref, type ShallowRef } from 'vue';
 import { estimateTextHeight, isReady } from './usePretextMeasurement';
 import type { VirtualItem } from './useVirtualizedMessages';
 import { USER_PROMPT_FILTER } from './useEnrichedPrompts';
+import { remPx } from './useRemPx';
 
 export interface FrameItem {
   top: number;
@@ -14,15 +15,15 @@ export interface Frame {
   totalHeight: number;
 }
 
-const BOTTOM_PADDING = 16;
+const BOTTOM_PADDING_REM = 1;
 const OVERSCAN = 5;
 
-const LEVEL_GAPS = [16, 12, 8] as const;
+const LEVEL_GAPS_REM = [1, 0.75, 0.5] as const;
 
 function getGap(prev: VirtualItem, curr: VirtualItem): number {
-  if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return LEVEL_GAPS[0];
-  if (prev.sourceMessageId !== curr.sourceMessageId) return LEVEL_GAPS[0];
-  return prev.spacingLevel === 1 || curr.spacingLevel === 1 ? LEVEL_GAPS[1] : LEVEL_GAPS[2];
+  if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return remPx(LEVEL_GAPS_REM[0]);
+  if (prev.sourceMessageId !== curr.sourceMessageId) return remPx(LEVEL_GAPS_REM[0]);
+  return remPx(prev.spacingLevel === 1 || curr.spacingLevel === 1 ? LEVEL_GAPS_REM[1] : LEVEL_GAPS_REM[2]);
 }
 
 const CARD_HEADER = 34;
@@ -134,8 +135,11 @@ function binarySearchVisibleRange(
 
 export function useScrollEngine(
   virtualItems: Ref<VirtualItem[]>,
+  streamingMessageId: Readonly<Ref<string | null | undefined>>,
   scrollContainer: Ref<HTMLElement | null>,
   canvasRef: Ref<HTMLElement | null>,
+  // An element carrying the transcript's column class; rows wrap at its width, not the scroll container's.
+  columnRef: Ref<HTMLElement | null>,
 ) {
   const containerWidth = ref(0);
   const frame: ShallowRef<Frame> = shallowRef({ items: [], totalHeight: 0 });
@@ -144,12 +148,16 @@ export function useScrollEngine(
   const stickyHeight = ref(0);
   const frameVersion = ref(0);
 
-  const knownItemIds = new Set<string>();
   const measuredHeights = new Map<string, number>();
+  // What each row showed when last measured; a change means it was streamed into, which grows it at its end.
+  const measuredContents = new Map<string, string>();
   const itemIdToIndex = new Map<string, number>();
 
   let scheduledRaf: number | null = null;
   let lastBuildWidth = 0;
+  // Where the view stood when this flush's first compensated resize arrived, and the shift owed since.
+  let shiftBase: number | null = null;
+  let pendingShift = 0;
   const resizeObservers = new Map<string, ResizeObserver>();
 
   function getItemHeight(item: VirtualItem, width: number): number {
@@ -162,7 +170,10 @@ export function useScrollEngine(
     [virtualItems, containerWidth],
     ([items, width]) => {
       if (width > 0) {
-        if (width !== lastBuildWidth) measuredHeights.clear();
+        if (width !== lastBuildWidth) {
+          measuredHeights.clear();
+          measuredContents.clear();
+        }
         lastBuildWidth = width;
 
         itemIdToIndex.clear();
@@ -195,13 +206,13 @@ export function useScrollEngine(
       if (height > 0) lastVisible = item;
     }
 
-    return { items: frameItems, totalHeight: y + BOTTOM_PADDING };
+    return { items: frameItems, totalHeight: y + remPx(BOTTOM_PADDING_REM) };
   }
 
   function measureContainerWidth(): void {
-    const container = scrollContainer.value;
-    if (container) {
-      const w = container.clientWidth;
+    const column = columnRef.value;
+    if (column) {
+      const w = column.clientWidth;
       if (w !== containerWidth.value) containerWidth.value = w;
     }
   }
@@ -219,7 +230,7 @@ export function useScrollEngine(
     const canvas = canvasRef.value;
     if (!container || !canvas) return;
 
-    const w = container.clientWidth;
+    const w = columnRef.value?.clientWidth ?? 0;
     if (w > 0 && w !== containerWidth.value) {
       containerWidth.value = w;
       return;
@@ -250,11 +261,16 @@ export function useScrollEngine(
   }
 
   function onItemResized(itemId: string, newHeight: number): void {
+    const wasMeasured = measuredHeights.has(itemId);
     measuredHeights.set(itemId, newHeight);
 
     const items = virtualItems.value;
     const index = itemIdToIndex.get(itemId);
     if (index === undefined) return;
+    const item = items[index];
+    const content = `${item?.type}:${item?.text ?? ''}`;
+    const streamedInto = wasMeasured && content !== measuredContents.get(itemId);
+    measuredContents.set(itemId, content);
 
     const f = frame.value;
     const resized = f.items[index];
@@ -289,20 +305,31 @@ export function useScrollEngine(
     }
 
     const lastItem = newItems[newItems.length - 1];
-    const totalHeight = lastItem ? lastItem.bottom + BOTTOM_PADDING : 0;
+    const totalHeight = lastItem ? lastItem.bottom + remPx(BOTTOM_PADDING_REM) : 0;
 
     const container = scrollContainer.value;
     const canvas = canvasRef.value;
     if (container && canvas) {
-      const canvasOffset = canvas.offsetTop;
-      if ((canvasOffset + resizedTop) < container.scrollTop) {
-        container.scrollTop += (newHeight - oldHeight);
+      const viewTop = (shiftBase ?? container.scrollTop) + pendingShift - canvas.offsetTop;
+      // A row the view starts inside moves what it shows only when measured before and not grown at its end (docs/invariants.md#streaming-views).
+      const growsAtEnd = streamedInto || (!!streamingMessageId.value && item?.sourceMessageId === streamingMessageId.value);
+      if (resized.bottom <= viewTop || (resized.top < viewTop && wasMeasured && !growsAtEnd)) {
+        shiftBase ??= container.scrollTop;
+        pendingShift += newHeight - oldHeight;
       }
     }
 
     frame.value = { items: newItems, totalHeight };
     frameVersion.value++;
   }
+
+  // Runs after the canvas height commits and before the view's MutationObserver reads it (docs/invariants.md#streaming-views).
+  watch(frame, () => {
+    const container = scrollContainer.value;
+    if (container && shiftBase !== null) container.scrollTop = shiftBase + pendingShift;
+    shiftBase = null;
+    pendingShift = 0;
+  }, { flush: 'post' });
 
   function onItemMounted(itemId: string, el: HTMLElement): void {
     if (resizeObservers.has(itemId)) return;
@@ -324,6 +351,7 @@ export function useScrollEngine(
     }
     if (!itemIdToIndex.has(itemId)) {
       measuredHeights.delete(itemId);
+      measuredContents.delete(itemId);
     }
   }
 
@@ -345,7 +373,6 @@ export function useScrollEngine(
     visibleStart,
     visibleEnd,
     frameVersion,
-    knownItemIds,
     stickyHeight,
     onScroll,
     setStickyHeight,

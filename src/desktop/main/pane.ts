@@ -9,7 +9,7 @@ import { APP_ORIGIN, PANE_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl } from './security';
 import { isPanelSender } from './views';
 
-// What the pane may ask for; every page id is resolved against the selected chat tab's own pages by the implementation.
+// What the pane may ask for; every page id is resolved against the selected chat's own pages by the implementation.
 export interface PaneActions {
   state(): PaneState;
   requestWidth(width: number, commit: boolean): void;
@@ -53,7 +53,7 @@ export function paneHtml(theme: PanelTheme): string {
   const nonce = randomBytes(16).toString('base64');
   const assets = `${APP_ORIGIN}/desktop-shell/assets`;
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en"${theme.reducedMotion ? ' data-reduced-motion' : ''}>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -69,7 +69,7 @@ export function paneHtml(theme: PanelTheme): string {
 </html>`;
 }
 
-/** The one pane view of the window: the chrome of the selected chat tab's browser pane, talking to main only through the damocles:pane: channels. */
+/** The one pane view of the window: the chrome of the selected chat's browser pane, talking to main only through the damocles:pane: channels. */
 export class PaneHost {
   readonly view: WebContentsView;
   private readonly actions: PaneActions;

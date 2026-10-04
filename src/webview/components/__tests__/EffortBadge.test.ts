@@ -23,8 +23,7 @@ vi.mock('@/composables/usePlatformBridge', () => ({
   usePlatformBridge: () => ({ postMessage: () => {}, onMessage: () => () => {}, getState: () => undefined, setState: () => {} }),
 }));
 
-const SubtitleShell = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
-const PassThrough = defineComponent({ template: '<div><slot /></div>' });
+const Shell = defineComponent({ template: '<div><slot name="header-actions" /><slot /><slot name="footer" /></div>' });
 
 /** Every rendered badge's accessible name, in document order. */
 const badgeNames = (wrapper: VueWrapper): Array<string | undefined> =>
@@ -60,7 +59,7 @@ describe('the reply effort badge', () => {
     ...(effort ? { effort } : {}),
   });
   const row = (virtualItem: VirtualItem): VueWrapper => mount(VirtualItemWrapper, {
-    props: { item: virtualItem, top: 0, isNew: false, canRewind: false, promptIndex: 0 },
+    props: { item: virtualItem, top: 0, arriving: false, canRewind: false, promptIndex: 0 },
     global: { plugins: [i18n], stubs: { MessageContent: true, MarkdownRenderer: true } },
   });
 
@@ -93,21 +92,27 @@ describe('the subagent effort badge', () => {
     useSubagentStore().subagents = { [state.id]: state };
     return mount(SubagentOverlay, {
       props: { subagent: state },
-      global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true, ToolCallCard: true } },
+      global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true, ToolCallCard: true } },
     });
   };
 
-  it('shows the run effort beside the model on the card and in the overlay header', () => {
+  /** The overlay's meta chips name the effort as a chip ("Medium effort") rather than a badge. */
+  const effortChips = (wrapper: VueWrapper): string[] =>
+    wrapper.findAll('[data-testid="agent-chip"]').map((chip) => chip.text().replace(/\s+/g, ' ')).filter((text) => text.endsWith('effort'));
+
+  it('shows the run effort beside the model on the card and in the overlay chips', () => {
     const state = subagent({ effort: 'medium' });
     const onCard = card(state);
-    expect(badgeNames(onCard)).toEqual(['Effort: Medium']);
+    expect(onCard.get('[data-testid="subagent-card-effort"]').text()).toBe('Medium effort');
     expect(onCard.text()).toContain('Haiku 4.5');
-    expect(badgeNames(overlay(state))).toEqual(['Effort: Medium']);
+    const onOverlay = overlay(state);
+    expect(effortChips(onOverlay)).toEqual(['Medium effort']);
+    expect(onOverlay.text()).toContain('Haiku 4.5');
   });
 
-  it('shows no badge for a run with no published effort', () => {
-    expect(badgeNames(card(subagent()))).toEqual([]);
-    expect(badgeNames(overlay(subagent()))).toEqual([]);
+  it('shows no badge or chip for a run with no published effort', () => {
+    expect(card(subagent()).find('[data-testid="subagent-card-effort"]').exists()).toBe(false);
+    expect(effortChips(overlay(subagent()))).toEqual([]);
   });
 });
 
@@ -130,29 +135,30 @@ describe('the team agent effort badge', () => {
   };
   const card = (member: TeamAgent) => mount(TeamAgentCard, { props: { agent: member, index: 0 }, global: { plugins: [i18n] } });
   const overlay = () => mount(TeamAgentOverlay, {
-    global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, ScrollArea: PassThrough, Button: true, MarkdownRenderer: true, LoadingSpinner: true, ToolCallCard: true } },
+    global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ToolCallCard: true } },
   });
 
+  const effortChips = (wrapper: VueWrapper): string[] =>
+    wrapper.findAll('[data-testid="agent-chip"]').map((chip) => chip.text().replace(/\s+/g, ' ')).filter((text) => text.endsWith('effort'));
+
   it.each([
-    ['lead', 'high', 'Effort: High'],
-    ['specialist', 'medium', 'Effort: Medium'],
-  ] as const)('shows the %s effort beside its model on the card and in the overlay header', (role, effort, name) => {
+    ['lead', 'high', 'High effort'],
+    ['specialist', 'medium', 'Medium effort'],
+  ] as const)('shows the %s effort beside its model on the card and in the overlay chips', (role, effort, label) => {
     const member = agent({ role, effort });
     seed(member);
     const onCard = card(member);
-    expect(badgeNames(onCard)).toEqual([name]);
+    expect(onCard.get('[data-testid="team-agent-effort"]').text()).toBe(label);
     expect(onCard.text()).toContain('Opus 5');
-    const header = overlay().get('.subtitle');
-    expect(badgeNames(header as unknown as VueWrapper)).toEqual([name]);
-    expect(header.text()).toMatch(new RegExp(`${role} \\| Opus 5`));
+    const onOverlay = overlay();
+    expect(effortChips(onOverlay)).toEqual([label]);
+    expect(onOverlay.text()).toContain('Opus 5');
   });
 
-  it('shows no badge, and keeps the subtitle separator, for an agent with no effort', () => {
+  it('shows no effort for an agent that published none', () => {
     const member = agent();
     seed(member);
-    expect(badgeNames(card(member))).toEqual([]);
-    const header = overlay().get('.subtitle');
-    expect(header.find('[data-testid="effort-badge"]').exists()).toBe(false);
-    expect(header.text()).toMatch(/lead \| Opus 5 \| 2 tools/);
+    expect(card(member).find('[data-testid="team-agent-effort"]').exists()).toBe(false);
+    expect(effortChips(overlay())).toEqual([]);
   });
 });

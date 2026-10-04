@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { createEditorHandlers } from '../editor-handlers';
+import { settingsViewHandlers } from '../settings-handlers';
 import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import type { HandlerContext } from '../../types';
@@ -16,11 +17,13 @@ const MESSAGES: ExtensionToWebviewMessage[] = [
   { type: 'settingsFileSaveResult', scope: 'user', ok: true, version: 'def' },
   { type: 'settingsFileChanged', scope: 'user', version: 'ghi' },
   { type: 'settingsFileAvailability', files: { user: { available: true }, project: { available: false, reason: 'untrusted' }, local: { available: false, reason: 'untrusted' } } },
+  { type: 'openSettingsFileEditor', scope: 'project' },
 ];
 
 function dispatch(msg: ExtensionToWebviewMessage): void {
   const ctx = { stores: { settingsStore: useSettingsStore() } } as unknown as HandlerContext;
-  const handler = createEditorHandlers()[msg.type] as ((m: ExtensionToWebviewMessage, c: HandlerContext) => void) | undefined;
+  // settingsFileAvailability is a settings view message, also read by the desktop settings modal's footer.
+  const handler = { ...settingsViewHandlers, ...createEditorHandlers() }[msg.type] as ((m: ExtensionToWebviewMessage, c: HandlerContext) => void) | undefined;
   if (!handler) throw new Error(`no editor handler for ${msg.type}`);
   handler(msg, ctx);
 }
@@ -48,6 +51,8 @@ describe('editor handlers', () => {
     const store = useEditorStore();
 
     dispatch(MESSAGES[0]!);
+    expect(store.view).toBeNull();
+    expect(store.openProposal('tool-1')).toBe(true);
     expect(store.view).toMatchObject({ kind: 'diff', viewId: 'v1', purpose: 'proposal', approvalId: 'tool-1' });
 
     dispatch(MESSAGES[3]!);
@@ -58,6 +63,9 @@ describe('editor handlers', () => {
     expect(store.saveResults.user).toEqual({ ok: true, version: 'def' });
     expect(store.changedVersions.user).toEqual({ version: 'ghi' });
     expect(store.settingsFileAvailability?.project).toEqual({ available: false, reason: 'untrusted' });
+
+    dispatch(MESSAGES[7]!);
+    expect(store.settingsEditorScope).toBe('project');
   });
 });
 

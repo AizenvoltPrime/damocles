@@ -16,13 +16,13 @@ import type { PanelStateStore } from '../panel-state-store';
 import { CHAT_WORKER_SRC, DesktopPanel, type PanelViews } from '../views';
 
 function panel(kind: PanelOptions['kind']): DesktopPanel {
-  const deps = { window: {} as never, preloadPath: '', panePreloadPath: '', states: { set: vi.fn() } as unknown as PanelStateStore, log: vi.fn(), onChange: vi.fn(), onRendererGaveUp: vi.fn(), onPaneGaveUp: vi.fn(), paneContext: vi.fn() };
+  const deps = { window: {} as never, preloadPath: '', panePreloadPath: '', states: { set: vi.fn() } as unknown as PanelStateStore, log: vi.fn(), onChange: vi.fn(), onRestack: vi.fn(), onReveal: vi.fn(), onRendererGaveUp: vi.fn(), onSavedSessionChange: vi.fn(), onPaneGaveUp: vi.fn(), paneContext: vi.fn() };
   return new DesktopPanel({} as PanelViews, deps, { options: { kind, title: '', localResourceRoots: [] } }, undefined, undefined);
 }
 
 // workerSrc becomes the chat page's CSP worker-src (core panel HTML); Monaco's workers need it and nothing else may get it.
 describe('panel CSP inputs', () => {
-  it('lets a chat tab load workers from the built webview assets only', () => {
+  it('lets a chat load workers from the built webview assets only', () => {
     expect(CHAT_WORKER_SRC).toBe('app://damocles/webview/assets/');
     expect(panel('chat').workerSrc).toBe(CHAT_WORKER_SRC);
   });

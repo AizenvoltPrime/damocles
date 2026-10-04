@@ -45,23 +45,23 @@ function openElementCode(attachment: ElementAttachment): void {
           v-if="attachment.elementScreenshot"
           :src="`data:image/png;base64,${attachment.elementScreenshot}`"
           :alt="attachment.selector"
-          class="w-16 h-16 object-cover rounded-md border border-border cursor-pointer hover:opacity-80 transition-opacity"
+          class="size-16 object-cover rounded-md border border-border cursor-pointer hover:opacity-80 transition-opacity"
           :title="$t('elementAttachment.preview')"
           @click="openLightbox(attachment)"
         />
         <div
           v-else
-          class="w-16 h-16 rounded-md border border-border bg-muted flex items-center justify-center"
+          class="size-16 rounded-md border border-border bg-muted flex items-center justify-center"
         >
-          <span class="text-[10px] text-muted-foreground">DOM</span>
+          <span class="text-10 text-muted-foreground">DOM</span>
         </div>
         <button
-          class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground
+          class="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-destructive text-destructive-foreground
                  flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity
                  hover:bg-destructive/80 cursor-pointer"
           @click="$emit('remove', attachment.id)"
         >
-          <IconX :size="12" />
+          <IconX class="size-3" />
         </button>
       </div>
 
@@ -71,20 +71,22 @@ function openElementCode(attachment: ElementAttachment): void {
         :title="$t('elementAttachment.openContext')"
         @click="openElementCode(attachment)"
       >
-        <IconCode :size="14" class="text-purple-400 shrink-0" />
+        <IconCode
+          class="size-3.5 text-(--d-info) shrink-0"
+        />
         <div class="flex flex-col min-w-0">
-          <span class="text-[10px] font-medium text-purple-400 uppercase tracking-wider">{{ $t('elementAttachment.element') }}</span>
-          <span class="text-xs text-foreground truncate max-w-[120px]" :title="attachment.selector">
+          <span class="text-10 font-medium text-(--d-info) uppercase tracking-wider">{{ $t('elementAttachment.element') }}</span>
+          <span class="text-xs text-foreground truncate max-w-30" :title="attachment.selector">
             {{ attachment.selector }}
           </span>
         </div>
         <button
-          class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-destructive text-destructive-foreground
+          class="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-destructive text-destructive-foreground
                  flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity
                  hover:bg-destructive/80 cursor-pointer"
           @click.stop="$emit('remove', attachment.id)"
         >
-          <IconX :size="12" />
+          <IconX class="size-3" />
         </button>
       </div>
     </template>

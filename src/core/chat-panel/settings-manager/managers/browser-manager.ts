@@ -1,6 +1,6 @@
 import type { Disposable } from "../../../../platform/disposable";
 import type { Platform } from "../../../../platform/platform";
-import { updateConfigAtEffectiveScope } from "../utils";
+import { updateConfigAtEffectiveScope, type SettingWrite } from "../utils";
 
 export class BrowserManager {
   private enabled = false;
@@ -27,8 +27,8 @@ export class BrowserManager {
     return this.enabled;
   }
 
-  async setEnabled(enabled: boolean): Promise<void> {
+  async setEnabled(enabled: boolean): Promise<SettingWrite> {
     this.enabled = enabled;
-    await updateConfigAtEffectiveScope(this.platform, "damocles.browser", "enabled", enabled);
+    return updateConfigAtEffectiveScope(this.platform, "damocles.browser.enabled", enabled);
   }
 }

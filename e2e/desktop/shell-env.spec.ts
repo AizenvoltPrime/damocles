@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { mainLog } from './support/app';
-import { chatTab, expect, nextTab, test } from './support/fixtures';
+import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
@@ -39,7 +39,7 @@ test.describe('child process environment', () => {
     fs.writeFileSync(path.join(home.damoclesDir, 'mcp.json'), JSON.stringify({ mcpServers: { e2e: { command: 'e2e-mcp', args: [] } } }, null, 2));
 
     const desktop = await launch({ env: { PATH: pathWithoutGit(), SHELL: '/bin/sh' } });
-    const tab = await chatTab(desktop.app);
+    const tab = await activeChat(desktop.app);
     await expect(chatInput(tab)).toBeVisible();
     expect(pathWithoutGit().split(path.delimiter)).not.toContain(tools);
     await expect.poll(() => mainLog(home)).toContain('[git] git version 9.9.9-e2e');
@@ -60,14 +60,14 @@ test.describe('child process environment', () => {
       const env: Record<string, string> = { PATH: pathWithoutGit() };
       if (process.platform !== 'win32') env['SHELL'] = path.join(home.root, 'no-such-shell');
       const desktop = await launch({ env });
-      const tab = await chatTab(desktop.app);
+      const tab = await activeChat(desktop.app);
       await expect(chatInput(tab)).toBeVisible();
       await expect.poll(() => desktop.output()).toContain(`[notification:warning] ${GIT_MISSING}`);
 
       await sendAndAwaitEcho(tab, 'a turn with no git');
       await expect.poll(() => desktop.output()).toContain(`[CheckpointService] git unavailable, checkpoints disabled for this session: ${GIT_MISSING}`);
 
-      const opened = nextTab(desktop.app, [tab]);
+      const opened = nextChat(desktop.app, [tab]);
       await clickMenu(desktop.app, 'damocles.openChat');
       const second = await opened;
       await expect(chatInput(second)).toBeVisible();

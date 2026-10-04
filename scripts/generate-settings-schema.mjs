@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseContributedConfiguration } from '../src/core/config/contributed-configuration.ts';
+import { DESKTOP_CONFIGURATION } from '../src/desktop/main/desktop-configuration.ts';
 import { isEntryPoint } from './entry-point.mjs';
 
 /**
@@ -11,8 +12,8 @@ import { isEntryPoint } from './entry-point.mjs';
  *   node scripts/generate-settings-schema.mjs --check  # exit 1 if the committed file is stale
  *
  * `user` covers ~/.damocles/settings.json; `project` covers <folder>/.damocles/settings.json and settings.local.json,
- * where user-only keys are flagged. Every top-level key the settings readers accept is listed, and any other key is
- * flagged as unknown.
+ * where user-only keys are flagged. Every top-level key the settings readers accept is listed, the desktop-only keys of
+ * src/desktop/main/desktop-configuration.ts included, and any other key is flagged as unknown.
  */
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -88,14 +89,19 @@ function fileSchema(properties) {
   return { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties, additionalProperties: false };
 }
 
-export function buildSettingsSchemas(manifest, nls) {
+export function buildSettingsSchemas(manifest, nls, desktop = DESKTOP_CONFIGURATION) {
   const configuration = manifest.contributes?.configuration;
   const sections = Array.isArray(configuration) ? configuration : configuration ? [configuration] : [];
   const contributed = {};
   for (const section of sections) {
     for (const [key, property] of Object.entries(section.properties ?? {})) contributed[key] = toSchema(property, key, nls);
   }
-  const { userOnlyKeys } = parseContributedConfiguration(manifest);
+  const userOnlyKeys = new Set(parseContributedConfiguration(manifest).userOnlyKeys);
+  for (const [key, property] of Object.entries(desktop)) {
+    if (Object.hasOwn(contributed, key)) throw new Error(`desktop-only key ${key} is also a package.json setting`);
+    contributed[key] = toSchema(property, key, nls);
+    if (property.scope === 'application') userOnlyKeys.add(key);
+  }
   for (const key of userOnlyKeys) {
     if (!Object.hasOwn(contributed, key)) throw new Error(`user-only key ${key} is not a contributed setting`);
   }

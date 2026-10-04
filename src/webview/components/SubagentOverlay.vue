@@ -4,44 +4,40 @@ import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
-import { Button } from '@/components/ui/button';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import {
-  IconClipboard,
-  IconSearch,
-  IconCompass,
-  IconRobot,
-  IconCheck,
-  IconXCircle,
-  IconBan,
-  IconChevronDown,
-  IconFile,
-  IconPaperPlane,
-} from '@/components/icons';
-import LoadingSpinner from './LoadingSpinner.vue';
+import { effortBadgeLabelKey } from '@shared/effort-badge';
+import { agentCacheHitRate, agentTotalTokens } from '@shared/usage-accounting';
+import { Bot, ClipboardList, Compass, Database, FileText, Gauge, Loader, LoaderCircle, Receipt, SearchCheck, Send, Square, Timer, Wrench, Zap } from 'lucide-vue-next';
 import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import OverlayHeaderAction from './OverlayHeaderAction.vue';
+import AgentChip from './agent-view/AgentChip.vue';
+import AgentPromptDisclosure from './agent-view/AgentPromptDisclosure.vue';
+import AgentResult from './agent-view/AgentResult.vue';
+import AgentSteerBar from './agent-view/AgentSteerBar.vue';
 import SteerImageChips from './SteerImageChips.vue';
-import AgentUsageStats from './AgentUsageStats.vue';
-import EffortBadge from './EffortBadge.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { stripSteerPrefix } from '@shared/steer';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
-import { useUIStore } from '@/stores/useUIStore';
+import { useCostLabel } from '@/composables/useCostLabel';
+import { useModelIdentity } from '@/composables/useModelIdentity';
+import { useOverlaySteer } from '@/composables/useOverlaySteer';
+import { useSubagentStop } from '@/composables/useSubagentStop';
+import { useAppendedIds } from '@/composables/useAppendedIds';
+import { agentStatusChip, formatElapsed, formatTokenCount } from '@/composables/useTeamFormatting';
+import { useBackgroundTaskStore } from '@/stores/useBackgroundTaskStore';
 import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 import { ownEntry } from '@/utils/ownEntry';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
+import { cacheHitPercent } from '@/utils/cacheHitPercent';
 import { subagentHeading } from '@/stores/useSubagentStore';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const { postMessage } = usePlatformBridge();
-const uiStore = useUIStore();
+const { costLabel, costTitle } = useCostLabel();
+const modelIdentity = useModelIdentity();
+const backgroundTaskStore = useBackgroundTaskStore();
 
 interface StreamingState {
   content?: string;
@@ -60,7 +56,6 @@ const emit = defineEmits<{
   (e: 'openLog', agentId: string): void;
 }>();
 
-const isPromptExpanded = ref(false);
 const lightboxImageUrl = ref<string | null>(null);
 
 function openLightbox(block: ImageBlock): void {
@@ -70,12 +65,8 @@ const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 
 onMounted(() => {
-  if (props.subagent.status === 'running') {
-    updateElapsed();
-    timerInterval = setInterval(updateElapsed, 1000);
-  } else {
-    updateElapsed();
-  }
+  updateElapsed();
+  if (props.subagent.status === 'running') timerInterval = setInterval(updateElapsed, 1000);
 });
 
 onUnmounted(() => {
@@ -90,49 +81,22 @@ function updateElapsed(): void {
   elapsedSeconds.value = Math.floor((endTime - props.subagent.startTime) / 1000);
 }
 
-const formattedDuration = computed(() => {
-  const elapsed = elapsedSeconds.value;
-  if (elapsed < 60) return `${elapsed}s`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-});
+const AGENT_ICONS: Record<string, Component> = {
+  'code-reviewer': SearchCheck,
+  Explore: Compass,
+  Plan: ClipboardList,
+  'general-purpose': Bot,
+};
 
 const agentIcon = computed((): Component => {
-  const icons: Record<string, Component> = {
-    'code-reviewer': IconSearch,
-    Explore: IconCompass,
-    Plan: IconClipboard,
-    'general-purpose': IconRobot,
-  };
   const type = props.subagent.agentType;
-  return (type !== undefined ? ownEntry(icons, type) : undefined) ?? IconClipboard;
+  return (type !== undefined ? ownEntry(AGENT_ICONS, type) : undefined) ?? Bot;
 });
 
-const statusBadgeClass = computed(() => {
-  switch (props.subagent.status) {
-    case 'running':
-      return 'bg-primary/30 text-primary border-primary/30';
-    case 'completed':
-      return 'bg-success/30 text-success border-success/30';
-    case 'failed':
-      return 'bg-error/30 text-error border-error/30';
-    case 'cancelled':
-      return 'bg-warning/30 text-warning border-warning/30';
-    default:
-      return 'bg-primary/30 text-primary border-primary/30';
-  }
-});
+const chip = computed(() => agentStatusChip(props.subagent.status));
+const isRunning = computed(() => props.subagent.status === 'running');
 
-const displayStatus = computed(() => {
-  const statusMap: Record<string, string> = {
-    running: t('subagent.running'),
-    completed: t('subagent.completed'),
-    failed: t('subagent.failed'),
-    cancelled: t('subagent.cancelled'),
-  };
-  return statusMap[props.subagent.status] || props.subagent.status;
-});
+const statusBadge = computed(() => ({ label: t(chip.value.labelKey), class: chip.value.color, pulse: chip.value.live }));
 
 const displayAgentType = computed((): string | null => {
   const type = props.subagent.agentType;
@@ -140,6 +104,12 @@ const displayAgentType = computed((): string | null => {
   const key = subagentTypeLabelKey(type);
   return key ? t(key) : type;
 });
+
+const subtitle = computed(() => [
+  displayAgentType.value !== null ? t('overlays.agent.subagentOfType', { type: displayAgentType.value }) : t('overlays.agent.subagent'),
+  props.subagent.isBackground ? t('overlays.agent.inBackground') : null,
+  t('overlays.agent.startedByMain'),
+].filter(Boolean).join(' · '));
 
 const hasPrompt = computed(() => Boolean(props.subagent.prompt?.trim()));
 
@@ -152,29 +122,20 @@ const resultContent = computed(() =>
 );
 const hasResult = computed(() => Boolean(resultContent.value));
 
-const formattedToolCount = computed(() => {
-  if (props.subagent.result?.totalToolUseCount) {
-    const count = props.subagent.result.totalToolUseCount;
-    return t('subagentDisplay.tools', { n: count }, count);
-  }
-
-  let liveCount = props.subagent.toolCalls.length;
-  for (const message of props.subagent.messages) {
-    if (message.toolCalls) {
-      liveCount += message.toolCalls.length;
-    }
-  }
-
-  if (liveCount === 0) return null;
-  return t('subagentDisplay.tools', { n: liveCount }, liveCount);
+const toolCount = computed(() => {
+  if (props.subagent.result?.totalToolUseCount) return props.subagent.result.totalToolUseCount;
+  return props.subagent.messages.reduce((count, message) => count + (message.toolCalls?.length ?? 0), props.subagent.toolCalls.length);
 });
 
-// The extension resolves the authoritative display label (incl. custom providers like StepFun), so
-// render it verbatim — never re-parse it as a model id (that drops space-separated names like
-// "StepFun Step 3.7 Flash"). Same value flows from live streaming and from a restored transcript.
-const displayModel = computed(() => props.subagent.model ?? null);
+// The extension resolves the authoritative display label (custom providers included), so it is matched
+// to a listed model only for its logo and otherwise shown verbatim.
+const model = computed(() => modelIdentity(props.subagent.model));
 
-const hasTemplate = computed(() => Boolean(props.subagent.templatePath));
+const totalTokens = computed(() => (props.subagent.usage ? agentTotalTokens(props.subagent.usage) : 0));
+const cachePct = computed(() => {
+  const rate = props.subagent.usage ? agentCacheHitRate(props.subagent.usage) : null;
+  return rate === null ? 0 : cacheHitPercent(rate);
+});
 
 function openTemplate(): void {
   if (props.subagent.templatePath) {
@@ -182,27 +143,18 @@ function openTemplate(): void {
   }
 }
 
-// Metadata after the agent type (which renders separately so it can be a clickable template link).
-const metadataTail = computed(() => [
-  formattedDuration.value,
-  formattedToolCount.value,
-  displayModel.value,
-].filter(Boolean));
+const subagentStop = useSubagentStop();
+const stopping = computed(() => subagentStop.isStopping(props.subagent));
 
-const overlayStatusBadge = computed(() => {
-  const iconMap: Record<string, Component | undefined> = {
-    running: undefined,
-    completed: IconCheck,
-    failed: IconXCircle,
-    cancelled: IconBan,
-  };
-  return {
-    label: displayStatus.value,
-    class: statusBadgeClass.value,
-    icon: iconMap[props.subagent.status],
-    showSpinner: props.subagent.status === 'running',
-  };
-});
+function stop(): void {
+  if (props.subagent.sdkAgentId) subagentStop.stop(props.subagent.sdkAgentId);
+}
+
+const canSteer = computed(() => isRunning.value && Boolean(props.subagent.sdkAgentId));
+const steer = useOverlaySteer(() => props.subagent.sdkAgentId);
+
+// Streamed text seals into a new message, so only steers and tool cards play an entrance.
+const arrived = useAppendedIds(() => props.subagent.messages.map((message) => message.id));
 
 // Messages are replaced, never mutated, so a cached array stays correct and keeps the chips' props stable across renders.
 const steerImageCache = new WeakMap<ChatMessage, ImageBlock[]>();
@@ -215,8 +167,6 @@ function steerImages(message: ChatMessage): ImageBlock[] {
   }
   return images;
 }
-
-const hasLogFile = computed(() => Boolean(props.subagent.sdkAgentId));
 
 function isTextBlock(block: ContentBlock): block is { type: 'text'; text: string } {
   return block.type === 'text';
@@ -258,144 +208,240 @@ function userMessageText(message: ChatMessage): string {
 <template>
   <OverlayShell
     :title="subagentHeading(subagent, t).title"
+    :subtitle="subtitle"
     :icon="agentIcon"
-    icon-class="text-primary"
-    :status-badge="overlayStatusBadge"
+    icon-class="text-(--d-info)"
+    :status-badge="statusBadge"
+    :follow-key="subagent.id"
+    :has-draft="steer.text.value.trim() !== ''"
     @close="emit('close')"
   >
-    <template #subtitle>
-      <span class="inline-flex items-center">
-        <template v-if="displayAgentType !== null">
-          <button
-            v-if="hasTemplate"
-            type="button"
-            class="cursor-pointer text-primary hover:underline"
-            :title="t('subagentDisplay.openTemplate', { path: subagent.templatePath })"
-            @click="openTemplate"
-          >{{ displayAgentType }}</button>
-          <span v-else>{{ displayAgentType }}</span>
-        </template>
-        <span v-if="metadataTail.length"><template v-if="displayAgentType !== null">&nbsp;•&nbsp;</template>{{ metadataTail.join(' • ') }}</span>
-        <EffortBadge v-if="subagent.effort" :effort="subagent.effort" class="ml-1.5" />
-        <AgentUsageStats v-if="subagent.usage" :usage="subagent.usage" :dollar-billed="subagent.dollarBilled" variant="subtitle" />
-      </span>
-    </template>
-
     <template #header-actions>
-      <Button
-        v-if="hasLogFile"
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
+      <OverlayHeaderAction
+        v-if="subagent.sdkAgentId"
+        :label="t('overlays.agent.log')"
         :title="t('subagentDisplay.openLog')"
-        @click="emit('openLog', subagent.sdkAgentId!)"
-      >
-        <IconFile :size="16" />
-      </Button>
+        :icon="FileText"
+        @click="emit('openLog', subagent.sdkAgentId)"
+      />
+      <OverlayHeaderAction
+        v-if="subagentStop.canStop(subagent)"
+        :label="stopping ? t('toolCall.stopping') : t('overlays.agent.stop')"
+        :title="stopping ? t('toolCall.stopping') : t('agentStop.stopSubagent')"
+        :icon="Square"
+        :busy="stopping"
+        :disabled="stopping"
+        data-testid="subagent-stop"
+        @click="stop"
+      />
     </template>
 
-    <div class="p-4 space-y-4">
-      <Collapsible v-if="hasPrompt" v-model:open="isPromptExpanded">
-        <CollapsibleTrigger as-child>
-          <Button
-            variant="ghost"
-            size="sm"
-            class="h-auto py-1 px-2 gap-2 text-primary hover:text-primary/80 hover:bg-muted"
-          >
-            <IconChevronDown
-              :size="14"
-              class="transition-transform duration-200"
-              :class="{ '-rotate-90': !isPromptExpanded }"
-            />
-            <span class="text-sm">{{ t('subagentDisplay.viewPrompt') }}</span>
-          </Button>
-        </CollapsibleTrigger>
+    <div class="sticky top-0 z-3 flex gap-1.5 overflow-x-auto border-b border-(--d-border) bg-(--d-bg) px-4.5 pt-3 pb-2.5 [scrollbar-width:none] @min-[35rem]/overlay:flex-wrap">
+      <AgentChip
+        v-if="displayAgentType !== null"
+        :icon="agentIcon"
+        icon-class="text-(--d-info)"
+        value-class="text-(--d-info)"
+        :value="displayAgentType"
+        :clickable="Boolean(subagent.templatePath)"
+        :title="subagent.templatePath ? t('subagentDisplay.openTemplate', { path: subagent.templatePath }) : undefined"
+        data-testid="subagent-type-chip"
+        @click="openTemplate"
+      />
+      <AgentChip
+        v-if="subagent.isBackground"
+        :icon="Loader"
+        :value="t('backgroundTask.background')"
+        clickable
+        :title="t('overlays.agent.openBackgroundTasks')"
+        data-testid="subagent-background-chip"
+        @click="backgroundTaskStore.openOverlay()"
+      />
+      <AgentChip
+        v-if="model"
+        :logo="model.logo"
+        :value="model.name"
+      />
+      <AgentChip
+        v-if="subagent.effort"
+        :icon="Gauge"
+        :value="t(effortBadgeLabelKey(subagent.effort))"
+        :unit="t('overlays.agent.unit.effort')"
+      />
+      <AgentChip
+        :icon="Timer"
+        data-part="elapsed"
+        :value="formatElapsed(elapsedSeconds * 1000)"
+        mono
+        :title="t('overlays.agent.elapsed')"
+      />
+      <AgentChip
+        v-if="toolCount > 0"
+        :icon="Wrench"
+        :value="toolCount"
+        :unit="t('overlays.agent.unit.tools', toolCount)"
+      />
+      <AgentChip
+        v-if="totalTokens > 0"
+        :icon="Database"
+        data-part="tokens"
+        :value="formatTokenCount(totalTokens, locale)"
+        :unit="t('overlays.agent.unit.tokens', totalTokens)"
+      />
+      <AgentChip
+        v-if="cachePct > 0"
+        :icon="Zap"
+        data-part="cache"
+        :value="`${cachePct}%`"
+        :unit="t('overlays.agent.unit.cache')"
+        :title="t('agentUsage.cacheHitTooltip')"
+      />
+      <AgentChip
+        v-if="subagent.usage && subagent.usage.costUsd > 0"
+        :icon="Receipt"
+        data-part="cost"
+        :value="costLabel(subagent.usage.costUsd, subagent.dollarBilled)"
+        mono
+        :title="costTitle(subagent.dollarBilled)"
+      />
+    </div>
 
-        <CollapsibleContent>
-          <div class="mt-2 py-2 px-3 border-l-2 border-border bg-muted/70 rounded-r-md overflow-hidden max-h-48 overflow-y-auto">
-            <MarkdownRenderer :content="subagent.prompt" class="text-sm text-muted-foreground" />
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+    <div class="flex flex-col gap-3 px-4.5 pt-3.5 pb-4.5">
+      <AgentPromptDisclosure
+        v-if="hasPrompt"
+        :prompt="subagent.prompt"
+        :from="t('overlays.agent.fromMainAgent')"
+      />
 
-      <!-- Interleaved message rendering -->
-      <template v-for="message in subagent.messages" :key="message.id">
-        <div
-          v-if="message.role === 'user'"
-          class="flex items-start gap-2 py-1.5 pl-2 pr-3 border-l-2 border-warning/50 bg-warning/5 rounded-r"
+      <div class="flex flex-col gap-2.25">
+        <template
+          v-for="message in subagent.messages"
+          :key="message.id"
         >
-          <IconPaperPlane :size="14" class="text-warning/80 shrink-0 mt-0.5" />
-          <div class="min-w-0 flex-1">
-            <div class="text-[11px] uppercase tracking-wide text-warning/80 mb-0.5">{{ t('subagentDisplay.steered') }}</div>
-            <SteerImageChips :images="steerImages(message)" @open-lightbox="openLightbox" />
-            <MarkdownRenderer :content="userMessageText(message)" class="text-sm" />
-          </div>
-        </div>
-        <template v-else-if="message.contentBlocks?.length">
-          <template v-for="(block, blockIndex) in message.contentBlocks" :key="getBlockKey(block, blockIndex)">
-            <ThinkingIndicator
-              v-if="isThinkingBlock(block)"
-              :thinking="block.thinking"
-              :default-expanded="true"
-            />
-
-            <div v-else-if="isTextBlock(block)" class="pl-2">
-              <MarkdownRenderer :content="block.text" />
-            </div>
-
-            <template v-else-if="isToolUseBlock(block)">
-              <ToolCallCard
-                v-for="tc in toolCallsById(message, block.id)"
-                :key="tc.id"
-                :tool-call="tc"
-                source="subagent"
-                @expand="(id: string) => uiStore.expandTool(id, 'subagent')"
+          <div
+            v-if="message.role === 'user'"
+            class="flex justify-end"
+            :class="arrived.has(message.id) && 'd-arrive'"
+            data-testid="agent-steer-message"
+          >
+            <div class="max-w-[85%] rounded-[0.875rem_0.875rem_0.3125rem_0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--d-warning)_7%,transparent)] px-3 pt-2 pb-2.25">
+              <div class="mb-0.5 flex items-center gap-1.5 text-11 font-semibold text-(--d-warning-text)">
+                <Send
+                  class="size-2.75"
+                  aria-hidden="true"
+                />{{ t('subagentDisplay.steered') }}
+              </div>
+              <SteerImageChips
+                :images="steerImages(message)"
+                @open-lightbox="openLightbox"
               />
+              <MarkdownRenderer
+                :content="userMessageText(message)"
+                class="text-12.5 [&_.markdown-p]:my-0"
+              />
+            </div>
+          </div>
+          <template v-else-if="message.contentBlocks?.length">
+            <template
+              v-for="(block, blockIndex) in message.contentBlocks"
+              :key="getBlockKey(block, blockIndex)"
+            >
+              <ThinkingIndicator
+                v-if="isThinkingBlock(block)"
+                :thinking="block.thinking"
+                :default-expanded="true"
+              />
+              <MarkdownRenderer
+                v-else-if="isTextBlock(block)"
+                class="text-13 leading-[1.6]"
+                :content="block.text"
+              />
+              <template v-else-if="isToolUseBlock(block)">
+                <ToolCallCard
+                  v-for="tc in toolCallsById(message, block.id)"
+                  :key="tc.id"
+                  :class="arrived.has(message.id) && 'd-arrive'"
+                  :tool-call="tc"
+                  source="subagent"
+                />
+              </template>
             </template>
           </template>
         </template>
-      </template>
 
-      <!-- Live streaming tool calls (rare: a tool normally seals into its message before it executes) -->
-      <div v-if="subagent.toolCalls.length > 0" class="space-y-2">
+        <!-- Live streaming tool calls (rare: a tool normally seals into its message before it executes) -->
         <ToolCallCard
           v-for="tool in subagent.toolCalls"
           :key="tool.id"
           :tool-call="tool"
           source="subagent"
-          @expand="(id: string) => uiStore.expandTool(id, 'subagent')"
         />
+
+        <!-- Live in-flight message rendered last, in source order (thinking → text), like the main session -->
+        <ThinkingIndicator
+          v-if="hasStreamingContent && (streaming?.thinking || streaming?.isThinkingPhase)"
+          :thinking="streaming?.thinking"
+          :is-streaming="streaming?.isThinkingPhase"
+          :duration="streaming?.thinkingDuration"
+        />
+
+        <MarkdownRenderer
+          v-if="hasStreamingContent && streaming?.content"
+          :content="streaming.content"
+          class="text-13 leading-[1.6] opacity-80"
+        />
+
+        <div
+          v-if="isRunning"
+          class="flex items-center gap-2 p-0.5 text-12.5"
+          data-testid="agent-working"
+        >
+          <LoaderCircle
+            class="size-3.5 d-spinning flex-none text-(--d-accent)"
+            aria-hidden="true"
+          />
+          <span class="d-glint min-w-0 truncate italic text-(--d-muted)">{{ subagent.progressSummary || t('overlays.agent.working') }}<span
+            class="d-glint-window text-(--d-text)"
+            aria-hidden="true"
+          ><span>{{ subagent.progressSummary || t('overlays.agent.working') }}</span></span></span>
+          <span class="flex-1" />
+          <span class="font-mono text-11 text-(--d-faint)">{{ formatElapsed(elapsedSeconds * 1000) }}</span>
+        </div>
+
+        <p
+          v-else-if="!hasResult && subagent.messages.length === 0 && subagent.toolCalls.length === 0"
+          class="py-6 text-center text-12.5 text-(--d-faint)"
+        >
+          {{ t('subagentDisplay.noActivity') }}
+        </p>
       </div>
 
-      <!-- Live in-flight message rendered last, in source order (thinking → text), like the main session -->
-      <ThinkingIndicator
-        v-if="hasStreamingContent && (streaming?.thinking || streaming?.isThinkingPhase)"
-        :thinking="streaming?.thinking"
-        :is-streaming="streaming?.isThinkingPhase"
-        :duration="streaming?.thinkingDuration"
+      <AgentResult
+        v-if="hasResult"
+        :content="resultContent!"
+        :status="subagent.status"
+        :destination="t('overlays.agent.returnedToMain')"
       />
-
-      <div v-if="hasStreamingContent && streaming?.content" class="pl-2">
-        <MarkdownRenderer :content="streaming.content" class="opacity-80" />
-      </div>
-
-      <!-- Agent's final result summary -->
-      <div v-if="hasResult" class="mt-4 pt-4 border-t border-border/30">
-        <div class="flex items-center gap-2 mb-2 text-xs text-primary font-medium">
-          <IconCheck :size="14" />
-          <span>{{ t('subagentDisplay.result') }}</span>
-        </div>
-        <div class="pl-2">
-          <MarkdownRenderer :content="resultContent!" />
-        </div>
-      </div>
-
-      <div v-if="!hasStreamingContent && !hasResult && subagent.messages.length === 0 && subagent.toolCalls.length === 0" class="text-center text-muted-foreground text-sm py-8">
-        <LoadingSpinner v-if="subagent.status === 'running'" :size="24" class="mx-auto mb-2" />
-        <p>{{ subagent.status === 'running' ? t('subagentDisplay.working') : t('subagentDisplay.noActivity') }}</p>
-      </div>
     </div>
 
-    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="lightboxImageUrl = null" />
+    <template
+      v-if="canSteer"
+      #footer
+    >
+      <AgentSteerBar
+        v-model="steer.text.value"
+        :placeholder="t('overlays.agent.steerSubagent')"
+        :sending="steer.sending.value"
+        :failed="steer.failed.value"
+        :can-send="steer.canSend.value"
+        @send="steer.send"
+      />
+    </template>
+
+    <ImageLightbox
+      :open="lightboxImageUrl !== null"
+      :image-url="lightboxImageUrl ?? ''"
+      @close="lightboxImageUrl = null"
+    />
   </OverlayShell>
 </template>

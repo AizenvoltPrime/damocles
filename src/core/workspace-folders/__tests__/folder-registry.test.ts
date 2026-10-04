@@ -36,7 +36,7 @@ let fake: FakePlatform;
 let registry: WorkspaceFolderRegistry | null = null;
 
 function makeRegistry(): WorkspaceFolderRegistry {
-  registry = new WorkspaceFolderRegistry(fake.workspaceFolders, state);
+  registry = new WorkspaceFolderRegistry(fake.workspaceFolders, state, fake.fileWatchers);
   return registry;
 }
 
@@ -150,7 +150,7 @@ describe('WorkspaceFolderRegistry default folder', () => {
     expect(await reg.setDefault(folderKey(B))).toBe(true);
     expect(state.get('damocles.defaultWorkspaceFolder')).toBe(folderKey(B));
     expect(reg.defaultTarget().fsPath).toBe(B);
-    expect(changes).toEqual([{ added: [], removed: [], relabelled: false, defaultChanged: true }]);
+    expect(changes).toEqual([{ added: [], removed: [], relabelled: false, defaultChanged: true, branchChanged: false }]);
   });
 
   it('refuses a default that is not open and stores nothing', async () => {
@@ -212,7 +212,7 @@ describe('WorkspaceFolderRegistry change events', () => {
 
     setFolders([wsFolder(A), wsFolder(B, 'Backend')]);
 
-    expect(changes).toEqual([{ added: [], removed: [], relabelled: true, defaultChanged: false }]);
+    expect(changes).toEqual([{ added: [], removed: [], relabelled: true, defaultChanged: false, branchChanged: false }]);
     expect(reg.resolve(folderKey(B))?.label).toBe('Backend');
   });
 

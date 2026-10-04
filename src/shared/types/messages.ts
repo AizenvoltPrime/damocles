@@ -49,6 +49,7 @@ import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
 import type { WorkspaceFolderInfo } from './workspace-folders';
+import type { SettingsAccountId, SettingsSectionId } from '../settings-sections';
 
 // Re-exported from ./memory (its true home) so existing transport-layer imports keep working.
 export type { ObservationCursor } from './memory';
@@ -69,7 +70,6 @@ export type WebviewToExtensionMessage =
       updatedPermissions?: PermissionUpdate[];
     }
   | { type: "ready"; savedSessionId?: string; savedWorkspaceFolderKey?: string }
-  | { type: "requestModels" }
   | { type: "setActiveModel"; model: string }
   | { type: "setDefaultModel"; model: string }
   | { type: "setPanelWorkspaceFolder"; folderKey: string }
@@ -86,6 +86,8 @@ export type WebviewToExtensionMessage =
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }
   | { type: "setCacheWarming"; mode: CacheWarmingMode }
+  /** Whole days, 0 keeps checkpoints forever. */
+  | { type: "setCheckpointRetentionDays"; days: number }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
   | { type: "setDangerouslySkipPermissions"; enabled: boolean }
@@ -106,12 +108,20 @@ export type WebviewToExtensionMessage =
   | { type: "requestMcpStatus" }
   | { type: "requestSupportedCommands" }
   | { type: "openSettings" }
-  | { type: "invokeSignIn" }
+  /** Opens the host's settings modal outside the chat page (desktop overlay); the section must be a SETTINGS_SECTION_IDS entry. */
+  | { type: "openAppSettings"; section?: SettingsSectionId; account?: SettingsAccountId }
+  /** An attached settings view's bootstrap, in place of the chat's `ready`: core re-posts the settings state the view renders. */
+  | { type: "requestSettingsState" }
+  /** Opens the chat's own settings.json editor; core posts openSettingsFileEditor to the chat only. */
+  | { type: "openSettingsFileInChat"; scope: SettingsFileScope }
   | { type: "renameSession"; sessionId: string; newName: string }
   | { type: "deleteSession"; sessionId: string }
   | { type: "openSessionLog" }
   | { type: "openSessionPlan" }
-  | { type: "bindPlanToSession" }
+  /** Lists the chat folder's plan files for the bind-plan overlay; core answers with planFileCandidates. */
+  | { type: "requestPlanFileCandidates" }
+  /** candidateId is an id core issued in the last planFileCandidates for this panel; without one core opens the OS file dialog. */
+  | { type: "bindPlanToSession"; candidateId?: string }
   | { type: "openAgentLog"; agentId: string }
   | { type: "requestMoreSessions"; offset: number; selectedSessionId?: string }
   | { type: "searchSessions"; query: string; offset?: number; selectedSessionId?: string }
@@ -149,7 +159,6 @@ export type WebviewToExtensionMessage =
   | { type: "requestToolStatus" }
   | { type: "setImageGenerationEnabled"; enabled: boolean }
   | { type: "setImageGenerationModel"; model: string }
-  | { type: "requestImageGenerationSettings" }
   | { type: "setProjectTrusted" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | { type: "answerForm"; toolUseId: string; values: FormValues | null }
@@ -222,7 +231,6 @@ export type WebviewToExtensionMessage =
   | { type: "voiceOpenModelsFolder" }
   | { type: "voiceFreeDiskSpace" }
   | { type: "voiceRemoveAllFiles" }
-  | { type: "voiceQueryFilesSize" }
   | { type: "voiceTestVoice" }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
@@ -232,7 +240,8 @@ export type WebviewToExtensionMessage =
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
-  | { type: "stopBackgroundTask"; taskId: string }
+  /** `agentId` is the subagent record id `subagentStart` names, foreground or background. */
+  | { type: "stopSubagent"; agentId: string }
   | { type: "steerAgent"; agentId: string; message: string; images?: ImageBlock[]; requestId: string }
   | { type: "requestSteerTargets" }
   | { type: "pickBrowserElement" }
@@ -240,7 +249,9 @@ export type WebviewToExtensionMessage =
   | { type: "openElementContext"; content: string }
   | { type: "requestTeamData"; teamId: string }
   | { type: "requestTeamDataByToolUse"; toolUseId: string }
+  /** A specialist only; the lead stops with its team (`cancelTeam`). */
   | { type: "cancelTeamAgent"; teamId: string; agentId: string }
+  | { type: "cancelTeam"; teamId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
   | { type: "requestToolResultImages"; requestId: string; toolUseId: string; owner: ToolResultOwner }
   | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' }
@@ -264,20 +275,15 @@ export type WebviewToExtensionMessage =
   | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
   | { type: "setStepfunApiKey"; key: string; requestId: string }
   | { type: "clearStepfunApiKey"; requestId: string }
-  | { type: "getStepfunAuthStatus" }
   | { type: "setDeepseekApiKey"; key: string; requestId: string }
   | { type: "clearDeepseekApiKey"; requestId: string }
-  | { type: "getDeepseekAuthStatus" }
   | { type: "setTypesafeApiKey"; key: string; requestId: string }
   | { type: "clearTypesafeApiKey"; requestId: string }
-  | { type: "getTypesafeAuthStatus" }
   | { type: "setOpenrouterApiKey"; key: string; requestId: string }
   | { type: "clearOpenrouterApiKey"; requestId: string }
-  | { type: "getOpenrouterAuthStatus" }
   | { type: "startChatGPTOAuth" }
   | { type: "signOutChatGPT" }
   | { type: "signOutCodex" }
-  | { type: "getClaudeAuthStatus" }
   | { type: "claudeSignIn"; useAllowance: boolean }
   | { type: "claudeSetBilling"; useAllowance: boolean }
   | { type: "claudeSetApiKey"; key: string }
@@ -286,8 +292,6 @@ export type WebviewToExtensionMessage =
   | { type: "settingsFileLoad"; scope: SettingsFileScope }
   /** `baseVersion` is the `version` the editor loaded; the host refuses the save as a conflict when the file changed since. */
   | { type: "settingsFileSave"; scope: SettingsFileScope; content: string; baseVersion: string }
-  /** Answered with `settingsFileAvailability`, which the host posts again to the panel on a trust grant or a project change. */
-  | { type: "getSettingsFileAvailability" }
   | { type: "revealSettingsFile"; scope: SettingsFileScope };
 
 /**
@@ -313,8 +317,6 @@ export interface HostCapabilities {
   hostSpeechExtensions: boolean;
   /** A host-native settings editor exists; false routes "open settings" to the in-app settings panel. */
   hostSettingsEditor: boolean;
-  /** The host renders markdown previews (system prompt, MCP tool info). */
-  markdownPreview: boolean;
   /** The host shows a diff editor (checkpoint diffs). */
   diffReview: boolean;
   /** `settingsUpdate` carries `settingSources` and the settings panel shows each value's source file. */
@@ -323,6 +325,14 @@ export interface HostCapabilities {
   monaco: boolean;
   /** The host has an active text editor whose file and selection can be attached to a prompt (`damocles.ideContext.enabled`). */
   ideContext: boolean;
+  /** The host fills the design tokens with the Damocles palettes and the desktop-only `--s-*` syntax tokens; code blocks then use the Damocles Shiki theme instead of one matched to the VS Code theme. */
+  damoclesTheme: boolean;
+  /** The settings modal opens inside the chat page; false makes settings links post `openAppSettings`, which the host shows outside the chat. */
+  settingsInPanel: boolean;
+  /** The chat header offers session history (search, rename, tag, delete); false where the host lists chats elsewhere (the desktop sidebar). */
+  historyInPanel: boolean;
+  /** With two or more folders open, the chat header's folder label picks the chat's folder; false where the host chooses it elsewhere (the desktop Projects list). */
+  folderPickerInPanel: boolean;
 }
 
 /** What the VS Code host supplies, and the webview's value until the host says otherwise. */
@@ -330,11 +340,14 @@ export const VSCODE_HOST_CAPABILITIES: Readonly<HostCapabilities> = {
   voice: true,
   hostSpeechExtensions: true,
   hostSettingsEditor: true,
-  markdownPreview: true,
   diffReview: true,
   settingsSources: false,
   monaco: false,
   ideContext: true,
+  damoclesTheme: false,
+  settingsInPanel: true,
+  historyInPanel: true,
+  folderPickerInPanel: true,
 };
 
 /** Text of a file or buffer the host shows in a chat panel editor; the host decides the body, the webview never reads files. */
@@ -381,6 +394,8 @@ export interface SettingSource {
   scope: "project" | "local";
   /** Absolute path of the file. */
   path: string;
+  /** The JSON value that file holds for the key. */
+  value: unknown;
 }
 
 /** A quick-pick entry; when a select request carries `items`, the answer is the chosen item's `id`. */
@@ -416,9 +431,18 @@ export type ExtensionToWebviewMessage =
   | { type: "accountInfo"; data: AccountInfo }
   | { type: "availableModels"; models: ModelInfo[] }
   | { type: "systemInit"; data: SystemInitData }
-  /** `settingSources` is present only when `HostCapabilities.settingsSources`; a key absent from it resolves from the user file or the default. */
-  | { type: "settingsUpdate"; settings: ExtensionSettings; settingSources?: Record<string, SettingSource> }
+  /**
+   * `settingSources` is present only when `HostCapabilities.settingsSources`; a key absent from it resolves from the user file or the default.
+   * `workspaceWritable` is false in an untrusted folder, whose Workspace section core refuses to write.
+   */
+  | { type: "settingsUpdate"; settings: ExtensionSettings; workspaceWritable: boolean; settingSources?: Record<string, SettingSource> }
   | { type: "hostCapabilities"; capabilities: HostCapabilities }
+  /**
+   * Sent after each settings write; `key` is the damocles.* key the row that asked shows, `scope` and `file` where the value
+   * the setter wrote now comes from. A write that left its key at the default reports the setter's home scope and no file.
+   */
+  | { type: "settingWriteResult"; key: string; ok: true; scope: SettingsFileScope; file?: string }
+  | { type: "settingWriteResult"; key: string; ok: false; error: string }
   /** `approvalId` (purpose "proposal" only) is the `toolUseId` of the pending `requestPermission` the diff belongs to. */
   | { type: "editorShowDiff"; viewId: string; title: string; purpose: "proposal" | "checkpoint"; approvalId?: string; original: EditorDocument; modified: EditorDocument }
   /** Read-only view; `untitled` marks an in-memory buffer with no path. */
@@ -432,6 +456,7 @@ export type ExtensionToWebviewMessage =
   /** Sent only to panels that loaded `scope`, when the file changed on disk to a new `version`. */
   | { type: "settingsFileChanged"; scope: SettingsFileScope; version: string }
   | { type: "settingsFileAvailability"; files: Record<SettingsFileScope, SettingsFileAvailability> }
+  | { type: "openSettingsFileEditor"; scope: SettingsFileScope }
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
@@ -455,6 +480,10 @@ export type ExtensionToWebviewMessage =
    *  a click landing after the call finished. */
   | { type: "toolCancelRejected"; toolUseId: string; requestId?: string }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
+  /** A `stopSubagent` that stopped nothing because the agent had already finished, so its "Stopping..." state clears. */
+  | { type: "subagentStopRejected"; agentId: string }
+  /** A `cancelTeam` that stopped nothing because the team had already finished, so its "Stopping..." state clears. */
+  | { type: "teamCancelRejected"; teamId: string }
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean; description?: string; resumedFrom?: string }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
@@ -495,8 +524,9 @@ export type ExtensionToWebviewMessage =
       toolName: string;
       toolInput: Record<string, unknown>;
       filePath?: string;
-      originalContent?: string;
-      proposedContent?: string;
+      /** Edit and Write: the change's patch with real line numbers, as its result records it (`FilePatch`). */
+      patch?: string;
+      patchOmitted?: import('./file-patch').FilePatchOmitted;
       command?: string;
       /** GenerateImage only: the text sent to the image model. A GenerateImage request carries no diff. */
       prompt?: string;
@@ -556,6 +586,8 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
+  /** `modifiedAt` is epoch milliseconds. `listFailed` answers a listing that threw, so the overlay leaves its loading state and still offers Browse. */
+  | { type: "planFileCandidates"; files: { id: string; relativePath: string; modifiedAt: number }[]; hasPlan: boolean; listFailed?: true }
   | { type: "contextWarning"; level: ContextWarningLevel }
   | { type: "autoCompactTriggering"; percentUsed: number; trigger: Exclude<CompactionTrigger, "manual"> }
   | { type: "autoCompactComplete" }
@@ -666,7 +698,6 @@ export type ExtensionToWebviewMessage =
   // `metadata` is the team path's only carrier for a tool result's `details`; the other two producers emit `toolMetadata`.
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
-  | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }
   | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string }
@@ -680,9 +711,7 @@ export type ExtensionToWebviewMessage =
   | { type: "exploreApiKeyUpdate"; hasApiKey: boolean }
   | { type: "exploreConfigUpdate"; provider: string; model: string; effort: string }
   | { type: "exploreStarted"; toolUseId: string; model: string; prompt: string; description: string; startTime: number }
-  | { type: "exploreDelta"; toolUseId: string; deltaType: 'text' | 'thinking'; text: string }
   | { type: "exploreToolCall"; toolUseId: string; innerToolUseId: string; toolName: string; toolInput: Record<string, unknown> }
-  | { type: "exploreToolResult"; toolUseId: string; innerToolUseId: string; result: string; isError: boolean }
   | { type: "exploreCompleted"; toolUseId: string; status: 'completed' | 'failed'; result: string | null; elapsed: number; toolCount: number; model: string }
   | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] }
   | { type: "openaiAuthStatusChanged"; status: { chatgpt: { signedIn: boolean; expiresAt?: number }; codex: { signedIn: boolean; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
@@ -709,7 +738,7 @@ export type ExtensionToWebviewMessage =
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
   | { type: "claudeAuthError"; error: string }
-  | { type: "openSettingsPanel" }
+  | { type: "openSettingsPanel"; section?: SettingsSectionId; account?: SettingsAccountId }
   | { type: "openOpenAIAuthPanel" }
   | {
       type: "extensionUiRequest";

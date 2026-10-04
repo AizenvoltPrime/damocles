@@ -27,7 +27,7 @@ function handleClick(): void {
 <template>
   <button
     type="button"
-    class="inline-flex items-center gap-2 h-8 rounded-md border border-border bg-muted/50 pl-1 pr-2 text-xs text-foreground hover:border-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-safe:transition-colors cursor-pointer"
+    class="inline-flex h-8 items-center gap-2 rounded-8 border border-(--d-border2) bg-(--d-card) ps-1 pe-2 text-xs text-(--d-text) transition-colors hover:border-(--d-accent)"
     :title="title"
     @click="handleClick"
   >
@@ -35,11 +35,11 @@ function handleClick(): void {
       v-if="thumbnailUrl"
       :src="thumbnailUrl"
       alt=""
-      class="h-6 w-6 rounded object-cover shrink-0"
+      class="size-6 shrink-0 rounded-5 object-cover"
     />
-    <IconImage v-else :size="14" class="shrink-0 opacity-70 ml-1" />
+    <IconImage v-else class="size-3.5 ms-1 shrink-0 text-(--d-muted)" />
     <span class="truncate max-w-[20ch]">{{ displayName }}</span>
-    <span v-if="hasDimensions" class="text-muted-foreground tabular-nums shrink-0">{{ width }}×{{ height }}</span>
+    <span v-if="hasDimensions" class="shrink-0 font-mono text-11 tabular-nums text-(--d-muted)">{{ width }}×{{ height }}</span>
     <slot />
   </button>
 </template>

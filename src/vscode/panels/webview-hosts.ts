@@ -20,7 +20,7 @@ function wrapWebviewPanel(
     get active() { return panel.active; },
     get column() { return panel.viewColumn; },
     get cspSource() { return webview.cspSource; },
-    // VS Code injects the --vscode-* variables into every webview itself.
+    // VS Code injects its --vscode-* variables into every webview itself, and tokens.css maps them to --d-*.
     themeCssSource: () => '',
     setHtml: (html) => { webview.html = html; },
     // Not async, so a synchronous throw from webview.postMessage still reaches the caller's try/catch.

@@ -701,7 +701,7 @@ describe('TeamPersistence checkpoint files', () => {
 
   it('offers the newest checkpoint until a team-resumed entry names it, and never an older one', async () => {
     const persistence = teamWithLog(join(DAMOCLES_HOME_DIR, 'checkpoint-newest'));
-    expect(await persistence.isResumable(TEAM_ID)).toBe(false);
+    expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
 
     persistence.writeCheckpoint(checkpoint());
     persistence.writeCheckpoint(checkpoint(CANCELLED_AT + 10));
@@ -710,7 +710,7 @@ describe('TeamPersistence checkpoint files', () => {
     resumedFrom(persistence, CANCELLED_AT + 10);
 
     expect(await persistence.resumableCheckpoint(await persistence.readEventLog(TEAM_ID))).toBeNull();
-    expect(await persistence.isResumable(TEAM_ID)).toBe(false);
+    expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
   });
 
   it('orders checkpoints by cancel time, not by name, and ignores files that are not checkpoints', async () => {
@@ -727,7 +727,7 @@ describe('TeamPersistence checkpoint files', () => {
     const persistence = new TeamPersistence(join(DAMOCLES_HOME_DIR, 'checkpoint-nolog'), SESSION_ID);
     persistence.writeCheckpoint(checkpoint());
 
-    expect(await persistence.isResumable(TEAM_ID)).toBe(false);
+    expect(await persistence.resumableStop(TEAM_ID)).toBeNull();
   });
 
   it('refuses a team-resumed entry that does not name its checkpoint', async () => {
@@ -743,6 +743,18 @@ describe('TeamPersistence checkpoint files', () => {
     expect(isTeamCheckpoint({ ...checkpoint(), cancelledAt: -1 })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), cancelledAt: '1' })).toBe(false);
     expect(isTeamCheckpoint({ ...checkpoint(), review: { ...checkpoint().review, reviewedSpecialists: 'dev' } })).toBe(false);
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'parent' })).toBe(true);
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'reset' })).toBe(false);
+    expect(isTeamCheckpoint({ ...checkpoint(), stoppedBy: 'budget' })).toBe(false);
+  });
+
+  it('reports why the resumable team stopped, and a checkpoint from before causes were recorded as unrecorded', async () => {
+    const persistence = teamWithLog(join(DAMOCLES_HOME_DIR, 'checkpoint-cause'));
+    persistence.writeCheckpoint(checkpoint());
+    expect(await persistence.resumableStop(TEAM_ID)).toBe('unrecorded');
+
+    persistence.writeCheckpoint({ ...checkpoint(CANCELLED_AT + 1), stoppedBy: 'shutdown' });
+    expect(await persistence.resumableStop(TEAM_ID)).toBe('shutdown');
   });
 
   describe('steer images and attempts', () => {

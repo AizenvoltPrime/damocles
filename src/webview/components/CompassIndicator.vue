@@ -1,31 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconCompass, IconLock } from '@/components/icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import type { CompassPanel } from '@/stores/useCompassStore';
+import { remPx } from '@/composables/useRemPx';
 
 const { t } = useI18n();
 const store = useCompassStore();
 const { postMessage } = usePlatformBridge();
 const popoverOpen = ref(false);
-
-const reducedMotionQuery = typeof window !== 'undefined' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-const prefersReducedMotion = ref(reducedMotionQuery?.matches ?? false);
-const handleReducedMotionChange = (event: MediaQueryListEvent): void => {
-	prefersReducedMotion.value = event.matches;
-};
-reducedMotionQuery?.addEventListener('change', handleReducedMotionChange);
-onBeforeUnmount(() => {
-	reducedMotionQuery?.removeEventListener('change', handleReducedMotionChange);
-});
-
-const indicatorIconClass = computed(() => ({
-	'animate-spin': store.isIndexing && !prefersReducedMotion.value,
-}));
-const indicatorIconStyle = computed(() => (store.isIndexing && !prefersReducedMotion.value ? 'animation-duration: 2s' : ''));
 
 function openPanel(panel: CompassPanel): void {
 	store.setActivePanel(panel);
@@ -33,13 +19,9 @@ function openPanel(panel: CompassPanel): void {
 }
 
 const pillClass = computed(() => {
-	if (store.isError) {
-		return 'bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[color:var(--color-error)] hover:bg-[color-mix(in_srgb,var(--color-error)_25%,transparent)]';
-	}
-	if (store.isIndexing) {
-		return 'bg-primary/15 text-primary hover:bg-primary/25';
-	}
-	return 'bg-[color-mix(in_srgb,var(--color-success)_15%,transparent)] text-[color:var(--color-success)] hover:bg-[color-mix(in_srgb,var(--color-success)_25%,transparent)]';
+	if (store.isError) return 'text-(--d-danger)';
+	if (store.isIndexing) return 'text-(--d-accent)';
+	return '';
 });
 
 const pillText = computed(() => {
@@ -73,91 +55,92 @@ function handleReindex(): void {
 
 <template>
 	<Popover v-if="store.isVisible" v-model:open="popoverOpen">
-		<PopoverTrigger as-child>
-			<button
-				type="button"
-				class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium transition-colors cursor-pointer border-0"
-				:class="pillClass"
+    <PopoverTrigger
+      class="flex shrink-0 items-center gap-1.25 rounded-full bg-(--d-hover) px-2 py-0.5 transition-colors hover:bg-(--d-border2) hover:text-(--d-text) data-[state=open]:bg-(--d-border2)"
+      :class="pillClass"
+      data-testid="composer-compass"
+    >
+      <IconCompass
+        class="size-2.75 shrink-0"
+        :class="store.isIndexing ? 'animate-[d-spin_2s_linear_infinite]' : ''"
+      />
+      <span class="tabular-nums leading-none @max-[43rem]:sr-only">{{ pillText }}</span>
+      <span
+        v-if="readOnly"
+        class="inline-flex shrink-0"
+        data-testid="compass-read-only-pill"
 			>
-				<IconCompass
-					:size="12"
-					class="shrink-0"
-					:class="indicatorIconClass"
-					:style="indicatorIconStyle"
-				/>
-				<span class="tabular-nums leading-none">{{ pillText }}</span>
-				<span
-					v-if="readOnly"
-					class="inline-flex shrink-0"
-					data-testid="compass-read-only-pill"
-				>
-					<IconLock :size="11" />
-					<span class="sr-only">{{ t('compass.indicator.readOnly') }}</span>
-				</span>
-			</button>
+        <IconLock class="size-2.5" />
+        <span class="sr-only">{{ t('compass.indicator.readOnly') }}</span>
+      </span>
 		</PopoverTrigger>
-		<PopoverContent class="w-max min-w-56 max-w-80 p-3" align="start" :side-offset="8" side="top">
+    <PopoverContent
+      class="w-max min-w-56 max-w-80 rounded-xl border-(--d-border2) bg-(--d-card) p-3 text-(--d-text) shadow-(--d-shadow)"
+      align="start"
+      :side-offset="remPx(0.5)"
+      side="top"
+    >
 			<div class="space-y-2">
-				<p class="text-xs font-semibold text-foreground">{{ t('compassIndicator.title') }}</p>
-				<div v-if="store.isError && store.status?.error" class="text-xs text-red-400">
+        <p class="text-xs font-semibold">
+          {{ t('compassIndicator.title') }}
+        </p>
+        <div
+          v-if="store.isError && store.status?.error"
+          class="text-xs text-(--d-danger)"
+        >
 					{{ store.status.error }}
 				</div>
 				<div v-else-if="store.status" class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-					<span class="text-muted-foreground">{{ t('compass.indicator.state') }}</span>
+          <span class="text-(--d-muted)">{{ t('compass.indicator.state') }}</span>
 					<span
 						:class="{
-							'text-emerald-400': store.isReady,
-							'text-primary': store.isIndexing,
-							'text-red-400': store.isError,
+              'text-(--d-success)': store.isReady,
+              'text-(--d-accent)': store.isIndexing,
+              'text-(--d-danger)': store.isError,
 						}"
 					>
 						{{ store.status.state === 'ready' ? t('compass.indicator.ready') : store.status.state === 'indexing' || store.status.state === 'building' ? t('compass.indicator.indexingState') : store.status.state === 'idle' ? t('compass.indicator.idle') : t('common.error') }}
 					</span>
 					<template v-if="readOnly">
-						<span class="text-muted-foreground">{{ t('compass.indicator.access') }}</span>
+            <span class="text-(--d-muted)">{{ t('compass.indicator.access') }}</span>
 						<span data-testid="compass-read-only-state">{{ t('compass.indicator.readOnly') }}</span>
 					</template>
-					<span class="text-muted-foreground">{{ t('compass.indicator.files') }}</span>
+          <span class="text-(--d-muted)">{{ t('compass.indicator.files') }}</span>
 					<span>{{ store.status.fileCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compassValidation.nodes') }}</span>
+          <span class="text-(--d-muted)">{{ t('compassValidation.nodes') }}</span>
 					<span>{{ store.status.nodeCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compassValidation.edges') }}</span>
+          <span class="text-(--d-muted)">{{ t('compassValidation.edges') }}</span>
 					<span>{{ store.status.edgeCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compass.indicator.communities') }}</span>
+          <span class="text-(--d-muted)">{{ t('compass.indicator.communities') }}</span>
 					<span>{{ store.status.communityCount.toLocaleString() }}</span>
-					<span class="text-muted-foreground">{{ t('compass.indicator.indexed') }}</span>
+          <span class="text-(--d-muted)">{{ t('compass.indicator.indexed') }}</span>
 					<span>{{ lastIndexedLabel }}</span>
 				</div>
-				<div v-if="store.isReady" class="flex gap-1.5 mt-1">
+        <div
+          v-if="store.isReady"
+          class="mt-1 flex gap-1.5"
+        >
 					<button
-						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="openPanel('graph')"
+            v-for="panel in (['graph', 'search', 'validate'] as const)"
+            :key="panel"
+            type="button"
+            class="d-press flex-1 rounded-7 bg-(--d-hover) px-2 py-1 text-xs font-medium transition-colors hover:bg-(--d-border2)"
+            @click="openPanel(panel)"
 					>
-						{{ t('compassIndicator.graph') }}
-					</button>
-					<button
-						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="openPanel('search')"
-					>
-						{{ t('compassIndicator.search') }}
-					</button>
-					<button
-						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="openPanel('validate')"
-					>
-						{{ t('compassValidation.validate') }}
+            {{ panel === 'graph' ? t('compassIndicator.graph') : panel === 'search' ? t('compassIndicator.search') : t('compassValidation.validate') }}
 					</button>
 				</div>
 				<p
 					v-if="readOnly"
 					id="compass-read-only-notice"
 					data-testid="compass-read-only-notice"
-					class="text-xs text-muted-foreground"
+          class="text-xs text-(--d-muted)"
 				>
 					{{ t('compass.indicator.readOnlyNotice') }}
 				</p>
 				<button
-					class="w-full mt-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+          type="button"
+          class="d-press mt-1 w-full rounded-7 bg-(--d-hover) px-2 py-1 text-xs font-medium transition-colors hover:bg-(--d-border2) disabled:opacity-50"
 					data-testid="compass-reindex"
 					:disabled="store.isIndexing || readOnly"
 					:aria-describedby="readOnly ? 'compass-read-only-notice' : undefined"

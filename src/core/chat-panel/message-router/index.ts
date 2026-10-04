@@ -9,7 +9,7 @@ import type { BrowserService } from "../../browser";
 import type { CompassRegistry } from "../../compass/compass-registry";
 import type { VoiceService } from "../../voice/service";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
-import type { HostInstance } from "../types";
+import type { AttachedView, HostInstance } from "../types";
 import type { PanelHost } from "../../../platform/window-service";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
@@ -22,6 +22,7 @@ export interface MessageRouterConfig {
   postMessage: (host: PanelHost, message: ExtensionToWebviewMessage) => void;
   getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
+  sessionCatalog: HandlerDependencies["sessionCatalog"];
   historyManager: HistoryManager;
   settingsManager: SettingsManager;
   workspaceManager: WorkspaceManager;
@@ -52,6 +53,7 @@ export class MessageRouter {
       postMessage: config.postMessage,
       getPanels: config.getPanels,
       storageManager: config.storageManager,
+      sessionCatalog: config.sessionCatalog,
       historyManager: config.historyManager,
       settingsManager: config.settingsManager,
       workspaceManager: config.workspaceManager,
@@ -79,7 +81,8 @@ export class MessageRouter {
     await platform.state.global.update(LANGUAGE_PREFERENCE_KEY, locale);
   }
 
-  async handleWebviewMessage(message: WebviewToExtensionMessage, panelId: string): Promise<void> {
+  /** `view` is the attached settings view the message came from; the handler then runs with the chat's own context. */
+  async handleWebviewMessage(message: WebviewToExtensionMessage, panelId: string, view?: AttachedView): Promise<void> {
     const instance = this.getPanels().get(panelId);
     if (!instance) {
       log("[MessageRouter] No panel instance found for", panelId);
@@ -93,6 +96,7 @@ export class MessageRouter {
       ideContextManager: instance.ideContextManager,
       panelId,
       folder: instance.folder,
+      ...(view ? { view } : {}),
     };
 
     const handler = this.handlers[message.type];

@@ -1,18 +1,23 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, nextTick, provide } from "vue";
+import { ref, computed, defineAsyncComponent, nextTick, provide, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { toast } from "vue-sonner";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke } from "@vueuse/core";
 import { storeToRefs } from "pinia";
 import VirtualizedMessageList from "./components/VirtualizedMessageList.vue";
+import JumpToLatestButton from "./components/JumpToLatestButton.vue";
 import ChatInput from "./components/ChatInput.vue";
-import SessionStats from "./components/SessionStats.vue";
-import SettingsPanel from "./components/SettingsPanel.vue";
+import ComposerStatusStrip from "./components/composer/ComposerStatusStrip.vue";
+import ChatHeader from "./components/chat-header/ChatHeader.vue";
+import SessionHistoryDropdown from "./components/chat-header/SessionHistoryDropdown.vue";
+import type { HeaderAction } from "./components/chat-header/headerActions";
+import EmptyState from "./components/EmptyState.vue";
+import PlanReadyBanner from "./components/PlanReadyBanner.vue";
+import ExtensionUiDialog from "./components/ExtensionUiDialog.vue";
+import { PANEL_HOST_SETTINGS } from "./components/settings/panel-host-settings";
 import { Toaster } from "@/components/ui/sonner";
-import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
-import ToolsStatusIndicator from "./components/ToolsStatusIndicator.vue";
 import ToolsStatusPanel from "./components/ToolsStatusPanel.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
@@ -20,18 +25,10 @@ import ContextWarningBanner from "./components/ContextWarningBanner.vue";
 import AuthFailureBanner from "./components/AuthFailureBanner.vue";
 import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
-import SessionPicker from "./components/SessionPicker.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
-import ConsolidationIndicator from "./components/ConsolidationIndicator.vue";
-import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
-import TeamIndicator from "./components/TeamIndicator.vue";
-import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
-import PromptNavigatorChip from "./components/PromptNavigatorChip.vue";
-import AccountChip from "./components/AccountChip.vue";
-import WorkspaceFolderChip from "./components/WorkspaceFolderChip.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
 
@@ -49,9 +46,10 @@ const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrow
 const CompactionRewindConfirm = defineAsyncComponent(() => import("./components/CompactionRewindConfirm.vue"));
 const QuestionPrompt = defineAsyncComponent(() => import("./components/QuestionPrompt.vue"));
 const FormPrompt = defineAsyncComponent(() => import("./components/FormPrompt.vue"));
-const ExtensionUiDialog = defineAsyncComponent(() => import("./components/ExtensionUiDialog.vue"));
+const SettingsModal = defineAsyncComponent(() => import("./components/settings/SettingsModal.vue"));
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
+const BindPlanOverlay = defineAsyncComponent(() => import("./components/BindPlanOverlay.vue"));
 const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/context-injection/ContextInjectionOverlay.vue"));
 const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
 const SubscriptionUsageOverlay = defineAsyncComponent(() => import("./components/SubscriptionUsageOverlay.vue"));
@@ -79,10 +77,12 @@ const EditorOverlayHost = defineAsyncComponent({
   },
 });
 import PromptNavigator from "./components/PromptNavigator.vue";
+import { useOpenSettings } from "@/composables/useOpenSettings";
 import { usePlatformBridge } from "./composables/usePlatformBridge";
+import { useBtwAsk } from "./composables/useBtwAsk";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
-import { useAutoScroll } from "./composables/useAutoScroll";
+import { useStickToBottom } from "./composables/useStickToBottom";
 import { useExpandedTool } from "./composables/useExpandedTool";
 import { hasOpenOverlay } from "./composables/useOverlayEscape";
 import {
@@ -99,6 +99,7 @@ import {
 } from "./stores";
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
+import { useBindPlanStore } from "./stores/useBindPlanStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useSubscriptionUsageStore } from "./stores/useSubscriptionUsageStore";
@@ -107,17 +108,12 @@ import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useMemoryAuditStore } from "./stores/useMemoryAuditStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useEditorStore } from "./stores/useEditorStore";
-import { useExtensionUiStore } from "./stores/useExtensionUiStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useVoiceJarvisStore } from "./stores/useVoiceJarvisStore";
 import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
-import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconGlobe, IconClock } from "@/components/icons";
-import type { PermissionMode, EffortLevel, AutoCompactConfig, CacheWarmingMode, TeamRole } from "@shared/types/settings";
-import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
+import type { PermissionMode } from "@shared/types/settings";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem, RestorePoint } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
@@ -135,8 +131,8 @@ initLocaleMessaging(postMessage);
 const uiStore = useUIStore();
 const {
   isProcessing,
-  isAtBottom,
-  showSettingsPanel,
+  showSettingsModal,
+  settingsTarget,
   showMcpPanel,
   showToolsPanel,
   showMemoryPanel,
@@ -155,10 +151,8 @@ const {
 
 const settingsStore = useSettingsStore();
 const editorStore = useEditorStore();
-const extensionUiStore = useExtensionUiStore();
 const {
   currentSettings,
-  availableModels,
   mcpServers,
   mcpConfigErrors,
   mcpLocalUnignored,
@@ -171,18 +165,6 @@ const {
   toolsSnapshot,
   budgetWarning,
   contextWarning,
-  activeModel,
-  defaultModel,
-  panelThinking,
-  panelThinkingModel,
-  defaultThinking,
-  defaultThinkingModel,
-  voiceConfig,
-  voiceHasApiKey,
-  exploreHasApiKey,
-  exploreProvider,
-  exploreModel,
-  exploreEffort,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -234,6 +216,7 @@ const { notes, observations, searchResults, hasMoreObservations, loadingObservat
   storeToRefs(memoryStore);
 
 const planViewStore = usePlanViewStore();
+const bindPlanStore = useBindPlanStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
 const contextInjectionStore = useContextInjectionStore();
@@ -246,11 +229,13 @@ const backgroundTaskStore = useBackgroundTaskStore();
 const teamStore = useTeamStore();
 const compassStore = useCompassStore();
 const btwStore = useBtwStore();
+const askBtw = useBtwAsk();
 const voiceJarvisStore = useVoiceJarvisStore();
 const {
   firstRunRequired: voiceFirstRunRequired,
   modelDownload: voiceModelDownload,
   hasActiveDownload: voiceHasActiveDownload,
+  showModelDownload: voiceShowModelDownload,
   pendingUpgrades: voicePendingUpgrades,
 } = storeToRefs(voiceJarvisStore);
 
@@ -291,8 +276,11 @@ const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const navigatorStore = usePromptNavigatorStore();
 const { isOpen: isNavigatorOpen } = storeToRefs(navigatorStore);
 
-const shouldAutoScroll = computed(() => isProcessing.value || !!streamingMessageId.value);
-const { pinToBottom } = useAutoScroll(messageContainerRef, shouldAutoScroll);
+const {
+  isFollowing: isFollowingTranscript,
+  scrollToBottom: followTranscript,
+  jumpToLatest: jumpToLatestInTranscript,
+} = useStickToBottom(messageContainerRef);
 
 const compactMarkersList = computed(() => compactMarkers.value);
 
@@ -303,8 +291,8 @@ const compactionAbortedNoticesList = computed(() => compactionAbortedNotices.val
 const thinkingDroppedNoticesList = computed(() => thinkingDroppedNotices.value);
 
 useMessageHandler({
-  messageContainerRef,
   chatInputRef,
+  followTranscript,
 });
 
 function openRewindFlow() {
@@ -384,7 +372,7 @@ useDoubleKeyStroke("Escape", () => {
   if (
     !showRewindTypeModal.value &&
     !showRewindBrowser.value &&
-    !showSettingsPanel.value &&
+    !showSettingsModal.value &&
     !showMcpPanel.value &&
     !showToolsPanel.value &&
     !showMemoryPanel.value
@@ -397,12 +385,7 @@ function tryDispatchBtw(content: string | UserContentBlock[]): boolean {
   if (typeof content !== "string") return false;
   const btwMatch = content.trim().match(/^\/btw\s+(.+)$/s);
   if (!btwMatch) return false;
-  if (btwStore.aside?.isStreaming) {
-    postMessage({ type: "cancelBtw", btwId: btwStore.aside.id });
-  }
-  const btwId = `btw-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  btwStore.addAside(btwId, btwMatch[1]!);
-  postMessage({ type: "sendBtw", btwId, question: btwMatch[1]! });
+  askBtw(btwMatch[1]!);
   return true;
 }
 
@@ -410,11 +393,15 @@ function handleSteer({ agentId, message, images }: SteerRequest, requestId: stri
   postMessage({ type: "steerAgent", agentId, message, ...(images.length ? { images } : {}), requestId });
 }
 
+function handleOpenSubscriptionUsage() {
+  subscriptionUsageStore.openOverlay();
+  postMessage({ type: "requestSubscriptionUsage" });
+}
+
 function tryInterceptUsage(content: string | UserContentBlock[]): boolean {
   if (typeof content !== "string") return false;
   if (content.trim() !== "/usage") return false;
-  subscriptionUsageStore.openOverlay();
-  postMessage({ type: "requestSubscriptionUsage" });
+  handleOpenSubscriptionUsage();
   return true;
 }
 
@@ -437,8 +424,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
       return;
     }
     if (trimmed === "/context") {
-      contextUsageStore.openOverlay();
-      postMessage({ type: "requestContextUsage" });
+      handleOpenContextUsage();
       return;
     }
   }
@@ -448,6 +434,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
   if (tryDispatchBtw(content)) return;
 
   postMessage({ type: "sendMessage", content, includeIdeContext });
+  followTranscript();
   uiStore.setProcessing(true);
 }
 
@@ -456,6 +443,7 @@ function handleQueueMessage(content: string | UserContentBlock[]) {
   if (tryInterceptStats(content)) return;
   if (tryDispatchBtw(content)) return;
   postMessage({ type: "queueMessage", content });
+  followTranscript();
 }
 
 function handleModeChange(mode: PermissionMode) {
@@ -529,148 +517,30 @@ function handleSessionPickerOpen() {
   }
 }
 
-function handleMessageScroll(event: Event) {
-  const container = event.target as HTMLElement;
-  if (!container) return;
-
-  const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-  uiStore.setIsAtBottom(scrollBottom < 20);
-}
-
-function scrollToBottom() {
-  pinToBottom();
-}
-
-function handleSetActiveModel(model: string) {
-  settingsStore.setModelState(model, defaultModel.value);
-  postMessage({ type: "setActiveModel", model });
-}
-
-function handleSetDefaultModel(model: string) {
-  settingsStore.setModelState(activeModel.value, model);
-  postMessage({ type: "setDefaultModel", model });
-}
-
-function handleSetPanelThinkingDisabled(disabled: boolean) {
-  postMessage({ type: "setPanelThinkingDisabled", disabled });
-}
-
-function handleSetPanelEffort(effort: EffortLevel | null, model: string) {
-  postMessage({ type: "setPanelEffort", effort, model });
-}
-
-function handleSetPanelMaxThinkingTokens(tokens: number | null, model: string) {
-  postMessage({ type: "setPanelMaxThinkingTokens", tokens, model });
-}
-
-function handleSetDefaultThinkingDisabled(disabled: boolean) {
-  postMessage({ type: "setDefaultThinkingDisabled", disabled });
-}
-
-function handleSetDefaultEffort(effort: EffortLevel | null, model: string) {
-  postMessage({ type: "setDefaultEffort", effort, model });
-}
-
-function handleSetTeamRoleModel(role: TeamRole, model: string) {
-  postMessage({ type: "setTeamRoleModel", role, model });
-}
-
-function handleSetTeamRoleEffort(role: TeamRole, effort: EffortLevel | null) {
-  postMessage({ type: "setTeamRoleEffort", role, effort });
-}
-
-function handleSetDefaultMaxThinkingTokens(tokens: number | null) {
-  postMessage({ type: "setDefaultMaxThinkingTokens", tokens });
-}
-
-function handleSetBudgetLimit(budgetUsd: number | null) {
-  settingsStore.setBudgetLimit(budgetUsd);
-  postMessage({ type: "setBudgetLimit", budgetUsd });
-}
-
-function handleSetTaskBudget(budget: number | null) {
-  settingsStore.setTaskBudget(budget);
-  postMessage({ type: "setTaskBudget", budget });
-}
-
-function handleSetAutoCompact(config: AutoCompactConfig) {
-  settingsStore.updateAutoCompactConfig(config);
-  postMessage({ type: "setAutoCompact", config });
-}
-
-function handleSetCacheWarming(mode: CacheWarmingMode) {
-  settingsStore.setCacheWarmingMode(mode);
-  postMessage({ type: "setCacheWarming", mode });
-}
-
 function handleSetPermissionMode(mode: PermissionMode) {
   postMessage({ type: "setPermissionMode", mode });
   settingsStore.setPermissionMode(mode);
 }
 
-function handleSetDefaultPermissionMode(mode: PermissionMode) {
-  postMessage({ type: "setDefaultPermissionMode", mode });
-  settingsStore.setDefaultPermissionMode(mode);
-}
-
-function handleSetDefaultDangerouslySkipPermissions(enabled: boolean) {
-  postMessage({ type: "setDefaultDangerouslySkipPermissions", enabled });
-  settingsStore.setDefaultDangerouslySkipPermissions(enabled);
-}
-
-function handleSetIdeContextEnabled(enabled: boolean) {
-  postMessage({ type: "setIdeContextEnabled", enabled });
-  settingsStore.setIdeContextEnabledDefault(enabled);
-  uiStore.setIdeContextDefault(enabled);
-}
-
-function handleOpenVSCodeSettings() {
-  postMessage({ type: "openSettings" });
-}
+const handleOpenSettings = useOpenSettings();
 
 function handleInvokeSignIn() {
-  postMessage({ type: "invokeSignIn" });
+  handleOpenSettings("accounts");
 }
 
-function handleSetVoiceProvider(provider: VoiceProvider) {
-  postMessage({ type: "setVoiceProvider", provider });
-}
-
-function handleSetVoiceApiKey(provider: VoiceProvider, apiKey: string) {
-  postMessage({ type: "setVoiceApiKey", provider, apiKey });
-}
-
-function handleDeleteVoiceApiKey(provider: VoiceProvider) {
-  postMessage({ type: "deleteVoiceApiKey", provider });
-}
-
-function handleSetVoiceLanguage(language: string) {
-  postMessage({ type: "setVoiceLanguage", language });
-}
-
-function handleSetVoiceMode(mode: VoiceMode) {
-  postMessage({ type: "setVoiceMode", mode });
-}
-
-function handleSetExploreApiKey(apiKey: string) {
-  postMessage({ type: "setExploreApiKey", apiKey });
-}
-
-function handleDeleteExploreApiKey() {
-  postMessage({ type: "deleteExploreApiKey" });
-}
-
-function handleSetExploreProvider(provider: string) {
-  postMessage({ type: "setExploreProvider", provider });
-}
-
-function handleSetExploreModel(model: string) {
-  postMessage({ type: "setExploreModel", model });
-}
-
-function handleSetExploreEffort(effort: string) {
-  postMessage({ type: "setExploreEffort", effort });
-}
+// A model that needed OpenAI sign-in is switched to once any OpenAI credential exists.
+watch(
+  () => ({
+    pending: settingsStore.pendingOpenAIModel,
+    ready: settingsStore.openaiAuthStatus.chatgpt.signedIn || settingsStore.openaiAuthStatus.codex.signedIn || settingsStore.openaiAuthStatus.apikey.configured,
+  }),
+  ({ pending, ready }) => {
+    if (!pending || !ready) return;
+    settingsStore.setModelState(pending, settingsStore.defaultModel);
+    postMessage({ type: "setActiveModel", model: pending });
+    settingsStore.setPendingOpenAIModel(null);
+  },
+);
 
 function handleOpenSessionLog() {
   postMessage({ type: "openSessionLog" });
@@ -711,7 +581,8 @@ function handleBindPlan() {
     toast.info(t("toast.noSessionToBindPlan"));
     return;
   }
-  postMessage({ type: "bindPlanToSession" });
+  bindPlanStore.open();
+  postMessage({ type: "requestPlanFileCandidates" });
 }
 
 function handleOpenAgentLog(agentId: string) {
@@ -1041,189 +912,63 @@ const rewindMessagePreview = computed(() => {
   return selectedRewindItem.value?.content.slice(0, 100) || "";
 });
 
-const sessionHistoryOpen = ref(false);
-const sessionPickerRef = ref<InstanceType<typeof SessionPicker> | null>(null);
-
-function handleSessionHistorySelect(sessionId: string) {
-  handleSessionSelect(sessionId);
-  sessionHistoryOpen.value = false;
+// A side question is a `/btw` prompt; once one exists, the same entry reopens its answer.
+function handleSideQuestion() {
+  chatInputRef.value?.prependInput("/btw ");
 }
 
-function handleSessionPopoverEscape(event: KeyboardEvent) {
-  if (sessionPickerRef.value?.isInEditMode) {
-    event.preventDefault();
-  }
-}
+const HEADER_ACTIONS: Record<HeaderAction, () => void> = {
+  consolidation: handleOpenConsolidation,
+  viewPlan: handleOpenPlan,
+  bindPlan: handleBindPlan,
+  memory: handleOpenMemoryPanel,
+  browser: handleOpenBrowser,
+  mcp: handleOpenMcpPanel,
+  tools: handleOpenToolsPanel,
+  rewind: openRewindFlow,
+  sideQuestion: handleSideQuestion,
+  viewAside: () => btwStore.openOverlay(),
+  context: handleOpenContextUsage,
+  usage: handleOpenSubscriptionUsage,
+  stats: () => usageStatsStore.openOverlay(),
+  settings: () => handleOpenSettings(),
+};
 
+const isEmptyConversation = computed(() => messageListRef.value?.isEmpty === true);
+
+// A suggestion sends at once, as the reference's chips do, without touching the draft.
+function handleSuggestion(prompt: string) {
+  chatInputRef.value?.sendPrompt(prompt);
+}
 
 </script>
 
 <template>
-  <div class="flex flex-col flex-1 min-h-0 bg-background text-foreground">
-    <!-- Header bar with account info and controls -->
-    <div class="px-3 py-1.5 text-xs border-b border-border/50 flex items-center gap-2 bg-card">
-      <AccountChip />
-
-      <WorkspaceFolderChip />
-
-      <div class="flex-1"></div>
-
-      <!-- Prompt Navigator Chip -->
-      <PromptNavigatorChip />
-
-      <!-- Memory Consolidation -->
-      <ConsolidationIndicator @click="handleOpenConsolidation" />
-
-      <!-- Btw Aside Indicator -->
-      <Button
-        v-if="btwStore.hasAside"
-        variant="ghost"
-        size="icon-sm"
-        class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('header.viewAside')"
-        @click="btwStore.openOverlay()"
+  <div class="flex min-h-0 flex-1 flex-col bg-(--d-bg) text-(--d-text)">
+    <ChatHeader @action="(action: HeaderAction) => HEADER_ACTIONS[action]()">
+      <template
+        v-if="settingsStore.hostCapabilities.historyInPanel"
+        #history
       >
-        <IconMessageSquare :size="16" />
-        <span
-          v-if="btwStore.aside?.isStreaming"
-          class="absolute inset-0 m-auto h-7 w-7 rounded-full border-2 border-transparent border-t-primary animate-spin pointer-events-none"
+        <SessionHistoryDropdown
+          :sessions="storedSessions"
+          :selected-session-id="selectedSessionId"
+          :selected-session-name="selectedSessionDisplayName"
+          :has-more="hasMoreSessions"
+          :loading="loadingMoreSessions"
+          @select="handleSessionSelect"
+          @rename="handleSessionRename"
+          @delete="handleSessionDelete"
+          @tag="handleSessionTag"
+          @load-more="handleSessionLoadMore"
+          @search="handleSessionSearch"
+          @open="handleSessionPickerOpen"
         />
-      </Button>
+      </template>
+    </ChatHeader>
 
-      <!-- Open Browser Button -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('header.openBrowser')"
-        @click="handleOpenBrowser"
-      >
-        <IconGlobe :size="16" />
-      </Button>
-
-      <!-- Bind Plan Button -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('stats.bindPlan')"
-        @click="handleBindPlan"
-      >
-        <IconLink :size="16" />
-      </Button>
-
-      <!-- View Plan Button -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('stats.openPlan')"
-        @click="handleOpenPlan"
-      >
-        <IconFileText :size="16" />
-      </Button>
-
-      <!-- Memory Button -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('header.memory')"
-        @click="handleOpenMemoryPanel"
-      >
-        <IconBrain :size="16" />
-      </Button>
-
-      <!-- MCP Status Indicator -->
-      <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="handleOpenMcpPanel" />
-
-      <!-- Tools Status Indicator -->
-      <ToolsStatusIndicator :snapshot="toolsSnapshot" :disabled="isProcessing" @click="handleOpenToolsPanel" />
-
-      <!-- Session History Popover -->
-      <Popover v-model:open="sessionHistoryOpen">
-        <PopoverTrigger as-child>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            class="text-muted-foreground hover:bg-muted hover:text-foreground"
-            :title="t('header.sessionHistory')"
-          >
-            <IconClock :size="16" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          side="bottom"
-          align="end"
-          class="w-[60vw] p-0"
-          @escape-key-down="handleSessionPopoverEscape"
-        >
-          <SessionPicker
-            ref="sessionPickerRef"
-            :sessions="storedSessions"
-            :selected-session-id="selectedSessionId"
-            :selected-session-name="selectedSessionDisplayName"
-            :has-more="hasMoreSessions"
-            :loading="loadingMoreSessions"
-            @select="handleSessionHistorySelect"
-            @rename="handleSessionRename"
-            @delete="handleSessionDelete"
-            @tag="handleSessionTag"
-            @load-more="handleSessionLoadMore"
-            @search="handleSessionSearch"
-            @open="handleSessionPickerOpen"
-            @close="sessionHistoryOpen = false"
-          />
-        </PopoverContent>
-      </Popover>
-
-      <!-- Settings button -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-primary hover:bg-muted hover:text-primary"
-        :title="t('common.settings')"
-        @click="uiStore.openSettingsPanel()"
-      >
-        <IconGear :size="18" />
-      </Button>
-    </div>
-
-    <!-- Budget Warning Banner -->
-    <BudgetWarning
-      v-if="budgetWarning"
-      :current-spend="budgetWarning.currentSpend"
-      :limit="budgetWarning.limit"
-      :exceeded="budgetWarning.exceeded"
-      @dismiss="handleDismissBudgetWarning"
-    />
-
-    <!-- Context Warning Banner -->
-    <ContextWarningBanner
-      v-if="contextWarning"
-      :level="contextWarning.level"
-      :auto-compact-triggered="contextWarning.autoCompactTriggered"
-      @dismiss="handleDismissContextWarning"
-    />
-
-    <!-- Auth Failure Banner -->
-    <AuthFailureBanner
-      v-if="authFailureMessage"
-      :message="authFailureMessage"
-      @sign-in="handleInvokeSignIn"
-      @dismiss="uiStore.dismissAuthFailure"
-    />
-
-    <McpRenamedRulesBanner
-      v-if="mcpRenamedToolRules.length > 0"
-      :notices="mcpRenamedToolRules"
-      @open-file="(path: string) => handleOpenMcpConfigFile(path, null)"
-      @dismiss="settingsStore.dismissMcpRenamedToolRules()"
-    />
-
-    <!-- Message area wrapper (relative positioning for scroll-to-bottom button) -->
-    <div class="relative flex-1 min-h-0">
-      <!-- Toast notifications (positioned in top-right of chat area) -->
+    <!-- The message area is the scroll-to-bottom button's positioning context. -->
+    <div class="relative min-h-0 flex-1">
       <Toaster position="top-right" :duration="4000" />
 
       <!-- Marked as the overlay return-focus region: a transcript row can be recycled away while an overlay opened from it is up. -->
@@ -1232,8 +977,11 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         data-overlay-return-focus
         tabindex="-1"
         class="h-full overflow-y-auto message-container outline-none"
-        @scroll="handleMessageScroll"
       >
+        <EmptyState
+          v-if="isEmptyConversation"
+          @pick="handleSuggestion"
+        />
         <VirtualizedMessageList
           ref="messageListRef"
           :messages="messages"
@@ -1247,207 +995,251 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           @rewind="handleBubbleRewind"
           @rewind-to-compaction="handleCompactionRewind"
           @expand-subagent="subagentStore.expandSubagent"
-          @expand-tool="(toolId: string) => uiStore.expandTool(toolId, 'session')"
-          @expand-diff="diffStore.expandDiff"
           @view-context="handleViewContext"
         />
       </div>
 
-      <!-- Scroll to bottom button (appears when scrolled up from bottom) -->
-      <Transition name="fade">
-        <Button
-          v-if="!isAtBottom"
-          variant="default"
-          size="icon"
-          class="absolute bottom-4 right-8 rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/50 z-20"
-          :title="t('session.scrollToBottom')"
-          @click="scrollToBottom"
-        >
-          <IconChevronDown :size="16" />
-        </Button>
+      <Transition name="t-pop">
+        <JumpToLatestButton
+          v-if="!isFollowingTranscript && !isEmptyConversation"
+          class="absolute bottom-3.5 inset-e-5 z-10"
+          @click="jumpToLatestInTranscript"
+        />
       </Transition>
     </div>
 
-    <!-- Permission Prompt (queue - shows one at a time) -->
-    <PermissionPrompt
-      v-if="currentPermission"
-      :visible="true"
-      :tool-use-id="currentPermission.toolUseId"
-      :tool-name="currentPermission.toolName"
-      :tool-input="currentPermission.toolInput"
-      :file-path="currentPermission.filePath"
-      :prompt="currentPermission.prompt"
-      :image-model="currentPermission.imageModel"
-      :original-content="currentPermission.originalContent"
-      :proposed-content="currentPermission.proposedContent"
-      :command="currentPermission.command"
-      :agent-description="currentPermission.agentDescription"
-      :suggestions="currentPermission.suggestions"
-      :blocked-path="currentPermission.blockedPath"
-      :decision-reason="currentPermission.decisionReason"
-      :queue-position="1"
-      :queue-total="pendingPermissionCount"
-      @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
-    />
+    <!-- The bottom dock, top to bottom as in Chat Panel.dc.html: banners, prompts, plan banner, tasks, status row, status strip, composer. -->
+    <div
+      class="shrink-0 pb-3.5 pt-2"
+      data-testid="chat-dock"
+    >
+      <div class="chat-column flex flex-col gap-2">
+        <TransitionGroup
+          name="t-up"
+          tag="div"
+          class="flex flex-col gap-2 empty:hidden"
+        >
+          <BudgetWarning
+            v-if="budgetWarning"
+            key="budget"
+            :current-spend="budgetWarning.currentSpend"
+            :limit="budgetWarning.limit"
+            :exceeded="budgetWarning.exceeded"
+            @dismiss="handleDismissBudgetWarning"
+          />
+          <ContextWarningBanner
+            v-if="contextWarning"
+            key="context"
+            :level="contextWarning.level"
+            :auto-compact-triggered="contextWarning.autoCompactTriggered"
+            @dismiss="handleDismissContextWarning"
+          />
+          <AuthFailureBanner
+            v-if="authFailureMessage"
+            key="auth"
+            :message="authFailureMessage"
+            @sign-in="handleInvokeSignIn"
+            @dismiss="uiStore.dismissAuthFailure"
+          />
+          <McpRenamedRulesBanner
+            v-if="mcpRenamedToolRules.length > 0"
+            key="mcp-renamed"
+            :notices="mcpRenamedToolRules"
+            @open-file="(path: string) => handleOpenMcpConfigFile(path, null)"
+            @dismiss="settingsStore.dismissMcpRenamedToolRules()"
+          />
+        </TransitionGroup>
 
-    <TeamPermissionPrompt />
+        <!-- Permission Prompt (queue - shows one at a time) -->
+        <Transition name="t-up">
+          <PermissionPrompt
+            v-if="currentPermission"
+            :visible="true"
+            :tool-use-id="currentPermission.toolUseId"
+            :tool-name="currentPermission.toolName"
+            :tool-input="currentPermission.toolInput"
+            :file-path="currentPermission.filePath"
+            :prompt="currentPermission.prompt"
+            :image-model="currentPermission.imageModel"
+            :patch="currentPermission.patch"
+            :patch-omitted="currentPermission.patchOmitted"
+            :command="currentPermission.command"
+            :agent-description="currentPermission.agentDescription"
+            :suggestions="currentPermission.suggestions"
+            :blocked-path="currentPermission.blockedPath"
+            :decision-reason="currentPermission.decisionReason"
+            :queue-position="1"
+            :queue-total="pendingPermissionCount"
+            @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
+          />
+        </Transition>
 
-    <!-- Persistent Task List Panel (always visible when tasks exist) -->
-    <div v-if="tasks.length > 0" class="px-3 py-2 border-t border-border/30 bg-card">
-      <TaskListCard :tasks="tasks" :is-collapsed="tasksPanelCollapsed" @update:is-collapsed="uiStore.setTasksPanelCollapsed" />
+        <TeamPermissionPrompt />
+
+        <!-- Question Prompt for AskUserQuestion tool -->
+        <Transition name="t-up">
+          <QuestionPrompt
+            v-if="pendingQuestion"
+            :visible="true"
+            @submit="handleQuestionSubmit"
+            @cancel="handleQuestionCancel"
+          />
+        </Transition>
+
+        <!-- Input Form Prompt for BrowserRequestInput tool -->
+        <Transition name="t-up">
+          <FormPrompt
+            v-if="pendingFormSchema"
+            :visible="true"
+            @submit="handleFormSubmit"
+            @cancel="handleFormCancel"
+          />
+        </Transition>
+
+        <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
+        <ExtensionUiDialog />
+
+        <!-- Skill Approval Prompt for Skill tool -->
+        <Transition name="t-up">
+          <SkillApprovalPrompt
+            v-if="pendingSkillApproval"
+            :visible="true"
+            :skill-name="pendingSkillApproval.skillName"
+            :skill-description="pendingSkillApproval.skillDescription"
+            @approve="handleSkillApprove"
+          />
+        </Transition>
+
+        <!-- Elicitation Prompt for MCP server input requests -->
+        <ElicitationPrompt />
+
+        <PlanReadyBanner />
+
+        <!-- Persistent Task List Panel (always visible when tasks exist) -->
+        <Transition name="t-up">
+          <TaskListCard
+            v-if="tasks.length > 0"
+            :tasks="tasks"
+            :is-collapsed="tasksPanelCollapsed"
+            @update:is-collapsed="uiStore.setTasksPanelCollapsed"
+          />
+        </Transition>
+
+        <StatusBar
+          :is-processing="isProcessing"
+          :awaiting-user-action="isAwaitingUserAction"
+          :current-tool-name="currentRunningTool ?? undefined"
+          :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
+          :active-hooks="uiStore.activeHooks"
+        />
+
+        <ComposerStatusStrip
+          :stats="sessionStats"
+          @open-log="handleOpenSessionLog"
+          @open-context-usage="handleOpenContextUsage"
+          @open-background-tasks="handleOpenBackgroundTasks"
+        />
+
+        <ChatInput
+          ref="chatInputRef"
+          :is-processing="isProcessing"
+          :permission-mode="currentSettings.permissionMode"
+          :dangerously-skip-permissions="currentSettings.dangerouslySkipPermissions"
+          :settings-open="showSettingsModal"
+          @send="handleSendMessage"
+          @queue="handleQueueMessage"
+          @steer="handleSteer"
+          @cancel="handleCancel"
+          @change-mode="handleModeChange"
+          @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
+        />
+      </div>
     </div>
 
-    <!-- Question Prompt for AskUserQuestion tool -->
-    <QuestionPrompt v-if="pendingQuestion" :visible="true" @submit="handleQuestionSubmit" @cancel="handleQuestionCancel" />
-
-    <!-- Input Form Prompt for BrowserRequestInput tool -->
-    <FormPrompt v-if="pendingFormSchema" :visible="true" @submit="handleFormSubmit" @cancel="handleFormCancel" />
-
-    <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
-    <ExtensionUiDialog v-if="extensionUiStore.current" />
-
-    <!-- Skill Approval Prompt for Skill tool -->
-    <SkillApprovalPrompt
-      v-if="pendingSkillApproval"
-      :visible="true"
-      :skill-name="pendingSkillApproval.skillName"
-      :skill-description="pendingSkillApproval.skillDescription"
-      @approve="handleSkillApprove"
+    <SettingsModal
+      v-if="showSettingsModal && settingsStore.hostCapabilities.settingsInPanel"
+      :host="PANEL_HOST_SETTINGS"
+      :footer="{ kind: 'hostSettings' }"
+      backdrop="blur"
+      :target="settingsTarget ?? undefined"
+      @closed="uiStore.closeSettingsModal()"
+      @open-host-settings="postMessage({ type: 'openSettings' })"
     />
 
-    <!-- Elicitation Prompt for MCP server input requests -->
-    <ElicitationPrompt />
-
-    <!-- Status Bar with witty phrases (above input) -->
-    <StatusBar
-      :is-processing="isProcessing"
-      :awaiting-user-action="isAwaitingUserAction"
-      :current-tool-name="currentRunningTool ?? undefined"
-      :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
-      :active-hooks="uiStore.activeHooks"
-    />
-
-    <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
-      <TeamIndicator />
-      <CompassIndicator />
-      <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
-    </SessionStats>
-
-    <ChatInput
-      ref="chatInputRef"
-      :is-processing="isProcessing"
-      :permission-mode="currentSettings.permissionMode"
-      :dangerously-skip-permissions="currentSettings.dangerouslySkipPermissions"
-      :settings-open="showSettingsPanel"
-      @send="handleSendMessage"
-      @queue="handleQueueMessage"
-      @steer="handleSteer"
-      @cancel="handleCancel"
-      @change-mode="handleModeChange"
-      @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
-    />
-
-    <!-- Settings Panel (overlay) -->
-    <SettingsPanel
-      :visible="showSettingsPanel"
-      :settings="currentSettings"
-      :available-models="availableModels"
-      :active-model="activeModel"
-      :default-model="defaultModel"
-      :panel-thinking="panelThinking"
-      :panel-thinking-model="panelThinkingModel"
-      :default-thinking="defaultThinking"
-      :default-thinking-model="defaultThinkingModel"
-      :voice-config="voiceConfig"
-      :voice-has-api-key="voiceHasApiKey"
-      :explore-has-api-key="exploreHasApiKey"
-      :explore-provider="exploreProvider"
-      :explore-model="exploreModel"
-      :explore-effort="exploreEffort"
-      @close="uiStore.closeSettingsPanel()"
-      @set-active-model="handleSetActiveModel"
-      @set-default-model="handleSetDefaultModel"
-      @set-panel-thinking-disabled="handleSetPanelThinkingDisabled"
-      @set-panel-effort="handleSetPanelEffort"
-      @set-panel-max-thinking-tokens="handleSetPanelMaxThinkingTokens"
-      @set-default-thinking-disabled="handleSetDefaultThinkingDisabled"
-      @set-default-effort="handleSetDefaultEffort"
-      @set-default-max-thinking-tokens="handleSetDefaultMaxThinkingTokens"
-      @set-budget-limit="handleSetBudgetLimit"
-      @set-task-budget="handleSetTaskBudget"
-      @set-auto-compact="handleSetAutoCompact"
-      @set-cache-warming="handleSetCacheWarming"
-      @set-default-permission-mode="handleSetDefaultPermissionMode"
-      @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
-      @set-ide-context-enabled="handleSetIdeContextEnabled"
-      @open-v-s-code-settings="handleOpenVSCodeSettings"
-      @set-voice-provider="handleSetVoiceProvider"
-      @set-voice-api-key="handleSetVoiceApiKey"
-      @delete-voice-api-key="handleDeleteVoiceApiKey"
-      @set-voice-language="handleSetVoiceLanguage"
-      @set-voice-mode="handleSetVoiceMode"
-      @set-explore-api-key="handleSetExploreApiKey"
-      @delete-explore-api-key="handleDeleteExploreApiKey"
-      @set-explore-provider="handleSetExploreProvider"
-      @set-explore-model="handleSetExploreModel"
-      @set-explore-effort="handleSetExploreEffort"
-      @set-team-role-model="handleSetTeamRoleModel"
-      @set-team-role-effort="handleSetTeamRoleEffort"
-    />
-
-    <!-- MCP Status Panel (modal) -->
-    <McpStatusPanel
-      :visible="showMcpPanel"
-      :servers="mcpServers"
-      :config-errors="mcpConfigErrors"
-      :local-mcp-unignored="mcpLocalUnignored"
-      :tool-exposure-scopes="mcpToolExposureScopes"
-      :config-revision="mcpConfigRevision"
-      :mcp-enabled="mcpEnabled"
-      @close="uiStore.closeMcpPanel()"
-      @toggle="handleToggleMcpServer"
-      @toggle-enabled="handleSetMcpEnabled"
-      @set-tool-exposure="handleSetMcpToolExposure"
-      @reconnect="handleReconnectMcpServer"
-      @authenticate="handleAuthenticateMcpServer"
-      @reauthenticate="handleReauthenticateMcpServer"
-      @sign-out="handleSignOutMcpServer"
-      @reload-config="handleReloadMcpConfig"
-      @trust-project="postMessage({ type: 'setProjectTrusted' })"
-      @add-server="handleAddMcpServer"
-      @update-server="handleUpdateMcpServer"
-      @delete-server="handleDeleteMcpServer"
-      :mcp-write-in-flight="mcpWriteRequestId !== null"
-      :mcp-write-error="mcpWriteError"
-      @open-file="handleOpenMcpConfigFile"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <McpStatusPanel
+        v-if="showMcpPanel"
+        :servers="mcpServers"
+        :config-errors="mcpConfigErrors"
+        :local-mcp-unignored="mcpLocalUnignored"
+        :tool-exposure-scopes="mcpToolExposureScopes"
+        :config-revision="mcpConfigRevision"
+        :mcp-enabled="mcpEnabled"
+        :mcp-write-in-flight="mcpWriteRequestId !== null"
+        :mcp-write-error="mcpWriteError"
+        @close="uiStore.closeMcpPanel()"
+        @toggle="handleToggleMcpServer"
+        @toggle-enabled="handleSetMcpEnabled"
+        @set-tool-exposure="handleSetMcpToolExposure"
+        @reconnect="handleReconnectMcpServer"
+        @authenticate="handleAuthenticateMcpServer"
+        @reauthenticate="handleReauthenticateMcpServer"
+        @sign-out="handleSignOutMcpServer"
+        @reload-config="handleReloadMcpConfig"
+        @trust-project="postMessage({ type: 'setProjectTrusted' })"
+        @add-server="handleAddMcpServer"
+        @update-server="handleUpdateMcpServer"
+        @delete-server="handleDeleteMcpServer"
+        @open-file="handleOpenMcpConfigFile"
+      />
+    </Transition>
 
     <!-- Memory Panel (full-screen overlay) -->
-    <MemoryPanel
-      v-if="showMemoryPanel"
-      :notes="notes"
-      :observations="observations"
-      :search-results="searchResults"
-      :has-more-observations="hasMoreObservations"
-      :loading-observations="loadingObservations"
-      @close="uiStore.closeMemoryPanel()"
-      @create="handleCreateMemory"
-      @delete="handleDeleteMemory"
-      @pin="handlePinMemory"
-      @unpin="handleUnpinMemory"
-      @load-more-observations="handleLoadMoreObservations"
-    />
-    <MemoryAuditOverlay v-if="memoryAuditStore.isOverlayOpen" @close="memoryAuditStore.closeOverlay()" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <MemoryPanel
+        v-if="showMemoryPanel"
+        :notes="notes"
+        :observations="observations"
+        :search-results="searchResults"
+        :has-more-observations="hasMoreObservations"
+        :loading-observations="loadingObservations"
+        @close="uiStore.closeMemoryPanel()"
+        @create="handleCreateMemory"
+        @delete="handleDeleteMemory"
+        @pin="handlePinMemory"
+        @unpin="handleUnpinMemory"
+        @load-more-observations="handleLoadMoreObservations"
+      />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <MemoryAuditOverlay
+        v-if="memoryAuditStore.isOverlayOpen"
+        @close="memoryAuditStore.closeOverlay()"
+      />
+    </Transition>
 
-    <!-- Tools Status Panel (modal) -->
-    <ToolsStatusPanel
-      :visible="showToolsPanel"
-      :snapshot="toolsSnapshot"
-      @close="uiStore.closeToolsPanel()"
-      @toggle="handleToggleTool"
-      @toggle-group="handleToggleToolGroup"
-      @trust-project="postMessage({ type: 'setProjectTrusted' })"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <ToolsStatusPanel
+        v-if="showToolsPanel"
+        :snapshot="toolsSnapshot"
+        @close="uiStore.closeToolsPanel()"
+        @toggle="handleToggleTool"
+        @toggle-group="handleToggleToolGroup"
+        @trust-project="postMessage({ type: 'setProjectTrusted' })"
+      />
+    </Transition>
 
     <!-- Rewind Type Modal (pick rewind type first) -->
     <RewindConfirmModal
@@ -1475,40 +1267,72 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     />
 
     <!-- Rewind Browser (pick which message to rewind to) -->
-    <RewindBrowser
-      v-if="showRewindBrowser"
-      :is-open="showRewindBrowser"
-      :prompts="rewindHistoryItems"
-      :restore-points="rewindRestorePoints"
-      :is-loading="rewindHistoryLoading"
-      @select="handleRewindBrowserSelect"
-      @undo="handleUndoRewind"
-      @close="uiStore.closeRewindBrowser"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <RewindBrowser
+        v-if="showRewindBrowser"
+        :prompts="rewindHistoryItems"
+        :restore-points="rewindRestorePoints"
+        :is-loading="rewindHistoryLoading"
+        @select="handleRewindBrowserSelect"
+        @undo="handleUndoRewind"
+        @close="uiStore.closeRewindBrowser"
+      />
+    </Transition>
 
     <!-- Compaction rewind confirmation (shared by the boundary card and the rewind picker) -->
     <CompactionRewindConfirm
-      v-if="pendingCompactionRewindId"
       :open="pendingCompactionRewindId !== null"
       @confirm="confirmCompactionRewind"
       @cancel="cancelCompactionRewind"
     />
 
     <!-- Subagent Overlay (full-screen) -->
-    <SubagentOverlay
-      v-if="expandedSubagent"
-      :subagent="expandedSubagent"
-      :streaming="expandedSubagent ? subagentStore.getSubagentStreaming(expandedSubagent.id) : undefined"
-      @close="subagentStore.collapseSubagent"
-      @open-log="handleOpenAgentLog"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <SubagentOverlay
+        v-if="expandedSubagent"
+        :subagent="expandedSubagent"
+        :streaming="expandedSubagent ? subagentStore.getSubagentStreaming(expandedSubagent.id) : undefined"
+        @close="subagentStore.collapseSubagent"
+        @open-log="handleOpenAgentLog"
+      />
+    </Transition>
 
     <!-- Tool Overlay (full-screen) — MCP tools and built-in tools use dedicated overlays -->
-    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" :owner="expandedToolOwner" @close="uiStore.collapseTool" />
-    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" :owner="expandedToolOwner" @close="uiStore.collapseTool" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <McpToolOverlay
+        v-if="expandedTool && expandedTool.name.startsWith('mcp__')"
+        :tool="expandedTool"
+        :owner="expandedToolOwner"
+        @close="uiStore.collapseTool"
+      />
+      <ToolOverlay
+        v-else-if="expandedTool"
+        :tool="expandedTool"
+        :owner="expandedToolOwner"
+        @close="uiStore.collapseTool"
+      />
+    </Transition>
 
     <!-- Diff Overlay (full-screen) -->
-    <DiffOverlay v-if="expandedDiff" :diff="expandedDiff" @close="diffStore.collapseDiff" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <DiffOverlay
+        v-if="expandedDiff"
+        :diff="expandedDiff"
+        @close="diffStore.collapseDiff"
+      />
+    </Transition>
 
     <!-- Monaco editor overlays (desktop) -->
     <EditorOverlayHost
@@ -1517,87 +1341,200 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     />
 
     <!-- Plan Approval Overlay (full-screen) -->
-    <PlanApprovalOverlay
-      v-if="pendingPlanApproval && isPlanOverlayVisible"
-      :plan-content="pendingPlanApproval.planContent"
-      @approve="handlePlanApprove"
-      @feedback="handlePlanFeedback"
-      @dismiss="handlePlanDismiss"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <PlanApprovalOverlay
+        v-if="pendingPlanApproval && isPlanOverlayVisible"
+        :plan-content="pendingPlanApproval.planContent"
+        @approve="handlePlanApprove"
+        @feedback="handlePlanFeedback"
+        @dismiss="handlePlanDismiss"
+      />
+    </Transition>
 
     <!-- Plan View Overlay (read-only, full-screen) -->
-    <PlanViewOverlay v-if="viewingPlan" :plan-content="viewingPlan" @close="planViewStore.closePlanView" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <PlanViewOverlay
+        v-if="viewingPlan"
+        :plan-content="viewingPlan"
+        @close="planViewStore.closePlanView"
+      />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <BindPlanOverlay
+        v-if="bindPlanStore.isOpen"
+        @close="bindPlanStore.close()"
+      />
+    </Transition>
 
     <!-- Context Injection Overlay -->
-    <ContextInjectionOverlay v-if="contextInjectionStore.isOverlayOpen" @close="contextInjectionStore.closeOverlay()" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <ContextInjectionOverlay
+        v-if="contextInjectionStore.isOverlayOpen"
+        @close="contextInjectionStore.closeOverlay()"
+      />
+    </Transition>
 
     <!-- Context Usage Overlay -->
-    <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />
-    <SubscriptionUsageOverlay v-if="subscriptionUsageStore.isOverlayOpen" @close="subscriptionUsageStore.closeOverlay()" />
-    <UsageStatsOverlay v-if="usageStatsStore.isOverlayOpen" @close="usageStatsStore.closeOverlay()" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <ContextUsageOverlay
+        v-if="contextUsageStore.isOverlayOpen"
+        @close="contextUsageStore.closeOverlay()"
+      />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <SubscriptionUsageOverlay
+        v-if="subscriptionUsageStore.isOverlayOpen"
+        @close="subscriptionUsageStore.closeOverlay()"
+      />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <UsageStatsOverlay
+        v-if="usageStatsStore.isOverlayOpen"
+        @close="usageStatsStore.closeOverlay()"
+      />
+    </Transition>
 
-    <ConsolidationOverlay v-if="consolidationStore.isOverlayOpen" @close="consolidationStore.closeOverlay()" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <ConsolidationOverlay
+        v-if="consolidationStore.isOverlayOpen"
+        @close="consolidationStore.closeOverlay()"
+      />
+    </Transition>
 
     <!-- Background Tasks Overlay -->
-    <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
-    <TeamOverlay v-if="teamStore.isOverlayOpen" />
-    <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <BackgroundTasksOverlay
+        v-if="backgroundTaskStore.isOverlayOpen"
+        @close="backgroundTaskStore.closeOverlay()"
+      />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <TeamOverlay v-if="teamStore.isOverlayOpen" />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
+    </Transition>
 
-    <CompassGraphOverlay v-if="compassStore.activePanel === 'graph'" />
-    <CompassSearchOverlay v-if="compassStore.activePanel === 'search'" />
-    <CompassValidationOverlay v-if="compassStore.activePanel === 'validate'" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <CompassGraphOverlay v-if="compassStore.activePanel === 'graph'" />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <CompassSearchOverlay v-if="compassStore.activePanel === 'search'" />
+    </Transition>
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <CompassValidationOverlay v-if="compassStore.activePanel === 'validate'" />
+    </Transition>
 
     <!-- Voice First-Run Modal (privacy disclosure) -->
-    <VoiceFirstRunModal
-      v-if="voiceFirstRunRequired"
-      :reason="voiceFirstRunRequired"
-      @accept="handleVoiceFirstRunAccept"
-      @cancel="handleVoiceFirstRunCancel"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <VoiceFirstRunModal
+        v-if="voiceFirstRunRequired"
+        :reason="voiceFirstRunRequired"
+        @accept="handleVoiceFirstRunAccept"
+        @cancel="handleVoiceFirstRunCancel"
+      />
+    </Transition>
 
     <!-- Voice Model Download Modal -->
-    <VoiceModelDownloadModal
-      v-if="voiceHasActiveDownload"
-      :downloads="voiceModelDownload"
-      @cancel="handleVoiceDownloadCancel"
-      @open-license="handleVoiceLicenseOpen"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <VoiceModelDownloadModal
+        v-if="voiceShowModelDownload"
+        :downloads="voiceModelDownload"
+        @hide="voiceJarvisStore.hideModelDownload()"
+        @cancel="handleVoiceDownloadCancel"
+        @open-license="handleVoiceLicenseOpen"
+      />
+    </Transition>
 
     <!-- Voice Model Upgrade Modal -->
-    <VoiceModelUpgradeModal
-      v-if="voicePendingUpgrades.length > 0 && !voiceHasActiveDownload"
-      :upgrades="voicePendingUpgrades"
-      @accept="handleVoiceUpgradeAccept"
-      @dismiss="handleVoiceUpgradeDismiss"
-      @open-license="handleVoiceLicenseOpen"
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <VoiceModelUpgradeModal
+        v-if="voicePendingUpgrades.length > 0 && !voiceHasActiveDownload"
+        :upgrades="voicePendingUpgrades"
+        @accept="handleVoiceUpgradeAccept"
+        @dismiss="handleVoiceUpgradeDismiss"
+        @open-license="handleVoiceLicenseOpen"
+      />
+    </Transition>
 
-    <!-- Prompt Navigator Overlay (always mounted; Dialog manages enter/exit) -->
-    <PromptNavigator @edit-and-resend="handleEditAndResend" @rewind="handleNavigatorRewind" />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <PromptNavigator
+        v-if="isNavigatorOpen"
+        @edit-and-resend="handleEditAndResend"
+        @rewind="handleNavigatorRewind"
+      />
+    </Transition>
 
     <!-- Btw Aside Overlay -->
-    <BtwAsideBubble
-      v-if="btwStore.isOverlayOpen && btwStore.aside"
-      :aside="btwStore.aside"
-      @close="btwStore.closeOverlay()"
-      @dismiss="
-        () => {
-          if (btwStore.aside?.isStreaming) postMessage({ type: 'cancelBtw', btwId: btwStore.aside.id });
-          btwStore.dismissAside();
-        }
-      "
-    />
+    <Transition
+      name="t-overlay"
+      appear
+    >
+      <BtwAsideBubble
+        v-if="btwStore.isOverlayOpen && btwStore.aside"
+        :aside="btwStore.aside"
+        @close="btwStore.closeOverlay()"
+        @dismiss="
+          () => {
+            if (btwStore.aside?.isStreaming) postMessage({ type: 'cancelBtw', btwId: btwStore.aside.id });
+            btwStore.dismissAside();
+          }
+        "
+      />
+    </Transition>
   </div>
 </template>
-
-<style scoped>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.15s ease-out;
-}
-
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>

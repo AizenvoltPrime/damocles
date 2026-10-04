@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import type { ElicitationRequest } from '@shared/types/elicitation';
-import { Button } from '@/components/ui/button';
+import { Check, ExternalLink, Plug } from 'lucide-vue-next';
 import { useElicitationStore } from '@/stores/useElicitationStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -72,83 +72,115 @@ function handleOpenUrl() {
 function updateFormValue(key: string, value: unknown) {
   formValues.value = { ...formValues.value, [key]: value };
 }
+
+function onFieldInput(prop: { key: string; type: unknown }, raw: string) {
+  const numeric = prop.type === 'number' || prop.type === 'integer';
+  updateFormValue(prop.key, numeric ? (raw === '' ? undefined : Number(raw)) : raw);
+}
 </script>
 
 <template>
-  <div
-    v-if="currentElicitation"
-    class="border-t border-border bg-background"
-    role="region"
-    :aria-label="$t('elicitation.ariaLabel')"
-  >
-    <div class="px-4 pt-3 pb-1">
-      <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs bg-primary/20 text-primary border border-border">
-        {{ currentElicitation.serverName }}
-      </span>
-    </div>
+  <Transition name="t-up">
+    <div
+      v-if="currentElicitation"
+      class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+      role="region"
+      :aria-label="$t('elicitation.ariaLabel')"
+      data-dock-prompt
+      data-testid="elicitation-card"
+    >
+      <header class="flex items-center gap-2.5 border-b border-(--d-border) bg-linear-to-b from-[color-mix(in_srgb,var(--d-accent)_10%,transparent)] to-transparent px-3 py-2">
+        <span
+          class="d-ring flex size-6.5 flex-none items-center justify-center rounded-lg bg-(--d-accent-soft) text-(--d-accent)"
+          aria-hidden="true"
+        >
+          <Plug class="size-3.5" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="truncate font-semibold">
+            {{ $t('elicitation.title', { server: currentElicitation.serverName }) }}
+          </div>
+        </div>
+      </header>
 
-    <div class="px-4 py-2 text-sm text-foreground whitespace-pre-wrap">
-      {{ currentElicitation.message }}
-    </div>
+      <div class="px-3.5 pt-2.5 pb-2 text-13 text-pretty whitespace-pre-wrap">
+        {{ currentElicitation.message }}
+      </div>
 
-    <!-- URL mode -->
-    <template v-if="currentElicitation.mode === 'url'">
-      <div class="px-4 pb-3">
-        <Button
-          v-if="currentElicitation.url"
-          variant="outline"
-          size="sm"
-          class="mb-2"
+      <div
+        v-if="currentElicitation.mode === 'url' && currentElicitation.url"
+        class="px-3.5 pb-3"
+      >
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
           @click="handleOpenUrl"
         >
+          <ExternalLink
+            class="size-3.25"
+            aria-hidden="true"
+          />
           {{ $t('elicitation.openInBrowser') }}
-        </Button>
+        </button>
       </div>
-    </template>
 
-    <!-- Form mode -->
-    <template v-else-if="currentElicitation.mode === 'form' && schemaProperties.length > 0">
-      <div class="px-4 pb-3 space-y-2">
-        <div v-for="prop in schemaProperties" :key="prop.key" class="flex flex-col gap-1">
-          <label class="text-xs text-muted-foreground">{{ prop.description || prop.key }}</label>
-          <template v-if="prop.type === 'boolean'">
-            <label class="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                :checked="!!formValues[prop.key]"
-                class="accent-primary"
-                @change="updateFormValue(prop.key, ($event.target as HTMLInputElement).checked)"
-              />
-              {{ prop.key }}
-            </label>
-          </template>
-          <template v-else-if="prop.type === 'number' || prop.type === 'integer'">
+      <div
+        v-else-if="currentElicitation.mode === 'form' && schemaProperties.length > 0"
+        class="space-y-2.5 px-3.5 pb-3"
+      >
+        <div
+          v-for="prop in schemaProperties"
+          :key="prop.key"
+          class="flex flex-col gap-1"
+        >
+          <label
+            v-if="prop.type === 'boolean'"
+            class="flex items-center gap-2 text-12.5"
+          >
             <input
-              type="number"
-              class="w-full px-2 py-1.5 text-sm rounded border border-border bg-card text-foreground focus:outline-none focus:border-primary"
-              :value="formValues[prop.key] ?? ''"
-              @input="updateFormValue(prop.key, ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value))"
-            />
-          </template>
+              type="checkbox"
+              :checked="!!formValues[prop.key]"
+              class="accent-(--d-accent)"
+              @change="updateFormValue(prop.key, ($event.target as HTMLInputElement).checked)"
+            >
+            {{ prop.description || prop.key }}
+          </label>
           <template v-else>
+            <label
+              :for="`elicitation-${prop.key}`"
+              class="text-xs font-medium text-(--d-muted)"
+            >{{ prop.description || prop.key }}</label>
             <input
-              type="text"
-              class="w-full px-2 py-1.5 text-sm rounded border border-border bg-card text-foreground focus:outline-none focus:border-primary"
+              :id="`elicitation-${prop.key}`"
+              :type="prop.type === 'number' || prop.type === 'integer' ? 'number' : 'text'"
+              class="h-8.5 w-full rounded-10 border border-(--d-border2) bg-(--d-input) px-2.75 text-12.5 text-(--d-text) outline-none focus:border-(--d-accent)"
               :value="formValues[prop.key] ?? ''"
-              @input="updateFormValue(prop.key, ($event.target as HTMLInputElement).value)"
-            />
+              @input="onFieldInput(prop, ($event.target as HTMLInputElement).value)"
+            >
           </template>
         </div>
       </div>
-    </template>
 
-    <div class="px-4 pb-3 flex justify-end gap-2 border-t border-border/30 pt-3">
-      <Button variant="ghost" size="sm" @click="handleDecline">
-        {{ $t('elicitation.decline') }}
-      </Button>
-      <Button size="sm" @click="handleAccept">
-        {{ $t('elicitation.accept') }}
-      </Button>
+      <div class="flex justify-end gap-2 border-t border-(--d-border) bg-(--d-panel) px-3.5 py-2.5">
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center rounded-9 border border-(--d-border2) px-3 text-12.5 transition-colors hover:bg-(--d-hover)"
+          @click="handleDecline"
+        >
+          {{ $t('elicitation.decline') }}
+        </button>
+        <button
+          type="button"
+          class="d-press flex h-7.5 items-center gap-1.5 rounded-9 bg-(--d-accent) px-3.5 text-12.5 font-semibold text-(--d-on-accent) transition-[filter] hover:brightness-110"
+          @click="handleAccept"
+        >
+          <Check
+            class="size-3.25"
+            aria-hidden="true"
+          />
+          {{ $t('elicitation.accept') }}
+        </button>
+      </div>
     </div>
-  </div>
+  </Transition>
 </template>

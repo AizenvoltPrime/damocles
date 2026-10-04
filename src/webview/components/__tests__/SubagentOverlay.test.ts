@@ -8,25 +8,15 @@ import type { SubagentState } from '@shared/types/subagents';
 import SubagentOverlay from '../SubagentOverlay.vue';
 import { useExpandedTool } from '@/composables/useExpandedTool';
 import { useUIStore } from '@/stores/useUIStore';
+import { useDiffStore } from '@/stores/useDiffStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
 import { i18n } from '@/i18n';
 import { at, defined } from '@/__tests__/helpers';
 
 /**
- * The dead click this slice removes: a tool card inside a subagent overlay set an expanded tool id
- * that nothing could resolve, so no overlay ever appeared.
- *
- * The two suites next door cover the halves. This covers the seam: the card's `expand` emit has to
- * reach `expandTool` with the `'subagent'` source, at both card sites, so the resolver reads the store
- * that actually holds the call. `ToolCallCard` is stubbed down to its emit because the card's own
- * rendering is not what is under test here; everything between the emit and the resolved call is real.
+ * The seam between the subagent transcript and the tool and diff overlays: both card sites must hand the
+ * real `ToolCallCard` the `'subagent'` source, so a click opens the call from the store that holds it.
  */
-
-const ToolCallCardStub = defineComponent({
-  props: { toolCall: { type: Object as () => ToolCall, required: true } },
-  emits: ['expand'],
-  template: `<button class="tool-card" @click="$emit('expand', toolCall.id)">{{ toolCall.id }}</button>`,
-});
 
 const PassThroughStub = defineComponent({ template: '<div><slot /></div>' });
 
@@ -63,8 +53,9 @@ function open(state: SubagentState) {
     global: {
       plugins: [i18n],
       stubs: {
-        ToolCallCard: ToolCallCardStub,
         OverlayShell: PassThroughStub,
+        LiveOutputPane: true,
+        DiffView: true,
         MarkdownRenderer: true,
         ThinkingIndicator: true,
         LoadingSpinner: true,
@@ -75,12 +66,15 @@ function open(state: SubagentState) {
 
 beforeEach(() => setActivePinia(createPinia()));
 
+const cardsOf = (wrapper: ReturnType<typeof open>) => wrapper.findAll('[data-testid="tool-card"]');
+const clickToExpand = () => i18n.global.t('toolCall.clickToExpand');
+
 describe('clicking a tool card inside a subagent overlay', () => {
   it('opens the call that is still in the live tool list', async () => {
     const tool: ToolCall = { id: 't-live', name: 'Bash', input: {}, status: 'running' };
     const wrapper = open(subagent({ toolCalls: [tool] }));
 
-    const cards = wrapper.findAll('.tool-card');
+    const cards = cardsOf(wrapper);
     expect(cards).toHaveLength(1);
     await at(cards, 0).trigger('click');
 
@@ -92,12 +86,23 @@ describe('clicking a tool card inside a subagent overlay', () => {
     const tool: ToolCall = { id: 't-sealed', name: 'Grep', input: {}, status: 'completed' };
     const wrapper = open(subagent({ messagesSealed: true, messages: [sealedMessage(tool)] }));
 
-    const cards = wrapper.findAll('.tool-card');
+    const cards = cardsOf(wrapper);
     expect(cards).toHaveLength(1);
     await at(cards, 0).trigger('click');
 
     expect(useUIStore().expandedToolSource).toBe('subagent');
     expect(defined(useExpandedTool().tool.value).name).toBe('Grep');
+  });
+
+  it.each([
+    ['an Edit', { id: 't-edit', name: 'Edit', input: { file_path: '/w/a.ts', old_string: 'a', new_string: 'b' }, status: 'completed' }],
+    ['a Write', { id: 't-write', name: 'Write', input: { file_path: '/w/a.ts', content: 'one\n' }, status: 'completed', metadata: { created: true } }],
+  ] as Array<[string, ToolCall]>)('opens the diff of %s it made', async (_label, tool) => {
+    const wrapper = open(subagent({ messagesSealed: true, messages: [sealedMessage(tool)] }));
+
+    await wrapper.get(`[aria-label="${clickToExpand()}"]`).trigger('click');
+
+    expect(useDiffStore().expandedDiff).toMatchObject({ filePath: '/w/a.ts', tool: tool.name });
   });
 });
 
@@ -188,18 +193,18 @@ describe('the image lightbox of a steer row', () => {
   });
 });
 
-describe('the subagent overlay subtitle', () => {
-  const SubtitleShell = defineComponent({ template: '<div><div class="subtitle"><slot name="subtitle" /></div><slot /></div>' });
+describe('the subagent overlay meta chips', () => {
+  const Shell = defineComponent({ template: '<div><slot name="header-actions" /><slot /><slot name="footer" /></div>' });
 
-  function subtitle(state: SubagentState): string {
+  function chips(state: SubagentState): string {
     return mount(SubagentOverlay, {
       props: { subagent: state },
-      global: { plugins: [i18n], stubs: { OverlayShell: SubtitleShell, MarkdownRenderer: true, ThinkingIndicator: true, LoadingSpinner: true } },
-    }).get('.subtitle').text();
+      global: { plugins: [i18n], stubs: { OverlayShell: Shell, MarkdownRenderer: true, ThinkingIndicator: true } },
+    }).findAll('[data-testid="agent-chip"]').map((chip) => chip.text()).join(' | ');
   }
 
   it('shows the run usage after the model, in place of the model-facing token total', () => {
-    const text = subtitle(subagent({
+    const text = chips(subagent({
       model: 'haiku',
       result: { content: 'done', totalTokens: 999 },
       usage: { totalInputTokens: 12, totalOutputTokens: 340, cacheReadTokens: 4800, cacheCreationTokens: 1200, costUsd: 0.37 },
@@ -214,6 +219,6 @@ describe('the subagent overlay subtitle', () => {
   });
 
   it('shows no usage before the first response', () => {
-    expect(subtitle(subagent({ result: { content: 'done', totalTokens: 999 } }))).not.toContain('tokens');
+    expect(chips(subagent({ result: { content: 'done', totalTokens: 999 } }))).not.toContain('tokens');
   });
 });

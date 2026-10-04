@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform, type FakeFileWatcherFactory, type FakeNotificationService, type FakeWorkspaceFolders } from '../../../__mocks__/fake-platform';
 import type { Disposable } from '../../../platform/disposable';
 import type { TrustService } from '../../../platform/trust-service';
+import type { SettingsFolder } from '../../../platform/settings-store';
 import { parseContributedConfiguration, readContributedConfiguration } from '../../../core/config/contributed-configuration';
 import { updateConfigAtEffectiveScope } from '../../../core/chat-panel/settings-manager/utils';
 import { DesktopSettingsStore, EMPTY_SETTINGS_RETRY_MS } from '../platform/settings-store';
+import { DESKTOP_CONFIGURATION, RESTORE_LAYOUT_SETTING, THEME_SETTING } from '../desktop-configuration';
 
 const PROJECT_GLOB = '.damocles/{settings.json,settings.local.json}';
 
@@ -60,6 +62,8 @@ interface Harness {
   readonly watchers: FakeFileWatcherFactory;
   readonly notifications: FakeNotificationService;
   setDefault(folder: string | undefined): void;
+  // the folders the loaded chats use, as main reports them
+  setChatFolders(folders: readonly SettingsFolder[]): void;
 }
 
 function harness(opts: { trusted?: readonly string[]; projects?: readonly string[]; defaultFolder?: string } = {}): Harness {
@@ -69,6 +73,8 @@ function harness(opts: { trusted?: readonly string[]; projects?: readonly string
   // null follows the first open project, as the registry does with no stored default
   let chosen: string | undefined | null = opts.defaultFolder ?? null;
   const defaultListeners = new Set<() => void>();
+  let chatFolders: readonly SettingsFolder[] = [];
+  const chatFolderListeners = new Set<() => void>();
   const store = new DesktopSettingsStore({
     userFile,
     contributed,
@@ -80,6 +86,13 @@ function harness(opts: { trusted?: readonly string[]; projects?: readonly string
       onDidChange: (cb) => {
         defaultListeners.add(cb);
         return { dispose: () => { defaultListeners.delete(cb); } };
+      },
+    },
+    chatFolders: {
+      folders: () => chatFolders,
+      onDidChange: (cb) => {
+        chatFolderListeners.add(cb);
+        return { dispose: () => { chatFolderListeners.delete(cb); } };
       },
     },
     notifications: fake.notifications,
@@ -95,6 +108,10 @@ function harness(opts: { trusted?: readonly string[]; projects?: readonly string
     setDefault: (folder) => {
       chosen = folder;
       for (const cb of [...defaultListeners]) cb();
+    },
+    setChatFolders: (folders) => {
+      chatFolders = folders;
+      for (const cb of [...chatFolderListeners]) cb();
     },
   };
 }
@@ -129,6 +146,17 @@ describe('DesktopSettingsStore user scope', () => {
     expect(store.get('damocles.debug', true)).toBe(false);
     expect(store.get('damocles.unknown', 7)).toBe(7);
     expect(store.get('damocles.nothing', 'x')).toBeNull();
+  });
+
+  it('answers the damocles.desktop.* defaults, which package.json never declares', () => {
+    const { store } = harness();
+    expect(store.get(THEME_SETTING)).toBe('system');
+    expect(store.get(RESTORE_LAYOUT_SETTING)).toBe(true);
+    for (const [key, property] of Object.entries(DESKTOP_CONFIGURATION)) {
+      expect(contributed.keys).not.toContain(key);
+      expect(store.get(key)).toBe(property.default);
+      expect(store.inspect(key)).toStrictEqual({ defaultValue: property.default });
+    }
   });
 
   it('answers the VS Code search defaults so ripgrep keeps honoring ignore files', () => {
@@ -223,6 +251,20 @@ describe('DesktopSettingsStore project and local scopes', () => {
     }
   });
 
+  it.each([
+    [THEME_SETTING, 'light', 'dark'],
+    [RESTORE_LAYOUT_SETTING, false, true],
+  ])('never reads the desktop-only %s from a project or local file, trusted or not', (key, userValue, fileValue) => {
+    writeJson(userFile, { [key]: userValue });
+    writeJson(projectFile(projectA), { [key]: fileValue });
+    writeJson(localFile(projectA), { [key]: fileValue });
+    for (const trusted of [[], [projectA]]) {
+      const { store } = harness({ trusted });
+      expect(store.inspect(key)).toStrictEqual({ defaultValue: DESKTOP_CONFIGURATION[key]!.default, userValue });
+      expect(store.get(key)).toBe(userValue);
+    }
+  });
+
   it('drops a project entry that is an object prefix of a user-only key', () => {
     writeJson(projectFile(projectA), { 'damocles.compass': { enabled: true }, 'damocles.voice': { runtimePath: '/evil' } });
     const { store } = harness({ trusted: [projectA] });
@@ -270,20 +312,20 @@ describe('DesktopSettingsStore project and local scopes', () => {
     writeJson(projectFile(projectA), { 'damocles.permissionMode': 'plan', 'damocles.maxTurns': 3 });
     const trustedFolder = harness({ trusted: [projectA] });
     const platform = { settings: trustedFolder.store };
-    await updateConfigAtEffectiveScope(platform, 'damocles', 'permissionMode', 'acceptEdits');
+    await updateConfigAtEffectiveScope(platform, 'damocles.permissionMode', 'acceptEdits');
     expect(readJson(userFile)).toEqual({ 'damocles.permissionMode': 'acceptEdits' });
-    await updateConfigAtEffectiveScope(platform, 'damocles', 'maxTurns', 9);
+    await updateConfigAtEffectiveScope(platform, 'damocles.maxTurns', 9);
     expect(readJson(projectFile(projectA))).toMatchObject({ 'damocles.maxTurns': 9 });
 
     const untrusted = harness();
-    await updateConfigAtEffectiveScope({ settings: untrusted.store }, 'damocles', 'maxTurns', 4);
+    await updateConfigAtEffectiveScope({ settings: untrusted.store }, 'damocles.maxTurns', 4);
     expect(readJson(userFile)).toEqual({ 'damocles.permissionMode': 'acceptEdits', 'damocles.maxTurns': 4 });
   });
 
   it('writes a UI toggle to the local file that supplies the value, with two projects open', async () => {
     writeJson(localFile(projectA), { 'damocles.maxTurns': 3 });
     const { store } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB] });
-    await updateConfigAtEffectiveScope({ settings: store }, 'damocles', 'maxTurns', 9);
+    await updateConfigAtEffectiveScope({ settings: store }, 'damocles.maxTurns', 9);
     expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 9 });
     expect(store.get('damocles.maxTurns')).toBe(9);
     expect(fs.existsSync(userFile)).toBe(false);
@@ -325,7 +367,7 @@ describe('DesktopSettingsStore project and local scopes', () => {
     const listener = vi.fn();
     store.onDidChange('damocles.maxTurns', listener);
     writeJson(localFile(projectA), { 'damocles.maxTurns': 12 });
-    watchers.workspaceWatcher(PROJECT_GLOB).fireCreate(localFile(projectA));
+    watchers.watcher(projectA, PROJECT_GLOB).fireCreate(localFile(projectA));
     expect(listener).toHaveBeenCalledTimes(1);
     expect(store.get('damocles.maxTurns')).toBe(12);
   });
@@ -454,6 +496,81 @@ describe('DesktopSettingsStore file problems', () => {
     expect(readJson(claudeFile)).toEqual({});
   });
 });
+
+describe('DesktopSettingsStore per-folder reads (D38)', () => {
+  it('reads a folder\'s own project and local layers whichever project is the default', () => {
+    writeJson(projectFile(projectA), { 'damocles.maxTurns': 1 });
+    writeJson(projectFile(projectB), { 'damocles.maxTurns': 2 });
+    writeJson(localFile(projectB), { 'damocles.model': 'b-local' });
+    const { store } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB], defaultFolder: projectA });
+    expect(store.get('damocles.maxTurns')).toBe(1);
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(2);
+    expect(store.inspect('damocles.model', { path: projectB })).toStrictEqual({ defaultValue: 'default-model', localValue: 'b-local' });
+    expect(store.scopeFile('project', { path: projectB })).toBe(projectFile(projectB));
+    expect(store.scopeFile('local', { path: projectB })).toBe(localFile(projectB));
+  });
+
+  it('applies a folder\'s layers only while that folder is trusted, never by a trusted parent', () => {
+    const child = path.join(projectA, 'child');
+    writeJson(projectFile(child), { 'damocles.maxTurns': 7 });
+    writeJson(projectFile(projectB), { 'damocles.maxTurns': 8 });
+    const { store, trust } = harness({ trusted: [projectA], projects: [projectA, projectB] });
+    expect(store.get('damocles.maxTurns', 100, { path: child })).toBe(100);
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(100);
+    const listener = vi.fn();
+    store.onDidChange('damocles.maxTurns', listener);
+    trust.grant(projectB);
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(8);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('splits a worktree chat: the project layer from the worktree, the local layer and trust from the project folder (D34)', async () => {
+    const worktree = path.join(dir, 'worktree');
+    writeJson(projectFile(worktree), { 'damocles.model': 'worktree-project' });
+    writeJson(localFile(worktree), { 'damocles.maxTurns': 99 });
+    writeJson(localFile(projectA), { 'damocles.maxTurns': 4 });
+    const folder = { path: worktree, personalPath: projectA };
+    const untrusted = harness({ trusted: [worktree] });
+    expect(untrusted.store.inspect('damocles.model', folder)).toStrictEqual({ defaultValue: 'default-model' });
+
+    const { store } = harness({ trusted: [projectA] });
+    expect(store.get('damocles.model', undefined, folder)).toBe('worktree-project');
+    expect(store.inspect('damocles.maxTurns', folder)).toStrictEqual({ defaultValue: 100, localValue: 4 });
+    await store.update('damocles.maxTurns', 5, 'local', folder);
+    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 5 });
+    expect(readJson(localFile(worktree))).toEqual({ 'damocles.maxTurns': 99 });
+    expect(store.scopeFile('project', folder)).toBe(projectFile(worktree));
+    expect(store.scopeFile('local', folder)).toBe(localFile(projectA));
+  });
+
+  it('writes a folder\'s local value into that folder, and refuses one for an untrusted folder', async () => {
+    const { store } = harness({ trusted: [projectA], projects: [projectA, projectB], defaultFolder: projectA });
+    await store.update('damocles.maxTurns', 6, 'local', { path: projectA });
+    expect(readJson(localFile(projectA))).toEqual({ 'damocles.maxTurns': 6 });
+    await expect(store.update('damocles.maxTurns', 6, 'local', { path: projectB })).rejects.toThrow(/not trusted/);
+    expect(fs.existsSync(localFile(projectB))).toBe(false);
+  });
+
+  it('watches a loaded folder, fires for its edits, and drops its watcher once no chat uses it', () => {
+    const { store, watchers, setChatFolders } = harness({ trusted: [projectA, projectB], projects: [projectA, projectB], defaultFolder: projectA });
+    setChatFolders([{ path: projectB }]);
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(100);
+    const listener = vi.fn();
+    store.onDidChange('damocles.maxTurns', listener);
+    writeJson(localFile(projectB), { 'damocles.maxTurns': 3 });
+    const watcherB = watchers.watcher(projectB, PROJECT_GLOB);
+    watcherB.fireChange(localFile(projectB));
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(3);
+
+    setChatFolders([]);
+    expect(() => watchers.watcher(projectB, PROJECT_GLOB)).toThrow();
+    expect(watchers.watcher(projectA, PROJECT_GLOB)).toBeDefined();
+    writeJson(localFile(projectB), { 'damocles.maxTurns': 4 });
+    expect(store.get('damocles.maxTurns', 100, { path: projectB })).toBe(4);
+  });
+});
+
 
 describe('readContributedConfiguration', () => {
   it('derives defaults and the user-only keys from package.json', () => {
