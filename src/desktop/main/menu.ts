@@ -47,7 +47,7 @@ export function shellShortcutLabels(platform: NodeJS.Platform = process.platform
     : { newChat: 'Ctrl+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,' };
 }
 
-// The window part holding keyboard focus, F6's stops: the shell's sidebar, the selected chat, the browser pane, the overlay's toast stack.
+// The part holding keyboard focus, F6's stops: the shell's sidebar, the selected chat, the browser pane, the desktop popups' window.
 export type FocusPart = 'sidebar' | 'chat' | 'pane' | 'toasts';
 
 // What the context-bound items act on: a selected chat, the browser feature, an active page in the open pane and the
@@ -71,7 +71,7 @@ export interface MenuActions {
   openSettings(): void;
   // 1 selects the next chat of the selected project's list, -1 the previous one
   selectRelativeChat(delta: 1 | -1): void;
-  // 1 moves keyboard focus to the next part of the window (sidebar, chat, pane, toasts), -1 to the previous one
+  // 1 moves keyboard focus to the next part (sidebar, chat, pane, the desktop popups), -1 to the previous one
   focusPart(delta: 1 | -1): void;
   togglePromptNavigator(): void;
   togglePane(): void;

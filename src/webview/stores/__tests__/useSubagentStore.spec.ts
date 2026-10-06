@@ -246,6 +246,29 @@ describe('useSubagentStore nested tool status', () => {
     expect(tool.liveOutput).toBeUndefined();
   });
 
+  it('follows a prompted call from running to awaiting approval and back to running', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Bash', input: {}, status: 'running' });
+
+    store.updateSubagentToolStatus('nested-1', 'awaiting_approval');
+    expect(nestedTool(store, 'agent-1', 'nested-1').status).toBe('awaiting_approval');
+
+    store.updateSubagentToolStatus('nested-1', 'running');
+    expect(nestedTool(store, 'agent-1', 'nested-1').status).toBe('running');
+  });
+
+  it('keeps an outcome when a live status arrives late', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });
+    store.addToolCallToSubagent('agent-1', { id: 'nested-1', name: 'Bash', input: {}, status: 'running' });
+    store.updateSubagentToolStatus('nested-1', 'denied', undefined, 'stopped before it started');
+
+    store.updateSubagentToolStatus('nested-1', 'running');
+
+    expect(nestedTool(store, 'agent-1', 'nested-1').status).toBe('denied');
+  });
+
   it('does not let abandoned overwrite a recorded success', () => {
     const store = useSubagentStore();
     store.registerAgentTool('agent-1', { subagent_type: 'Explore', description: 'find' });

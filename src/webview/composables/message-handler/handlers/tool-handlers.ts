@@ -1,77 +1,13 @@
-import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
-import type { TaskCreateInput, TaskUpdateInput, TaskUpdateStatus } from "@shared/types/subagents";
+import { TOOL_AGENT, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import type { HandlerRegistry } from "../types";
 import { extractDenialFeedback } from "../utils";
 import { takeRejectedCancels } from "@/composables/useToolCancel";
 import { endedSubagentStatus } from "@/stores/useSubagentStore";
 
-function str(bag: Record<string, unknown>, key: string): string | undefined {
-  const value = bag[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function record(bag: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
-  const value = bag[key];
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-/**
- * Tool inputs arrive as untyped agent JSON, so the required key is read rather than asserted: a
- * TaskCreate with no subject is not a task the store can track, and asserting would hand it a
- * `subject` of `undefined` typed as `string`.
- */
-function readTaskCreateInput(bag: Record<string, unknown>): TaskCreateInput | undefined {
-  const subject = str(bag, "subject");
-  if (subject === undefined) return undefined;
-  const description = str(bag, "description");
-  const activeForm = str(bag, "activeForm");
-  const metadata = record(bag, "metadata");
-  return {
-    subject,
-    ...(description !== undefined && { description }),
-    ...(activeForm !== undefined && { activeForm }),
-    ...(metadata !== undefined && { metadata }),
-  };
-}
-
-function readTaskUpdateInput(bag: Record<string, unknown>): TaskUpdateInput | undefined {
-  const taskId = str(bag, "taskId");
-  if (taskId === undefined) return undefined;
-
-  const status = str(bag, "status");
-  const isUpdateStatus = (s: string): s is TaskUpdateStatus =>
-    s === "pending" || s === "in_progress" || s === "completed" || s === "deleted";
-
-  const strings = (key: string): string[] | undefined => {
-    const value = bag[key];
-    return Array.isArray(value) && value.every((v): v is string => typeof v === "string") ? value : undefined;
-  };
-
-  const subject = str(bag, "subject");
-  const description = str(bag, "description");
-  const activeForm = str(bag, "activeForm");
-  const owner = str(bag, "owner");
-  const metadata = record(bag, "metadata");
-  const addBlocks = strings("addBlocks");
-  const addBlockedBy = strings("addBlockedBy");
-
-  return {
-    taskId,
-    ...(subject !== undefined && { subject }),
-    ...(description !== undefined && { description }),
-    ...(activeForm !== undefined && { activeForm }),
-    ...(status !== undefined && isUpdateStatus(status) && { status }),
-    ...(addBlocks !== undefined && { addBlocks }),
-    ...(addBlockedBy !== undefined && { addBlockedBy }),
-    ...(owner !== undefined && { owner }),
-    ...(metadata !== undefined && { metadata }),
-  };
-}
-
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
     toolStreaming: (msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, taskStore, teamStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, teamStore } = ctx.stores;
       const targetMsgId = msg.messageId;
       const parentToolUseId = msg.parentToolUseId;
       uiStore.setCurrentRunningTool(msg.tool.name);
@@ -89,14 +25,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           msg.tool.id,
           msg.tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
         );
-      }
-
-      if (msg.tool.name === TOOL_TASK_CREATE) {
-        const input = readTaskCreateInput(msg.tool.input);
-        if (input) taskStore.trackToolInput(msg.tool.id, { tool: "TaskCreate", input });
-      } else if (msg.tool.name === TOOL_TASK_UPDATE) {
-        const input = readTaskUpdateInput(msg.tool.input);
-        if (input) taskStore.trackToolInput(msg.tool.id, { tool: "TaskUpdate", input });
       }
 
       if (parentToolUseId && hasSubagent) {
@@ -140,7 +68,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
     },
 
     toolCompleted: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, taskStore } = ctx.stores;
+      const { uiStore, streamingStore, subagentStore } = ctx.stores;
 
       if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
         subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
@@ -191,29 +119,6 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
             ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
             ...(msg.imageCount !== undefined && { imageCount: msg.imageCount }),
           });
-        }
-      }
-
-      if (TASK_MANAGEMENT_TOOLS.has(msg.toolName)) {
-        try {
-          const result = JSON.parse(msg.result);
-          switch (msg.toolName) {
-            case TOOL_TASK_CREATE:
-              taskStore.handleTaskCreate(msg.toolUseId, result);
-              uiStore.setTasksPanelCollapsed(false);
-              break;
-            case TOOL_TASK_UPDATE:
-              taskStore.handleTaskUpdate(msg.toolUseId, result);
-              break;
-            case TOOL_TASK_LIST:
-              taskStore.handleTaskList(result);
-              break;
-            case TOOL_TASK_GET:
-              taskStore.handleTaskGet(result);
-              break;
-          }
-        } catch {
-          console.warn("[tool-handlers] Failed to parse Task* tool result");
         }
       }
 

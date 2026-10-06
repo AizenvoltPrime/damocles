@@ -9,7 +9,6 @@ import { useSubagentStore } from "@/stores/useSubagentStore";
 import { useQuestionStore } from "@/stores/useQuestionStore";
 import { useFormStore } from "@/stores/useFormStore";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
-import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
@@ -28,6 +27,7 @@ import { createHandlerRegistry } from "./handler-registry";
 import { QUEUED_REPLAY_TYPES } from "./handlers/history-handlers";
 import { logSinceNavigation } from "@/utils/perf";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
+import { isUuid } from "@shared/uuid";
 import type { MessageHandlerOptions, HandlerContext, HandlerRegistry, StoreContext } from "./types";
 
 export type { MessageHandlerOptions } from "./types";
@@ -52,6 +52,18 @@ export function createMessageDispatcher(
   };
 }
 
+/**
+ * This panel's identity across window reloads: made once and kept in the persisted state, which every later
+ * setState spreads. The host hands a conversation over without asking when its holder names the same token.
+ */
+export function ensurePanelToken(saved: { panelToken?: string } | undefined, setState: <T>(state: T) => void): string {
+  const existing = saved?.panelToken;
+  if (isUuid(existing)) return existing;
+  const panelToken = crypto.randomUUID();
+  setState({ ...saved, panelToken });
+  return panelToken;
+}
+
 export function useMessageHandler(options: MessageHandlerOptions): void {
   const { postMessage, onMessage, setState, getState } = usePlatformBridge();
   const { chatInputRef, followTranscript } = options;
@@ -65,7 +77,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const questionStore = useQuestionStore();
   const formStore = useFormStore();
   const planViewStore = usePlanViewStore();
-  const taskStore = useTaskStore();
   const memoryStore = useMemoryStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
@@ -91,7 +102,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     questionStore,
     formStore,
     planViewStore,
-    taskStore,
     memoryStore,
     contextInjectionStore,
     contextUsageStore,
@@ -121,13 +131,14 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   onMounted(() => {
     onMessage(dispatch);
 
-    const savedState = getState<{ sessionId?: string; sessionName?: string; workspaceFolderKey?: string }>();
+    const savedState = getState<{ sessionId?: string; sessionName?: string; workspaceFolderKey?: string; panelToken?: string }>();
     if (savedState?.sessionId) {
       sessionStore.setSelectedSession(savedState.sessionId, savedState.sessionName ?? null);
       sessionStore.setResumedSession(savedState.sessionId);
     }
     postMessage({
       type: "ready",
+      panelToken: ensurePanelToken(savedState, setState),
       ...(savedState?.sessionId !== undefined && { savedSessionId: savedState.sessionId }),
       ...(savedState?.workspaceFolderKey !== undefined && { savedWorkspaceFolderKey: savedState.workspaceFolderKey }),
     });

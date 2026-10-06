@@ -4,6 +4,7 @@ import { createSubagentExtensionFactory, type SubagentGateContext } from '../sub
 import type { HooksConfigService } from '../hooks/config';
 import type { PanelGateContext } from '../permission-gate';
 import type { CheckpointService } from '../checkpoint-service';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -85,6 +86,7 @@ const ALL_EVENTS = [
   'session_shutdown',
   'session_start',
   'tool_call',
+  'tool_execution_end',
   'tool_result',
   'input',
   'before_agent_start',
@@ -108,6 +110,7 @@ const ALL_EVENTS = [
 
 const PAYLOADS: Record<string, unknown> = {
   tool_call: { type: 'tool_call', toolName: 'read', toolCallId: 't1', input: {} },
+  tool_execution_end: { type: 'tool_execution_end', toolCallId: 't1', toolName: 'read', result: { content: [] }, isError: false },
   tool_result: { type: 'tool_result', toolCallId: 't1', toolName: 'read', input: {}, content: [], isError: false, details: undefined },
   input: { type: 'input', source: 'interactive', text: 'hi' },
   // pi normalizes the options before emitting, so `selectedTools` and `sections` are always present.
@@ -144,10 +147,12 @@ async function sweep(
 function fakePanel(): PanelGateContext & { onBeforeSettle: ReturnType<typeof vi.fn> } {
   return {
     permissionHandler: {
-      evaluatePermission: vi.fn(async () => 'allow'),
+      matchRule: vi.fn(async () => null),
+      decide: vi.fn(() => 'allow'),
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
     } as unknown as PanelGateContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     getSessionModel: () => 'claude-opus-4-8',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
@@ -202,13 +207,15 @@ function buildPanelExtension(): ReturnType<typeof fakePi> & {
 
 function buildSubagentExtension(): ReturnType<typeof fakePi> & { gate: ReturnType<typeof vi.fn> } {
   const pi = fakePi();
-  const gate = vi.fn(async () => 'allow');
+  const gate = vi.fn(async () => null);
   const ctx: SubagentGateContext = {
     permissionHandler: {
-      evaluatePermission: gate,
+      matchRule: gate,
+      decide: vi.fn(() => 'allow'),
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
     } as unknown as SubagentGateContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'call-1',
     deferrableToolNames: [],
     hooks: { config: { getEntries: () => [], hasEntries: () => false } as unknown as HooksConfigService, workspaceRoot: '/repo', userHome: '/home/u' },
@@ -228,7 +235,7 @@ describe('the shared extension instance outlives the sessions bound to it', () =
     pi.panels.set('session-A', first);
 
     await pi.emitToolCall(payloadFor('tool_call'), ctxFor('session-A'));
-    expect(first.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
+    expect(first.permissionHandler.matchRule).toHaveBeenCalledTimes(1);
 
     await pi.emit('session_shutdown', { type: 'session_shutdown', reason: 'new' }, ctxFor('session-A'));
     pi.panels.delete('session-A');
@@ -253,12 +260,12 @@ describe('the shared extension instance outlives the sessions bound to it', () =
     await pi.emit('message_start', payloadFor('message_start'), ctxFor('session-B'));
     const hookResults = await pi.emit('input', payloadFor('input'), ctxFor('session-B'));
 
-    expect(second.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
+    expect(second.permissionHandler.matchRule).toHaveBeenCalledTimes(1);
     expect(startEvent.systemPromptOptions.customPrompt).toEqual(expect.any(String));
     expect(secondCheckpoints.onMessageStart).toHaveBeenCalledTimes(1);
     expect(hookResults).toHaveLength(1);
     // The old session's panel is not consulted for the new session's call.
-    expect(first.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
+    expect(first.permissionHandler.matchRule).toHaveBeenCalledTimes(1);
   });
 
   it('keeps serving a second live session after the first one shuts down', async () => {
@@ -277,7 +284,7 @@ describe('the shared extension instance outlives the sessions bound to it', () =
     await pi.emitToolCall(payloadFor('tool_call'), ctxFor('session-B'));
     await pi.emit('agent_before_settle', payloadFor('agent_before_settle'), ctxFor('session-B'));
 
-    expect(b.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
+    expect(b.permissionHandler.matchRule).toHaveBeenCalledTimes(1);
     expect(b.onBeforeSettle).toHaveBeenCalledTimes(1);
     expect(a.onBeforeSettle).not.toHaveBeenCalled();
   });

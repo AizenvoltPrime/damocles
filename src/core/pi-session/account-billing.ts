@@ -1,9 +1,10 @@
 import type { AccountInfo, ModelInfo } from '../../shared/types/settings';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, openaiRuntimeKeyWanted, type OpenAIAuthStatus } from './openai-auth';
 import { isDollarBilled, resolvePiModel, type ModelLookup } from './pi-models';
+import type { SubscriptionProvider } from './usage-thresholds';
 
 /**
- * Account/billing credential resolution for the adapter callbacks (US-008/account chip). Pure over a
+ * Account/billing credential resolution for the adapter callbacks and the account state (US-008). Pure over a
  * snapshot of live auth state assembled by `PiSession` — the modules never capture `this`. Both
  * auth-status getters are side-effect-free pure reads, so eager assembly of `claudeAuthMode` and
  * `openaiAuthStatus` is behavior-identical to the original lazy reads.
@@ -21,6 +22,14 @@ export interface AccountBillingDeps {
   preferApiKey: boolean;
   /** The pi provider the active model resolved to; undefined when it resolved to none. */
   resolvedProvider?: string | undefined;
+}
+
+/** The subscription the active credential bills, or undefined for an API key or a custom provider. */
+export function subscriptionProvider(deps: AccountBillingDeps): SubscriptionProvider | undefined {
+  const mi = deps.modelInfo;
+  if (mi?.backend === 'openai') return openaiTokenSource(deps) === 'openai-api-key' ? undefined : 'openai';
+  if (mi?.piProvider) return undefined;
+  return deps.claudeAuthMode === 'allowance' || deps.claudeAuthMode === 'extra' ? 'anthropic' : undefined;
 }
 
 /**
@@ -46,18 +55,9 @@ export function apiKeySource(deps: AccountBillingDeps): string {
   return deps.claudeAuthMode;
 }
 
-/** The account chip: model + the active backend's credential/subscription source. */
+/** The account state the webview reads: the active model and whether its credential is dollar-metered. */
 export function buildAccountInfo(deps: AccountBillingDeps): AccountInfo {
-  const info: AccountInfo = { model: deps.modelValue, dollarBilled: dollarBilled(deps) };
-  const mi = deps.modelInfo;
-  if (mi?.backend === 'openai') {
-    info.tokenSource = openaiTokenSource(deps);
-  } else if (mi?.piProvider) {
-    info.tokenSource = mi.piProvider; // no Claude subscriptionType chip for custom providers
-  } else {
-    info.subscriptionType = deps.claudeAuthMode;
-  }
-  return info;
+  return { model: deps.modelValue, dollarBilled: dollarBilled(deps) };
 }
 
 /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
@@ -75,7 +75,7 @@ export interface ModelBillingDeps {
   registry: ModelLookup | undefined;
 }
 
-/** Whether a catalog model value bills dollars, by the account chip's rule: the provider `resolvePiModel` picks names the credential. */
+/** Whether a catalog model value bills dollars, by the account state's rule: the provider `resolvePiModel` picks names the credential. */
 export function modelDollarBilled(value: string, deps: ModelBillingDeps): boolean {
   return dollarBilled({
     modelValue: value,

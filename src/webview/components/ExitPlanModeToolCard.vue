@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
 import { Ban, CheckCheck, ChevronRight, ClipboardList, Eye, MessageSquare, Pencil } from 'lucide-vue-next';
 import { useToolCardStatus } from '@/composables/useToolCardStatus';
-import { usePlanSummary } from '@/composables/usePlanSummary';
+import { recordedPlanVersion, usePlanSummary } from '@/composables/usePlanSummary';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
@@ -25,7 +25,7 @@ const isCompleted = computed(() => props.toolCall.status === 'completed');
 const isDenied = computed(() => props.toolCall.status === 'denied');
 const isAbandoned = computed(() => props.toolCall.status === 'abandoned');
 
-const planSummary = usePlanSummary(() => props.toolCall.id);
+const planSummary = usePlanSummary(() => props.toolCall.id, () => recordedPlanVersion(props.toolCall.metadata));
 const subtitle = computed(() => [t('exitPlanMode.plan'), ...planSummary.value].join(' · '));
 
 const { statusIcon, statusMotion, cardClass } = useToolCardStatus(() => props.toolCall.status);
@@ -110,7 +110,10 @@ function handleViewPlan() {
         <div class="truncate text-13 font-semibold">
           {{ headerText }}
         </div>
-        <div class="truncate text-11 text-(--d-faint)">
+        <div
+          class="truncate text-11 text-(--d-faint)"
+          data-testid="plan-card-subtitle"
+        >
           {{ subtitle }}
         </div>
       </div>

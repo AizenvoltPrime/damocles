@@ -69,7 +69,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       try {
-        const history = await historyManager.extractRewindHistory(ctx.folder.fsPath, currentSessionId);
+        const history = await historyManager.extractRewindHistory(ctx.folder.fsPath, currentSessionId, ctx.session.fileCheckpoints);
         postMessage(ctx.host, { type: "rewindHistory", prompts: history.items, restorePoints: history.restorePoints, canFork: true });
       } catch (err) {
         log("[MessageRouter] Error extracting rewind history:", err);

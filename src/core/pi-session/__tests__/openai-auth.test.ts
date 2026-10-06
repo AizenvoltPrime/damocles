@@ -260,7 +260,7 @@ describe('PiRuntime OpenAI auth', () => {
     await expect(rt.signOutChatGPT()).resolves.toEqual({ apiKey: false, chatgpt: false, codex: false });
   });
 
-  it('republishes the account chip on a key secret change while a pending sign-in holds the chain', async () => {
+  it('republishes the account state on a key secret change while a pending sign-in holds the chain', async () => {
     const rt = PiRuntime.get(agentDir);
     await rt.init();
     const session = { publishAccountInfo: vi.fn() };

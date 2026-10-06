@@ -220,8 +220,7 @@ export const useSettingsStore = defineStore('settings', () => {
     baseAvailableModels.value = models;
   }
 
-  // buildAccountInfo returns a whole snapshot that carries subscriptionType or tokenSource but never
-  // both, so merging would keep the previous backend's chip after a model switch.
+  // buildAccountInfo returns a whole snapshot, so it replaces the previous one rather than merging into it.
   function setAccountInfo(info: AccountInfo | null) {
     accountInfo.value = info;
   }

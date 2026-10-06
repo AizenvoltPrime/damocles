@@ -7,7 +7,7 @@ import { startOpenAIStub } from './support/openai-stub';
 import { shellState } from './support/shell';
 import { projectKeyOf, projectRow, readyShell } from './support/shell-ui';
 import { closeSettingsModal, openSettingsModal, settingsNav, settingsRow } from './support/settings';
-import { addProject, answerMessageBoxes, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
+import { addProject, answerDialogs, chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 interface SettingsUpdate {
   settings: { maxTurns: number; maxBudgetUsd: number | null; taskBudget: number | null; defaultPermissionMode: string; cacheWarming: string };
@@ -54,7 +54,7 @@ test('settings scopes: an untrusted project is ignored, trust applies it live, a
   expect(untrusted.settingSources).toEqual({});
 
   // Granting trust applies the project and local files with no restart; the user-only keys stay on the user file.
-  await answerMessageBoxes(desktop.app, { [TRUST_PROMPT]: 'Trust Folder' });
+  await answerDialogs(desktop.app, { [TRUST_PROMPT]: 'Trust Folder' });
   await postFromWebview(alpha, { type: 'setProjectTrusted' });
   await expect.poll(async () => (await latestSettings(alpha))?.settings.maxTurns).toBe(7);
   const trusted = (await latestSettings(alpha))!;

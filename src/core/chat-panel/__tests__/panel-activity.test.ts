@@ -12,6 +12,7 @@ vi.mock('../ide-context-manager', () => ({
 import { createHarness, folderEntry, makeFakeHost, type FakeSession, type Harness } from './panel-manager-harness';
 import { folderKey } from '../../workspace-folders/folder-key';
 import type { ChatActivity } from '../../pi-session/session-state';
+import type { UsageThresholdCrossing } from '../../pi-session/usage-thresholds';
 
 const ROOT = path.resolve(os.tmpdir(), 'panel-activity-root');
 const A = path.join(ROOT, 'alpha');
@@ -32,13 +33,24 @@ describe('PanelManager activity', () => {
 
     const panelId = await h.manager.initializeHost(makeFakeHost(), { initialFolderKey: folderKey(A) });
     const first = h.instance(panelId).session as unknown as FakeSession;
-    expect(seen).toEqual([[panelId, { state: 'idle', pendingKinds: [], background: false }]]);
+    expect(seen).toEqual([[panelId, { state: 'idle', pendingKinds: [], pendingPrompts: [], background: false }]]);
 
     await h.manager.switchPanelFolder(panelId, folderKey(B), 'resume');
 
     expect(seen.map(([id]) => id)).toEqual([panelId, panelId]);
     expect(first.activityListener).toBeNull();
     expect((h.instance(panelId).session as unknown as FakeSession).activityListener).toBeTypeOf('function');
+  });
+
+  it('reports a usage threshold crossing to every listener, tied to no panel', () => {
+    h = createHarness([folderEntry(A)]);
+    const seen: UsageThresholdCrossing[] = [];
+    h.manager.onUsageThreshold((crossing) => seen.push(crossing));
+    const crossing: UsageThresholdCrossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 95, utilization: 96 };
+
+    h.manager.usageThresholdCrossed(crossing);
+
+    expect(seen).toEqual([crossing]);
   });
 
   it('sessionIdOf and hasConversation read the panel current session, and know no other panel', async () => {

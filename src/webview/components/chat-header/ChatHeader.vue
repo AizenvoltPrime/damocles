@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import { Brain, GitBranch, Globe, MessageCircleQuestion, Settings } from 'lucide-vue-next';
-import AccountChip from '@/components/AccountChip.vue';
 import WorkspaceFolderChip from '@/components/WorkspaceFolderChip.vue';
 import PromptNavigatorChip from '@/components/PromptNavigatorChip.vue';
 import ConsolidationIndicator from '@/components/ConsolidationIndicator.vue';
@@ -103,7 +102,6 @@ const run = (action: HeaderAction) => emit('action', action);
           />
           <span class="truncate">{{ branch }}</span>
         </span>
-        <AccountChip v-if="wide" />
       </div>
     </div>
 

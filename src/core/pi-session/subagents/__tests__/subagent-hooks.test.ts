@@ -7,6 +7,7 @@ import type { GatePermissionContext } from '../../permission-gate';
 import type { DispatchDeps } from '../../hooks';
 import type { HookEntry } from '../../hooks/types';
 import type { HooksConfigService } from '../../hooks/config';
+import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown>;
 
@@ -62,9 +63,11 @@ function makeCtx(plan: boolean, entriesByKey: Record<string, HookEntry[]>): Suba
   return {
     permissionHandler: {
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
-      evaluatePermission: vi.fn(async () => 'allow' as const),
+      matchRule: vi.fn(async () => null),
+      decide: vi.fn(() => 'allow' as const),
     } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => plan,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
     // Slice 3 (contract §A) made this field REQUIRED so a future call site that forgets it is a compile
     // error rather than a silent loss of deferral. These hook/pruning cases predate it and are
@@ -146,6 +149,7 @@ describe('subagent hooks (US-008)', () => {
     createSubagentExtensionFactory({
       permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
       isPlanMode: () => false,
+      shellCancel: new ShellCancelStore().forContext(() => undefined),
       parentToolUseId: 'agent-7',
       deferrableToolNames: [],
     })(pi as never);
@@ -174,6 +178,7 @@ describe('subagent context image pruning', () => {
   const bareCtx = (): SubagentGateContext => ({
     permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
     deferrableToolNames: [],
   });

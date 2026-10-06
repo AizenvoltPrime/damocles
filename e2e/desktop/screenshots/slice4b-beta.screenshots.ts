@@ -237,12 +237,6 @@ function cardTurn(now: number) {
   };
 }
 
-const CARD_TASKS = [
-  { id: '1', subject: 'Add a limiter to /login', status: 'in_progress', activeForm: 'Adding the limiter' },
-  { id: '2', subject: 'Run the auth tests', status: 'pending' },
-  { id: '3', subject: 'Summarize the change', status: 'pending' },
-];
-
 test('message cards beside the reference', async ({ home, launch }, testInfo) => {
   test.setTimeout(600_000);
   const stub = await startOpenAIStub();
@@ -258,14 +252,12 @@ test('message cards beside the reference', async ({ home, launch }, testInfo) =>
       { name: 'card-edit', setup: referenceScrollTo('+7 −0') },
       { name: 'card-agent', setup: referenceScrollTo('Check the other auth routes for brute-force gaps') },
       { name: 'card-team', setup: referenceScrollTo('Per-account lockout after repeated failures') },
-      { name: 'card-tasks', setup: referenceScrollTo('Add a limiter to /login') },
     ]);
 
     const now = Date.now();
     await withStores(tab, "store('team').handleTeamStarted(arg);", sampleTeam(now));
     await withStores(tab, "const s = store('subagent'); s.subagents = { ...s.subagents, [arg.id]: arg };", sampleSubagent(now));
     await withStores(tab, "store('streaming').addMessage(arg);", cardTurn(now));
-    await withStores(tab, "store('task').tasks = arg;", CARD_TASKS);
     await expect(tab.getByTestId('team-card')).toBeVisible();
 
     const scrollTo = (testId: string) => async (): Promise<void> => {
@@ -279,7 +271,6 @@ test('message cards beside the reference', async ({ home, launch }, testInfo) =>
     });
     await shoot(app, tab, testInfo, 'card-agent', scrollTo('subagent-card'));
     await shoot(app, tab, testInfo, 'card-team', scrollTo('team-card'));
-    await shoot(app, tab, testInfo, 'card-tasks', scrollTo('task-list-card'));
 
     await withStores(tab, "store('ui').expandTool('c-bash', 'session');");
     await expect(tab.getByTestId('tool-overlay-copy-command')).toBeVisible();

@@ -123,6 +123,8 @@ export class ChatPanelProvider {
       this.panelManager.broadcast({ type: "claudeAuthStatusChanged", mode: readClaudeAuthFromDisk(PI_AGENT_DIR).mode });
     });
     this.subscriptions.push({ dispose: stopAuthUpdates });
+    const stopUsageThresholds = PiRuntime.onUsageThreshold((crossing) => this.panelManager.usageThresholdCrossed(crossing));
+    this.subscriptions.push({ dispose: stopUsageThresholds });
     // Before pi starts, the status is read from these secrets alone, so their changes are an input too.
     this.subscriptions.push(platform.secrets.onDidChange((key) => {
       if (key === TYPESAFE_SECRET_KEY || key === EXPLORE_SECRET_KEYS.openrouter) this.broadcastMemoryJudge();

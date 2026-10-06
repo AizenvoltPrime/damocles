@@ -1,7 +1,7 @@
 import type { ExtensionFactory, ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { PanelGateContext, PreToolUseHookGate } from './permission-gate';
 import { runPermissionGate, gateErrorFallback } from './permission-gate';
-import { buildAgentStartResult } from './agent-start';
+import { buildAgentStartResult, buildPlanModeNoticeResult } from './agent-start';
 import { log } from '../logger';
 import type { CheckpointService } from './checkpoint-service';
 import { mapPiToolName, normalizeToolInput } from './tool-normalization';
@@ -214,6 +214,11 @@ export function createDamoclesExtensionFactory(
       }
     });
 
+    // A `tool_call` handler of another extension can block a call this gate allowed, so pi never executes it.
+    pi.on('tool_execution_end', (event, ctx) => {
+      registry.get(ctx.sessionManager.getSessionId())?.shellCancel.releaseAdmitted(event.toolCallId);
+    });
+
     pi.on('before_agent_start', async (event, ctx) => {
       const sessionId = ctx.sessionManager.getSessionId();
       const panel = registry.get(sessionId);
@@ -229,6 +234,18 @@ export function createDamoclesExtensionFactory(
         return await buildAgentStartResult(event, panel, sessionId, ctx.sessionManager, () => registry.get(sessionId) !== undefined);
       } catch (err) {
         log('[DamoclesExtension] before_agent_start failed: %O', err);
+        return undefined;
+      }
+    });
+
+    // Registered after the prompt handler above, whose plan-mode section it reads.
+    pi.on('before_agent_start', (event, ctx) => {
+      const panel = registry.get(ctx.sessionManager.getSessionId());
+      if (!panel) return undefined;
+      try {
+        return buildPlanModeNoticeResult(event, panel, ctx.sessionManager);
+      } catch (err) {
+        log('[DamoclesExtension] plan-mode notice failed: %O', err);
         return undefined;
       }
     });

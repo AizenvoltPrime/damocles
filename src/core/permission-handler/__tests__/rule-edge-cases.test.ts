@@ -7,6 +7,7 @@ import { PermissionHandler } from '../index';
 import type { McpToolIdentity } from '../types';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 import { runPermissionGate, type GatePermissionContext, type PanelGateContext } from '../../pi-session/permission-gate';
+import { ShellCancelStore } from '../../pi-session/tools/shell-cancel-registry';
 import { createDamoclesExtensionFactory } from '../../pi-session/damocles-extension';
 import { createMcpToolName } from '../../pi-session/mcp/naming';
 import { DAMOCLES_PLANS_DIR, isPlanFilePath } from '../../paths';
@@ -31,8 +32,9 @@ const handler = (): PermissionHandler => {
   return h;
 };
 const ev = (toolName: string, input: object, toolCallId = 'c1'): ToolCallEvent => ({ type: 'tool_call', toolName, toolCallId, input }) as unknown as ToolCallEvent;
+const newShellCancel = (): GatePermissionContext['shellCancel'] => new ShellCancelStore().forContext(() => undefined);
 const gate = (h: PermissionHandler, toolName: string, input: object, extra: Partial<GatePermissionContext> = {}) =>
-  runPermissionGate(ev(toolName, input), { permissionHandler: h, isPlanMode: () => false, ...extra }, undefined);
+  runPermissionGate(ev(toolName, input), { permissionHandler: h, isPlanMode: () => false, shellCancel: newShellCancel(), ...extra }, undefined);
 /** Claude Code's `//` absolute form of a native path: `C:\x` as `//c/x`, `/tmp/x` as `//tmp/x`. */
 const abs = (native: string): string => {
   const slashed = native.split(path.sep).join('/');
@@ -237,6 +239,7 @@ const extensionPanel = (h: PermissionHandler): PanelGateContext => ({
   getSystemPromptEnv: () => ({ cwd: WS, model: 'claude-opus-4-8', isGitRepo: false, platform: process.platform, shell: 'bash', osVersion: 'test', compassEnabled: false, thinkingDisabled: false }),
   getPlanFilePath: () => path.join(DAMOCLES_PLANS_DIR, 'plan-test.md'),
   postMessage: () => undefined,
+  shellCancel: newShellCancel(),
 });
 const toolCallHandler = (panel: PanelGateContext): ((event: unknown, ctx: unknown) => Promise<{ block?: boolean; reason?: string; terminate?: boolean } | undefined>) => {
   const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
@@ -322,7 +325,7 @@ describe('the plan file', () => {
     const h = handler();
     expect(await h.evaluatePermission('Write', { file_path: target, content: 'x' })).toBe('ask');
     h.setPermissionMode('plan');
-    const blocked = await runPermissionGate(ev('write', { path: target, content: 'x' }), { permissionHandler: h, isPlanMode: () => true }, undefined);
+    const blocked = await runPermissionGate(ev('write', { path: target, content: 'x' }), { permissionHandler: h, isPlanMode: () => true, shellCancel: newShellCancel() }, undefined);
     expect(blocked?.block).toBe(true);
   });
 
@@ -342,7 +345,7 @@ describe('the plan file', () => {
     fs.linkSync(victim, linked);
     expect(isPlanFilePath(linked)).toBe(false);
     expect(await handler().evaluatePermission('Write', { file_path: linked, content: 'x' })).toBe('ask');
-    const blocked = await runPermissionGate(ev('write', { path: linked, content: 'x' }), { permissionHandler: handler(), isPlanMode: () => true }, undefined);
+    const blocked = await runPermissionGate(ev('write', { path: linked, content: 'x' }), { permissionHandler: handler(), isPlanMode: () => true, shellCancel: newShellCancel() }, undefined);
     expect(blocked?.block).toBe(true);
     write(path.join(plans, 'own.md'));
     expect(isPlanFilePath(path.join(plans, 'own.md'))).toBe(true);
@@ -390,7 +393,7 @@ describe('aborting a prompt', () => {
     expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('aborted before this approval was answered');
     expect(result).not.toHaveProperty('terminate');
-    expect(h.pendingPromptKinds().size > 0).toBe(false);
-    expect(posted.filter((m) => m.type === 'permissionAutoResolved')).toEqual([expect.objectContaining({ outcome: 'withdrawn' })]);
+    expect(h.pendingPrompts().length > 0).toBe(false);
+    expect(posted.filter((m) => m.type === 'permissionAutoResolved')).toHaveLength(1);
   });
 });

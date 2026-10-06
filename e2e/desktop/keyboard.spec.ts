@@ -2,9 +2,19 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
-import { answerConfirm, overlayToasts, overlayViewState, readyOverlay } from './support/overlay';
 import { saveScreenshot } from './support/screenshots';
-import { pressKeys, PRIMARY, shellState } from './support/shell';
+import {
+  countPopupFocus,
+  popupFocusRequests,
+  popupPage,
+  popupToasts,
+  popupWindowState,
+  pressKeys,
+  PRIMARY,
+  setWindowFocused,
+  shellState,
+  viewFocused,
+} from './support/shell';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 import { chatList, chatRow, listChats, readyShell } from './support/shell-ui';
 
@@ -38,6 +48,9 @@ test('menu accelerators work while focus is in the chat view: New Chat, Next and
     seedStubModel(home, stub.baseUrl);
     const { app } = await launch();
     const shell = await readyShell(app);
+    // A test runner's window may never hold OS focus, and a turn settling in an unfocused window raises a done popup,
+    // which would make the popups an F6 stop; the window reports itself focused instead.
+    await setWindowFocused(app, true);
     const first = await activeChat(app);
     await expect(chatInput(first)).toBeVisible();
     await sendAndAwaitEcho(first, 'first chat');
@@ -110,66 +123,66 @@ test('menu accelerators work while focus is in the chat view: New Chat, Next and
 const GAVE_UP = 'A chat stopped working because its page kept crashing.';
 const NO_SESSION = 'No active session to view';
 
-/** The accessible name of the overlay page's focused control while the overlay view holds keyboard focus. */
-async function focusedToastControl(app: ElectronApplication, overlay: Page): Promise<string | null> {
-  if (!(await overlayViewState(app)).focused) return null;
-  return overlay.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim() ?? null);
+/** Whether the popup window is the active window and its page holds keyboard focus. */
+async function popupFocused(app: ElectronApplication): Promise<boolean> {
+  const popup = await popupWindowState(app);
+  return popup !== undefined && popup.focused && popup.pageFocused;
 }
 
-async function chatFocused(app: ElectronApplication, chat: Page): Promise<boolean> {
-  return app.evaluate(({ webContents }, part) => webContents.getAllWebContents().find((c) => c.getURL().includes(part))?.isFocused() ?? false, urlOf(chat));
+async function popupVisible(app: ElectronApplication): Promise<boolean> {
+  return (await popupWindowState(app))?.visible ?? false;
 }
 
-test('F6 reaches the toast stack only while a toast shows, Enter runs its action and Escape leaves, and focus returns to the part it came from', async ({ launch }, testInfo) => {
+/** The accessible name of the popup page's focused control in the toast stack, with its focus ring showing. */
+async function focusedToastControl(popup: Page): Promise<string | null> {
+  return popup.evaluate(() => {
+    const active = document.activeElement;
+    if (!active?.matches(':focus-visible') || !active.closest('[data-testid="overlay-toasts"]')) return null;
+    return active.getAttribute('aria-label') ?? active.textContent?.trim() ?? null;
+  });
+}
+
+test('F6 reaches the desktop popups only while one shows, Tab stays in them, Enter runs an action and Escape leaves, and focus returns to the part it came from', async ({ launch }, testInfo) => {
   test.setTimeout(180_000);
   const desktop = await launch();
   const { app } = desktop;
   const shell = await readyShell(app);
   const chat = await activeChat(app);
   await expect(chatInput(chat)).toBeVisible();
-  const overlay = await readyOverlay(app);
-  const notice = overlayToasts(overlay).filter({ hasText: NO_SESSION });
 
-  // F6 from the chat reaches a notice's Dismiss button; Escape leaves the toast showing and gives focus back to the chat.
+  // F6 from the chat focuses the popup window and lands on a notice's Dismiss button with its ring showing; Tab stays in
+  // the stack, and Escape leaves the popup showing and gives focus back to the chat in the main window.
   await postFromWebview(chat, { type: 'openSessionLog' });
+  const popup = await popupPage(app);
+  const notice = popupToasts(popup).filter({ hasText: NO_SESSION });
   await expect(notice).toBeVisible();
+  expect(await popupFocused(app)).toBe(false);
+  await countPopupFocus(app);
   await pressKeys(app, urlOf(chat), 'F6');
-  await expect.poll(() => focusedToastControl(app, overlay)).toBe('Dismiss notification');
-  await overlay.keyboard.press('Escape');
-  await expect.poll(() => chatFocused(app, chat)).toBe(true);
-  expect((await overlayViewState(app)).focused).toBe(false);
+  await expect.poll(() => popupFocusRequests(app)).toBe(1);
+  await expect.poll(() => focusedToastControl(popup)).toBe('Dismiss notification');
+  await popup.keyboard.press('Tab');
+  expect(await focusedToastControl(popup)).toBe('Dismiss notification');
+  await popup.keyboard.press('Escape');
+  await expect.poll(() => viewFocused(app, chat)).toBe(true);
+  expect(await popupFocused(app)).toBe(false);
   await expect(notice).toBeVisible();
 
-  // Shift+F6 from the sidebar wraps to it too; dismissing it there hides the stack and gives focus back to the sidebar.
+  // Shift+F6 from the sidebar wraps to it too; dismissing it there hides the window and gives focus back to the sidebar.
   await pressKeys(app, urlOf(chat), 'F6', ['shift']);
   await expect(chatList(shell)).toBeFocused();
   await pressKeys(app, '/shell/', 'F6', ['shift']);
-  await expect.poll(() => focusedToastControl(app, overlay)).toBe('Dismiss notification');
-  await overlay.keyboard.press('Enter');
-  await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
+  await expect.poll(() => popupFocusRequests(app)).toBe(2);
+  await expect.poll(() => focusedToastControl(popup)).toBe('Dismiss notification');
+  await popup.keyboard.press('Enter');
+  await expect.poll(() => popupVisible(app)).toBe(false);
   await expect.poll(() => shellFocused(app)).toBe(true);
   await expect(chatList(shell)).toBeFocused();
-  expect((await overlayViewState(app)).focused).toBe(false);
 
-  // With no toast showing, F6 skips the stack: Shift+F6 from the sidebar wraps to the chat.
+  // With no popup showing, F6 skips it: Shift+F6 from the sidebar wraps to the chat.
   await pressKeys(app, '/shell/', 'F6', ['shift']);
-  await expect.poll(() => chatFocused(app, chat)).toBe(true);
-
-  // A confirmation's scrim covers the toasts, so they can be neither seen above it nor clicked through it.
-  await postFromWebview(chat, { type: 'openSessionLog' });
-  await expect(notice).toBeVisible();
-  void shell.evaluate(() => window.damoclesShell!.requestOverlay({ kind: 'confirm', title: 'Delete Session', message: 'Sure?', confirmLabel: 'Delete', cancelLabel: 'Cancel', danger: true }));
-  await expect(overlay.getByRole('alertdialog')).toBeVisible();
-  const toastOnTop = await overlay.evaluate(() => {
-    const toast = document.querySelector('[data-testid="overlay-toast"]')!.getBoundingClientRect();
-    return document.elementFromPoint(toast.x + toast.width / 2, toast.y + toast.height / 2)?.closest('[data-testid="overlay-toast"]') !== null;
-  });
-  expect(toastOnTop).toBe(false);
-  await overlay.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished)));
-  await saveScreenshot(overlay, testInfo, 'toast-under-confirm');
-  await answerConfirm(app, false);
-  await notice.getByTestId('overlay-toast-dismiss').click();
-  await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
+  await expect.poll(() => viewFocused(app, chat)).toBe(true);
+  expect(await popupFocusRequests(app)).toBe(2);
 
   // A chat whose page keeps crashing leaves a Reload Chat toast: the fourth crash within a minute is not reloaded.
   const panelId = panelIdOf(chat);
@@ -184,17 +197,18 @@ test('F6 reaches the toast stack only while a toast shows, Enter runs its action
     }, panelId);
     await expect.poll(() => desktop.output().split(`[views] panel ${panelId} renderer gone`).length - 1).toBe(i + 1);
   }
-  await expect(overlayToasts(overlay).filter({ hasText: GAVE_UP })).toBeVisible();
+  await expect(popupToasts(popup).filter({ hasText: GAVE_UP })).toBeVisible();
 
-  // F6 reaches the toast's action; Enter runs it: the chat loads again, which focuses it, and the emptied stack hides without keeping focus.
+  // F6 reaches the toast's action; Enter runs it: the chat loads again, which focuses it, and the emptied popup window hides without keeping focus.
   await pressKeys(app, '/shell/', 'F6', ['shift']);
-  await expect.poll(() => focusedToastControl(app, overlay)).toBe('Reload Chat');
-  await saveScreenshot(overlay, testInfo, 'toast-keyboard-focus');
-  await overlay.keyboard.press('Enter');
+  await expect.poll(() => popupFocusRequests(app)).toBe(3);
+  await expect.poll(() => focusedToastControl(popup)).toBe('Reload Chat');
+  await saveScreenshot(popup, testInfo, 'toast-keyboard-focus');
+  await popup.keyboard.press('Enter');
   await expect.poll(loadedRenderer).not.toBe(0);
-  await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
-  await expect.poll(() => chatFocused(app, chat)).toBe(true);
-  expect((await overlayViewState(app)).focused).toBe(false);
+  await expect.poll(() => popupVisible(app)).toBe(false);
+  await expect.poll(() => viewFocused(app, chat)).toBe(true);
+  expect(await popupFocused(app)).toBe(false);
 });
 
 test('copy, paste and select all work in the chat input through the platform shortcuts', async ({ home, launch }) => {

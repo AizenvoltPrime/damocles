@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const { requestCancel, isCancelPending } = useToolCancel(() => props.source);
 
-/** The extension registers a cancellable entry inside execute, so only a running shell call has one. */
+/** The extension holds a shell call's cancel entry from its permission gate to the end of execute; a Stop outside that window is rejected and clears itself. */
 const isVisible = computed(() => props.toolCall.status === "running" && LIVE_OUTPUT_TOOLS.has(props.toolCall.name));
 
 /** The local half survives a call no store could mark, so only the extension's rejection clears it. */

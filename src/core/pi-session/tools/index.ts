@@ -8,17 +8,15 @@ import type { PanelHost } from '../../../platform/window-service';
 import {
   TOOL_EDIT,
   TOOL_POWERSHELL,
-  TOOL_TASK_CREATE,
-  TOOL_TASK_UPDATE,
-  TOOL_TASK_LIST,
-  TOOL_TASK_GET,
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
   TOOL_ASK_USER_QUESTION,
   TOOL_AGENT,
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
+  LIVE_OUTPUT_TOOLS,
 } from '../../../shared/tool-names';
+import { mapPiToolName } from '../tool-normalization';
 import { createEditTool } from './edit-tool';
 import { createBashTool, type ShellOptions } from './bash-tool';
 import { createFindTool, createGrepTool } from './search-tools';
@@ -29,7 +27,6 @@ import { withPerCallCancel } from './cancellable-shell';
 import type { ShellCancelStore } from './shell-cancel-registry';
 import type { ShellSessionJob } from './process-tree';
 import { createPowerShellTool } from './powershell-tool';
-import { createTaskTools } from './task-tools';
 import { createPlanModeTools } from './plan-mode-tools';
 import { createAskUserQuestionTool } from './ask-user-question-tool';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
@@ -58,7 +55,7 @@ export interface CustomToolDeps {
   permissionHandler: PermissionHandler;
   /** Required, with no default: a missing one would silently drop the user's configured shell. */
   getShellOptions: () => ShellOptions;
-  /** The session-lived store both shell tools register their per-call abort controllers in. */
+  /** The session-lived store holding the per-call abort controllers of the shell calls the UI can stop. */
   shellCancel: ShellCancelStore;
   /** Delivers a cancel note as a real user turn to the agent that ran the command; supplied per build context. */
   deliverUserNote: (text: string) => void;
@@ -132,10 +129,6 @@ export const OVERRIDE_TOOL_NAMES: readonly string[] = ['bash', 'grep', 'find', '
 export const CUSTOM_TOOL_NAMES: readonly string[] = [
   TOOL_EDIT,
   TOOL_POWERSHELL,
-  TOOL_TASK_CREATE,
-  TOOL_TASK_UPDATE,
-  TOOL_TASK_LIST,
-  TOOL_TASK_GET,
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
   TOOL_ASK_USER_QUESTION,
@@ -146,8 +139,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
 
 /**
  * Build the per-session Damocles custom tool definitions, each closing over this panel's `cwd` and
- * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, the Task list tools, plan,
- * question). The native `read/ls` come from pi directly. `bash` is pi's own tool, re-registered
+ * `permissionHandler`. Replaces the CC tools pi lacks (Edit, PowerShell, plan, question). The native `read/ls` come from pi directly. `bash` is pi's own tool, re-registered
  * here under the same name so the panel owns a per-call abort controller for it; `grep` and `find`
  * are re-registered so they run the bundled ripgrep instead of pi's download of rg and fd; `write` is
  * re-registered so a write that replaces a file records its patch.
@@ -158,23 +150,21 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   const cancelRegistry = shellCancel.forContext(deliverUserNote);
   const rgPath = (): Promise<string> => resolveRgPath(platform().paths);
   const readRuleFilter = (): Promise<(filePath: string) => boolean> => permissionHandler.readRuleFilter();
-  const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
+  // The gate admits a cancel entry for exactly the `LIVE_OUTPUT_TOOLS`, so the wrap follows the same set.
+  const cancellable = (tool: ToolDefinition): ToolDefinition =>
+    LIVE_OUTPUT_TOOLS.has(mapPiToolName(tool.name)) ? withPerCallCancel(tool, cancelRegistry) : tool;
   const tools: ToolDefinition[] = [
-    createBashTool(pi, cwd, { getShellOptions, cancelRegistry, shellJob }),
+    createBashTool(pi, cwd, { getShellOptions, shellJob }),
     createGrepTool(pi, cwd, rgPath, readRuleFilter),
     createFindTool(pi, cwd, rgPath, readRuleFilter),
     createWriteTool(pi, cwd),
     createEditTool(pi, cwd),
-    withPerCallCancel(createPowerShellTool(pi, cwd, shellJob), cancelRegistry),
-    taskCreate,
-    taskUpdate,
-    taskList,
-    taskGet,
+    createPowerShellTool(pi, cwd, shellJob),
     enterPlan,
     exitPlan,
     createAskUserQuestionTool(pi, permissionHandler),
-  ];
+  ].map(cancellable);
 
   // Build module tools whenever their service object is present — NOT gated by `.isEnabled`. Built-but-
   // inactive tools cost nothing (pi sends only ACTIVE tools to the model), and building them up front is

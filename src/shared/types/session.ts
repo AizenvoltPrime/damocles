@@ -104,8 +104,8 @@ export interface RewindHistoryItem {
   linesChanged?: { added: number; removed: number };
   /** Files this checkpoint left out; a rewind to it never modifies, deletes or restores them. */
   skipped?: SkippedSummary;
-  /** Set when the turn has no usable baseline, so it cannot be rewound. */
-  notRewindable?: { reason: NotRewindableReason; params: NotRewindableParams };
+  /** Set when the turn's files cannot be restored: it has no usable baseline, or the chat has no project folder and takes no checkpoints (`no-project`). */
+  notRewindable?: { reason: NotRewindableReason | "no-project"; params: NotRewindableParams };
 }
 
 export type SkipReason = "size" | "category" | "lfs";
@@ -285,6 +285,12 @@ export const CANCELLED_TOOL_DETAIL_KEY = "damoclesCancelled";
  * It is how a run the note itself starts is told apart from a prompt (`session-store/prompt-index.ts`).
  */
 export const CANCEL_NOTE_DETAIL_KEY = "damoclesCancelNote";
+
+/**
+ * An `ExitPlanMode` call's plan version: its ordinal among the `ExitPlanMode` calls on its branch, stamped by
+ * core on the result's `details` and on the plan approval request. A call recorded without one has no version.
+ */
+export const PLAN_VERSION_DETAIL_KEY = "planVersion";
 
 export interface ToolCall {
   id: string;

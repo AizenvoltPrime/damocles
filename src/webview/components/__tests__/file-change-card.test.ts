@@ -73,7 +73,7 @@ describe('an Edit card', () => {
   });
 
   it('numbers its lines from the approval while it awaits one', async () => {
-    usePermissionStore().addPermission('t-edit', { toolName: 'Edit', patch: PATCH });
+    usePermissionStore().addPermission('t-edit', { owner: { kind: 'main' }, toolName: 'Edit', patch: PATCH });
 
     const wrapper = await card(edit({ status: 'awaiting_approval' }));
 
@@ -85,11 +85,11 @@ describe('an Edit card', () => {
     ['awaiting its own approval', edit({ status: 'awaiting_approval' })],
   ])('is not highlighted again when another call\'s prompt comes or goes (%s)', async (_label, toolCall) => {
     const permissions = usePermissionStore();
-    permissions.addPermission('t-edit', { toolName: 'Edit', patch: PATCH });
+    permissions.addPermission('t-edit', { owner: { kind: 'main' }, toolName: 'Edit', patch: PATCH });
     await card(toolCall);
     highlightDiffLines.mockClear();
 
-    permissions.addPermission('t-other', { toolName: 'Bash', command: 'ls' });
+    permissions.addPermission('t-other', { owner: { kind: 'main' }, toolName: 'Bash', command: 'ls' });
     await flushPromises();
     permissions.removePermission('t-other');
     await flushPromises();

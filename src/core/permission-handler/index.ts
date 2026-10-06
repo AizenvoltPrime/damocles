@@ -7,18 +7,18 @@ import { QuestionManager } from './managers/question-manager';
 import { FormManager } from './managers/form-manager';
 import { PlanManager } from './managers/plan-manager';
 import { SkillManager } from './managers/skill-manager';
-import { SubagentManager } from './managers/subagent-manager';
 import { EvaluatorManager } from './managers/evaluator-manager';
 import { ElicitationManager } from './managers/elicitation-manager';
 import type { ElicitationRequest, ElicitationResult } from '../../shared/types/elicitation';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
-import type { PermissionUpdate } from '../../shared/types/permissions';
+import type { PermissionUpdate, PromptApprover, PromptOwner } from '../../shared/types/permissions';
+import { log } from '../logger';
 import type { PermissionResult, CanUseToolContext, SettledApproval, McpToolIdentity } from './types';
 import { buildUnaskedDenyResult } from './utils';
 import { IMAGE_MODEL_SETTING } from '../pi-session/tools/image-tool-specs';
 import type { FormValues } from '../../shared/types/forms';
-import type { PendingKind } from '../pi-session/session-state';
+import type { RaisedPrompt } from '../pi-session/session-state';
 import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
 export type { PermissionResult, CanUseToolContext };
@@ -31,10 +31,10 @@ export class PermissionHandler {
   private formManager: FormManager;
   private planManager: PlanManager;
   private skillManager: SkillManager;
-  private subagentManager: SubagentManager;
   private evaluatorManager: EvaluatorManager;
   private elicitationManager: ElicitationManager;
   private readonly platform: Platform;
+  private onPlanModeActivated: (() => Promise<void>) | null = null;
 
   // panelId is the chat panel this handler belongs to; proposal diffs are shown there on hosts that render editors in the panel.
   /** `settingsFolder` is the chat's folder, whose permission-mode and YOLO defaults seed this handler. */
@@ -64,11 +64,6 @@ export class PermissionHandler {
       this.state,
       getPostMessage
     );
-    this.subagentManager = new SubagentManager(
-      this.state,
-      this.diffManager,
-      getPostMessage
-    );
     this.evaluatorManager = new EvaluatorManager(this.state, platform);
     this.elicitationManager = new ElicitationManager(this.state, getPostMessage);
 
@@ -76,8 +71,10 @@ export class PermissionHandler {
     this.state.dangerouslySkipPermissions = platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
   }
 
+  /** Every mode change goes through here, so open prompts the new mode would not ask about are approved. */
   setPermissionMode(mode: PermissionMode): void {
     this.state.permissionMode = mode;
+    this.approveUnaskedPrompts();
   }
 
   getPermissionMode(): PermissionMode {
@@ -86,6 +83,7 @@ export class PermissionHandler {
 
   setDangerouslySkipPermissions(enabled: boolean): void {
     this.state.dangerouslySkipPermissions = enabled;
+    this.approveUnaskedPrompts();
   }
 
   /**
@@ -93,9 +91,37 @@ export class PermissionHandler {
    * approval dropped, so none outlives the conversation or folder it was granted in. The mode stays.
    */
   resetForNewConversation(settingsFolder: SettingsFolder | undefined): void {
+    // Open prompts belong to the conversation being replaced, so this YOLO change never approves them.
     this.state.dangerouslySkipPermissions = this.platform.settings.get<boolean>('damocles.dangerouslySkipPermissions', false, settingsFolder);
     this.state.autoApprovedSkills.clear();
-    this.state.autoApprovedSubagents.clear();
+  }
+
+  /**
+   * Approve every open approval and skill prompt whose call the gate would now run unasked
+   * (`CanUseToolContext.runsUnasked`), as the user's yes would. A check that throws leaves its prompt open.
+   */
+  private approveUnaskedPrompts(): void {
+    const approvedBy: PromptApprover = this.state.dangerouslySkipPermissions ? 'yolo' : this.state.permissionMode;
+    const runsUnasked = (id: string, pending: { runsUnasked?: () => boolean }): boolean => {
+      try {
+        return pending.runsUnasked?.() ?? false;
+      } catch (err) {
+        log('[PermissionHandler] re-checking open prompt %s failed, leaving it open: %O', id, err);
+        return false;
+      }
+    };
+    let approved = 0;
+    for (const [id, pending] of [...this.state.pendingApprovals]) {
+      if (!runsUnasked(id, pending)) continue;
+      approved++;
+      void this.approvalManager.approveUnasked(id, approvedBy);
+    }
+    for (const [id, pending] of [...this.state.pendingSkillApprovals]) {
+      if (!runsUnasked(id, pending)) continue;
+      approved++;
+      this.skillManager.approveUnasked(id, approvedBy);
+    }
+    if (approved > 0) log('[PermissionHandler] %s approved %d open prompts', approvedBy, approved);
   }
 
   getDangerouslySkipPermissions(): boolean {
@@ -116,9 +142,14 @@ export class PermissionHandler {
     this.state.onPendingChanged = fn;
   }
 
-  /** The kinds of the unanswered prompts on this panel's `PermissionState`; empty when none is open. */
-  pendingPromptKinds(): Set<PendingKind> {
-    return this.state.pendingKinds();
+  /** Wire who raised each prompt, resolved as it is raised and stated on its message. Supplied by PiSession. */
+  setPromptOwnerResolver(fn: ((parentToolUseId: string | null | undefined) => PromptOwner) | null): void {
+    this.state.promptOwnerResolver = fn;
+  }
+
+  /** The unanswered prompts on this panel's `PermissionState`, in the order raised. */
+  pendingPrompts(): RaisedPrompt[] {
+    return this.state.pendingPrompts();
   }
 
   /**
@@ -144,11 +175,21 @@ export class PermissionHandler {
   }
 
   setOnPlanModeActivated(callback: () => Promise<void>): void {
-    this.planManager.setOnPlanModeActivated(callback);
+    this.onPlanModeActivated = callback;
   }
 
   async activatePlanMode(): Promise<void> {
-    return this.planManager.activatePlanMode();
+    if (this.state.permissionMode === 'plan') {
+      return;
+    }
+
+    this.setPermissionMode('plan');
+
+    try {
+      await this.onPlanModeActivated?.();
+    } catch (err) {
+      log('[PermissionHandler] activatePlanMode callback failed:', err);
+    }
   }
 
   preApproveSkill(skillName: string): void {
@@ -157,10 +198,6 @@ export class PermissionHandler {
 
   revokeSkillPreApproval(skillName: string): void {
     this.skillManager.revokeSkillPreApproval(skillName);
-  }
-
-  autoApproveSubagent(parentToolUseId: string): void {
-    this.subagentManager.autoApproveSubagent(parentToolUseId);
   }
 
   /** The panel's project folder, or null when it has no project scope; project rules and skills load from it. */
@@ -173,11 +210,7 @@ export class PermissionHandler {
     this.state.cwd = cwd;
   }
 
-  /**
-   * Lightweight evaluation for PreToolUse hook.
-   * Only returns allow/deny for definitive pattern matches.
-   * Returns 'ask' for everything else, letting SDK's canUseTool handle prompts.
-   */
+  /** The evaluator's verdict on a call: the settings rule it matches, then YOLO, the mode and the tool defaults. */
   async evaluatePermission(
     toolName: string,
     input: Record<string, unknown>,
@@ -189,6 +222,11 @@ export class PermissionHandler {
   /** The behavior of the settings rule the call matches, or null when none does or YOLO is on. */
   async matchRule(toolName: string, input: Record<string, unknown>, mcpTool?: McpToolIdentity): Promise<'allow' | 'deny' | 'ask' | null> {
     return this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, mcpTool);
+  }
+
+  /** `evaluatePermission` for a call whose settings rule is already known, under the current mode and YOLO. */
+  decide(toolName: string, input: Record<string, unknown>, rule: 'allow' | 'deny' | 'ask' | null): 'allow' | 'deny' | 'ask' {
+    return this.evaluatorManager.decide(toolName, input, rule);
   }
 
   /** Whether a `Read` deny or ask rule covers a file, for Grep and Glob to leave it out of their results. */
@@ -218,7 +256,9 @@ export class PermissionHandler {
       return this.formManager.handleForm(input, context);
     }
 
-    const evaluation = await this.evaluatorManager.evaluate(toolName, input, this.state.workspacePath, context.mcpTool);
+    const evaluation = context.rule !== undefined
+      ? this.decide(toolName, input, context.rule)
+      : await this.evaluatePermission(toolName, input, context.mcpTool);
 
     if (evaluation === 'allow') {
       return { behavior: 'allow', updatedInput: input };
@@ -228,11 +268,8 @@ export class PermissionHandler {
       return buildUnaskedDenyResult(undefined, 'Permission denied by settings rule');
     }
 
-    // An ask rule prompts even for a subagent whose edits the user accepted.
-    const askRule = (await this.evaluatorManager.matchRule(toolName, input, this.state.workspacePath, context.mcpTool)) === 'ask';
-
     if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
-      return this.approvalManager.handleFilePermission(toolName, input, context, askRule);
+      return this.approvalManager.handleFilePermission(toolName, input, context);
     }
 
     if (toolName === TOOL_GENERATE_IMAGE) {
@@ -240,7 +277,7 @@ export class PermissionHandler {
     }
 
     if (isShellTool(toolName)) {
-      return this.approvalManager.handleShellPermission(toolName, input, context, askRule);
+      return this.approvalManager.handleShellPermission(toolName, input, context);
     }
 
     if (toolName === TOOL_SKILL) {

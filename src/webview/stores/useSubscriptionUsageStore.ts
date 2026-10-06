@@ -1,6 +1,7 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import type { SubscriptionUsageData } from '@shared/types/usage';
+import { usePlatformBridge } from '@/composables/usePlatformBridge';
 
 export const useSubscriptionUsageStore = defineStore('subscriptionUsage', () => {
   const isOverlayOpen = ref(false);
@@ -11,6 +12,12 @@ export const useSubscriptionUsageStore = defineStore('subscriptionUsage', () => 
     data.value = null;
     isLoading.value = true;
     isOverlayOpen.value = true;
+  }
+
+  /** Subscription usage as `/usage` and the desktop command open it: the overlay, and the host asked for its data. */
+  function requestOverlay(): void {
+    openOverlay();
+    usePlatformBridge().postMessage({ type: 'requestSubscriptionUsage' });
   }
 
   // Keep existing bars visible while re-fetching.
@@ -42,6 +49,7 @@ export const useSubscriptionUsageStore = defineStore('subscriptionUsage', () => 
     isLoading,
     data,
     openOverlay,
+    requestOverlay,
     refresh,
     closeOverlay,
     handleDataLoaded,

@@ -12,6 +12,8 @@ export interface PermissionResult {
   /** The user was never asked; set only by `buildUnaskedDenyResult`, so the gate words it as policy. */
   policy?: true;
   updatedPermissions?: PermissionUpdate[];
+  /** `ExitPlanMode` only: the plan reached the user, whether answered or stopped, so it is a plan version. */
+  planShown?: true;
 }
 
 /** The server an MCP call reaches, by its config name, and the server's own tool name. */
@@ -30,6 +32,16 @@ export interface CanUseToolContext {
   decisionReason?: string;
   /** Set for an MCP call whose descriptor the caller found; `mcp__` rules match it. */
   mcpTool?: McpToolIdentity;
+  /** The version core stamped on an `ExitPlanMode` call (`plan-version.ts`), shown on its approval prompt. */
+  planVersion?: number;
+  /** The settings rule the gate matched for this call; the decision and any re-check of its open prompt read only this. */
+  rule?: 'allow' | 'deny' | 'ask' | null;
+  /**
+   * Whether the gate, deciding this call under the current permission state, would run it unasked
+   * (`runsUnasked` in `permission-gate.ts`). Its open prompt is settled as approved when this turns true;
+   * a call no gate decided has none and stays open.
+   */
+  runsUnasked?: () => boolean;
 }
 
 export interface ApprovalResult {
@@ -51,9 +63,11 @@ export interface PendingApproval {
   cleanup: () => void;
   request: ExtensionToWebviewMessage;
   diffId?: string;
-  parentToolUseId?: string | null;
   /** The panel's project folder when the prompt was raised; a rule the user saves from it belongs there. */
   workspacePath: string | null;
+  /** @see CanUseToolContext.runsUnasked */
+  runsUnasked?: () => boolean;
+  parentToolUseId?: string | null;
 }
 
 /** An approval the user's answer settled, as opposed to a stale id that matched nothing pending. */
@@ -101,6 +115,10 @@ export interface PlanApprovalResult {
   approved: boolean;
   /** @see ApprovalResult.userAnswered */
   userAnswered?: true;
+  /** The request was posted to the webview before the result settled. */
+  shown?: true;
+  /** Why an unanswered request settled: an abort or a teardown. */
+  customMessage?: string;
   approvalMode?: 'acceptEdits' | 'manual';
   feedback?: string;
 }
@@ -123,6 +141,9 @@ export interface PendingSkillApproval {
   resolve: (result: SkillApprovalResult) => void;
   cleanup: () => void;
   request: ExtensionToWebviewMessage;
+  /** @see CanUseToolContext.runsUnasked */
+  runsUnasked?: () => boolean;
+  parentToolUseId?: string | null;
 }
 
 /** A pending MCP elicitation. Keyed by `elicitationId`, not by a tool use id: an elicitation is raised

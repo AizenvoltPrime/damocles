@@ -10,7 +10,7 @@ import type { ChatSession } from "../chat-session";
 import type { SessionOptions, ContentInput, McpScope, RewindOption } from "../session-types";
 import type { Disposable } from "../../platform/disposable";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
+import type { ModelInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpRenamedToolRuleNotice, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
@@ -34,10 +34,14 @@ import type { FolderRuntime } from "./folder-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { cacheWarmingSetting, PI_AGENT_DIR } from "./agent-dir";
 import { installTurnDecider, BUDGET_STOP_HOOK } from "./finish-turn";
+import { installPlanModeChangeNotice, mainPlanModeStatement, planModeChangeNotice, planModeNoticeAtPromptStart, type PlanModeStatement } from "./plan-mode-change";
+import { buildPlanModeGuidance } from "./plan-mode-guidance";
 import { dispatchObserveOnly } from "./hooks/dispatch";
 import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
 import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
-import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingKind, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
+import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type PendingPrompt, type RaisedPrompt, type SessionState, type TurnChange, type TurnOutcome, type TurnState } from "./session-state";
+import { pendingPromptDescriber, pendingPromptOwners, promptOwnerOf, type PromptOwners } from "./pending-prompts";
+import type { SubscriptionProvider, UsageMonitor } from "./usage-thresholds";
 import {
   piSupportedModels,
   resolvePiModel,
@@ -86,6 +90,7 @@ import {
   type AgentInvocationData,
 } from "./agent-records";
 import { TeamPersistence } from "../team/persistence";
+import { teamPlanModeStatement } from "../team/prompts";
 import { resolveExploreSectionModel } from "./custom-providers";
 import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
@@ -107,7 +112,7 @@ import {
   stripIdeContext,
   nextPromptIndex,
 } from "./session-store";
-import { acquireSessionLease, releaseSessionLease, sessionLeasesOf } from "./session-store/session-lease";
+import { acquireSessionLease, refreshSessionLeaseOwners, releaseSessionLease, sessionLeasesOf, type SessionLeaseHolder } from "./session-store/session-lease";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService, RESTORE_WAIT_MS, checkpointBaselineWaitMs, checkpointMaxFileSizeBytes, type ServiceRestoreResult } from "./checkpoint-service";
 import type { CheckpointRecord, NotRewindableRecord, StoredCheckpointRecord } from "./checkpoints";
@@ -160,6 +165,7 @@ import {
   modelDollarBilled,
   piModelDollarBilled,
   resolvedProviderOf,
+  subscriptionProvider,
   type AccountBillingDeps,
   type ModelBillingDeps,
 } from "./account-billing";
@@ -194,6 +200,11 @@ function parseSteerImages(images: unknown): ImageBlock[] | null {
     parsed.push({ type: 'image', source: { type: 'base64', media_type: image.source.media_type, data: image.source.data } });
   }
   return parsed;
+}
+
+/** The user's text for a file rewind or undo in a chat with no project folder. */
+function noProjectRewindMessage(): string {
+  return t("This chat has no project folder, so its files have no checkpoints to restore.");
 }
 
 /** The user's text for a rewind of a turn that has no usable checkpoint. */
@@ -253,6 +264,12 @@ interface ListedNote {
   echoed: boolean;
 }
 
+/** The process usage monitor and the subscription a chat's model bills. */
+interface SubscriptionUsage {
+  readonly usage: UsageMonitor;
+  readonly provider: SubscriptionProvider;
+}
+
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses its folder's `FolderRuntime.services` and a `PiStreamAdapter` that
@@ -297,23 +314,26 @@ export class PiSession implements ChatSession {
   private _mcpStatusListener: (() => void) | null = null;
   /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
   private checkpointService: CheckpointService | null = null;
-  /** User entry ids that have a checkpoint — the rewindable set pushed via `checkpointInfo`. */
+  /** User entry ids with a rewind control, pushed via `checkpointInfo`: those with a checkpoint, or every prompt when the chat takes no checkpoints. */
   private readonly checkpointUserIds = new Set<string>();
   /** Size of the last `checkpointInfo` broadcast, to suppress no-op re-emits. */
   private lastCheckpointBroadcast = -1;
-  /** The last `sessionStateChanged` sent, as `state:sessionId`, so a re-derivation that changed
-   *  nothing sends nothing. Only an identical message is ever dropped. */
+  /** The last `sessionStateChanged` sent, as its state, session id and pending prompt ids, so a
+   *  re-derivation that changed nothing sends nothing. Only an identical message is ever dropped. */
   private lastSessionState: string | null = null;
   /** The turn's own lifecycle, the single value `publishSessionState` derives from. Written only by
    *  `setTurnState`, never inferred from another flag: `processingFlag` is cleared a tick later than the
    *  adapter reports idle, so reading it here republishes `running` after `idle` and latches the bar. */
   private turnState: TurnState = "idle";
+  /** When the running turn started (epoch ms), for a completed outcome's duration. */
+  private turnStartedAt = 0;
   /** The session last announced with `stored`, so its file's first write is announced once. */
   private announcedStoredId: string | null = null;
   private activityListener: ((activity: ChatActivity) => void) | null = null;
   private turnSettledListener: ((outcome: TurnOutcome) => void) | null = null;
   /** The last activity reported, keyed with the stored session id, so a change to that id reports too. */
   private lastActivityKey: string | null = null;
+  private readonly describePrompts: (raised: readonly RaisedPrompt[]) => PendingPrompt[];
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
@@ -349,6 +369,10 @@ export class PiSession implements ChatSession {
   private resumeSessionId: string | null = null;
   /** Sessions whose lease another process took; this panel is detaching from them and never re-leases them. */
   private readonly lostLeases = new Set<string>();
+  /** The panel's `ready.panelToken`, named in the owner record of every lease this session holds. */
+  private panelToken: string | null = null;
+  /** The teardown `dispose()` started; a handover waits for it before letting the lease go. */
+  private disposal: Promise<void> | null = null;
   /** Guards the one-shot AI title generation after the first assistant turn (US-012). */
   private titleGenerationAttempted = false;
   /** The first real (non-internal, non-`<…>`) user message of this session, captured in `sendMessage`.
@@ -396,7 +420,7 @@ export class PiSession implements ChatSession {
   /** Ends the running Always-loaded MCP wait when the user stops the turn, the session is replaced or the panel closes. */
   private mcpStartupWaitAbort: AbortController | null = null;
   /** A field, not a per-session local, so a live call's entry survives session replacement. Each entry
-   *  carries the delivery of the context that registered it, so a note still reaches the conversation
+   *  carries the delivery of the context that opened it, so a note still reaches the conversation
    *  that ran the command and not the one that replaced it. */
   private readonly shellCancel = new ShellCancelStore();
   // Panel-scoped, not conversation-scoped: reset() and clear() swap the pi session but keep this instance, so a
@@ -440,6 +464,9 @@ export class PiSession implements ChatSession {
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
+    this.describePrompts = pendingPromptDescriber(options.cwd);
+    const owners = this.promptOwners();
+    options.permissionHandler.setPromptOwnerResolver((parentToolUseId) => promptOwnerOf(parentToolUseId, owners));
     // Wired here and not at bind time: a prompt outranks the turn lifecycle even before start().
     this.uiContext.setPendingChangedListener(() => this.publishSessionState());
     options.permissionHandler.setPendingPromptsListener(() => this.publishSessionState());
@@ -638,6 +665,8 @@ export class PiSession implements ChatSession {
     installTurnDecider(session.agent, BUDGET_STOP_HOOK, () =>
       this._budgetStopRequested ? { action: 'end' } : undefined,
     );
+    // A user's mode change while the run streams reaches the model at its next step; see plan-mode-change.ts.
+    installPlanModeChangeNotice(session.agent, () => this.isPlanMode(), this.planModeStatement);
     // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
     // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
     // (see FolderRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
@@ -677,7 +706,8 @@ export class PiSession implements ChatSession {
       deferrableTools: () => this.deferrableToolsSnapshot(),
       activateDeferredTools: (names) => this.activateDeferredTools(names),
       waitForAlwaysLoadedMcp: (id) => this.waitForAlwaysLoadedMcp(id),
-      checkpointBaseline: this.checkpointBaselineGate,
+      ...this.checkpointBaselineField(),
+      shellCancel: this.shellCancel.forContext(this.noteDeliveryForMain(() => session)),
     };
     folder.registerPanel(sessionId, gate);
     this.registeredGate = gate;
@@ -733,15 +763,18 @@ export class PiSession implements ChatSession {
 
     // Registered before the first turn's message_start. A rebind onto the same session keeps its driver,
     // whose pending turn and queued records belong to that session. `hydrate` re-surfaces the checkpoints
-    // already in a resumed/forked tree so they are immediately rewindable.
-    let checkpointService = this.checkpointService;
-    if (checkpointService?.sessionId !== sessionId) {
-      checkpointService?.dispose();
-      checkpointService = this.createCheckpointService(sessionId);
-      this.checkpointService = checkpointService;
+    // already in a resumed/forked tree so they are immediately rewindable. A chat with no project folder
+    // has no service: its baseline would snapshot the whole home folder (docs/invariants.md, "Checkpoints").
+    if (this.fileCheckpoints) {
+      let checkpointService = this.checkpointService;
+      if (checkpointService?.sessionId !== sessionId) {
+        checkpointService?.dispose();
+        checkpointService = this.createCheckpointService(sessionId);
+        this.checkpointService = checkpointService;
+      }
+      folder.registerCheckpointService(sessionId, checkpointService);
+      checkpointService.hydrate(session.sessionManager);
     }
-    folder.registerCheckpointService(sessionId, checkpointService);
-    checkpointService.hydrate(session.sessionManager);
 
     // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
     this.uiContext.cancelAll();
@@ -778,7 +811,54 @@ export class PiSession implements ChatSession {
     if (this._disposed) return;
     log("[PiSession] lease on session %s lost; detaching", sessionId);
     void this.options.platform.notifications.warn(t("This conversation was opened in another Damocles window, so this panel closed it."));
-    this.detachFromDeletedSession().catch((err) => log("[PiSession] detaching after a lost lease failed: %O", err));
+    this.detachSession().catch((err) => log("[PiSession] detaching after a lost lease failed: %O", err));
+  }
+
+  /**
+   * The graceful opposite of a lost lease: this process still holds the lease, so the turn is stopped and
+   * every write lands before the lease goes. A detach that fails leaves the old session installed, and this
+   * panel's own hold keeps the lease.
+   */
+  async onSessionReleaseRequested(sessionId: string): Promise<void> {
+    // A panel being disposed releases the lease itself, after its teardown appended the last entry.
+    if (this._disposed || !this.holdsSession(sessionId) || this.lostLeases.has(sessionId)) return;
+    // Joined before anything rebinds, since the reset releases this panel's own hold while the old session can still append.
+    const handover: SessionLeaseHolder = {
+      // After the reset the panel no longer holds the session, so its own loss handler would not mute the old manager.
+      onSessionLeaseLost: (id) => {
+        this.lostLeases.add(id);
+        const session = this.runtime?.session;
+        if (session) this.muteIfLeaseLost(session);
+      },
+    };
+    if (!acquireSessionLease(sessionId, handover, { writer: true })) return;
+    log("[PiSession] another process asked for session %s; handing it over", sessionId);
+    try {
+      await this.startPromise?.catch(() => undefined);
+      if (this._disposed || this.lostLeases.has(sessionId)) return;
+      // The Stop path, so the stop marker lands in the file while the lease is still held.
+      if (this.processingFlag || this.runtime?.session.isStreaming) await this.interrupt();
+      else await this.abortPromise;
+      if (this._disposed || this.lostLeases.has(sessionId)) return;
+      await this.detachSession();
+      if (!this.lostLeases.has(sessionId)) {
+        void this.options.platform.notifications.warn(t("This conversation was opened in another Damocles window, so this panel closed it."));
+      }
+    } finally {
+      // A dispose under way still appends the aborted turn in its teardown.
+      if (this._disposed) await this.disposal?.catch(() => undefined);
+      releaseSessionLease(sessionId, handover);
+    }
+  }
+
+  setPanelToken(token: string | null): void {
+    if (this.panelToken === token) return;
+    this.panelToken = token;
+    refreshSessionLeaseOwners(this);
+  }
+
+  sessionLeasePanelToken(): string | null {
+    return this.panelToken;
   }
 
   /** Stop `session`'s manager writing when its lease was lost; pi's SessionManager has no close, so replacing its file writer is the only synchronous way. */
@@ -995,6 +1075,8 @@ export class PiSession implements ChatSession {
     const committed = watchPromptEntry(session, (entry) => {
       const service = this.checkpointService;
       if (service?.sessionId === session.sessionId) service.startTurn(session.sessionManager, entry.id, entry.text);
+      // With no file checkpoints the conversation can still be forked from any prompt.
+      if (!this.fileCheckpoints && this.runtime?.session === session) this.addCheckpoint(entry.id);
       if (this.runtime?.session === session) this.announceIfNewlyStored();
     });
     this.promptEntry = committed;
@@ -1773,7 +1855,13 @@ export class PiSession implements ChatSession {
     return this.resetPromise ?? Promise.resolve();
   }
 
-  async dispose(): Promise<void> {
+  dispose(): Promise<void> {
+    const disposal = this.runDispose();
+    this.disposal = disposal;
+    return disposal;
+  }
+
+  private async runDispose(): Promise<void> {
     this._disposed = true;
     this.mcpStartupWaitAbort?.abort();
     // Closing the handle is what kills whatever this panel's shells left running: the job object's
@@ -1792,6 +1880,7 @@ export class PiSession implements ChatSession {
     // supplied by the caller) would keep publishing into a webview that is gone.
     this.options.permissionHandler.setPendingPromptsListener(null);
     this.uiContext.setPendingChangedListener(null);
+    this.options.permissionHandler.setPromptOwnerResolver(null);
     this.options.teamService?.setRunListener(null);
     this.activityListener = null;
     this.turnSettledListener = null;
@@ -1987,7 +2076,7 @@ export class PiSession implements ChatSession {
     // leaves `modelValue` (and everything derived from it) pointing at the still-current model.
     this.modelValue = model;
     this.desiredModel = resolution.model;
-    // The account chip is derived from the model, so it is stale until the new one is published.
+    // The account state is derived from the model, so it is stale until the new one is published.
     this.publishAccountInfo();
     void this.runtime.session.setModel(resolution.model).catch((err) => log("[PiSession] setModel failed: %O", err));
   }
@@ -2303,7 +2392,16 @@ export class PiSession implements ChatSession {
    * agents the reset aborted have stopped writing under the session's folder (bounded by
    * `ABORTED_AGENTS_SETTLE_TIMEOUT_MS`).
    */
-  async detachFromDeletedSession(): Promise<void> {
+  detachFromDeletedSession(): Promise<void> {
+    return this.detachSession();
+  }
+
+  /**
+   * Replace this panel's session with a fresh one and clear its webview, resolving once the old manager can no
+   * longer write and the agents the reset aborted have settled (or the wait timed out). Rejects when the
+   * replacement failed or was cancelled, which leaves the old session installed and writable.
+   */
+  private async detachSession(): Promise<void> {
     // A panel mid-`start()` has no `runtime` yet, so reset() would bail and whenReplaced() would
     // resolve instantly — while start() goes on to open a SessionManager on the very path about to be
     // removed. Let the start settle so there is a live session to actually replace. Its own failure is
@@ -2323,13 +2421,13 @@ export class PiSession implements ChatSession {
     // no longer holds it. Cleared before the republish, never after.
     this.lastSessionState = null;
     this.publishSessionState();
-    // The aborted agents still append to files under the session's folder, which the caller removes next.
+    // The aborted agents still append to files under the session's folder, which a delete removes next.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
     });
     if ((await Promise.race([agentsSettled, timedOut])) === "timeout") {
-      log("[PiSession] aborted agents still running after %dms; deleting their session data anyway", ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
+      log("[PiSession] aborted agents still running after %dms; detaching anyway", ABORTED_AGENTS_SETTLE_TIMEOUT_MS);
     }
     clearTimeout(timer);
   }
@@ -2687,6 +2785,18 @@ export class PiSession implements ChatSession {
     return this.options.platform.settings.get<boolean>("damocles.team.enabled", false);
   }
 
+  private isPlanMode(): boolean {
+    return this.options.permissionHandler.getPermissionMode() === "plan";
+  }
+
+  /** The main agent's plan-mode statement, with the same guidance inputs as its system prompt (`agent-start.ts`). */
+  private readonly planModeStatement: PlanModeStatement = mainPlanModeStatement(() =>
+    buildPlanModeGuidance(this.getPlanFilePath(), {
+      teamEnabled: !!this.options.teamService && this.isTeamEnabled(),
+      webSearchEnabled: isWebSearchEnabled(),
+    }),
+  );
+
   // ---- subagents (Phase 5) ------------------------------------------------
 
   /** The background-subagent concurrency cap (`damocles.subagents.maxConcurrent`, default 4, clamped 1–16). */
@@ -2769,8 +2879,9 @@ export class PiSession implements ChatSession {
       registry: this.agentRegistry!,
       ...this.trackedNestedSessions(folder),
       permissionHandler: this.options.permissionHandler,
-      isPlanMode: () => this.permissionMode === "plan",
-      checkpointBaseline: this.checkpointBaselineGate,
+      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
+      ...this.checkpointBaselineField(),
+      shellCancelFor: (agentId) => this.shellCancel.forContext(this.noteDeliveryForSubagent(agentId)),
       postMessage: (m) => this.emit(m),
       getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
@@ -2915,6 +3026,9 @@ export class PiSession implements ChatSession {
     const messages = event.context.contextMessages;
     if (turnHasNonErrorExitPlanModeResult(messages)) return undefined;
     if (lastAssistant(messages)?.stopReason !== "stop") return undefined;
+    // A model never told that plan mode started gets the plan-mode instructions before any nudge.
+    const notice = planModeChangeNotice(messages, true, this.planModeStatement);
+    if (notice) return { type: "custom_message", ...notice };
 
     return {
       type: "custom_message",
@@ -3177,12 +3291,19 @@ export class PiSession implements ChatSession {
     return true;
   }
 
-  /** The gate's checkpoint for this panel and every agent it spawned; reads the live service at each wait. */
-  private get checkpointBaselineGate(): CheckpointBaselineGate {
+  /** The gate's checkpoint for this panel and every agent it spawned, which reads the live service at each wait; none when the chat takes no checkpoints. */
+  private checkpointBaselineField(): { checkpointBaseline?: CheckpointBaselineGate } {
+    if (!this.fileCheckpoints) return {};
     return {
-      folder: this.cwd,
-      wait: (signal, toolName) => this.checkpointService?.awaitBaseline(signal, toolName) ?? Promise.resolve(),
+      checkpointBaseline: {
+        folder: this.cwd,
+        wait: (signal, toolName) => this.checkpointService?.awaitBaseline(signal, toolName) ?? Promise.resolve(),
+      },
     };
+  }
+
+  get fileCheckpoints(): boolean {
+    return this.options.projectScope;
   }
 
   seedCheckpoints(userMessageIds: Iterable<string>): void {
@@ -3230,6 +3351,10 @@ export class PiSession implements ChatSession {
       const needsFork = option === "fork-conversation" || option === "fork-and-rewind-code";
 
       if (needsFileRewind) {
+        if (!this.fileCheckpoints) {
+          this.emit({ type: "rewindError", message: noProjectRewindMessage() });
+          return;
+        }
         if (!entry) {
           const notRewindable = getNotRewindableEntries(sm.getEntries()).find((r) => r.userEntryId === userMessageId);
           this.emit({
@@ -3286,6 +3411,10 @@ export class PiSession implements ChatSession {
     const session = await this.sessionForRewind();
     if (!session) return;
     try {
+      if (!this.fileCheckpoints) {
+        this.emit({ type: "rewindError", message: noProjectRewindMessage() });
+        return;
+      }
       const sm = session.sessionManager;
       const record = getPreRewindEntries(sm.getEntries()).find((r) => r.id === preRewindId);
       if (!record) {
@@ -3416,16 +3545,18 @@ export class PiSession implements ChatSession {
         const branchedPath = branchSm.createBranchedSession(parentId);
         if (branchedPath) {
           piBranchedSessionId = piSessionIdFromFile(branchedPath);
-          try {
-            const srcGit = getGitDir(getRepoDir(sourceFile));
-            if (existsSync(srcGit)) await RepoManager.cloneFrom(srcGit, getGitDir(getRepoDir(branchedPath)));
-          } catch (err) {
-            log("[PiSession] checkpoint repo clone-on-fork failed: %O", err);
-          }
-          try {
-            await this.carryCheckpointsToFork(pi, liveSm, parentId, branchedPath, piBranchedSessionId);
-          } catch (err) {
-            log("[PiSession] carrying checkpoints into the fork failed: %O", err);
+          if (this.fileCheckpoints) {
+            try {
+              const srcGit = getGitDir(getRepoDir(sourceFile));
+              if (existsSync(srcGit)) await RepoManager.cloneFrom(srcGit, getGitDir(getRepoDir(branchedPath)));
+            } catch (err) {
+              log("[PiSession] checkpoint repo clone-on-fork failed: %O", err);
+            }
+            try {
+              await this.carryCheckpointsToFork(pi, liveSm, parentId, branchedPath, piBranchedSessionId);
+            } catch (err) {
+              log("[PiSession] carrying checkpoints into the fork failed: %O", err);
+            }
           }
           await this.copyAgentDataToFork(pi, liveSm, parentId, piBranchedSessionId);
           try {
@@ -3758,8 +3889,26 @@ export class PiSession implements ChatSession {
     const pi = getPiCodingAgent();
     if (!pi) throw new Error("pi runtime not loaded");
     const folder = this.requireFolder();
+    const nested = this.trackedNestedSessions(folder);
     return {
-      ...this.trackedNestedSessions(folder),
+      ...nested,
+      // A team agent's plan directive is frozen in its system prompt, while its gate reads the live mode.
+      createSession: async (opts) => {
+        const statement = teamPlanModeStatement(opts.role);
+        const isPlanMode = (): boolean => this.isPlanMode();
+        const session = await nested.createSession({
+          ...opts,
+          extensionFactory: async (pi) => {
+            await opts.extensionFactory(pi);
+            pi.on("before_agent_start", (event, ctx) => {
+              const message = planModeNoticeAtPromptStart(ctx.sessionManager.buildSessionProjection().messages, event.systemPromptOptions, isPlanMode(), statement);
+              return message ? { message } : undefined;
+            });
+          },
+        });
+        installPlanModeChangeNotice(session.agent, isPlanMode, statement);
+        return session;
+      },
       // ONE call per spawn for all three: the agent's names, its customTools (with the MCP definitions
       // appended, exactly as the `team_*` tools are) and the frozen snapshot everything else derives
       // from. `mcp.names` is NOT in `toolNames` — the caller concatenates them, so there is exactly one
@@ -3779,12 +3928,13 @@ export class PiSession implements ChatSession {
           readOnly: !toolNames.some(isWrite),
         };
       },
-      buildExtensionFactory: (_agentName, agentId, mcp, readOnly) => createSubagentExtensionFactory({
+      buildExtensionFactory: (agent, mcp, readOnly) => createSubagentExtensionFactory({
         permissionHandler: this.options.permissionHandler,
-        isPlanMode: () => this.permissionMode === "plan",
-        checkpointBaseline: this.checkpointBaselineGate,
+        isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
+        ...this.checkpointBaselineField(),
+        shellCancel: this.shellCancel.forContext(this.noteDeliveryForTeamAgent(agent)),
         readOnlyShell: readOnly,
-        parentToolUseId: agentId,
+        parentToolUseId: agent.agentId,
         // `buildExtensionFactory` is invoked PER AGENT SPAWN, not once at buildTeamEngine() time, so
         // `teamAgentBaseToolNames()` must be called HERE to read live panel state at spawn. Hoisting it
         // to a buildTeamEngine local would freeze the deferrable set at team-construction time and
@@ -3946,7 +4096,7 @@ export class PiSession implements ChatSession {
 
   /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
   private dollarBilled(): boolean {
-    return dollarBilledFrom(this.accountBillingDeps());
+    return dollarBilledFrom(this.accountBillingDeps(PiRuntime.get()));
   }
 
   /** The conversation's own spend, without the entries a fork copied from its parent. */
@@ -4018,8 +4168,7 @@ export class PiSession implements ChatSession {
   }
 
   /** Snapshot the live auth state the account/billing pure functions consume. */
-  private accountBillingDeps(): AccountBillingDeps {
-    const piRuntime = PiRuntime.get();
+  private accountBillingDeps(piRuntime: PiRuntime): AccountBillingDeps {
     const registry = piRuntime.modelRuntime;
     const openaiAuthStatus = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
@@ -4033,16 +4182,31 @@ export class PiSession implements ChatSession {
     };
   }
 
-  private buildAccountInfo(): AccountInfo {
-    return buildAccountInfoFrom(this.accountBillingDeps());
+  /**
+   * Publish the account state to the webview. Its five auth inputs change independently of any turn, so
+   * every mutation of one calls this and nothing else republishes. Rebuilt on each call, never cached. A
+   * caller can run late in shutdown, so a disposed session or a retired runtime publishes nothing.
+   */
+  publishAccountInfo(): void {
+    const runtime = this._disposed ? null : PiRuntime.unlessRetired();
+    if (runtime) this.emit({ type: "accountInfo", data: buildAccountInfoFrom(this.accountBillingDeps(runtime)) });
+  }
+
+  /** The usage monitor and the subscription the chat's model bills; none for an API key, a custom provider, a disposed session or a retired runtime. */
+  private subscriptionUsage(): SubscriptionUsage | undefined {
+    const runtime = this._disposed ? null : PiRuntime.unlessRetired();
+    const provider = runtime ? subscriptionProvider(this.accountBillingDeps(runtime)) : undefined;
+    return runtime && provider ? { usage: runtime.usage, provider } : undefined;
   }
 
   /**
-   * Publish the account chip to the webview. Its five inputs change independently of any turn, so every
-   * mutation of one calls this and nothing else republishes. Rebuilt on each call, never cached.
+   * A rate limit's outcome names the full window a bounded usage refresh finds (D55), so only this report
+   * waits: the session state went idle already. The listener is read after the wait, and dispose clears it,
+   * so a session disposed meanwhile raises nothing.
    */
-  publishAccountInfo(): void {
-    this.emit({ type: "accountInfo", data: this.buildAccountInfo() });
+  private async settleOnRateLimit(outcome: Extract<TurnOutcome, { kind: "rateLimit" }>, subscription: SubscriptionUsage | undefined): Promise<void> {
+    const window = subscription ? await subscription.usage.fullWindow(subscription.provider, this.modelValue) : undefined;
+    this.turnSettledListener?.({ ...outcome, ...window });
   }
 
   /**
@@ -4053,18 +4217,32 @@ export class PiSession implements ChatSession {
    */
   private setTurnState(...[turn, outcome]: TurnChange): void {
     const settled = this.turnState === "running" && turn === "idle";
+    if (turn === "running" && this.turnState !== "running") this.turnStartedAt = Date.now();
     this.turnState = turn;
     this.publishSessionState();
     if (turn !== "idle") return;
     this.announceIfNewlyStored();
-    if (settled) this.turnSettledListener?.(outcome);
+    if (!settled) return;
+    const subscription = this.subscriptionUsage();
+    if (outcome.kind === "rateLimit") {
+      void this.settleOnRateLimit(outcome, subscription);
+      return;
+    }
+    this.turnSettledListener?.(outcome.kind === "completed" ? { kind: "completed", durationMs: Date.now() - this.turnStartedAt } : outcome);
+    subscription?.usage.refreshAfterTurn();
   }
 
-  /** The kinds of the prompts `PermissionState` and `WebviewExtensionUIContext` still hold, sorted. */
-  private pendingKinds(): PendingKind[] {
-    const kinds = this.options.permissionHandler.pendingPromptKinds();
-    if (this.uiContext.hasPendingDialogs()) kinds.add("input");
-    return [...kinds].sort();
+  /** The prompts `PermissionState` and `WebviewExtensionUIContext` still hold, in that order. */
+  private raisedPrompts(): RaisedPrompt[] {
+    const dialogs = this.uiContext.pendingDialogs().map((request): RaisedPrompt => ({ id: request.requestId, kind: "input", request }));
+    return [...this.options.permissionHandler.pendingPrompts(), ...dialogs];
+  }
+
+  private promptOwners(): PromptOwners {
+    return {
+      teamMember: (agentId) => this.options.teamService?.memberOf(agentId) ?? null,
+      subagentOfToolCall: (toolCallId) => this.subagentManager?.agentIdOfToolCall(toolCallId),
+    };
   }
 
   /** A subagent or team run that has not settled; their owners call the publisher as one starts or settles. */
@@ -4076,24 +4254,30 @@ export class PiSession implements ChatSession {
    * Publish the session state to the webview and the panel's activity. The inputs, the turn lifecycle,
    * the prompt maps owned by `PermissionState` and `WebviewExtensionUIContext`, the subagent and team
    * runs and the stored session id, change independently of each other, so every mutation of one calls
-   * this and nothing else emits `sessionStateChanged` or reports activity. Rebuilt on each call, never cached.
+   * this and nothing else emits `sessionStateChanged` or reports activity. Rebuilt on each call; only a
+   * pending prompt's summary is kept, for as long as that prompt is raised.
    */
   private publishSessionState(): void {
     const sessionId = this.runtime?.session.sessionId ?? "";
-    const pendingKinds = this.pendingKinds();
+    // One read for both, so the kinds are exactly the kinds of the prompts reported.
+    const raised = this.raisedPrompts();
+    const pendingKinds = [...new Set(raised.map((prompt) => prompt.kind))].sort();
     const state: SessionState = deriveSessionState(this.turnState, pendingKinds.length > 0);
-    const key = `${state}:${sessionId}`;
+    // A prompt's owner never changes while it is pending, so its id stands for the whole entry.
+    const key = `${state}:${sessionId}:${raised.map((prompt) => prompt.id).join(",")}`;
     if (this.lastSessionState !== key) {
       this.lastSessionState = key;
-      this.emit({ type: "sessionStateChanged", state, sessionId });
+      this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised) });
     }
     const listener = this.activityListener;
     if (!listener) return;
     const background = this.backgroundRunning();
-    const activityKey = `${state}:${pendingKinds.join(",")}:${background}:${this.storedSessionId ?? ""}`;
+    // Keyed on the prompt ids, so a new prompt of a kind already pending still reports.
+    const activityKey = `${state}:${raised.map((prompt) => prompt.id).join(",")}:${background}:${this.storedSessionId ?? ""}`;
     if (this.lastActivityKey === activityKey) return;
     this.lastActivityKey = activityKey;
-    listener({ state, pendingKinds, background });
+    const pendingPrompts = this.describePrompts(raised);
+    listener({ state, pendingKinds, pendingPrompts, background });
   }
 
   /** Reports the current activity at once, then every change; null stops the reports. */

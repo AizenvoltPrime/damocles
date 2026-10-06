@@ -511,6 +511,24 @@ describe('Shift+Tab in the composer', () => {
   });
 });
 
+/** A mode or YOLO change re-checks the open approval prompts, which exist only while a turn runs. */
+describe('mode and YOLO controls while a turn runs', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('cycles the mode from Shift+Tab and the mode button, and toggles YOLO', async () => {
+    const wrapper = composer();
+    await wrapper.setProps({ isProcessing: true });
+
+    await wrapper.get('textarea').trigger('keydown', { key: 'Tab', shiftKey: true });
+    await wrapper.get('[data-testid="composer-mode"]').trigger('click');
+    await wrapper.get('[data-testid="composer-yolo"]').trigger('click');
+
+    expect(wrapper.emitted('changeMode')).toEqual([['acceptEdits'], ['acceptEdits']]);
+    expect(wrapper.emitted('toggleDangerouslySkipPermissions')).toHaveLength(1);
+    wrapper.unmount();
+  });
+});
+
 describe('Escape while a turn runs', () => {
   it('stops the run, except when pressed inside a dock prompt card or a confirmation, which keep it', async () => {
     const wrapper = composer();

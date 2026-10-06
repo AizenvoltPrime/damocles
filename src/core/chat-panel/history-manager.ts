@@ -59,15 +59,15 @@ export class HistoryManager {
 
     // The pi tree-store loader emits sessionCleared itself. The fork-prefix path is unused
     // on pi — a forked panel resumes an already-truncated branched session file (US-013c).
-    const rewindableIds = await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal, this.modelReasons?.());
+    const rewindableIds = await loadPiSessionHistory(cwd, sessionId, (m) => this.postMessage(host, m), ctrl.signal, this.modelReasons?.(), session.fileCheckpoints);
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
     // The replay contract carries no account state, and a restored panel may never run a turn.
     session.publishAccountInfo();
     return rewindableIds;
   }
 
-  async extractRewindHistory(cwd: string, sessionId: string): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
-    return getPiRewindHistory(cwd, sessionId, this.maxCheckpointFileSizeBytes());
+  async extractRewindHistory(cwd: string, sessionId: string, fileCheckpoints: boolean): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
+    return getPiRewindHistory(cwd, sessionId, this.maxCheckpointFileSizeBytes(), fileCheckpoints);
   }
 
   /** The full list of files a checkpoint or restore point left out, read from its manifest without the folder lock. */

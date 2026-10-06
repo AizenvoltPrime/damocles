@@ -8,7 +8,7 @@ import { useDiffStore } from '@/stores/useDiffStore';
 import { useEditorStore } from '@/stores/useEditorStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
-import type { PermissionUpdate } from '@shared/types/permissions';
+import type { PermissionUpdate, PromptOwner } from '@shared/types/permissions';
 import { i18n } from '@/i18n';
 
 /**
@@ -57,13 +57,14 @@ describe('the numbered permission card', () => {
     expect(wrapper.emitted('approve')).toEqual([[true], [true, { acceptAll: true }], [false]]);
   });
 
-  it('numbers the options in order, so a suggested rule shifts No to 4', async () => {
+  it('numbers the options in order, so a suggested rule shifts No to 3 on a shell prompt', async () => {
     const wrapper = card({ toolName: 'Bash', command: 'ls', patch: undefined, suggestions: [SUGGESTION] });
 
-    press('4');
+    press('3');
 
     expect(wrapper.emitted('approve')).toEqual([[false]]);
-    expect(wrapper.get('[data-testid="permission-option-always-allow"]').text()).toContain('3');
+    expect(wrapper.get('[data-testid="permission-option-always-allow"]').text()).toContain('2');
+    expect(wrapper.get('[data-testid="permission-option-always-deny"]').text()).toContain('4');
   });
 
   it('ignores digits typed into the composer', () => {
@@ -187,6 +188,39 @@ describe('the numbered permission card', () => {
     await input.trigger('keydown', { key: 'Enter' });
 
     expect(wrapper.emitted('approve')).toEqual([[false, { customMessage: 'use a branch' }]]);
+  });
+});
+
+describe('Yes, and accept all edits this session', () => {
+  const TEAM: PromptOwner = { kind: 'team', teamId: 'team-1', agentId: 'agent-1', teamTitle: 'Lockout', agentName: 'Mira' };
+  const SUBAGENT: PromptOwner = { kind: 'subagent', agentId: 'sub-1' };
+  const optionValues = (wrapper: VueWrapper) => wrapper.findAll('[role="option"]').map((o) => o.attributes('data-testid')!.replace('permission-option-', ''));
+
+  it.each(['Edit', 'Write', 'GenerateImage'])('is offered on a %s prompt from the chat, a subagent or a team agent in default mode, as option 2', (toolName) => {
+    for (const owner of [{ kind: 'main' } as const, SUBAGENT, TEAM]) {
+      expect(optionValues(card({ toolName, owner }))).toEqual(['yes', 'yes-accept-all', 'no']);
+    }
+  });
+
+  it.each(['Bash', 'PowerShell'])('is never offered on a %s prompt, whose 2 then answers No', (toolName) => {
+    const wrapper = card({ toolName, command: 'ls', patch: undefined, owner: TEAM });
+
+    expect(optionValues(wrapper)).toEqual(['yes', 'no']);
+    expect(wrapper.get('[data-testid="permission-option-no"]').attributes('aria-keyshortcuts')).toBe('2 Escape');
+    press('2');
+    expect(wrapper.emitted('approve')).toEqual([[false]]);
+  });
+
+  it('is never offered on a tool with no view of its own, which acceptEdits never approves', () => {
+    expect(optionValues(card({ toolName: 'Read', toolInput: { file_path: '.env' }, patch: undefined }))).toEqual(['yes', 'no']);
+  });
+
+  it.each(['plan', 'acceptEdits'] as const)("is not offered on any agent's edit in %s mode, where switching the chat to acceptEdits would leave plan mode or change nothing", (mode) => {
+    useSettingsStore().setPermissionMode(mode);
+
+    for (const owner of [{ kind: 'main' } as const, SUBAGENT, TEAM]) {
+      expect(optionValues(card({ owner }))).toEqual(['yes', 'no']);
+    }
   });
 });
 

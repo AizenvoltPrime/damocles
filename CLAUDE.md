@@ -12,7 +12,7 @@ npm run build:desktop # Build the Electron main + panel, shell, pane and overlay
 npm run dev:desktop   # Fetch assets and the Electron binary, build webview + desktop, then launch the app (accepts --user-data-dir <path>)
 npm run test:desktop  # Same setup and build, then run the Playwright Electron suite (playwright.desktop.config.ts)
 node scripts/test-desktop-wsl.mjs --distro Ubuntu-24.04 [specs...]  # The desktop suite on Linux, synced into WSL and run there
-npm run dist          # Build and package the desktop app for this OS into dist-desktop/ (never publishes)
+npm run dist          # Build and package the desktop app for this OS into dist-desktop/ (never publishes; macOS needs Xcode 26+ for the icon)
 npm run dist:linux-wsl -- --distro Ubuntu-24.04  # Linux deb + rpm from Windows, built in WSL
 DAMOCLES_E2E_PACKAGED_APP=<path to built app> npm run test:desktop:packaged  # e2e subset against a packaged app
 npm run dev           # Watch mode
@@ -21,6 +21,7 @@ npm run lint          # Lint
 npm test              # Vitest (whole repo)
 npm run package       # Package for distribution
 npm run package:linux-wsl -- --target linux-x64 --distro Ubuntu  # Linux VSIX from Windows, built in WSL
+npm run generate:icons     # Regenerate resources/icon.ico and build/icon.icon's artwork from resources/icon.png (commit the output)
 npm run generate:profiles  # Regenerate the team agent-profile catalog (commit the output)
 npm run generate:reference-words  # Regenerate the memory gate's English and software word lists and their stems (commit the output)
 npm run sync:profiles      # Report upstream agency-agents diffs (--apply to copy)
@@ -42,7 +43,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 - **Seam:** `PiSession` is the only producer of session messages in the webview contract (`ExtensionToWebviewMessage` in `src/shared/types/messages.ts`). Interface: `src/core/chat-session.ts`. Cross-session views (`/usage`, `/stats`) post from their router handlers; see `docs/invariants.md`.
 - **Source layout:** `src/core` is host-neutral and never imports `vscode` or `electron` (eslint and `tsconfig.core.json` enforce both); `src/platform` holds the host service interfaces core uses; `src/vscode` implements them for VS Code and holds the entry point `extension.ts`; `src/desktop` is the Electron app (`main/`: entry `index.ts`, the window, chat views and overlay view, chat retention, `app://` protocol, platform implementations; `preload/`: the panel bridge `window.damoclesBridge`, the shell bridge `window.damoclesShell`, the browser pane bridge `window.damoclesPane` and the overlay bridge `window.damoclesOverlay`; `shell/`: the window's Vue shell renderer (title bar, Projects and Chats sidebar), the overlay renderer and the browser pane renderer, which never import `electron`), the only place `electron` may be imported.
-- **Desktop:** esbuild → `dist/desktop/main.js` + `preload-panel.js` + `preload-shell.js` + `preload-pane.js` + `preload-overlay.js` (CJS); Vite (`vite.shell.config.ts`) → `dist/desktop-shell/` (shell, pane and overlay pages), which also receives the desktop fonts (`fonts/`). Externals: `scripts/desktop-externals.mjs`. The window is frameless; the sidebar's Chats list switches chats (no tab strip), each loaded chat's view loads the same `dist/webview` app over `app://damocles`, and menus, dialogs and toasts render in the top-most overlay view; browser pages live in a side pane beside their chat; see `docs/invariants.md` for the renderer security posture.
+- **Desktop:** esbuild → `dist/desktop/main.js` + `preload-panel.js` + `preload-shell.js` + `preload-pane.js` + `preload-overlay.js` (CJS); Vite (`vite.shell.config.ts`) → `dist/desktop-shell/` (shell, pane and overlay pages), which also receives the desktop fonts (`fonts/`). Externals: `scripts/desktop-externals.mjs`. The window is frameless; the sidebar's Chats list switches chats (no tab strip), each loaded chat's view loads the same `dist/webview` app over `app://damocles`, menus and dialogs render in the top-most overlay view and toasts only in the desktop popup window; browser pages live in a side pane beside their chat; see `docs/invariants.md` for the renderer security posture.
 - **Extension:** esbuild → `dist/extension.js` (CJS). Externals: `scripts/extension-externals.mjs` (single source; `scripts/sync-vscodeignore.mjs` derives the VSIX allowlist from it).
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
@@ -53,7 +54,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | --- | --- |
 | `pi-session/` | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys, subscription plugin) + one `FolderRuntime` per workspace folder (pi services, loader, hooks, registries, project MCP). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. `agent-records.ts` builds and id-checks every subagent/team data path under the parent session's folder. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
 | `chat-panel/` | Panel, session manager, settings, message routing, history |
-| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
+| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill) |
 | `memory/` | Kind/scope memory + fact graph, auto-extraction, relevance-gated delta injection (`injection/`), manual quality audit (`audit.ts`), `node:sqlite`/FTS5 (WAL) |
 | `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default) |
 | `usage-stats/` | `/stats`: sub-call ledger, `node:sqlite` spend index built by a worker thread from pi session files, `UsageStatsService` |
@@ -92,7 +93,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`**. Rea
 - A conversation is live in at most one panel of one process (`claimStoredSession` plus the cross-process lease). Session-keyed registries on `PiRuntime` and `FolderRuntime` unregister only the caller's own entry, or a closing panel strips a live panel's gate.
 - Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`), and a writer resuming after an `await` re-checks liveness. Never sequence a delete off a promise that resolves on a failed replacement.
 - Damocles READS other tools' config (`.claude`, `.codex`, `.pi`, `.mcp.json`) and WRITES only under `.damocles`. Every repository-authored input (instructions, skills, hooks, `.pi/`, MCP, permission rules) applies only in a trusted window and takes effect on trust grant with no reload.
-- Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`, which writes pi's `customPrompt` plus one named section per toggleable piece. Returning `systemPrompt` instead sets `forceSystemPrompt` and drops every section.
+- Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan version = core's stamp on the `ExitPlanMode` result (`plan-version.ts`; the webview never counts plans); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`, which writes pi's `customPrompt` plus one named section per toggleable piece. Returning `systemPrompt` instead sets `forceSystemPrompt` and drops every section.
 - The pi extension is process-global and outlives any session: hold no instance-wide session state, route each dispatch on `ctx.sessionManager.getSessionId()`, and never await checkpoint git work in a handler (queue it).
 - Memory injection is a delta whose state comes only from each injection message's `details`. Neutralize every emitted tag name in stored text, and never register a `context` handler or rewrite a past injection, which breaks the prompt-cache prefix.
 - An `agent_before_settle` handler returns `{ entries: [...event.entries, draft] }`; a bare `[draft]` discards every other handler's entries. Hold a turn open with `continue: true`, never by calling `session.prompt()` from a settle handler.

@@ -36,7 +36,7 @@ describe('proposal diff view', () => {
   it('names the owning panel and the permission prompt it belongs to', async () => {
     const { handler, platform } = handlerFor('host-7');
     void requestEdit(handler, 't1');
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     expect(platform.editor.diffs[0]?.request).toMatchObject({ purpose: 'proposal', panelId: 'host-7', approvalId: 't1' });
   });
@@ -44,7 +44,7 @@ describe('proposal diff view', () => {
   it('opens without taking focus from the chat', async () => {
     const { handler, platform } = handlerFor('host-1');
     void requestEdit(handler, 't1');
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     expect(platform.editor.diffs[0]?.request.preserveFocus).toBe(true);
   });
@@ -55,7 +55,7 @@ describe('proposal diff view', () => {
   ])('closes when the user decides (%s)', async (_label, approved) => {
     const { handler, platform } = handlerFor('host-1');
     const decision = requestEdit(handler, 't1');
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     await handler.resolveApproval('t1', approved);
 
@@ -67,7 +67,7 @@ describe('proposal diff view', () => {
     const { handler, platform } = handlerFor('host-1');
     const controller = new AbortController();
     const decision = requestEdit(handler, 't1', controller.signal);
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     controller.abort();
     await decision;
@@ -78,7 +78,7 @@ describe('proposal diff view', () => {
   it('closes when the panel is disposed', async () => {
     const { handler, platform } = handlerFor('host-1');
     void requestEdit(handler, 't1');
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     await handler.dispose();
 
@@ -132,7 +132,7 @@ describe('the approval a file change raises', () => {
     const messages: ExtensionToWebviewMessage[] = [];
     handler.setPostMessage((msg) => messages.push(msg));
     void handler.canUseTool(toolName, input(file), { signal: new AbortController().signal, toolUseID: 't1', parentToolUseId: null });
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
     return { request: messages.find((m) => m.type === 'requestPermission'), platform };
   }
 

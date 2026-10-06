@@ -2,15 +2,92 @@
 /* Tailwind emits only the utilities it finds in scanned files, and the overlay renders webview components outside this directory. */
 @source "../../../webview/components";
 
-/* The overlay view lies over the whole window; only its popups and toasts paint, the rest shows the views beneath. */
+/* The overlay view lies over the whole window and the popup window over the desktop; only their popups and toasts paint. */
 html,
 body {
   background-color: transparent;
 }
 
-/* The reference's toast entrance; the global reduced-motion rules shorten it to nothing. */
-.overlay-toast-enter {
+/*
+ * Toasts enter with the reference's nt-in and leave sliding right; a leaving toast leaves the flow where it stands
+ * (ToastStack sets its offsets), so its siblings glide into place. The reduced-motion rules shorten all three to nothing.
+ */
+.toast-enter-active {
   animation: nt-in 0.34s var(--ease-out) both;
+}
+
+.toast-leave-active {
+  position: absolute;
+  pointer-events: none;
+  animation: nt-out 0.24s ease-in both;
+}
+
+.toast-move {
+  transition: transform 0.32s var(--ease-out);
+}
+
+/* The life bar drains by transform only and stops while the toast is hovered or holds focus, as main pauses its timer. */
+.toast-life {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  opacity: 0.6;
+  transform-origin: left;
+  animation: nt-life linear both;
+}
+
+.toast-card:hover .toast-life,
+.toast-card:focus-within .toast-life {
+  animation-play-state: paused;
+}
+
+/* Reduced motion cuts the drain to nothing, which would draw the bar empty from the start; main still times the toast. */
+@media (prefers-reduced-motion: reduce) {
+  .toast-life {
+    display: none;
+  }
+}
+
+[data-reduced-motion] .toast-life {
+  display: none;
+}
+
+/* D41 dialogs: the panel zooms in over a fading scrim, and both play their exit before the answer reaches main. */
+.overlay-dialog {
+  animation: d-fade 0.2s var(--ease-out) both;
+}
+
+.overlay-dialog-panel {
+  animation: d-zoom 0.26s var(--ease-out) both;
+}
+
+.overlay-pop-leave-active.overlay-dialog {
+  transition: none;
+  animation: o-fade-out 0.18s ease-in both;
+}
+
+.overlay-pop-leave-active.overlay-dialog .overlay-dialog-panel {
+  transition: none;
+  animation: d-zoom-out 0.18s ease-in both;
+}
+
+/* The bell's center grows from under the bell, its top-right corner, and shrinks back there. */
+.notification-center {
+  transform-origin: top right;
+  animation: d-pop 0.16s var(--ease-out) both;
+}
+
+.overlay-pop-leave-active > .notification-center {
+  transition: none;
+  animation: d-pop-out 0.12s ease-in both;
+}
+
+/* A center row arriving with the open center rises in, a step after the one above it; virtualized rows never animate. */
+.center-row-arrive {
+  animation: o-up 0.22s var(--ease-out) both;
+  animation-delay: calc(var(--row-index, 0) * 25ms);
 }
 
 /* A popup animates out before its answer reaches main, which hides the overlay on it (plan section 7). */

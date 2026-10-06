@@ -27,8 +27,6 @@ import McpRenamedRulesBanner from "./components/McpRenamedRulesBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
-import TaskListCard from "./components/TaskListCard.vue";
-import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
 
@@ -97,7 +95,6 @@ import {
   useDiffStore,
   useMemoryStore,
 } from "./stores";
-import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useBindPlanStore } from "./stores/useBindPlanStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
@@ -145,7 +142,6 @@ const {
   rewindCanFork,
   selectedRewindItem,
   rewindMetadataLoading,
-  tasksPanelCollapsed,
   authFailureMessage,
 } = storeToRefs(uiStore);
 
@@ -184,8 +180,6 @@ const {
   isAwaitingUserAction,
 } = storeToRefs(sessionStore);
 
-const taskStore = useTaskStore();
-const { tasks } = storeToRefs(taskStore);
 
 const permissionStore = usePermissionStore();
 const {
@@ -394,8 +388,7 @@ function handleSteer({ agentId, message, images }: SteerRequest, requestId: stri
 }
 
 function handleOpenSubscriptionUsage() {
-  subscriptionUsageStore.openOverlay();
-  postMessage({ type: "requestSubscriptionUsage" });
+  subscriptionUsageStore.requestOverlay();
 }
 
 function tryInterceptUsage(content: string | UserContentBlock[]): boolean {
@@ -716,9 +709,8 @@ function handlePermissionApproval(
   approved: boolean,
   options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] },
 ) {
-  const permission = permissionStore.pendingPermissions[toolUseId];
-
-  if (options?.acceptAll && !permission?.parentToolUseId && settingsStore.currentSettings.permissionMode !== "plan") {
+  // Any agent's edit prompt switches the whole chat, so every agent's later edits auto-approve.
+  if (options?.acceptAll) {
     handleSetPermissionMode("acceptEdits");
   }
 
@@ -733,8 +725,6 @@ function handlePermissionApproval(
     toolUseId,
     approved,
     ...(options?.customMessage !== undefined && { customMessage: options.customMessage }),
-    ...(options?.acceptAll !== undefined && { acceptAll: options.acceptAll }),
-    ...(permission?.parentToolUseId ? { parentToolUseId: permission.parentToolUseId } : {}),
     ...(updatedPermissions ? { updatedPermissions } : {}),
   });
   permissionStore.removePermission(toolUseId);
@@ -1008,7 +998,7 @@ function handleSuggestion(prompt: string) {
       </Transition>
     </div>
 
-    <!-- The bottom dock, top to bottom as in Chat Panel.dc.html: banners, prompts, plan banner, tasks, status row, status strip, composer. -->
+    <!-- The bottom dock, top to bottom as in Chat Panel.dc.html: banners, prompts, plan banner, status row, status strip, composer. -->
     <div
       class="shrink-0 pb-3.5 pt-2"
       data-testid="chat-dock"
@@ -1064,6 +1054,7 @@ function handleSuggestion(prompt: string) {
             :patch="currentPermission.patch"
             :patch-omitted="currentPermission.patchOmitted"
             :command="currentPermission.command"
+            :owner="currentPermission.owner"
             :agent-description="currentPermission.agentDescription"
             :suggestions="currentPermission.suggestions"
             :blocked-path="currentPermission.blockedPath"
@@ -1073,8 +1064,6 @@ function handleSuggestion(prompt: string) {
             @approve="(approved, options) => currentPermission && handlePermissionApproval(currentPermission.toolUseId, approved, options)"
           />
         </Transition>
-
-        <TeamPermissionPrompt />
 
         <!-- Question Prompt for AskUserQuestion tool -->
         <Transition name="t-up">
@@ -1114,16 +1103,6 @@ function handleSuggestion(prompt: string) {
         <ElicitationPrompt />
 
         <PlanReadyBanner />
-
-        <!-- Persistent Task List Panel (always visible when tasks exist) -->
-        <Transition name="t-up">
-          <TaskListCard
-            v-if="tasks.length > 0"
-            :tasks="tasks"
-            :is-collapsed="tasksPanelCollapsed"
-            @update:is-collapsed="uiStore.setTasksPanelCollapsed"
-          />
-        </Transition>
 
         <StatusBar
           :is-processing="isProcessing"

@@ -146,13 +146,10 @@ test('sidebar edits: rename, tag and delete change the session files for loaded 
     await expect.poll(() => focusedMenuItem(overlay)).toBe('delete');
     await overlay.keyboard.press('ArrowUp');
     await expect.poll(() => focusedMenuItem(overlay)).toBe('tag');
-    // Escape closes it, shrinks the overlay out of full mode (to hidden, or to the toast area while a toast shows) and gives focus back to the sidebar.
+    // Escape closes it, hides the overlay and gives focus back to the sidebar.
     await overlay.keyboard.press('Escape');
     await expect(overlayMenu(overlay)).toHaveCount(0);
-    await expect.poll(async () => {
-      const after = await overlayViewState(app);
-      return after.visible && after.bounds.width === after.content.width;
-    }).toBe(false);
+    await expect.poll(async () => (await overlayViewState(app)).visible).toBe(false);
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.webContents.isFocused())).toBe(true);
     await expect(chatList(shell)).toBeFocused();
 

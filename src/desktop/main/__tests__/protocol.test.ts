@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ protocol: { registerSchemesAsPrivileged: vi.fn(), handle: vi.fn() } }));
 
 import { protocol } from 'electron';
-import { appResourceUri, handleAppProtocol, mimeTypeFor, panelPageUrl, resolveAppRequest } from '../protocol';
+import { appResourceUri, handleAppProtocol, mimeTypeFor, NOTIFIER_PAGE_URL, panelPageUrl, resolveAppRequest } from '../protocol';
 
 let root: string;
 
@@ -82,6 +82,11 @@ describe('resolveAppRequest', () => {
     expect(target).toMatchObject({ kind: 'file', filePath: path.join(root, 'dist', 'webview', '%2e%2e', 'package.json') });
   });
 
+  it('maps the desktop popup page to its generated page', () => {
+    expect(resolveAppRequest(NOTIFIER_PAGE_URL, root)).toEqual({ kind: 'notifier' });
+    expect(resolveAppRequest('app://damocles/notifier/other.html', root)).toBeUndefined();
+  });
+
   it('maps a panel page to its panel id', () => {
     expect(resolveAppRequest(panelPageUrl('0f8a-42'), root)).toEqual({ kind: 'panel', panelId: '0f8a-42' });
     expect(resolveAppRequest('app://damocles/panel/../index.html', root)).toBeUndefined();
@@ -121,7 +126,7 @@ describe('handleAppProtocol', () => {
   // Monaco's workers load by URL from dist/webview/assets, and a worker served with a non-script type fails under nosniff.
   async function fetchApp(url: string): Promise<Response> {
     vi.mocked(protocol.handle).mockClear();
-    handleAppProtocol(root, { panel: () => undefined, shell: () => '', pane: () => '', overlay: () => '' });
+    handleAppProtocol(root, { panel: () => undefined, shell: () => '', pane: () => '', overlay: () => '', notifier: () => '' });
     const handler = vi.mocked(protocol.handle).mock.calls[0]?.[1];
     if (!handler) throw new Error('no app:// handler registered');
     return handler(new Request(url)) as Promise<Response>;

@@ -785,6 +785,21 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(out.find((m) => m.type === 'toolFailed')).not.toHaveProperty('imageCount');
     expect(JSON.stringify(out)).not.toContain('AAAA');
   });
+
+  it('carries the details of an error result, as a reload does, and nothing for a thrown error\'s empty details', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-details');
+    for (const id of ['plan', 'thrown']) listener!({ type: 'tool_execution_start', toolCallId: id, toolName: 'ExitPlanMode', args: {} });
+    listener!({ type: 'tool_execution_end', toolCallId: 'plan', toolName: 'ExitPlanMode', result: { content: [{ type: 'text', text: 'revise' }], details: { planVersion: 3 } }, isError: true });
+    listener!({ type: 'tool_execution_end', toolCallId: 'thrown', toolName: 'ExitPlanMode', result: { content: [{ type: 'text', text: 'boom' }], details: {} }, isError: true });
+
+    expect(out.filter((m) => m.type === 'toolFailed').map((m) => m.toolUseId)).toEqual(['plan', 'thrown']);
+    expect(out.filter((m) => m.type === 'toolMetadata')).toEqual([{ type: 'toolMetadata', toolUseId: 'plan', metadata: { planVersion: 3 } }]);
+  });
 });
 
 describe('PiStreamAdapter refusals (US-023)', () => {

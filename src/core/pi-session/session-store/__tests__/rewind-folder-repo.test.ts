@@ -155,6 +155,14 @@ describe('rewind history, file content and delete across legacy and folder check
     expect(byId.get(u3)).toMatchObject({ filesAffected: 0, notRewindable: { reason: 'baseline-timeout', params: { tool: 'Edit', waitSeconds: 30 } } });
   });
 
+  it('with no file checkpoints, every prompt is a conversation-only anchor whatever records the file holds', async () => {
+    const { items, restorePoints } = await getPiRewindHistory(cwd, sm.getSessionId(), CAP, false);
+    expect(restorePoints).toEqual([]);
+    expect(items.map((i) => i.messageId)).toEqual([u3, u2, u1]);
+    for (const item of items) expect(item).toMatchObject({ kind: 'prompt', filesAffected: 0, notRewindable: { reason: 'no-project', params: {} } });
+    expect(items.every((i) => i.files === undefined && i.skipped === undefined)).toBe(true);
+  });
+
   it('AC5: file content before a turn comes from the repo each entry names', async () => {
     expect(await getPiFileCheckpointContent(cwd, sm.getSessionId(), u1, path.join(cwd, 'legacy.txt'))).toBe('legacy before\n');
     expect(await getPiFileCheckpointContent(cwd, sm.getSessionId(), u2, path.join(cwd, 'folder.txt'))).toBe('folder before\n');

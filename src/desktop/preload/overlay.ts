@@ -6,11 +6,13 @@ import {
   type DamoclesOverlayApi,
   type OverlayPrefs,
   type OverlayPrefWrite,
+  type OverlayRasterRequest,
   type OverlayRequest,
   type OverlaySettingsAttached,
   type OverlayState,
   type OverlayToast,
 } from './overlay-channels';
+import type { ChimeTone, NotificationCenterState } from './notifications';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { SettingsTarget } from '../../shared/settings-sections';
 
@@ -47,13 +49,29 @@ const api: DamoclesOverlayApi = {
   resolveToast: (id, action) => {
     ipcRenderer.send(OVERLAY_CHANNELS.resolveToast, id, action);
   },
-  reportToastArea: (size) => {
-    ipcRenderer.send(OVERLAY_CHANNELS.toastArea, { width: size.width, height: size.height });
+  reportToastArea: (area) => {
+    const parts = area.parts.map((part) => ({ x: part.x, y: part.y, width: part.width, height: part.height }));
+    ipcRenderer.send(OVERLAY_CHANNELS.toastArea, { width: area.width, height: area.height, parts });
+  },
+  reportToastPointer: (over) => {
+    ipcRenderer.send(OVERLAY_CHANNELS.toastsPointer, over);
   },
   onToastsFocus: (listener) => subscribe<unknown>(OVERLAY_CHANNELS.toastsFocus, () => listener()),
   leaveToasts: () => {
     ipcRenderer.send(OVERLAY_CHANNELS.toastsLeave);
   },
+  holdToast: (id, held) => {
+    ipcRenderer.send(OVERLAY_CHANNELS.toastHold, id, held);
+  },
+  getNotifications: () => ipcRenderer.invoke(OVERLAY_CHANNELS.notificationsGet) as Promise<NotificationCenterState>,
+  onNotifications: (listener) => subscribe<NotificationCenterState>(OVERLAY_CHANNELS.notificationsState, listener),
+  clearNotifications: () => ipcRenderer.invoke(OVERLAY_CHANNELS.notificationsClear) as Promise<void>,
+  setDoNotDisturb: (on) => ipcRenderer.invoke(OVERLAY_CHANNELS.notificationsDnd, on) as Promise<void>,
+  onRasterize: (listener) => subscribe<OverlayRasterRequest>(OVERLAY_CHANNELS.rasterize, listener),
+  rasterized: (id, png) => {
+    ipcRenderer.send(OVERLAY_CHANNELS.rasterized, id, png);
+  },
+  onChime: (listener) => subscribe<ChimeTone>(OVERLAY_CHANNELS.chime, listener),
   settingsSend: (generation, message) => {
     ipcRenderer.send(OVERLAY_CHANNELS.settingsSend, { generation, message });
   },

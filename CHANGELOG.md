@@ -2,6 +2,40 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [3.4.0] - 2026-10-05
+
+### Added
+
+- **Desktop: notifications reach you outside the app, like a chat app's.** Every notice shows as a card at the bottom-right of the screen, above other apps, whether or not Damocles is in front, and it never takes focus from what you are typing. Only the cards take clicks; the space around them passes clicks to the app underneath. F6 reaches the cards and Escape goes back.
+  - **What notifies you:** a prompt waiting for you (an approval, a plan, a question or a team member's review), a chat that finished while you looked elsewhere, a chat paused by an error or a rate limit, a budget stop, and a subscription window crossing 80% or 95% of its limit. A rate limit on a subscription names the limit that was reached, such as the 5-hour session or the weekly limit, and when it resets. A usage warning shows once per window reset, even across restarts, and each prompt notifies once; answering it in the app removes its card.
+  - **Actions:** Review and Answer select the chat, loading it if needed, and focus its prompt; Review plan opens the plan; Open team opens that team; Open chat selects the chat; View usage opens Subscription usage.
+  - **The bell** in the title bar lists the run's notifications with unread dots, Clear all and Do not disturb. Do not disturb silences the cards, sound and flash for prompts and chats, while the app's own notices still show, and the list keeps collecting.
+  - **Taskbar and sound:** the count of new notifications, cleared by opening the bell, shows on the taskbar button (the dock or launcher badge on macOS and Linux), and a prompt that waits for you flashes the button while Damocles is in the background. Each card plays a short chime, which the "Play a sound with desktop pop-ups" switch in Settings › Application turns off.
+- **Desktop: the app's own questions open as a dialog in the window's theme.** Trusting a folder, switching a chat's folder, the reload prompt after a crash and other questions no longer open the operating system's message box, which ignored the app's theme. The trust dialog focuses Don't Trust first, so a stray Enter never grants trust. If the dialog cannot show, the question falls back to the operating system's box.
+
+### Changed
+
+- **The chat header no longer shows the account chip.** Subscription usage (`/usage`) shows each provider's plan, and for Claude whether extra usage is on.
+- **"Yes, and accept all edits this session" means the same on every prompt.** It shows only on file edit prompts in Ask before edits mode, and it switches the whole chat to Accept edits, including when a subagent or team agent asked. On a subagent's or team agent's prompt it used to approve everything that one agent did, shell commands included, without changing the mode. Shell commands and other tools no longer offer it.
+- **You can change the mode and YOLO while the agent works, and doing so settles prompts the new mode would not ask about.** The mode button, Shift+Tab and YOLO were locked during a turn; now a change applies from the agent's next tool call. Edits waiting for approval close as approved when you switch to Accept edits, and every waiting approval closes when you turn YOLO on, while questions, plans and anything a settings ask rule names keep waiting. Switching into or out of Plan mode mid-turn also tells the agent, and any running team agents, at their next step.
+- **A team agent waiting for you shows "Needs you".** Its chip, the team card, the team view and its overlay show it, instead of a running spinner.
+- **App icons are rendered at each size the OS shows them at.** The Windows icon carries every size Windows 11 uses from 100% to 400% scaling, so the taskbar, tray, window and executable each get an exact image. macOS 26 gets an Icon Composer icon, and older macOS releases an icns rendered from it.
+
+### Removed
+
+- **The task list tools and the Tasks card.** The agent no longer has `TaskCreate`, `TaskUpdate`, `TaskList` or `TaskGet`, and the Tasks card above the status bar is gone. Task calls saved in older chats show as ordinary tool cards.
+
+### Fixed
+
+- **A conversation held by a window that is gone opens again.** After a VS Code Remote-SSH reload the server never heard about, the old extension host keeps running with no window for up to three hours and kept its conversations, so the reloaded panel said the conversation was open in another Damocles window and offered no way to open it. A normal reload could do the same while the old window was still closing. Now the window holding a conversation hands it over when asked. A reloaded panel takes its own conversation back by itself, with no notice. Any other open shows the notice with Open here, which stops the turn running there, closes the conversation there and opens it here. A window of an older Damocles release cannot be asked, so it still refuses.
+- **A chat with no project folder no longer makes file-changing tools wait up to 30 seconds.** With no folder open in VS Code, or no project loaded on the desktop, a chat runs in your home folder, and its checkpoint snapshotted the whole profile: it never finished within the wait, and the checkpoint store grew by gigabytes. Such a chat now takes no file checkpoints. Every prompt still rewinds and forks the conversation, and the rewind view says why its file options are off.
+- **Stop works on a shell call before it starts, and on a command you approved.** An approved command showed neither Stop nor its live output until it finished, and a Stop pressed before a command started, while it waited for a checkpoint or for approval, did nothing. Now an approved command shows both, and a Stop before the start ends the call at once: the command never runs, an approval prompt still open for it closes, and the turn goes on with your note as a message. Such a call reads denied rather than Stopped.
+- **A subagent's command waiting for approval no longer shows Stop.** Its card inside the subagent card showed Running with a Stop button while the prompt waited, so a Stop there looked like it cut a running command short, when the command had never started. The card now shows "Needs approval" until you answer, as the chat's own cards do, and Stop with live output once you approve.
+- **A team agent's approval no longer leaves a stuck card in the chat, and its prompt says who asks.** A team agent's tool call that needed approval added a card to the chat's own transcript, which stayed "awaiting approval" after you answered. Core now states which agent owns each prompt, so a team agent's prompt adds no card there, and the prompt names the agent and its team, as a subagent's names the subagent.
+- **A plan the agent writes and presents in one step is no longer refused.** When the agent wrote its plan file and asked for approval in the same step, the approval could run before the file was written and fail with "No plan file found". Damocles now runs the plan-mode tools in order with the rest of the step, so the plan is always written first, and tools the agent runs right after entering plan mode get plan mode's checks.
+- **The pinned prompt no longer hides the conversation in a short window.** With a permission prompt docked in a small window, the pinned copy of your prompt covered most or all of what was left of the message list, a subagent card included. It now steps aside while it would cover more than half the list, unless you expanded it, and comes back when there is room. While it shows, a focused or scrolled-to item lands below it instead of under it.
+- **A plan's version number stays right after a compaction, a reload or a rewind.** The plan card and the plan banner counted the plans still loaded, so after a compaction the count restarted. Damocles now stamps each plan with its number when it is presented and saves it with the plan, counting only plans you were shown; the next plan after a rewind or a fork continues from that branch's highest number. Plans saved by an earlier version show no version label.
+
 ## [3.3.0] - 2026-10-03
 
 ### Added
@@ -4436,6 +4470,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[3.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v3.0.0...v3.1.0

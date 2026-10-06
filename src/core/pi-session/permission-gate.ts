@@ -2,16 +2,19 @@ import * as path from 'path';
 import type { ToolCallEvent, ToolCallEventResult, AgentBeforeSettleEvent, SessionBoundaryDraft } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
 import type { McpToolIdentity } from '../permission-handler/types';
+import type { PermissionBehavior } from '../../shared/types/permissions';
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT } from '../../shared/tool-names';
+import { IGNORED_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL, TOOL_AGENT, LIVE_OUTPUT_TOOLS } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import type { DeferrableSnapshot } from './tools/tool-search-tool';
+import type { ShellCancelRegistry } from './tools/shell-cancel-registry';
+import { describeStoppedBeforeRun } from './tools/cancellable-shell';
 import type { ToolCallHookResult } from './hooks/dispatch';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
@@ -105,6 +108,11 @@ export interface PanelGateContext {
    * land before the parent turn's baseline. Absent means no checkpoints to wait for.
    */
   checkpointBaseline?: CheckpointBaselineGate;
+  /**
+   * This context's handle on the panel's shell cancel store, delivering a note to the agent this gate
+   * serves. The gate opens a call's entry as it starts deciding, so a Stop reaches the call before it runs.
+   */
+  shellCancel: ShellCancelRegistry;
 }
 
 /** What the gate needs of a panel's turn checkpoint. */
@@ -116,12 +124,11 @@ export interface CheckpointBaselineGate {
 }
 
 /**
- * Tools whose interaction is owned by their own `execute()` (they drive the managers directly) plus
- * the task-list tools (`TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet` — in-memory session state, never
- * a real-world side effect, so never prompted). The gate must NOT route these through `canUseTool` —
- * that would double-prompt. `IGNORED_TOOLS` already covers AskUserQuestion/Enter/Exit-PlanMode.
+ * Tools whose interaction is owned by their own `execute()` (they drive the managers directly). The
+ * gate must NOT route these through `canUseTool` — that would double-prompt. `IGNORED_TOOLS` already
+ * covers AskUserQuestion/Enter/Exit-PlanMode.
  */
-const GATE_ALLOW_ALWAYS: ReadonlySet<string> = new Set<string>([...IGNORED_TOOLS, ...TASK_MANAGEMENT_TOOLS, ...SUBAGENT_TOOLS]);
+const GATE_ALLOW_ALWAYS: ReadonlySet<string> = new Set<string>([...IGNORED_TOOLS, ...SUBAGENT_TOOLS]);
 
 /**
  * Ensure a deny reason renders as the existing "denied" card state rather than "failed". The webview
@@ -149,13 +156,19 @@ export function formatPolicyBlockReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline'> & {
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly' | 'mcpToolIdentity' | 'checkpointBaseline' | 'shellCancel'> & {
   /**
    * Apply plan mode's shell rule to this caller in every mode: a command `readonly-shell.ts` proves
    * read-only auto-runs, any other goes through `canUseTool` (prompt, settings rules, YOLO), and write
    * tools are blocked. Set for a subagent whose resolved toolset contains no write tool.
    */
   readOnlyShell?: boolean;
+  /**
+   * Where the gate reports a call `canUseTool` let through as running (`toolPending`), since its prompt
+   * moved the call's card to awaiting approval. Absent for a team agent: its cards take no status from a
+   * prompt, and `toolPending` would land on the chat's own transcript.
+   */
+  postMessage?: (message: ExtensionToWebviewMessage) => void;
 };
 
 /** Tools that start agents, which change files the turn's checkpoint must see first. */
@@ -243,6 +256,27 @@ export async function runPermissionGate(
   parentToolUseId: string | null = null,
   preToolUse?: PreToolUseHookGate,
 ): Promise<ToolCallEventResult | undefined> {
+  // Opened at entry because pi emits `tool_execution_start`, which shows the card's Stop, before this gate runs.
+  const stopSignal = LIVE_OUTPUT_TOOLS.has(mapPiToolName(event.toolName)) ? panel.shellCancel.admit(event.toolCallId, signal) : undefined;
+  try {
+    const result = await decideToolCall(event, panel, signal, parentToolUseId, preToolUse, stopSignal);
+    if (stopSignal && result?.block) panel.shellCancel.releaseAdmitted(event.toolCallId);
+    return result;
+  } catch (err) {
+    if (stopSignal) panel.shellCancel.releaseAdmitted(event.toolCallId);
+    throw err;
+  }
+}
+
+/** `stopSignal` aborts when the user stops this shell call; such a call is blocked, never run and never prompted for. */
+async function decideToolCall(
+  event: ToolCallEvent,
+  panel: GatePermissionContext,
+  signal: AbortSignal | undefined,
+  parentToolUseId: string | null,
+  preToolUse: PreToolUseHookGate | undefined,
+  stopSignal: AbortSignal | undefined,
+): Promise<ToolCallEventResult | undefined> {
   const damoclesName = mapPiToolName(event.toolName);
   const category = toolCategory(damoclesName);
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
@@ -258,20 +292,33 @@ export async function runPermissionGate(
   // A PreToolUse hook's `additionalContext` (when the tool will proceed) is delivered on the matching
   // tool result — pi's `tool_call` return can't inject context. Stamped on any "tool proceeds" path.
   let pendingContext: string | undefined;
+  // Ends the approval prompt and the checkpoint wait on a Stop as well as on a run abort.
+  const callSignal = stopSignal ? AbortSignal.any([signal ?? NEVER_ABORT, stopSignal]) : signal;
+  // The user acted, so this is a user rejection: no policy wording, no `terminate` (the turn goes on),
+  // and never the note, which already reached the agent as a user message.
+  const stoppedByUser = (): ToolCallEventResult | undefined => {
+    if (!stopSignal?.aborted) return undefined;
+    const cancellation = panel.shellCancel.takeCancellation(event.toolCallId) ?? {};
+    return { block: true, reason: formatDenyReason(describeStoppedBeforeRun(cancellation)) };
+  };
   // Every allow path funnels here, after approval, so the approval prompt's time counts toward the baseline.
-  const proceed = async (): Promise<undefined> => {
+  const proceed = async (): Promise<ToolCallEventResult | undefined> => {
     const checkpoint = panel.checkpointBaseline;
     if (checkpoint && waitsForCheckpointBaseline(event.toolName, event.input as Record<string, unknown>, panel.isMcpReadOnly, checkpoint.folder)) {
-      await checkpoint.wait(signal ?? NEVER_ABORT, mapPiToolName(event.toolName));
+      await checkpoint.wait(callSignal ?? NEVER_ABORT, mapPiToolName(event.toolName));
     }
+    const stopped = stoppedByUser();
+    if (stopped) return stopped;
     if (pendingContext && preToolUse) preToolUse.stashContext(event.toolCallId, pendingContext);
     return undefined;
   };
 
   if (preToolUse) {
     const result = await preToolUse.run(event);
+    if (result?.systemMessages.length) preToolUse.notify(result.systemMessages);
+    const stopped = stoppedByUser();
+    if (stopped) return stopped;
     if (result) {
-      if (result.systemMessages.length) preToolUse.notify(result.systemMessages);
       if (result.mutated && result.decision !== 'deny') {
         // `finalInput` is the COMPLETE rewritten input: dispatch chains each hook's `updated_input` onto a
         // copy of the original tool input, so it always carries every key. Merging it back is therefore a
@@ -303,34 +350,72 @@ export async function runPermissionGate(
   const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
 
   // The full approval flow: the prompt for gating tools and unknown tools, and for any call an ask rule names.
-  const askUser = async (): Promise<ToolCallEventResult | undefined> => {
+  const askUser = async (call: GatedCall): Promise<ToolCallEventResult | undefined> => {
+    const stopped = stoppedByUser();
+    if (stopped) return stopped;
     const result = await panel.permissionHandler.canUseTool(
       damoclesName,
       input,
-      buildCanUseToolContext(event.toolCallId, signal, parentToolUseId, mcpTool),
+      { ...buildCanUseToolContext(event.toolCallId, callSignal, parentToolUseId, mcpTool), rule: call.rule, runsUnasked: () => runsUnasked(call, panel) },
     );
+    // A Stop withdraws the prompt, which settles as an unasked deny, so this check must come first.
+    const stoppedDuringPrompt = stoppedByUser();
+    if (stoppedDuringPrompt) return stoppedDuringPrompt;
     // `interrupt` becomes pi's `terminate`, and only `buildUserDenyResult`/`buildUserFileEditDenyResult`
     // (permission-handler/utils.ts) ever set it: the user answered the prompt and left the feedback box
     // empty. An unexplained "no" means stop; "no, do X instead" is instruction the model must keep. Every
     // deny the user was NOT asked about goes through `buildUnaskedDenyResult`, which cannot set it and
     // marks it `policy`, so the model is never told the user rejected it.
     // See docs/invariants.md ("Permissions and plan mode") for pi's per-batch terminate semantics.
-    if (result.behavior !== 'deny') return proceed();
+    if (result.behavior !== 'deny') {
+      // Sent whether or not a prompt was raised, since `canUseTool` does not say; a running card ignores it.
+      panel.postMessage?.({ type: 'toolPending', toolUseId: event.toolCallId, toolName: damoclesName, input, parentToolUseId });
+      return proceed();
+    }
     if (result.policy) return { block: true, reason: formatPolicyBlockReason(result.message) };
     return { block: true, reason: formatDenyReason(result.message), ...(result.interrupt ? { terminate: true } : {}) };
   };
 
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
+  const call: GatedCall = { name: damoclesName, input, mcpReadOnly, rule: await panel.permissionHandler.matchRule(damoclesName, input, mcpTool) };
+  const verdict = gateVerdict(call, panel);
+  if (verdict.kind === 'block') return { block: true, reason: formatPolicyBlockReason(verdict.reason) };
+  return verdict.kind === 'run' ? proceed() : askUser(call);
+}
+
+/** A call the gate decides, as it reached the gate once its PreToolUse hooks ran. */
+export interface GatedCall {
+  /** The Damocles tool name. */
+  name: string;
+  /** The normalized input the approval flow sees. */
+  input: Record<string, unknown>;
+  /** Whether it is a read-only-annotated MCP tool. */
+  mcpReadOnly: boolean;
+  /** The settings rule it matched when it reached the gate, null when none did or YOLO was on. */
+  rule: PermissionBehavior | null;
+}
+
+/** Run the call, block it with a policy reason, or hand it to the approval flow (`canUseTool`). */
+export type GateVerdict = { kind: 'run' } | { kind: 'block'; reason: string } | { kind: 'approval' };
+
+const RUN: GateVerdict = { kind: 'run' };
+const APPROVAL: GateVerdict = { kind: 'approval' };
+const SETTINGS_RULE_DENY = 'Permission denied by a rule in your Damocles settings';
+
+/**
+ * The gate's decision on a call under the current permission state. Synchronous, so an open prompt is
+ * decided again by this same function when the mode or YOLO changes (`runsUnasked`).
+ */
+export function gateVerdict(call: GatedCall, panel: GatePermissionContext): GateVerdict {
+  const { name, input, rule } = call;
+  const byRule = (): GateVerdict => (rule === 'deny' ? { kind: 'block', reason: SETTINGS_RULE_DENY } : rule === 'ask' ? APPROVAL : RUN);
+
   // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
   // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4)
   // and an ask rule prompts. Web tools are NOT here — they are in `READ_ONLY_TOOLS`, so they fall
   // through to the read branch.
-  if (GATEABLE_MODULE_NAMES.has(damoclesName)) {
-    const rule = await panel.permissionHandler.matchRule(damoclesName, input);
-    if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
-    return rule === 'ask' ? askUser() : proceed();
-  }
+  if (GATEABLE_MODULE_NAMES.has(name)) return byRule();
 
   // Plan mode blocks the write-category tools. A shell command `readonly-shell.ts` proves read-only
   // auto-runs; any other goes through canUseTool like default mode (prompt, settings rules, YOLO), so
@@ -357,44 +442,49 @@ export async function runPermissionGate(
   // user's approval, so `echo > file` cannot silently undo a denied `Edit`; it is not a general
   // capability ceiling. The trust boundary for MCP is the user's server-enablement list, which a
   // subagent cannot widen.
+  const category = toolCategory(name);
   const planMode = panel.isPlanMode();
   const readOnlyAgent = panel.readOnlyShell === true;
   if (category === 'shell' && (planMode || readOnlyAgent)) {
     const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
-    const shell = damoclesName === TOOL_BASH ? 'bash'
-      : damoclesName === TOOL_POWERSHELL ? 'powershell'
+    const shell = name === TOOL_BASH ? 'bash'
+      : name === TOOL_POWERSHELL ? 'powershell'
         : null; // A shell tool with no classifier always asks; never default it to allow.
-    if (!shell || !classifyReadOnlyShellCommand(shell, command).readOnly) return askUser();
-    // Auto-allow unless a settings rule names the command: never fall through to canUseTool for the
+    if (!shell || !classifyReadOnlyShellCommand(shell, command).readOnly) return APPROVAL;
+    // Auto-allow unless a settings rule names the command: never hand it to canUseTool for the
     // read-only verdict alone, since with no rule it would prompt for every shell command.
-    const rule = await panel.permissionHandler.matchRule(damoclesName, input);
-    if (rule === 'deny') return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
-    return rule === 'ask' ? askUser() : proceed();
+    return byRule();
   }
   if (category === 'write' && (planMode || readOnlyAgent)) {
     const isPlanFileEdit =
       planMode &&
-      (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
+      (name === TOOL_EDIT || name === TOOL_WRITE) &&
       panel.permissionHandler.isPlanFile(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');
     if (!isPlanFileEdit) {
-      return { block: true, reason: formatPolicyBlockReason(
-        planMode
-          ? 'Plan mode is active — only read-only tools are allowed until you exit the plan.'
-          : 'You are a read-only agent — only read-only tools are allowed.') };
+      return { kind: 'block', reason: planMode
+        ? 'Plan mode is active — only read-only tools are allowed until you exit the plan.'
+        : 'You are a read-only agent — only read-only tools are allowed.' };
     }
   }
 
   // Read tools (incl. known extension read tools + read-only MCP tools) auto-allow, still honoring
   // settings deny rules. The evaluator answers ask for them only when an ask rule names the call, and
-  // that prompts below in every mode.
-  if (category === 'read' || mcpReadOnly) {
-    const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input, mcpTool);
-    if (evaluation === 'deny') {
-      return { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') };
-    }
-    if (evaluation !== 'ask') return proceed();
+  // that prompts in every mode.
+  if (category === 'read' || call.mcpReadOnly) {
+    const evaluation = panel.permissionHandler.decide(name, input, rule);
+    if (evaluation === 'deny') return { kind: 'block', reason: SETTINGS_RULE_DENY };
+    if (evaluation !== 'ask') return RUN;
   }
 
   // Gating tools (Edit/Write/Bash/PowerShell) + unknown tools: full approval flow.
-  return askUser();
+  return APPROVAL;
+}
+
+/**
+ * Whether the gate would run `call` with no prompt under the current permission state: its own verdict,
+ * and for a call it hands to the approval flow, the evaluator's, which `canUseTool` applies the same way.
+ */
+export function runsUnasked(call: GatedCall, panel: GatePermissionContext): boolean {
+  const verdict = gateVerdict(call, panel);
+  return verdict.kind === 'run' || (verdict.kind === 'approval' && panel.permissionHandler.decide(call.name, call.input, call.rule) === 'allow');
 }

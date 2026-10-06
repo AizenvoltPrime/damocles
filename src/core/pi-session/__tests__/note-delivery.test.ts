@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { PermissionHandler } from '../../permission-handler';
-import type { PiCodingAgentModule } from '../pi-loader';
+import { getPiCodingAgent, type PiCodingAgentModule } from '../pi-loader';
 import type { SessionOptions } from '../../session-types';
 import { PiSession } from '../pi-session';
 import type { CustomToolDeps } from '../tools';
 import { buildCustomTools } from '../tools';
+import type { ShellCancelRegistry } from '../tools/shell-cancel-registry';
 import { log } from '../../logger';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
 
@@ -15,6 +16,11 @@ vi.mock('../../logger', () => ({ log: vi.fn() }));
 vi.mock('../tools', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../tools')>()),
   buildCustomTools: vi.fn(() => []),
+}));
+
+vi.mock('../pi-loader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pi-loader')>()),
+  getPiCodingAgent: vi.fn(() => null),
 }));
 
 const NOTE = 'wrong loop, use seq 1 5';
@@ -69,8 +75,9 @@ function harness(): Harness {
 
   const options = {
     cwd: '/cwd',
+    projectScope: true,
     platform: createFakePlatform(),
-    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, pendingPromptKinds: () => new Set() } as unknown as PermissionHandler,
+    permissionHandler: { getPermissionMode: () => 'default', setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as PermissionHandler,
     onMessage: (message: ExtensionToWebviewMessage) => emitted.push(message),
     resolveThinking: () => ({ thinkingDisabled: true, effort: null, maxThinkingTokens: null }),
   } as unknown as SessionOptions;
@@ -218,6 +225,39 @@ describe('cancel note delivery targets the agent that ran the command', () => {
 
     expect(first.mock.calls).toEqual([['first']]);
     expect(second.mock.calls).toEqual([['second']]);
+  });
+});
+
+describe('the gate cancel handle delivers like the tools of its context', () => {
+  it('sends the note of a Stop on a subagent call its gate still holds to that subagent', async () => {
+    const h = harness();
+    const engine = (h.session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown): { shellCancelFor(agentId: string): ShellCancelRegistry } })
+      .buildSubagentEngine(fakePi(), {});
+    engine.shellCancelFor('agent-7').admit('sub-call', undefined);
+
+    expect(h.session.cancelToolCall('sub-call', NOTE)).toBe(true);
+    await vi.waitFor(() => expect(h.steer).toHaveBeenCalledWith('agent-7', NOTE, undefined));
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
+  });
+
+  it('sends the note of a Stop on a team agent call its gate still holds to that agent', () => {
+    vi.mocked(getPiCodingAgent).mockReturnValueOnce(fakePi());
+    const h = harness();
+    const internals = h.session as unknown as { folder: unknown; options: { permissionHandler: Record<string, unknown> } };
+    internals.folder = { getHooksDispatchDeps: () => undefined };
+    // The approval never answers, so the gate holds the call when the Stop lands.
+    internals.options.permissionHandler['canUseTool'] = () => new Promise(() => {});
+    const mcp = { names: [], deferrable: [], descriptions: new Map(), directGroups: new Set(), isReadOnly: () => false, identity: () => undefined };
+    const factory = h.session.buildTeamEngine().buildExtensionFactory(teamContext('Mira', h.deliverUserNote, h.busSend) as never, mcp as never, false);
+    const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+    factory({ on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; }, registerTool: () => undefined } as never);
+
+    void handlers['tool_call']!({ type: 'tool_call', toolName: 'bash', toolCallId: 'team-call', input: { command: 'make' } }, { signal: undefined, sessionManager: { getSessionId: () => 'nested' } });
+
+    expect(h.session.cancelToolCall('team-call', NOTE)).toBe(true);
+    expect(h.deliverUserNote).toHaveBeenCalledWith(NOTE);
+    expect(h.piSession.prompt).not.toHaveBeenCalled();
+    expect(h.steer).not.toHaveBeenCalled();
   });
 });
 

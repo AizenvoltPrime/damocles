@@ -660,7 +660,7 @@ function applyBlock(original, block) {
 /**
  * `.vscodeignore` rules that keep desktop-only files out of the VSIX: the Monaco editor
  * (vite.config.ts emits all of it under `dist/webview/assets/monaco-`), the desktop build output and
- * packaging config, the end-to-end suite and its output, typecheck-only stubs, and logs.
+ * packaging config, the end-to-end suite and its output, typecheck-only stubs, the Windows icon file, and logs.
  * Each must appear verbatim as a line of `.vscodeignore`; the syntax is limited to `*` and `**`.
  */
 export const DESKTOP_EXCLUDE_RULES = [
@@ -676,6 +676,7 @@ export const DESKTOP_EXCLUDE_RULES = [
   'electron-builder.yml',
   'playwright.desktop.config.ts',
   'vite.shell.config.ts',
+  'resources/icon.ico',
 ];
 
 /** Why .vscodeignore could let a desktop-only file into the VSIX; empty when every exclusion holds. */

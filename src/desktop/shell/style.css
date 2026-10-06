@@ -39,6 +39,16 @@
   box-shadow: 0 0 0 1.5px oklch(0.72 0.14 var(--avatar-hue));
 }
 
+/* The bell rings from its top for a new entry that asks for the user, and its badge pops when the count rises. */
+.bell-ring {
+  transform-origin: 50% 1px;
+  animation: d-wiggle 0.7s var(--ease-out);
+}
+
+.bell-badge-pop {
+  animation: d-badge-pop 0.34s var(--ease-spring) both;
+}
+
 .provider-logo > svg {
   width: 100%;
   height: 100%;

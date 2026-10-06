@@ -112,6 +112,7 @@ const liveOutputText = computed(() => props.tool.liveOutput ?? '');
 
 const statusBadge = computed(() => {
   if (isRunning.value) return { label: t('toolOverlay.statusRunning'), class: 'd-tone-accent', pulse: true };
+  if (props.tool.status === 'awaiting_approval') return { label: t('toolCall.awaitingApproval'), class: 'd-tone-warning', pulse: true };
   if (isCompleted.value) return { label: t('toolOverlay.statusCompleted'), class: 'd-tone-success' };
   if (isFailed.value) return { label: t('toolOverlay.statusFailed'), class: 'd-tone-danger' };
   if (isCancelled.value) return { label: t('toolOverlay.statusCancelled'), class: 'd-tone-muted' };

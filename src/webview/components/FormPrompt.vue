@@ -10,6 +10,7 @@ import { useFormStore } from '@/stores/useFormStore';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { useQuestionStore } from '@/stores/useQuestionStore';
 import type { FormFieldSchema, FormValues } from '@shared/types/forms';
+import { useAttentionCard } from '@/composables/useAttention';
 
 defineProps<{
   visible: boolean;
@@ -106,6 +107,7 @@ function stringModel(field: FormFieldSchema): string {
 }
 
 const rootRef = ref<HTMLElement | null>(null);
+useAttentionCard('input', rootRef);
 
 function focusFirstField() {
   nextTick(() => {
@@ -213,7 +215,7 @@ const nativeControlClass =
   <div
     v-if="visible && form"
     ref="rootRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-accent)]"
     role="region"
     :aria-label="t('form.ariaLabel')"
     data-dock-prompt

@@ -6,6 +6,7 @@ import DockPromptOptions from './DockPromptOptions.vue';
 import { Textarea } from '@/components/ui/textarea';
 import { MessageSquare, SendHorizontal, Sparkles } from 'lucide-vue-next';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
+import { useAttentionCard } from '@/composables/useAttention';
 
 const { t } = useI18n();
 
@@ -23,6 +24,7 @@ const showCustomInput = ref(false);
 const customMessage = ref('');
 const selectedValue = ref<string>('yes');
 const cardRef = ref<HTMLElement | null>(null);
+useAttentionCard('approval', cardRef);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 
 const choices = computed(() => [
@@ -84,7 +86,7 @@ useDockPromptDigits(cardRef, (digit) => {
   <div
     v-if="visible"
     ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-warning)]"
     role="region"
     :aria-label="t('skill.ariaLabel')"
     data-dock-prompt

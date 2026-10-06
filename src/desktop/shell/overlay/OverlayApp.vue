@@ -4,8 +4,9 @@ import type { DamoclesOverlayApi, OverlayAnswer, OverlayRequest } from '../../pr
 import { applyShellLocale } from '../i18n';
 import ContextMenu from './components/ContextMenu.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
+import MessageDialog from './components/MessageDialog.vue';
+import NotificationCenter from './components/NotificationCenter.vue';
 import TagPicker from './components/TagPicker.vue';
-import ToastStack from './components/ToastStack.vue';
 import OverlaySettings from './settings/OverlaySettings.vue';
 import type { OverlaySettingsBridge } from './settings/overlay-bridge';
 
@@ -46,10 +47,13 @@ function onAfterLeave(element: Element): void {
   props.api.answer(id, value);
 }
 
+// The settings modal and the dialogs take Escape through the overlay stack: a search query clears first, and a dialog
+// above the modal cancels without closing it.
+const OWN_ESCAPE: ReadonlySet<OverlayRequest['kind']> = new Set(['settings', 'confirm', 'message']);
+
 function onKeydown(event: KeyboardEvent): void {
   const top = open.value[open.value.length - 1];
-  // The settings modal takes Escape itself: a search query clears first, and it closes only after its exit.
-  if (event.key !== 'Escape' || !top || top.request.kind === 'settings') return;
+  if (event.key !== 'Escape' || !top || OWN_ESCAPE.has(top.request.kind)) return;
   event.preventDefault();
   answer(top.id, { kind: 'dismissed' });
 }
@@ -77,8 +81,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="h-full">
-    <!-- Before the popups, which paint over it in document order, so a dialog's scrim covers the toasts. -->
-    <ToastStack :api="api" />
     <TransitionGroup
       name="overlay-pop"
       @before-leave="onBeforeLeave"
@@ -109,6 +111,13 @@ onBeforeUnmount(() => {
           :request="entry.request"
           @answer="answer(entry.id, $event)"
         />
+        <MessageDialog
+          v-else-if="entry.request.kind === 'message'"
+          :key="entry.id"
+          :data-overlay-id="entry.id"
+          :request="entry.request"
+          @answer="answer(entry.id, $event)"
+        />
         <div
           v-else
           :key="entry.id"
@@ -123,8 +132,14 @@ onBeforeUnmount(() => {
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />
+          <NotificationCenter
+            v-else-if="entry.request.kind === 'notifications'"
+            :api="api"
+            :request="entry.request"
+            @answer="answer(entry.id, $event)"
+          />
           <TagPicker
-            v-else
+            v-else-if="entry.request.kind === 'tagPicker'"
             :request="entry.request"
             @answer="answer(entry.id, $event)"
           />

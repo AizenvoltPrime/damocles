@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { useSessionStore } from '../useSessionStore';
+import { useSessionStore, type SessionState } from '../useSessionStore';
 
 describe('useSessionStore.addCompactMarker — entryId (rewind-to-before-compaction)', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -126,13 +126,16 @@ describe('useSessionStore.setSessionState', () => {
     expect(store.isAwaitingUserAction).toBe(false);
   });
 
+  // Core sends a prompt exactly while it publishes requires_action.
+  const pendingFor = (state: SessionState) => (state === 'requires_action' ? [{ id: 'p-1', owner: { kind: 'main' as const } }] : []);
+
   it.each([
     ['idle', false],
     ['running', false],
     ['requires_action', true],
   ] as const)('keeps %s exactly as sent', (state, awaiting) => {
     const store = useSessionStore();
-    store.setSessionState(state);
+    store.setSessionState(state, pendingFor(state));
 
     expect(store.sessionState).toBe(state);
     expect(store.isAwaitingUserAction).toBe(awaiting);
@@ -142,7 +145,7 @@ describe('useSessionStore.setSessionState', () => {
     const store = useSessionStore();
     const seen: string[] = [];
     for (const state of ['running', 'requires_action', 'running', 'requires_action', 'running', 'idle'] as const) {
-      store.setSessionState(state);
+      store.setSessionState(state, pendingFor(state));
       seen.push(store.sessionState);
     }
 
@@ -153,9 +156,9 @@ describe('useSessionStore.setSessionState', () => {
   it('clears a parked state when the turn is cancelled with the dialog still open', () => {
     // Cancelling withdraws the prompt, so idle arrives with no running in between.
     const store = useSessionStore();
-    store.setSessionState('running');
-    store.setSessionState('requires_action');
-    store.setSessionState('idle');
+    store.setSessionState('running', pendingFor('running'));
+    store.setSessionState('requires_action', pendingFor('requires_action'));
+    store.setSessionState('idle', pendingFor('idle'));
 
     expect(store.sessionState).toBe('idle');
     expect(store.isAwaitingUserAction).toBe(false);
@@ -164,11 +167,11 @@ describe('useSessionStore.setSessionState', () => {
   it('accepts a parked state that arrives with no running before it', () => {
     // The derivation lets a pending prompt outrank the turn lifecycle, so this order is reachable.
     const store = useSessionStore();
-    store.setSessionState('requires_action');
+    store.setSessionState('requires_action', pendingFor('requires_action'));
 
     expect(store.isAwaitingUserAction).toBe(true);
 
-    store.setSessionState('idle');
+    store.setSessionState('idle', pendingFor('idle'));
 
     expect(store.isAwaitingUserAction).toBe(false);
   });
@@ -176,9 +179,9 @@ describe('useSessionStore.setSessionState', () => {
   it('stays correct if the same state ever lands twice', () => {
     // The extension suppresses byte-identical repeats, so the store must not depend on that guard.
     const store = useSessionStore();
-    store.setSessionState('requires_action');
-    store.setSessionState('requires_action');
-    store.setSessionState('running');
+    store.setSessionState('requires_action', pendingFor('requires_action'));
+    store.setSessionState('requires_action', pendingFor('requires_action'));
+    store.setSessionState('running', pendingFor('running'));
 
     expect(store.sessionState).toBe('running');
   });
@@ -186,7 +189,7 @@ describe('useSessionStore.setSessionState', () => {
   it('keeps the state the extension published when the user switches session', () => {
     // The extension owns the value and republishes on every path, so inferring idle here would race that message.
     const store = useSessionStore();
-    store.setSessionState('requires_action');
+    store.setSessionState('requires_action', pendingFor('requires_action'));
     store.clearSessionData();
 
     expect(store.sessionState).toBe('requires_action');
@@ -194,7 +197,7 @@ describe('useSessionStore.setSessionState', () => {
 
   it('keeps the state the extension published through a full store reset', () => {
     const store = useSessionStore();
-    store.setSessionState('requires_action');
+    store.setSessionState('requires_action', pendingFor('requires_action'));
     store.$reset();
 
     expect(store.sessionState).toBe('requires_action');

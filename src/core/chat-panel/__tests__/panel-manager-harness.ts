@@ -31,6 +31,9 @@ export interface FakeSession {
   hasConversation: () => boolean;
   getToolStatus: () => object;
   setMcpStatusListener: () => void;
+  /** The panel token the manager last handed this session, as PiSession records it for its lease owner records. */
+  panelToken: string | null;
+  setPanelToken: (token: string | null) => void;
 }
 
 export interface FakeHost extends PanelHost {
@@ -144,7 +147,7 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
         activityListener: null,
         setActivityListener: (listener) => {
           session.activityListener = listener;
-          listener?.({ state: 'idle', pendingKinds: [], background: false });
+          listener?.({ state: 'idle', pendingKinds: [], pendingPrompts: [], background: false });
         },
         setTurnSettledListener: () => undefined,
         holdsSession: (id) => session.storedId === id,
@@ -155,6 +158,8 @@ export function createHarness(initial: ReturnType<typeof folderEntry>[]): Harnes
         hasConversation: () => session.conversation,
         getToolStatus: () => ({}),
         setMcpStatusListener: () => undefined,
+        panelToken: null,
+        setPanelToken: (token) => { session.panelToken = token; },
       };
       sessions.push(session);
       return session as unknown as ChatSession;

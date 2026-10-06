@@ -67,7 +67,7 @@ const FORM_INPUT = {
 describe('a prompt raised on an already-aborted signal settles instead of stranding', () => {
   /**
    * Adding an abort listener to a signal that already aborted never fires it, so the entry would
-   * register and never settle: `pendingPromptKinds()` keeps it, the panel pins on `requires_action`,
+   * register and never settle: `pendingPrompts()` keeps it, the panel pins on `requires_action`,
    * and the `canUseTool` promise the agent is waiting on never resolves.
    */
   const kinds: [string, (h: PermissionHandler, ctx: CanUseToolContext) => Promise<unknown>][] = [
@@ -93,7 +93,7 @@ describe('a prompt raised on an already-aborted signal settles instead of strand
 
       await raise(handler, abortedCtx('t1'));
 
-      expect(handler.pendingPromptKinds().size > 0).toBe(false);
+      expect(handler.pendingPrompts().length > 0).toBe(false);
     });
   }
 });
@@ -102,20 +102,20 @@ describe('pendingElicitations counts as a pending prompt', () => {
   it('fires the pending-prompt listener and counts while an elicitation is open', async () => {
     const { handler, messages } = handlerWith();
     const changes: boolean[] = [];
-    handler.setPendingPromptsListener(() => changes.push(handler.pendingPromptKinds().size > 0));
+    handler.setPendingPromptsListener(() => changes.push(handler.pendingPrompts().length > 0));
 
     const elicitation = handler.requestElicitation(
       { elicitationId: 'e1', serverName: 'srv', message: 'sign in', mode: 'form' },
       liveCtx('e1').signal,
     );
 
-    expect(handler.pendingPromptKinds().size > 0).toBe(true);
+    expect(handler.pendingPrompts().length > 0).toBe(true);
     expect(messages.map((m) => m.type)).toEqual(['requestElicitation']);
 
     handler.resolveElicitation('e1', { action: 'accept', content: {} });
     await elicitation;
 
-    expect(handler.pendingPromptKinds().size > 0).toBe(false);
+    expect(handler.pendingPrompts().length > 0).toBe(false);
     expect(changes).toEqual([true, false]);
   });
 });
@@ -160,7 +160,7 @@ describe('a webview reload gets every live prompt posted again', () => {
       { file_path: '/tmp/a.txt', old_string: 'alpha', new_string: 'omega' },
       liveCtx('t1'),
     );
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     const raised = messages.find((m) => m.type === 'requestPermission');
     expect(raised).toMatchObject({ patch: expect.stringContaining('@@ -1,2 +1,2 @@\n-alpha\n+omega\n beta') });
@@ -190,7 +190,7 @@ describe('resolveApproval settles the tool call even when the diff view will not
       { file_path: '/tmp/a.txt', old_string: 'alpha', new_string: 'omega' },
       liveCtx('t1'),
     );
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
+    await waitFor(() => handler.pendingPrompts().length > 0);
 
     // A tab the user already closed makes the close path throw, and nothing awaits resolveApproval.
     vi.spyOn(platform.editor.diffs[0]!, 'close').mockRejectedValue(new Error('the diff tab is gone'));
@@ -198,20 +198,5 @@ describe('resolveApproval settles the tool call even when the diff view will not
     await handler.resolveApproval('t1', true);
 
     await expect(approval).resolves.toMatchObject({ behavior: 'allow' });
-  });
-});
-
-describe('auto-approving a subagent', () => {
-  it('approves its open prompt and tells the webview the outcome was approved', async () => {
-    const { handler, messages } = handlerWith();
-    const approval = handler.canUseTool('Bash', { command: 'rm -rf /tmp/x' }, { signal: new AbortController().signal, toolUseID: 't1', parentToolUseId: 'agent-1' });
-    await waitFor(() => handler.pendingPromptKinds().size > 0);
-
-    handler.autoApproveSubagent('agent-1');
-
-    await expect(approval).resolves.toMatchObject({ behavior: 'allow' });
-    expect(messages.filter((m) => m.type === 'permissionAutoResolved')).toEqual([
-      { type: 'permissionAutoResolved', toolUseId: 't1', outcome: 'approved', parentToolUseId: 'agent-1' },
-    ]);
   });
 });

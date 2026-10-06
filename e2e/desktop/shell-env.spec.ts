@@ -4,6 +4,7 @@ import { mainLog } from './support/app';
 import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
+import { openProjectChat } from './support/screenshots';
 import { chatInput, clickMenu, hostMessages, postFromWebview, recordHostMessages, sendAndAwaitEcho } from './support/ui';
 
 const GIT_MISSING = 'Git was not found on PATH, so checkpoints and rewind are turned off.';
@@ -52,7 +53,7 @@ test.describe('child process environment', () => {
     }, { timeout: 60_000 }).toBe('connected');
   });
 
-  test('with git absent from PATH the capability warning appears once and checkpoints report disabled', async ({ home, launch }) => {
+  test('with git absent from PATH the capability warning appears once and project chats report checkpoints disabled', async ({ home, launch }) => {
     const stub = await startOpenAIStub();
     try {
       seedStubModel(home, stub.baseUrl);
@@ -60,10 +61,10 @@ test.describe('child process environment', () => {
       const env: Record<string, string> = { PATH: pathWithoutGit() };
       if (process.platform !== 'win32') env['SHELL'] = path.join(home.root, 'no-such-shell');
       const desktop = await launch({ env });
-      const tab = await activeChat(desktop.app);
-      await expect(chatInput(tab)).toBeVisible();
       await expect.poll(() => desktop.output()).toContain(`[notification:warning] ${GIT_MISSING}`);
 
+      // A chat with no project folder takes no checkpoints, so only a project chat reaches the git check.
+      const tab = await openProjectChat(desktop.app, home.project);
       await sendAndAwaitEcho(tab, 'a turn with no git');
       await expect.poll(() => desktop.output()).toContain(`[CheckpointService] git unavailable, checkpoints disabled for this session: ${GIT_MISSING}`);
 

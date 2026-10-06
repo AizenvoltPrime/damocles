@@ -1,13 +1,14 @@
+import { toast } from "vue-sonner";
+import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
-import type { ToolCall } from "@shared/types/session";
+import { PLAN_VERSION_DETAIL_KEY, type ToolCall } from "@shared/types/session";
 import { TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from "@shared/tool-names";
 
 export function createPermissionHandlers(): Partial<HandlerRegistry> {
   return {
     requestPermission: (msg, ctx) => {
       const { streamingStore, sessionStore, subagentStore, permissionStore } = ctx.stores;
-      const parentToolUseId = msg.parentToolUseId;
-      const hasSubagent = parentToolUseId ? subagentStore.hasSubagent(parentToolUseId) : false;
+      const { owner, parentToolUseId } = msg;
 
       const toolCall: ToolCall = {
         id: msg.toolUseId,
@@ -21,23 +22,33 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         sessionStore.trackFileAccess(msg.toolName, msg.toolInput);
       }
 
-      if (parentToolUseId && hasSubagent) {
-        subagentStore.addToolCallToSubagent(parentToolUseId, toolCall);
-      } else {
-        streamingStore.addToolCall({
-          id: toolCall.id,
-          name: toolCall.name,
-          input: toolCall.input,
-          ...(toolCall.metadata !== undefined && { metadata: toolCall.metadata }),
-        });
-        streamingStore.updateToolStatus(toolCall.id, "awaiting_approval");
+      // A team agent's card lives in the team view and takes no prompt status, so its prompt marks no card.
+      switch (owner.kind) {
+        case "main":
+          streamingStore.addToolCall({
+            id: toolCall.id,
+            name: toolCall.name,
+            input: toolCall.input,
+            ...(toolCall.metadata !== undefined && { metadata: toolCall.metadata }),
+          });
+          streamingStore.updateToolStatus(toolCall.id, "awaiting_approval");
+          break;
+        case "subagent":
+          if (parentToolUseId) {
+            subagentStore.addToolCallToSubagent(parentToolUseId, toolCall);
+            subagentStore.updateSubagentToolStatus(toolCall.id, "awaiting_approval");
+          }
+          break;
+        case "team":
+          break;
       }
 
-      const agentDescription = parentToolUseId ? subagentStore.getSubagentDescription(parentToolUseId) : undefined;
+      const agentDescription = owner.kind === "subagent" && parentToolUseId ? subagentStore.getSubagentDescription(parentToolUseId) : undefined;
 
       // `PendingPermissionInfo` declares these optional, so an absent field is forwarded as an
       // absent key rather than an explicit undefined that a later spread could use to clobber.
       permissionStore.addPermission(msg.toolUseId, {
+        owner,
         toolName: msg.toolName,
         toolInput: msg.toolInput,
         ...(msg.filePath !== undefined && { filePath: msg.filePath }),
@@ -55,17 +66,24 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
     },
 
     permissionAutoResolved: (msg, ctx) => {
-      const { streamingStore, subagentStore, permissionStore } = ctx.stores;
+      const { permissionStore } = ctx.stores;
+      const skillPrompt = permissionStore.pendingSkillApproval?.toolUseId === msg.toolUseId;
+      // The prompt the user just answered is gone already, and needs no notice.
+      const wasOpen = msg.toolUseId in permissionStore.pendingPermissions || skillPrompt;
       permissionStore.removePermission(msg.toolUseId);
 
       if (permissionStore.pendingPlanApproval?.toolUseId === msg.toolUseId) {
         permissionStore.clearPendingPlanApproval();
       }
+      if (skillPrompt) {
+        permissionStore.clearPendingSkillApproval();
+      }
 
-      if (msg.outcome !== "approved") return;
-      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "approved");
-      if (!found) {
-        streamingStore.updateToolStatus(msg.toolUseId, "approved");
+      if (msg.approvedBy && wasOpen) {
+        const t = i18n.global.t;
+        const approver = msg.approvedBy === "yolo" ? t("chatInput.yolo.active") : t(`chatInput.permissionModes.${msg.approvedBy}.label`);
+        // One notice per approver however many prompts it closed.
+        toast.info(t("toast.promptsApproved", { approver }), { id: `prompts-approved-${msg.approvedBy}` });
       }
     },
 
@@ -96,10 +114,14 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
     },
 
     requestPlanApproval: (msg, ctx) => {
-      ctx.stores.streamingStore.updateToolStatus(msg.toolUseId, "awaiting_approval");
-      ctx.stores.permissionStore.setPendingPlanApproval({
+      const { streamingStore, permissionStore } = ctx.stores;
+      streamingStore.updateToolStatus(msg.toolUseId, "awaiting_approval");
+      // The card shows the version before the result records it.
+      if (msg.planVersion !== undefined) streamingStore.updateToolMetadata(msg.toolUseId, { [PLAN_VERSION_DETAIL_KEY]: msg.planVersion });
+      permissionStore.setPendingPlanApproval({
         toolUseId: msg.toolUseId,
         planContent: msg.planContent,
+        ...(msg.planVersion !== undefined && { planVersion: msg.planVersion }),
       });
     },
 

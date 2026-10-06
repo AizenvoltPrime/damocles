@@ -101,6 +101,7 @@ describe('ready handler: restores the panel into the right folder', () => {
       onWebviewReady: vi.fn(),
       getToolStatus: () => ({}),
       holdsSession: () => false,
+      setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
       initializeEarly: vi.fn(async () => { order.push('start'); }),
     };
@@ -250,6 +251,7 @@ describe('ready handler: paints the conversation before the session-wide lists',
       onWebviewReady: () => undefined,
       getToolStatus: () => ({}),
       holdsSession: () => false,
+      setPanelToken: () => undefined,
       setResumeSession: () => undefined,
       initializeEarly: async () => { order.push('initializeEarly'); },
     };
@@ -336,6 +338,7 @@ describe('ready handler: a conversation pi has not written yet', () => {
       onWebviewReady: () => undefined,
       getToolStatus: () => ({}),
       holdsSession: () => false,
+      setPanelToken: vi.fn(),
       setResumeSession: vi.fn(),
       initializeEarly: async () => undefined,
     };

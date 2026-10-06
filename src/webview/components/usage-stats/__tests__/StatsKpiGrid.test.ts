@@ -113,7 +113,7 @@ describe('StatsKpiGrid', () => {
     expect(wrapper.find('[data-kpi="cost"]').text()).toContain('API-equivalent cost');
     expect(card(wrapper, 'cost').value).toBe('$10.00');
 
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-4-5', subscriptionType: 'allowance', dollarBilled: false });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-4-5', dollarBilled: false });
     await nextTick();
 
     expect(card(wrapper, 'cost').value).toBe('~$10.00 est.');

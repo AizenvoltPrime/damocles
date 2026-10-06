@@ -9,7 +9,7 @@ import { chromium } from 'playwright-core';
 import { startFeedServer } from '../../../scripts/desktop-update-feed.mjs';
 import { writeOverride } from '../../../scripts/desktop-update-override.mjs';
 import { isEntryPoint } from '../../../scripts/entry-point.mjs';
-import { noticeAction, OVERLAY_URL, RELEASE_PAGE_ACTION, RESTART_ACTION, SHELL_URL } from './update-notice.mjs';
+import { NOTIFIER_URL, noticeAction, RELEASE_PAGE_ACTION, RESTART_ACTION, SHELL_URL } from './update-notice.mjs';
 
 // Installs version N of the packaged desktop app, points it at a loopback feed holding N+1, and checks the
 // update end to end. Windows and Linux: N+1 must end up installed, and "Restart Now" must relaunch it. macOS:
@@ -277,15 +277,16 @@ async function appPages(port, timeoutMs, failFast) {
   }, failFast);
   const pageAt = (url) => browser.contexts().flatMap((context) => context.pages()).find((p) => p.url() === url);
   const shell = await waitFor('the shell page', timeoutMs, () => pageAt(SHELL_URL), failFast);
-  const overlay = await waitFor('the overlay page', timeoutMs, () => pageAt(OVERLAY_URL), failFast);
-  return { browser, shell, overlay };
+  return { browser, shell, pageAt };
 }
 
-async function clickToastAction(overlay, label, timeoutMs, failFast) {
-  const button = noticeAction(overlay, label);
+// The popup window's page exists once the first popup opened it, which the update notice may be.
+async function clickToastAction(pages, label, timeoutMs, failFast) {
+  const popup = await waitFor('the popup window page', timeoutMs, () => pages.pageAt(NOTIFIER_URL), failFast);
+  const button = noticeAction(popup, label);
   await waitFor(`the "${label}" toast action`, timeoutMs, () => button.isVisible(), failFast);
   say(`toast action "${label}" is showing`);
-  return button;
+  return { popup, button };
 }
 
 function disconnect(browser) {
@@ -341,9 +342,9 @@ async function selfUpdate(target, options, work) {
     const failFast = failOnUpdaterError(logFile);
     const pages = await appPages(port, options.timeoutMs, failFast);
     browser = pages.browser;
-    const restart = await clickToastAction(pages.overlay, RESTART_ACTION, options.timeoutMs, failFast);
+    const restart = await clickToastAction(pages, RESTART_ACTION, options.timeoutMs, failFast);
     if (options.mode === 'restart') {
-      await actionThatQuits({ browser, page: pages.overlay }, () => restart.click({ timeout: options.timeoutMs }));
+      await actionThatQuits({ browser, page: restart.popup }, () => restart.button.click({ timeout: options.timeoutMs }));
     } else {
       say('closing the window so install-on-quit runs');
       await actionThatQuits({ browser, page: pages.shell }, () => pages.shell.evaluate(() => window.close()));
@@ -394,8 +395,8 @@ async function macNotice(options, work) {
     const failFast = failOnUpdaterError(launched.logFile);
     const pages = await appPages(port, options.timeoutMs, failFast);
     browser = pages.browser;
-    const open = await clickToastAction(pages.overlay, RELEASE_PAGE_ACTION, options.timeoutMs, failFast);
-    await open.click();
+    const open = await clickToastAction(pages, RELEASE_PAGE_ACTION, options.timeoutMs, failFast);
+    await open.button.click();
     const expected = `[updater] opening the release page ${RELEASES_URL}/tag/v${options.toVersion}`;
     await waitFor(`the log line "${expected}"`, options.timeoutMs, () => readLog(launched.logFile).split('\n').some((line) => line.endsWith(expected)), failFast);
     const opened = readLog(launched.logFile).split('\n').filter((line) => line.includes('[updater] opening the release page'));

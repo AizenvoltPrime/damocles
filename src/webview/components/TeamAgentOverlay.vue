@@ -21,6 +21,7 @@ import ThinkingIndicator from './ThinkingIndicator.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import StopTeamConfirm from './StopTeamConfirm.vue';
 import { useTeamStore, type AgentChatMessage } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useModelIdentity } from '@/composables/useModelIdentity';
@@ -38,6 +39,7 @@ const { postMessage } = usePlatformBridge();
 const { costLabel, costTitle } = useCostLabel();
 const modelIdentity = useModelIdentity();
 const teamStore = useTeamStore();
+const sessionStore = useSessionStore();
 const { selectedTeam, selectedAgent, currentAgentMessages, currentAgentStreaming, isAgentOverlayOpen } = storeToRefs(teamStore);
 
 const ALIVE: ReadonlySet<TeamAgentStatus> = new Set(['running', 'pending', 'awaiting-review', 'standby', 'monitoring']);
@@ -49,7 +51,8 @@ const agentIndex = computed(() => {
 });
 
 const color = computed(() => getAgentColor(agentIndex.value));
-const chip = computed(() => (selectedAgent.value ? agentStatusChip(selectedAgent.value.status) : null));
+const awaitingUser = computed(() => Boolean(selectedTeam.value && selectedAgent.value && sessionStore.teamAgentsAwaitingUser.get(selectedTeam.value.teamId)?.has(selectedAgent.value.agentId)));
+const chip = computed(() => (selectedAgent.value ? agentStatusChip(selectedAgent.value.status, awaitingUser.value) : null));
 const model = computed(() => modelIdentity(selectedAgent.value?.model));
 
 const lightboxImageUrl = ref<string | null>(null);
@@ -71,7 +74,7 @@ const { elapsedMs } = useElapsedTimer(
   () => selectedAgent.value ?? null,
 );
 
-const statusBadge = computed(() => (chip.value ? { label: t(chip.value.labelKey), class: chip.value.color, pulse: chip.value.live } : undefined));
+const statusBadge = computed(() => (chip.value ? { label: t(chip.value.labelKey), class: chip.value.color, pulse: chip.value.live || chip.value.attention } : undefined));
 
 const subtitle = computed(() => {
   if (!selectedAgent.value || !selectedTeam.value) return '';

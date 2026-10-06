@@ -5,6 +5,7 @@ import type { PendingPermissionInfo } from '@shared/types/permissions';
 interface PendingPlanApproval {
   toolUseId: string;
   planContent: string;
+  planVersion?: number;
 }
 
 interface ApprovedPlanInfo {

@@ -38,7 +38,7 @@ export const test = base.extend<DesktopFixtures>({
     };
     for (const [i, desktop] of launched.entries()) {
       await desktop.stopTracing(failed ? testInfo.outputPath(`trace-${i}.zip`) : undefined).catch(record);
-      await desktop.close().catch(record);
+      await desktop.close().catch((error: unknown) => record(new Error(`launch ${i}: ${error instanceof Error ? error.message : String(error)}`)));
       // After close, so the attached log also covers the shutdown.
       await attachDiagnostics(testInfo, `launch-${i}`, desktop, home).catch(record);
       const handlerErrors = desktop.output().split('\n').filter((line) => line.includes(IPC_HANDLER_ERROR));

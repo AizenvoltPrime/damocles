@@ -7,7 +7,13 @@
     "themeToLight": "Switch to light theme",
     "themeToDark": "Switch to dark theme",
     "settingsName": "Settings",
-    "settings": "Settings ({shortcut})"
+    "settings": "Settings ({shortcut})",
+    "notifications": "Notifications",
+    "notificationsDnd": "Notifications · Do not disturb is on",
+    "notificationsOff": "Notifications · Pop-ups are turned off in Settings",
+    "notificationsUnseen": "Notifications, {count} new | Notifications, {count} new",
+    "notificationsUnseenDnd": "Notifications, {count} new · Do not disturb is on | Notifications, {count} new · Do not disturb is on",
+    "notificationsUnseenOff": "Notifications, {count} new · Pop-ups are turned off in Settings | Notifications, {count} new · Pop-ups are turned off in Settings"
   },
   "sidebar": {
     "label": "Sidebar",
@@ -95,6 +101,80 @@
     "error": "Error",
     "moreDismissAll": "{count} more · Dismiss all"
   },
+  "notifications": {
+    "title": "Notifications",
+    "clearAll": "Clear all",
+    "doNotDisturb": "Do not disturb",
+    "popupsOn": "Pop-ups show when a chat needs you",
+    "popupsSilenced": "No pop-ups. They still collect here",
+    "popupsOff": "Pop-ups are turned off in Settings",
+    "listLabel": "Notifications, newest first",
+    "unread": "Unread",
+    "empty": "You’re all caught up",
+    "footer": "Approvals, plans, questions and finished chats",
+    "keyboardHelp": "Arrow keys move between notifications, Enter opens one.",
+    "usage": "Usage",
+    "newChat": "New chat",
+    "now": "now",
+    "minutesAgo": "{count}m ago",
+    "hoursAgo": "{count}h ago",
+    "seconds": "{seconds}s",
+    "minutes": "{minutes}m {seconds}s",
+    "hours": "{hours}h {minutes}m",
+    "kinds": {
+      "approval": {
+        "lead": "Needs your approval to",
+        "leadAlone": "Needs your approval.",
+        "fallback": "Open the chat to allow or deny.",
+        "action": "Review"
+      },
+      "plan": {
+        "lead": "Plan ready for review.",
+        "fallback": "Approve it or ask for changes.",
+        "action": "Review plan"
+      },
+      "question": {
+        "lead": "Asks:",
+        "leadAlone": "Has a question for you.",
+        "fallback": "Open the chat to answer.",
+        "action": "Answer"
+      },
+      "team": {
+        "lead": "Your review is needed.",
+        "leadAgent": "{name} needs your review.",
+        "fallback": "Open the team to review the work.",
+        "action": "Open team"
+      },
+      "done": {
+        "lead": "Finished",
+        "duration": "in {duration}.",
+        "fallback": "and is waiting for your next message.",
+        "action": "Open chat"
+      },
+      "error": {
+        "lead": "Paused:",
+        "fallback": "The turn stopped on an error.",
+        "rateLimit": "The rate limit was reached.",
+        "windowReached": "The {window} limit was reached.",
+        "resetsAt": "Resets at {time}.",
+        "resetsOn": "Resets {day} {time}.",
+        "action": "Open chat"
+      },
+      "limit": {
+        "lead": "Heads up:",
+        "budget": "This chat stopped at its budget limit.",
+        "used": "{percent}% used.",
+        "resetsAt": "Resets at {time}.",
+        "resetsOn": "Resets {day} {time}.",
+        "action": "View usage"
+      }
+    }
+  },
+  "dialog": {
+    "info": "Information",
+    "warning": "Warning",
+    "danger": "Caution"
+  },
   "pane": {
     "label": "Browser pane",
     "divider": "Resize browser pane",
@@ -165,7 +245,11 @@
       },
       "notify": {
         "label": "Notify me when a chat needs me",
-        "description": "Each in-app notification also shows as a desktop notification while the Damocles window is not focused."
+        "description": "Pop-ups show on the desktop when a chat needs you, whether or not the Damocles window is focused. Off, notifications still collect under the bell."
+      },
+      "notifySound": {
+        "label": "Play a sound with desktop pop-ups",
+        "description": "A short chime when a pop-up appears: rising when a chat waits on you, a single note when one finishes, falling when one stops."
       }
     },
     "restoreDefaults": "Restore defaults",

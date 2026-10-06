@@ -205,15 +205,16 @@ export class SubagentStreamBridge {
         const toolName = mapPiToolName(event.toolName);
         this.toolStarts.delete(event.toolCallId);
         const resultText = joinResultText(event.result);
+        const details = (event.result as { details?: unknown } | undefined)?.details;
+        const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
         if (event.isError) {
           this.emit({ type: 'toolFailed', toolUseId: event.toolCallId, toolName, error: resultText || 'Tool failed', parentToolUseId, durationMs });
+          // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
+          if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
         } else {
           const imageCount = resultImageCount(event.result);
           this.emit({ type: 'toolCompleted', toolUseId: event.toolCallId, toolName, result: resultText, parentToolUseId, durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
-          const details = (event.result as { details?: unknown } | undefined)?.details;
-          if (details && typeof details === 'object') {
-            this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata: normalizeToolDetails(details as Record<string, unknown>) });
-          }
+          if (metadata) this.emit({ type: 'toolMetadata', toolUseId: event.toolCallId, metadata });
         }
         break;
       }

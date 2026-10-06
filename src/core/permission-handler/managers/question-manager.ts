@@ -130,6 +130,7 @@ export class QuestionManager {
         type: 'requestQuestion',
         toolUseId,
         questions,
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       };
 

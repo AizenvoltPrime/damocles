@@ -198,6 +198,7 @@ function formatNumber(num: number): string {
       <span
         class="shrink-0 font-mono font-semibold text-(--d-text)"
         :title="costTooltip"
+        data-testid="composer-cost"
       >
         {{ unpriced ? t('common.unpriced') : costLabel(stats.costUsd) }}
       </span>

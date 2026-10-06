@@ -151,6 +151,20 @@ describe('RewindConfirmModal checkpoint notes', () => {
     expect(wrapper.emitted('confirm')).toEqual([['fork-conversation']]);
   });
 
+  it('explains a chat with no project folder and offers only the fork, in English and Greek', async () => {
+    const wrapper = await mountModal({ filesAffected: 0, files: undefined, notRewindable: { reason: 'no-project', params: {} } });
+    expect(q('[data-testid="rewind-not-rewindable"]')?.textContent).toContain('This chat has no project folder, so its files are not checkpointed.');
+    const disabled = qa('[role="alertdialog"] button[disabled]').map((b) => b.textContent ?? '');
+    expect(disabled.some((text) => text.includes('Rewind code to here'))).toBe(true);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true, cancelable: true }));
+    expect(wrapper.emitted('confirm')).toEqual([['fork-conversation']]);
+    mounted.pop()?.unmount();
+
+    i18n.global.locale.value = 'el';
+    await mountModal({ filesAffected: 0, files: undefined, notRewindable: { reason: 'no-project', params: {} } });
+    expect(q('[data-testid="rewind-not-rewindable"]')?.textContent).toContain('Αυτή η συνομιλία δεν έχει φάκελο έργου');
+  });
+
   it('renders in Greek, with the raw git error only as a parameter', async () => {
     i18n.global.locale.value = 'el';
     await mountModal({ skipped, notRewindable: { reason: 'baseline-failed', params: { error: 'fatal: Unable to create index.lock' } } });

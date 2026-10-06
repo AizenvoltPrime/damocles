@@ -28,6 +28,7 @@ import { backgroundResultsDetails, SUBAGENT_RESULTS_CUSTOM_TYPE } from '../backg
 import { SubagentStreamBridge } from '../subagent-stream-bridge';
 import { DAMOCLES_AGENT_STATUS_ENTRY } from '../../session-store/constants';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
+import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 
 // Pass-through spies so a test can prove a rejected resume id never reached the filesystem.
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -134,6 +135,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     permissionHandler: {} as never,
     isPlanMode: () => false,
     checkpointBaseline: { folder: '/w', wait: async () => {} },
+    shellCancelFor: () => new ShellCancelStore().forContext(() => undefined),
     postMessage: () => {},
     getParentSystemPrompt: () => '',
     getParentSessionId: () => 'parent-sid',
@@ -539,6 +541,20 @@ describe('AgentManager background keep-alive', () => {
       id: `e${branch.length}`, parentId: null, timestamp: new Date().toISOString(),
     } as unknown as SessionEntry);
     expect(mgr.deliverableLive()).toEqual([]);
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager.agentIdOfToolCall', () => {
+  it('names the subagent an Agent call started, running or queued, and none for any other call', () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    const running = mgr.spawn(spec(0));
+    const queued = mgr.spawn(spec(1));
+
+    expect(mgr.agentIdOfToolCall('tc0')).toBe(running);
+    expect(mgr.agentIdOfToolCall('tc1')).toBe(queued);
+    expect(mgr.agentIdOfToolCall('tc2')).toBeUndefined();
     mgr.dispose();
   });
 });

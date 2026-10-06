@@ -10,6 +10,7 @@ import { FEEDBACK_MARKER } from '../../../shared/types/constants';
 import type { BranchAgent } from '../subagents/agent-manager';
 import type { AgentRecord } from '../subagents/types';
 import { emptyAgentUsage } from '../../../shared/usage-accounting';
+import { CANCELLED_TOOL_DETAIL_KEY } from '../../../shared/types/session';
 
 vi.mock('fs/promises', () => ({ readFile: vi.fn() }));
 
@@ -124,10 +125,6 @@ describe('buildCustomTools — conformance', () => {
     const { tool } = build();
     expect(props(tool('Edit'))).toEqual(['file_path', 'old_string', 'new_string', 'replace_all']);
     expect(props(tool('PowerShell'))).toEqual(['command', 'timeout', 'description']);
-    expect(props(tool('TaskCreate'))).toEqual(['subject', 'description', 'activeForm', 'metadata']);
-    expect(props(tool('TaskUpdate'))).toEqual(['taskId', 'subject', 'description', 'activeForm', 'status', 'addBlocks', 'addBlockedBy', 'owner', 'metadata']);
-    expect(props(tool('TaskList'))).toEqual([]);
-    expect(props(tool('TaskGet'))).toEqual(['taskId']);
     expect(props(tool('AskUserQuestion'))).toEqual(['questions']);
   });
 
@@ -197,16 +194,16 @@ describe('buildCustomTools — behavior', () => {
     expect(permissionHandler.activatePlanMode).toHaveBeenCalled();
   });
 
-  it('ExitPlanMode rejection throws an error tool result carrying the denial marker (renders denied, not completed)', async () => {
+  it('ExitPlanMode rejection is an error tool result carrying the denial marker and its plan version (renders denied, not completed)', async () => {
     const ph = {
-      canUseTool: vi.fn(async () => ({ behavior: 'deny', message: `Plan rejected. ${FEEDBACK_MARKER} please add tests first` })),
+      canUseTool: vi.fn(async () => ({ behavior: 'deny', message: `Plan rejected. ${FEEDBACK_MARKER} please add tests first`, planShown: true })),
       getPermissionMode: vi.fn(() => 'plan'),
       activatePlanMode: vi.fn(async () => undefined),
     } as unknown as PermissionHandler;
     const { tool } = build(ph);
-    await expect(
-      tool('ExitPlanMode').execute('id', {}, undefined, undefined, {} as never),
-    ).rejects.toThrow(FEEDBACK_MARKER);
+    const result = await tool('ExitPlanMode').execute('id', {}, undefined, undefined, { sessionManager: { getBranch: () => [] } } as never);
+    expect(result).toMatchObject({ isError: true, details: { planVersion: 1 } });
+    expect(JSON.stringify(result.content)).toContain(FEEDBACK_MARKER);
   });
 
   it('AskUserQuestion cancellation throws with the denial marker (renders denied, not completed)', async () => {
@@ -219,64 +216,6 @@ describe('buildCustomTools — behavior', () => {
     await expect(
       tool('AskUserQuestion').execute('id', { questions: [] }, undefined, undefined, {} as never),
     ).rejects.toThrow(FEEDBACK_MARKER);
-  });
-
-  it('Task tools mirror the SDK contract: create returns id+subject, list/get reflect state', async () => {
-    const { tool } = build();
-
-    const created = parsed(await tool('TaskCreate').execute('id', { subject: 'Ship it', description: 'do the thing', activeForm: 'Shipping it' }, undefined, undefined, {} as never));
-    expect(created).toEqual({ task: { id: '1', subject: 'Ship it' } });
-
-    const listed = parsed(await tool('TaskList').execute('id', {}, undefined, undefined, {} as never));
-    expect(listed.tasks).toEqual([{ id: '1', subject: 'Ship it', status: 'pending', blockedBy: [] }]);
-
-    const got = parsed(await tool('TaskGet').execute('id', { taskId: '1' }, undefined, undefined, {} as never));
-    expect(got.task).toMatchObject({ id: '1', subject: 'Ship it', description: 'do the thing', status: 'pending', blocks: [], blockedBy: [] });
-  });
-
-  it('TaskUpdate changes status (with statusChange) and reports updated fields', async () => {
-    const { tool } = build();
-    await tool('TaskCreate').execute('id', { subject: 'A', description: 'a' }, undefined, undefined, {} as never);
-
-    const upd = parsed(await tool('TaskUpdate').execute('id', { taskId: '1', status: 'in_progress' }, undefined, undefined, {} as never));
-    expect(upd).toEqual({ success: true, taskId: '1', updatedFields: ['status'], statusChange: { from: 'pending', to: 'in_progress' } });
-
-    const got = parsed(await tool('TaskGet').execute('id', { taskId: '1' }, undefined, undefined, {} as never));
-    expect((got.task as { status: string }).status).toBe('in_progress');
-  });
-
-  it('TaskUpdate addBlockedBy records reciprocal blocks/blockedBy edges', async () => {
-    const { tool } = build();
-    await tool('TaskCreate').execute('id', { subject: 'A', description: 'a' }, undefined, undefined, {} as never);
-    await tool('TaskCreate').execute('id', { subject: 'B', description: 'b' }, undefined, undefined, {} as never);
-
-    await tool('TaskUpdate').execute('id', { taskId: '2', addBlockedBy: ['1'] }, undefined, undefined, {} as never);
-
-    const two = parsed(await tool('TaskGet').execute('id', { taskId: '2' }, undefined, undefined, {} as never));
-    expect((two.task as { blockedBy: string[] }).blockedBy).toEqual(['1']);
-    const one = parsed(await tool('TaskGet').execute('id', { taskId: '1' }, undefined, undefined, {} as never));
-    expect((one.task as { blocks: string[] }).blocks).toEqual(['2']);
-  });
-
-  it('TaskUpdate status:deleted removes the task and cleans dependency edges', async () => {
-    const { tool } = build();
-    await tool('TaskCreate').execute('id', { subject: 'A', description: 'a' }, undefined, undefined, {} as never);
-    await tool('TaskCreate').execute('id', { subject: 'B', description: 'b' }, undefined, undefined, {} as never);
-    await tool('TaskUpdate').execute('id', { taskId: '2', addBlockedBy: ['1'] }, undefined, undefined, {} as never);
-
-    await tool('TaskUpdate').execute('id', { taskId: '1', status: 'deleted' }, undefined, undefined, {} as never);
-
-    const listed = parsed(await tool('TaskList').execute('id', {}, undefined, undefined, {} as never));
-    expect((listed.tasks as Array<{ id: string }>).map((t) => t.id)).toEqual(['2']);
-    const two = parsed(await tool('TaskGet').execute('id', { taskId: '2' }, undefined, undefined, {} as never));
-    expect((two.task as { blockedBy: string[] }).blockedBy).toEqual([]);
-  });
-
-  it('TaskUpdate on a missing task fails without throwing', async () => {
-    const { tool } = build();
-    const res = parsed(await tool('TaskUpdate').execute('id', { taskId: '99' }, undefined, undefined, {} as never));
-    expect(res.success).toBe(false);
-    expect(res.error).toContain('99');
   });
 });
 
@@ -449,9 +388,28 @@ describe('GetSubagentResult', () => {
   });
 });
 
+describe('per-call cancel wiring', () => {
+  it('wraps both shell tools, so a call stopped at the gate never reaches its delegate', async () => {
+    const pi = fakePi();
+    const shellCancel = new ShellCancelStore();
+    const tools = buildCustomTools({ pi, cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', ...shellDeps(), shellCancel });
+    const gate = shellCancel.forContext(() => undefined);
+
+    for (const name of ['bash', 'PowerShell']) {
+      gate.admit(`${name}-1`, undefined);
+      expect(shellCancel.cancel(`${name}-1`)).toBe(true);
+      const result = await lookup(tools)(name).execute(`${name}-1`, { command: 'make' }, undefined, undefined, {} as never);
+      expect(result.details, name).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true });
+    }
+
+    const delegates = [pi.createBashToolDefinition, pi.createPowerShellToolDefinition].map((factory) => vi.mocked(factory).mock.results[0]!.value as { execute: ReturnType<typeof vi.fn> });
+    for (const delegate of delegates) expect(delegate.execute).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * `deliverUserNote` is per build context, and this is the seam that carries it from the deps object to
- * the shell tools. Which agent each context names is asserted in `tools/__tests__/note-delivery.test.ts`.
+ * the shell tools. Which agent each context names is asserted in `note-delivery.test.ts`.
  */
 describe('cancel note delivery wiring', () => {
   /** A bash delegate that settles only when the signal it was handed aborts, so a Stop lands on a live call. */

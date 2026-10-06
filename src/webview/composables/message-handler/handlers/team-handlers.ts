@@ -54,15 +54,5 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
     teamAgentDataLoaded: (msg) => {
       useTeamStore().handleAgentDataLoaded(msg.agentId, msg.messages);
     },
-    teamAgentPermissionRequest: (msg) => {
-      useTeamStore().handlePermissionRequest({
-        requestId: msg.requestId,
-        teamId: msg.teamId,
-        agentId: msg.agentId,
-        agentName: msg.agentName,
-        toolName: msg.toolName,
-        toolInput: msg.toolInput,
-      });
-    },
   };
 }

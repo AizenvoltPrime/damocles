@@ -3,8 +3,8 @@ import type { ElectronApplication, Page } from '@playwright/test';
 import { MAIN_SCRIPT } from './support/app';
 import { activeChat, expect, panelIdOf, test } from './support/fixtures';
 import { hermeticEnv } from './support/hermetic';
-import { OVERLAY_URL, overlayPage, SHELL_URL } from './support/shell';
-import { chatInput } from './support/ui';
+import { NOTIFIER_URL, OVERLAY_URL, overlayPage, popupPage, SHELL_URL } from './support/shell';
+import { chatInput, postFromWebview } from './support/ui';
 
 // Records shell.openExternal in main instead of launching the OS browser.
 async function recordOpenExternal(app: ElectronApplication): Promise<void> {
@@ -40,9 +40,12 @@ test.describe('renderer security at runtime', () => {
     const tab = await activeChat(app);
     await expect(chatInput(tab)).toBeVisible();
     const panelId = panelIdOf(tab);
+    // The popup window and its view exist only once a popup shows: a notice for a chat with no conversation yet.
+    await postFromWebview(tab, { type: 'openSessionLog' });
+    await popupPage(app);
 
-    const prefs = await app.evaluate(({ webContents, BrowserWindow }) => {
-      const views = webContents.getAllWebContents().filter((w) => w.getURL().startsWith('app://damocles/panel/') || w.getURL() === 'app://damocles/pane/index.html' || w.getURL() === 'app://damocles/overlay/index.html');
+    const prefs = await app.evaluate(({ webContents, BrowserWindow }, pages) => {
+      const views = webContents.getAllWebContents().filter((w) => w.getURL().startsWith('app://damocles/panel/') || pages.includes(w.getURL()));
       const windows = BrowserWindow.getAllWindows().map((w) => w.webContents);
       // Undocumented and absent from electron.d.ts, but it is how Electron's own spec suite reads applied preferences.
       type Prefs = { contextIsolation?: boolean; nodeIntegration?: boolean; sandbox?: boolean; webviewTag?: boolean };
@@ -50,8 +53,9 @@ test.describe('renderer security at runtime', () => {
         const p = (w as unknown as { getLastWebPreferences(): Prefs | null }).getLastWebPreferences();
         return { url: w.getURL(), contextIsolation: p?.contextIsolation, nodeIntegration: p?.nodeIntegration, sandbox: p?.sandbox, webviewTag: p?.webviewTag };
       });
-    });
-    expect(prefs.length).toBeGreaterThanOrEqual(3);
+    }, ['app://damocles/pane/index.html', OVERLAY_URL, NOTIFIER_URL]);
+    expect(prefs.length).toBeGreaterThanOrEqual(4);
+    expect(prefs.map((p) => p.url)).toContain(NOTIFIER_URL);
     for (const p of prefs) expect(p, p.url).toMatchObject({ contextIsolation: true, nodeIntegration: false, sandbox: true });
     for (const p of prefs) expect(p.webviewTag, p.url).not.toBe(true);
     if (process.platform !== 'linux') {
@@ -188,10 +192,10 @@ test.describe('renderer security at runtime', () => {
       const sender = all.find((w) => w.getURL().includes(`/panel/${fromId}/`));
       if (!target || !sender) throw new Error('views not found');
       const event = { sender, senderFrame: sender.mainFrame, processId: sender.getProcessId(), frameId: sender.mainFrame.routingId, returnValue: undefined, reply: () => {} };
-      return target.ipc.emit('damocles:overlay:toast-area', event, { width: 400, height: 400 });
+      return target.ipc.emit('damocles:overlay:answer', event, 'forged-id', { kind: 'dismissed' });
     }, { overlayUrl: OVERLAY_URL, fromId: panelIdOf(chat) });
     expect(delivered).toBe(true);
-    await expect.poll(() => desktop.output()).toContain(`[overlay] rejected damocles:overlay:toast-area from "app://damocles/panel/${panelIdOf(chat)}/index.html"`);
+    await expect.poll(() => desktop.output()).toContain(`[overlay] rejected damocles:overlay:answer from "app://damocles/panel/${panelIdOf(chat)}/index.html"`);
   });
 
   test('the unpackaged app has its own name, neither "Electron" nor the installed app\'s', async ({ launch }) => {

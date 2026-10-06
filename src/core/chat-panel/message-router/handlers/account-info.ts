@@ -2,7 +2,7 @@ import type { HostInstance } from "../../types";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 
 /**
- * Republish the account chip to every open panel. The chip is derived from the Claude auth mode, the
+ * Republish the account state to every open panel. It is derived from the Claude auth mode, the
  * OpenAI auth state and the prefer-API-key flag, all of which are process-wide, so a credential change
  * in one panel restates every panel's billing. The same credentials pick the memory judges' sub-call model.
  */

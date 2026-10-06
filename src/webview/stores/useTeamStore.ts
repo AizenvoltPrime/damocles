@@ -96,17 +96,6 @@ export const useTeamStore = defineStore('team', () => {
   // so a request holds only until that member's status changes.
   const agentCancelRequested = ref<ReadonlyMap<string, TeamAgentStatus>>(new Map());
 
-  interface PermissionRequest {
-    requestId: string;
-    teamId: string;
-    agentId: string;
-    agentName: string;
-    toolName: string;
-    toolInput: Record<string, unknown>;
-  }
-  const permissionQueue = ref<PermissionRequest[]>([]);
-  const activePermission = computed(() => permissionQueue.value[0] ?? null);
-
   const selectedTeam = computed(() =>
     selectedTeamId.value ? teams.value[selectedTeamId.value] ?? null : null
   );
@@ -575,14 +564,6 @@ export const useTeamStore = defineStore('team', () => {
     };
   }
 
-  function handlePermissionRequest(request: { requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }): void {
-    permissionQueue.value = [...permissionQueue.value, request];
-  }
-
-  function shiftPermissionQueue(): void {
-    permissionQueue.value = permissionQueue.value.slice(1);
-  }
-
   function $reset(): void {
     teams.value = {};
     isOverlayOpen.value = false;
@@ -593,7 +574,6 @@ export const useTeamStore = defineStore('team', () => {
     agentHistoryLoaded.value = new Set();
     selectedAgentId.value = null;
     isAgentOverlayOpen.value = false;
-    permissionQueue.value = [];
     cancelRequested.value = new Set();
     agentCancelRequested.value = new Map();
   }
@@ -649,10 +629,6 @@ export const useTeamStore = defineStore('team', () => {
     isAgentHistoryLoaded,
     getTeamForToolUseId,
     getTeamForResumeCall,
-    permissionQueue,
-    activePermission,
-    handlePermissionRequest,
-    shiftPermissionQueue,
     $reset,
   };
 });

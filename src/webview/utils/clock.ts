@@ -15,6 +15,23 @@ export function formatClock(time: Date | number, locale?: string, options: { sec
   return clockFormatter(locale, options).format(time);
 }
 
+const DAY_MS = 86_400_000;
+
+/**
+ * When a usage window resets, as Subscription usage and notifications word it: the clock time alone on `now`'s day,
+ * with the weekday within the coming week, with the date further out (a monthly window).
+ */
+export function formatResetTime(time: number, now: number, locale?: string): { day?: string; time: string } {
+  const clock = formatClock(time, locale);
+  const today = new Date(now);
+  if (new Date(time).toDateString() === today.toDateString()) return { time: clock };
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const day = time - startOfToday < 7 * DAY_MS
+    ? new Intl.DateTimeFormat(locale, { weekday: 'long' }).format(time)
+    : new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(time);
+  return { day, time: clock };
+}
+
 /** A date with its 24-hour clock time, e.g. "1/2/26, 14:05". */
 export function formatDateTime(time: Date | number, locale?: string, options: { dateStyle?: 'short' | 'medium'; seconds?: boolean } = {}): string {
   return new Intl.DateTimeFormat(locale, {

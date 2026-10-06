@@ -70,14 +70,5 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
         postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages: [] });
       }
     },
-
-    teamAgentPermissionResponse: async (msg, ctx) => {
-      if (msg.type !== "teamAgentPermissionResponse") return;
-      if (!ctx.session.teamService) {
-        log('[TeamHandlers] teamAgentPermissionResponse ignored: team service unavailable on panel %s', ctx.panelId);
-        return;
-      }
-      ctx.session.teamService.resolvePermission(msg.requestId, msg.behavior);
-    },
   };
 }

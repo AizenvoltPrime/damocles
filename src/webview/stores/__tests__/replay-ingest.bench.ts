@@ -9,7 +9,6 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useSessionStore } from '@/stores/useSessionStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
-import { useTaskStore } from '@/stores/useTaskStore';
 import { useTeamStore } from '@/stores/useTeamStore';
 
 type ReplayItem = Extract<ExtensionToWebviewMessage, { type: 'userReplay' | 'assistantReplay' }>;
@@ -70,7 +69,6 @@ function ingest(items: readonly ReplayItem[]): void {
       sessionStore: useSessionStore(),
       streamingStore: useStreamingStore(),
       subagentStore: useSubagentStore(),
-      taskStore: useTaskStore(),
       teamStore: useTeamStore(),
     },
     bridge: { postMessage: () => {}, getState: () => undefined, setState: () => {} },

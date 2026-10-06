@@ -6,7 +6,6 @@ import type { HandlerContext, StoreContext } from '../../types';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useTaskStore } from '@/stores/useTaskStore';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 
 function context(): HandlerContext {
@@ -146,7 +145,6 @@ describe('toolCompleted for an Agent card', () => {
       streamingStore: useStreamingStore(),
       subagentStore: useSubagentStore(),
       uiStore: useUIStore(),
-      taskStore: useTaskStore(),
     } as unknown as StoreContext;
     return { stores } as unknown as HandlerContext;
   }
@@ -240,7 +238,6 @@ describe('toolCompleted image count', () => {
       streamingStore: useStreamingStore(),
       subagentStore: useSubagentStore(),
       uiStore: useUIStore(),
-      taskStore: useTaskStore(),
     } as unknown as StoreContext;
     return { stores } as unknown as HandlerContext;
   }

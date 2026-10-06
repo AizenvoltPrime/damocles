@@ -14,7 +14,6 @@ import { useSessionStore } from '@/stores/useSessionStore';
 import { useStreamingStore } from '@/stores/useStreamingStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSubagentStore } from '@/stores/useSubagentStore';
-import { useTaskStore } from '@/stores/useTaskStore';
 import { createHandlerRegistry } from '@/composables/message-handler/handler-registry';
 import type { HandlerContext, HandlerRegistry } from '@/composables/message-handler/types';
 import { i18n } from '@/i18n';
@@ -182,7 +181,7 @@ describe('a resumed team replayed from history', () => {
     const ctx = {
       stores: {
         sessionStore: useSessionStore(), streamingStore: useStreamingStore(), uiStore: useUIStore(),
-        subagentStore: useSubagentStore(), taskStore: useTaskStore(), teamStore: useTeamStore(),
+        subagentStore: useSubagentStore(), teamStore: useTeamStore(),
       },
       bridge: { postMessage: (m: WebviewToExtensionMessage) => { posted.push(m); } },
     } as unknown as HandlerContext;

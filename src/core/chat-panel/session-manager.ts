@@ -109,6 +109,7 @@ export class SessionManager {
     piSession = new PiSession({
       cwd: folder.fsPath,
       settingsFolder: settingsFolderOf(folder),
+      projectScope: folder.projectScope,
       permissionHandler,
       onMessage: (message) => this.postMessage(host, message),
       onSessionIdChange: (sessionId, stored) => {

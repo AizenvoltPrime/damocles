@@ -183,7 +183,6 @@ describe("approveEdit — saving an always-allow rule", () => {
     const manager = new ApprovalManager(state, diffManager, () => vi.fn());
     const { deps, ctx, platform } = setup();
     const permissionHandler = {
-      autoApproveSubagent: vi.fn(),
       resolveApproval: manager.resolveApproval.bind(manager),
     };
     const approveEdit = createPermissionHandlers(deps).approveEdit!;

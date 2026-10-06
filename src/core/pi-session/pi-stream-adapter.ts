@@ -528,8 +528,8 @@ export class PiStreamAdapter {
         const args = (event.args ?? {}) as Record<string, unknown>;
         this.ensureToolStreaming(event.toolCallId, event.toolName, args);
         this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName });
-        // The gate (canUseTool) ran in `tool_call`; once pi begins executing, transition the card
-        // from awaiting-approval/streaming to running. Mirrors the SDK path's PreToolUse `toolPending`.
+        // pi emits this before `beforeToolCall`, where the gate runs, so the card shows running while the
+        // gate decides; a prompt moves it to awaiting approval, and the gate reports it running again.
         this.emit({
           type: 'toolPending',
           toolUseId: event.toolCallId,
@@ -729,16 +729,17 @@ export class PiStreamAdapter {
     const durationMs = this.elapsed(toolCallId) * 1000;
     const toolName = mapPiToolName(piName);
     this._tools.delete(toolCallId);
+    const details = (result as { details?: unknown } | undefined)?.details;
+    const metadata = details && typeof details === 'object' ? normalizeToolDetails(details as Record<string, unknown>) : undefined;
     if (isError) {
       this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', durationMs });
+      // An error result keeps the details a tool returned with it (a thrown error's are empty), and a reload shows them.
+      if (metadata && Object.keys(metadata).length > 0) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
       return;
     }
     const imageCount = resultImageCount(result);
     this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), durationMs, ...(imageCount > 0 ? { imageCount } : {}) });
-    const details = (result as { details?: unknown } | undefined)?.details;
-    if (details && typeof details === 'object') {
-      this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata: normalizeToolDetails(details as Record<string, unknown>) });
-    }
+    if (metadata) this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata });
   }
 
   /**

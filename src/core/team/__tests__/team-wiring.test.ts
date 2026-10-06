@@ -102,7 +102,7 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
       },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
-      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its second argument. The
       // snapshot is NON-EMPTY and built by the real builder — see `team-mcp-fixture.ts` for why an
       // empty one made every spawn-site mutation unobservable.
       buildAgentToolset: () => {
@@ -110,7 +110,7 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
         toolsetSnapshots.push(mcp);
         return { toolNames, customTools, mcp };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset) => {
+      buildExtensionFactory: (_agent: unknown, mcp: NestedMcpToolset) => {
         factoryMcpSnapshots.push(mcp);
         return (() => undefined) as never;
       },
@@ -596,7 +596,7 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     // The lead's `createSession` closure is executed by exactly one path in the whole suite — this one.
     // Everything else either stubs `agentRunner.startAgent` wholesale (so the closure never runs) or
     // discards the options. That left the lead half of the spawn invariant unguarded: replacing its
-    // third argument with a SECOND `buildAgentToolset(leadCtx).mcp` read passed all 125 tests.
+    // `mcp` argument with a SECOND `buildAgentToolset(leadCtx).mcp` read passed all 125 tests.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'team-lead-spawn-'));
     const leadSession = new FakeSession({ onPrompt: (_t, sess) => sess.emit({ type: 'turn_end' }) });
     const w = makeWiring([], { cwd });

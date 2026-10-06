@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createFakePlatform, type FakePlatform } from "../../../../../__mocks__/fake-platform";
 import { createChatHandlers } from "../chat-handlers";
@@ -10,7 +11,7 @@ import type { FolderTarget } from "../../../../workspace-folders/folder-registry
 import type { HandlerContext, HandlerDependencies } from "../../types";
 import type { HostInstance } from "../../../types";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../../../../shared/types/messages";
-import { SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
+import { SESSION_LEASE_DIR, SESSION_LEASE_STALE_MS, releaseSessionLease, sessionLeasePath, sessionLeasesOf, type SessionLeaseHolder } from "../../../../pi-session/session-store/session-lease";
 
 vi.mock("../../../../pi-session/session-store", () => ({ renamePiSession: vi.fn(), deletePiSession: vi.fn(), tagPiSession: vi.fn() }));
 vi.mock("../../../../pi-session/pi-runtime", () => ({ PiRuntime: { liveSessionMutator: () => undefined } }));
@@ -32,6 +33,8 @@ function makeSession(holding: string | null) {
     holdsSession: (id: string) => resumeTarget === id,
     hasConversation: () => resumeTarget !== null,
     onSessionLeaseLost: () => undefined,
+    onSessionReleaseRequested: async () => undefined,
+    setPanelToken: vi.fn(),
     setResumeSession: vi.fn((id: string | null) => { resumeTarget = id; }),
     initializeEarly: vi.fn(async () => undefined),
     onWebviewReady: () => undefined,
@@ -145,6 +148,22 @@ function heldByAnotherWindow(sessionId: string, heartbeatAgoMs = 0): void {
 }
 
 const OTHER_WINDOW = "This conversation is open in another Damocles window.";
+const OPEN_HERE = "Open here";
+const TOKEN = "11111111-2222-4333-8444-555555555555";
+const OTHER_TOKEN = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+const NONCE = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+
+const requestFile = (sessionId: string): string => path.join(SESSION_LEASE_DIR, `${sessionId}.release`);
+
+/** The owner record the other window wrote beside its lease, naming the panel token it holds the session for. */
+function ownedBy(sessionId: string, panelToken: string | null): void {
+  const file = path.join(SESSION_LEASE_DIR, `${sessionId}.owner`);
+  fs.writeFileSync(file, JSON.stringify({ v: 1, nonce: NONCE, pid: 4242, hostname: "remote-host", panelToken, acquiredAt: Date.now() }));
+  foreignLeases.push(file, requestFile(sessionId));
+}
+
+/** The other window let go, as its poll does once it read a request naming its nonce. */
+const letsGo = (sessionId: string): void => fs.rmSync(sessionLeasePath(sessionId), { recursive: true, force: true });
 
 const infos = () => platform.notifications.calls.filter((c) => c.level === "info").map((c) => c.message);
 
@@ -381,6 +400,7 @@ describe("a conversation another Damocles window holds", () => {
     const h = harness(mine);
     h.folderOfSession.set("sess-held", FOLDER_A);
     heldByAnotherWindow("sess-held");
+    ownedBy("sess-held", TOKEN);
     vi.mocked(renamePiSession).mockClear();
     vi.mocked(tagPiSession).mockClear();
 
@@ -390,6 +410,8 @@ describe("a conversation another Damocles window holds", () => {
     expect(renamePiSession).not.toHaveBeenCalled();
     expect(tagPiSession).not.toHaveBeenCalled();
     expect(infos()).toEqual([OTHER_WINDOW, OTHER_WINDOW]);
+    // Not an open: a rename or tag is never offered the takeover, even when the holder could be asked.
+    expect(platform.notifications.calls.map((c) => c.actions)).toEqual([[], []]);
   });
 
   it("panel restore after that window stopped: says so, then restores once its lease turns stale", async () => {
@@ -426,5 +448,183 @@ describe("a conversation another Damocles window holds", () => {
 
     expect(mine.target()).toBe("sess-started-here");
     expect(h.loadSessionHistory).not.toHaveBeenCalled();
+  });
+});
+
+const readyAs = (savedSessionId: string, panelToken?: string) =>
+  ({ type: "ready", savedSessionId, ...(panelToken !== undefined ? { panelToken } : {}) }) as WebviewToExtensionMessage;
+
+describe("restoring a conversation another live Damocles process holds", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  it("a: a holder whose heartbeat stopped keeps the retry at stale, even when it names this panel", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-a", 10_000);
+    ownedBy("sess-a", TOKEN);
+
+    await h.session.ready!(readyAs("sess-a", TOKEN), mine.ctx);
+
+    expect(infos()).toEqual([expect.stringMatching(/opens here in about \d+ seconds/)]);
+    expect(fs.existsSync(requestFile("sess-a"))).toBe(false);
+  });
+
+  it("b: asks the same panel's earlier holder with no toast, and opens the conversation once it let go", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-b");
+    ownedBy("sess-b", TOKEN);
+
+    await h.session.ready!(readyAs("sess-b", TOKEN), mine.ctx);
+
+    expect(JSON.parse(fs.readFileSync(requestFile("sess-b"), "utf8"))).toMatchObject({ v: 1, nonce: NONCE, requesterPid: process.pid });
+    // Opened empty on its own folder, as for any refusal, until the holder lets go.
+    expect(mine.target()).toBeNull();
+    expect(h.switchPanelFolder).not.toHaveBeenCalled();
+
+    letsGo("sess-b");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mine.target()).toBe("sess-b");
+    expect(h.order).toEqual(expect.arrayContaining(["resumeAccepted", "load:/a:sess-b", "sessionStarted"]));
+    expect(platform.notifications.calls).toEqual([]);
+    expect(fs.existsSync(requestFile("sess-b"))).toBe(false);
+  });
+
+  it("b: still opens the conversation once the holder let go when the rest of the restore threw", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-b4");
+    ownedBy("sess-b4", TOKEN);
+    h.switchPanelFolder.mockRejectedValueOnce(new Error("switch failed"));
+
+    await expect(h.session.ready!({ ...readyAs("sess-b4", TOKEN), savedWorkspaceFolderKey: FOLDER_B.key } as WebviewToExtensionMessage, mine.ctx)).rejects.toThrow("switch failed");
+    letsGo("sess-b4");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mine.target()).toBe("sess-b4");
+  });
+
+  it("b: leaves alone a panel the user started a conversation in while the holder let go", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-b2");
+    ownedBy("sess-b2", TOKEN);
+
+    await h.session.ready!(readyAs("sess-b2", TOKEN), mine.ctx);
+    mine.session.setResumeSession("sess-started-here");
+    letsGo("sess-b2");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mine.target()).toBe("sess-started-here");
+    expect(h.loadSessionHistory).not.toHaveBeenCalled();
+    expect(platform.notifications.calls).toEqual([]);
+  });
+
+  it("b: a holder that never lets go is refused with the choice once the request expired", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-b3");
+    ownedBy("sess-b3", TOKEN);
+
+    await h.session.ready!(readyAs("sess-b3", TOKEN), mine.ctx);
+    await vi.advanceTimersByTimeAsync(19_000);
+    expect(platform.notifications.calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(platform.notifications.calls).toEqual([expect.objectContaining({ level: "info", actions: [OPEN_HERE] })]);
+    expect(fs.existsSync(requestFile("sess-b3"))).toBe(false);
+    expect(mine.target()).toBeNull();
+  });
+
+  it("c: another panel's holder is refused with Open here, and nothing is asked until the user chooses", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-c");
+    ownedBy("sess-c", TOKEN);
+
+    await h.session.ready!(readyAs("sess-c", OTHER_TOKEN), mine.ctx);
+
+    expect(platform.notifications.calls).toEqual([expect.objectContaining({ level: "info", actions: [OPEN_HERE] })]);
+    expect(fs.existsSync(requestFile("sess-c"))).toBe(false);
+    expect(mine.target()).toBeNull();
+  });
+
+  it("c: a panel with no token never matches a holder that has none either", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-c2");
+    ownedBy("sess-c2", null);
+
+    await h.session.ready!(readyAs("sess-c2"), mine.ctx);
+    await h.session.ready!(readyAs("sess-c2", "not-a-uuid"), mine.ctx);
+
+    expect(platform.notifications.calls.map((c) => c.actions)).toEqual([[OPEN_HERE], [OPEN_HERE]]);
+    expect(fs.existsSync(requestFile("sess-c2"))).toBe(false);
+  });
+
+  it("a holder that left no owner record cannot be asked, so the refusal offers nothing", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-old");
+
+    await h.session.ready!(readyAs("sess-old", TOKEN), mine.ctx);
+
+    expect(platform.notifications.calls).toEqual([expect.objectContaining({ level: "info", message: OTHER_WINDOW, actions: [] })]);
+  });
+
+  it("Open here asks the holder named at the time of the choice, then opens the conversation in the refused panel", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-x");
+    ownedBy("sess-x", TOKEN);
+    platform.notifications.answerWith((call) => (call.actions.includes(OPEN_HERE) ? OPEN_HERE : undefined));
+
+    await h.session.ready!(readyAs("sess-x", OTHER_TOKEN), mine.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(JSON.parse(fs.readFileSync(requestFile("sess-x"), "utf8"))).toMatchObject({ nonce: NONCE });
+    letsGo("sess-x");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mine.target()).toBe("sess-x");
+    expect(h.loadSessionHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("history open: the refusal offers Open here, and choosing it resumes the conversation in that panel", async () => {
+    const mine = makePanel("host-1", "sess-mine");
+    const h = harness(mine);
+    heldByAnotherWindow("sess-y");
+    ownedBy("sess-y", OTHER_TOKEN);
+    platform.notifications.answerWith((call) => (call.actions.includes(OPEN_HERE) ? OPEN_HERE : undefined));
+
+    await h.chat.resumeSession!(resume("sess-y"), mine.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mine.target()).toBe("sess-mine");
+    letsGo("sess-y");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(mine.target()).toBe("sess-y");
+    expect(h.order).toEqual(expect.arrayContaining(["resumeAccepted", "load:/a:sess-y", "sessionStarted"]));
+  });
+
+  it("Open here on a panel that closed meanwhile asks nothing", async () => {
+    const mine = makePanel("host-1", null);
+    const h = harness(mine);
+    heldByAnotherWindow("sess-z");
+    ownedBy("sess-z", TOKEN);
+    let choose!: (choice: string) => void;
+    const chosen = new Promise<string>((resolve) => { choose = resolve; });
+    const info = vi.spyOn(platform.notifications, "info").mockReturnValueOnce(chosen as Promise<string | undefined>);
+
+    await h.session.ready!(readyAs("sess-z", OTHER_TOKEN), mine.ctx);
+    (h.deps as unknown as { getPanels: () => Map<string, HostInstance> }).getPanels = () => new Map();
+    choose(OPEN_HERE);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(info).toHaveBeenCalledWith(expect.any(String), OPEN_HERE);
+    expect(fs.existsSync(requestFile("sess-z"))).toBe(false);
   });
 });

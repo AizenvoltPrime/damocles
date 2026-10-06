@@ -9,10 +9,12 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
 import { buildUnaskedDenyResult } from '../utils';
 
+const NOT_SHOWN = 'Damocles could not show the plan to the user for approval, so this tool call was denied';
+const ABORTED_BEFORE_ANSWER = 'The session was aborted before the user answered this plan';
+
 export class PlanManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
-  private onPlanModeActivated: (() => Promise<void>) | null = null;
   private getPlanContent: (() => Promise<string | null>) | null = null;
 
   constructor(
@@ -23,26 +25,8 @@ export class PlanManager {
     this.getPostMessage = getPostMessage;
   }
 
-  setOnPlanModeActivated(callback: () => Promise<void>): void {
-    this.onPlanModeActivated = callback;
-  }
-
   setPlanContentResolver(fn: () => Promise<string | null>): void {
     this.getPlanContent = fn;
-  }
-
-  async activatePlanMode(): Promise<void> {
-    if (this.state.permissionMode === 'plan') {
-      return;
-    }
-
-    this.state.permissionMode = 'plan';
-
-    try {
-      await this.onPlanModeActivated?.();
-    } catch (err) {
-      log('[PlanManager] activatePlanMode callback failed:', err);
-    }
   }
 
   async handleExitPlanMode(_input: Record<string, unknown>, context: CanUseToolContext): Promise<PermissionResult> {
@@ -58,8 +42,9 @@ export class PlanManager {
 
     const result = await this.requestPlanApprovalFromWebview(planContent, context);
 
+    const shown = result.shown ? { planShown: true as const } : {};
     if (!result.approved && !result.userAnswered) {
-      return buildUnaskedDenyResult(undefined, 'Damocles could not show the plan to the user for approval, so this tool call was denied');
+      return { ...buildUnaskedDenyResult(result.customMessage, NOT_SHOWN), ...shown };
     }
     if (!result.approved) {
       const message = result.feedback
@@ -68,10 +53,12 @@ export class PlanManager {
       return {
         behavior: 'deny',
         message,
+        ...shown,
       };
     }
 
     return {
+      ...shown,
       behavior: 'allow',
       updatedInput: {
         approved: true,
@@ -91,16 +78,18 @@ export class PlanManager {
     }
 
     return new Promise<PlanApprovalResult>((resolve) => {
+      let shown = false;
+      // Every way the request settles goes through here, so a result after the post says the plan was shown.
+      const settle = (result: PlanApprovalResult) => resolve(shown ? { ...result, shown: true } : result);
       const abortHandler = () => {
         log('[PlanManager] Abort signal on plan approval: toolUseId=%s', toolUseId);
         this.state.removePendingPlanApproval(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
-          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
-        resolve({ approved: false });
+        settle({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
       };
 
       const cleanup = () => {
@@ -111,6 +100,8 @@ export class PlanManager {
         type: 'requestPlanApproval',
         toolUseId,
         planContent,
+        ...(context.planVersion !== undefined ? { planVersion: context.planVersion } : {}),
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       };
 
@@ -118,7 +109,9 @@ export class PlanManager {
         signal: context.signal,
         toolUseId,
         register: () => {
-          this.state.addPendingPlanApproval(toolUseId, { resolve, cleanup, request });
+          this.state.addPendingPlanApproval(toolUseId, { resolve: settle, cleanup, request });
+          // Set before posting: a webview can answer within the post.
+          shown = true;
           postMessage(request);
         },
         onAborted: abortHandler,

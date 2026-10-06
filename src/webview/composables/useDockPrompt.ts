@@ -31,6 +31,35 @@ export function useDockPromptDigits(card: MaybeRefOrGetter<HTMLElement | null | 
   });
 }
 
+// Dispatched on a dock prompt's options list by `focusDockPrompt`.
+const FOCUS_OPTIONS_EVENT = 'damocles:focus-dock-options';
+const FORM_FIELD = 'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role="checkbox"]';
+const FOCUSABLE = 'button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Focus a dock prompt for a user action that names it (a notification's Review), whatever holds focus: its
+ * options list, else its first form field, else its first control. The mount-time hold in
+ * `useDockPromptOptionsFocus` does not apply.
+ */
+export function focusDockPrompt(card: HTMLElement): void {
+  const options = card.querySelector<HTMLElement>('[role="listbox"]');
+  // A listbox that is not a `DockPromptOptions` leaves the event unanswered, and the card's fields take focus.
+  const answered = options ? !options.dispatchEvent(new CustomEvent(FOCUS_OPTIONS_EVENT, { cancelable: true })) : false;
+  if (!answered) (card.querySelector<HTMLElement>(FORM_FIELD) ?? card.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+}
+
+/** Answers `focusDockPrompt` on the options list: releases the hold and focuses the highlighted option, or the first. */
+export function useDockPromptOptionsExplicitFocus(list: MaybeRefOrGetter<HTMLElement | null | undefined>): void {
+  const root = injectListboxRootContext();
+  useEventListener(() => toValue(list), FOCUS_OPTIONS_EVENT, (event: Event) => {
+    event.preventDefault();
+    root.focusable.value = true;
+    const highlighted = root.highlightedElement.value;
+    if (highlighted?.isConnected) root.changeHighlight(highlighted);
+    else root.highlightFirstItem();
+  });
+}
+
 /**
  * A dock prompt's options take focus as they mount, unless focus is in an editable field, in another dock prompt or in
  * an open overlay. Called inside reka's `ListboxRoot`, which focuses its first highlighted item one tick after mount.

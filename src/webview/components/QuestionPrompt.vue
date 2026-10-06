@@ -9,6 +9,7 @@ import { Textarea } from '@/components/ui/textarea';
 import SlidingIndicator from './SlidingIndicator.vue';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
+import { useAttentionCard } from '@/composables/useAttention';
 import { useQuestionStore } from '@/stores/useQuestionStore';
 import type { Question, QuestionAnnotations } from '@shared/types/permissions';
 
@@ -28,6 +29,7 @@ const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 const customInputValue = ref('');
 const previewingOptionLabel = ref<string | null>(null);
 const cardRef = ref<HTMLElement | null>(null);
+useAttentionCard('question', cardRef);
 const tabRow = ref<HTMLElement | null>(null);
 const { box: tabBox, animate: tabAnimate } = useSlidingIndicator(tabRow, '[data-question-tab]', () => store.currentTabIndex);
 
@@ -176,7 +178,7 @@ watch(() => store.currentTabIndex, () => {
   <div
     v-if="visible && store.pendingQuestion"
     ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-accent)]"
     role="region"
     :aria-label="t('question.ariaLabel')"
     data-dock-prompt

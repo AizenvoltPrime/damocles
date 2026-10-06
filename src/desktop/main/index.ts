@@ -18,7 +18,8 @@ import { settingsFolderOf } from '../../core/workspace-folders/folder-registry';
 import type { Disposable } from '../../platform/disposable';
 import type { PanelOptions } from '../../platform/window-service';
 import type { StoredSession } from '../../shared/types/session';
-import { MAX_OVERLAY_TAGS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import { MAX_OVERLAY_TAGS, OVERLAY_CHANNELS, type OverlayAnswer, type OverlayRequest } from '../preload/overlay-channels';
+import type { NotificationProject } from '../preload/notifications';
 import {
   MAX_TAG_LENGTH,
   NEW_CHAT_ID_PREFIX,
@@ -32,13 +33,14 @@ import {
   type ShellProject,
   type ShellState,
 } from '../preload/shell-channels';
+import { trayIcon, windowIcon } from './app-icon';
 import { startCore, type DesktopCore } from './bootstrap';
 import { chatsToUnload, ChatWorkQueue, isActiveActivity } from './chat-pool';
 import { resolveChatTab } from './chat-tab-target';
 import { storedTitle } from './chat-title';
 import { parseUserDataDir } from './cli';
 import { CoreHost } from './core-host';
-import { NOTIFICATIONS_SETTING, RESTORE_LAYOUT_SETTING, THEME_SETTING, type DesktopLanguageSetting } from './desktop-configuration';
+import { NOTIFICATION_SOUND_SETTING, NOTIFICATIONS_SETTING, RESTORE_LAYOUT_SETTING, THEME_SETTING, type DesktopLanguageSetting } from './desktop-configuration';
 import {
   installApplicationMenu,
   popupApplicationMenu,
@@ -48,8 +50,11 @@ import {
   type FocusPart,
   type MenuState,
 } from './menu';
+import { createMessageAsker } from './message-dialog';
 import { installCaCertificates } from './network/ca-certificates';
 import { installProxyDispatcher } from './network/proxy-dispatcher';
+import { DO_NOT_DISTURB_KEY, handleCenterChannels, NotificationCenter, runEntryAction, type ChatKey, type ChatRef, type EntryActionDeps } from './notification-center';
+import { NotifierHost } from './notifier';
 import { OverlayHost, overlayHtml } from './overlay';
 import { OverlaySettings } from './overlay-settings';
 import type { SettingsAccountId, SettingsSectionId } from '../../shared/settings-sections';
@@ -69,10 +74,13 @@ import { restrictPermissions, hardenWebContents } from './security';
 import { paneHtml } from './pane';
 import { reportFailure, ShellHost, shellHtml, type ShellActions } from './shell';
 import { mergeLoginShellEnv, probeGit } from './shell-env';
-import { currentTheme, currentThemeKind, followThemeSettings, onThemeChange, THEME_BACKGROUND, titleBarOverlay } from './theme';
+import { TaskbarBadges } from './taskbar-badges';
+import { TaskbarCounter } from './taskbar-counter';
+import { currentTheme, currentThemeKind, followThemeSettings, LIGHT_THEME, onThemeChange, THEME_BACKGROUND, titleBarOverlay } from './theme';
 import { AppTray } from './tray';
 import { TrustStore } from './trust-store';
 import { loadAutoUpdater, startUpdater } from './updater';
+import { UsageWarningStore } from './usage-warning-store';
 import { PanelViews, type DesktopPanel, type PaneContext } from './views';
 import {
   clampToWorkAreas,
@@ -84,7 +92,7 @@ import {
 } from './window-layout-store';
 
 // electron-builder.yml appId: the Windows AppUserModelID, the macOS bundle id and the update identity. The unpackaged app's own
-// ID keeps its Start Menu shortcut, which Windows reads for the taskbar icon and notifications, apart from an installed copy's.
+// ID keeps its taskbar button group, and any Start Menu shortcut or pin carrying that ID, apart from an installed copy's.
 const APP_ID = app.isPackaged ? 'io.github.aizenvoltprime.damocles' : 'io.github.aizenvoltprime.damocles.dev';
 // The packaged package.json name. The unpackaged app sets it too, or Electron names it "Electron" and it shares its
 // userData folder and safeStorage key with every other unpackaged Electron app.
@@ -139,11 +147,81 @@ class DesktopApp {
   private readonly projects: ProjectList;
   private readonly state: DesktopKeyValueState;
   private readonly trust: TrustStore;
-  private readonly notifications = createDesktopNotificationService({
+  private readonly usageWarnings: UsageWarningStore;
+  // Every desktop question: the overlay's dialog, else the OS message box (D41).
+  private readonly ask = createMessageAsker({
+    overlay: () => this.overlay,
     window: () => this.window,
-    toasts: () => this.overlay?.toastSink,
-    osNotifications: () => this.requirePlatform().settings.get<boolean>(NOTIFICATIONS_SETTING, true),
-    showWindow: () => this.showWindow(),
+    focused: () => webContents.getFocusedWebContents() ?? undefined,
+    log: (line) => log(line),
+  });
+  // D52: the taskbar badge, drawn by the overlay page.
+  private readonly taskbarBadges = new TaskbarBadges({
+    rasterize: (art) => this.overlay?.rasterize(art) ?? Promise.resolve(undefined),
+    scaleFactor: () => screen.getPrimaryDisplay().scaleFactor,
+    // White on red in every theme; the light palette's pair is the one at AA.
+    colors: { fill: LIGHT_THEME['--d-danger']!, text: LIGHT_THEME['--d-on-danger']! },
+    log: (line) => log(line),
+  });
+  // D52: popups in a window of the app's own outside the main window, which the OS notification settings do not hold back.
+  private readonly notifier: NotifierHost = new NotifierHost({
+    platform: process.platform,
+    preloadPath: path.join(__dirname, 'preload-overlay.js'),
+    state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform() }),
+    // A popup's action brings the window forward before it runs.
+    resolveToast: (id, action) => {
+      if (action !== undefined) this.showWindow();
+      this.notificationCenter.resolveToast(id, action);
+    },
+    holdToast: (id, held) => this.notificationCenter.holdToast(id, held),
+    leave: () => this.leavePopups(),
+    blurred: () => {
+      this.toastFocusOrigin = undefined;
+    },
+    pendingToasts: () => this.notificationCenter.pendingToasts(),
+    log: (line) => log(line),
+  });
+  private readonly taskbar = new TaskbarCounter({
+    platform: process.platform,
+    window: () => this.window,
+    badge: (label) => this.taskbarBadges.badge(label),
+    setBadgeCount: (count) => app.setBadgeCount(count),
+    describe: (count) => {
+      const { t } = this.requireLocalization();
+      return count === 1 ? t('1 new notification') : t('{0} new notifications', String(count));
+    },
+    log: (line) => log(line),
+  });
+  private readonly notificationCenter: NotificationCenter = new NotificationCenter({
+    doNotDisturb: () => this.state.global.get<boolean>(DO_NOT_DISTURB_KEY, false) === true,
+    setDoNotDisturb: (on) => this.state.global.update(DO_NOT_DISTURB_KEY, on),
+    popupsEnabled: () => this.platform?.settings.get<boolean>(NOTIFICATIONS_SETTING, true) !== false,
+    windowFocused: () => this.window?.isFocused() ?? false,
+    chatSelected: (corePanelId) => {
+      const selected = this.views?.selected();
+      return selected !== undefined && selected === this.panelOfCore(corePanelId);
+    },
+    viewedChat: () => this.viewedChat(),
+    flash: (on) => this.flash('notifications', on),
+    describeChat: (corePanelId) => this.describeChat(corePanelId),
+    // Only while the main window exists, so the popup window never keeps the app running; from its closed event on it reports destroyed.
+    popups: () => (this.window && !this.window.isDestroyed() ? this.notifier.sink() : undefined),
+    chime: (tone) => {
+      if (this.platform?.settings.get<boolean>(NOTIFICATION_SOUND_SETTING, true) !== false) this.notifier.chime(tone);
+    },
+    usageWarningShown: (crossing) => this.usageWarnings.shown(crossing),
+    recordUsageWarning: (crossing) => {
+      void this.usageWarnings.record(crossing);
+    },
+    run: (action) => {
+      runEntryAction(action, this.entryActionDeps).catch(this.report('A notification action'));
+    },
+    changed: () => this.notificationsChanged(),
+    log: (line) => log(line),
+  });
+  private readonly notifications = createDesktopNotificationService({
+    notice: (severity, message, actions) => this.notificationCenter.notice(severity, message, actions),
+    ask: this.ask,
     t: (message) => this.requireLocalization().t(message),
     log: (line) => log(line),
   });
@@ -183,8 +261,13 @@ class DesktopApp {
   private retentionScheduled = false;
   private readonly chatFoldersChanged = new Emitter<[]>('chat-folders', (line) => log(line));
   private shellFocusedPart: ShellFocusPart | null = null;
-  // The part F6 moved keyboard focus from into the toast stack, until focus is anywhere else.
+  // The part F6 moved keyboard focus from into the desktop popups, until focus is anywhere else or the popup window loses it.
   private toastFocusOrigin: FocusPart | undefined;
+  // What the main window focuses once it gains focus (a part left from the popups, or an overlay popup opened while it was
+  // unfocused), until a later focusOn places focus.
+  private focusOnActivation: FocusPart | 'overlay' | undefined;
+  // Why the taskbar button flashes: an entry waiting on the user, or an overlay popup waiting for the window to activate.
+  private readonly flashReasons = new Set<'notifications' | 'overlay'>();
 
   // The stores log what they skip while reading their files, so they are read only once the log sink is installed.
   constructor() {
@@ -194,7 +277,8 @@ class DesktopApp {
     this.windowLayout = new WindowLayoutStore(this.userDataDir, (line) => log(line));
     this.projects = new ProjectList(this.userDataDir, (line) => log(line));
     this.state = createDesktopKeyValueState(this.userDataDir, (line) => log(line));
-    this.trust = new TrustStore(this.userDataDir, () => this.window, (message, ...args) => this.requireLocalization().t(message, ...args), (line) => log(line));
+    this.trust = new TrustStore(this.userDataDir, this.ask, (message, ...args) => this.requireLocalization().t(message, ...args), (line) => log(line));
+    this.usageWarnings = new UsageWarningStore(this.userDataDir, (line) => log(line));
   }
 
   async start(): Promise<void> {
@@ -207,7 +291,7 @@ class DesktopApp {
       hardenWebContents(contents, (url) => this.requirePlatform().shell.openExternal(url), bootLog);
       // Menu items enable by the focused part, and only main sees focus move between views.
       contents.on('focus', () => {
-        if (contents !== this.overlay?.view.webContents) this.toastFocusOrigin = undefined;
+        if (!this.notifier.owns(contents)) this.toastFocusOrigin = undefined;
         this.refreshMenuState();
       });
       contents.on('blur', () => this.refreshMenuState());
@@ -237,6 +321,8 @@ class DesktopApp {
       shell: () => shellHtml(currentTheme()),
       pane: () => paneHtml(currentTheme()),
       overlay: () => overlayHtml(currentTheme()),
+      // The overlay bundle, which shows only its toast stack at this path.
+      notifier: () => overlayHtml(currentTheme()),
     });
 
     this.platform = createDesktopPlatform({
@@ -271,6 +357,7 @@ class DesktopApp {
         this.views?.broadcastTheme(theme);
         this.shell?.sendTheme(theme);
         this.overlay?.sendTheme(theme);
+        this.notifier.sendTheme(theme);
         this.applyTitleBarOverlay();
         this.shellStateChanged();
       }),
@@ -281,6 +368,7 @@ class DesktopApp {
       this.trust.onDidGrant(() => this.shellStateChanged()),
       this.platform.settings.onDidChange('damocles', (change) => {
         if (change.affects(BROWSER_ENABLED_KEY)) this.views?.browserEnabledChanged();
+        if (change.affects(NOTIFICATIONS_SETTING)) this.notificationCenter.popupPolicyChanged();
       }),
       this.state.onDidChange('global', LANGUAGE_PREFERENCE_KEY, () => localization.setLanguage(this.preferredLanguage())),
       localization.onDidChangeLanguage(() => {
@@ -288,9 +376,13 @@ class DesktopApp {
         this.tray?.relocalize();
         this.shellStateChanged();
         this.overlay?.stateChanged();
+        this.notifier.stateChanged();
+        // The overlay icon's description is localized.
+        this.taskbar.reapply();
         this.chatsChanged();
         this.views?.pane.stateChanged();
       }),
+      this.onScaleChange(() => this.taskbar.reapply()),
     );
     this.installMenu();
 
@@ -314,7 +406,7 @@ class DesktopApp {
     }
     this.core.start();
     this.createWindow();
-    this.tray = new AppTray(path.join(resourceRoot, 'resources', 'icon.png'), {
+    this.tray = new AppTray(trayIcon(resourceRoot), {
       windowVisible: () => this.window?.isVisible() ?? false,
       toggleWindow: () => {
         if (this.window?.isVisible()) this.window.hide();
@@ -361,6 +453,15 @@ class DesktopApp {
     return this.localization;
   }
 
+  // The primary display's scale factor changed; the taskbar badge is drawn at it.
+  private onScaleChange(listener: () => void): Disposable {
+    const changed = (_event: Electron.Event, display: Electron.Display, metrics: string[]): void => {
+      if (metrics.includes('scaleFactor') && display.id === screen.getPrimaryDisplay().id) listener();
+    };
+    screen.on('display-metrics-changed', changed);
+    return { dispose: () => screen.removeListener('display-metrics-changed', changed) };
+  }
+
   private requireViews(): PanelViews {
     if (!this.views) throw new Error('No window to open a panel in');
     return this.views;
@@ -390,17 +491,21 @@ class DesktopApp {
   private startCoreServices(): DesktopCore {
     const core = startCore(this.requirePlatform());
     const panelManager = core.provider.getPanelManager();
+    // The previous core's chats closed with it.
+    for (const corePanelId of this.activity.keys()) this.notificationCenter.panelClosed(corePanelId);
     this.activity.clear();
     this.catalogRows.clear();
     const subscriptions = [
       core.provider.getFolderRegistry().onDidChange(() => this.shellStateChanged()),
       panelManager.onAllPanelsClosed(() => log('[chats] the last loaded chat closed')),
       panelManager.onActivity((panelId, activity) => this.onChatActivity(panelId, activity)),
-      panelManager.onTurnSettled((panelId) => {
+      panelManager.onTurnSettled((panelId, outcome) => {
         const panel = this.panelOfCore(panelId);
         if (panel) this.chatsChanged(this.projectOf(panel));
+        this.notificationCenter.turnSettled(panelId, outcome);
         this.scheduleRetention();
       }),
+      panelManager.onUsageThreshold((crossing) => this.notificationCenter.usageThreshold(crossing)),
       core.provider.getSessionCatalog().onDidChange((change) => {
         if (change.projectKey === undefined) this.catalogRows.clear();
         else this.catalogRows.delete(change.projectKey);
@@ -428,7 +533,7 @@ class DesktopApp {
       minWidth: MIN_WINDOW_WIDTH,
       minHeight: MIN_WINDOW_HEIGHT,
       title: 'Damocles',
-      icon: path.join(resourceRoot, 'resources', 'icon.png'),
+      ...(mac ? {} : { icon: windowIcon(resourceRoot) }),
       backgroundColor: THEME_BACKGROUND[currentThemeKind()],
       // AD7: frameless; the shell draws the title bar and the OS draws the window controls over it.
       titleBarStyle: 'hidden',
@@ -450,11 +555,18 @@ class DesktopApp {
       window,
       preloadPath: path.join(__dirname, 'preload-overlay.js'),
       state: () => ({ locale: this.requireLocalization().language, platform: shellPlatform() }),
-      resolveToast: (id, action) => this.notifications.resolveToast(id, action),
-      pendingToasts: () => this.notifications.pendingToasts(),
-      focusOutside: () => this.focusOutsideOverlay(),
+      focusOutside: () => this.focusOn('chat'),
+      // Activation is asynchronous on X11 and Electron focuses the window's own page as it activates, so the overlay takes
+      // focus from the window's focus event.
+      awaitActivation: () => {
+        this.focusOnActivation = 'overlay';
+        this.flash('overlay', true);
+      },
+      // A badge drawn while the page could not draw is a dot.
+      canRasterize: () => this.taskbar.reapply(),
       log: (line) => log(line),
     });
+    handleCenterChannels(overlay, this.notificationCenter);
     const views = new PanelViews(
       {
         window,
@@ -500,6 +612,8 @@ class DesktopApp {
     });
     window.on('closed', () => {
       log('[window] closed');
+      // A window left open would keep the app from quitting on Windows and Linux.
+      this.notifier.dispose();
       shell.dispose();
       overlaySettings.dispose();
       overlay.dispose();
@@ -515,7 +629,16 @@ class DesktopApp {
     });
     window.on('show', () => this.tray?.relocalize());
     window.on('hide', () => this.tray?.relocalize());
+    window.on('focus', () => {
+      this.notificationCenter.windowFocused();
+      this.flash('overlay', false);
+      const viewed = this.viewedChat();
+      if (viewed) this.notificationCenter.chatViewed(viewed);
+      if (this.focusOnActivation !== undefined) this.focusOn(this.focusOnActivation);
+    });
     this.window = window;
+    this.notificationCenter.windowOpened();
+    this.taskbar.reapply();
     this.views = views;
     this.shell = shell;
     this.overlay = overlay;
@@ -569,7 +692,13 @@ class DesktopApp {
     const { t } = this.requireLocalization();
     const reload = t('Reload Chat');
     this.notifications.error(t('A chat stopped working because its page kept crashing.'), reload).then((answer) => {
-      if (answer === reload) panel.restart();
+      if (answer !== reload || panel.isDisposed) return;
+      // Reload Chat is the user's choice: the reloaded chat takes focus once its page has loaded, when it is still selected,
+      // since focus given to a page whose renderer is still starting is lost.
+      panel.webContents.once('did-finish-load', () => {
+        if (!panel.isDisposed && this.views?.selected() === panel) this.views.focusChat();
+      });
+      panel.restart();
     }, this.report('Reporting a crashed chat'));
   }
 
@@ -581,7 +710,7 @@ class DesktopApp {
     }, this.report('Reporting a crashed browser pane'));
   }
 
-  // The window's own page draws the title bar and sidebar, so a native dialog asks instead.
+  // The window's own page draws the title bar and sidebar, so the overlay's dialog asks, which falls back to the OS box.
   private shellGaveUp(shell: ShellHost): void {
     const { t } = this.requireLocalization();
     const reload = t('Reload Window');
@@ -809,6 +938,8 @@ class DesktopApp {
     this.refreshSelectedCatalog();
     this.chatsChanged(projectKey);
     this.shellStateChanged();
+    const viewed = this.viewedChat();
+    if (viewed) this.notificationCenter.chatViewed(viewed);
   }
 
   private async selectChat(chatId: string): Promise<SelectChatResult> {
@@ -829,7 +960,15 @@ class DesktopApp {
       // Another Damocles process holds the conversation: the selection stays where it is.
       const refusal = leaseRefusalFor(chatId);
       if (refusal) {
-        announceLeaseRefusal(this.notifications, refusal);
+        announceLeaseRefusal(this.notifications, refusal, {
+          takeover: {
+            sessionId: chatId,
+            canOpen: () => this.views !== undefined,
+            open: async () => {
+              await this.selectChat(chatId);
+            },
+          },
+        });
         return { ok: false, reason: 'leased' };
       }
       const views = this.requireViews();
@@ -984,6 +1123,7 @@ class DesktopApp {
     this.chatFoldersChanged.fire();
     const previous = this.activity.get(corePanelId);
     this.activity.set(corePanelId, activity);
+    this.notificationCenter.activity(corePanelId, activity);
     const panel = this.panelOfCore(corePanelId);
     if (!panel) return;
     if (statusOf(previous) !== statusOf(activity)) this.shellStateChanged();
@@ -1017,7 +1157,11 @@ class DesktopApp {
     const views = this.views;
     if (!views || !this.core.current() || views.retainingStates || this.shutdown !== 'running') return;
     const panels = this.requireCore().provider.getPanelManager().getPanels();
-    for (const corePanelId of [...this.activity.keys()]) if (!panels.has(corePanelId)) this.activity.delete(corePanelId);
+    for (const corePanelId of [...this.activity.keys()]) {
+      if (panels.has(corePanelId)) continue;
+      this.activity.delete(corePanelId);
+      this.notificationCenter.panelClosed(corePanelId);
+    }
     for (const panelId of this.chatsToUnload()) {
       const chat = views.panel(panelId);
       if (!chat) continue;
@@ -1104,7 +1248,7 @@ class DesktopApp {
       deleteChat: reportFailure((id: string) => this.deleteChat(id), this.shellFailure('Delete Chat', 'Damocles could not change the session: {0}'), CHAT_CHANGE_FAILED),
       // A popup the overlay could not show (not loaded, no acknowledgement, a crash) answers as dismissed.
       requestOverlay: reportFailure(
-        (request: OverlayRequest, returnFocus: WebContents) => overlay.request(request, returnFocus),
+        (request: OverlayRequest, returnFocus: WebContents) => this.requestFromShell(overlay, request, returnFocus),
         this.shellFailure('Show Popup', 'Damocles could not open the menu or dialog: {0}'),
         OVERLAY_DISMISSED,
       ),
@@ -1122,6 +1266,79 @@ class DesktopApp {
       },
     };
   }
+
+  // The bell's center marks every entry seen once the overlay shows it; choosing a row closes it, and main then runs the row's action.
+  private async requestFromShell(overlay: OverlayHost, request: OverlayRequest, returnFocus: WebContents): Promise<OverlayAnswer> {
+    const shown = request.kind === 'notifications' ? () => this.notificationCenter.markSeen() : undefined;
+    const answer = await overlay.request(request, returnFocus, shown);
+    if (answer.kind === 'notifications') this.notificationCenter.open(answer.entryId);
+    return answer;
+  }
+
+  private notificationsChanged(): void {
+    this.taskbar.update(this.notificationCenter.bell().unseen);
+    this.shellStateChanged();
+    if (this.overlay?.isOpen('notifications')) this.overlay.send(OVERLAY_CHANNELS.notificationsState, this.notificationCenter.state());
+  }
+
+  // The chat the user is looking at: the selected one, while the window has focus (D52's read rule).
+  private viewedChat(): ChatKey | undefined {
+    const selected = this.views?.selected();
+    if (!selected || !this.window || this.window.isDestroyed() || !this.window.isFocused()) return undefined;
+    const sessionId = this.sessionIdOf(selected);
+    return { panelId: selected.panelId, ...(sessionId !== undefined ? { sessionId } : {}) };
+  }
+
+  private notificationProject(key: string): NotificationProject {
+    const folder = this.projects.folders().find((candidate) => folderKey(candidate.fsPath) === key);
+    const name = this.core.current()?.provider.getFolderRegistry().resolve(key)?.label ?? folder?.name;
+    return { key, name: name ?? path.basename(key) };
+  }
+
+  // The chat a notification is about, with a title from the catalog when main has not read one yet.
+  private async describeChat(corePanelId: string): Promise<ChatRef | undefined> {
+    const panel = this.panelOfCore(corePanelId);
+    const projectKey = panel ? this.projectOf(panel) : undefined;
+    if (!panel || projectKey === undefined) return undefined;
+    const sessionId = this.sessionIdOf(panel);
+    if (sessionId !== undefined && this.titleOf(panel) === '') {
+      await this.catalogList(projectKey).catch(this.report('Reading the chat list'));
+    }
+    return {
+      panelId: panel.panelId,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      project: this.notificationProject(projectKey),
+      title: this.titleOf(panel),
+    };
+  }
+
+  // Selecting shows the chat, and core posts panelFocused (which focuses the composer) inside that show, so a message an
+  // entry's action posts reaches the chat after it.
+  private readonly entryActionDeps: EntryActionDeps<DesktopPanel> = {
+    selected: () => this.views?.selected(),
+    // A refusal (another process's lease, a deleted chat) shows its toast.
+    select: async (chat: ChatRef) => {
+      const views = this.views;
+      if (!views) return undefined;
+      const loaded = views.panel(chat.panelId);
+      const chatId = loaded && views.chats().includes(loaded) ? this.chatIdOf(loaded) : chat.sessionId ?? `${NEW_CHAT_ID_PREFIX}${chat.panelId}`;
+      const result = await this.selectChat(chatId);
+      return result.ok ? this.loadedChat(chatId) : undefined;
+    },
+    // AD11: a message for a chat's UI goes out once that chat's view is ready, so a chat that just loaded never drops it.
+    whenReady: async (panel) => {
+      const corePanelId = this.corePanelIdOf(panel);
+      const panelManager = this.core.current()?.provider.getPanelManager();
+      const instance = corePanelId === undefined ? undefined : panelManager?.getPanels().get(corePanelId);
+      if (!panelManager || !instance || corePanelId === undefined) {
+        log('[notifications] the chat is not ready for its action');
+        return false;
+      }
+      await instance.webviewReady;
+      return panelManager.getPanels().get(corePanelId) === instance;
+    },
+    post: (panel, message) => this.core.current()?.provider.getPanelManager().postMessage(panel, message),
+  };
 
   private shellState(views: PanelViews): ShellState {
     const registry = this.core.current()?.provider.getFolderRegistry();
@@ -1163,6 +1380,7 @@ class DesktopApp {
       ...(selected?.pane && this.browserEnabled() ? { pane: { open: selected.pane.open } } : {}),
       paneShortcutLabel: togglePaneShortcutLabel(),
       shortcuts: shellShortcutLabels(),
+      notifications: this.notificationCenter.bell(),
     };
   }
 
@@ -1214,9 +1432,9 @@ class DesktopApp {
   private focusedPart(): FocusPart | undefined {
     const views = this.views;
     if (!views) return undefined;
+    if (this.notifier.focused) return 'toasts';
     if (views.paneFocused()) return 'pane';
     if (views.chatFocused()) return 'chat';
-    if (this.overlay?.mode === 'toasts' && this.overlay.focused) return 'toasts';
     return this.shell?.focused && this.shellFocusedPart === 'sidebar' ? 'sidebar' : undefined;
   }
 
@@ -1233,7 +1451,7 @@ class DesktopApp {
     if (this.platform) updateMenuState(this.menuState());
   }
 
-  // F6 and Shift+F6 move keyboard focus through the sidebar, the chat, the pane and the toast stack while each is shown,
+  // F6 and Shift+F6 move keyboard focus through the sidebar, the chat, the pane and the desktop popups while each is shown,
   // as VS Code's Focus Next Part does; Tab cannot leave a WebContents.
   private focusPart(delta: 1 | -1): void {
     const views = this.views;
@@ -1242,31 +1460,51 @@ class DesktopApp {
     if (this.windowLayout.sidebar().sidebarVisible) parts.push('sidebar');
     if (views.selected()) parts.push('chat');
     if (views.paneVisible()) parts.push('pane');
-    if (this.overlay?.mode === 'toasts') parts.push('toasts');
+    if (this.notifier.showing) parts.push('toasts');
     if (parts.length === 0) return;
     const current = this.focusedPart();
     const index = current === undefined ? (delta === 1 ? -1 : 0) : parts.indexOf(current);
     const next = parts[(index + delta + parts.length) % parts.length]!;
-    if (next === 'toasts' && current !== 'toasts') this.toastFocusOrigin = current;
-    this.focusOn(next);
+    if (next === 'toasts' && current !== 'toasts') this.toastFocusOrigin = current ?? 'chat';
+    if (current === 'toasts' && next !== 'toasts') this.leavePopupsFor(next);
+    else this.focusOn(next);
   }
 
-  // Keyboard focus leaving the overlay goes back to the part F6 took it from, else the selected chat.
-  private focusOutsideOverlay(): void {
+  // Escape in the popups, or their last card going while they hold focus, gives focus back to the part F6 took it from;
+  // popups focused by a click, or left for another window, leave focus where the OS puts it.
+  private leavePopups(): void {
     const origin = this.toastFocusOrigin;
     this.toastFocusOrigin = undefined;
-    this.focusOn(origin ?? 'chat');
+    if (origin !== undefined) this.leavePopupsFor(origin);
   }
 
-  // A part that is no longer shown falls back to the selected chat, and with none selected to the window's own page.
-  private focusOn(part: FocusPart): void {
+  // Except on macOS, Electron focuses the window's own page as the window gains focus, and X11 activates the window only
+  // after focus() returns; a part focused before that activation lands would lose focus to the shell.
+  private leavePopupsFor(part: FocusPart): void {
+    this.showWindow();
+    if (this.window?.isFocused()) this.focusOn(part);
+    else this.focusOnActivation = part;
+  }
+
+  // A part that is no longer shown, or an overlay with no popup open, falls back to the selected chat, and with none
+  // selected to the window's own page.
+  private focusOn(part: FocusPart | 'overlay'): void {
+    this.focusOnActivation = undefined;
     const views = this.views;
     if (!views) return;
-    if (part === 'toasts') this.overlay?.focusToasts();
+    if (part === 'overlay' && this.overlay?.mode === 'full') this.overlay.focus();
+    else if (part === 'toasts') this.notifier.focusToasts();
     else if (part === 'sidebar' && this.windowLayout.sidebar().sidebarVisible) this.shell?.focusSidebar();
     else if (part === 'pane' && views.paneVisible()) views.focusPane();
     else if (views.selected()) views.focusChat();
     else this.window?.webContents.focus();
+  }
+
+  // Each call that turns a reason on flashes again; the flash stops once no reason is left.
+  private flash(reason: 'notifications' | 'overlay', on: boolean): void {
+    if (on) this.flashReasons.add(reason);
+    else if (!this.flashReasons.delete(reason) || this.flashReasons.size > 0) return;
+    if (this.window && !this.window.isDestroyed()) this.window.flashFrame(on);
   }
 
   // Close Page closes the browser pane's active page while the pane holds focus; chats leave memory only by retention or Delete.
@@ -1353,6 +1591,9 @@ class DesktopApp {
     await Promise.race([Promise.all([this.core.dispose(), this.windowLayout.flush()]), timedOut]);
     clearTimeout(timer);
     for (const disposable of this.disposables.reverse()) disposable.dispose();
+    this.notificationCenter.dispose();
+    this.taskbar.dispose();
+    this.notifier.dispose();
     this.tray?.dispose();
     this.tray = undefined;
     this.platform?.fileWatchers.dispose();

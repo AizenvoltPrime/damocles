@@ -26,10 +26,6 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
     approveEdit: async (msg, ctx) => {
       if (msg.type !== "approveEdit") return;
 
-      if (msg.acceptAll && msg.parentToolUseId) {
-        ctx.permissionHandler.autoApproveSubagent(msg.parentToolUseId);
-      }
-
       // Settled first, so a failed rule write cannot strand the tool call, and a click that matches no
       // pending approval (one answered from a panel that has since switched folder) saves nothing.
       const settled = await ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {

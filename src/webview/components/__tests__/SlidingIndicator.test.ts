@@ -18,13 +18,13 @@ function pieces(box: IndicatorBox, radius: number, variant: 'solid' | 'ring' = '
 }
 
 describe('SlidingIndicator', () => {
-  it('draws a pill from two fixed caps and a 1px middle scaled on X, overlapping each cap by 1px', () => {
+  it('draws a pill from two fixed caps and a 100px middle scaled on X, overlapping each cap by 1px', () => {
     const [start, middle, end] = pieces({ x: 10, y: 4, width: 60, height: 20 }, 5);
 
     expect(start!.transform).toBe('translate(10px, 4px)');
     expect(start!.width).toBe('5px');
-    expect(middle!.width).toBe('1px');
-    expect(middle!.transform).toBe('translate(14px, 4px) scaleX(52)');
+    expect(middle!.width).toBe('100px');
+    expect(middle!.transform).toBe('translate(14px, 4px) scaleX(0.52)');
     expect(end!.transform).toBe('translate(65px, 4px)');
     expect(end!.height).toBe('20px');
   });
@@ -33,7 +33,7 @@ describe('SlidingIndicator', () => {
     const [start, middle, end] = pieces({ x: 0, y: 0, width: 6, height: 20 }, 5);
 
     expect(start!.width).toBe('3px');
-    expect(middle!.transform).toBe('translate(2px, 0px) scaleX(2)');
+    expect(middle!.transform).toBe('translate(2px, 0px) scaleX(0.02)');
     expect(end!.transform).toBe('translate(3px, 0px)');
   });
 
@@ -42,7 +42,7 @@ describe('SlidingIndicator', () => {
 
     expect(top!.transform).toBe('translate(2px, 30px)');
     expect(top!.height).toBe('11px');
-    expect(middle!.transform).toBe('translate(2px, 41px) scaleY(28)');
+    expect(middle!.transform).toBe('translate(2px, 41px) scaleY(0.28)');
     expect(bottom!.transform).toBe('translate(2px, 69px)');
   });
 
@@ -59,7 +59,7 @@ describe('SlidingIndicator', () => {
     try {
       const [start, middle] = pieces({ x: 0, y: 0, width: 60, height: 20 }, 8);
       expect(start!.width).toBe('10px');
-      expect(middle!.transform).toBe('translate(9px, 0px) scaleX(42)');
+      expect(middle!.transform).toBe('translate(9px, 0px) scaleX(0.42)');
     } finally {
       document.documentElement.style.fontSize = '';
     }

@@ -187,6 +187,9 @@ import type { WebviewExtensionUIContext } from '../extension-ui-context';
 import { deriveSessionState, turnOutcomeOfError, type ChatActivity, type TurnOutcome } from '../session-state';
 import { TeamService } from '../../team';
 import { TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_SKILL } from '../../../shared/tool-names';
+import { runPermissionGate, type GatePermissionContext } from '../permission-gate';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
+import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 
 type StateMessage = Extract<ExtensionToWebviewMessage, { type: 'sessionStateChanged' }>;
 type UiRequest = Extract<ExtensionToWebviewMessage, { type: 'extensionUiRequest' }>;
@@ -230,6 +233,7 @@ async function startPanel(extra: Partial<SessionOptions> = {}): Promise<{
   const options: SessionOptions = {
     cwd: '/cwd',
     settingsFolder: undefined,
+    projectScope: true,
     platform,
     permissionHandler,
     onMessage: (m) => messages.push(m),
@@ -286,7 +290,7 @@ describe('session state publisher', () => {
 
     // A shell approval, through the real canUseTool path that fills pendingApprovals.
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     await permissionHandler.resolveApproval('t1', true);
     await approval;
 
@@ -320,7 +324,7 @@ describe('session state publisher', () => {
     const sessionId = session.currentSessionId;
     const finish = await openTurn(session);
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     await permissionHandler.resolveApproval('t1', true);
     await approval;
     await finish();
@@ -346,7 +350,7 @@ describe('session state publisher', () => {
       },
       ctx('q1'),
     );
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     permissionHandler.resolveQuestion('q1', { Pick: 'a' });
     await question;
     await finish();
@@ -364,7 +368,7 @@ describe('session state publisher', () => {
       { title: 'Log in', fields: [{ id: 'user', label: 'User', selector: '#user', type: 'text' }] },
       ctx('f1'),
     );
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     permissionHandler.resolveForm('f1', { user: 'me' });
     await form;
     await finish();
@@ -380,7 +384,7 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const plan = permissionHandler.canUseTool(TOOL_EXIT_PLAN_MODE, {}, ctx('p1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     permissionHandler.resolvePlanApproval('p1', true);
     await plan;
     await finish();
@@ -394,12 +398,31 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const skill = permissionHandler.canUseTool(TOOL_SKILL, { skill: 'simplify' }, ctx('s1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     permissionHandler.resolveSkillApproval('s1', true);
     await skill;
     await finish();
 
     expect(states(messages)).toEqual(['running', 'requires_action', 'running', 'idle']);
+    await session.dispose();
+  });
+
+  it('a prompt that turning YOLO on approves leaves the pending set and returns the session to running', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const finish = await openTurn(session);
+    const gate: GatePermissionContext = { permissionHandler, isPlanMode: () => false, shellCancel: new ShellCancelStore().forContext(() => undefined) };
+    const event = { type: 'tool_call', toolName: 'bash', toolCallId: 't1', input: { command: 'npm install' } } as unknown as ToolCallEvent;
+
+    const shell = runPermissionGate(event, gate, undefined);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
+    permissionHandler.setDangerouslySkipPermissions(true);
+    expect(await shell).toBeUndefined();
+    expect(permissionHandler.pendingPrompts()).toEqual([]);
+    await finish();
+
+    const pendingIds = messages.filter((m): m is StateMessage => m.type === 'sessionStateChanged').map((m) => m.pendingPrompts.map((p) => p.id));
+    expect(states(messages)).toEqual(['running', 'requires_action', 'running', 'idle']);
+    expect(pendingIds).toEqual([[], ['t1'], [], []]);
     await session.dispose();
   });
 
@@ -417,27 +440,30 @@ describe('session state publisher', () => {
     await session.dispose();
   });
 
-  it('two prompts open at once give ONE requires_action, and running only after both are answered', async () => {
+  it('two prompts open at once hold requires_action, restate the pending set as it changes, and run only after both are answered', async () => {
     const { session, permissionHandler, messages } = await startPanel();
     const finish = await openTurn(session);
+    const pendingIds = () => messages.filter((m): m is StateMessage => m.type === 'sessionStateChanged').map((m) => m.pendingPrompts.map((p) => p.id));
 
-    // One from each owner, so the single requires_action spans both maps rather than one of them.
+    // One from each owner, so requires_action spans both maps rather than one of them.
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     const dialog = uiOf(session).confirm('Sure?', 'really?');
     await tick();
-    expect(states(messages)).toEqual(['running', 'requires_action']);
+    const dialogId = lastUiRequest(messages).requestId;
+    expect(states(messages)).toEqual(['running', 'requires_action', 'requires_action']);
 
-    session.resolveExtensionUiResponse(lastUiRequest(messages).requestId, true);
+    session.resolveExtensionUiResponse(dialogId, true);
     await dialog;
     // Still parked: the approval is unanswered, so the second prompt's resolve must not release it.
-    expect(states(messages)).toEqual(['running', 'requires_action']);
+    expect(states(messages)).toEqual(['running', 'requires_action', 'requires_action', 'requires_action']);
 
     await permissionHandler.resolveApproval('t1', true);
     await approval;
     await finish();
 
-    expect(states(messages)).toEqual(['running', 'requires_action', 'running', 'idle']);
+    expect(states(messages)).toEqual(['running', 'requires_action', 'requires_action', 'requires_action', 'running', 'idle']);
+    expect(pendingIds()).toEqual([[], ['t1'], ['t1', dialogId], ['t1'], [], []]);
     await session.dispose();
   });
 
@@ -447,7 +473,7 @@ describe('session state publisher', () => {
 
     for (const id of ['t1', 't2'] as const) {
       const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx(id));
-      await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+      await waitFor(() => permissionHandler.pendingPrompts().length > 0);
       await permissionHandler.resolveApproval(id, true);
       await approval;
     }
@@ -465,7 +491,7 @@ describe('session state publisher', () => {
 
     const controller = new AbortController();
     const dialog = uiOf(session).select('Pick one', ['a'], { signal: controller.signal });
-    await waitFor(() => uiOf(session).hasPendingDialogs());
+    await waitFor(() => uiOf(session).pendingDialogs().length > 0);
     controller.abort();
     await dialog;
     await finish();
@@ -478,7 +504,7 @@ describe('session state publisher', () => {
     const { session, messages } = await startPanel();
 
     const dialog = uiOf(session).confirm('Sure?', 'really?');
-    await waitFor(() => uiOf(session).hasPendingDialogs());
+    await waitFor(() => uiOf(session).pendingDialogs().length > 0);
     session.resolveExtensionUiResponse(lastUiRequest(messages).requestId, true);
     await dialog;
 
@@ -491,7 +517,7 @@ describe('session state publisher', () => {
     const finish = await openTurn(session);
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     // The reload leaves the five permission maps holding their live awaiters, so the session is still
@@ -525,7 +551,7 @@ describe('session state publisher', () => {
     while (!session.processing) await tick();
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     // The adapter settles the turn, and `prompt()` has NOT resolved yet, so `processingFlag` is still
@@ -628,13 +654,13 @@ describe('session state publisher', () => {
       { command: 'echo hi' },
       { signal: controller.signal, toolUseID: 't1', parentToolUseId: null },
     );
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     expect(states(messages)).toEqual(['running', 'requires_action']);
 
     session.cancel();
     controller.abort();
     await approval;
-    await waitFor(() => permissionHandler.pendingPromptKinds().size === 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length === 0);
 
     // No `running` in between: the turn was already down when the last prompt cleared.
     expect(states(messages)).toEqual(['running', 'requires_action', 'idle']);
@@ -667,7 +693,7 @@ describe('panel activity, from the same publisher', () => {
     const finish = await openTurn(session);
 
     const approval = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t1'));
-    await waitFor(() => permissionHandler.pendingPromptKinds().size > 0);
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
     await permissionHandler.resolveApproval('t1', true);
     await approval;
     const dialog = uiOf(session).input('Which path?');
@@ -719,18 +745,231 @@ describe('panel activity, from the same publisher', () => {
     await session.dispose();
   });
 
-  it('a running turn that goes idle reports how it settled, once', async () => {
+  it('a running turn that goes idle reports how it settled, once, a completed one with its duration', async () => {
     const { session } = await startPanel();
     const outcomes: TurnOutcome[] = [];
     session.setTurnSettledListener((outcome) => outcomes.push(outcome));
+    let now = 10_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
 
-    await (await openTurn(session))();
+    const finish = await openTurn(session);
+    now += 1_250;
+    await finish();
     const stopped = await openTurn(session);
     session.cancel();
     await stopped();
     session.reset();
 
-    expect(outcomes).toEqual([{ kind: 'completed' }, { kind: 'cancelled' }]);
+    expect(outcomes).toEqual([{ kind: 'completed', durationMs: 1_250 }, { kind: 'cancelled' }]);
+    await session.dispose();
+  });
+
+  it('refreshes subscription usage after a settled turn, only on a subscription account', async () => {
+    const { session } = await startPanel();
+    const runtime = PiRuntime.get();
+    const refresh = vi.spyOn(runtime.usage, 'refreshAfterTurn').mockImplementation(() => undefined);
+    const auth = vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' } as never);
+
+    await (await openTurn(session))();
+    expect(refresh).not.toHaveBeenCalled();
+    auth.mockReturnValue({ mode: 'allowance' } as never);
+    await (await openTurn(session))();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('a turn that settles after the session was disposed refreshes nothing', async () => {
+    const { session } = await startPanel();
+    const runtime = PiRuntime.get();
+    const refresh = vi.spyOn(runtime.usage, 'refreshAfterTurn').mockImplementation(() => undefined);
+    vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'allowance' } as never);
+
+    const finish = await openTurn(session);
+    await session.dispose();
+    await finish();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  describe('a rate-limited turn (D55)', () => {
+    /** A turn whose last assistant message is a provider rate-limit error. */
+    async function rateLimitedTurn(session: PiSession): Promise<() => Promise<void>> {
+      const finish = await openTurn(session);
+      return async () => {
+        H.fireEvent({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '429 rate_limit_error', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } });
+        await finish();
+      };
+    }
+
+    function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+      let resolve: (value: T) => void = () => {};
+      const promise = new Promise<T>((r) => { resolve = r; });
+      return { promise, resolve };
+    }
+
+    const SESSION_WINDOW = { windowId: 'five_hour', windowLabel: 'Session (5hr)', resetsAt: Date.parse('2026-03-01T15:00:00Z') };
+
+    it('goes idle at once, and its outcome waits for the refresh to name the full window', async () => {
+      const { session, messages } = await startPanel();
+      const runtime = PiRuntime.get();
+      vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'allowance' } as never);
+      const refreshed = deferred<typeof SESSION_WINDOW | undefined>();
+      const fullWindow = vi.spyOn(runtime.usage, 'fullWindow').mockReturnValue(refreshed.promise);
+      const afterTurn = vi.spyOn(runtime.usage, 'refreshAfterTurn').mockImplementation(() => undefined);
+      const outcomes: TurnOutcome[] = [];
+      session.setTurnSettledListener((outcome) => outcomes.push(outcome));
+
+      await (await rateLimitedTurn(session))();
+      expect(states(messages).at(-1)).toBe('idle');
+      expect(outcomes).toEqual([]);
+      expect(fullWindow).toHaveBeenCalledWith('anthropic', 'claude-opus-4-8');
+
+      refreshed.resolve(SESSION_WINDOW);
+      await tick();
+      expect(outcomes).toEqual([{ kind: 'rateLimit', ...SESSION_WINDOW }]);
+      expect(afterTurn).not.toHaveBeenCalled();
+      await session.dispose();
+    });
+
+    it('names no window and refreshes nothing on an API key', async () => {
+      const { session } = await startPanel();
+      const runtime = PiRuntime.get();
+      vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'apikey' } as never);
+      const fullWindow = vi.spyOn(runtime.usage, 'fullWindow');
+      const outcomes: TurnOutcome[] = [];
+      session.setTurnSettledListener((outcome) => outcomes.push(outcome));
+
+      await (await rateLimitedTurn(session))();
+      await tick();
+      expect(outcomes).toEqual([{ kind: 'rateLimit' }]);
+      expect(fullWindow).not.toHaveBeenCalled();
+      await session.dispose();
+    });
+
+    it('raises nothing once the session is disposed while the refresh runs', async () => {
+      const { session } = await startPanel();
+      const runtime = PiRuntime.get();
+      vi.spyOn(runtime, 'getClaudeAuthStatus').mockReturnValue({ mode: 'allowance' } as never);
+      const refreshed = deferred<typeof SESSION_WINDOW | undefined>();
+      vi.spyOn(runtime.usage, 'fullWindow').mockReturnValue(refreshed.promise);
+      const outcomes: TurnOutcome[] = [];
+      session.setTurnSettledListener((outcome) => outcomes.push(outcome));
+
+      await (await rateLimitedTurn(session))();
+      const disposed = session.dispose();
+      refreshed.resolve(SESSION_WINDOW);
+      await disposed;
+      await tick();
+      expect(outcomes).toEqual([]);
+    });
+  });
+
+  it('reports each pending prompt with its id, kind, owner and summary, and a second prompt of a kind already pending', async () => {
+    const { session, permissionHandler, messages } = await startPanel();
+    const activity = watchActivity(session);
+    const finish = await openTurn(session);
+
+    const first = permissionHandler.canUseTool('Bash', { command: 'npm test\nnpm run lint' }, ctx('t1'));
+    await waitFor(() => permissionHandler.pendingPrompts().length > 0);
+    const second = permissionHandler.canUseTool(TOOL_ASK_USER_QUESTION, {
+      questions: [{ question: 'Which store?', header: 'Store', multiSelect: false, options: [{ label: 'a', description: '' }, { label: 'b', description: '' }] }],
+    }, ctx('q1'));
+    await waitFor(() => permissionHandler.pendingPrompts().length > 1);
+    const third = permissionHandler.canUseTool('Bash', { command: 'echo hi' }, ctx('t2'));
+    await waitFor(() => permissionHandler.pendingPrompts().length > 2);
+    const dialog = uiOf(session).input('Which path?');
+    await tick();
+
+    const last = activity[activity.length - 1]!;
+    expect(last.pendingPrompts).toEqual([
+      { id: 't1', kind: 'approval', owner: { kind: 'main' }, summary: 'run `npm test`' },
+      { id: 'q1', kind: 'question', owner: { kind: 'main' }, summary: 'Which store?' },
+      { id: 't2', kind: 'approval', owner: { kind: 'main' }, summary: 'run `echo hi`' },
+      { id: lastUiRequest(messages).requestId, kind: 'input', owner: { kind: 'main' }, summary: 'Which path?' },
+    ]);
+    expect(activity.map((a) => a.pendingPrompts.length)).toEqual([0, 0, 1, 2, 3, 4]);
+    for (const a of activity) expect(a.pendingKinds).toEqual([...new Set(a.pendingPrompts.map((p) => p.kind))].sort());
+
+    session.resolveExtensionUiResponse(lastUiRequest(messages).requestId, '/a.ts');
+    permissionHandler.resolveQuestion('q1', { Store: 'a' });
+    await permissionHandler.resolveApproval('t1', true);
+    await permissionHandler.resolveApproval('t2', true);
+    await Promise.all([first, second, third, dialog]);
+    await finish();
+    await session.dispose();
+  });
+
+  it('names the team or subagent that raised a prompt, by the parent tool use id it carries', async () => {
+    const teamService = new TeamService({} as ConstructorParameters<typeof TeamService>[0]);
+    const { session, permissionHandler, messages } = await startPanel({ teamService });
+    const activity = watchActivity(session);
+    const runner = { getMember: (id: string) => (id === 'agent-7' ? { name: 'Backend\u202e lead' } : undefined), getTitle: () => 'Lockout' };
+    (privOf(teamService)['setActiveTeam'] as (id: string, r: unknown) => void).call(teamService, 'team-1', runner);
+    const subagents = privOf(session)['subagentManager'] as object;
+    (privOf(subagents)['agents'] as Map<string, unknown>).set('sub-1', { id: 'sub-1', toolCallId: 'call-agent' });
+
+    const fromTeam = permissionHandler.canUseTool('Bash', { command: 'ls' }, { ...ctx('t1'), parentToolUseId: 'agent-7' });
+    await waitFor(() => permissionHandler.pendingPrompts().length === 1);
+    const fromSubagent = permissionHandler.canUseTool('Bash', { command: 'pwd' }, { ...ctx('t2'), parentToolUseId: 'call-agent' });
+    await waitFor(() => permissionHandler.pendingPrompts().length === 2);
+    const fromGone = permissionHandler.canUseTool('Bash', { command: 'id' }, { ...ctx('t3'), parentToolUseId: 'call-finished' });
+    await waitFor(() => permissionHandler.pendingPrompts().length === 3);
+    const teamDialog = uiOf(session).forAgent({ agentId: 'agent-8', agentName: 'Reviewer', teamId: 'team-1' }).input('Token?');
+    const subagentDialog = uiOf(session).forAgent({ agentId: 'sub-2', agentName: 'Explore' }).input('Path?');
+    await tick();
+
+    const team = { kind: 'team', teamId: 'team-1', agentId: 'agent-7', teamTitle: 'Lockout', agentName: 'Backend lead' };
+    const stated = [
+      team,
+      { kind: 'subagent', agentId: 'sub-1' },
+      { kind: 'main' },
+      { kind: 'team', teamId: 'team-1', agentId: 'agent-8', agentName: 'Reviewer' },
+      { kind: 'subagent', agentId: 'sub-2' },
+    ];
+    expect(activity[activity.length - 1]!.pendingPrompts.map((p) => p.owner)).toEqual(stated);
+    // The webview reads the same owners from the session state, so a team card names exactly these members.
+    const lastState = (): StateMessage => messages.filter((m): m is StateMessage => m.type === 'sessionStateChanged').at(-1)!;
+    expect(lastState().pendingPrompts.map((p) => p.owner)).toEqual(stated);
+    expect(lastState().pendingPrompts.map((p) => p.id)).toEqual(activity[activity.length - 1]!.pendingPrompts.map((p) => p.id));
+
+    // The webview places each call's card by the owner on the prompt, on first post and on the re-post a reload gets.
+    type PermissionRequest = Extract<ExtensionToWebviewMessage, { type: 'requestPermission' }>;
+    const posted = () => messages.filter((m): m is PermissionRequest => m.type === 'requestPermission').map((m) => [m.toolUseId, m.owner]);
+    const owners = [['t1', team], ['t2', { kind: 'subagent', agentId: 'sub-1' }], ['t3', { kind: 'main' }]];
+    expect(posted()).toEqual(owners);
+    (privOf(teamService)['setActiveTeam'] as (id: null, r: null) => void).call(teamService, null, null);
+    session.onWebviewReady();
+    expect(posted()).toEqual([...owners, ...owners]);
+    // A reload gets the still-pending owners again, though the team has since stopped running.
+    expect(lastState().pendingPrompts.map((p) => p.owner)).toEqual(stated);
+
+    for (const request of messages.filter((m): m is UiRequest => m.type === 'extensionUiRequest')) session.resolveExtensionUiResponse(request.requestId, 'x');
+    for (const id of ['t1', 't2', 't3']) await permissionHandler.resolveApproval(id, true);
+    await Promise.all([fromTeam, fromSubagent, fromGone, teamDialog, subagentDialog]);
+    expect(lastState().pendingPrompts).toEqual([]);
+    await session.dispose();
+  });
+
+  it("drops a team agent's prompts from the stated owners when its run aborts them, a question included", async () => {
+    const teamService = new TeamService({} as ConstructorParameters<typeof TeamService>[0]);
+    const { session, permissionHandler, messages } = await startPanel({ teamService });
+    const runner = { getMember: (id: string) => (id === 'agent-7' ? { name: 'Mira' } : undefined), getTitle: () => 'Lockout' };
+    (privOf(teamService)['setActiveTeam'] as (id: string, r: unknown) => void).call(teamService, 'team-1', runner);
+    const lastState = (): StateMessage => messages.filter((m): m is StateMessage => m.type === 'sessionStateChanged').at(-1)!;
+    const run = new AbortController();
+    const agentCtx = (toolUseID: string): CanUseToolContext => ({ signal: run.signal, toolUseID, parentToolUseId: 'agent-7' });
+
+    const approval = permissionHandler.canUseTool('Bash', { command: 'ls' }, agentCtx('t1'));
+    const question = permissionHandler.canUseTool(TOOL_ASK_USER_QUESTION, {
+      questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'a', description: 'first' }, { label: 'b', description: 'second' }] }],
+    }, agentCtx('q1'));
+    await waitFor(() => permissionHandler.pendingPrompts().length === 2);
+    const mira = { kind: 'team', teamId: 'team-1', agentId: 'agent-7', teamTitle: 'Lockout', agentName: 'Mira' };
+    expect(lastState()).toMatchObject({ state: 'requires_action', pendingPrompts: [{ id: 'q1', owner: mira }, { id: 't1', owner: mira }] });
+
+    run.abort();
+    await Promise.all([approval, question]);
+    expect(lastState()).toMatchObject({ state: 'idle', pendingPrompts: [] });
+    (privOf(teamService)['setActiveTeam'] as (id: null, r: null) => void).call(teamService, null, null);
     await session.dispose();
   });
 
@@ -777,14 +1016,15 @@ describe('single-writer discipline', () => {
 
   // A second reporter could tell main a chat is idle while its webview shows a prompt, or the reverse.
   it('builds the panel activity only inside publishSessionState, from the state it publishes', () => {
-    const reporters = backendSourceFiles().filter((f) => /\{\s*state,\s*pendingKinds,\s*background\s*\}/.test(readFileSync(f.path, 'utf8')));
+    const activity = /\{\s*state,\s*pendingKinds,\s*pendingPrompts,\s*background\s*\}/;
+    const reporters = backendSourceFiles().filter((f) => activity.test(readFileSync(f.path, 'utf8')));
     expect(reporters.map((f) => f.rel)).toEqual(['src/core/pi-session/pi-session.ts']);
 
     const source = readFileSync(reporters[0]!.path, 'utf8');
     const start = source.indexOf('private publishSessionState(): void {');
     const body = source.slice(start, source.indexOf('\n  }\n', start));
-    expect(body).toContain('listener({ state, pendingKinds, background })');
-    expect(body).toContain('this.emit({ type: "sessionStateChanged", state, sessionId })');
-    expect(source.match(/\{\s*state,\s*pendingKinds,\s*background\s*\}/g)).toHaveLength(1);
+    expect(body).toContain('listener({ state, pendingKinds, pendingPrompts, background })');
+    expect(body).toContain('this.emit({ type: "sessionStateChanged", state, sessionId, pendingPrompts: pendingPromptOwners(raised) })');
+    expect(source.match(new RegExp(activity.source, 'g'))).toHaveLength(1);
   });
 });

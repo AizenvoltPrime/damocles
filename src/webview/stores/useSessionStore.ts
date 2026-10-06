@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, CompactionAbortedNotice, CompactionTrigger, ThinkingDroppedNotice, SessionStats } from '@shared/types/session';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
+import type { PendingPromptOwner } from '@shared/types/permissions';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE, TOOL_GENERATE_IMAGE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 import { emptyAgentUsage } from '@shared/usage-accounting';
@@ -44,6 +45,7 @@ export const useSessionStore = defineStore('session', () => {
   const sessionStats = ref<SessionStats>({ ...DEFAULT_SESSION_STATS });
   const lastAssistantMessage = ref<string | null>(null);
   const sessionState = ref<SessionState>('idle');
+  const pendingPrompts = ref<readonly PendingPromptOwner[]>([]);
 
   const selectedSession = computed(() => {
     if (!selectedSessionId.value) return null;
@@ -66,6 +68,18 @@ export const useSessionStore = defineStore('session', () => {
   });
 
   const isAwaitingUserAction = computed(() => sessionState.value === 'requires_action');
+
+  /** The members of each team, by team id, that have a prompt waiting on the user. */
+  const teamAgentsAwaitingUser = computed(() => {
+    const byTeam = new Map<string, Set<string>>();
+    for (const { owner } of pendingPrompts.value) {
+      if (owner.kind !== 'team') continue;
+      const agents = byTeam.get(owner.teamId) ?? new Set<string>();
+      agents.add(owner.agentId);
+      byTeam.set(owner.teamId, agents);
+    }
+    return byTeam as ReadonlyMap<string, ReadonlySet<string>>;
+  });
 
   function setCurrentSession(id: string | null) {
     currentSessionId.value = id;
@@ -224,9 +238,10 @@ export const useSessionStore = defineStore('session', () => {
     lastAssistantMessage.value = message;
   }
 
-  // The extension derives this from its own pending-prompt maps, so the webview stores it as sent and never infers it.
-  function setSessionState(state: SessionState) {
+  // The extension derives both from its own pending-prompt maps, so the webview stores them as sent and never infers them.
+  function setSessionState(state: SessionState, prompts: readonly PendingPromptOwner[]) {
     sessionState.value = state;
+    pendingPrompts.value = prompts;
   }
 
   function clearSessionData() {
@@ -277,6 +292,8 @@ export const useSessionStore = defineStore('session', () => {
     sessionStats,
     lastAssistantMessage,
     sessionState,
+    pendingPrompts,
+    teamAgentsAwaitingUser,
     selectedSession,
     selectedSessionDisplayName,
     lastAccessedFile,

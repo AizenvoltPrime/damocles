@@ -30,7 +30,12 @@ const style = computed(() => ({ transform: `translateY(${props.offset}px)` }));
 </script>
 
 <template>
-  <div ref="rootRef" class="sticky top-0 z-10" :style="style">
+  <div
+    ref="rootRef"
+    class="sticky top-0 z-10"
+    :style="style"
+    data-testid="pinned-prompt"
+  >
     <div class="chat-column pt-2">
       <UserMessageBlock
         mode="pinned"

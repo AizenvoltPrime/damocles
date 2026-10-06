@@ -23,17 +23,17 @@ describe('PlanReadyBanner', () => {
     expect(mountBanner().find('[data-testid="plan-ready-banner"]').exists()).toBe(false);
   });
 
-  it('names the plan version and counts its numbered steps', () => {
+  it('names the version its request carries, never a count of the loaded plans, and counts its numbered steps', () => {
     useStreamingStore().messages = [
       { id: 'a1', role: 'assistant', content: '', timestamp: 1, toolCalls: [{ id: 'p1', name: TOOL_EXIT_PLAN_MODE, input: {}, status: 'denied' }] },
       { id: 'a2', role: 'assistant', content: '', timestamp: 2, toolCalls: [{ id: 'p2', name: TOOL_EXIT_PLAN_MODE, input: {}, status: 'awaiting_approval' }] },
     ];
-    usePermissionStore().setPendingPlanApproval({ toolUseId: 'p2', planContent: PLAN });
+    usePermissionStore().setPendingPlanApproval({ toolUseId: 'p2', planContent: PLAN, planVersion: 5 });
 
     const banner = mountBanner();
 
     expect(banner.text()).toContain('Plan ready for review');
-    expect(banner.text()).toContain('Version 2 · 3 steps · nothing has been changed yet');
+    expect(banner.text()).toContain('Version 5 · 3 steps · nothing has been changed yet');
   });
 
   it('opens the plan review overlay from Review plan', async () => {

@@ -2,6 +2,7 @@ import type { AgentSpec } from "./types";
 import { COMMENT_RULES_BODY, TEST_RUN_RULES_BODY } from "../pi-session/code-rules";
 import { buildNarrationRule, PROSE_RULES_BODY } from "../pi-session/prose-rules";
 import { STEERING_PROTOCOL_BLOCK } from "../pi-session/steering-protocol";
+import type { PlanModeStatement } from "../pi-session/plan-mode-change";
 
 /** Shared by all three team prompts, which run in replace mode and inherit no comment policy. */
 const COMMENTS_SUBSECTION = `### Comments
@@ -77,6 +78,17 @@ function buildPlanModeDirective(role: "lead" | "specialist"): string {
 - Read files, search code (Grep, Glob, Read), and analyze patterns
 - Write findings to the scratchpad and send messages to teammates
 - Propose specific code changes (as text in your report), but do NOT apply them`;
+}
+
+/** A team agent's plan-mode statement: its role's directive in the system prompt, which pi records as section `preamble`. */
+export function teamPlanModeStatement(role: "lead" | "specialist"): PlanModeStatement {
+  const directive = buildPlanModeDirective(role);
+  return {
+    section: "preamble",
+    statesPlanMode: (text) => text.includes(directive),
+    upcoming: (options) => options.customPrompt,
+    guidance: () => directive,
+  };
 }
 
 export function buildLeadSystemPrompt(

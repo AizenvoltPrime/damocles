@@ -12,7 +12,6 @@ export const overlayMenu = (overlay: Page): Locator => overlay.getByTestId('over
 export const menuItem = (overlay: Page, itemId: string): Locator => overlay.locator(`[data-menu-item][data-item-id="${itemId}"]`);
 export const confirmDialog = (overlay: Page): Locator => overlay.getByRole('alertdialog');
 export const tagPicker = (overlay: Page): Locator => overlay.getByTestId('overlay-tag-picker');
-export const overlayToasts = (overlay: Page): Locator => overlay.getByTestId('overlay-toast');
 
 /** The item id the overlay page has keyboard focus on, if any. */
 export async function focusedMenuItem(overlay: Page): Promise<string | null> {

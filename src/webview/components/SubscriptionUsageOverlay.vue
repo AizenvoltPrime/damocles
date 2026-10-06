@@ -7,6 +7,7 @@ import OverlayHeaderAction from './OverlayHeaderAction.vue';
 import { providerLogoSvg } from '@/components/icons/provider-logos';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { formatResetTime } from '@/utils/clock';
 import type { ProviderUsage, UsageSpend, UsageWindowBar } from '@shared/types/usage';
 
 const { t, te, locale } = useI18n();
@@ -17,7 +18,7 @@ defineEmits<{
   (e: 'close'): void;
 }>();
 
-// Wall-clock tick drives countdown captions without any network per tick.
+// Wall-clock tick drives reset captions without any network per tick.
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
@@ -81,22 +82,10 @@ function windowLabel(bar: UsageWindowBar): string {
   return barLabel(bar.id);
 }
 
-function formatCountdown(msDiff: number): string {
-  const totalMin = Math.floor(msDiff / 60_000);
-  if (totalMin < 60) return `${totalMin}m`;
-  const totalHr = Math.floor(totalMin / 60);
-  if (totalHr < 24) {
-    const min = totalMin % 60;
-    return min > 0 ? `${totalHr}h ${min}m` : `${totalHr}h`;
-  }
-  const days = Math.floor(totalHr / 24);
-  const hr = totalHr % 24;
-  return hr > 0 ? `${days}d ${hr}h` : `${days}d`;
-}
-
 function resetsCaption(resetsAt: number | null): string | null {
   if (resetsAt === null || resetsAt <= now.value) return null;
-  return t('usage.resetsIn', { time: formatCountdown(resetsAt - now.value) });
+  const reset = formatResetTime(resetsAt, now.value, locale.value);
+  return reset.day === undefined ? t('usage.resetsAt', { time: reset.time }) : t('usage.resetsOn', { day: reset.day, time: reset.time });
 }
 
 function formatCurrency(n: number, currency?: string): string {

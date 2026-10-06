@@ -57,7 +57,7 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
     broadcast({ type: "claudeAuthBusy", busy: true });
     try {
       broadcast(statusChanged(await op()));
-      // Every op here changes the credential the account chip is derived from.
+      // Every op here changes the credential the account state is derived from.
       republishAccountInfo(getPanels);
     } catch (err) {
       if (err instanceof Error && err.message === SIGN_IN_CANCELLED) {

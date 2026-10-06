@@ -1,8 +1,8 @@
 import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
-import type { PermissionUpdate } from '../../../shared/types/permissions';
-import { registerAbortablePrompt, type PermissionState } from '../state';
-import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval } from '../types';
+import type { PermissionUpdate, PromptApprover } from '../../../shared/types/permissions';
+import { registerAbortablePrompt, unaskedCheck, postApprovedUnasked, type PermissionState } from '../state';
+import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier, SettledApproval, PendingApproval } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { buildUserFileEditDenyResult, buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 import { TOOL_WRITE, TOOL_EDIT, TOOL_GENERATE_IMAGE, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
@@ -52,13 +52,8 @@ export class ApprovalManager {
   async handleFilePermission(
     toolName: string,
     input: Record<string, unknown>,
-    context: CanUseToolContext,
-    askRule = false
+    context: CanUseToolContext
   ): Promise<PermissionResult> {
-    if (!askRule && context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
-      return buildAllowResult(input);
-    }
-
     const typedInput = input as unknown as FileEditInput | FileWriteInput;
     const result = await this.requestFilePermissionFromWebview(toolName, typedInput, context);
 
@@ -77,13 +72,8 @@ export class ApprovalManager {
   async handleShellPermission(
     toolName: ShellToolName,
     input: Record<string, unknown>,
-    context: CanUseToolContext,
-    askRule = false
+    context: CanUseToolContext
   ): Promise<PermissionResult> {
-    if (!askRule && context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
-      return buildAllowResult(input);
-    }
-
     const command = typeof input['command'] === 'string' ? input['command'] : JSON.stringify(input);
     const suggestions = generatePatternSuggestions(toolName, input);
     const result = await this.requestPermissionFromWebview(
@@ -172,7 +162,6 @@ export class ApprovalManager {
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
-          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
         resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
@@ -190,6 +179,7 @@ export class ApprovalManager {
         filePath,
         prompt,
         imageModel,
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
@@ -204,8 +194,8 @@ export class ApprovalManager {
             reject: () => resolve({ approved: false }),
             cleanup,
             request,
-            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
             workspacePath: this.state.workspacePath,
+            ...unaskedCheck(context),
           });
 
           this.getNotifier()?.({
@@ -261,7 +251,6 @@ export class ApprovalManager {
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
-          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
         resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
@@ -279,6 +268,7 @@ export class ApprovalManager {
         toolInput: input as unknown as Record<string, unknown>,
         filePath,
         ...diffResult?.patch,
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
         ...(suggestions.length ? { suggestions } : {}),
@@ -296,8 +286,8 @@ export class ApprovalManager {
             cleanup,
             request,
             diffId: toolUseId,
-            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
             workspacePath: this.state.workspacePath,
+            ...unaskedCheck(context),
           });
 
           this.getNotifier()?.({
@@ -340,7 +330,6 @@ export class ApprovalManager {
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
           toolUseId,
-          outcome: 'withdrawn',
           ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         });
         resolve({ approved: false, customMessage: ABORTED_BEFORE_ANSWER });
@@ -356,6 +345,7 @@ export class ApprovalManager {
         toolName,
         toolInput: input,
         ...fields,
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
         ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
@@ -370,8 +360,8 @@ export class ApprovalManager {
             reject: () => resolve({ approved: false }),
             cleanup,
             request,
-            ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
             workspacePath: this.state.workspacePath,
+            ...unaskedCheck(context),
           });
 
           this.getNotifier()?.({
@@ -398,6 +388,26 @@ export class ApprovalManager {
       return null;
     }
 
+    await this.settle(toolUseId, pending, {
+      approved,
+      userAnswered: true,
+      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
+      ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
+    });
+    return { workspacePath: pending.workspacePath };
+  }
+
+  /** Approve an open prompt that `approvedBy` no longer asks about, exactly as the user's yes would. */
+  async approveUnasked(toolUseId: string, approvedBy: PromptApprover): Promise<void> {
+    const pending = this.state.removePendingApproval(toolUseId);
+    if (!pending) {
+      return;
+    }
+    postApprovedUnasked(this.getPostMessage(), toolUseId, pending, approvedBy);
+    await this.settle(toolUseId, pending, { approved: true });
+  }
+
+  private async settle(toolUseId: string, pending: PendingApproval, result: ApprovalResult): Promise<void> {
     try {
       // A tab the user already closed rejects here, and the awaiting tool call must not hang on it.
       if (pending.diffId) {
@@ -407,13 +417,7 @@ export class ApprovalManager {
       log('[ApprovalManager] closing the diff view for %s failed: %O', toolUseId, err);
     } finally {
       pending.cleanup();
-      pending.resolve({
-        approved,
-        userAnswered: true,
-        ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
-        ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
-      });
+      pending.resolve(result);
     }
-    return { workspacePath: pending.workspacePath };
   }
 }

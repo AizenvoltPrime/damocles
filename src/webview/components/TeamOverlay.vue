@@ -13,6 +13,7 @@ import TeamTimeline from './TeamTimeline.vue';
 import TeamScratchpad from './TeamScratchpad.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useSlidingIndicator } from '@/composables/useSlidingIndicator';
 import { agentStatusChip, formatElapsed, formatTokenCount, workingAgentCount } from '@/composables/useTeamFormatting';
@@ -28,6 +29,7 @@ const { teamDollarBilled, costLabel, costTitle } = useCostLabel();
 const { postMessage } = usePlatformBridge();
 
 const teamStore = useTeamStore();
+const sessionStore = useSessionStore();
 const { selectedTeam, activeTab, isOverlayOpen } = storeToRefs(teamStore);
 
 watch([selectedTeam, isOverlayOpen], ([team, open]) => {
@@ -81,10 +83,11 @@ function onTabKeydown(event: KeyboardEvent): void {
 }
 
 const statusBadge = computed(() => {
-  const status = selectedTeam.value?.status;
-  if (!status) return undefined;
-  const chip = agentStatusChip(status);
-  return { label: t(chip.labelKey), class: chip.color, pulse: chip.live };
+  const team = selectedTeam.value;
+  if (!team) return undefined;
+  const awaiting = isRunning.value && (sessionStore.teamAgentsAwaitingUser.get(team.teamId)?.size ?? 0) > 0;
+  const chip = agentStatusChip(team.status, awaiting);
+  return { label: t(chip.labelKey), class: chip.color, pulse: chip.live || chip.attention };
 });
 
 const { elapsedMs } = useElapsedTimer(

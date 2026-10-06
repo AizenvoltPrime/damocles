@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronRight, Moon, PanelLeft, PanelRight, Settings, Sun } from 'lucide-vue-next';
+import { Bell, BellOff, ChevronRight, Moon, PanelLeft, PanelRight, Settings, Sun } from 'lucide-vue-next';
 import type { DamoclesShellApi, ShellState } from '../../preload/shell-channels';
 import ProjectAvatar from './ProjectAvatar.vue';
 
@@ -30,6 +30,48 @@ const paneTitle = computed(() => {
 function openAppMenu(): void {
   const rect = logo.value?.getBoundingClientRect();
   void props.api.openAppMenu({ x: Math.max(0, Math.round(rect?.left ?? 0)), y: Math.max(0, Math.round(rect?.bottom ?? 0)) });
+}
+
+const bell = ref<HTMLElement | null>(null);
+const centerOpen = ref(false);
+const bellState = computed(() => props.state.notifications);
+const quiet = computed(() => bellState.value.doNotDisturb || bellState.value.popupsOff);
+const BELL_TEXT = {
+  on: { title: 'titleBar.notifications', unseen: 'titleBar.notificationsUnseen' },
+  dnd: { title: 'titleBar.notificationsDnd', unseen: 'titleBar.notificationsUnseenDnd' },
+  off: { title: 'titleBar.notificationsOff', unseen: 'titleBar.notificationsUnseenOff' },
+} as const;
+const bellText = computed(() => BELL_TEXT[bellState.value.doNotDisturb ? 'dnd' : bellState.value.popupsOff ? 'off' : 'on']);
+const bellTitle = computed(() => t(bellText.value.title));
+// The label keeps the pop-up state the title shows, with the count when there is one.
+const bellLabel = computed(() => {
+  const { unseen } = bellState.value;
+  return unseen > 0 ? t(bellText.value.unseen, { count: unseen }, unseen) : bellTitle.value;
+});
+
+// The badge pops when the count rises and the bell rings for a new entry that asks for the user; each re-keys its
+// element so the one-shot animation plays again. Nothing plays for the state the page loads with.
+const badgePops = ref(0);
+const rings = ref(0);
+watch(() => bellState.value.unseen, (count, previous) => {
+  if (count > previous) badgePops.value++;
+});
+watch(() => bellState.value.attention, (count, previous) => {
+  if (count > previous) rings.value++;
+});
+
+async function openCenter(): Promise<void> {
+  const rect = bell.value?.getBoundingClientRect();
+  if (!rect || centerOpen.value) return;
+  centerOpen.value = true;
+  try {
+    await props.api.requestOverlay({
+      kind: 'notifications',
+      anchor: { x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height },
+    });
+  } finally {
+    centerOpen.value = false;
+  }
 }
 </script>
 
@@ -120,6 +162,44 @@ function openAppMenu(): void {
         aria-hidden="true"
         class="mx-1.5 h-4 w-px bg-(--d-border2)"
       />
+      <button
+        ref="bell"
+        type="button"
+        data-testid="notification-bell"
+        class="title-bar-control relative flex h-7 w-[30px] items-center justify-center rounded-[7px] transition-colors duration-150 hover:bg-(--d-hover) hover:text-(--d-text)"
+        :class="[bellState.unseen > 0 ? 'text-(--d-text)' : 'text-(--d-muted)', centerOpen ? 'bg-(--d-hover)' : '']"
+        :aria-label="bellLabel"
+        :title="bellTitle"
+        aria-haspopup="dialog"
+        :aria-expanded="centerOpen"
+        @click="openCenter"
+      >
+        <span
+          :key="rings"
+          data-testid="notification-bell-icon"
+          class="flex"
+          :class="rings > 0 ? 'bell-ring' : ''"
+        >
+          <BellOff
+            v-if="quiet"
+            aria-hidden="true"
+            class="size-[15px]"
+          />
+          <Bell
+            v-else
+            aria-hidden="true"
+            class="size-[15px]"
+          />
+        </span>
+        <span
+          v-if="bellState.unseen > 0"
+          :key="badgePops"
+          aria-hidden="true"
+          data-testid="notification-badge"
+          class="absolute top-0.5 right-[3px] flex h-[15px] min-w-[15px] items-center justify-center rounded-full border-2 border-(--d-panel) bg-(--d-warning) px-[3px] text-[9px] leading-none font-bold text-(--d-on-warning)"
+          :class="badgePops > 0 ? 'bell-badge-pop' : ''"
+        >{{ bellState.unseen > 99 ? '99+' : bellState.unseen }}</span>
+      </button>
       <button
         type="button"
         data-testid="toggle-theme"

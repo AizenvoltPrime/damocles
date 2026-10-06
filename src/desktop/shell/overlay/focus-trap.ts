@@ -3,7 +3,8 @@ const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex]:not
 /** Keeps Tab and Shift+Tab cycling inside root; returns whether it handled the key. */
 export function trapTab(event: KeyboardEvent, root: HTMLElement): boolean {
   if (event.key !== 'Tab') return false;
-  const focusable = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  // A part on its way out (a leaving toast) is inert, so it can neither take focus nor end the cycle.
+  const focusable = [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((element) => element.closest('[inert]') === null);
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
   if (!first || !last) return false;

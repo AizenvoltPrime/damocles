@@ -9,7 +9,7 @@ import { usePlanSummary } from '@/composables/usePlanSummary';
 const { t } = useI18n();
 const permissionStore = usePermissionStore();
 const { pendingPlanApproval } = storeToRefs(permissionStore);
-const planSummary = usePlanSummary(() => pendingPlanApproval.value?.toolUseId);
+const planSummary = usePlanSummary(() => pendingPlanApproval.value?.toolUseId, () => pendingPlanApproval.value?.planVersion);
 
 const subtitle = computed(() => [...planSummary.value, t('cards.planBanner.unchanged')].join(' · '));
 </script>

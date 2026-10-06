@@ -178,7 +178,7 @@ bun.lockb
 package-lock.json
 **/*.log
 
-# Desktop app: build output, packaging config and end-to-end suite (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
+# Desktop app: build output, packaging config, end-to-end suite and Windows icon (DESKTOP_EXCLUDE_RULES in scripts/sync-vscodeignore.mjs)
 dist/desktop/**
 dist/desktop-shell/**
 dist/e2e*/**
@@ -189,6 +189,7 @@ types/**
 electron-builder.yml
 playwright.desktop.config.ts
 vite.shell.config.ts
+resources/icon.ico
 
 # Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
 python/**/.venv/**

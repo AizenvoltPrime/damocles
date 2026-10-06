@@ -365,6 +365,7 @@ vi.mock('../fork-agent-data', async (importOriginal) => {
 
 import { PiSession } from '../pi-session';
 import type { CheckpointService } from '../checkpoint-service';
+import { RepoManager, getGitDir, getRepoDir } from '../checkpoints';
 import { PiRuntime } from '../pi-runtime';
 import { FolderRuntime } from '../folder-runtime';
 import { reconstructMessages } from '../session-store/history-loader';
@@ -385,6 +386,7 @@ import { mapPiToolName, toolCategory } from '../tool-normalization';
 import { CUSTOM_TOOL_NAMES, OVERRIDE_TOOL_NAMES, buildCustomTools } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
 import { PLAN_MODE_NUDGE_TEXT, PLAN_MODE_NUDGE_ESCALATED_TEXT } from '../plan-mode-hold';
+import { teamPlanModeStatement } from '../../team/prompts';
 import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT, TOOL_GENERATE_IMAGE } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
@@ -414,7 +416,7 @@ import * as fsSync from 'fs';
 // paid once during collection instead of inside a test's 5s timeout budget.
 import * as realPi from '@earendil-works/pi-coding-agent';
 import { installFakePlatform, type FakePlatform } from '../../../__mocks__/fake-platform';
-import { sessionLeasesOf } from '../session-store/session-lease';
+import { SESSION_LEASE_DIR, sessionLeaseBlocker, sessionLeasePath, sessionLeasesOf } from '../session-store/session-lease';
 import elBundle from '../../../../l10n/bundle.l10n.el.json';
 
 /** The platform every session here reads through, also served by the host accessor; fresh per test. */
@@ -437,8 +439,9 @@ function makeOptions(messages: ExtensionToWebviewMessage[], extra?: Partial<Sess
   return {
     cwd: '/cwd',
     settingsFolder: undefined,
+    projectScope: true,
     platform: testPlatform,
-    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, pendingPromptKinds: () => new Set() } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {}, setPendingPromptsListener: () => {}, setPromptOwnerResolver: () => {}, pendingPrompts: () => [] } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-5-5',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -2391,13 +2394,15 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
 
   type SettleEvt = { type: 'agent_before_settle'; entries: unknown[]; continue: boolean; context: { contextMessages: unknown[] } };
   const userMsg = (): unknown => ({ role: 'user', content: [{ type: 'text', text: 'plan it' }] });
+  /** The system prompt's plan-mode section, so the model under test already knows it is in plan mode. */
+  const planSection = (): unknown => ({ role: 'system', content: '', sections: { damocles_plan_mode: 'Plan mode is active.' } });
   const assistant = (stopReason: string): unknown => ({ role: 'assistant', stopReason, content: [{ type: 'text', text: 'here is the plan' }] });
   const exitResult = (isError: boolean): unknown => ({ role: 'toolResult', toolName: 'ExitPlanMode', isError, toolCallId: 'tc1', content: [] });
   /** An already-injected nudge as the projection holds it: role 'custom', never role 'user'. */
   const nudgeMsg = (): unknown => ({ role: 'custom', customType: 'damocles-plan-mode-nudge', content: 'x', display: false });
   /** The boundary carries the session projection, so every turn under test opens with a user message. */
   const evt = (messages: unknown[]): SettleEvt =>
-    ({ type: 'agent_before_settle', entries: [], continue: false, context: { contextMessages: [userMsg(), ...messages] } });
+    ({ type: 'agent_before_settle', entries: [], continue: false, context: { contextMessages: [planSection(), userMsg(), ...messages] } });
 
   /** Drive the pre-settlement coordinator through the registered panel context (the real dispatch path). */
   async function fireBeforeSettle(event: SettleEvt): Promise<unknown> {
@@ -2440,12 +2445,13 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.setPermissionMode('plan');
 
     const priorTurn = [assistant('stop'), exitResult(false)];
-    const thisTurn = [userMsg(), assistant('stop')];
+    // The prompt after the approved exit re-entered plan mode, so pi patched the plan-mode section back in.
+    const thisTurn = [planSection(), userMsg(), assistant('stop')];
     const draft = await fireBeforeSettle({
       type: 'agent_before_settle',
       entries: [],
       continue: false,
-      context: { contextMessages: [userMsg(), ...priorTurn, ...thisTurn] },
+      context: { contextMessages: [planSection(), userMsg(), ...priorTurn, ...thisTurn] },
     });
 
     expect(draft).toMatchObject(NUDGE);
@@ -2554,7 +2560,7 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
       type: 'agent_before_settle',
       entries: [],
       continue: false,
-      context: { contextMessages: [userMsg(), ...priorTurn, userMsg(), assistant('stop')] },
+      context: { contextMessages: [planSection(), userMsg(), ...priorTurn, userMsg(), assistant('stop')] },
     })) as { content: string };
 
     expect(draft.content).toBe(PLAN_MODE_NUDGE_TEXT);
@@ -2571,6 +2577,24 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     const proseQuestion = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Which database should I use?' }] };
 
     expect(await fireBeforeSettle(evt([proseQuestion]))).toMatchObject(NUDGE);
+    await session.dispose();
+  });
+
+  it('a model never told that plan mode started gets the plan-mode change notice instead of the nudge', async () => {
+    // The user switched into plan mode during the run's last step, so no later step carried the notice.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    const draft = await fireBeforeSettle({
+      type: 'agent_before_settle',
+      entries: [],
+      continue: false,
+      context: { contextMessages: [userMsg(), assistant('stop')] },
+    });
+
+    expect(draft).toMatchObject({ type: 'custom_message', customType: 'damocles-plan-mode-change', display: false, details: { planMode: true } });
+    expect((draft as { content: string }).content).toMatch(/^The user switched this chat to plan mode. /);
     await session.dispose();
   });
 
@@ -2839,12 +2863,12 @@ describe('PiSession unpersisted tool result images', () => {
     await session.initializeEarly();
     const folder = cwdFolder()!;
     const listeners = new Set<(event: unknown) => void>();
-    const nested = { subscribe: (fn: (event: unknown) => void) => { listeners.add(fn); return () => listeners.delete(fn); } };
+    const nested = { agent: {}, subscribe: (fn: (event: unknown) => void) => { listeners.add(fn); return () => listeners.delete(fn); } };
     vi.spyOn(folder, 'createSubagentSession').mockResolvedValue(nested as never);
     const forget = vi.spyOn(folder, 'forgetSubagentSession').mockImplementation(() => {});
     const engine = engineOf(session);
 
-    const created = await engine.createSession({});
+    const created = await engine.createSession({ role: 'specialist', extensionFactory: () => undefined });
     for (const fn of listeners) fn(toolEnd('nested-1'));
     expect(session.unpersistedToolResultImages('nested-1')).toEqual([pngBlock]);
 
@@ -2852,6 +2876,39 @@ describe('PiSession unpersisted tool result images', () => {
     expect(session.unpersistedToolResultImages('nested-1')).toBeUndefined();
     expect(listeners.size).toBe(0);
     expect(forget).toHaveBeenCalledWith(nested);
+    await session.dispose();
+  });
+
+  it('the team engine tells a team agent about a plan-mode change at its next step and at a prompt start', async () => {
+    let mode = 'default';
+    const options = makeOptions([]);
+    (options.permissionHandler as unknown as { getPermissionMode: () => string }).getPermissionMode = () => mode;
+    const session = new PiSession(options);
+    await session.initializeEarly();
+    const folder = cwdFolder()!;
+    const agent: { prepareNextTurnWithContext?: (turn: unknown) => Promise<{ messages?: unknown[] } | undefined> } = {};
+    const create = vi.spyOn(folder, 'createSubagentSession').mockResolvedValue({ agent, subscribe: () => () => undefined } as never);
+    const gate = vi.fn();
+    await session.buildTeamEngine().createSession({ role: 'lead', extensionFactory: gate } as never);
+    const directive = teamPlanModeStatement('lead').guidance();
+    const preamble = { role: 'system', content: '', sections: { preamble: 'You lead the team.' } };
+
+    mode = 'plan';
+    const step = await agent.prepareNextTurnWithContext!({ newMessages: [], context: { messages: [preamble, { role: 'user', content: [] }] } });
+    expect(step?.messages).toEqual([expect.objectContaining({ customType: 'damocles-plan-mode-change', content: `The user switched this chat to plan mode. ${directive}` })]);
+
+    // A lead spawned while the team was in plan mode, whose user has since left it.
+    mode = 'default';
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+    const pi = { on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(event, handler) };
+    const factory = (create.mock.calls[0]![0] as { extensionFactory: (pi: unknown) => Promise<void> }).extensionFactory;
+    await factory(pi);
+    expect(gate).toHaveBeenCalledWith(pi);
+    const start = handlers.get('before_agent_start')!(
+      { systemPromptOptions: { sections: {}, customPrompt: `You lead the team.\n\n${directive}` } },
+      { sessionManager: { buildSessionProjection: () => ({ messages: [] }) } },
+    );
+    expect(start).toMatchObject({ message: { customType: 'damocles-plan-mode-change', details: { planMode: false } } });
     await session.dispose();
   });
 });
@@ -3346,8 +3403,8 @@ describe('plan-mode active set — exclusion model', () => {
     'CompassQuery', 'CompassReviewContext', 'CompassSearch', 'CompassStats', 'Edit', 'ExitPlanMode',
     'FeedRead', 'ForgetMemory', 'GenerateImage', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
     'GetSubagentResult', 'ListNotes', 'PowerShell', 'ResetObservationStaleness', 'SaveMemory',
-    'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent', 'TaskCreate', 'TaskGet',
-    'TaskList', 'TaskUpdate', 'ToolSearch', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
+    'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent',
+    'ToolSearch', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
     'YouTubeTranscript', 'bash', 'find', 'grep', 'ls', 'read', 'write',
   ];
   // `ToolSearch` (Slice 2) was added here after answering this block's question deliberately: SHOULD a
@@ -3371,7 +3428,7 @@ describe('plan-mode active set — exclusion model', () => {
   // Kept deliberately: it is the only assertion that states the inversion's behavioral delta as a set
   // difference, so it fails loudly if a later edit widens plan mode while updating the pinned list above.
   const LEGACY_READONLY = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript'];
-  const LEGACY_INTERACTIVE = ['AskUserQuestion', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'Agent', 'GetSubagentResult', 'SteerSubagent'];
+  const LEGACY_INTERACTIVE = ['AskUserQuestion', 'ExitPlanMode', 'Agent', 'GetSubagentResult', 'SteerSubagent'];
   const LEGACY_PLAN_FILE = ['Edit', 'write'];
   const LEGACY_SHELL = ['bash', 'PowerShell'];
 
@@ -3398,7 +3455,7 @@ describe('plan-mode active set — exclusion model', () => {
 
   it('keeps every tool the planner needs — interactive, shell, plan-file, module, web and MCP', () => {
     const names = planSet();
-    for (const n of ['ExitPlanMode', 'AskUserQuestion', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'Agent', 'GetSubagentResult', 'SteerSubagent', 'Edit', 'write', 'bash', 'PowerShell', 'mcp__git__commit']) {
+    for (const n of ['ExitPlanMode', 'AskUserQuestion', 'Agent', 'GetSubagentResult', 'SteerSubagent', 'Edit', 'write', 'bash', 'PowerShell', 'mcp__git__commit']) {
       expect(names, n).toContain(n);
     }
     for (const n of [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES, ...WEB_TOOLS, ...PI_NATIVE_ACTIVE_TOOLS]) {
@@ -3908,7 +3965,7 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     // second read this slice exists to remove, and the test would stop modelling the production path.
     const engine = session.buildTeamEngine();
     const { mcp } = engine.buildAgentToolset(spawnCtx('agent-1'));
-    engine.buildExtensionFactory('specialist', 'agent-1', mcp, false)(nested.api);
+    engine.buildExtensionFactory(spawnCtx('agent-1'), mcp, false)(nested.api);
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH);
     expect(tool).toBeDefined();
@@ -3947,14 +4004,14 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     const engine = session.buildTeamEngine(); // built ONCE, before the toggle
 
     const before = nestedPi([TOOL_TOOL_SEARCH]);
-    engine.buildExtensionFactory('specialist', 'agent-1', engine.buildAgentToolset(spawnCtx('agent-1')).mcp, false)(before.api);
+    engine.buildExtensionFactory(spawnCtx('agent-1'), engine.buildAgentToolset(spawnCtx('agent-1')).mcp, false)(before.api);
     // Browser off, compass unwired and no MCP manager ⇒ nothing deferrable ⇒ registration is skipped.
     expect(before.registered.get(TOOL_TOOL_SEARCH)).toBeUndefined();
 
     flags.browser = true; // the user enables the browser mid-run
 
     const after = nestedPi([TOOL_TOOL_SEARCH]);
-    engine.buildExtensionFactory('specialist', 'agent-2', engine.buildAgentToolset(spawnCtx('agent-2')).mcp, false)(after.api);
+    engine.buildExtensionFactory(spawnCtx('agent-2'), engine.buildAgentToolset(spawnCtx('agent-2')).mcp, false)(after.api);
     const afterTool = after.registered.get(TOOL_TOOL_SEARCH);
     expect(afterTool).toBeDefined();
 
@@ -4118,7 +4175,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const { mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
     const nested = nestedTeamPi([TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES]);
 
-    engine.buildExtensionFactory('specialist', 'agent-1', mcp, false)(nested.api);
+    engine.buildExtensionFactory(teamCtx('agent-1'), mcp, false)(nested.api);
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH);
     expect(tool, 'a team specialist with MCP tools must get a ToolSearch to load them').toBeDefined();
@@ -4156,7 +4213,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
 
     // The team agent's ToolSearch: the direct tool is off the menu and, asked for by name, reported active.
     const nested = nestedTeamPi([TOOL_TOOL_SEARCH, 'mcp__git__status']);
-    teamEngine.buildExtensionFactory('specialist', 'agent-1', snapshots[0]!, false)(nested.api);
+    teamEngine.buildExtensionFactory(teamCtx('agent-1'), snapshots[0]!, false)(nested.api);
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
     expect(tool.description).toContain('git (1): mcp__git__commit');
     expect(tool.description).not.toContain('mcp__git__status');
@@ -4187,7 +4244,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
 
     const teamMcp = teamEngine.buildAgentToolset(teamCtx('agent-1')).mcp;
     const nested = nestedTeamPi([TOOL_TOOL_SEARCH, 'mcp__git__status', 'mcp__git__commit', 'mcp__docs__search']);
-    teamEngine.buildExtensionFactory('specialist', 'agent-1', teamMcp, false)(nested.api);
+    teamEngine.buildExtensionFactory(teamCtx('agent-1'), teamMcp, false)(nested.api);
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
     const result = (await tool.execute('tc-1', { tools: ['git'] }, undefined, undefined, teamExecCtx)) as { content: Array<{ text: string }> };
 
@@ -4205,7 +4262,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     // The deferred baseline a real team spawn writes: coordination tools active, MCP held back.
     const baseline = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES];
     const nested = nestedTeamPi(baseline);
-    engine.buildExtensionFactory('specialist', 'agent-1', mcp, false)(nested.api);
+    engine.buildExtensionFactory(teamCtx('agent-1'), mcp, false)(nested.api);
     for (const tool of mcp.tools) nested.registerTool(tool as unknown as NestedTool); // pi merges customTools likewise
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
@@ -4325,7 +4382,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const canUseTool = vi.fn(async () => ({ behavior: 'allow' as const, updatedInput: {} }));
     Object.assign((session as unknown as { options: SessionOptions }).options.permissionHandler, { matchRule, canUseTool });
     const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>> = {};
-    engine.buildExtensionFactory('reviewer', 'agent-r', reviewer.mcp, reviewer.readOnly)({
+    engine.buildExtensionFactory(teamCtx('agent-r'), reviewer.mcp, reviewer.readOnly)({
       ...(nestedTeamPi().api as object),
       on: (event: string, handler: (e: unknown, c: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>) => { handlers[event] = handler; },
     } as never);
@@ -4334,11 +4391,40 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
       { signal: undefined, sessionManager: { getSessionId: () => 'nested' } },
     );
 
+    // The gate reads the settings rule once per call and hands that read to the approval flow.
     expect((await call('npm test'))?.block).toBeFalsy();
     expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool).toHaveBeenLastCalledWith('Bash', expect.anything(), expect.objectContaining({ rule: null }));
     expect((await call('git diff'))?.block).toBeFalsy();
-    expect(matchRule).toHaveBeenCalledTimes(1);
+    expect(matchRule).toHaveBeenCalledTimes(2);
     expect(canUseTool).toHaveBeenCalledTimes(1);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it("a team agent's gate holds its shell call stoppable and hands the note to that agent's runner delivery", async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const deliverUserNote = vi.fn(() => true);
+    const agent = { ...(teamCtx('agent-n') as object), deliverUserNote } as never;
+    const { mcp, readOnly } = engine.buildAgentToolset(agent);
+    const canUseTool = vi.fn(async () => ({ behavior: 'allow' as const, updatedInput: {} }));
+    Object.assign((session as unknown as { options: SessionOptions }).options.permissionHandler, { canUseTool, matchRule: vi.fn(async () => null) });
+    const handlers: Record<string, (event: unknown, ctx: unknown) => Promise<{ block?: boolean } | undefined>> = {};
+    engine.buildExtensionFactory(agent, mcp, readOnly)({
+      ...(nestedTeamPi().api as object),
+      on: (event: string, handler: (e: unknown, c: unknown) => Promise<{ block?: boolean } | undefined>) => { handlers[event] = handler; },
+    } as never);
+
+    const allowed = await handlers['tool_call']!(
+      { type: 'tool_call', toolName: 'bash', toolCallId: 'team-call', input: { command: 'npm install' } },
+      { signal: undefined, sessionManager: { getSessionId: () => 'nested' } },
+    );
+
+    expect(allowed?.block).toBeFalsy();
+    expect(session.cancelToolCall('team-call', 'wrong package')).toBe(true);
+    expect(deliverUserNote).toHaveBeenCalledWith('wrong package');
 
     cfg.mockRestore();
     await session.dispose();
@@ -4349,7 +4435,7 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     const engine = session.buildTeamEngine();
     const { mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
     const nested = nestedTeamPi([TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES]);
-    engine.buildExtensionFactory('specialist', 'agent-1', mcp, false)(nested.api);
+    engine.buildExtensionFactory(teamCtx('agent-1'), mcp, false)(nested.api);
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
     const result = (await tool.execute('tc-1', { tools: [TEAM_AGENT_PI_TOOL_NAMES[0]!] }, undefined, undefined, teamExecCtx)) as {
@@ -4876,6 +4962,122 @@ describe('PiSession — the on-disk invariant, against a REAL pi SessionManager'
       warn.mockRestore();
     }
   });
+
+  it('a handover another process asked for stops the turn and lets every write land before the lease goes', async () => {
+    const { file } = await seededManager();
+    const live = realPi.SessionManager.open(file, dir);
+    live.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: 'tc-1', name: 'read', arguments: { path: 'README.md' } }], stopReason: 'toolUse', timestamp: 0 } as never);
+    H.setSessionManagerFactory(() => live);
+    // Only the stored session has its id; the fresh one the detach installs gets its own, as pi's newSession does.
+    let made = 0;
+    H.setSessionSetup((s) => { if (made++ === 0) (s as unknown as { sessionId: string }).sessionId = live.getSessionId(); });
+    const warn = vi.spyOn(testPlatform.notifications, 'warn');
+    const messages: ExtensionToWebviewMessage[] = [];
+    const sessionId = live.getSessionId();
+    const leaseHeld = (): boolean => fsSync.existsSync(sessionLeasePath(sessionId));
+    const order: string[] = [];
+    const record = (step: string): void => { if (order.at(-1) !== step) order.push(step); };
+    try {
+      const session = new PiSession(makeOptions(messages));
+      await session.initializeEarly();
+      expect(sessionLeasesOf(session)).toEqual([sessionId]);
+      const first = H.getLastSession()!;
+      (first as { isStreaming: boolean }).isStreaming = true;
+      H.fireEvent({ type: 'tool_execution_start', toolCallId: 'tc-1', toolName: 'read', args: { path: 'README.md' } });
+      first.abort.mockImplementation(async () => {
+        record(`abort, lease held ${leaseHeld()}`);
+        if (!first.isStreaming) return;
+        live.appendMessage({ role: 'toolResult', toolCallId: 'tc-1', toolName: 'read', content: [{ type: 'text', text: 'Operation aborted' }], isError: true, timestamp: 0 } as never);
+        (first as { isStreaming: boolean }).isStreaming = false;
+      });
+      const service = (session as unknown as { checkpointService: CheckpointService }).checkpointService;
+      vi.spyOn(service, 'drain').mockImplementation(async () => { record(`drain, lease held ${leaseHeld()}`); });
+      let settleAgents!: () => void;
+      const agents = new Promise<void>((resolve) => { settleAgents = resolve; });
+      const manager = (session as unknown as { subagentManager: { whenRunsSettled: () => Promise<void> } }).subagentManager;
+      manager.whenRunsSettled = () => agents.then(() => record(`agents settled, lease held ${leaseHeld()}`));
+
+      const handover = session.onSessionReleaseRequested(sessionId);
+      await vi.waitFor(() => expect(messages.some((m) => m.type === 'sessionCleared')).toBe(true));
+      // Replaced, but the aborted agents still write under the session's folder: the lease stays, and no panel here can take it.
+      expect(H.getLastSession()).not.toBe(first);
+      expect(leaseHeld()).toBe(true);
+      expect(sessionLeaseBlocker(sessionId)).toEqual({ kind: 'writing' });
+      expect(warn).not.toHaveBeenCalled();
+      settleAgents();
+      await handover;
+
+      expect(order).toEqual(['abort, lease held true', 'drain, lease held true', 'agents settled, lease held true']);
+      expect(leaseHeld()).toBe(false);
+      expect(fsSync.existsSync(path.join(SESSION_LEASE_DIR, `${sessionId}.owner`))).toBe(false);
+      expect(warn).toHaveBeenCalledWith('This conversation was opened in another Damocles window, so this panel closed it.');
+      expect(messages.filter((m) => m.type === 'processing' && !m.isProcessing).length).toBeGreaterThan(0);
+      // The Stop path ran, so a reload in the other window shows the cut-off call as stopped.
+      const { messages: replayed } = reconstructMessages(realPi.SessionManager.open(file, dir).getBranch());
+      expect(replayed.flatMap((m) => (m.kind === 'assistant' ? m.tools : [])).find((t) => t.id === 'tc-1')).toMatchObject({ stopped: true });
+      const released = fsSync.readFileSync(file, 'utf8');
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fsSync.readFileSync(file, 'utf8')).toBe(released);
+      expect(sessionLeasesOf(session)).not.toContain(sessionId);
+      await session.dispose();
+    } finally {
+      H.setSessionSetup(null);
+      warn.mockRestore();
+    }
+  });
+
+  it('a handover that fails to replace the session keeps the lease, since the old session is still installed and writable', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const sessionId = live.sessionId;
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+    runtime.newSession = async () => { throw new Error('factory boom'); };
+    const warn = vi.spyOn(testPlatform.notifications, 'warn');
+    try {
+      await expect(session.onSessionReleaseRequested(sessionId)).rejects.toThrow('factory boom');
+
+      expect(H.getLastSession()).toBe(live);
+      expect(sessionLeasesOf(session)).toEqual([sessionId]);
+      expect(fsSync.existsSync(sessionLeasePath(sessionId))).toBe(true);
+      // The writer left with the failed handover, so this panel's own hold is all that remains.
+      expect(sessionLeaseBlocker(sessionId)).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      await session.dispose();
+    }
+  });
+
+  it('a handover that meets a dispose leaves the detach to it, replaces nothing, and releases the lease once', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const sessionId = live.sessionId;
+    (live as { isStreaming: boolean }).isStreaming = true;
+    // pi's abort() waits for the one wind-down however many callers ask.
+    let windDown!: () => void;
+    const wound = new Promise<undefined>((resolve) => { windDown = () => resolve(undefined); });
+    live.abort.mockImplementation(() => wound);
+    const warn = vi.spyOn(testPlatform.notifications, 'warn');
+    try {
+      const handover = session.onSessionReleaseRequested(sessionId);
+      await new Promise((r) => setTimeout(r, 0));
+      const disposing = session.dispose();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(fsSync.existsSync(sessionLeasePath(sessionId))).toBe(true);
+      windDown();
+      await Promise.all([handover, disposing]);
+
+      expect(fsSync.existsSync(sessionLeasePath(sessionId))).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      // Nothing replaced the session of the panel being torn down.
+      expect(H.getLastSession()).toBe(live);
+      await expect(session.onSessionReleaseRequested(sessionId)).resolves.toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('PiSession session-replacement contract (what a destructive delete is sequenced off)', () => {
@@ -5187,6 +5389,26 @@ describe('PiSession session leases follow what the panel holds', () => {
   });
 });
 
+/** A live session whose branch can fork at `a1`, the parent of user entry `u2`. */
+async function forkableSession(messages: ExtensionToWebviewMessage[], parentTimestamp: string | undefined, extra?: Partial<SessionOptions>) {
+  const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
+  const session = new PiSession({ ...makeOptions(messages, extra), onSpawnFork });
+  await session.initializeEarly();
+  const sm = H.getLastSession()!.sessionManager;
+  (sm['getEntry'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+    id === 'u2' ? { id: 'u2', parentId: 'a1', type: 'message', timestamp: '2026-03-04T09:00:00.000Z' }
+    : id === 'a1' ? { id: 'a1', parentId: 'u1', type: 'message', ...(parentTimestamp ? { timestamp: parentTimestamp } : {}) }
+    : undefined,
+  );
+  (sm['getSessionFile'] as ReturnType<typeof vi.fn>).mockReturnValue('/fake/agent/sessions/cwd/2026-03-04T08-00-00-000Z_src.jsonl');
+  sm['getSessionId'] = () => 'src';
+  sm['getEntries'] = () => [];
+  (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({
+    createBranchedSession: () => '/fake/agent/sessions/cwd/2026-03-04T10-00-00-000Z_fork.jsonl',
+  });
+  return { session, onSpawnFork };
+}
+
 describe('PiSession interruption notice and the pre-turn window', () => {
   beforeEach(() => {
     H.seq.length = 0;
@@ -5300,26 +5522,6 @@ describe('PiSession interruption notice and the pre-turn window', () => {
     expect(live.prompt).toHaveBeenCalledTimes(1);
     await session.dispose();
   });
-
-  /** A live session whose branch can fork at `a1`, the parent of user entry `u2`. */
-  async function forkableSession(messages: ExtensionToWebviewMessage[], parentTimestamp: string | undefined, extra?: Partial<SessionOptions>) {
-    const onSpawnFork = vi.fn<(args: ForkSpawnArgs) => Promise<void>>(async () => undefined);
-    const session = new PiSession({ ...makeOptions(messages, extra), onSpawnFork });
-    await session.initializeEarly();
-    const sm = H.getLastSession()!.sessionManager;
-    (sm['getEntry'] as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
-      id === 'u2' ? { id: 'u2', parentId: 'a1', type: 'message', timestamp: '2026-03-04T09:00:00.000Z' }
-      : id === 'a1' ? { id: 'a1', parentId: 'u1', type: 'message', ...(parentTimestamp ? { timestamp: parentTimestamp } : {}) }
-      : undefined,
-    );
-    (sm['getSessionFile'] as ReturnType<typeof vi.fn>).mockReturnValue('/fake/agent/sessions/cwd/2026-03-04T08-00-00-000Z_src.jsonl');
-    sm['getSessionId'] = () => 'src';
-    sm['getEntries'] = () => [];
-    (H.fakePi.SessionManager as Record<string, unknown>)['open'] = () => ({
-      createBranchedSession: () => '/fake/agent/sessions/cwd/2026-03-04T10-00-00-000Z_fork.jsonl',
-    });
-    return { session, onSpawnFork };
-  }
 
   it('a fork copies agent data cut at the parent entry\'s timestamp', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
@@ -6912,7 +7114,7 @@ describe('PiSession account state publication', () => {
   beforeEach(() => {
     H.seq.length = 0;
     H.resetServices();
-    // Earlier suites leave auth spies on the runtime singleton, and these assert exact chip values.
+    // Earlier suites leave auth spies on the runtime singleton, and these assert exact account values.
     vi.restoreAllMocks();
     vi.spyOn(PiRuntime.get('/fake/agent'), 'getClaudeAuthStatus').mockReturnValue({ mode: 'none' });
   });
@@ -6952,7 +7154,21 @@ describe('PiSession account state publication', () => {
     const session = new PiSession(makeOptions(messages));
     await session.initializeEarly();
 
-    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', subscriptionType: 'none', dollarBilled: false });
+    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: false });
+    await session.dispose();
+  });
+
+  it('publishes nothing once the runtime is retired, and builds no new runtime to do it', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const before = messages.length;
+    await PiRuntime.disposeInstance();
+
+    session.publishAccountInfo();
+
+    expect(messages.length).toBe(before);
+    expect(PiRuntime.exists).toBe(false);
     await session.dispose();
   });
 
@@ -6967,7 +7183,7 @@ describe('PiSession account state publication', () => {
     session.setModel('gpt-6.1-sol');
 
     // The panel model was a subscription-billed Claude one; the switch target is metered by the key.
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
     await session.dispose();
   });
 
@@ -6993,7 +7209,7 @@ describe('PiSession account state publication', () => {
 
     session.publishAccountInfo();
 
-    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', subscriptionType: 'apikey', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'claude-opus-5-5', dollarBilled: true });
     await session.dispose();
   });
 
@@ -7006,12 +7222,12 @@ describe('PiSession account state publication', () => {
     vi.spyOn(runtime, 'getOpenAIAuthStatus').mockReturnValue({ apiKey: true, chatgpt: false, codex: true });
     registerOpenAIModel(true);
     session.setModel('gpt-6.1-sol');
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'codex-oauth', dollarBilled: false });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: false });
 
     preferApiKey = true;
     session.publishAccountInfo();
 
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
     await session.dispose();
   });
 
@@ -7025,7 +7241,7 @@ describe('PiSession account state publication', () => {
 
     session.setModel('gpt-6.1-sol');
 
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
     await session.dispose();
   });
 
@@ -7040,15 +7256,15 @@ describe('PiSession account state publication', () => {
     registerOpenAIModel();
     session.setModel('gpt-6.1-sol');
     expect(session.currentModel).toBe('gpt-6.1-sol');
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'chatgpt-oauth', dollarBilled: false });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: false });
 
     preferApiKey = true;
     session.publishAccountInfo();
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
 
     preferApiKey = false;
     session.publishAccountInfo();
-    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'chatgpt-oauth', dollarBilled: false });
+    expect(published(messages)).toEqual({ model: 'gpt-6.1-sol', dollarBilled: false });
     expect(signIn).not.toHaveBeenCalled();
     await session.dispose();
   });
@@ -7522,6 +7738,121 @@ describe('PiSession GenerateImage runs with the model its approval prompt showed
     await (tool.execute as (...args: unknown[]) => Promise<unknown>)('g1', { prompt: 'a fox', file_path: target }, undefined, undefined, undefined);
 
     expect(generateImages).toHaveBeenCalledWith(expect.objectContaining({ id: 'approved/model' }), expect.anything(), expect.anything());
+    await session.dispose();
+  });
+});
+
+describe('PiSession with no project folder takes no checkpoints', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    H.setSessionManagerFactory(null);
+    delete (H.fakePi.SessionManager as Record<string, unknown>)['open'];
+    await PiRuntime.disposeInstance();
+  });
+
+  type Registries = { _panelRegistry: Map<string, PanelGateContext>; _checkpointRegistry: Map<string, unknown> };
+  const prompt = (id: string, text: string) => ({ type: 'message', id, message: { role: 'user', content: [{ type: 'text', text }] } });
+
+  it('creates no checkpoint service, and neither its gate nor a subagent gate has a baseline to wait on', async () => {
+    const session = new PiSession(makeOptions([], { projectScope: false }));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const folder = cwdFolder()!;
+    const registries = folder as unknown as Registries;
+
+    expect(session.fileCheckpoints).toBe(false);
+    expect((session as unknown as { checkpointService: unknown }).checkpointService).toBeNull();
+    expect(registries._checkpointRegistry.has(live.sessionId)).toBe(false);
+    const gate = registries._panelRegistry.get(live.sessionId)!;
+    expect(gate).not.toHaveProperty('checkpointBaseline');
+    const subagentEngine = (session as unknown as { buildSubagentEngine(pi: unknown, folder: unknown): object }).buildSubagentEngine(getPiCodingAgent(), folder);
+    expect(subagentEngine).not.toHaveProperty('checkpointBaseline');
+    await session.dispose();
+  });
+
+  it('makes every prompt a conversation rewind point and refuses a file rewind or undo with the reason', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages, { projectScope: false }));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async (_text: string, opts: unknown) => {
+      piRuns(opts, getBranch, [prompt('u1', 'list my downloads')]);
+    });
+
+    await session.sendMessage('list my downloads', undefined, 'c1', { content: 'list my downloads' });
+    await session.rewindFiles('u1', 'code-only');
+    await session.undoRewind('r1');
+
+    expect(messages.filter((m) => m.type === 'checkpointInfo').at(-1)).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1'] });
+    const reason = 'This chat has no project folder, so its files have no checkpoints to restore.';
+    expect(messages.flatMap((m) => (m.type === 'rewindError' ? [m.message] : []))).toEqual([reason, reason]);
+    await session.dispose();
+  });
+
+  it('a fork runs no checkpoint git work and still copies the agent data', async () => {
+    const { session, onSpawnFork } = await forkableSession([], '2026-03-04T08:30:00.123Z', { projectScope: false });
+    // The source's legacy repo exists, so only the no-project rule keeps the fork from cloning it.
+    const sourceGit = getGitDir(getRepoDir('/fake/agent/sessions/cwd/2026-03-04T08-00-00-000Z_src.jsonl'));
+    fsSync.mkdirSync(sourceGit, { recursive: true });
+    const cloneFrom = vi.spyOn(RepoManager, 'cloneFrom').mockResolvedValue(undefined);
+    const carry = vi.spyOn(session as unknown as { carryCheckpointsToFork: () => Promise<void> }, 'carryCheckpointsToFork').mockResolvedValue(undefined);
+    vi.mocked(copyForkAgentData).mockClear();
+    vi.mocked(copyForkAgentData).mockResolvedValueOnce([]);
+    try {
+      await session.rewindFiles('u2', 'fork-conversation');
+
+      expect(cloneFrom).not.toHaveBeenCalled();
+      expect(carry).not.toHaveBeenCalled();
+      expect(copyForkAgentData).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(copyForkAgentData).mock.calls[0]![0]).toMatchObject({ sourceSessionId: 'src', targetSessionId: 'fork' });
+      expect(onSpawnFork.mock.calls[0]![0].piBranchedSessionId).toBe('fork');
+    } finally {
+      cloneFrom.mockRestore();
+      fsSync.rmSync(sourceGit, { recursive: true, force: true });
+      await session.dispose();
+    }
+  });
+
+  it('a project chat still checkpoints and waits on its baseline', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const registries = cwdFolder() as unknown as Registries;
+
+    expect(registries._checkpointRegistry.has(live.sessionId)).toBe(true);
+    expect(registries._panelRegistry.get(live.sessionId)?.checkpointBaseline?.folder).toBe('/cwd');
+    await session.dispose();
+  });
+});
+
+describe("the panel gate's cancel handle", () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    H.setSessionSetup(null);
+    H.setSessionManagerFactory(null);
+    await PiRuntime.disposeInstance();
+  });
+
+  it('steers the note of a Stop on a call the gate still holds into the panel session', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const gate = (cwdFolder() as unknown as { _panelRegistry: Map<string, PanelGateContext> })._panelRegistry.get(live.sessionId)!;
+    gate.shellCancel.admit('held-call', undefined);
+
+    expect(session.cancelToolCall('held-call', 'wrong folder')).toBe(true);
+    await vi.waitFor(() => expect(live.prompt).toHaveBeenCalledWith('wrong folder', expect.objectContaining({ streamingBehavior: 'steer', expandPromptTemplates: false })));
     await session.dispose();
   });
 });

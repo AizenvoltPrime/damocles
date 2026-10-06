@@ -1,16 +1,12 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { dialog, type BrowserWindow } from 'electron';
 import type { Disposable } from '../../platform/disposable';
 import { writeJsonConfig } from '../../core/config/json-config-write';
 import { folderKey } from '../../core/workspace-folders/folder-key';
+import type { AskMessage } from './message-dialog';
 
 const SCHEMA_VERSION = 1;
 export const TRUST_FILE = 'trusted-folders.json';
-
-// Button order of the trust prompt; a test answering the dialog returns TRUST_BUTTON to grant.
-export const TRUST_BUTTON = 0;
-export const DONT_TRUST_BUTTON = 1;
 
 export type Translate = (message: string, ...args: string[]) => string;
 
@@ -29,13 +25,13 @@ export class TrustStore {
   private readonly trusted = new Map<string, string>();
   private readonly grantListeners = new Set<(folderPaths: readonly string[]) => void>();
   private readonly prompts = new Map<string, Promise<boolean>>();
-  private readonly window: () => BrowserWindow | undefined;
+  private readonly ask: AskMessage;
   private readonly t: Translate;
   private readonly log: (line: string) => void;
 
-  constructor(userDataDir: string, window: () => BrowserWindow | undefined, t: Translate, log: (line: string) => void) {
+  constructor(userDataDir: string, ask: AskMessage, t: Translate, log: (line: string) => void) {
     this.filePath = path.join(userDataDir, TRUST_FILE);
-    this.window = window;
+    this.ask = ask;
     this.t = t;
     this.log = log;
     let text: string | undefined;
@@ -87,20 +83,16 @@ export class TrustStore {
     return prompt;
   }
 
+  // Don't Trust is Cancel and takes focus first, so neither Enter nor Escape grants trust.
   private async prompt(folderPath: string): Promise<boolean> {
-    const options = {
-      type: 'question' as const,
-      title: 'Damocles',
+    const chosen = await this.ask({
+      severity: 'warning',
       message: this.t('Do you trust the authors of the files in {0}?', folderPath),
       detail: this.t('Damocles loads a trusted folder\'s own instructions, skills, hooks, MCP servers, subagents, permission rules and settings. Until you trust it, only your user-level configuration applies there. Trusting this folder does not trust its subfolders.'),
-      buttons: [this.t('Trust Folder'), this.t('Don\'t Trust')],
-      defaultId: DONT_TRUST_BUTTON,
-      cancelId: DONT_TRUST_BUTTON,
-      noLink: true,
-    };
-    const parent = this.window();
-    const { response } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
-    if (response !== TRUST_BUTTON) {
+      actions: [this.t('Trust Folder')],
+      cancelLabel: this.t('Don\'t Trust'),
+    });
+    if (chosen !== 0) {
       this.log(`[trust] declined ${folderPath}`);
       return false;
     }

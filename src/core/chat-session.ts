@@ -96,7 +96,7 @@ export interface ChatSession extends ActivitySource {
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): void;
 
-  /** Push the account/billing chip (model, credential source, dollar-metered flag) to the webview.
+  /** Push the account state (model, dollar-metered flag) to the webview.
    *  Callers own the timing: it is derived state with no publisher of its own. */
   publishAccountInfo(): void;
 
@@ -128,6 +128,8 @@ export interface ChatSession extends ActivitySource {
   rewindFiles(userMessageId: string, option?: RewindOption, promptContent?: string): Promise<void>;
   undoRewind(preRewindId: string): Promise<void>;
   seedCheckpoints(userMessageIds: Iterable<string>): void;
+  /** False for a chat with no project folder: its files are never checkpointed, so only its conversation can be rewound. */
+  readonly fileCheckpoints: boolean;
   getAccumulatedCost(): number;
 
   /**
@@ -154,4 +156,13 @@ export interface ChatSession extends ActivitySource {
    * once, then detach. A session this panel no longer holds is ignored.
    */
   onSessionLeaseLost(sessionId: string): void;
+
+  /**
+   * Another process asked for stored session `sessionId`: stop its turn, finish this panel's writes, detach
+   * and tell the user, then release the lease. A session this panel no longer holds, or a disposed panel, is ignored.
+   */
+  onSessionReleaseRequested(sessionId: string): Promise<void>;
+
+  /** The panel's identity across reloads, which the lease owner record of every session this panel holds names. */
+  setPanelToken(token: string | null): void;
 }

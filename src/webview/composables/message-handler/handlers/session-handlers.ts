@@ -9,7 +9,7 @@ import { settingsViewHandlers } from "./settings-handlers";
 
 /** Every path that drops the conversation runs this, so a store added here is cleared on all of them. */
 function resetConversationStores(ctx: HandlerContext): void {
-  const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
+  const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, formStore, permissionStore, planViewStore, contextInjectionStore, contextUsageStore, subscriptionUsageStore, elicitationStore, btwStore } = ctx.stores;
 
   streamingStore.$reset();
   subagentStore.$reset();
@@ -17,7 +17,6 @@ function resetConversationStores(ctx: HandlerContext): void {
   formStore.$reset();
   permissionStore.$reset();
   planViewStore.$reset();
-  taskStore.$reset();
   contextInjectionStore.$reset();
   contextUsageStore.$reset();
   subscriptionUsageStore.$reset();
@@ -27,7 +26,6 @@ function resetConversationStores(ctx: HandlerContext): void {
   useTeamStore().$reset();
   useConsolidationStore().$reset();
   uiStore.collapseTool();
-  uiStore.setTasksPanelCollapsed(true);
   sessionStore.clearSessionData();
   sessionStore.setCurrentSession(null);
 }
@@ -74,7 +72,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     // The panel owns one session and `running` can arrive before `sessionStarted`, so no session id filter here.
     sessionStateChanged: (msg, ctx) => {
-      ctx.stores.sessionStore.setSessionState(msg.state);
+      ctx.stores.sessionStore.setSessionState(msg.state, msg.pendingPrompts);
     },
 
     storedSessions: (msg, ctx) => {

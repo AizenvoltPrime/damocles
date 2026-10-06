@@ -90,6 +90,34 @@ describe('RewindBrowser keyboard', () => {
   });
 });
 
+describe('RewindBrowser not-rewindable rows', () => {
+  function mountWith(prompts: RewindHistoryItem[]): void {
+    mounted.push(mount(RewindBrowser, { props: { prompts }, attachTo: document.body, global: { plugins: [i18n] } }) as VueWrapper);
+  }
+  const badges = () => document.body.querySelectorAll('[data-testid="rewind-row-not-rewindable"]');
+
+  it('badges no row of a chat with no project folder, and the selected row still says why its files cannot be restored', async () => {
+    const noProject = { reason: 'no-project', params: {} } as const;
+    mountWith([
+      { messageId: 'u2', content: 'second prompt', timestamp: Date.now(), filesAffected: 0, notRewindable: noProject },
+      { messageId: 'u1', content: 'first prompt', timestamp: Date.now(), filesAffected: 0, notRewindable: noProject },
+    ]);
+    await flush();
+    expect(badges()).toHaveLength(0);
+    expect(q('[data-testid="rewind-not-rewindable"]')?.textContent).toContain('This chat has no project folder');
+  });
+
+  it('badges a row whose turn has no usable checkpoint', async () => {
+    mountWith([
+      { messageId: 'u2', content: 'second prompt', timestamp: Date.now(), filesAffected: 1 },
+      { messageId: 'u1', content: 'first prompt', timestamp: Date.now(), filesAffected: 0, notRewindable: { reason: 'baseline-timeout', params: { tool: 'Edit', waitSeconds: 30 } } },
+    ]);
+    await flush();
+    expect(badges()).toHaveLength(1);
+    expect(badges()[0]!.closest('[role="option"]')?.textContent).toContain('first prompt');
+  });
+});
+
 describe('RewindBrowser restore points', () => {
   const at = new Date();
   at.setHours(14, 32, 0, 0);

@@ -5,9 +5,9 @@ import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { listChats, projectKeyOf } from './support/shell-ui';
-import { addProject, answerMessageBoxes, chatInput, clickMenu, messageBoxes, sendAndAwaitEcho } from './support/ui';
-import { overlayToasts, overlayViewState } from './support/overlay';
-import { overlayPage, pressKeys, PRIMARY, shellPage, shellState } from './support/shell';
+import { addProject, answerDialogs, chatInput, clickMenu, askedDialogs, sendAndAwaitEcho } from './support/ui';
+import { overlayViewState } from './support/overlay';
+import { overlayPage, popupPage, popupToasts, pressKeys, PRIMARY, shellPage, shellState, viewFocused } from './support/shell';
 import { chooseSegment, closeSettingsModal, openSettingsModal, settingsModal, settingsNav, settingsRow } from './support/settings';
 
 const userSettings = (dir: string): Record<string, unknown> => {
@@ -51,7 +51,7 @@ test('Ctrl+, (Cmd+, on macOS) opens settings from the chat, and Escape returns f
   await expect(overlay.getByTestId('settings-search')).toBeFocused();
   await overlay.keyboard.press('Escape');
   await expect(settingsModal(overlay)).toHaveCount(0);
-  await expect.poll(() => tab.evaluate(() => document.hasFocus())).toBe(true);
+  await expect.poll(() => viewFocused(app, tab)).toBe(true);
 });
 
 test('search filters every section and Escape clears it before it closes', async ({ launch }) => {
@@ -215,7 +215,7 @@ test('on a fresh install with no project the modal opens on the chat main create
   await dialog.getByRole('textbox').fill('sk-or-e2e-fresh-install');
   await dialog.getByRole('textbox').press('Enter');
   await expect(dialog).toBeHidden();
-  await expect(overlayToasts(overlay).filter({ hasText: 'OpenRouter API key saved' })).toBeVisible();
+  await expect(popupToasts(await popupPage(app)).filter({ hasText: 'OpenRouter API key saved' })).toBeVisible();
   await expect(settingsModal(overlay)).toBeVisible();
 });
 
@@ -240,14 +240,14 @@ test('This chat › Workspace folder asks first, then starts a new conversation 
     await sendAndAwaitEcho(tab, 'work in alpha');
     const oldChat = await storedChatId(app);
 
-    await answerMessageBoxes(app, { 'Switch this panel': 'Start new conversation' });
+    await answerDialogs(app, { 'Switch this panel': 'Start new conversation' });
     const overlay = await openSettingsModal(app, 'chat');
     const folder = settingsRow(overlay, 'workspace-folder');
     await expect(folder).toContainText('Switching starts a new conversation. This one stays in history.');
     await folder.getByRole('combobox').click();
     await overlay.getByRole('option', { name: /^beta/ }).click();
 
-    await expect.poll(async () => (await messageBoxes(app)).map((box) => box.message)).toContainEqual(expect.stringContaining('beta'));
+    await expect.poll(async () => (await askedDialogs(app)).map((box) => box.message)).toContainEqual(expect.stringContaining('beta'));
     await expect(folder.getByRole('combobox')).toContainText('beta');
     await expect(tab.getByText('Echo: work in alpha', { exact: true })).toHaveCount(0);
     await expect.poll(async () => (await shellState(app)).selected.projectKey).toBe(betaKey);

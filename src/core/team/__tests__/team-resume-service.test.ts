@@ -270,6 +270,19 @@ describe('a team member session', () => {
     expect(p.excluded).toEqual([[...PI_EXCLUDED_TOOLS]]);
     for (const name of OVERRIDE_TOOL_NAMES) expect(PI_EXCLUDED_TOOLS).not.toContain(name);
   });
+
+  it('is named with its running team while the team runs, and with none once the team stopped', async () => {
+    const p = panel();
+    const { teamId, result } = await runningTeam(p);
+    const leadId = p.service.listSteerTargets()[0]!.id;
+
+    expect(p.service.memberOf(leadId)).toEqual({ teamId, teamTitle: 'resumable team', agentName: 'Lead' });
+    expect(p.service.memberOf('not-a-member')).toBeNull();
+
+    p.service.cancelTeam(teamId);
+    await result;
+    expect(p.service.memberOf(leadId)).toBeNull();
+  });
 });
 
 describe("the user's Stop team", () => {

@@ -4,6 +4,7 @@ import type { ElicitationRequest } from '@shared/types/elicitation';
 import { Check, ExternalLink, Plug } from 'lucide-vue-next';
 import { useElicitationStore } from '@/stores/useElicitationStore';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
+import { useAttentionCard } from '@/composables/useAttention';
 
 const store = useElicitationStore();
 const { postMessage } = usePlatformBridge();
@@ -13,6 +14,8 @@ const currentElicitation = computed((): ElicitationRequest | undefined =>
 );
 
 const formValues = ref<Record<string, unknown>>({});
+const cardRef = ref<HTMLElement | null>(null);
+useAttentionCard('input', cardRef);
 
 watch(() => currentElicitation.value?.elicitationId, () => {
   formValues.value = {};
@@ -83,7 +86,8 @@ function onFieldInput(prop: { key: string; type: unknown }, raw: string) {
   <Transition name="t-up">
     <div
       v-if="currentElicitation"
-      class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+      ref="cardRef"
+      class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-accent)_45%,var(--d-border))] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-accent)]"
       role="region"
       :aria-label="$t('elicitation.ariaLabel')"
       data-dock-prompt

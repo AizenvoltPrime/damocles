@@ -48,6 +48,8 @@ export interface ResolvedTeamModel {
 export interface TeamSessionOptions {
   cwd: string;
   systemPrompt: string;
+  /** Selects the plan-mode directive `systemPrompt` carries, for the plan-mode change notice. */
+  role: AgentRole;
   model?: Model<Api>;
   thinkingLevel?: ThinkingLevel;
   tools: string[];
@@ -91,8 +93,9 @@ export interface TeamEngine {
   };
   /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). Takes the
    *  spawn's frozen `mcp` snapshot so the gate's read-only classifier and the nested ToolSearch
-   *  inventory come from the same read as the agent's `tools:`, and the same spawn's `readOnly`. */
-  buildExtensionFactory: (agentName: string, agentId: string, mcp: NestedMcpToolset, readOnly: boolean) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
+   *  inventory come from the same read as the agent's `tools:`, and the same spawn's `readOnly`. Takes
+   *  the spawn's context, from which the gate binds the same cancel-note delivery as the agent's tools. */
+  buildExtensionFactory: (agent: AgentMcpContext, mcp: NestedMcpToolset, readOnly: boolean) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
   /** Roll a team agent session's cost delta (USD) into the panel budget meter. */
   onAgentCost: (deltaUsd: number) => void;
   /** Dispose a team agent's browser tab scope at its run-settle point. `closeTabs` closes its tabs only

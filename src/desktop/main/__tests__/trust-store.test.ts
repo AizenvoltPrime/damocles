@@ -3,26 +3,104 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const showMessageBox = vi.fn();
-vi.mock('electron', () => ({ dialog: { showMessageBox: (...args: unknown[]) => showMessageBox(...args) } }));
+const H = vi.hoisted(() => ({ showMessageBox: vi.fn() }));
+vi.mock('electron', async () => ({
+  ...(await import('./fake-overlay-electron')).fakeOverlayElectron(),
+  dialog: { showMessageBox: (...args: unknown[]) => H.showMessageBox(...args) },
+}));
 
-import { DONT_TRUST_BUTTON, TRUST_BUTTON, TRUST_FILE, TrustStore } from '../trust-store';
+import { OVERLAY_CHANNELS, type OverlayRequest } from '../../preload/overlay-channels';
+import { createMessageAsker, type MessageOverlay } from '../message-dialog';
+import { OverlayHost } from '../overlay';
+import { OVERLAY_PAGE_URL } from '../protocol';
+import { TRUST_FILE, TrustStore } from '../trust-store';
+import { fakeOverlayWindow, type FakeOverlayView } from './fake-overlay-electron';
+
+// Button indexes of the OS fallback box: Trust Folder, then Don't Trust (Cancel).
+const TRUST_BUTTON = 0;
+const DONT_TRUST_BUTTON = 1;
 
 let userData: string;
 let project: string;
+let overlay: MessageOverlay | undefined;
+const showMessageBox = H.showMessageBox;
 
 beforeEach(() => {
   userData = fs.mkdtempSync(path.join(os.tmpdir(), 'damocles-trust-'));
   project = path.join(userData, 'workspace', 'project');
   fs.mkdirSync(path.join(project, 'packages', 'child'), { recursive: true });
   showMessageBox.mockReset();
+  overlay = undefined;
 });
 
 afterEach(() => {
   fs.rmSync(userData, { recursive: true, force: true });
 });
 
-const store = (): TrustStore => new TrustStore(userData, () => undefined, (message) => message, () => undefined);
+const ask = createMessageAsker({ overlay: () => overlay, window: () => undefined, focused: () => undefined, log: () => undefined });
+const store = (): TrustStore => new TrustStore(userData, ask, (message, ...args) => args.reduce((text, arg, index) => text.replace(`{${index}}`, arg), message), () => undefined);
+
+function loadedOverlay(): { host: OverlayHost; view: FakeOverlayView } {
+  const host = new OverlayHost({
+    window: fakeOverlayWindow() as never,
+    preloadPath: 'preload-overlay.js',
+    state: () => ({ locale: 'en', platform: 'win32' }),
+    focusOutside: () => undefined,
+    awaitActivation: () => undefined,
+    canRasterize: () => undefined,
+    log: () => undefined,
+  });
+  host.load();
+  const view = host.view as unknown as FakeOverlayView;
+  view.webContents.emit('did-finish-load');
+  return { host, view };
+}
+
+describe('the trust question', () => {
+  it('asks in the overlay dialog with Don\'t Trust as Cancel and focused first, and grants on Trust Folder', async () => {
+    const { host, view } = loadedOverlay();
+    overlay = host;
+    const trust = store();
+    const answer = trust.requestTrust(project);
+    const [, sent] = view.webContents.send.mock.calls.find(([channel]) => channel === OVERLAY_CHANNELS.request) as [string, { requestId: string; request: OverlayRequest }];
+    expect(sent.request).toEqual({
+      kind: 'message',
+      severity: 'warning',
+      message: `Do you trust the authors of the files in ${project}?`,
+      detail: expect.stringContaining('Trusting this folder does not trust its subfolders.'),
+      actions: ['Trust Folder'],
+      cancelLabel: 'Don\'t Trust',
+    });
+    // Only the overlay page answers it, and only for the id main issued.
+    const own = { sender: view.webContents, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } };
+    view.webContents.ipc.emit(OVERLAY_CHANNELS.answer, { sender: { id: 99 }, senderFrame: own.senderFrame }, sent.requestId, { kind: 'message', action: 0 });
+    view.webContents.ipc.emit(OVERLAY_CHANNELS.answer, own, 'forged', { kind: 'message', action: 0 });
+    expect(trust.isTrusted(project)).toBe(false);
+    view.webContents.ipc.emit(OVERLAY_CHANNELS.answer, own, sent.requestId, { kind: 'message', action: 0 });
+    await expect(answer).resolves.toBe(true);
+    expect(trust.isTrusted(project)).toBe(true);
+    expect(showMessageBox).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it('leaves the folder untrusted when the overlay dialog is cancelled', async () => {
+    const { host, view } = loadedOverlay();
+    overlay = host;
+    const trust = store();
+    const answer = trust.requestTrust(project);
+    const [, sent] = view.webContents.send.mock.calls.find(([channel]) => channel === OVERLAY_CHANNELS.request) as [string, { requestId: string }];
+    view.webContents.ipc.emit(OVERLAY_CHANNELS.answer, { sender: view.webContents, senderFrame: { url: OVERLAY_PAGE_URL, parent: null } }, sent.requestId, { kind: 'message', action: null });
+    await expect(answer).resolves.toBe(false);
+    expect(fs.existsSync(path.join(userData, TRUST_FILE))).toBe(false);
+    host.dispose();
+  });
+
+  it('falls back to the OS message box with Don\'t Trust as the default and cancel button', async () => {
+    showMessageBox.mockResolvedValue({ response: TRUST_BUTTON, checkboxChecked: false });
+    expect(await store().requestTrust(project)).toBe(true);
+    expect(showMessageBox.mock.calls[0]![0]).toMatchObject({ buttons: ['Trust Folder', 'Don\'t Trust'], defaultId: DONT_TRUST_BUTTON, cancelId: DONT_TRUST_BUTTON });
+  });
+});
 
 describe('TrustStore', () => {
   it('trusts a folder only by exact match: not its parent, not its children', async () => {

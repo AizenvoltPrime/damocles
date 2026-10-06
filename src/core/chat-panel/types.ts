@@ -32,6 +32,8 @@ export interface HostInstance {
   /** Replaced, never mutated, when the panel switches folder; read it from the instance, not a copy. */
   session: ChatSession;
   folder: FolderTarget;
+  /** The webview's `ready.panelToken`, which survives a window reload; null until it arrives or when it is malformed. Every session the panel runs carries it. */
+  panelToken: string | null;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   disposables: Disposable[];

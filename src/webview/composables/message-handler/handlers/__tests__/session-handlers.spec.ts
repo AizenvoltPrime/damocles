@@ -14,7 +14,6 @@ import { useQuestionStore } from '@/stores/useQuestionStore';
 import { useFormStore } from '@/stores/useFormStore';
 import { usePermissionStore } from '@/stores/usePermissionStore';
 import { usePlanViewStore } from '@/stores/usePlanViewStore';
-import { useTaskStore } from '@/stores/useTaskStore';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
 import { useSubscriptionUsageStore } from '@/stores/useSubscriptionUsageStore';
@@ -53,7 +52,6 @@ function context(): HandlerContext {
     formStore: useFormStore(),
     permissionStore: usePermissionStore(),
     planViewStore: usePlanViewStore(),
-    taskStore: useTaskStore(),
     contextInjectionStore: useContextInjectionStore(),
     contextUsageStore: useContextUsageStore(),
     subscriptionUsageStore: useSubscriptionUsageStore(),
@@ -183,6 +181,12 @@ describe('sessionStarted persists only a stored conversation', () => {
   });
 });
 
+/** A state as core publishes it: parked exactly while a prompt is pending, here one of the chat's own. */
+function stateChanged(state: 'idle' | 'running' | 'requires_action', sessionId = 's-1'): ExtensionToWebviewMessage {
+  const pendingPrompts = state === 'requires_action' ? [{ id: 'p-1', owner: { kind: 'main' as const } }] : [];
+  return { type: 'sessionStateChanged', state, sessionId, pendingPrompts };
+}
+
 describe('the webview reading sessionStateChanged', () => {
   beforeEach(() => setActivePinia(createPinia()));
 
@@ -193,7 +197,7 @@ describe('the webview reading sessionStateChanged', () => {
   ] as const)('writes %s into the session store unchanged', (state, awaiting) => {
     const ctx = context();
 
-    dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+    dispatch(stateChanged(state), ctx);
 
     expect(ctx.stores.sessionStore.sessionState).toBe(state);
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(awaiting);
@@ -204,7 +208,7 @@ describe('the webview reading sessionStateChanged', () => {
     const seen: string[] = [];
 
     for (const state of ['running', 'requires_action', 'running', 'requires_action', 'running', 'idle'] as const) {
-      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+      dispatch(stateChanged(state), ctx);
       seen.push(ctx.stores.sessionStore.sessionState);
     }
 
@@ -214,8 +218,8 @@ describe('the webview reading sessionStateChanged', () => {
   it('leaves no parked state behind when idle follows requires_action directly', () => {
     const ctx = context();
 
-    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
-    dispatch({ type: 'sessionStateChanged', state: 'idle', sessionId: 's-1' }, ctx);
+    dispatch(stateChanged('requires_action'), ctx);
+    dispatch(stateChanged('idle'), ctx);
 
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(false);
   });
@@ -224,7 +228,7 @@ describe('the webview reading sessionStateChanged', () => {
     const ctx = context();
     ctx.stores.sessionStore.setCurrentSession('s-old');
 
-    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-new' }, ctx);
+    dispatch(stateChanged('requires_action', 's-new'), ctx);
 
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
   });
@@ -240,11 +244,42 @@ const PUBLISHED_SEQUENCES = [
   ['clean turn, no prompts', ['running', 'idle']],
   ['one prompt answered mid turn', ['running', 'requires_action', 'running', 'idle']],
   ['permission dialog then a team agent elicitation', ['running', 'requires_action', 'running', 'requires_action', 'running', 'idle']],
-  ['two prompts open at once, answered one at a time', ['running', 'requires_action', 'running', 'idle']],
+  ['two prompts open at once, answered one at a time', ['running', 'requires_action', 'requires_action', 'requires_action', 'running', 'idle']],
   ['a ctx.ui dialog withdrawn by its abort signal', ['running', 'requires_action', 'running', 'idle']],
   ['turn cancelled with a permission dialog open', ['running', 'requires_action', 'idle']],
   ['a dialog opened with no turn in flight', ['requires_action', 'idle']],
 ] as const;
+
+describe('the team members waiting on the user', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const member = (teamId: string, agentId: string) => ({ kind: 'team' as const, teamId, agentId, teamTitle: 'Lockout', agentName: agentId });
+
+  it('are the team owners the published state names, and only while it names them', () => {
+    const ctx = context();
+    const waiting = () => ctx.stores.sessionStore.teamAgentsAwaitingUser;
+
+    dispatch({
+      type: 'sessionStateChanged',
+      state: 'requires_action',
+      sessionId: 's-1',
+      pendingPrompts: [
+        { id: 't1', owner: member('team-1', 'a1') },
+        { id: 'q1', owner: member('team-1', 'a1') },
+        { id: 't2', owner: { kind: 'subagent', agentId: 'sub-1' } },
+        { id: 't3', owner: member('team-2', 'a2') },
+        { id: 't4', owner: { kind: 'main' } },
+      ],
+    }, ctx);
+    expect([...waiting()].map(([team, agents]) => [team, [...agents]])).toEqual([['team-1', ['a1']], ['team-2', ['a2']]]);
+
+    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1', pendingPrompts: [{ id: 't3', owner: member('team-2', 'a2') }] }, ctx);
+    expect(waiting().has('team-1')).toBe(false);
+
+    dispatch(stateChanged('running'), ctx);
+    expect(waiting().size).toBe(0);
+  });
+});
 
 describe('every sequence the extension publisher can produce', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -254,7 +289,7 @@ describe('every sequence the extension publisher can produce', () => {
     const seen: string[] = [];
 
     for (const state of sequence) {
-      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+      dispatch(stateChanged(state), ctx);
       seen.push(ctx.stores.sessionStore.sessionState);
     }
 
@@ -265,7 +300,7 @@ describe('every sequence the extension publisher can produce', () => {
     const ctx = context();
 
     for (const state of sequence) {
-      dispatch({ type: 'sessionStateChanged', state, sessionId: 's-1' }, ctx);
+      dispatch(stateChanged(state), ctx);
     }
 
     expect(ctx.stores.sessionStore.sessionState).toBe('idle');
@@ -278,7 +313,7 @@ describe('every sequence the extension publisher can produce', () => {
 
     expect(ctx.stores.sessionStore.sessionState).toBe('idle');
 
-    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
+    dispatch(stateChanged('requires_action'), ctx);
 
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
   });
@@ -287,8 +322,8 @@ describe('every sequence the extension publisher can produce', () => {
     // The publisher suppresses the repeat, so the parked state has to survive the silence at turn end.
     const ctx = context();
 
-    dispatch({ type: 'sessionStateChanged', state: 'running', sessionId: 's-1' }, ctx);
-    dispatch({ type: 'sessionStateChanged', state: 'requires_action', sessionId: 's-1' }, ctx);
+    dispatch(stateChanged('running'), ctx);
+    dispatch(stateChanged('requires_action'), ctx);
     dispatch({ type: 'processing', isProcessing: false }, ctx);
 
     expect(ctx.stores.sessionStore.isAwaitingUserAction).toBe(true);
@@ -541,7 +576,7 @@ describe('conversationCleared', () => {
 
 describe('ready', () => {
   const api = (globalThis as unknown as {
-    acquireVsCodeApi: () => { postMessage: (m: unknown) => void; getState: () => unknown };
+    acquireVsCodeApi: () => { postMessage: (m: unknown) => void; getState: () => unknown; setState: (next: unknown) => void };
   }).acquireVsCodeApi();
   const unmounts: (() => void)[] = [];
 
@@ -551,9 +586,15 @@ describe('ready', () => {
     vi.restoreAllMocks();
   });
 
-  function mountHandler(savedState: unknown): unknown[] {
+  const TOKEN = '6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  /** Mounts the handler over a webview whose persisted state starts as `savedState`, as the host keeps it. */
+  function mountHandler(savedState: unknown): { posted: unknown[]; state: () => unknown } {
     const posted: unknown[] = [];
-    vi.spyOn(api, 'getState').mockReturnValue(savedState);
+    let state = savedState;
+    vi.spyOn(api, 'getState').mockImplementation(() => state);
+    vi.spyOn(api, 'setState').mockImplementation((next: unknown) => { state = next; });
     vi.spyOn(api, 'postMessage').mockImplementation((m: unknown) => void posted.push(m));
     const Host = defineComponent({
       setup() {
@@ -563,19 +604,62 @@ describe('ready', () => {
     });
     const wrapper = mount(Host, { global: { plugins: [i18n] } });
     unmounts.push(() => wrapper.unmount());
-    return posted;
+    return { posted, state: () => state };
   }
 
-  it('carries the persisted folder key so a restored panel returns to its folder', () => {
-    const posted = mountHandler({ sessionId: 's-1', workspaceFolderKey: SERVER.key });
+  const readyOf = (posted: unknown[]): Record<string, unknown> => posted.find((m) => (m as { type: string }).type === 'ready') as Record<string, unknown>;
 
-    expect(posted).toContainEqual({ type: 'ready', savedSessionId: 's-1', savedWorkspaceFolderKey: SERVER.key });
+  it('carries the persisted folder key and panel token so a restored panel returns to its folder', () => {
+    const { posted, state } = mountHandler({ sessionId: 's-1', workspaceFolderKey: SERVER.key, panelToken: TOKEN });
+
+    expect(readyOf(posted)).toEqual({ type: 'ready', panelToken: TOKEN, savedSessionId: 's-1', savedWorkspaceFolderKey: SERVER.key });
+    expect(state()).toEqual({ sessionId: 's-1', workspaceFolderKey: SERVER.key, panelToken: TOKEN });
   });
 
-  it('omits the key when nothing was persisted', () => {
-    const posted = mountHandler(undefined);
+  it('makes a panel token once, persists it beside the existing state, and sends the same one on the next ready', () => {
+    const first = mountHandler({ workspaceFolderKey: SERVER.key });
+    const token = readyOf(first.posted).panelToken;
+    expect(token).toMatch(UUID);
+    expect(first.state()).toEqual({ workspaceFolderKey: SERVER.key, panelToken: token });
 
-    expect(posted).toContainEqual({ type: 'ready' });
+    // A window reload remounts the webview over the state the host kept.
+    const second = mountHandler(first.state());
+    expect(readyOf(second.posted)).toEqual({ type: 'ready', panelToken: token, savedWorkspaceFolderKey: SERVER.key });
+  });
+
+  it('replaces a persisted token that is not a well-formed one, which the host would read as no identity', () => {
+    const { posted } = mountHandler({ panelToken: 'not-a-token' });
+
+    expect(readyOf(posted).panelToken).toMatch(UUID);
+    expect(readyOf(posted).panelToken).not.toBe('not-a-token');
+  });
+
+  it('with nothing persisted sends only a fresh token', () => {
+    const { posted } = mountHandler(undefined);
+
+    expect(Object.keys(readyOf(posted)).sort()).toEqual(['panelToken', 'type']);
+  });
+});
+
+describe('the persisted panel token', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const TOKEN = '6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
+
+  it.each([
+    ['sessionStarted', { type: 'sessionStarted', sessionId: 's-2', stored: true }],
+    ['sessionStarted of an unstored conversation', { type: 'sessionStarted', sessionId: 's-2', stored: false }],
+    ['resumeAccepted', { type: 'resumeAccepted', sessionId: 's-2' }],
+    ['sessionCleared', { type: 'sessionCleared' }],
+    ['conversationCleared', { type: 'conversationCleared' }],
+    ['a folder switch', folderUpdate(SERVER.key, true)],
+  ] as const)('survives %s, which rewrites the state', (_name, msg) => {
+    const ctx = context();
+    ctx.bridge.setState({ sessionId: 's-1', panelToken: TOKEN });
+
+    dispatch(msg as unknown as ExtensionToWebviewMessage, ctx);
+
+    expect(ctx.bridge.getState<{ panelToken?: string }>()?.panelToken).toBe(TOKEN);
   });
 });
 

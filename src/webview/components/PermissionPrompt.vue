@@ -5,11 +5,12 @@ import { ListboxRoot, ListboxItem } from 'reka-ui';
 import DockPromptOptions from './DockPromptOptions.vue';
 import { FilePlus, ImagePlus, MessageSquare, PencilLine, SquareTerminal, Wrench } from 'lucide-vue-next';
 import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
-import { isShellTool, TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE } from '@shared/tool-names';
-import type { PermissionUpdate, PermissionUpdateDestination } from '@shared/types/permissions';
+import { isShellTool, TOOL_EDIT, TOOL_GENERATE_IMAGE, TOOL_WRITE, WRITE_TOOLS } from '@shared/tool-names';
+import type { PermissionUpdate, PermissionUpdateDestination, PromptOwner } from '@shared/types/permissions';
 import type { FilePatchOmitted } from '@shared/types/file-patch';
 import { buildFileDiff, fileChangeSource } from '@/utils/parseUnifiedDiff';
 import { useDockPromptDigits } from '@/composables/useDockPrompt';
+import { useAttentionCard } from '@/composables/useAttention';
 import { useFolderRelativePath } from '@/composables/useFolderRelativePath';
 import { useDiffStore } from '@/stores/useDiffStore';
 import { useEditorStore } from '@/stores/useEditorStore';
@@ -32,6 +33,7 @@ const props = defineProps<{
   patch?: string | undefined;
   patchOmitted?: FilePatchOmitted | undefined;
   command?: string | undefined;
+  owner?: PromptOwner | undefined;
   agentDescription?: string | undefined;
   queuePosition?: number | undefined;
   queueTotal?: number | undefined;
@@ -84,6 +86,15 @@ const title = computed(() => {
 });
 
 const agentLine = computed(() => {
+  const owner = props.owner;
+  if (owner?.kind === 'team') {
+    if (!owner.agentName || !owner.teamTitle) return null;
+    const names = { agent: owner.agentName, team: owner.teamTitle };
+    if (isShell.value) return t('permission.runCommandTeamAgent', names);
+    if (isGeneric.value) return t('permission.useToolTeamAgent', { ...names, tool: props.toolName });
+    if (isGenerateImage.value || isNewFile.value) return t('permission.createFileTeamAgent', names);
+    return t('permission.editFileTeamAgent', names);
+  }
   const agent = props.agentDescription;
   if (!agent) return null;
   if (isShell.value) return t('permission.runCommandAgent', { agent });
@@ -135,12 +146,16 @@ const suggestionLabel = computed(() => {
   return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
 });
 
+// Switches the whole chat to acceptEdits, which auto-approves exactly WRITE_TOOLS and changes something only from default.
+const offersAcceptAllEdits = computed(() => WRITE_TOOLS.has(props.toolName ?? '')
+  && settingsStore.currentSettings.permissionMode === 'default');
+
 const options = computed(() => {
   // `extraKey` is the aria-keyshortcuts name of the visible hint; the digit and hint stay out of the accessible name.
   const list: Array<{ value: OptionValue; label: string; hint?: string; extraKey?: string }> = [
     { value: 'yes', label: t('permission.options.yes'), hint: t('prompts.keys.enter'), extraKey: 'Enter' },
-    { value: 'yes-accept-all', label: t('prompts.permission.yesAcceptAll') },
   ];
+  if (offersAcceptAllEdits.value) list.push({ value: 'yes-accept-all', label: t('prompts.permission.yesAcceptAll') });
   if (suggestionLabel.value) list.push({ value: 'always-allow', label: t('permission.options.alwaysAllow', { pattern: suggestionLabel.value }) });
   list.push({ value: 'no', label: t('permission.options.no'), hint: t('prompts.keys.esc'), extraKey: 'Escape' });
   if (suggestionLabel.value) list.push({ value: 'always-deny', label: t('permission.options.alwaysDeny', { pattern: suggestionLabel.value }) });
@@ -210,6 +225,7 @@ function handleDestinationCancel() {
 }
 
 const cardRef = ref<HTMLElement | null>(null);
+useAttentionCard('approval', cardRef);
 
 useDockPromptDigits(cardRef, (digit) => {
   const option = showDestinationPicker.value ? undefined : options.value[digit - 1];
@@ -229,7 +245,7 @@ watch(() => props.toolUseId, resetState);
   <section
     v-if="visible"
     ref="cardRef"
-    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow)"
+    class="overflow-hidden rounded-[0.875rem] border border-[color-mix(in_srgb,var(--d-warning)_45%,transparent)] bg-(--d-card) text-(--d-text) shadow-(--d-shadow) [--attention-ring:var(--d-warning)]"
     role="region"
     :aria-label="t('permission.ariaLabel')"
     data-dock-prompt

@@ -4,7 +4,7 @@ import { activeChat, expect, test } from './support/fixtures';
 import { seedStubModel } from './support/hermetic';
 import { startOpenAIStub } from './support/openai-stub';
 import { shellState } from './support/shell';
-import { addProject, answerMessageBoxes, answerOpenDialog, chatInput, messageBoxes, TRUST_PROMPT } from './support/ui';
+import { addProject, answerDialogs, answerOpenDialog, chatInput, askedDialogs, TRUST_PROMPT } from './support/ui';
 import { projectKeyOf, projectRow, readyShell } from './support/shell-ui';
 import { chooseMenuItem } from './support/overlay';
 
@@ -24,22 +24,22 @@ test('projects: the sidebar adds, trusts, selects and removes projects, shows th
     // Adding asks once; declining leaves the project listed, selected and untrusted.
     await addProject(app, home.project, false);
     await expect.poll(async () => (await shellState(app)).projects.map((p) => p.name)).toEqual(['alpha']);
-    expect((await messageBoxes(app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(1);
+    expect((await askedDialogs(app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(1);
     const alphaKey = await projectKeyOf(app, 'alpha');
     const alphaRow = projectRow(shell, alphaKey);
     await expect(alphaRow).toHaveAttribute('aria-selected', 'true');
     await expect(shell.getByTestId('breadcrumb-project')).toHaveText('alpha');
     await expect(alphaRow.getByTestId('untrusted-badge')).toHaveText('Untrusted');
 
-    // The Untrusted badge opens the same native trust prompt.
-    await answerMessageBoxes(app, { [TRUST_PROMPT]: 'Trust Folder' });
+    // The Untrusted badge asks the same trust question in the overlay.
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
     await alphaRow.getByTestId('untrusted-badge').click();
     await expect.poll(async () => (await shellState(app)).projects[0]?.trusted).toBe(true);
     await expect(alphaRow.getByTestId('untrusted-badge')).toHaveCount(0);
 
     // Add project (folder-plus) opens the folder picker; the new project becomes the selected one.
     await answerOpenDialog(app, beta);
-    await answerMessageBoxes(app, { [TRUST_PROMPT]: 'Trust Folder' });
+    await answerDialogs(app, { [TRUST_PROMPT]: 'Trust Folder' });
     await shell.getByTestId('add-project').click();
     await expect.poll(async () => (await shellState(app)).projects.map((p) => p.name)).toEqual(['alpha', 'beta']);
     const betaKey = await projectKeyOf(app, 'beta');

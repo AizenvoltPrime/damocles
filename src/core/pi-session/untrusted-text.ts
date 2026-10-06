@@ -3,11 +3,10 @@
  * output and model-chosen agent names, before it is placed next to trusted chrome (a line-structured
  * menu the model is told to trust, or the panel's own dialog header).
  *
- * A leaf module on purpose: its consumers (`tools/tool-search-tool.ts`, `extension-ui-context.ts`,
- * `tools/shell-cancel-registry.ts`) import it and nothing else does, so none drags another's import
- * graph in at eval time. Linear-time patterns only, because this runs on hostile input.
+ * A leaf module on purpose: it imports nothing, so no consumer drags another's import graph in at eval
+ * time. Linear-time patterns only, because this runs on hostile input.
  *
- * Two functions rather than one because the threats differ, and a caller takes only the one its threat
+ * Two strippers rather than one because the threats differ, and a caller takes only the one its threat
  * needs. Control characters break layout, so they are stripped wherever the string is placed next to
  * line-structured chrome. Bidi overrides break reading order, which matters wherever a human renders
  * the string; the model-facing menu leaves them alone, since there a name must survive byte-for-byte
@@ -46,4 +45,12 @@ export function stripControlChars(value: string): string {
  */
 export function stripBidiControls(value: string): string {
   return value.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
+}
+
+/** Model, server or provider text flattened to one line a person reads, capped by code point; undefined when nothing is left. */
+export function oneLine(text: string, max: number): string | undefined {
+  const flat = stripBidiControls(stripControlChars(text)).replace(/\s+/g, ' ').trim();
+  if (!flat) return undefined;
+  const points = [...flat];
+  return points.length <= max ? flat : `${points.slice(0, max - 1).join('')}…`;
 }

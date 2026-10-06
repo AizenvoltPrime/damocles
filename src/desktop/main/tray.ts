@@ -1,4 +1,4 @@
-import { Menu, nativeImage, Tray } from 'electron';
+import { Menu, Tray, type NativeImage } from 'electron';
 import type { DesktopLocalizationService } from './platform/localization-service';
 
 export const TRAY_IDS = {
@@ -15,19 +15,16 @@ export interface TrayActions {
   quit(): void;
 }
 
-// 16 DIP is the menu bar and notification area size on every platform; Electron picks the scale for the display.
-const TRAY_ICON_SIZE = 16;
-
 /** The notification-area icon. Linux app indicators never report a click, so the owner calls relocalize() on every window show and hide to keep the toggle label true. */
 export class AppTray {
   private readonly tray: Tray;
   private readonly actions: TrayActions;
   private readonly l10n: DesktopLocalizationService;
 
-  constructor(iconPath: string, actions: TrayActions, l10n: DesktopLocalizationService) {
+  constructor(icon: NativeImage, actions: TrayActions, l10n: DesktopLocalizationService) {
     this.actions = actions;
     this.l10n = l10n;
-    this.tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: TRAY_ICON_SIZE, height: TRAY_ICON_SIZE }));
+    this.tray = new Tray(icon);
     this.relocalize();
     this.tray.on('click', () => actions.toggleWindow());
   }

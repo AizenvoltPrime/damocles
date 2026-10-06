@@ -11,6 +11,7 @@ import { REPO_ROOT, seedStubModel, writeUserSettings, type HermeticHome } from '
 import { chatRequests, startOpenAIStub } from './support/openai-stub';
 import { readyOverlay } from './support/overlay';
 import { packagedAppPath } from './support/packaged-app';
+import { popupPage, popupToasts, shellPage } from './support/shell';
 import { chatInput, hostMessages, postFromWebview, recordHostMessages } from './support/ui';
 
 // One file per bundled tree-sitter grammar whose extraction has no fallback, each defining a symbol named probe_<language>.
@@ -128,7 +129,16 @@ test('bundled assets resolve: first window, overlay, fonts, pi chat, shell, ripg
     // The overlay page runs on its own preload, script and stylesheet; the fonts and their licences ship beside it.
     expect(missingShellFiles()).toEqual([]);
     const overlay = await readyOverlay(app);
-    await expect(overlay.getByTestId('overlay-toasts')).toHaveCSS('position', 'fixed');
+    await (await shellPage(app)).getByTestId('notification-bell').click();
+    await expect(overlay.getByTestId('overlay-backdrop')).toHaveCSS('position', 'fixed');
+    await overlay.keyboard.press('Escape');
+    await expect(overlay.getByTestId('overlay-backdrop')).toHaveCount(0);
+
+    // The popup window loads the same bundle on its own route: a notice for the chat, which has no conversation yet.
+    await postFromWebview(tab, { type: 'openSessionLog' });
+    const popup = await popupPage(app);
+    await expect(popupToasts(popup).filter({ hasText: 'No active session to view' })).toBeVisible();
+    await expect(popup.getByTestId('overlay-toasts')).toHaveCSS('position', 'fixed');
 
     // pi against the stub, the shell tool (koffi job objects on Windows, the ELECTRON_RUN_AS_NODE sentinel elsewhere) and a write that git checkpoints.
     stub.replies.push({

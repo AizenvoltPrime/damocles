@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { protocol } from 'electron';
+import { NOTIFIER_PAGE_PATH } from '../preload/page-paths';
 
 export const APP_SCHEME = 'app';
 export const APP_HOST = 'damocles';
@@ -35,6 +36,8 @@ export const SHELL_PAGE_URL: string = `${APP_ORIGIN}${SHELL_PAGE}`;
 export const PANE_PAGE_URL: string = `${APP_ORIGIN}${PANE_PAGE}`;
 // The overlay view's page, generated the same way.
 export const OVERLAY_PAGE_URL: string = `${APP_ORIGIN}${OVERLAY_PAGE}`;
+// The desktop popup window's page (D52), generated the same way.
+export const NOTIFIER_PAGE_URL: string = `${APP_ORIGIN}${NOTIFIER_PAGE_PATH}`;
 
 const MIME_TYPES: Readonly<Record<string, string>> = {
   '.html': 'text/html; charset=utf-8',
@@ -62,13 +65,15 @@ export type AppRequestTarget =
   | { readonly kind: 'panel'; readonly panelId: string }
   | { readonly kind: 'shell' }
   | { readonly kind: 'pane' }
-  | { readonly kind: 'overlay' };
+  | { readonly kind: 'overlay' }
+  | { readonly kind: 'notifier' };
 
 export interface AppPages {
   panel(panelId: string): string | undefined;
   shell(): string;
   pane(): string;
   overlay(): string;
+  notifier(): string;
 }
 
 export function panelPageUrl(panelId: string): string {
@@ -106,6 +111,7 @@ export function resolveAppRequest(url: string, resourceRoot: string): AppRequest
   if (pathname === SHELL_PAGE) return { kind: 'shell' };
   if (pathname === PANE_PAGE) return { kind: 'pane' };
   if (pathname === OVERLAY_PAGE) return { kind: 'overlay' };
+  if (pathname === NOTIFIER_PAGE_PATH) return { kind: 'notifier' };
 
   const file = SERVED_FILES[pathname];
   if (file) return { kind: 'file', root: resourceRoot, filePath: path.join(resourceRoot, ...file) };
@@ -163,6 +169,7 @@ export function handleAppProtocol(resourceRoot: string, pages: AppPages): void {
     if (target.kind === 'shell') return htmlPage(pages.shell());
     if (target.kind === 'pane') return htmlPage(pages.pane());
     if (target.kind === 'overlay') return htmlPage(pages.overlay());
+    if (target.kind === 'notifier') return htmlPage(pages.notifier());
     if (target.kind === 'panel') {
       const html = pages.panel(target.panelId);
       return html === undefined ? notFound() : htmlPage(html);

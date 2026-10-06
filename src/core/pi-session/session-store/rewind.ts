@@ -1,6 +1,7 @@
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { RestorePoint, RewindHistoryItem, SkippedFile, SkippedFilesTarget, SkippedSummary } from '@shared/types/session';
 import type { CheckpointEntry, FileChange, Result } from '../checkpoints';
 import { initPiLoader } from '../pi-loader';
@@ -28,6 +29,7 @@ import { log } from '../../logger';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
+import { promptTest } from './prompt-index';
 
 /** `git show <commit>:<path>` failure messages that genuinely mean "this path is absent from the
  *  commit" (the file was created that turn) — as opposed to a real fault (bad commit, corrupt repo). */
@@ -112,6 +114,11 @@ export function rewindableUserIdsOnBranch(branch: readonly unknown[]): string[] 
     ids.push(cp.userEntryId);
   }
   return ids;
+}
+
+/** The prompt entry ids on `branch`, the rewind points of a chat that takes no file checkpoints. */
+export function promptUserIdsOnBranch(branch: readonly SessionEntry[]): string[] {
+  return branch.filter(promptTest(branch)).map((entry) => entry.id);
 }
 
 /**
@@ -213,11 +220,14 @@ export function mergeRewindAnchorsNewestFirst(
  * `fileChanges` (paths cwd-joined so the diff viewer can fetch before/after content). Compaction items
  * (`kind: 'compaction'`) carry the pi compaction entry id + summary and never restore files — selecting
  * one branches the tree at the compaction's parent to recover the full pre-compaction context.
+ * `fileCheckpoints` is false for a chat with no project folder: every prompt is then a conversation-only
+ * anchor and no checkpoint repo is read.
  */
 export async function getPiRewindHistory(
   cwd: string,
   sessionId: string,
   maxFileSizeBytes: number,
+  fileCheckpoints = true,
 ): Promise<{ items: RewindHistoryItem[]; restorePoints: RestorePoint[] }> {
   const none = { items: [], restorePoints: [] };
   const pi = await initPiLoader();
@@ -231,6 +241,7 @@ export async function getPiRewindHistory(
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
     // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
     const originalInputs = extractOriginalInputs(branch);
+    if (!fileCheckpoints) return { items: conversationOnlyRewindItems(branch, originalInputs), restorePoints: [] };
     // A checkpoint whose userEntryId matches a compaction entry is a compaction snapshot, not a prompt
     // turn: it must enrich the compaction anchor (below) instead of leaking a phantom empty-prompt row.
     const compactionIds = new Set<string>();
@@ -300,6 +311,19 @@ export async function getPiRewindHistory(
     log('[session-store] getPiRewindHistory failed for %s: %O', sessionId, err);
     return none;
   }
+}
+
+/** Every prompt and compaction anchor, none restoring files, for a chat that takes no file checkpoints. Runs no git. */
+function conversationOnlyRewindItems(branch: readonly SessionEntry[], originalInputs: ReadonlyMap<string, string>): RewindHistoryItem[] {
+  const prompts = branch.filter(promptTest(branch)).map((entry): RewindHistoryItem => ({
+    kind: 'prompt',
+    messageId: entry.id,
+    content: (originalInputs.get(entry.id) ?? userEntryText(branch, entry.id)).slice(0, 200),
+    timestamp: Date.parse(entry.timestamp) || 0,
+    filesAffected: 0,
+    notRewindable: { reason: 'no-project', params: {} },
+  }));
+  return mergeRewindAnchorsNewestFirst(prompts.reverse(), getCompactionRewindItems(branch));
 }
 
 /** The text of the user message entry `id` on `branch`, or '' when it is not there. */

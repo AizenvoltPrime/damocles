@@ -1,7 +1,7 @@
 import type { ExtensionUIContext, Theme } from '@earendil-works/pi-coding-agent';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ElicitationUI } from './mcp/elicitation-handler';
-import { stripBidiControls, stripControlChars } from './untrusted-text';
+import { oneLine } from './untrusted-text';
 
 /** RPC mode degrades all TUI-only surfaces; theme rendering is not used by webview-bridged dialogs. */
 const EMPTY_THEME = {} as Theme;
@@ -37,27 +37,17 @@ export interface AgentElicitationUI extends ElicitationUI {
   cancelOwnDialogs(): void;
 }
 
+/** The longest agent name any surface shows; a longer one ends in an ellipsis. */
+export const AGENT_NAME_MAX_CHARS = 60;
+
 /**
- * The attribution line sits directly beneath the panel's trusted dialog chrome, and the name in it is
- * NOT ours: a team specialist's is chosen by the lead MODEL (`startSpecialist`) and a markdown agent's
- * is user-authored. Sanitize and cap it HERE, where it is captured, so nothing downstream has to
- * remember to.
- *
- * Two different attacks, so two passes. `stripControlChars` (the canonical flattener in
- * `untrusted-text.ts`, shared with the ToolSearch inventory) removes everything with LAYOUT meaning —
- * C0, DEL, C1 and U+2028/U+2029 — so no name can forge a second line. `stripBidiControls` removes the
- * bidi overrides and isolates, which are neither control characters nor whitespace and so survive
- * every other filter: an unpaired U+202E reverses the visual order of the rest of the badge, letting a
- * name render as text it does not contain. Flattening alone would leave that wide open. Both patterns
- * are linear.
+ * An agent name as any surface shows it, undefined when nothing is left. The name is not ours (the lead
+ * model chooses a team specialist's, a user writes a markdown agent's) and sits beneath trusted dialog
+ * chrome, so it is sanitized where it is captured: `oneLine` strips the layout characters that would forge
+ * a second line and the bidi controls that would make it render as text it does not contain.
  */
-const MAX_AGENT_NAME = 60;
-function agentLabel(name: string): string {
-  const flattened = stripBidiControls(stripControlChars(name)).replace(/\s+/g, ' ').trim();
-  if (flattened.length <= MAX_AGENT_NAME) return flattened;
-  // Sliced by code POINT: a plain `.slice` on a UTF-16 string can cut a surrogate pair in half and
-  // render the cap itself as U+FFFD.
-  return `${[...flattened].slice(0, MAX_AGENT_NAME - 3).join('')}...`;
+export function agentLabel(name: string): string | undefined {
+  return oneLine(name, AGENT_NAME_MAX_CHARS);
 }
 
 /**
@@ -102,9 +92,9 @@ export class WebviewExtensionUIContext implements ExtensionUIContext {
     this.onPendingChanged = fn;
   }
 
-  /** Whether any bridged dialog, the panel's own or a nested agent's, is still awaiting an answer. */
-  hasPendingDialogs(): boolean {
-    return this.pending.size > 0;
+  /** Every bridged dialog still awaiting an answer, in the order opened, as the message it was posted with. */
+  pendingDialogs(): UiRequestMessage[] {
+    return [...this.pending.values()].map((entry) => entry.message);
   }
 
   /** Resolve a pending dialog with the value from a webview `extensionUiResponse`. */

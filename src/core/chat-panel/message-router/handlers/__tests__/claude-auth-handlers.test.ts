@@ -184,7 +184,7 @@ describe("createClaudeAuthHandlers", () => {
   });
 
   /**
-   * The account chip is derived from the Claude auth mode. Nothing republishes it on its own, so each
+   * The account state is derived from the Claude auth mode. Nothing republishes it on its own, so each
    * credential change here has to ask every panel's session to publish.
    */
   describe("account state republication", () => {

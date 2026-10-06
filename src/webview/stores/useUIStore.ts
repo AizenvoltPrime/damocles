@@ -41,7 +41,6 @@ export const useUIStore = defineStore('ui', () => {
   const selectedRewindItem = ref<RewindHistoryItem | null>(null);
   const rewindSource = ref<RewindSource>(null);
   const rewindMetadataLoading = ref(false);
-  const tasksPanelCollapsed = ref(false);
   const showMemoryPanel = ref(false);
   const memoryPanelFocus = ref<MemoryPanelFocus | null>(null);
   // The source tags which store owns the call; the id alone is not unique across stores.
@@ -195,10 +194,6 @@ export const useUIStore = defineStore('ui', () => {
     rewindSource.value = null;
   }
 
-  function setTasksPanelCollapsed(collapsed: boolean) {
-    tasksPanelCollapsed.value = collapsed;
-  }
-
   function openMemoryPanel(focus?: MemoryPanelFocus) {
     memoryPanelFocus.value = focus ? { ...focus } : null;
     showMemoryPanel.value = true;
@@ -288,7 +283,6 @@ export const useUIStore = defineStore('ui', () => {
     selectedRewindItem.value = null;
     rewindSource.value = null;
     rewindMetadataLoading.value = false;
-    tasksPanelCollapsed.value = false;
     ideContext.value = null;
     ideContextEnabled.value = ideContextDefaultEnabled.value;
     ideContextUserOverride.value = false;
@@ -343,8 +337,6 @@ export const useUIStore = defineStore('ui', () => {
     expandedToolSource,
     expandTool,
     collapseTool,
-    tasksPanelCollapsed,
-    setTasksPanelCollapsed,
     ideContext,
     ideContextEnabled,
     ideContextDefaultEnabled,

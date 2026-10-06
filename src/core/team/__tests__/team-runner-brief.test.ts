@@ -58,14 +58,14 @@ function makeConfig(): TeamConfig {
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
-      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its second argument. The
       // snapshot is NON-EMPTY and built by the real builder — see `team-mcp-fixture.ts` for why an
       // empty one made every spawn-site mutation unobservable.
       buildAgentToolset: () => {
         const { toolNames, customTools, mcp } = teamAgentToolset();
         return { toolNames, customTools, mcp };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
+      buildExtensionFactory: (_agent: unknown, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
       cancelAgentDialogs: (agentId: string) => cancelledDialogs.push(agentId),

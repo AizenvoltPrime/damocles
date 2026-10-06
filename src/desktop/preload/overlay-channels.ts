@@ -1,10 +1,12 @@
-// Shared by the overlay preload, main and (as types only) the shell and overlay apps. Main listens on the overlay view's own
-// webContents.ipc, which only the overlay page's messages reach.
+// Shared by the overlay preload, main and (as types only) the shell and overlay apps. The overlay view and the desktop
+// popup window's page both run the overlay preload; main listens on each one's own webContents.ipc, which only that page's
+// messages reach, and answers the popup page only on getState and the toast channels.
 
 import type { ShellLocale, ShellPlatform } from './shell-channels';
 import type { SettingsAccountId, SettingsSectionId, SettingsTarget } from '../../shared/settings-sections';
 import type { DesktopLanguageSetting } from '../main/desktop-configuration';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/types/messages';
+import type { ChimeTone, NotificationBody, NotificationCenterState } from './notifications';
 
 export const OVERLAY_CHANNELS = {
   // renderer → main, invoke
@@ -14,15 +16,26 @@ export const OVERLAY_CHANNELS = {
   answer: 'damocles:overlay:answer',
   resolveToast: 'damocles:overlay:resolve-toast',
   toastArea: 'damocles:overlay:toast-area',
-  // Escape in the toast stack: keyboard focus goes back out of the overlay
+  // Escape in the toast stack: keyboard focus goes back to the part F6 took it from
   toastsLeave: 'damocles:overlay:toasts:leave',
+  // (id, held): the pointer or keyboard focus is on a toast, whose life main pauses until released
+  toastHold: 'damocles:overlay:toast-hold',
+  // boolean: the pointer is over a toast or the "N more" pill, so the popup window takes it
+  toastsPointer: 'damocles:overlay:toasts:pointer',
   // { generation, message }: a settings view request for the chat the modal is attached to
   settingsSend: 'damocles:overlay:settings:send',
+  // (id, png: Uint8Array | null): the answer to a rasterize request; main validates the PNG before using it
+  rasterized: 'damocles:overlay:rasterized',
   // renderer → main, invoke
   prefsGet: 'damocles:overlay:prefs:get',
   prefsSet: 'damocles:overlay:prefs:set',
   relaunch: 'damocles:overlay:app:relaunch',
   layoutReset: 'damocles:overlay:layout:reset',
+  // the notification center; refused unless the center is open
+  notificationsGet: 'damocles:overlay:notifications:get',
+  notificationsClear: 'damocles:overlay:notifications:clear',
+  // boolean: Do not disturb on or off
+  notificationsDnd: 'damocles:overlay:notifications:dnd',
   // main → renderer
   // OverlayState after the UI language changed
   state: 'damocles:overlay:state',
@@ -30,7 +43,7 @@ export const OVERLAY_CHANNELS = {
   cancel: 'damocles:overlay:cancel',
   toast: 'damocles:overlay:toast',
   toastDismiss: 'damocles:overlay:toast-dismiss',
-  // main → renderer: F6 moved keyboard focus to the overlay, which focuses the newest toast
+  // main → renderer: F6 moved keyboard focus to the popup window, whose page focuses the newest toast
   toastsFocus: 'damocles:overlay:toasts:focus',
   // main → renderer, PanelTheme; the preload applies it to the page itself
   theme: 'damocles:overlay:theme',
@@ -42,6 +55,12 @@ export const OVERLAY_CHANNELS = {
   settingsTarget: 'damocles:overlay:settings:target',
   // main → renderer, OverlayPrefs after a damocles.desktop.* setting changed while the modal shows
   prefsChanged: 'damocles:overlay:prefs:changed',
+  // main → renderer, NotificationCenterState after a change while the center is open
+  notificationsState: 'damocles:overlay:notifications:state',
+  // main → renderer, OverlayRasterRequest: draw main's art on a canvas and answer with its PNG
+  rasterize: 'damocles:overlay:rasterize',
+  // main → renderer, ChimeTone: the popup page plays the sound of a popup that just arrived
+  chime: 'damocles:overlay:chime',
 } as const;
 
 // Lucide names a request may carry; main rejects a request naming any other icon.
@@ -68,12 +87,38 @@ export const MAX_OVERLAY_LABEL_LENGTH = 200;
 export const MAX_OVERLAY_ID_LENGTH = 200;
 export const MAX_OVERLAY_TAGS = 500;
 export const MAX_OVERLAY_TEXT_LENGTH = 2000;
+// Buttons of a message dialog besides Cancel.
+export const MAX_MESSAGE_ACTIONS = 4;
 // CSS px; a coordinate or size outside [0, MAX_OVERLAY_COORDINATE] is malformed.
 export const MAX_OVERLAY_COORDINATE = 100_000;
+// Boxes in one toast area report: three toasts, the pill and toasts still leaving.
+export const MAX_TOAST_PARTS = 32;
 // JSON characters of one settings view request; a pasted API key is far smaller.
 export const MAX_SETTINGS_MESSAGE_CHARS: number = 64 * 1024;
 // The overlay must ack a request within this many ms or main hides it and rejects the request.
 export const OVERLAY_ACK_TIMEOUT_MS = 2000;
+// Bytes of one rasterized PNG; main refuses a larger answer.
+export const MAX_RASTER_PNG_BYTES: number = 64 * 1024;
+
+// Main's art for the taskbar badge (D52): drawn in order on a width×height canvas. Coordinates and sizes are design units,
+// multiplied by scale; an SVG layer covers the whole canvas.
+export type RasterOp =
+  | { readonly kind: 'svg'; readonly svg: string }
+  // centred on (x, y) by its ink box, in the renderer's --d-font
+  | { readonly kind: 'text'; readonly text: string; readonly x: number; readonly y: number; readonly size: number; readonly weight: number; readonly color: string };
+
+export interface RasterArt {
+  readonly width: number;
+  readonly height: number;
+  readonly scale: number;
+  readonly ops: readonly RasterOp[];
+}
+
+export interface OverlayRasterRequest {
+  // issued by main
+  readonly id: string;
+  readonly art: RasterArt;
+}
 
 // CSS px in window content coordinates (the shell page's coordinates).
 export interface OverlayPoint {
@@ -130,7 +175,22 @@ export type OverlayRequest =
       readonly placeholder: string;
     }
   // Only main opens it; `generation` is the attachment the modal's first settingsSend calls must carry.
-  | { readonly kind: 'settings'; readonly section?: SettingsSectionId; readonly account?: SettingsAccountId; readonly generation: number };
+  | { readonly kind: 'settings'; readonly section?: SettingsSectionId; readonly account?: SettingsAccountId; readonly generation: number }
+  // Only main asks one (D41); it stacks above an open request instead of dismissing it.
+  | {
+      readonly kind: 'message';
+      readonly severity: MessageSeverity;
+      readonly message: string;
+      readonly detail?: string;
+      readonly actions: readonly string[];
+      readonly cancelLabel: string;
+      // index of the action focused first; absent, Cancel is, so Enter alone never takes a risky action
+      readonly defaultAction?: number;
+    }
+  // the title bar bell's menu, under the bell
+  | { readonly kind: 'notifications'; readonly anchor: OverlayRect };
+
+export type MessageSeverity = 'info' | 'warning' | 'danger';
 
 export type OverlayAnswer =
   | { readonly kind: 'dismissed' }
@@ -139,13 +199,20 @@ export type OverlayAnswer =
   // null removes the tag
   | { readonly kind: 'tagPicker'; readonly tag: string | null }
   // sent once the modal's exit animation ended
-  | { readonly kind: 'settings'; readonly closed: true };
+  | { readonly kind: 'settings'; readonly closed: true }
+  // the index of the chosen action; null is Cancel
+  | { readonly kind: 'message'; readonly action: number | null }
+  | { readonly kind: 'notifications'; readonly action: 'open'; readonly entryId: string };
 
+// A notification-center entry on screen; its id is the entry's.
 export interface OverlayToast {
   readonly id: string;
-  readonly severity: 'info' | 'warning' | 'error';
-  readonly message: string;
-  readonly actions: readonly string[];
+  // epoch ms
+  readonly at: number;
+  readonly lifeMs: number;
+  // life left when main sent it; main pauses it while the toast is held
+  readonly remainingMs: number;
+  readonly body: NotificationBody;
 }
 
 export interface OverlayState {
@@ -153,9 +220,13 @@ export interface OverlayState {
   readonly platform: ShellPlatform;
 }
 
+// CSS px of the measured toast stack with its margin, 0×0 when no toast shows; the area's bottom-right corner is the popup
+// window's.
 export interface OverlayToastArea {
   readonly width: number;
   readonly height: number;
+  // the layout boxes of the toasts and the "N more" pill, leaving ones included, from the area's top-left corner
+  readonly parts: readonly OverlayRect[];
 }
 
 export interface OverlaySettingsAttached {
@@ -182,17 +253,32 @@ export interface DamoclesOverlayApi {
   // the request is on screen; send within OVERLAY_ACK_TIMEOUT_MS
   ack(requestId: string): void;
   answer(requestId: string, answer: OverlayAnswer): void;
+  // the popup page's toast stack (D52), from here to holdToast
   onToast(listener: (toast: OverlayToast) => void): () => void;
-  // main timed the toast out or it was answered elsewhere
+  // main timed the toast out, or it was answered or withdrawn in main
   onToastDismiss(listener: (id: string) => void): () => void;
   // undefined action = dismissed
   resolveToast(id: string, action?: string): void;
-  // CSS px of the measured toast stack, 0×0 when no toast shows
-  reportToastArea(size: OverlayToastArea): void;
+  reportToastArea(area: OverlayToastArea): void;
+  // the pointer moved onto a toast or the "N more" pill (true) or off them (false)
+  reportToastPointer(over: boolean): void;
   // F6 moved keyboard focus into the toast stack; returns the unsubscribe
   onToastsFocus(listener: () => void): () => void;
-  // Escape in the toast stack; main moves keyboard focus back out of the overlay
+  // Escape in the toast stack; main moves keyboard focus back to the part F6 took it from
   leaveToasts(): void;
+  // the pointer or focus is on the toast (true) or left it (false)
+  holdToast(id: string, held: boolean): void;
+  // refused unless the center is open
+  getNotifications(): Promise<NotificationCenterState>;
+  onNotifications(listener: (state: NotificationCenterState) => void): () => void;
+  clearNotifications(): Promise<void>;
+  setDoNotDisturb(on: boolean): Promise<void>;
+  // main's art to draw; answer each request once through rasterized
+  onRasterize(listener: (request: OverlayRasterRequest) => void): () => void;
+  // the PNG of a rasterize request, or null when it could not be drawn
+  rasterized(id: string, png: Uint8Array | null): void;
+  // the popup page: a popup arrived and its sound is on
+  onChime(listener: (tone: ChimeTone) => void): () => void;
   // a settings view request; main drops it unless generation is the current attachment's
   settingsSend(generation: number, message: WebviewToExtensionMessage): void;
   onSettingsMessage(listener: (message: ExtensionToWebviewMessage) => void): () => void;

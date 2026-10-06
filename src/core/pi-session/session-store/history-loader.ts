@@ -22,7 +22,7 @@ import {
 import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
-import { rewindableUserIdsOnBranch } from './rewind';
+import { promptUserIdsOnBranch, rewindableUserIdsOnBranch } from './rewind';
 import { promptTest } from './prompt-index';
 import { extractOriginalInputs } from './original-input';
 import { extractMidStreamEntryIds } from './mid-stream';
@@ -380,7 +380,9 @@ async function hydrateSubagentCards(
  * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). A
  * `compaction` entry on the branch replays as a historical `compactBoundary` + `compactSummary`, mirroring
  * the live post-compaction view (preceding messages hidden, summary marker shown).
- * Resolves to the rewindable user entry ids (`rewindableUserIdsOnBranch`), or null when the file was not read.
+ * Resolves to the user entry ids with a rewind control, or null when the file was not read: those with a
+ * checkpoint (`rewindableUserIdsOnBranch`), or every prompt when `fileCheckpoints` is false (a chat with no
+ * project folder, which can rewind only its conversation).
  */
 export async function loadPiSessionHistory(
   cwd: string,
@@ -388,6 +390,7 @@ export async function loadPiSessionHistory(
   post: (m: ExtensionToWebviewMessage) => void,
   signal?: AbortSignal,
   modelReasons?: ModelReasonsLookup | Promise<ModelReasonsLookup | undefined>,
+  fileCheckpoints = true,
 ): Promise<string[] | null> {
   // A superseding replay already aborted us — leave the panel to the newer load, don't blank it.
   if (signal?.aborted) return null;
@@ -438,7 +441,7 @@ export async function loadPiSessionHistory(
     usageSpan.end();
     // Read from the file on every resume path, so replayed turns are rewindable without waiting on the live
     // session. The userEntryId is the same pi entry id used as `userReplay.sdkMessageId`, so the webview links them.
-    checkpointUserIds = rewindableUserIdsOnBranch(branch);
+    checkpointUserIds = fileCheckpoints ? rewindableUserIdsOnBranch(branch) : promptUserIdsOnBranch(branch);
   } catch (err) {
     log('[session-store] loadPiSessionHistory failed for %s: %O', sessionId, err);
     fail(t('This conversation could not be opened: {0}', err instanceof Error ? err.message : String(err)));

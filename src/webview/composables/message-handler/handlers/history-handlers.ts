@@ -3,7 +3,7 @@ import { i18n } from "@/i18n";
 import type { ExtensionToWebviewMessage } from "@shared/types/messages";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools, toUserContentBlocks } from "../utils";
-import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TEAM_CREATE_TOOL, TEAM_RESUME_TOOL } from "@shared/tool-names";
 import { useExploreStore } from "@/stores/useExploreStore";
 import { isImageBlock } from "@shared/types/content";
 import { countReplayItem } from "@/utils/perf";
@@ -37,7 +37,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
     assistantReplay: (msg, ctx) => {
       countReplayItem();
-      const { uiStore, streamingStore, subagentStore, taskStore, teamStore } = ctx.stores;
+      const { streamingStore, subagentStore, teamStore } = ctx.stores;
 
       if (msg.tools) {
         for (const tool of msg.tools) {
@@ -61,15 +61,6 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
           // The host resolves a resume call to its team through the call's invocation entry.
           if (tool.name === TEAM_RESUME_TOOL && !tool.isError) {
             ctx.bridge.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
-          }
-          if (tool.name === TOOL_TASK_LIST && tool.result) {
-            try {
-              const result = JSON.parse(tool.result);
-              taskStore.handleTaskList(result);
-              uiStore.setTasksPanelCollapsed(false);
-            } catch {
-              // ignore parse errors
-            }
           }
         }
       }

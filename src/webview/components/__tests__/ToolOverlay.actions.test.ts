@@ -80,3 +80,12 @@ describe('ToolOverlay actions', () => {
     }
   });
 });
+
+describe('ToolOverlay status', () => {
+  it('names a call that waits for approval and offers no Stop', () => {
+    const wrapper = overlay({ id: 't-5', name: 'PowerShell', input: { command: 'npm install' }, status: 'awaiting_approval' });
+
+    expect(wrapper.get('header').text()).toContain(i18n.global.t('toolCall.awaitingApproval'));
+    expect(wrapper.find(`button[aria-label="${i18n.global.t('toolCall.stopWithNote')}"]`).exists()).toBe(false);
+  });
+});

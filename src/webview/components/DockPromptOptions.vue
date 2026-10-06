@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { ListboxContent } from 'reka-ui';
-import { useDockPromptOptionsFocus } from '@/composables/useDockPrompt';
+import { useDockPromptOptionsExplicitFocus, useDockPromptOptionsFocus } from '@/composables/useDockPrompt';
 
 const content = ref<InstanceType<typeof ListboxContent> | null>(null);
-useDockPromptOptionsFocus(() => content.value?.$el as HTMLElement | undefined);
+const list = (): HTMLElement | undefined => content.value?.$el as HTMLElement | undefined;
+useDockPromptOptionsFocus(list);
+useDockPromptOptionsExplicitFocus(list);
 </script>
 
 <template>

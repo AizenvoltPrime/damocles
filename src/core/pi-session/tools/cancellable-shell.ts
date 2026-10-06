@@ -19,8 +19,16 @@ function errorText(error: unknown): string {
  */
 function composeCancelledText(body: string, cancellation: ShellCancellation, elapsedMs: number): string {
   const seconds = (elapsedMs / 1000).toFixed(1);
-  const reason = cancellation.note ? " The user's reason follows in their next message." : '';
-  return `${body}\n\n[Command cancelled by the user after ${seconds}s. The output above is partial.${reason}]`;
+  return `${body}\n\n[Command cancelled by the user after ${seconds}s. The output above is partial.${reasonFollows(cancellation)}]`;
+}
+
+function reasonFollows(cancellation: ShellCancellation): string {
+  return cancellation.note ? " The user's reason follows in their next message." : '';
+}
+
+/** What the model is told about a call the user stopped before it spawned, by the gate and by the wrapper alike. Never carries the note. */
+export function describeStoppedBeforeRun(cancellation: ShellCancellation): string {
+  return `The user stopped this command before it started, so it did not run.${reasonFollows(cancellation)}`;
 }
 
 /** `details` is `unknown` upstream, so the partial's own fields are carried only from a plain object; an array would spread as index keys, and the marker is set either way. */
@@ -48,31 +56,36 @@ export function withPerCallCancel(definition: ToolDefinition, registry: ShellCan
   return {
     ...definition,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const perCall = new AbortController();
-      const linked = signal ? AbortSignal.any([signal, perCall.signal]) : perCall.signal;
-      const startedAt = Date.now();
-      // The last partial carries the truncation state and `fullOutputPath`, which the thrown/returned
-      // abort body does not, so the composed result reuses its `details`.
-      let lastPartial: AgentToolResult<unknown> | undefined;
-      const captureUpdate = onUpdate
-        ? (partial: AgentToolResult<unknown>): void => {
-            lastPartial = partial;
-            onUpdate(partial);
-          }
-        : undefined;
-
-      registry.register(toolCallId, perCall);
+      const perCall = registry.adopt(toolCallId);
       try {
-        // A shell tool that returns rather than throws saw no abort: a Stop click can land after the
-        // command finished but before the tool settles, and that output is complete.
-        return await definition.execute(toolCallId, params, linked, captureUpdate, ctx);
-      } catch (error) {
-        const cancellation = registry.takeCancellation(toolCallId);
-        if (!cancellation) throw error;
-        return {
-          content: [{ type: 'text', text: composeCancelledText(errorText(error), cancellation, Date.now() - startedAt) }],
-          details: cancelledDetails(lastPartial, cancellation),
-        };
+        // A Stop that landed after the gate allowed the call, such as in a deferred parallel batch, means it never starts.
+        const preempted = registry.takeCancellation(toolCallId);
+        if (preempted) {
+          return { content: [{ type: 'text', text: `[${describeStoppedBeforeRun(preempted)}]` }], details: cancelledDetails(undefined, preempted) };
+        }
+        const linked = signal ? AbortSignal.any([signal, perCall.signal]) : perCall.signal;
+        const startedAt = Date.now();
+        // The last partial carries the truncation state and `fullOutputPath`, which the thrown/returned
+        // abort body does not, so the composed result reuses its `details`.
+        let lastPartial: AgentToolResult<unknown> | undefined;
+        const captureUpdate = onUpdate
+          ? (partial: AgentToolResult<unknown>): void => {
+              lastPartial = partial;
+              onUpdate(partial);
+            }
+          : undefined;
+        try {
+          // A shell tool that returns rather than throws saw no abort: a Stop click can land after the
+          // command finished but before the tool settles, and that output is complete.
+          return await definition.execute(toolCallId, params, linked, captureUpdate, ctx);
+        } catch (error) {
+          const cancellation = registry.takeCancellation(toolCallId);
+          if (!cancellation) throw error;
+          return {
+            content: [{ type: 'text', text: composeCancelledText(errorText(error), cancellation, Date.now() - startedAt) }],
+            details: cancelledDetails(lastPartial, cancellation),
+          };
+        }
       } finally {
         registry.release(toolCallId);
       }

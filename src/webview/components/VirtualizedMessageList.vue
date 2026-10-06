@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
+import { ref, reactive, computed, watch, watchEffect, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
@@ -178,6 +178,29 @@ function toggleExpanded(messageId: string): void {
 function isExpanded(messageId: string): boolean {
   return expandedMessages.get(messageId) ?? false;
 }
+// WCAG 2.2 SC 2.4.11 (Focus Not Obscured): the pin yields while it would cover more than half the list, and the
+// list's scroll padding keeps focused and scrolled-to rows below it while it shows.
+const PIN_MAX_SHARE = 0.5;
+const listHeight = ref(0);
+// The pin's last measured height, kept while it yields so a taller list can bring it back.
+const pinHeight = ref(0);
+const pinShown = computed(() => {
+  if (pinnedHeaderHidden.value) return false;
+  const message = sticky.activeMessage.value;
+  // An expansion the user asked for stays until they collapse it.
+  if (message && isExpanded(message.id)) return true;
+  return pinHeight.value <= listHeight.value * PIN_MAX_SHARE;
+});
+
+watchEffect((onCleanup) => {
+  const container = scrollContainer.value;
+  if (!container) return;
+  container.style.scrollPaddingTop = sticky.activeMessage.value && pinShown.value ? `${pinHeight.value}px` : '';
+  onCleanup(() => {
+    container.style.scrollPaddingTop = '';
+  });
+});
+
 function toggleStickyExpanded(): void {
   const msg = sticky.activeMessage.value;
   if (msg) toggleExpanded(msg.id);
@@ -217,6 +240,7 @@ function updateSticky(): void {
   if (!container || !canvas) return;
   const stickyEl = stickyRef.value;
   const stickyHeight = stickyEl && sticky.activeMessage.value ? stickyEl.offsetHeight : 0;
+  if (stickyHeight > 0) pinHeight.value = stickyHeight;
   sticky.update(container.scrollTop, canvas.offsetTop, stickyHeight);
   updateStickyHeight();
 }
@@ -266,7 +290,7 @@ watch(stickyRef, (el, prev) => {
 
 watch(() => sticky.activeMessage.value?.id ?? null, () => updateStickyHeight());
 
-watch(pinnedHeaderHidden, () => {
+watch(pinShown, () => {
   nextTick(() => updateSticky());
 });
 
@@ -279,7 +303,9 @@ onMounted(() => {
 
   const container = scrollContainer.value;
   if (container) {
+    listHeight.value = container.clientHeight;
     containerResizeObserver = new ResizeObserver(() => {
+      listHeight.value = container.clientHeight;
       invalidateLayoutCache();
       engine.forceRebuild();
     });
@@ -315,7 +341,7 @@ onUnmounted(() => {
     />
 
     <StickyUserHeader
-      v-if="sticky.activeMessage.value && !pinnedHeaderHidden"
+      v-if="sticky.activeMessage.value && pinShown"
       ref="stickyHeaderRef"
       :message="sticky.activeMessage.value"
       :offset="sticky.activeOffset.value"
@@ -356,7 +382,7 @@ onUnmounted(() => {
       :can-rewind="item.type === 'user-message' && canRewindTo(item.message)"
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
-      :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId && !pinnedHeaderHidden"
+      :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId && pinShown"
       :user-message-expanded="item.type === 'user-message' && isExpanded(item.message.id)"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)"

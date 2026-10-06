@@ -14,7 +14,9 @@ export async function resumeStoredSession(deps: HandlerDependencies, panelId: st
   // Checked before the switch, which disposes the panel's conversation and may move it to another folder.
   const leaseRefusal = leaseRefusalFor(sessionId);
   if (leaseRefusal) {
-    announceLeaseRefusal(platform.notifications, leaseRefusal);
+    announceLeaseRefusal(platform.notifications, leaseRefusal, {
+      takeover: { sessionId, canOpen: () => deps.getPanels().has(panelId), open: () => resumeStoredSession(deps, panelId, sessionId) },
+    });
     return;
   }
   // The session file lives under its folder's session dir, so the panel moves there first. The claim

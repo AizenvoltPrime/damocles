@@ -16,6 +16,7 @@ import { assignServerToolNames, createMcpToolName } from '../../mcp/naming';
 import type { McpToolDescriptor } from '../../mcp/types';
 import type { McpClientManager } from '../../mcp/mcp-client-manager';
 import type { PiCodingAgentModule } from '../../pi-loader';
+import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 
 
 /**
@@ -49,6 +50,7 @@ function ctxWith(deferrableToolNames: readonly string[]): SubagentGateContext {
   return {
     permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
     deferrableToolNames,
   };
@@ -384,6 +386,7 @@ function registerWithMcp(opts: { mcp: NestedMcpToolset; builtinDeferrable?: read
   createSubagentExtensionFactory({
     permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     parentToolUseId: 'agent-7',
     deferrableToolNames: deferrable,
     mcpDescriptions: opts.mcp.descriptions,

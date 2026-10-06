@@ -397,6 +397,113 @@ describe('withPerCallCancel: registry lifetime', () => {
   });
 });
 
+describe('ShellCancelStore: admission at the permission gate', () => {
+  it('accepts a Stop for an admitted call and delivers its note once', () => {
+    const { store, registry, delivered } = boundStore();
+    const stop = registry.admit('call-a1', new AbortController().signal);
+
+    expect(store.cancel('call-a1', 'wrong folder')).toBe(true);
+    expect(stop?.aborted).toBe(true);
+    expect(delivered).toEqual(['wrong folder']);
+    expect(store.cancel('call-a1', 'again')).toBe(false);
+    expect(delivered).toEqual(['wrong folder']);
+  });
+
+  it('drops the entry when the gate blocks the call', () => {
+    const { store, registry } = boundStore();
+    registry.admit('call-a2', new AbortController().signal);
+
+    registry.releaseAdmitted('call-a2');
+
+    expect(stillRegistered(store, 'call-a2')).toBe(false);
+  });
+
+  it('drops an admitted entry when the run aborts, since pi never executes a call of an aborted run', () => {
+    const { store, registry } = boundStore();
+    const run = new AbortController();
+    registry.admit('call-a3', run.signal);
+
+    run.abort();
+
+    expect(stillRegistered(store, 'call-a3')).toBe(false);
+  });
+
+  it('keeps an adopted entry through a run abort, which the executing tool handles itself', () => {
+    const { store, registry } = boundStore();
+    const run = new AbortController();
+    registry.admit('call-a4', run.signal);
+    registry.adopt('call-a4');
+
+    run.abort();
+    registry.releaseAdmitted('call-a4');
+
+    expect(stillRegistered(store, 'call-a4')).toBe(true);
+  });
+
+  it('opens no entry for a run that is already aborted', () => {
+    const { store, registry } = boundStore();
+    const run = new AbortController();
+    run.abort();
+
+    expect(registry.admit('call-a5', run.signal)).toBeUndefined();
+    expect(stillRegistered(store, 'call-a5')).toBe(false);
+  });
+
+  it('keeps the delivery the call was admitted with when another handle of the same store adopts it', () => {
+    const store = new ShellCancelStore();
+    const gateNotes: string[] = [];
+    const toolNotes: string[] = [];
+    store.forContext((text) => gateNotes.push(text)).admit('call-a6', undefined);
+    store.forContext((text) => toolNotes.push(text)).adopt('call-a6');
+
+    store.cancel('call-a6', 'stop');
+
+    expect(gateNotes).toEqual(['stop']);
+    expect(toolNotes).toEqual([]);
+  });
+});
+
+describe('withPerCallCancel: a call stopped before execute', () => {
+  it('never runs the delegate and returns the cancelled result with no note in its text', async () => {
+    const { store, registry } = boundStore();
+    const execute = vi.fn();
+    const wrapped = withPerCallCancel({ ...immediateShell({ text: 'ran' }), execute }, registry);
+    registry.admit('call-p1', new AbortController().signal);
+    store.cancel('call-p1', 'use the other repo');
+
+    const result = await wrapped.execute('call-p1', { command: 'rm -rf build' }, undefined, undefined, ctx);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(textOf(result)).toBe("[The user stopped this command before it started, so it did not run. The user's reason follows in their next message.]");
+    expect(result.details).toEqual({ [CANCELLED_TOOL_DETAIL_KEY]: true, [CANCEL_NOTE_DETAIL_KEY]: 'use the other repo' });
+    expect(stillRegistered(store, 'call-p1')).toBe(false);
+  });
+});
+
+describe('withPerCallCancel: a call admitted at the gate and stopped while it runs', () => {
+  it('stops the command it adopted, delivers the note through the gate\'s handle once, and releases the entry', async () => {
+    const store = new ShellCancelStore();
+    const gateNotes: string[] = [];
+    const toolNotes: string[] = [];
+    const run = new AbortController();
+    store.forContext((text) => gateNotes.push(text)).admit('call-x1', run.signal);
+    const shell = abortingShell('compiling', 'throws');
+    const wrapped = withPerCallCancel(shell.definition, store.forContext((text) => toolNotes.push(text)));
+
+    const pending = wrapped.execute('call-x1', { command: 'make' }, run.signal, undefined, ctx);
+    await shell.started;
+    expect(store.cancel('call-x1', 'wrong target')).toBe(true);
+    const result = await pending;
+
+    expect(textOf(result)).toContain('[Command cancelled by the user after');
+    expect(result.details).toMatchObject({ [CANCELLED_TOOL_DETAIL_KEY]: true, [CANCEL_NOTE_DETAIL_KEY]: 'wrong target' });
+    expect(gateNotes).toEqual(['wrong target']);
+    expect(toolNotes).toEqual([]);
+    expect(run.signal.aborted).toBe(false);
+    expect(stillRegistered(store, 'call-x1')).toBe(false);
+  });
+});
+
 describe('ShellCancelStore: note delivery', () => {
   it('delivers the sanitized note to the context that registered the call, exactly once', async () => {
     const { store, registry, delivered } = boundStore();
@@ -484,9 +591,8 @@ describe('ShellCancelStore: note delivery', () => {
     const store = new ShellCancelStore();
     const order: string[] = [];
     const registry = store.forContext(() => order.push('deliver'));
-    const controller = new AbortController();
+    const controller = registry.adopt('call-13');
     controller.signal.addEventListener('abort', () => order.push('abort'), { once: true });
-    registry.register('call-13', controller);
 
     store.cancel('call-13', 'stop that');
 
@@ -566,7 +672,7 @@ describe('sanitizeCancelNote', () => {
 });
 
 describe('createBashTool', () => {
-  const deps = (getShellOptions: () => ShellOptions) => ({ getShellOptions, cancelRegistry: new ShellCancelStore().forContext(() => undefined), shellJob: undefined });
+  const deps = (getShellOptions: () => ShellOptions) => ({ getShellOptions, shellJob: undefined });
 
   it('registers under the literal lowercase pi name', () => {
     const pi = { createBashToolDefinition } as unknown as PiCodingAgentModule;
@@ -625,13 +731,13 @@ describe('createBashTool', () => {
     expect(delegateExecute).toHaveBeenCalledTimes(3);
   });
 
-  it('carries the per-call cancel, so a bash command stops without ending the turn', async () => {
+  it('passes the per-call signal through to the delegate, so the wrapped tool stops without ending the turn', async () => {
     vi.useFakeTimers();
     const { store, registry, delivered } = boundStore();
     const shell = abortingShell('cloning...', 'throws');
     const factory = vi.fn(() => shell.definition);
     const pi = { createBashToolDefinition: factory } as unknown as PiCodingAgentModule;
-    const tool = createBashTool(pi, '/cwd', { getShellOptions: () => ({}), cancelRegistry: registry, shellJob: undefined });
+    const tool = withPerCallCancel(createBashTool(pi, '/cwd', { getShellOptions: () => ({}), shellJob: undefined }), registry);
     const run = new AbortController();
 
     const pending = tool.execute('bash-1', { command: 'sleep 300' }, run.signal, undefined, ctx);

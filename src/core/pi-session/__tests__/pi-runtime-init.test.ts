@@ -584,7 +584,7 @@ describe('PiRuntime.init lifecycle', () => {
   });
 
   // A login, logout or token refresh in another process lands only in auth.json.
-  it('republishes each live session account chip before and after the key sync, once per burst of auth.json events', async () => {
+  it('republishes the account state of each live session before and after the key sync, once per burst of auth.json events', async () => {
     const runtime = PiRuntime.get('/agent');
     await runtime.init();
     const first = { publishAccountInfo: vi.fn() };

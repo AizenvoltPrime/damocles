@@ -1,7 +1,8 @@
 import { loadSkillDescription } from '../../skills/utils';
-import { registerAbortablePrompt, type PermissionState } from '../state';
+import { registerAbortablePrompt, unaskedCheck, postApprovedUnasked, type PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMessageFn } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { PromptApprover } from '../../../shared/types/permissions';
 import { buildUserDenyResult, buildUnaskedDenyResult, buildAllowResult } from '../utils';
 
 const ABORTED_BEFORE_ANSWER = 'The session was aborted before this skill approval was answered';
@@ -82,6 +83,7 @@ export class SkillManager {
         toolUseId,
         skillName,
         ...(skillDescription !== undefined ? { skillDescription } : {}),
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       };
 
@@ -89,7 +91,7 @@ export class SkillManager {
         signal: context.signal,
         toolUseId,
         register: () => {
-          this.state.addPendingSkillApproval(toolUseId, { resolve, cleanup, request });
+          this.state.addPendingSkillApproval(toolUseId, { resolve, cleanup, request, ...unaskedCheck(context) });
           postMessage(request);
         },
         onAborted: abortHandler,
@@ -114,5 +116,16 @@ export class SkillManager {
       ...(options?.approvalMode !== undefined ? { approvalMode: options.approvalMode } : {}),
       ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });
+  }
+
+  /** Approve an open skill prompt that `approvedBy` no longer asks about, exactly as the user's yes would. */
+  approveUnasked(toolUseId: string, approvedBy: PromptApprover): void {
+    const pending = this.state.removePendingSkillApproval(toolUseId);
+    if (!pending) {
+      return;
+    }
+    postApprovedUnasked(this.getPostMessage(), toolUseId, pending, approvedBy);
+    pending.cleanup();
+    pending.resolve({ approved: true });
   }
 }

@@ -54,11 +54,13 @@ function toggle(): void {
   if (expanded.value && props.target && props.skipped?.manifest) uiStore.requestSkippedFiles(props.target);
 }
 
-const notRewindableReason = computed(() =>
-  props.notRewindable?.reason === 'baseline-timeout'
-    ? t('rewind.notRewindable.reason.baselineTimeout')
-    : t('rewind.notRewindable.reason.baselineFailed'),
-);
+const notRewindableReason = computed(() => {
+  switch (props.notRewindable?.reason) {
+    case 'baseline-timeout': return t('rewind.notRewindable.reason.baselineTimeout');
+    case 'no-project': return t('rewind.notRewindable.reason.noProject');
+    default: return t('rewind.notRewindable.reason.baselineFailed');
+  }
+});
 
 const notRewindableDetail = computed(() => {
   const record = props.notRewindable;

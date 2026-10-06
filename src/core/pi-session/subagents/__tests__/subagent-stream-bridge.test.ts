@@ -144,6 +144,21 @@ describe('SubagentStreamBridge streaming', () => {
     expect(JSON.stringify(sent)).not.toContain('AAAA');
   });
 
+  it('forwards the details an error result carries, as the reload does, and none for a thrown error', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    const session = makeFakeSession();
+    bridge.attach(session as never);
+
+    session.emit({ type: 'tool_execution_end', toolCallId: 'kept', toolName: 'edit', result: { content: [{ type: 'text', text: 'no match' }], details: { reason: 'no-match' } }, isError: true });
+    session.emit({ type: 'tool_execution_end', toolCallId: 'thrown', toolName: 'edit', result: { content: [{ type: 'text', text: 'boom' }], details: {} }, isError: true });
+
+    expect(sent.filter((m) => m.type === 'toolFailed' || m.type === 'toolMetadata').map((m) => [m.type, (m as { toolUseId: string }).toolUseId])).toEqual([
+      ['toolFailed', 'kept'], ['toolMetadata', 'kept'], ['toolFailed', 'thrown'],
+    ]);
+    expect(sent.find((m) => m.type === 'toolMetadata')).toEqual({ type: 'toolMetadata', toolUseId: 'kept', metadata: { reason: 'no-match' } });
+  });
+
   it('finish emits toolCompleted{Agent} so a FOREGROUND card resolves without the parent stream event', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent); // isBackground: false → foreground

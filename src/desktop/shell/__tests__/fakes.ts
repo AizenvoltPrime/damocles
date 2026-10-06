@@ -1,6 +1,7 @@
 import { vi } from 'vitest';
 import type { DamoclesShellApi, ShellChat, ShellChatList, ShellFocusPart, ShellState } from '../../preload/shell-channels';
-import type { DamoclesOverlayApi, OverlayAnswer, OverlayPrefs, OverlayRequest, OverlayState, OverlayToast } from '../../preload/overlay-channels';
+import type { DamoclesOverlayApi, OverlayAnswer, OverlayPrefs, OverlayRasterRequest, OverlayRequest, OverlayState, OverlayToast } from '../../preload/overlay-channels';
+import type { ChimeTone, NotificationCenterState } from '../../preload/notifications';
 import type { SettingsTarget } from '../../../shared/settings-sections';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -21,6 +22,7 @@ export const STATE: ShellState = {
   },
   paneShortcutLabel: 'Ctrl+Shift+B',
   shortcuts: { newChat: 'Ctrl+N', toggleSidebar: 'Ctrl+B', settings: 'Ctrl+,' },
+  notifications: { unseen: 0, doNotDisturb: false, popupsOff: false, attention: 0 },
 };
 
 export function chat(overrides: Partial<ShellChat> & { id: string }): ShellChat {
@@ -97,6 +99,13 @@ export type FakeOverlayApi = DamoclesOverlayApi & {
   settingsAttached: (generation: number) => void;
   settingsTarget: (target: SettingsTarget) => void;
   prefsChanged: (prefs: OverlayPrefs) => void;
+  // main's center: what getNotifications answers, and a push while the center is open
+  center: { state: NotificationCenterState };
+  pushNotifications: (state: NotificationCenterState) => void;
+  // main's rasterize request
+  rasterizeRequest: (request: OverlayRasterRequest) => void;
+  // main's chime for a popup
+  chime: (tone: ChimeTone) => void;
 };
 
 export function fakeOverlayApi(): FakeOverlayApi {
@@ -110,6 +119,10 @@ export function fakeOverlayApi(): FakeOverlayApi {
   const attachedListeners = new Set<(attached: { generation: number }) => void>();
   const targetListeners = new Set<(target: SettingsTarget) => void>();
   const prefsListeners = new Set<(prefs: OverlayPrefs) => void>();
+  const notificationListeners = new Set<(state: NotificationCenterState) => void>();
+  const rasterizeListeners = new Set<(request: OverlayRasterRequest) => void>();
+  const chimeListeners = new Set<(tone: ChimeTone) => void>();
+  const center: { state: NotificationCenterState } = { state: { entries: [], doNotDisturb: false, popupsOff: false } };
   return {
     getState: vi.fn(async () => ({ locale: 'en' as const, platform: 'win32' as const })),
     onState: vi.fn((listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); }),
@@ -121,8 +134,17 @@ export function fakeOverlayApi(): FakeOverlayApi {
     onToastDismiss: vi.fn((listener) => { dismissListeners.add(listener); return () => dismissListeners.delete(listener); }),
     resolveToast: vi.fn(),
     reportToastArea: vi.fn(),
+    reportToastPointer: vi.fn(),
     onToastsFocus: vi.fn((listener) => { toastsFocusListeners.add(listener); return () => toastsFocusListeners.delete(listener); }),
     leaveToasts: vi.fn(),
+    holdToast: vi.fn(),
+    getNotifications: vi.fn(async () => center.state),
+    onNotifications: vi.fn((listener) => { notificationListeners.add(listener); return () => notificationListeners.delete(listener); }),
+    clearNotifications: vi.fn(async () => {}),
+    setDoNotDisturb: vi.fn(async () => {}),
+    onRasterize: vi.fn((listener) => { rasterizeListeners.add(listener); return () => rasterizeListeners.delete(listener); }),
+    rasterized: vi.fn(),
+    onChime: vi.fn((listener) => { chimeListeners.add(listener); return () => chimeListeners.delete(listener); }),
     settingsSend: vi.fn(),
     onSettingsMessage: vi.fn((listener) => { settingsListeners.add(listener); return () => settingsListeners.delete(listener); }),
     onSettingsAttached: vi.fn((listener) => { attachedListeners.add(listener); return () => attachedListeners.delete(listener); }),
@@ -142,6 +164,10 @@ export function fakeOverlayApi(): FakeOverlayApi {
     settingsAttached: (generation) => { for (const l of attachedListeners) l({ generation }); },
     settingsTarget: (target) => { for (const l of targetListeners) l(target); },
     prefsChanged: (prefs) => { for (const l of prefsListeners) l(prefs); },
+    center,
+    pushNotifications: (state) => { center.state = state; for (const l of notificationListeners) l(state); },
+    rasterizeRequest: (request) => { for (const l of rasterizeListeners) l(request); },
+    chime: (tone) => { for (const l of chimeListeners) l(tone); },
   };
 }
 

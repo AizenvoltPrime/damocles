@@ -2,9 +2,9 @@
 import { computed } from 'vue';
 import type { IndicatorBox } from '@/composables/useSlidingIndicator';
 
-// `solid`: two fixed caps and a 1px middle scaled on X, so only transform moves and the corners never stretch;
+// `solid`: two fixed caps and a middle scaled on X, so only transform moves and the corners never stretch;
 // its currentColor must be opaque, because the pieces overlap by 1px to hide seams.
-// `ring`: currentColor border and tinted fill for a vertical list. Fixed top and bottom caps and a 1px middle scaled on Y,
+// `ring`: currentColor border and tinted fill for a vertical list. Fixed top and bottom caps and a middle scaled on Y,
 // so rows of different heights animate by transform alone; a width change snaps.
 // `soft`: the ring's pieces filled with currentColor and no border; currentColor may be translucent, as those pieces never overlap.
 const props = withDefaults(defineProps<{
@@ -14,6 +14,10 @@ const props = withDefaults(defineProps<{
   animate: boolean;
   variant?: 'solid' | 'ring' | 'soft';
 }>(), { variant: 'solid' });
+
+// The middle is drawn this many px long, then scaled to its span. Chromium snaps the unscaled box to device pixels,
+// so a 1px middle at 150% display scaling paints 2 device px and the scale stretches it a third past the far cap.
+const MIDDLE_BASE = 100;
 
 function radiusPx(box: IndicatorBox): number {
   if (props.radius === 'pill') return box.height / 2;
@@ -28,7 +32,7 @@ const pieces = computed(() => {
     height: `${box.height}px`,
     cap: `${r}px`,
     start: `translate(${box.x}px, ${box.y}px)`,
-    middle: `translate(${box.x + r - 1}px, ${box.y}px) scaleX(${Math.max(0, box.width - 2 * r + 2)})`,
+    middle: `translate(${box.x + r - 1}px, ${box.y}px) scaleX(${Math.max(0, box.width - 2 * r + 2) / MIDDLE_BASE})`,
     end: `translate(${box.x + box.width - r}px, ${box.y}px)`,
   };
 });
@@ -42,7 +46,7 @@ const ring = computed(() => {
     width: `${box.width}px`,
     cap: `${r}px`,
     top: `translate(${box.x}px, ${box.y}px)`,
-    middle: `translate(${box.x}px, ${box.y + r}px) scaleY(${Math.max(0, box.height - 2 * r)})`,
+    middle: `translate(${box.x}px, ${box.y + r}px) scaleY(${Math.max(0, box.height - 2 * r) / MIDDLE_BASE})`,
     bottom: `translate(${box.x}px, ${box.y + box.height - r}px)`,
   };
 });
@@ -74,7 +78,7 @@ const ringFill = computed(() => (props.variant === 'ring'
     />
     <span
       :class="[pieceClass, ringFill.middle]"
-      :style="{ width: ring.width, height: '1px', transform: ring.middle }"
+      :style="{ width: ring.width, height: `${MIDDLE_BASE}px`, transform: ring.middle }"
     />
     <span
       :class="[pieceClass, ringFill.bottom]"
@@ -95,7 +99,7 @@ const ringFill = computed(() => (props.variant === 'ring'
     <span
       :class="pieceClass"
       class="bg-current"
-      :style="{ width: '1px', height: pieces.height, transform: pieces.middle }"
+      :style="{ width: `${MIDDLE_BASE}px`, height: pieces.height, transform: pieces.middle }"
     />
     <span
       :class="pieceClass"

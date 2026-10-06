@@ -11,6 +11,7 @@ import { useModelIdentity } from '@/composables/useModelIdentity';
 import { usePlatformBridge } from '@/composables/usePlatformBridge';
 import { useStopTeamAgent } from '@/composables/useStopTeam';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 
 const { t } = useI18n();
 
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 }>();
 
 const teamStore = useTeamStore();
+const sessionStore = useSessionStore();
 const { postMessage } = usePlatformBridge();
 const modelIdentity = useModelIdentity();
 
@@ -37,7 +39,8 @@ const { elapsedMs } = useElapsedTimer(() => props.agent.runningSince !== null, (
 const hasRun = computed(() => props.agent.activeMs > 0 || props.agent.runningSince !== null);
 
 const color = computed(() => getAgentColor(props.index));
-const chip = computed(() => agentStatusChip(props.agent.status));
+const awaitingUser = computed(() => sessionStore.teamAgentsAwaitingUser.get(teamStore.selectedTeam?.teamId ?? '')?.has(props.agent.agentId) ?? false);
+const chip = computed(() => agentStatusChip(props.agent.status, awaitingUser.value));
 const model = computed(() => modelIdentity(props.agent.model));
 
 const memberStop = useStopTeamAgent(() => teamStore.selectedTeam, () => props.agent);
@@ -96,7 +99,7 @@ function cancelAgent(): void {
           <component
             :is="chip.icon"
             class="size-2.5"
-            :class="chip.live && 'd-spinning'"
+            :class="[chip.live && 'd-spinning', chip.attention && 'd-pulsing']"
             aria-hidden="true"
           />
           <span class="@max-[34.9375rem]/overlay:sr-only">{{ t(chip.labelKey) }}</span>

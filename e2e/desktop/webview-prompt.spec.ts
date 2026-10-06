@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { activeChat, expect, test } from './support/fixtures';
 import { chatInput, clickMenu, postFromWebview } from './support/ui';
-import { overlayToasts, readyOverlay } from './support/overlay';
 import { openSettingsModal, settingsModal, settingsRow } from './support/settings';
+import { popupPage, popupToasts } from './support/shell';
 
 const SECRET = 'sk-or-e2e-7f3a91';
 const CHATGPT_PASTE_PROMPT = 'Complete login in your browser, or paste the final redirect URL here:';
@@ -23,7 +23,7 @@ test('host input box renders in the chat webview, accepts a masked value, and an
   await input.fill(SECRET);
   await input.press('Enter');
   await expect(dialog).toBeHidden();
-  await expect(overlayToasts(await readyOverlay(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
+  await expect(popupToasts(await popupPage(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
 
   // The ChatGPT sign-in asks for the pasted redirect URL; signing out aborts the flow, which withdraws the prompt.
   await app.evaluate(({ shell: electronShell }) => {
@@ -61,7 +61,7 @@ test('with the settings modal open, a host prompt renders in it, takes a masked 
   await input.press('Enter');
   await expect(dialog).toBeHidden();
   await expect(settingsModal(overlay)).toBeVisible();
-  await expect(overlayToasts(overlay).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
+  await expect(popupToasts(await popupPage(app)).filter({ hasText: 'Damocles: OpenRouter API key saved' })).toBeVisible();
 
   const logs = path.join(home.userData, 'logs');
   for (const file of fs.readdirSync(logs)) {

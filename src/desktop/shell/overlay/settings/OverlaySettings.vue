@@ -16,6 +16,7 @@ import type { DamoclesOverlayApi } from '../../../preload/overlay-channels';
 import AppearanceSection from './AppearanceSection.vue';
 import LanguageRow from './LanguageRow.vue';
 import NotifyRow from './NotifyRow.vue';
+import NotifySoundRow from './NotifySoundRow.vue';
 import type { OverlaySettingsBridge } from './overlay-bridge';
 import { provideDesktopPrefs } from './desktop-prefs';
 
@@ -64,6 +65,11 @@ const DESKTOP: HostSettings = {
       section: 'application',
       component: NotifyRow,
       rows: [{ id: 'damocles.desktop.notifications.enabled', section: 'application', label: 'settingsHost.rows.notify.label', description: 'settingsHost.rows.notify.description', keys: ['damocles.desktop.notifications.enabled'] }],
+    },
+    {
+      section: 'application',
+      component: NotifySoundRow,
+      rows: [{ id: 'damocles.desktop.notifications.sound', section: 'application', label: 'settingsHost.rows.notifySound.label', description: 'settingsHost.rows.notifySound.description', keys: ['damocles.desktop.notifications.sound'] }],
     },
   ],
 };

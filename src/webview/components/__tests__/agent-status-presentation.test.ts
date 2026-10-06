@@ -12,6 +12,7 @@ import TeamOverlay from '../TeamOverlay.vue';
 import TeamAgentOverlay from '../TeamAgentOverlay.vue';
 import { useSubagentStore } from '@/stores/useSubagentStore';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { i18n } from '@/i18n';
 
 /** A status reads the same on a card as in its overlay's header, and a result box is tinted by how the agent ended. */
@@ -106,6 +107,68 @@ describe('one status presentation', () => {
 
     expect(mount(SubagentCard, { props: { subagent: state }, global }).get('[data-testid="subagent-status"]').text()).toBe('Διακόπηκε');
     expect(mount(SubagentOverlay, { props: { subagent: state }, global }).get('[data-testid="badge"]').text()).toBe('Διακόπηκε');
+  });
+});
+
+describe('a team member waiting on the user', () => {
+  /** Core's published state with one prompt of member a1 of team t1 pending, or with nothing pending. */
+  function publish(waiting: boolean): void {
+    useSessionStore().setSessionState(waiting ? 'requires_action' : 'running', waiting
+      ? [{ id: 'p1', owner: { kind: 'team', teamId: 't1', agentId: 'a1', teamTitle: 'Lockout', agentName: 'Atlas' } }]
+      : []);
+  }
+
+  it('reads Needs you, in the warning tone and by name, on the card, its member chip, the agent list and both overlays', async () => {
+    const state = team('running', member({ agentId: 'a1' }));
+    publish(true);
+    const card = mount(TeamCard, { props: { team: state, run: state.runs[0]! }, global });
+    const memberChip = card.get('[data-testid="team-card-member"]');
+
+    expect(card.get('[data-testid="team-status"]').text()).toBe('Needs you');
+    expect(card.get('[data-testid="team-status"]').classes()).toContain('d-tone-warning');
+    expect(card.get('[data-testid="team-status"] svg').classes()).toContain('d-pulsing');
+    expect(memberChip.attributes('aria-label')).toBe('Open agent Atlas, Needs you');
+    expect(memberChip.find('.d-spinning').exists()).toBe(false);
+    expect(memberChip.find('.d-pulsing').classes()).toContain('d-tone-warning');
+    expect(card.text()).toContain('1 of 1 active, 1 needs you');
+
+    const overlay = mount(TeamOverlay, { global });
+    expect(overlay.get('[data-testid="badge"]').text()).toBe('Needs you');
+    expect(overlay.get('[data-testid="badge"]').classes()).toContain('d-tone-warning');
+    expect(overlay.get('[data-testid="team-agent-status"]').text()).toBe('Needs you');
+    expect(overlay.get('[data-testid="team-agent-status"]').classes()).toContain('d-tone-warning');
+    useTeamStore().openAgentOverlay('a1');
+    const agentOverlay = mount(TeamAgentOverlay, { global });
+    expect(read(agentOverlay.get('[data-testid="badge"]')).text).toBe('Needs you');
+
+    // Answered, denied, withdrawn or reloaded alike: the next published state names no prompt of this member.
+    publish(false);
+    await card.vm.$nextTick();
+    expect(card.get('[data-testid="team-status"]').text()).toBe('Running');
+    expect(memberChip.attributes('aria-label')).toBe('Open agent Atlas, Running');
+    expect(memberChip.find('.d-pulsing').exists()).toBe(false);
+    expect(card.text()).toContain('1 of 1 active');
+    expect(card.text()).not.toContain('needs you');
+    expect(overlay.get('[data-testid="team-agent-status"]').text()).toBe('Running');
+    expect(agentOverlay.get('[data-testid="badge"]').text()).toBe('Running');
+  });
+
+  it('reads Σας χρειάζεται in Greek', () => {
+    i18n.global.locale.value = 'el';
+    const state = team('running', member({ agentId: 'a1' }));
+    publish(true);
+    const card = mount(TeamCard, { props: { team: state, run: state.runs[0]! }, global });
+
+    expect(card.get('[data-testid="team-status"]').text()).toBe('Σας χρειάζεται');
+    expect(card.get('[data-testid="team-card-member"]').attributes('aria-label')).toBe('Άνοιγμα πράκτορα Atlas, Σας χρειάζεται');
+  });
+
+  it('is never claimed by the card of a run that is not running', () => {
+    const state = team('completed', member({ agentId: 'a1' }));
+    publish(true);
+    const card = mount(TeamCard, { props: { team: state, run: state.runs[0]! }, global });
+
+    expect(card.get('[data-testid="team-status"]').text()).toBe('Completed');
   });
 });
 

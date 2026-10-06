@@ -9,7 +9,8 @@ import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
-import { buildPlanModeGuidance } from './plan-mode-guidance';
+import { buildPlanModeGuidance, PLAN_MODE_SECTION } from './plan-mode-guidance';
+import { mainPlanModeStatement, planModeNoticeAtPromptStart } from './plan-mode-change';
 import { mechanismLabels } from './delivery-mechanisms';
 import { isWebSearchEnabled } from './web-access';
 import { CONTEXT_INJECTION_CUSTOM_TYPE, readLiveInjections } from './live-injections';
@@ -156,7 +157,7 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): Dam
   if (i.memoryEnabled) sections['damocles_memory'] = MEMORY_SYSTEM_PROMPT;
   if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
-    sections['damocles_plan_mode'] = buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled });
+    sections[PLAN_MODE_SECTION] = buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled });
   } else if (i.existingPlanFile) {
     sections['damocles_plan_file'] = planFileReminder(i.existingPlanFile);
     sections['damocles_plan_execution'] = planExecutionDirective(i.teamEnabled);
@@ -268,7 +269,23 @@ export function buildCompassContext(panel: PanelGateContext): { text: string; ke
 }
 
 /**
- * The single `before_agent_start` handler for the pi path. Writes the Damocles
+ * The plan-mode change notice for a prompt whose system prompt will not correct what the model was last
+ * told about plan mode. Reads the sections `buildAgentStartResult` wrote, so it runs after it.
+ */
+export function buildPlanModeNoticeResult(
+  event: BeforeAgentStartEvent,
+  panel: PanelGateContext,
+  sessionManager: Pick<ProjectionReader, 'buildSessionProjection'>,
+): BeforeAgentStartEventResult | undefined {
+  const statement = mainPlanModeStatement(() =>
+    buildPlanModeGuidance(panel.getPlanFilePath(), { teamEnabled: panel.isTeamEnabled?.() ?? false, webSearchEnabled: isWebSearchEnabled() }),
+  );
+  const message = planModeNoticeAtPromptStart(sessionManager.buildSessionProjection().messages, event.systemPromptOptions, panel.isPlanMode(), statement);
+  return message ? { message } : undefined;
+}
+
+/**
+ * The `before_agent_start` prompt handler for the pi path. Writes the Damocles
  * prompt into `event.systemPromptOptions` (replacing pi's boilerplate, preserving project context) and
  * returns what is new for this prompt (memories, notices, profile, a changed Compass status) as a
  * NON-displayed custom message whose `details` record what it carries. Dynamic context goes in the

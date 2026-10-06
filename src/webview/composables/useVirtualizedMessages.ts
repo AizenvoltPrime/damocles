@@ -1,7 +1,7 @@
 import { computed, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, CompactionAbortedNotice, ThinkingDroppedNotice, ToolCall } from '@shared/types/session';
 import { isImageBlock, type ContentBlock, type ImageBlock } from '@shared/types/content';
-import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_RESUME_TOOL, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
+import { TEAM_MANAGEMENT_TOOLS, TEAM_RESUME_TOOL, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 
 export type VirtualItemType =
@@ -50,7 +50,6 @@ function isFilteredTool(toolName: string): boolean {
   // GetSubagentResult is the parent's "collect a background subagent's result" call; its result is
   // already shown on that subagent's own card, so the standalone tool card is redundant noise.
   return (
-    TASK_MANAGEMENT_TOOLS.has(toolName) ||
     // resume_team renders the team card it continued, so it is not noise.
     (TEAM_MANAGEMENT_TOOLS.has(toolName) && toolName !== TEAM_RESUME_TOOL) ||
     toolName === TOOL_GET_SUBAGENT_RESULT

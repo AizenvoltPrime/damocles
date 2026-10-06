@@ -114,14 +114,6 @@ export class TeamService {
     this.pendingToolUseId = toolUseId;
   }
 
-  /**
-   * Team-agent permission responses (`teamAgentPermissionResponse`) are handled by the central permission
-   * gate (inherit-parent-mode), so there is no per-team prompt to resolve — this is a no-op.
-   */
-  resolvePermission(_requestId: string, _behavior: 'allow' | 'deny'): void {
-    // Intentionally empty — pi team permissions are handled by the central gate.
-  }
-
   async createTeam(config: {
     title: string;
     brief: string;
@@ -327,6 +319,13 @@ export class TeamService {
 
   listSteerTargets(): SteerTargetInfo[] {
     return this.activeRunner?.listSteerTargets() ?? [];
+  }
+
+  /** The running team that has member `agentId`, with its title and the member's name; null when none has. */
+  memberOf(agentId: string): { teamId: string; teamTitle: string; agentName: string } | null {
+    const { activeTeamId: teamId, activeRunner: runner } = this;
+    const member = teamId ? runner?.getMember(agentId) : undefined;
+    return teamId && runner && member ? { teamId, teamTitle: runner.getTitle(), agentName: member.name } : null;
   }
 
   /** `null` when no running team has this member, so the caller can report its own not-found. */

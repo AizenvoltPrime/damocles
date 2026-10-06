@@ -337,20 +337,18 @@ describe('switching folder', () => {
 });
 
 describe('permission resets on a confirmed switch', () => {
-  it('resets skip-permissions and subagent approvals like clear, and keeps the permission mode', async () => {
+  it('resets skip-permissions like clear, and keeps the permission mode', async () => {
     h = createHarness([folderEntry(A), folderEntry(B)]);
     const { panelId } = await openPanel();
     const handler = h.instance(panelId).permissionHandler;
     handler.setPermissionMode('acceptEdits');
     handler.setDangerouslySkipPermissions(true);
-    handler.autoApproveSubagent('tool-1');
     sessionOf(panelId).conversation = true;
     answerNextWarning(CONFIRM);
 
     await h.manager.switchPanelFolder(panelId, folderKey(B), 'user');
 
     expect(handler.getDangerouslySkipPermissions()).toBe(false);
-    expect((handler as unknown as { state: { autoApprovedSubagents: Set<string> } }).state.autoApprovedSubagents.size).toBe(0);
     expect(handler.getPermissionMode()).toBe('acceptEdits');
     expect((handler as unknown as { state: { workspacePath: string | null } }).state.workspacePath).toBe(B);
   });

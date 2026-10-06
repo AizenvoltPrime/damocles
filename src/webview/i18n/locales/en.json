@@ -384,7 +384,8 @@
       "badge": "Not rewindable",
       "reason": {
         "baselineTimeout": "A file-changing tool ran before this turn's checkpoint was ready.",
-        "baselineFailed": "This turn's checkpoint could not be taken."
+        "baselineFailed": "This turn's checkpoint could not be taken.",
+        "noProject": "This chat has no project folder, so its files are not checkpointed. You can still fork the conversation from here."
       },
       "detail": {
         "baselineTimeout": "{tool} waited {n} s for this turn's checkpoint and ran without it.",
@@ -397,9 +398,13 @@
     "runCommandAgent": "{agent} wants to run this command:",
     "createFileAgent": "{agent} wants to create this file",
     "editFileAgent": "{agent} wants to edit",
+    "runCommandTeamAgent": "{agent} from team {team} wants to run this command:",
+    "createFileTeamAgent": "{agent} from team {team} wants to create this file",
+    "editFileTeamAgent": "{agent} from team {team} wants to edit",
     "generateImage": "Generate an image and save it as this new file?",
     "useTool": "Allow {tool} with this input?",
     "useToolAgent": "{agent} wants to use {tool} with this input:",
+    "useToolTeamAgent": "{agent} from team {team} wants to use {tool} with this input:",
     "imagePrompt": "Image prompt",
     "imageModel": "Model:",
     "imageBilled": "Billed to your OpenRouter key.",
@@ -479,13 +484,6 @@
     "duration": "{seconds}s",
     "tokens": "{n} tokens",
     "toolCalls": "{n} tool call | {n} tool calls"
-  },
-  "task": {
-    "title": "Tasks",
-    "progress": "{done} done, {open} open",
-    "inProgress": "In Progress",
-    "blocked": "blocked by task {ids} | blocked by tasks {ids}",
-    "noTasks": "No tasks"
   },
   "mcp": {
     "title": "MCP servers",
@@ -704,7 +702,8 @@
       "weekly": "Weekly",
       "monthly": "Monthly"
     },
-    "resetsIn": "Resets in {time}",
+    "resetsAt": "Resets at {time}",
+    "resetsOn": "Resets {day} {time}",
     "extraUsage": "Extra usage: {amount}",
     "credits": "Credits: {amount}",
     "claudeNotConnected": "Sign in with your Claude subscription in Settings to see usage",
@@ -1514,7 +1513,8 @@
       "other": "Settings updated"
     },
     "responseTruncated": "Response truncated: max output tokens reached",
-    "rewindUndone": "Files restored to before the rewind"
+    "rewindUndone": "Files restored to before the rewind",
+    "promptsApproved": "{approver} approved the open prompts it no longer asks about"
   },
   "backgroundTask": {
     "title": "Background Tasks",
@@ -1565,7 +1565,8 @@
       "cancelled": "Stopped",
       "awaiting-review": "Awaiting review",
       "standby": "Standby",
-      "monitoring": "Monitoring"
+      "monitoring": "Monitoring",
+      "needsYou": "Needs you"
     },
     "tabs": {
       "agents": "Agents",
@@ -1580,13 +1581,6 @@
     },
     "indicator": {
       "label": "Team ({n})"
-    },
-    "permission": {
-      "request": "Permission Request",
-      "wantsToRun": "{agent} wants to run",
-      "input": "{tool} input",
-      "approve": "Approve",
-      "deny": "Deny"
     },
     "scratchpad": {
       "empty": "No scratchpad entries yet"
@@ -1683,11 +1677,6 @@
     "toast": {
       "signedIn": "Signed in to ChatGPT",
       "signInFailed": "ChatGPT sign-in failed: {error}"
-    },
-    "chip": {
-      "chatgpt": "ChatGPT",
-      "codex": "Codex",
-      "apiKey": "OpenAI API key"
     }
   },
   "stepfun": {
@@ -2691,7 +2680,9 @@
       "label": "Team",
       "open": "Open team {name}",
       "openAgent": "Open agent {name}",
+      "openAgentStatus": "Open agent {name}, {status}",
       "activeOf": "{active} of {total} active",
+      "activeWaitingOf": "{active} of {total} active, {waiting} needs you | {active} of {total} active, {waiting} need you",
       "finished": "finished",
       "stopped": "stopped"
     },
@@ -2733,12 +2724,6 @@
     "statusWaiting": "Waiting for your answer",
     "statusWorking": "Working",
     "branch": "Branch: {branch}",
-    "accountChip": "Billed through: {source}",
-    "account": {
-      "apikey": "API key",
-      "allowance": "Subscription",
-      "extra": "Extra usage"
-    },
     "promptNavigator": "Prompt navigator ({key})",
     "promptCount": "{n} prompt | {n} prompts",
     "consolidation": "Memory consolidation",

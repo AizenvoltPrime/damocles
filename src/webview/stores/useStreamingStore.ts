@@ -2,7 +2,7 @@ import { ref, computed } from "vue";
 import { defineStore } from "pinia";
 import type { ChatMessage, ToolCall, QueuedMessage } from "@shared/types/session";
 import type { ContentBlock, ImageBlock, UserContentBlock } from "@shared/types/content";
-import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
+import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from "./tool-cancelled-status";
 
 export interface ToolStatusEntry {
   status: ToolCall["status"];
@@ -249,6 +249,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       // undefined, which exactOptionalPropertyTypes rejects.
       const { liveOutput: _clearedOutput, liveOutputTruncated: _clearedTruncated, cancelRequested: _clearedCancel, ...withoutLiveOutput } = target;
       const resolvedStatus = resolveCancelledStatus(status, target.metadata);
+      // Not `replacesToolStatus`: a prompt's answer writes an outcome optimistically, and core's own outcome must replace it.
       if (TERMINAL_TOOL_STATUSES.has(target.status) && !TERMINAL_TOOL_STATUSES.has(resolvedStatus)) return;
       const base = TERMINAL_TOOL_STATUSES.has(resolvedStatus) ? withoutLiveOutput : target;
 
@@ -348,21 +349,6 @@ export const useStreamingStore = defineStore("streaming", () => {
   }
 
   function mergeToolCalls(existing: ToolCall[] | undefined, incoming: ToolCall[]): ToolCall[] {
-    const statusPriority: Record<ToolCall["status"], number> = {
-      pending: 0,
-      running: 1,
-      awaiting_approval: 2,
-      approved: 3,
-      // Strictly over every live status and strictly under every recorded outcome: a real result
-      // replaces it, a spinner never does.
-      unrecorded: 4,
-      denied: 5,
-      completed: 6,
-      failed: 6,
-      abandoned: 6,
-      cancelled: 6,
-    };
-
     const merged = new Map<string, ToolCall>();
 
     for (const tool of existing || []) {
@@ -373,7 +359,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       const exists = merged.get(tool.id);
       if (!exists) {
         merged.set(tool.id, tool);
-      } else if (statusPriority[tool.status] >= statusPriority[exists.status]) {
+      } else if (replacesToolStatus(exists.status, tool.status)) {
         const mergedMetadata = exists.metadata || tool.metadata
           ? { ...exists.metadata, ...tool.metadata }
           : undefined;

@@ -2,19 +2,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePlatform } from '../../../../__mocks__/fake-platform';
 import type { ChatSession } from '../../../chat-session';
 
-const LOCK = vi.hoisted(() => ({ error: null as NodeJS.ErrnoException | null }));
+const LOCK = vi.hoisted(() => ({ error: null as NodeJS.ErrnoException | null, beforeRelease: null as (() => void) | null }));
 vi.mock('proper-lockfile', async (importOriginal) => {
   const actual = await importOriginal<typeof import('proper-lockfile')>();
   return {
     ...actual,
     lockSync: (...args: Parameters<typeof actual.lockSync>) => {
       if (LOCK.error) throw LOCK.error;
-      return actual.lockSync(...args);
+      const release = actual.lockSync(...args);
+      return () => {
+        LOCK.beforeRelease?.();
+        release();
+      };
     },
   };
 });
 
-import { acquireSessionLease, type SessionLeaseHolder } from '../session-lease';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { SESSION_LEASE_DIR, acquireSessionLease, releaseSessionLease, type SessionLeaseHolder } from '../session-lease';
 import { claimStoredSession } from '../../../chat-panel/session-ownership';
 
 const holder: SessionLeaseHolder = { onSessionLeaseLost: () => undefined };
@@ -24,10 +30,23 @@ const onPlatform = (value: NodeJS.Platform): void => { Object.defineProperty(pro
 
 afterEach(() => {
   LOCK.error = null;
+  LOCK.beforeRelease = null;
   onPlatform(realPlatform);
 });
 
 describe('session lease errors', () => {
+  it('removes the owner record before the lock, so no other process writes its own record in between', () => {
+    const owner = path.join(SESSION_LEASE_DIR, 'sess-order.owner');
+    const ownerAtRelease: boolean[] = [];
+    LOCK.beforeRelease = () => ownerAtRelease.push(fs.existsSync(owner));
+    expect(acquireSessionLease('sess-order', holder)).toBe(true);
+    expect(fs.existsSync(owner)).toBe(true);
+
+    releaseSessionLease('sess-order', holder);
+
+    expect(ownerAtRelease).toEqual([false]);
+  });
+
   it('reads EPERM on Windows as a lease another process is releasing: busy, not an error', () => {
     onPlatform('win32');
     failWith('EPERM');

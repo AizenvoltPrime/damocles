@@ -465,7 +465,7 @@ describe("createOpenAIHandlers", () => {
   });
 
   /**
-   * The account chip is derived from the OpenAI credential state and the prefer-API-key flag. Nothing
+   * The account state is derived from the OpenAI credential state and the prefer-API-key flag. Nothing
    * republishes it on its own, so each mutation here has to ask every panel's session to publish.
    */
   describe("account state republication", () => {

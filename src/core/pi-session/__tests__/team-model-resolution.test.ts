@@ -302,7 +302,7 @@ describe('resolveRoleModel dollar billing', () => {
     expect(res.dollarBilled).toBe(false);
   });
 
-  it('(i6) a GPT model outside the Codex catalog bills the API key it resolves to, as the account chip does', () => {
+  it('(i6) a GPT model outside the Codex catalog bills the API key it resolves to, as the account state does', () => {
     const registry: ModelLookup = {
       getModel: (provider, modelId) => (provider === 'anthropic' || provider === 'openai' ? fakeModel(provider, modelId) : undefined),
       hasConfiguredAuth: (providerId) => providerId === 'anthropic',
@@ -312,7 +312,7 @@ describe('resolveRoleModel dollar billing', () => {
     const res = resolveRoleModel('implementor', d);
     expect(res.model?.provider).toBe('openai');
     expect(res.dollarBilled).toBe(true);
-    const chip = buildAccountInfo({
+    const account = buildAccountInfo({
       modelValue: OPENAI_ACTIVE,
       modelInfo: d.supportedModels.find((m) => m.value === OPENAI_ACTIVE),
       claudeAuthMode: d.claudeAuthMode,
@@ -320,7 +320,7 @@ describe('resolveRoleModel dollar billing', () => {
       preferApiKey: false,
       resolvedProvider: res.model?.provider,
     });
-    expect(chip).toMatchObject({ tokenSource: 'openai-api-key', dollarBilled: res.dollarBilled });
+    expect(account.dollarBilled).toBe(res.dollarBilled);
   });
 
   it('(i5) the blocking error return still carries billing', () => {

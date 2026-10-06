@@ -113,7 +113,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
   }
 
   /** Called on the mutation paths only. The read-only status queries post `openaiAuthStatusMessage()` direct,
-   *  because a read changes nothing the account chip is derived from. */
+   *  because a read changes nothing the account state is derived from. */
   async function broadcastAuthStatus(): Promise<void> {
     broadcast(await openaiAuthStatusMessage(platform));
     republishAccountInfo(getPanels);

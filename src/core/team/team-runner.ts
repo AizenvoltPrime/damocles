@@ -454,13 +454,14 @@ export class TeamRunner {
         return this.config.engine.createSession({
           cwd: this.config.cwd,
           systemPrompt: leadPrompt,
+          role: 'lead',
           ...(resolution?.model ? { model: resolution.model } : {}),
           ...(resolution?.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
           tools: [...toolNames, ...mcp.names],
           customTools,
           directMcpToolNames: mcp.direct,
           excludeTools: ['edit'],
-          extensionFactory: this.config.engine.buildExtensionFactory(leadName, leadAgent.agentId, mcp, readOnly),
+          extensionFactory: this.config.engine.buildExtensionFactory(leadCtx, mcp, readOnly),
           store,
         });
       }),
@@ -901,13 +902,14 @@ export class TeamRunner {
         return this.config.engine.createSession({
           cwd: this.config.cwd,
           systemPrompt: specialistPrompt,
+          role: 'specialist',
           ...(resolution?.model ? { model: resolution.model } : {}),
           ...(resolution?.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
           tools: [...toolNames, ...mcp.names],
           customTools,
           directMcpToolNames: mcp.direct,
           excludeTools: ['edit'],
-          extensionFactory: this.config.engine.buildExtensionFactory(name, agent.agentId, mcp, readOnly),
+          extensionFactory: this.config.engine.buildExtensionFactory(specialistCtx, mcp, readOnly),
           store,
         });
       }),

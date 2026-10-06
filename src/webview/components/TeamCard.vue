@@ -7,6 +7,7 @@ import AgentUsageStats from './AgentUsageStats.vue';
 import StopTeamConfirm from './StopTeamConfirm.vue';
 import { agentStatusChip, formatElapsed, formatTokenCount, getAgentColor, workingAgentCount } from '@/composables/useTeamFormatting';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useSessionStore } from '@/stores/useSessionStore';
 import { useCostLabel } from '@/composables/useCostLabel';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import { useStopTeam } from '@/composables/useStopTeam';
@@ -15,6 +16,7 @@ import { runStopwatch } from '@shared/team-stopwatch';
 const { t, locale } = useI18n();
 const { teamDollarBilled } = useCostLabel();
 const teamStore = useTeamStore();
+const sessionStore = useSessionStore();
 
 // Status, time and totals come from `run`; the team supplies the title, roster and billing flags.
 const props = defineProps<{
@@ -39,7 +41,12 @@ const activeAgentCount = computed(() => workingAgentCount(props.team.agents));
 
 const totalAgentCount = computed(() => props.team.agents.length);
 
+// Only the running run's card speaks for the live team, so an earlier run's card never claims a prompt.
+const awaitingAgents = computed<ReadonlySet<string>>(() => (isRunning.value ? sessionStore.teamAgentsAwaitingUser.get(props.team.teamId) : undefined) ?? new Set());
+
 const progressLine = computed(() => {
+  const waiting = awaitingAgents.value.size;
+  if (isRunning.value && waiting > 0) return t('cards.team.activeWaitingOf', { active: activeAgentCount.value, total: totalAgentCount.value, waiting }, waiting);
   if (isRunning.value) return t('cards.team.activeOf', { active: activeAgentCount.value, total: totalAgentCount.value });
   return props.run.status === 'completed' ? t('cards.team.finished') : t('cards.team.stopped');
 });
@@ -51,7 +58,9 @@ const totalBilled = computed(() => teamDollarBilled(props.team.agents));
 const cardClass = computed(() => {
   switch (props.run.status) {
     case 'running':
-      return 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]';
+      return awaitingAgents.value.size > 0
+        ? 'border-[color-mix(in_srgb,var(--d-warning)_45%,var(--d-border))]'
+        : 'border-[color-mix(in_srgb,var(--d-accent)_35%,var(--d-border))]';
     case 'failed':
       return 'border-[color-mix(in_srgb,var(--d-danger)_45%,var(--d-border))]';
     default:
@@ -59,13 +68,13 @@ const cardClass = computed(() => {
   }
 });
 
-const chip = computed(() => agentStatusChip(props.run.status));
+const chip = computed(() => agentStatusChip(props.run.status, awaitingAgents.value.size > 0));
 
 const members = computed(() => props.team.agents.map((agent, index) => ({
   agent,
   color: getAgentColor(index),
   initial: agent.name.charAt(0).toUpperCase(),
-  chip: agentStatusChip(agent.status),
+  chip: agentStatusChip(agent.status, awaitingAgents.value.has(agent.agentId)),
 })));
 
 // The agent opens over its team, so Back returns to the team (Chat Panel.dc.html member chips).
@@ -110,7 +119,7 @@ function openMember(agentId: string): void {
         <component
           :is="chip.icon"
           class="size-2.75"
-          :class="chip.live && 'd-spinning'"
+          :class="[chip.live && 'd-spinning', chip.attention && 'd-pulsing']"
           aria-hidden="true"
         />{{ t(chip.labelKey) }}
       </span>
@@ -126,7 +135,7 @@ function openMember(agentId: string): void {
         type="button"
         class="flex h-6 items-center gap-1.5 rounded-full border border-(--d-border) bg-(--d-panel) pr-2 pl-1 text-11.5 transition-colors hover:border-(--d-border2)"
         :title="`${member.agent.name} · ${t(`overlays.team.role.${member.agent.role}`)} · ${t(member.chip.labelKey)}`"
-        :aria-label="t('cards.team.openAgent', { name: member.agent.name })"
+        :aria-label="t('cards.team.openAgentStatus', { name: member.agent.name, status: t(member.chip.labelKey) })"
         data-testid="team-card-member"
         @click.stop="openMember(member.agent.agentId)"
       >
@@ -140,7 +149,7 @@ function openMember(agentId: string): void {
         <component
           :is="member.chip.icon"
           class="size-2.75"
-          :class="[member.chip.color, isRunning && member.chip.live && 'd-spinning']"
+          :class="[member.chip.color, isRunning && member.chip.live && 'd-spinning', member.chip.attention && 'd-pulsing']"
           aria-hidden="true"
         />
       </button>

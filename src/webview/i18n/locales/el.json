@@ -384,7 +384,8 @@
       "badge": "Χωρίς επαναφορά",
       "reason": {
         "baselineTimeout": "Ένα εργαλείο που αλλάζει αρχεία εκτελέστηκε πριν είναι έτοιμο το checkpoint αυτού του γύρου.",
-        "baselineFailed": "Το checkpoint αυτού του γύρου δεν μπόρεσε να δημιουργηθεί."
+        "baselineFailed": "Το checkpoint αυτού του γύρου δεν μπόρεσε να δημιουργηθεί.",
+        "noProject": "Αυτή η συνομιλία δεν έχει φάκελο έργου, οπότε δεν δημιουργούνται checkpoints για τα αρχεία της. Μπορείτε ακόμα να διακλαδώσετε τη συνομιλία από εδώ."
       },
       "detail": {
         "baselineTimeout": "Το {tool} περίμενε {n} s το checkpoint αυτού του γύρου και εκτελέστηκε χωρίς αυτό.",
@@ -397,9 +398,13 @@
     "runCommandAgent": "Ο {agent} θέλει να εκτελέσει αυτή την εντολή:",
     "createFileAgent": "Ο {agent} θέλει να δημιουργήσει αυτό το αρχείο",
     "editFileAgent": "Ο {agent} θέλει να επεξεργαστεί",
+    "runCommandTeamAgent": "Ο πράκτορας {agent} της ομάδας {team} θέλει να εκτελέσει αυτή την εντολή:",
+    "createFileTeamAgent": "Ο πράκτορας {agent} της ομάδας {team} θέλει να δημιουργήσει αυτό το αρχείο",
+    "editFileTeamAgent": "Ο πράκτορας {agent} της ομάδας {team} θέλει να επεξεργαστεί",
     "generateImage": "Δημιουργία εικόνας και αποθήκευσή της σε αυτό το νέο αρχείο;",
     "useTool": "Να επιτραπεί το {tool} με αυτά τα δεδομένα;",
     "useToolAgent": "Ο {agent} θέλει να χρησιμοποιήσει το {tool} με αυτά τα δεδομένα:",
+    "useToolTeamAgent": "Ο πράκτορας {agent} της ομάδας {team} θέλει να χρησιμοποιήσει το {tool} με αυτά τα δεδομένα:",
     "imagePrompt": "Περιγραφή εικόνας",
     "imageModel": "Μοντέλο:",
     "imageBilled": "Χρεώνεται στο κλειδί σας OpenRouter.",
@@ -479,13 +484,6 @@
     "duration": "{seconds}δ",
     "tokens": "{n} tokens",
     "toolCalls": "{n} κλήση εργαλείου | {n} κλήσεις εργαλείων"
-  },
-  "task": {
-    "title": "Εργασίες",
-    "progress": "Ολοκληρωμένες: {done}, ανοιχτές: {open}",
-    "inProgress": "Σε εξέλιξη",
-    "blocked": "μπλοκάρεται από την εργασία {ids} | μπλοκάρεται από τις εργασίες {ids}",
-    "noTasks": "Χωρίς εργασίες"
   },
   "mcp": {
     "title": "Διακομιστές MCP",
@@ -704,7 +702,8 @@
       "weekly": "Εβδομαδιαία",
       "monthly": "Μηνιαία"
     },
-    "resetsIn": "Επαναφορά σε {time}",
+    "resetsAt": "Επαναφορά στις {time}",
+    "resetsOn": "Επαναφορά {day} στις {time}",
     "extraUsage": "Επιπλέον χρήση: {amount}",
     "credits": "Πιστώσεις: {amount}",
     "claudeNotConnected": "Συνδεθείτε με τη συνδρομή σας Claude στις Ρυθμίσεις για να δείτε τη χρήση",
@@ -1514,7 +1513,8 @@
       "other": "Οι ρυθμίσεις ενημερώθηκαν"
     },
     "responseTruncated": "Η απάντηση περικόπηκε: συμπληρώθηκε το μέγιστο πλήθος tokens εξόδου",
-    "rewindUndone": "Τα αρχεία επανήλθαν στην κατάσταση πριν από την επαναφορά"
+    "rewindUndone": "Τα αρχεία επανήλθαν στην κατάσταση πριν από την επαναφορά",
+    "promptsApproved": "Η λειτουργία «{approver}» ενέκρινε τα ανοιχτά αιτήματα για τα οποία δεν ρωτά πλέον"
   },
   "backgroundTask": {
     "title": "Εργασίες Παρασκηνίου",
@@ -1565,7 +1565,8 @@
       "cancelled": "Διακόπηκε",
       "awaiting-review": "Αναμονή ελέγχου",
       "standby": "Αναμονή",
-      "monitoring": "Παρακολούθηση"
+      "monitoring": "Παρακολούθηση",
+      "needsYou": "Σας χρειάζεται"
     },
     "tabs": {
       "agents": "Πράκτορες",
@@ -1580,13 +1581,6 @@
     },
     "indicator": {
       "label": "Ομάδα ({n})"
-    },
-    "permission": {
-      "request": "Αίτημα Άδειας",
-      "wantsToRun": "Ο πράκτορας {agent} θέλει να εκτελέσει",
-      "input": "Δεδομένα του {tool}",
-      "approve": "Έγκριση",
-      "deny": "Απόρριψη"
     },
     "scratchpad": {
       "empty": "Δεν υπάρχουν ακόμα εγγραφές σημειωματάριου"
@@ -1683,11 +1677,6 @@
     "toast": {
       "signedIn": "Συνδεθήκατε στο ChatGPT",
       "signInFailed": "Αποτυχία σύνδεσης στο ChatGPT: {error}"
-    },
-    "chip": {
-      "chatgpt": "ChatGPT",
-      "codex": "Codex",
-      "apiKey": "Κλειδί API OpenAI"
     }
   },
   "stepfun": {
@@ -2691,7 +2680,9 @@
       "label": "Ομάδα",
       "open": "Άνοιγμα ομάδας {name}",
       "openAgent": "Άνοιγμα πράκτορα {name}",
+      "openAgentStatus": "Άνοιγμα πράκτορα {name}, {status}",
       "activeOf": "{active} από {total} ενεργοί",
+      "activeWaitingOf": "{active} από {total} ενεργοί, {waiting} σας χρειάζεται | {active} από {total} ενεργοί, {waiting} σας χρειάζονται",
       "finished": "ολοκληρώθηκε",
       "stopped": "σταμάτησε"
     },
@@ -2733,12 +2724,6 @@
     "statusWaiting": "Περιμένει την απάντησή σας",
     "statusWorking": "Σε εξέλιξη",
     "branch": "Κλάδος: {branch}",
-    "accountChip": "Χρέωση μέσω: {source}",
-    "account": {
-      "apikey": "Κλειδί API",
-      "allowance": "Συνδρομή",
-      "extra": "Επιπλέον χρήση"
-    },
     "promptNavigator": "Πλοηγός προτροπών ({key})",
     "promptCount": "{n} προτροπή | {n} προτροπές",
     "consolidation": "Ενοποίηση μνήμης",

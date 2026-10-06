@@ -219,6 +219,11 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
       }
     });
 
+    // A `tool_call` handler of another extension can block a call this gate allowed, so pi never executes it.
+    pi.on('tool_execution_end', (event) => {
+      ctx.shellCancel.releaseAdmitted(event.toolCallId);
+    });
+
     if (ctx.hooks) registerSubagentHooks(pi, ctx, ctx.hooks, preToolUseContextStash);
   };
 }

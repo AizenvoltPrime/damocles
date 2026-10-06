@@ -5,7 +5,7 @@ import { activeChat, expect, nextChat, test } from './support/fixtures';
 import { hermeticEnv, seedStubModel, writeUserSettings, type HermeticHome } from './support/hermetic';
 import { startOpenAIStub, STUB_MODEL_ID } from './support/openai-stub';
 import { SecondProcess } from './support/second-process';
-import { recordedToasts, recordToasts, shellState } from './support/shell';
+import { answerToast, recordedToasts, recordToasts, shellState, type RecordedNotice } from './support/shell';
 import { chatRow, clickChat, listChats, readyShell } from './support/shell-ui';
 import {
   addProject,
@@ -15,8 +15,9 @@ import {
   recordHostMessages,
 } from './support/ui';
 
-// Refusal text from src/core/chat-panel/session-ownership.ts.
-const HELD_ELSEWHERE = 'This conversation is open in another Damocles window.';
+// Refusal text and action from src/core/chat-panel/session-ownership.ts, offered while a live holder can be asked to let go.
+const HELD_ELSEWHERE = 'This conversation is open in another Damocles window. Opening it here closes it there and stops any turn running in it.';
+const OPEN_HERE = 'Open here';
 // proper-lockfile stale threshold of the session lease (src/core/pi-session/session-store/session-lease.ts).
 const LEASE_STALE_MS = 20_000;
 
@@ -30,9 +31,15 @@ async function openProjectChat(app: ElectronApplication, project: string): Promi
   return tab;
 }
 
-// The refusal is a non-modal notice, which desktop shows as a toast in the overlay.
+// The refusal is a non-modal notice, which desktop shows as a toast in the popup window.
+async function refusalToasts(app: ElectronApplication): Promise<RecordedNotice[]> {
+  return (await recordedToasts(app)).filter((toast) => toast.message === HELD_ELSEWHERE);
+}
+
 async function refusals(app: ElectronApplication): Promise<number> {
-  return (await recordedToasts(app)).filter((toast) => toast.message === HELD_ELSEWHERE).length;
+  const toasts = await refusalToasts(app);
+  for (const toast of toasts) expect(toast.actions).toEqual([OPEN_HERE]);
+  return toasts.length;
 }
 
 function leaseFile(home: HermeticHome, sessionId: string): string {
@@ -93,7 +100,7 @@ test.describe('same folder in two processes', () => {
     }
   });
 
-  test('a chat the other process holds is refused from the sidebar with a toast, and the selection does not move', async ({ home, launch }) => {
+  test('a chat the other process holds is refused from the sidebar with a toast, and the selection does not move until Open here takes it over', async ({ home, launch }) => {
     test.setTimeout(180_000);
     const stub = await startOpenAIStub();
     seedStubModel(home, stub.baseUrl);
@@ -118,6 +125,13 @@ test.describe('same folder in two processes', () => {
       expect(await shell.evaluate((id) => window.damoclesShell!.selectChat(id), held)).toEqual({ ok: false, reason: 'leased' });
       await expect.poll(() => refusals(app)).toBe(2);
       expect((await shellState(app)).selected).toEqual(before.selected);
+
+      // Open here asks the holder to let go, then opens the conversation in this window.
+      await answerToast(app, (await refusalToasts(app)).at(-1)!.id, OPEN_HERE);
+      await expect(chatRow(shell, held)).toHaveAttribute('aria-selected', 'true');
+      await expect((await activeChat(app)).getByText('Echo: held by the other process', { exact: true })).toBeVisible();
+      expect(fs.existsSync(leaseFile(home, held))).toBe(true);
+      expect(await refusals(app)).toBe(2);
     } finally {
       await other.dispose();
       await stub.close();

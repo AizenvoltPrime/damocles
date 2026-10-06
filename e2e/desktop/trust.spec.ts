@@ -5,7 +5,7 @@ import { activeChat, expect, test } from './support/fixtures';
 import { shellState } from './support/shell';
 import { seedStubModel } from './support/hermetic';
 import { chatRequests, startOpenAIStub, type OpenAIStub } from './support/openai-stub';
-import { addProject, answerMessageBoxes, chatInput, messageBoxes, postFromWebview, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
+import { addProject, answerDialogs, chatInput, askedDialogs, postFromWebview, sendAndAwaitEcho, TRUST_PROMPT } from './support/ui';
 
 // Project instructions (AGENTS.md) are project-scope input; the system prompt sent to the stub shows whether they loaded.
 const MARKER = 'PROJECT-SCOPE-MARKER-7c1e';
@@ -42,14 +42,14 @@ test('trust per folder: untrusted loads no project input, granting applies live,
     await expect(chatInput(await activeChat(desktop.app))).toBeVisible();
 
     const alpha = await openProjectChat(desktop.app, home.project, false);
-    expect((await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(1);
+    expect((await askedDialogs(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(1);
     expect(trustedFolders()).toEqual([]);
 
     await sendAndAwaitEcho(alpha, 'untrusted turn');
     expect(requestFor(stub, 'untrusted turn')).not.toContain(MARKER);
 
     // The webview's Trust control posts this message; the host answers with its trust prompt.
-    await answerMessageBoxes(desktop.app, { [TRUST_PROMPT]: 'Trust Folder' });
+    await answerDialogs(desktop.app, { [TRUST_PROMPT]: 'Trust Folder' });
     await postFromWebview(alpha, { type: 'setProjectTrusted' });
     await expect.poll(trustedFolders).toEqual([home.project]);
     // The grant reloads the folder asynchronously; each probe is a full turn, so polling never races a send.
@@ -63,17 +63,17 @@ test('trust per folder: untrusted loads no project input, granting applies live,
     const alphaChatId = (await shellState(desktop.app)).selected.chatId;
     await desktop.close();
     desktop = await launch();
-    await answerMessageBoxes(desktop.app);
+    await answerDialogs(desktop.app);
     // The selected chat comes back selected, resumed from its session file.
     await expect.poll(async () => (await shellState(desktop.app)).selected.chatId).toBe(alphaChatId);
     const restored = await activeChat(desktop.app);
     await expect(chatInput(restored)).toBeVisible();
     await sendAndAwaitEcho(restored, 'after restart');
     expect(requestFor(stub, 'after restart')).toContain(MARKER);
-    expect((await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(0);
+    expect((await askedDialogs(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT))).toHaveLength(0);
 
     const subTab = await openProjectChat(desktop.app, sub, false);
-    const prompts = (await messageBoxes(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT));
+    const prompts = (await askedDialogs(desktop.app)).filter((b) => b.message.startsWith(TRUST_PROMPT));
     expect(prompts.map((b) => b.message)).toEqual([`${TRUST_PROMPT} ${sub}?`]);
     await sendAndAwaitEcho(subTab, 'subfolder turn');
     // A trusted ancestor's AGENTS.md reaches a trusted child through pi's ancestor walk, so its absence proves the child is untrusted.

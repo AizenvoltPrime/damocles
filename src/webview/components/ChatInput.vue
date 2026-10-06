@@ -419,9 +419,7 @@ function handleKeydown(event: KeyboardEvent) {
   // Only a bare Shift+Tab cycles the mode; Ctrl/Cmd/Alt+Shift+Tab belong to the host (previous tab or editor).
   if (event.key === "Tab" && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
-    if (!props.isProcessing) {
-      cycleMode();
-    }
+    cycleMode();
     return;
   }
 
@@ -604,7 +602,6 @@ onUnmounted(() => {
           type="button"
           class="d-press flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-(--d-border2) py-0 ps-0.75 pe-2.5 text-xs font-medium transition-colors duration-200 hover:bg-(--d-hover) @max-[28.75rem]:pe-0.75"
           :class="currentModeConfig.color"
-          :disabled="isProcessing"
           :title="t('composer.modeCycle', { mode: currentModeConfig.label })"
           :aria-label="t('composer.modeCycle', { mode: currentModeConfig.label })"
           data-testid="composer-mode"
@@ -647,7 +644,6 @@ onUnmounted(() => {
           :class="dangerouslySkipPermissions
             ? 'bg-[color-mix(in_srgb,var(--d-danger)_14%,transparent)] text-(--d-danger-text)'
             : 'text-(--d-muted) hover:bg-(--d-hover) hover:text-(--d-text)'"
-          :disabled="isProcessing"
           :aria-pressed="dangerouslySkipPermissions"
           :title="t('chatInput.yolo.tooltip')"
           data-testid="composer-yolo"

@@ -6,6 +6,7 @@ import { POLICY_BLOCK_MARKER } from '../../../../shared/types/constants';
 import type { PermissionHandler, PermissionResult } from '../../../permission-handler';
 import { createSubagentExtensionFactory } from '../subagent-extension-factory';
 import { isPlanFilePath } from '../../../paths';
+import { ShellCancelStore } from '../../tools/shell-cancel-registry';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
   return { type: 'tool_call', toolName, toolCallId, input } as unknown as ToolCallEvent;
@@ -14,8 +15,9 @@ function ev(toolName: string, toolCallId: string, input: Record<string, unknown>
 function makeGate(plan: boolean) {
   const canUseTool = vi.fn<PermissionHandler['canUseTool']>(async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} }));
   const ctx: GatePermissionContext = {
-    permissionHandler: { canUseTool, evaluatePermission: vi.fn(async () => 'allow' as const), matchRule: vi.fn(async () => null), isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
+    permissionHandler: { canUseTool, decide: vi.fn(() => 'allow' as const), matchRule: vi.fn(async () => null), isPlanFile: isPlanFilePath } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => plan,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
   };
   return { ctx, canUseTool };
 }
@@ -80,5 +82,24 @@ describe('nested agents and the parent turn checkpoint', () => {
     releaseBaseline();
     await edit;
     expect(waited).toEqual(['Edit']);
+  });
+});
+
+describe('nested shell cancel entries', () => {
+  it('drops the entry of a shell call that ends without executing, as when another extension blocks it', async () => {
+    const store = new ShellCancelStore();
+    const shellCancel = store.forContext(() => undefined);
+    const admit = vi.spyOn(shellCancel, 'admit');
+    const handlers: Record<string, (event: unknown, hookCtx: unknown) => unknown> = {};
+    createSubagentExtensionFactory({ ...makeGate(false).ctx, shellCancel, parentToolUseId: 'agent-parent-1', deferrableToolNames: [] })(
+      { on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; } } as never,
+    );
+    const hookCtx = { signal: undefined, sessionManager: { getSessionId: () => 'nested' } };
+
+    expect(await handlers['tool_call']!(ev('bash', 'b1', { command: 'make' }), hookCtx)).toBeUndefined();
+    expect(admit).toHaveLastReturnedWith(expect.any(AbortSignal));
+    handlers['tool_execution_end']!({ type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash', result: { content: [] }, isError: true }, hookCtx);
+
+    expect(store.cancel('b1')).toBe(false);
   });
 });

@@ -732,7 +732,12 @@
       "damocles.desktop.notifications.enabled": {
         "type": "boolean",
         "default": true,
-        "description": "Also show each in-app notification as an operating system notification while the window is not focused."
+        "description": "Show pop-ups when a chat needs you (an approval, a plan, a question, a team review, a finished, paused or limited chat) at the bottom-right of the screen, above other apps. When off, they still collect in the notification center."
+      },
+      "damocles.desktop.notifications.sound": {
+        "type": "boolean",
+        "default": true,
+        "description": "Play a short sound with each desktop pop-up."
       },
       "permissions": {
         "type": "object",
@@ -1479,7 +1484,13 @@
         "not": {},
         "errorMessage": "damocles.desktop.notifications.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
         "doNotSuggest": true,
-        "description": "damocles.desktop.notifications.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nAlso show each in-app notification as an operating system notification while the window is not focused."
+        "description": "damocles.desktop.notifications.enabled applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nShow pop-ups when a chat needs you (an approval, a plan, a question, a team review, a finished, paused or limited chat) at the bottom-right of the screen, above other apps. When off, they still collect in the notification center."
+      },
+      "damocles.desktop.notifications.sound": {
+        "not": {},
+        "errorMessage": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.",
+        "doNotSuggest": true,
+        "description": "damocles.desktop.notifications.sound applies from user settings only (~/.damocles/settings.json); a project or local settings file cannot set it.\n\nPlay a short sound with each desktop pop-up."
       },
       "permissions": {
         "type": "object",

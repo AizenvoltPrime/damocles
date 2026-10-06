@@ -1,19 +1,24 @@
 /**
  * plan-mode-guidance.ts: single source of truth for the plan-mode directive.
  *
- * Imports only leaf text modules, never a pi-session module with behavior, so both consumers can share
+ * Imports only leaf text modules, never a pi-session module with behavior, so every consumer can share
  * it without an `agent-start ↔ tools/` import cycle:
  *  - `agent-start.ts` appends it to the system prompt when a turn STARTS in plan mode (the path is
  *    known, so it is named concretely).
  *  - `tools/plan-mode-tools.ts` returns it as the `EnterPlanMode` tool result when the model enters
  *    plan mode MID-turn (that turn's system prompt predates plan mode, so the tool result is the only
  *    guidance the model gets this turn).
+ *  - `plan-mode-change.ts` carries it to a model that was not told the user switched into plan mode:
+ *    at a later step of a running turn, at the next prompt start, or ahead of a plan-mode nudge.
  *
- * Both paths emit identical guidance; only the plan-file clause differs by whether the path is known.
+ * Every path emits identical guidance; only the plan-file clause differs by whether the path is known.
  * The text is cache-stable per session (no per-turn-varying content beyond the plan path).
  */
 
 import { mechanismRecordRule, sliceMechanismRungs } from './delivery-mechanisms';
+
+/** The system-prompt section that carries the guidance while a prompt starts in plan mode. */
+export const PLAN_MODE_SECTION = 'damocles_plan_mode';
 
 /**
  * Build the adaptive plan-mode guidance. When `planFilePath` is provided it is named concretely;

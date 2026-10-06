@@ -8,6 +8,7 @@ import {
   dollarBilled,
   modelDollarBilled,
   piModelDollarBilled,
+  subscriptionProvider,
   type AccountBillingDeps,
   type ModelBillingDeps,
 } from '../account-billing';
@@ -95,24 +96,23 @@ describe('apiKeySource', () => {
 });
 
 describe('buildAccountInfo', () => {
-  it('openai backend sets tokenSource, no subscriptionType', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'gpt-6.1-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, chatgpt: false, codex: false } }));
-    expect(info).toEqual({ model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true });
+  it('carries the model and whether its credential is dollar-metered', () => {
+    expect(buildAccountInfo(deps({ modelValue: 'gpt-6.1-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, chatgpt: false, codex: false } }))).toEqual({ model: 'gpt-6.1-sol', dollarBilled: true });
+    expect(buildAccountInfo(deps({ modelValue: 'deepseek-v4-pro', modelInfo: deepseekModel }))).toEqual({ model: 'deepseek-v4-pro', dollarBilled: true });
+    expect(buildAccountInfo(deps({ modelValue: 'claude-opus-4-8', modelInfo: anthropicModel, claudeAuthMode: 'allowance' }))).toEqual({ model: 'claude-opus-4-8', dollarBilled: false });
+    expect(buildAccountInfo(deps({ modelValue: 'mystery', modelInfo: undefined, claudeAuthMode: 'extra' }))).toEqual({ model: 'mystery', dollarBilled: true });
   });
+});
 
-  it('piProvider model sets tokenSource = provider id (no Claude chip)', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'deepseek-v4-pro', modelInfo: deepseekModel }));
-    expect(info).toEqual({ model: 'deepseek-v4-pro', tokenSource: 'deepseek', dollarBilled: true });
-  });
-
-  it('anthropic model sets subscriptionType = Claude auth mode', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'claude-opus-4-8', modelInfo: anthropicModel, claudeAuthMode: 'allowance' }));
-    expect(info).toEqual({ model: 'claude-opus-4-8', subscriptionType: 'allowance', dollarBilled: false });
-  });
-
-  it('undefined modelInfo falls to the Claude subscription chip (no backend/piProvider)', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'mystery', modelInfo: undefined, claudeAuthMode: 'extra' }));
-    expect(info).toEqual({ model: 'mystery', subscriptionType: 'extra', dollarBilled: true });
+describe('subscriptionProvider', () => {
+  it('names the subscription the active credential bills, and none for a key or a custom provider', () => {
+    const chatgpt = { apiKey: true, chatgpt: true, codex: false };
+    expect(subscriptionProvider(deps({ claudeAuthMode: 'allowance' }))).toBe('anthropic');
+    expect(subscriptionProvider(deps({ claudeAuthMode: 'extra' }))).toBe('anthropic');
+    expect(subscriptionProvider(deps({ claudeAuthMode: 'apikey' }))).toBeUndefined();
+    expect(subscriptionProvider(deps({ modelInfo: openaiModel, openaiAuthStatus: chatgpt }))).toBe('openai');
+    expect(subscriptionProvider(deps({ modelInfo: openaiModel, openaiAuthStatus: chatgpt, preferApiKey: true }))).toBeUndefined();
+    expect(subscriptionProvider(deps({ modelInfo: stepfunModel }))).toBeUndefined();
   });
 });
 

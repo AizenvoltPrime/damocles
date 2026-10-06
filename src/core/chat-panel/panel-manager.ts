@@ -15,7 +15,8 @@ import type { PromptTarget } from "./webview-prompts";
 import { claimStoredSession } from "./session-ownership";
 import { settingsFolderOf, type FolderChange, type FolderTarget, type WorkspaceFolderRegistry } from "../workspace-folders/folder-registry";
 import { HOST_THEME_STYLE_ID } from "../../shared/host-theme";
-import { PanelActivity, type PanelActivityListener, type PanelTurnSettledListener } from "./activity";
+import { PanelActivity, type PanelActivityListener, type PanelTurnSettledListener, type UsageThresholdListener } from "./activity";
+import type { UsageThresholdCrossing } from "../pi-session/usage-thresholds";
 import { SETTINGS_VIEW_MESSAGE_TYPES, SETTINGS_VIEW_REQUEST_TYPES } from "../../shared/settings-view-messages";
 
 /** Why a panel changes folder. Only `'user'` asks before discarding a conversation. */
@@ -166,6 +167,16 @@ export class PanelManager {
 
   onTurnSettled(listener: PanelTurnSettledListener): Disposable {
     return this.activity.onTurnSettled(listener);
+  }
+
+  /** A subscription usage window crossed 80% or 95%; process-wide, not tied to a panel. */
+  onUsageThreshold(listener: UsageThresholdListener): Disposable {
+    return this.activity.onUsageThreshold(listener);
+  }
+
+  /** Reports a crossing the runtime's `UsageMonitor` raised to every `onUsageThreshold` listener. */
+  usageThresholdCrossed(crossing: UsageThresholdCrossing): void {
+    this.activity.usageThresholdCrossed(crossing);
   }
 
   /** The stored session whose file the panel is on or is about to open; undefined while none exists. */
@@ -405,6 +416,7 @@ export class PanelManager {
       host,
       session,
       folder,
+      panelToken: null,
       permissionHandler,
       ideContextManager,
       disposables,
@@ -521,6 +533,8 @@ export class PanelManager {
   /** The plan-mode hook and the activity forwarding drive the session they were bound with, so both are re-bound whenever the session is replaced. */
   private bindSessionCallbacks(panelId: string, instance: HostInstance): void {
     const { session, host, permissionHandler } = instance;
+    // A session that replaced another (a folder switch, a recovery) names the same panel in its lease owner records.
+    session.setPanelToken(instance.panelToken);
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
       await this.sendCurrentSettings(host, permissionHandler, instance.folder);

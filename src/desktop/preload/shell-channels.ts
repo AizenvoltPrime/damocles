@@ -1,6 +1,7 @@
 // Shared by the shell preload, main and (as types only) the shell app; the shell never sees panel channels.
 
 import type { OverlayAnswer, OverlayRequest } from './overlay-channels';
+import type { NotificationBell } from './notifications';
 import type { SettingsSectionId } from '../../shared/settings-sections';
 
 export const SHELL_CHANNELS = {
@@ -131,6 +132,7 @@ export interface ShellState {
   readonly paneShortcutLabel: string;
   // display labels of menu accelerators, e.g. "Ctrl+N"
   readonly shortcuts: { readonly newChat: string; readonly toggleSidebar: string; readonly settings: string };
+  readonly notifications: NotificationBell;
 }
 
 // CSS px relative to the window's content area; main scales by the shell's zoom factor.

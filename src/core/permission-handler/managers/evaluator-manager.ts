@@ -120,14 +120,21 @@ export class EvaluatorManager {
     workspacePath: string | null,
     mcpTool?: McpToolIdentity,
   ): Promise<PermissionBehavior> {
+    return this.decide(toolName, input, await this.matchRule(toolName, input, workspacePath, mcpTool));
+  }
+
+  /**
+   * The verdict on a call under the current mode and YOLO, given `rule`, the settings rule it matches
+   * (`matchRule`). Synchronous, so an open prompt can be decided again the moment the mode changes.
+   */
+  decide(toolName: string, input: Record<string, unknown>, rule: PermissionBehavior | null): PermissionBehavior {
     if (this.state.dangerouslySkipPermissions) {
       return 'allow';
     }
 
     // A matching rule decides before any mode or tool default, so an ask rule prompts even for a read.
-    const patternResult = await this.matchRule(toolName, input, workspacePath, mcpTool);
-    if (patternResult) {
-      return patternResult;
+    if (rule) {
+      return rule;
     }
 
     if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && this.isPlanFile(typeof input['file_path'] === 'string' ? input['file_path'] : '')) {

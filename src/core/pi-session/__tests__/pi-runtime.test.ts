@@ -64,6 +64,23 @@ describe('PiRuntime singleton (B1)', () => {
     runtime.unregisterSessionMutator('sess-x', newer);
     expect(runtime.getSessionMutator('sess-x')).toBeUndefined();
   });
+
+  it('a usage threshold listener that throws leaves the others notified', () => {
+    const runtime = PiRuntime.get();
+    const heard = vi.fn();
+    const stopThrowing = PiRuntime.onUsageThreshold(() => {
+      throw new Error('listener failed');
+    });
+    const stopHeard = PiRuntime.onUsageThreshold(heard);
+    const crossing = { provider: 'anthropic', windowId: 'five_hour', windowLabel: 'Session (5hr)', threshold: 80, utilization: 81 } as const;
+    try {
+      (runtime.usage as unknown as { deps: { onCrossing(c: typeof crossing): void } }).deps.onCrossing(crossing);
+      expect(heard).toHaveBeenCalledWith(crossing);
+    } finally {
+      stopThrowing();
+      stopHeard();
+    }
+  });
 });
 
 /**

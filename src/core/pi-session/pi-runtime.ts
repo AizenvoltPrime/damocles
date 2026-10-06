@@ -55,6 +55,8 @@ import type { Platform } from '../../platform/platform';
 import type { Disposable } from '../../platform/disposable';
 import type { FileWatcher } from '../../platform/file-watcher';
 import { IMAGE_SETTINGS_SECTION } from './tools/image-tool-specs';
+import { fetchSubscriptionUsage } from './subscription-usage';
+import { UsageMonitor, type UsageThresholdCrossing } from './usage-thresholds';
 
 /**
  * How long the custom-provider credential sync may block before it is cancelled. The sync is offline
@@ -73,6 +75,7 @@ function notifyMemoryJudgeListeners(): void {
   for (const listener of memoryJudgeListeners) listener();
 }
 const authFileListeners = new Set<() => void>();
+const usageThresholdListeners = new Set<(crossing: UsageThresholdCrossing) => void>();
 
 /** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
  *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
@@ -239,6 +242,21 @@ export class PiRuntime {
   private readonly _syncAbort = new AbortController();
   private readonly _classifierBreakers = createClassifierBreakers();
   private _disposed = false;
+  /** The subscription usage refresh, its threshold crossings and the full window a rate limit names, shared by every session. */
+  readonly usage: UsageMonitor = new UsageMonitor({
+    fetchUsage: () => fetchSubscriptionUsage(this),
+    now: () => Date.now(),
+    onCrossing: (crossing) => {
+      if (this._disposed) return;
+      for (const listener of [...usageThresholdListeners]) {
+        try {
+          listener(crossing);
+        } catch (err) {
+          log('[PiRuntime] usage threshold listener failed: %O', err);
+        }
+      }
+    },
+  });
 
   private constructor(agentDir: string) {
     if (PiRuntime._instance) {
@@ -271,11 +289,19 @@ export class PiRuntime {
     return PiRuntime._instance !== null;
   }
 
-  /** Fires after auth.json changed outside a sign-in Damocles ran and the account chips were republished. Subscribing does not create the singleton. */
+  /** Fires after auth.json changed outside a sign-in Damocles ran and the account state was republished. Subscribing does not create the singleton. */
   static onAuthFileChange(listener: () => void): () => void {
     authFileListeners.add(listener);
     return () => {
       authFileListeners.delete(listener);
+    };
+  }
+
+  /** Fires when a subscription usage window crosses a threshold. Subscribing does not create the singleton. */
+  static onUsageThreshold(listener: (crossing: UsageThresholdCrossing) => void): () => void {
+    usageThresholdListeners.add(listener);
+    return () => {
+      usageThresholdListeners.delete(listener);
     };
   }
 
@@ -521,7 +547,7 @@ export class PiRuntime {
   }
 
   /**
-   * Re-sync the OpenAI runtime key and republish every live session's account chip when auth.json
+   * Re-sync the OpenAI runtime key and republish every live session's account state when auth.json
    * changes: a login or logout in another Damocles app or a pi CLI, or a token refresh anywhere, lands
    * only in that file.
    */
@@ -544,9 +570,10 @@ export class PiRuntime {
 
   /**
    * Republishes before the sync, which can wait behind a pending ChatGPT sign-in on the credential chain, and
-   * again after it. A failed sync is logged and the chip still republishes, so it shows the state the sync left.
+   * again after it. A failed sync is logged and the account state still republishes, so it shows the state the sync left.
    */
   private async _resyncOpenAIAndRepublish(reason: string): Promise<void> {
+    this.usage.credentialsChanged();
     this._publishAccountInfoToSessions();
     try {
       await this.syncOpenAIRuntimeKey();

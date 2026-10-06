@@ -9,7 +9,7 @@ import type {
   McpWriteErrorInfo,
 } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
-import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
+import type { Question, PermissionUpdate, QuestionAnnotations, PromptOwner, PendingPromptOwner, PromptApprover } from './permissions';
 import type { FormSchema, FormValues } from './forms';
 import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, CacheWarmingMode, EffortLevel, PanelThinkingState, TeamRole, MemoryJudge, ImageGenerationSettings } from './settings';
 import type {
@@ -65,11 +65,9 @@ export type WebviewToExtensionMessage =
       toolUseId: string;
       approved: boolean;
       customMessage?: string;
-      acceptAll?: boolean;
-      parentToolUseId?: string;
       updatedPermissions?: PermissionUpdate[];
     }
-  | { type: "ready"; savedSessionId?: string; savedWorkspaceFolderKey?: string }
+  | { type: "ready"; panelToken: string; savedSessionId?: string; savedWorkspaceFolderKey?: string }
   | { type: "setActiveModel"; model: string }
   | { type: "setDefaultModel"; model: string }
   | { type: "setPanelWorkspaceFolder"; folderKey: string }
@@ -254,7 +252,6 @@ export type WebviewToExtensionMessage =
   | { type: "cancelTeam"; teamId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
   | { type: "requestToolResultImages"; requestId: string; toolUseId: string; owner: ToolResultOwner }
-  | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' }
   | { type: "requestCompassReindex" }
   | { type: "compassSearch"; query: string; kind?: CompassNodeKind; limit?: number }
   | { type: "compassRequestGraph"; communityId?: number; maxNodes?: number }
@@ -406,6 +403,12 @@ export interface ExtensionUiItem {
   detail?: string;
 }
 
+/** The prompt card a notification's action focuses. */
+export type AttentionKind = 'approval' | 'plan' | 'question';
+
+/** A desktop command that opens part of a chat's UI (AD11). */
+export type ChatCommand = 'subscriptionUsage';
+
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
@@ -532,14 +535,19 @@ export type ExtensionToWebviewMessage =
       prompt?: string;
       /** GenerateImage only: the OpenRouter image model the call is billed for. */
       imageModel?: string;
+      /** The transcript that holds the call's card; a team agent's card is in the team view, which takes no prompt status. */
+      owner: PromptOwner;
       parentToolUseId?: string | null;
       editLineNumber?: number;
       suggestions?: PermissionUpdate[];
       blockedPath?: string;
       decisionReason?: string;
     }
-  /** `withdrawn`: an abort ended the prompt unanswered; the tool's own lifecycle sets the card's status. */
-  | { type: "permissionAutoResolved"; toolUseId: string; outcome: "approved" | "withdrawn"; parentToolUseId?: string | null }
+  /**
+   * The prompt closed without the user's answer: an abort ended it, or `approvedBy`, the permission state
+   * it no longer asks under, approved it. The tool's own lifecycle sets the card's status.
+   */
+  | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null; approvedBy?: PromptApprover }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
   | { type: "steerTargets"; agents: SteerTargetInfo[] }
   | { type: "customAgents"; agents: CustomAgentInfo[] }
@@ -563,13 +571,16 @@ export type ExtensionToWebviewMessage =
   | { type: "toolStatus"; data: ToolsSnapshot }
   | { type: "imageGenerationSettings"; settings: ImageGenerationSettings }
   | { type: "projectTrust"; trusted: boolean }
-  | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }
-  | { type: "requestForm"; toolUseId: string; form: FormSchema; parentToolUseId?: string | null }
+  | { type: "requestQuestion"; toolUseId: string; questions: Question[]; owner: PromptOwner; parentToolUseId?: string | null }
+  | { type: "requestForm"; toolUseId: string; form: FormSchema; owner: PromptOwner; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
   | {
       type: "requestPlanApproval";
       toolUseId: string;
       planContent: string;
+      /** The call's plan version, as its result records it under `PLAN_VERSION_DETAIL_KEY`. */
+      planVersion?: number;
+      owner: PromptOwner;
       parentToolUseId?: string | null;
     }
   | {
@@ -577,6 +588,7 @@ export type ExtensionToWebviewMessage =
       toolUseId: string;
       skillName: string;
       skillDescription?: string;
+      owner: PromptOwner;
       parentToolUseId?: string | null;
     }
   | {
@@ -699,8 +711,13 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean; imageCount?: number; metadata?: Record<string, unknown> }
   | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentHistoryMessage[] }
-  | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
-  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string }
+  /** `pendingPrompts` is every unanswered prompt with its owner, in the order raised; non-empty exactly when `state` is `requires_action`. */
+  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string; pendingPrompts: readonly PendingPromptOwner[] }
+  // The user chose a notification's action: focus that prompt's card (a user action, so it takes focus).
+  | { type: "focusAttention"; kind: AttentionKind }
+  | { type: "openTeamOverlay"; teamId: string }
+  // A desktop command for this chat's UI (AD11); the only path from a command to a chat.
+  | { type: "runChatCommand"; command: ChatCommand }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
   | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize'; label?: string }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }

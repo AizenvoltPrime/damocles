@@ -53,6 +53,7 @@ import type { MemoryInjectionDisplay } from '../../../shared/types/context-injec
 import type { ContextInjectionDetailsV1 } from '../../memory/injection/details';
 import type { InjectionBuildResult } from '../../memory/managers/injection-manager';
 import { formatIdeContextBlock } from '../../../shared/ide-context';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
 
 /** The opening of the execution-time plan directive, used for both its presence and its absence. */
 const PLAN_EXECUTION_MARKER = 'treat the delivery mechanism it assigns each slice as the default';
@@ -187,6 +188,7 @@ function makePanel(opts: {
   const panel: PanelGateContext = {
     permissionHandler: {} as PanelGateContext['permissionHandler'],
     isPlanMode: () => Boolean(opts.plan),
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     budgetStopRequested: () => false,
     ...(memoryService ? { memoryService } : {}),
     ...(compassService ? { compassService } : {}),

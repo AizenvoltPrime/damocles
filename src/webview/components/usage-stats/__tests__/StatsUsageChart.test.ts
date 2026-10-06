@@ -164,7 +164,7 @@ describe('StatsUsageChart', () => {
     await mountChart();
     expect(tooltipHtml(1)).not.toContain('est.');
 
-    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', subscriptionType: 'allowance', dollarBilled: false });
+    useSettingsStore().setAccountInfo({ model: 'claude-opus-5-5', dollarBilled: false });
     await nextTick();
 
     expect(tooltipHtml(1)).toContain('~$1.10 est.');

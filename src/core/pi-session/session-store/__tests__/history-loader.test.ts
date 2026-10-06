@@ -335,6 +335,16 @@ describe('loadPiSessionHistory — rewindable ids', () => {
     expect(posts.find((m) => m.type === 'checkpointInfo')).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1', 'u2'] });
   });
 
+  it('with no file checkpoints, resolves to every prompt on the branch, checkpointed or not, and posts them', async () => {
+    hoisted.branch = [userMsg('u1', 'one'), assistantMsg('a1', 'r1'), checkpoint('u1', 1), userMsg('u2', 'two'), assistantMsg('a2', 'r2')];
+    const posts: ExtensionToWebviewMessage[] = [];
+
+    const ids = await loadPiSessionHistory('/cwd', 'sess-home', (m) => posts.push(m), undefined, undefined, false);
+
+    expect(ids).toEqual(['u1', 'u2']);
+    expect(posts.find((m) => m.type === 'checkpointInfo')).toEqual({ type: 'checkpointInfo', userMessageIds: ['u1', 'u2'] });
+  });
+
   it('a replay superseded while it resolved the file posts no error and no done', async () => {
     const controller = new AbortController();
     vi.mocked(resolvePiSessionFile).mockImplementationOnce(async () => {

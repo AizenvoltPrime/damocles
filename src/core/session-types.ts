@@ -28,6 +28,8 @@ export interface SessionOptions {
   cwd: string;
   /** The folder the chat's per-chat settings are read for; undefined on the home target, which reads user settings. */
   settingsFolder: SettingsFolder | undefined;
+  /** `FolderTarget.projectScope`: false on the home target, whose chat takes no checkpoints. */
+  projectScope: boolean;
   platform: Platform;
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;

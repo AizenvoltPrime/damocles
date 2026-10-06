@@ -22,6 +22,7 @@ import { createInputHandlers } from "./handlers/input-handlers";
 import { createExploreHandlers } from "./handlers/explore-handlers";
 import { createConsolidationHandlers } from "./handlers/consolidation-handlers";
 import { createEditorHandlers } from "./handlers/editor-handlers";
+import { createAttentionHandlers } from "./handlers/attention-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   // The settings view's handlers come first: a chat handler that extends one of them (workspaceFolderUpdate) overrides it.
@@ -49,5 +50,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createExploreHandlers(),
     ...createConsolidationHandlers(),
     ...createEditorHandlers(),
+    ...createAttentionHandlers(),
   };
 }

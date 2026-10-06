@@ -5,9 +5,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { Type } from 'typebox';
 import type { BashOperations, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
-import { withPerCallCancel } from './cancellable-shell';
 import { createShellJob, killProcessTree, type ShellSessionJob } from './process-tree';
-import type { ShellCancelRegistry } from './shell-cancel-registry';
 
 /** pi's own ceiling, mirrored because `resolveTimeoutMs` is internal to its bash tool. */
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -27,7 +25,6 @@ type AnyToolDefinition = ToolDefinition<any, any, any>;
 export interface BashToolDeps {
   /** Read per call, so a settings edit takes effect without reloading the window. */
   getShellOptions: () => ShellOptions;
-  cancelRegistry: ShellCancelRegistry;
   /** The panel-lived job every shell call nests inside; `undefined` off win32. */
   shellJob: ShellSessionJob | undefined;
 }
@@ -233,8 +230,8 @@ export function createTrackedBashOperations(
 }
 
 /**
- * The `bash` replacement, which exists to own a per-call `AbortController` and the spawned shell's
- * process lifetime. pi's own bash definition is kept underneath and does all the rest.
+ * The `bash` replacement, which owns the spawned shell's process lifetime; pi's own bash definition
+ * does the rest.
  *
  * The name has to stay the literal lowercase `bash`, since that is what makes this replace pi's built-in
  * rather than add a tool, and what keeps the permission gate, the plan-mode classification and the
@@ -248,7 +245,7 @@ export function createTrackedBashOperations(
  * Introduce no default timeout: pi ships bash without one and long builds depend on that.
  */
 export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashToolDeps): ToolDefinition {
-  const { getShellOptions, cancelRegistry, shellJob } = deps;
+  const { getShellOptions, shellJob } = deps;
   const operations = createTrackedBashOperations(pi, getShellOptions, shellJob);
   const build = (options: ShellOptions): AnyToolDefinition => pi.createBashToolDefinition(cwd, { ...options, operations });
   const initialOptions = getShellOptions();
@@ -266,13 +263,10 @@ export function createBashTool(pi: PiCodingAgentModule, cwd: string, deps: BashT
     return cachedDelegate;
   };
 
-  return withPerCallCancel(
-    {
-      // `constrainedSampling` comes in with this spread, so declaring it here would shadow pi's own setting.
-      ...metadata,
-      parameters: withCommandDescription(metadata.parameters),
-      execute: (toolCallId, params, signal, onUpdate, ctx) => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx),
-    },
-    cancelRegistry,
-  );
+  return {
+    // `constrainedSampling` comes in with this spread, so declaring it here would shadow pi's own setting.
+    ...metadata,
+    parameters: withCommandDescription(metadata.parameters),
+    execute: (toolCallId, params, signal, onUpdate, ctx) => resolveDelegate().execute(toolCallId, params, signal, onUpdate, ctx),
+  };
 }

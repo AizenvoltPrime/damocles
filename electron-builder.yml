@@ -87,7 +87,7 @@ publish:
 win:
   # One arch per build; each Windows build also passes -c.publish.channel=latest-<arch> so the two feeds do not collide.
   target: nsis
-  icon: resources/icon.png
+  icon: resources/icon.ico
 
 nsis:
   oneClick: true
@@ -103,7 +103,9 @@ mac:
       arch: arm64
     - target: zip
       arch: arm64
-  icon: resources/icon.png
+  # Icon Composer icon: Assets.car for macOS 26 and an icns actool renders from it for older releases. Building it needs
+  # actool from Xcode 26 or later, the default Xcode on macos-latest.
+  icon: build/icon.icon
   category: public.app-category.developer-tools
   minimumSystemVersion: '13.0'
   # Ad hoc: no Apple Developer ID. Hardened runtime only matters for notarization.

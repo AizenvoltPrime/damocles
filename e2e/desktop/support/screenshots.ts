@@ -37,8 +37,11 @@ export async function settled(page: Page): Promise<void> {
     await document.fonts.ready;
     await frame();
     await frame();
-    // A spinner or a pulse runs forever, so only animations with an end are awaited.
-    const finite = document.getAnimations().filter((animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().endTime !== Infinity);
+    // A spinner or a pulse runs forever, so only animations with an end are awaited; a toast's life bar is a countdown
+    // that ends with the toast, not an entrance.
+    const finite = document.getAnimations().filter((animation) => animation.playState === 'running'
+      && animation.effect?.getComputedTiming().endTime !== Infinity
+      && !(animation instanceof CSSAnimation && animation.animationName === 'nt-life'));
     await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
     await frame();
   });

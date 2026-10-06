@@ -8,16 +8,18 @@ import type {
   PostMessageFn,
   PermissionMode,
   PermissionRequiredNotifier,
+  CanUseToolContext,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { PendingKind } from '../pi-session/session-state';
+import type { PromptApprover, PromptOwner } from '../../shared/types/permissions';
+import type { PendingKind, RaisedPrompt } from '../pi-session/session-state';
 import { log } from '../logger';
 
 /**
  * Register a pending prompt against the signal that can cancel it.
  *
  * A signal that already aborted never fires `abort` again, so a listener added after the fact never
- * runs: the entry registers and never settles, `pendingKinds()` keeps it for the life of the
+ * runs: the entry registers and never settles, `pendingPrompts()` keeps it for the life of the
  * panel, the panel pins on `requires_action`, and the `canUseTool` promise behind it never resolves.
  * Settling through the same handler the listener would have called keeps the already-aborted case
  * indistinguishable from an ordinary abort for every caller. Nothing may run after this call: the
@@ -39,6 +41,29 @@ export function registerAbortablePrompt(options: {
   signal.addEventListener('abort', onAborted, { once: true });
 }
 
+/** What an open prompt keeps so it can be decided again when the permission state changes. */
+export function unaskedCheck(context: CanUseToolContext): { runsUnasked?: () => boolean; parentToolUseId?: string | null } {
+  return {
+    ...(context.runsUnasked ? { runsUnasked: context.runsUnasked } : {}),
+    ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+  };
+}
+
+/** Tells the webview an open prompt closed because `approvedBy` approved it. */
+export function postApprovedUnasked(
+  postMessage: PostMessageFn | null,
+  toolUseId: string,
+  pending: { parentToolUseId?: string | null },
+  approvedBy: PromptApprover,
+): void {
+  postMessage?.({
+    type: 'permissionAutoResolved',
+    toolUseId,
+    ...(pending.parentToolUseId !== undefined ? { parentToolUseId: pending.parentToolUseId } : {}),
+    approvedBy,
+  });
+}
+
 export class PermissionState {
   pendingApprovals: Map<string, PendingApproval> = new Map();
   pendingQuestions: Map<string, PendingQuestion> = new Map();
@@ -50,7 +75,6 @@ export class PermissionState {
    *  reload can put the same dialogs back on screen without rebuilding a payload. */
   pendingPromptRequests: Map<string, ExtensionToWebviewMessage> = new Map();
   autoApprovedSkills: Set<string> = new Set();
-  autoApprovedSubagents: Set<string> = new Set();
   /** The image model each approved GenerateImage prompt showed, by tool use id, until the tool takes it. */
   approvedImageModels: Map<string, string> = new Map();
   postMessageToWebview: PostMessageFn | null = null;
@@ -62,15 +86,29 @@ export class PermissionState {
   cwd: string | null = null;
   /** Fired on every add and every remove so a listener re-derives from the maps, never from a count. */
   onPendingChanged: (() => void) | null = null;
+  /** Resolves who raised a prompt from its `parentToolUseId`; the session that runs the nested agents supplies it. */
+  promptOwnerResolver: ((parentToolUseId: string | null | undefined) => PromptOwner) | null = null;
 
-  /** The kinds of the unanswered prompts; a new prompt map must map to a kind here. */
-  pendingKinds(): Set<PendingKind> {
-    const kinds = new Set<PendingKind>();
-    if (this.pendingApprovals.size > 0 || this.pendingSkillApprovals.size > 0) kinds.add('approval');
-    if (this.pendingQuestions.size > 0) kinds.add('question');
-    if (this.pendingPlanApprovals.size > 0) kinds.add('plan');
-    if (this.pendingForms.size > 0 || this.pendingElicitations.size > 0) kinds.add('input');
-    return kinds;
+  /** The owner a prompt raised now states on its message; with no session there is no nested agent to name. */
+  promptOwner(parentToolUseId: string | null | undefined): PromptOwner {
+    return this.promptOwnerResolver?.(parentToolUseId) ?? { kind: 'main' };
+  }
+
+  /** The kind of the prompt map holding `id`; a new prompt map must map to a kind here. */
+  private kindOf(id: string): PendingKind | undefined {
+    if (this.pendingApprovals.has(id) || this.pendingSkillApprovals.has(id)) return 'approval';
+    if (this.pendingQuestions.has(id)) return 'question';
+    if (this.pendingPlanApprovals.has(id)) return 'plan';
+    if (this.pendingForms.has(id) || this.pendingElicitations.has(id)) return 'input';
+    return undefined;
+  }
+
+  /** The unanswered prompts in the order raised, each with the message it was posted with. */
+  pendingPrompts(): RaisedPrompt[] {
+    return [...this.pendingPromptRequests].flatMap(([id, request]) => {
+      const kind = this.kindOf(id);
+      return kind ? [{ id, kind, request }] : [];
+    });
   }
 
   addPendingApproval(toolUseId: string, approval: PendingApproval): void {
@@ -193,7 +231,6 @@ export class PermissionState {
     this.pendingPromptRequests.clear();
 
     this.autoApprovedSkills.clear();
-    this.autoApprovedSubagents.clear();
     this.approvedImageModels.clear();
     this.onPendingChanged?.();
   }

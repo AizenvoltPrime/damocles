@@ -7,6 +7,7 @@ import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CheckpointService, type CheckpointProducer, type CheckpointTreeReader } from '../checkpoint-service';
 import type { PanelGateContext } from '../permission-gate';
 import { createFakePlatform } from '../../../__mocks__/fake-platform';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
 
 /** Trust and watchers for the folder runtimes built here; trusted by default, as the host is. */
 const testPlatform = createFakePlatform();
@@ -59,6 +60,18 @@ function fakePiMulti(): { pi: unknown; emit: (event: string, e: unknown, ctx: un
   return { pi, emit };
 }
 
+/** A pi stub keeping every handler per event; `run` awaits each in registration order, as pi does, and returns their results. */
+function fakePiAll(): { pi: unknown; run: (event: string, e: unknown, ctx: unknown) => Promise<unknown[]> } {
+  const ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>> = {};
+  const pi = { on: (event: string, handler: (e: unknown, c: unknown) => unknown) => pushHandler(ordered, event, handler) };
+  const run = async (event: string, e: unknown, ctx: unknown): Promise<unknown[]> => {
+    const results: unknown[] = [];
+    for (const handler of ordered[event] ?? []) results.push(await handler(e, ctx));
+    return results;
+  };
+  return { pi, run };
+}
+
 function ctxFor(sessionId: string): unknown {
   return { sessionManager: { getSessionId: () => sessionId, buildSessionProjection: () => ({ messages: [] }) }, signal: undefined };
 }
@@ -66,10 +79,12 @@ function ctxFor(sessionId: string): unknown {
 function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
   return {
     permissionHandler: {
-      evaluatePermission: vi.fn(async () => evaluate),
+      matchRule: vi.fn(async () => null),
+      decide: vi.fn(() => evaluate),
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
     } as unknown as PanelGateContext['permissionHandler'],
     isPlanMode: () => plan,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     budgetStopRequested: () => false,
     getSessionModel: () => 'claude-opus-4-8',
     getSystemPromptEnv: () => ({
@@ -121,11 +136,25 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     createDamoclesExtensionFactory(reader(registry), noCheckpoints())(fakePi(handlers) as never);
 
     expect(await handler(handlers, 'tool_call')(readEvent, ctxFor('A'))).toBeUndefined();
-    expect(panelA.permissionHandler.evaluatePermission).toHaveBeenCalledTimes(1);
-    expect(panelB.permissionHandler.evaluatePermission).not.toHaveBeenCalled();
+    expect(panelA.permissionHandler.decide).toHaveBeenCalledTimes(1);
+    expect(panelB.permissionHandler.decide).not.toHaveBeenCalled();
 
     const blocked = (await handler(handlers, 'tool_call')(readEvent, ctxFor('B'))) as { block?: boolean } | undefined;
     expect(blocked?.block).toBe(true);
+  });
+
+  it('drops the cancel entry of a shell call that ends without executing, as when another extension blocks it', async () => {
+    const handlers: Handlers = {};
+    const store = new ShellCancelStore();
+    const owner = { ...panel('allow'), shellCancel: store.forContext(() => undefined) };
+    const admit = vi.spyOn(owner.shellCancel, 'admit');
+    createDamoclesExtensionFactory(reader(new Map([['A', owner]])), noCheckpoints())(fakePi(handlers) as never);
+
+    expect(await handler(handlers, 'tool_call')({ type: 'tool_call', toolName: 'bash', toolCallId: 'b1', input: { command: 'make' } }, ctxFor('A'))).toBeUndefined();
+    expect(admit).toHaveLastReturnedWith(expect.any(AbortSignal));
+    handler(handlers, 'tool_execution_end')({ type: 'tool_execution_end', toolCallId: 'b1', toolName: 'bash', result: { content: [] }, isError: true }, ctxFor('A'));
+
+    expect(store.cancel('b1')).toBe(false);
   });
 
   it('blocks even a read when no panel is registered for the session', async () => {
@@ -135,9 +164,9 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
   });
 
   it('writes the Damocles system prompt into the event options (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
-    const handlers: Handlers = {};
+    const { pi, run } = fakePiAll();
     const planning = new Map<string, PanelGateContext>([['A', panel('allow', true)], ['B', panel('allow', false)]]);
-    createDamoclesExtensionFactory(reader(planning), noCheckpoints())(fakePi(handlers) as never);
+    createDamoclesExtensionFactory(reader(planning), noCheckpoints())(pi as never);
 
     // `sections` and `selectedTools` mirror pi's normalized options, which always supply both; the
     // handler rewrites the first in place and reads the second.
@@ -149,38 +178,37 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     }) as never;
 
     const planEvent = eventFor();
-    const inPlan = await handler(handlers, 'before_agent_start')(planEvent, ctxFor('A'));
+    const inPlan = await run('before_agent_start', planEvent, ctxFor('A'));
     // A returned `systemPrompt` would set pi's `forceSystemPrompt` and drop every section.
-    expect(inPlan).not.toHaveProperty('systemPrompt');
+    for (const result of inPlan) expect(result ?? {}).not.toHaveProperty('systemPrompt');
     expect(planEvent.systemPromptOptions.customPrompt).not.toContain('operating inside pi');
     expect(planEvent.systemPromptOptions.customPrompt).not.toContain('PI BASE');
     expect(planEvent.systemPromptOptions.customPrompt).toContain('AI coding agent');
     expect(planEvent.systemPromptOptions.sections['damocles_plan_mode']).toContain('Plan mode is active');
 
     const plainEvent = eventFor();
-    await handler(handlers, 'before_agent_start')(plainEvent, ctxFor('B'));
+    await run('before_agent_start', plainEvent, ctxFor('B'));
     expect(plainEvent.systemPromptOptions.customPrompt).toContain('AI coding agent');
     expect('damocles_plan_mode' in plainEvent.systemPromptOptions.sections).toBe(false);
 
     const missingEvent = eventFor();
-    expect(await handler(handlers, 'before_agent_start')(missingEvent, ctxFor('missing'))).toBeUndefined();
+    expect(await run('before_agent_start', missingEvent, ctxFor('missing'))).toEqual([undefined, undefined, undefined]);
     expect(missingEvent.systemPromptOptions.customPrompt).toBeUndefined();
   });
 
   it('holds the prompt on the dispatching panel’s Always-loaded MCP wait, by session id, before building it', async () => {
     // The instance is shared by every panel of the folder, so the wait is the panel's, chosen per
     // dispatch; the extension keeps no record of which session already waited.
-    const handlers: Handlers = {};
     let release!: () => void;
     const panelA = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(() => new Promise<void>((resolve) => { release = resolve; })) };
     const panelB = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => undefined) };
     const registry = new Map<string, PanelGateContext>([['A', panelA], ['B', panelB]]);
-    createDamoclesExtensionFactory(reader(registry), noCheckpoints())(fakePi(handlers) as never);
+    const { pi, run } = fakePiAll();
+    createDamoclesExtensionFactory(reader(registry), noCheckpoints())(pi as never);
     const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
 
-    const started = handler(handlers, 'before_agent_start')(event, ctxFor('A')) as Promise<unknown>;
-    await Promise.resolve();
-    expect(panelA.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A');
+    const started = run('before_agent_start', event, ctxFor('A'));
+    await vi.waitFor(() => expect(panelA.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A'));
     expect(panelB.waitForAlwaysLoadedMcp).not.toHaveBeenCalled();
     expect(event.systemPromptOptions.customPrompt).toBeUndefined();
 
@@ -190,15 +218,33 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
   });
 
   it('a failing Always-loaded MCP wait still builds the Damocles prompt', async () => {
-    const handlers: Handlers = {};
     const failing = { ...panel('allow'), waitForAlwaysLoadedMcp: vi.fn(async () => { throw new Error('inspect failed'); }) };
-    createDamoclesExtensionFactory(readerOf(failing), noCheckpoints())(fakePi(handlers) as never);
+    const { pi, run } = fakePiAll();
+    createDamoclesExtensionFactory(readerOf(failing), noCheckpoints())(pi as never);
     const event = { type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} as Record<string, string> } } as { systemPromptOptions: { customPrompt?: string } };
 
-    await handler(handlers, 'before_agent_start')(event, ctxFor('A'));
-
+    await run('before_agent_start', event, ctxFor('A'));
     expect(failing.waitForAlwaysLoadedMcp).toHaveBeenCalledWith('A');
     expect(event.systemPromptOptions.customPrompt).toContain('AI coding agent');
+  });
+
+  it('tells the model at a prompt start that plan mode ended when the last statement it read is a stale notice', async () => {
+    // Plan mode was entered mid-run (notice) and left before this prompt, so no section patch corrects it.
+    const { pi, run } = fakePiAll();
+    createDamoclesExtensionFactory(readerOf(panel('allow', false)), noCheckpoints())(pi as never);
+    const history = [
+      { role: 'system', content: '', sections: { preamble: 'p' } },
+      { role: 'user', content: [] },
+      { role: 'custom', customType: 'damocles-plan-mode-change', content: 'x', display: false, details: { planMode: true } },
+    ];
+    const ctx = { sessionManager: { getSessionId: () => 'A', buildSessionProjection: () => ({ messages: history }) }, signal: undefined };
+    const eventFor = () => ({ type: 'before_agent_start', prompt: 'hi', systemPrompt: '', systemPromptOptions: { cwd: '/repo', selectedTools: [], sections: {} } });
+
+    expect((await run('before_agent_start', eventFor(), ctx)).at(-1)).toMatchObject({
+      message: { customType: 'damocles-plan-mode-change', display: false, details: { planMode: false } },
+    });
+    history.pop();
+    expect((await run('before_agent_start', eventFor(), ctx)).at(-1)).toBeUndefined();
   });
 });
 

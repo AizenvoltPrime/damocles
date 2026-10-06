@@ -8,7 +8,7 @@ import { createAskUserQuestionTool } from '../ask-user-question-tool';
 import { createBrowserRequestInputTool } from '../browser-request-input-tool';
 import { createPlanModeTools } from '../plan-mode-tools';
 
-type Executable = { execute: (id: string, params: unknown, signal: AbortSignal) => Promise<unknown> };
+type Executable = { execute: (id: string, params: unknown, signal: AbortSignal, onUpdate?: undefined, ctx?: unknown) => Promise<unknown> };
 
 const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
 const question = { questions: [{ question: 'Which?', header: 'Pick', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] };
@@ -28,19 +28,27 @@ function tools(handler: PermissionHandler): Record<'ask' | 'form' | 'exitPlan', 
   return {
     ask: createAskUserQuestionTool(pi, handler) as unknown as Executable,
     form: createBrowserRequestInputTool(pi, scope, handler) as unknown as Executable,
-    exitPlan: createPlanModeTools(pi, handler)[1] as unknown as Executable,
+    exitPlan: withBranch(createPlanModeTools(pi, handler)[1] as unknown as Executable),
   };
+}
+
+/** The tool context pi passes, with an empty branch for the plan version. */
+function withBranch(tool: Executable): Executable {
+  return { execute: (id, params, signal) => tool.execute(id, params, signal, undefined, { sessionManager: { getBranch: () => [] } }) };
 }
 
 const params = { ask: question, form, exitPlan: {} } as const;
 
+/** The model-facing text of a deny: a thrown error's message, or an error result's text (ExitPlanMode keeps its details). */
 async function rejection(promise: Promise<unknown>): Promise<string> {
+  let result: { isError?: boolean; content?: Array<{ text?: string }> };
   try {
-    await promise;
+    result = (await promise) as typeof result;
   } catch (err) {
     return (err as Error).message;
   }
-  throw new Error('expected the tool to throw');
+  if (result.isError) return result.content?.map((part) => part.text ?? '').join('') ?? '';
+  throw new Error('expected the tool to deny');
 }
 
 describe('AskUserQuestion, BrowserRequestInput and ExitPlanMode word an unasked deny as policy', () => {

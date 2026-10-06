@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle, type WebContents } from 'electron';
+import { WebContentsView, type BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { HOST_THEME_STYLE_ID } from '../../shared/host-theme';
 import {
   MAX_OVERLAY_COORDINATE,
@@ -7,48 +7,69 @@ import {
   MAX_OVERLAY_ITEMS,
   MAX_OVERLAY_LABEL_LENGTH,
   MAX_OVERLAY_TAGS,
+  MAX_MESSAGE_ACTIONS,
   MAX_OVERLAY_TEXT_LENGTH,
+  MAX_RASTER_PNG_BYTES,
   OVERLAY_ACK_TIMEOUT_MS,
   OVERLAY_CHANNELS,
   OVERLAY_ICONS,
   type OverlayAnswer,
   type OverlayIcon,
   type OverlayMenuItem,
+  type OverlayRasterRequest,
   type OverlayRect,
+  type RasterArt,
   type OverlayRequest,
   type OverlayState,
-  type OverlayToast,
-  type OverlayToastArea,
 } from '../preload/overlay-channels';
 import type { PanelTheme } from '../preload/panel-channels';
 import { MAX_TAG_LENGTH } from '../preload/shell-channels';
-import type { ToastSink } from './platform/notification-service';
+import { validPng } from './notification-art';
 import { APP_ORIGIN, OVERLAY_PAGE_URL } from './protocol';
 import { loadAppPage, loggableUrl } from './security';
 import { isPanelSender } from './views';
 
-export type OverlayMode = 'hidden' | 'toasts' | 'full';
+export type OverlayMode = 'hidden' | 'full';
 
 export interface OverlayHostDeps {
   readonly window: BrowserWindow;
   readonly preloadPath: string;
   readonly state: () => OverlayState;
-  // the overlay's answer to a toast: an action label of that toast, or undefined for a dismissal
-  readonly resolveToast: (id: string, action: string | undefined) => void;
-  // toasts still waiting for an answer, replayed when the overlay page (re)loads
-  readonly pendingToasts: () => readonly OverlayToast[];
   // moves keyboard focus out of the overlay when no popup names where it returns
   readonly focusOutside: () => void;
+  // a popup opened while the window is unfocused; focusing a view activates its window on macOS and Linux, so the caller
+  // draws attention and calls focus() once the window activates
+  readonly awaitActivation: () => void;
+  // rasterize can draw again: the page (re)loaded, or answered after a deadline for the first time since it loaded
+  readonly canRasterize: () => void;
   readonly log: (line: string) => void;
 }
 
+// A rasterize request the overlay has not answered by then resolves undefined, and its caller falls back.
+export const RASTER_TIMEOUT_MS = 2000;
+// Requests waiting on the overlay at once; a further one resolves undefined at once.
+const MAX_PENDING_RASTERS = 16;
 // An overlay page that kills its renderer on every load is left dead rather than reloaded in a loop.
 const MAX_CRASHES_IN_WINDOW = 3;
 const CRASH_WINDOW_MS = 60_000;
 const TRANSPARENT = '#00000000';
-const MAX_TOAST_ACTION_LENGTH = 500;
+// Renderer deadlines count ticks of main's own timer, not wall-clock time: a stall of main's event loop costs one tick,
+// and a reply that arrived during it is handled before the next.
+const DEADLINE_TICK_MS = 250;
 
 const ICONS: ReadonlySet<string> = new Set(OVERLAY_ICONS);
+
+/** Runs `expire` after ceil(deadlineMs / DEADLINE_TICK_MS) ticks; the returned function cancels it. */
+function tickDeadline(deadlineMs: number, expire: () => void): () => void {
+  let ticksLeft = Math.ceil(deadlineMs / DEADLINE_TICK_MS);
+  const timer = setInterval(() => {
+    ticksLeft--;
+    if (ticksLeft > 0) return;
+    clearInterval(timer);
+    expire();
+  }, DEADLINE_TICK_MS);
+  return () => clearInterval(timer);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -187,15 +208,57 @@ function parseTagPicker(raw: Record<string, unknown>): OverlayRequest | undefine
   return { kind: 'tagPicker', anchor, ...(current !== undefined ? { current } : {}), tags: [...(tags as string[])], placeholder };
 }
 
-/** A clean copy of a popup request from a renderer, or undefined when any field is malformed or out of bounds; only main opens settings. */
+function parseNotifications(raw: Record<string, unknown>): OverlayRequest | undefined {
+  const anchor = parseRect(field(raw, 'anchor'));
+  return anchor ? { kind: 'notifications', anchor } : undefined;
+}
+
+/** A clean copy of a popup request from a renderer, or undefined when any field is malformed or out of bounds; only main opens settings and asks messages. */
 export function parseOverlayRequest(raw: unknown): OverlayRequest | undefined {
   if (!isRecord(raw)) return undefined;
   switch (field(raw, 'kind')) {
     case 'menu': return parseMenu(raw);
     case 'confirm': return parseConfirm(raw);
     case 'tagPicker': return parseTagPicker(raw);
+    case 'notifications': return parseNotifications(raw);
     default: return undefined;
   }
+}
+
+function isIndexBelow(value: unknown, length: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < length;
+}
+
+/** A message dialog main asks (D41) within the overlay's bounds, or undefined, when main asks with the OS message box instead. */
+export function parseMessageRequest(raw: unknown): Extract<OverlayRequest, { kind: 'message' }> | undefined {
+  if (!isRecord(raw) || field(raw, 'kind') !== 'message') return undefined;
+  const severity = field(raw, 'severity');
+  const message = field(raw, 'message');
+  const detail = field(raw, 'detail');
+  const actions = field(raw, 'actions');
+  const cancelLabel = field(raw, 'cancelLabel');
+  const defaultAction = field(raw, 'defaultAction');
+  if (severity !== 'info' && severity !== 'warning' && severity !== 'danger') return undefined;
+  if (!isNonEmptyText(message, MAX_OVERLAY_TEXT_LENGTH) || !isNonEmptyText(cancelLabel, MAX_OVERLAY_LABEL_LENGTH)) return undefined;
+  if (detail !== undefined && !isText(detail, MAX_OVERLAY_TEXT_LENGTH)) return undefined;
+  if (!Array.isArray(actions) || actions.length > MAX_MESSAGE_ACTIONS) return undefined;
+  if (!(actions as unknown[]).every((action) => isNonEmptyText(action, MAX_OVERLAY_LABEL_LENGTH))) return undefined;
+  if (defaultAction !== undefined && !isIndexBelow(defaultAction, actions.length)) return undefined;
+  return {
+    kind: 'message',
+    severity,
+    message,
+    ...(detail !== undefined && detail !== '' ? { detail } : {}),
+    actions: [...(actions as string[])],
+    cancelLabel,
+    ...(defaultAction !== undefined ? { defaultAction } : {}),
+  };
+}
+
+function parseNotificationsAnswer(raw: Record<string, unknown>): OverlayAnswer | undefined {
+  const action = field(raw, 'action');
+  const entryId = field(raw, 'entryId');
+  return action === 'open' && isNonEmptyText(entryId, MAX_OVERLAY_ID_LENGTH) ? { kind: 'notifications', action: 'open', entryId } : undefined;
 }
 
 /** The overlay's answer as a clean copy, when it answers this request; a menu answer must name one of its enabled items. */
@@ -214,16 +277,15 @@ export function parseOverlayAnswer(raw: unknown, request: OverlayRequest): Overl
     return typeof confirmed === 'boolean' ? { kind: 'confirm', confirmed } : undefined;
   }
   if (request.kind === 'settings') return field(raw, 'closed') === true ? { kind: 'settings', closed: true } : undefined;
+  if (request.kind === 'message') {
+    const action = field(raw, 'action');
+    if (action === null) return { kind: 'message', action: null };
+    return isIndexBelow(action, request.actions.length) ? { kind: 'message', action } : undefined;
+  }
+  if (request.kind === 'notifications') return parseNotificationsAnswer(raw);
   const tag = field(raw, 'tag');
   if (tag === null) return { kind: 'tagPicker', tag: null };
   return isTag(tag) ? { kind: 'tagPicker', tag: tag.trim() } : undefined;
-}
-
-export function parseToastArea(raw: unknown): OverlayToastArea | undefined {
-  if (!isRecord(raw)) return undefined;
-  const width = field(raw, 'width');
-  const height = field(raw, 'height');
-  return isCoordinate(width) && isCoordinate(height) ? { width, height } : undefined;
 }
 
 /** The overlay page main serves at OVERLAY_PAGE_URL: the built overlay app under a fresh script nonce and the current theme. */
@@ -252,27 +314,40 @@ interface OpenRequest {
   readonly request: OverlayRequest;
   readonly resolve: (answer: OverlayAnswer) => void;
   readonly reject: (err: Error) => void;
-  ackTimer: NodeJS.Timeout | undefined;
+  readonly shown: (() => void) | undefined;
+  cancelAckDeadline: (() => void) | undefined;
+}
+
+interface PendingRaster {
+  readonly width: number;
+  readonly height: number;
+  readonly resolve: (png: Buffer | undefined) => void;
+  readonly cancelDeadline: () => void;
 }
 
 /**
- * The window's top-most view: menus, dialogs and toasts drawn above every other view (plan AD1). It is hidden, covers
- * the toast stack's rectangle, or covers the whole content area while a popup is open. One popup is open at a time; a
- * new request dismisses the open one.
+ * The window's top-most view: menus, dialogs and the settings modal drawn above every other view (plan AD1). It is
+ * hidden, or covers the whole content area while a popup is open; toasts show in the desktop popup window (D52). A message
+ * dialog stacks above whatever is open; any other new request dismisses every open request except those dialogs.
  */
-export class OverlayHost implements ToastSink {
+export class OverlayHost {
   readonly view: WebContentsView;
   private readonly deps: OverlayHostDeps;
   private readonly invokeChannels: string[] = [];
   private readonly sendHandlers: Array<[string, (event: IpcMainEvent, ...args: unknown[]) => void]> = [];
-  private open: OpenRequest | undefined;
-  // where keyboard focus returns when the popup closes; never the overlay itself
+  // in the order they opened
+  private open: OpenRequest[] = [];
+  // where keyboard focus returns when the last open popup closes; never the overlay itself
   private returnFocus: WebContents | undefined;
-  private toastArea: OverlayToastArea = { width: 0, height: 0 };
   private currentMode: OverlayMode = 'hidden';
   private loaded = false;
   private crashes: number[] = [];
   private disposed = false;
+  private readonly rasters = new Map<string, PendingRaster>();
+  // ids of requests that missed their deadline: a page's first draw can outlast it while it loads fonts under startup load
+  private readonly lateRasters = new Set<string>();
+  // only the first late answer since the page loaded asks for a redraw, so a page that is always slow cannot loop
+  private lateAnswered = false;
   private readonly onResize = (): void => this.applyMode();
 
   constructor(deps: OverlayHostDeps) {
@@ -296,14 +371,15 @@ export class OverlayHost implements ToastSink {
 
     this.handle(OVERLAY_CHANNELS.getState, () => this.deps.state());
     this.on(OVERLAY_CHANNELS.ack, (requestId) => {
-      const open = this.open;
-      if (!open || requestId !== open.id) return;
-      clearTimeout(open.ackTimer);
-      open.ackTimer = undefined;
+      const open = this.openById(requestId);
+      if (!open || open.cancelAckDeadline === undefined) return;
+      open.cancelAckDeadline();
+      open.cancelAckDeadline = undefined;
+      open.shown?.();
     });
     this.on(OVERLAY_CHANNELS.answer, (requestId, raw) => {
-      const open = this.open;
-      if (!open || requestId !== open.id) {
+      const open = this.openById(requestId);
+      if (!open) {
         this.deps.log('[overlay] ignoring an answer to a request that is not open');
         return;
       }
@@ -312,36 +388,38 @@ export class OverlayHost implements ToastSink {
       if (!answer) this.deps.log(`[overlay] a malformed ${open.request.kind} answer dismisses the request`);
       this.settle(open, answer ?? { kind: 'dismissed' });
     });
-    this.on(OVERLAY_CHANNELS.resolveToast, (id, action) => {
-      if (!isNonEmptyText(id, MAX_OVERLAY_ID_LENGTH) || !(action === undefined || isText(action, MAX_TOAST_ACTION_LENGTH))) {
-        this.deps.log('[overlay] ignoring a malformed toast answer');
+    this.on(OVERLAY_CHANNELS.rasterized, (id, raw) => {
+      const pending = typeof id === 'string' ? this.rasters.get(id) : undefined;
+      if (!pending) {
+        if (typeof id === 'string' && this.lateRasters.delete(id)) {
+          if (this.lateAnswered) return;
+          this.lateAnswered = true;
+          this.deps.log('[overlay] the overlay rasterized an image after its deadline; drawing again');
+          this.deps.canRasterize();
+          return;
+        }
+        this.deps.log('[overlay] ignoring a rasterized image main did not ask for');
         return;
       }
-      this.deps.resolveToast(id, action);
-    });
-    this.on(OVERLAY_CHANNELS.toastArea, (raw) => {
-      const area = parseToastArea(raw);
-      if (!area) {
-        this.deps.log('[overlay] ignoring a malformed toast area');
-        return;
-      }
-      this.toastArea = area;
-      this.applyMode();
-    });
-    this.on(OVERLAY_CHANNELS.toastsLeave, () => {
-      if (this.currentMode === 'toasts') this.releaseFocus(this.focused);
+      this.rasters.delete(id as string);
+      pending.cancelDeadline();
+      const png = raw === null ? undefined : validPng(raw, pending.width, pending.height, MAX_RASTER_PNG_BYTES);
+      if (raw !== null && !png) this.deps.log(`[overlay] refused a rasterized image that is not one ${pending.width}x${pending.height} PNG`);
+      pending.resolve(png);
     });
 
     const contents = this.view.webContents;
     contents.on('did-finish-load', () => {
       this.loaded = true;
-      for (const toast of this.deps.pendingToasts()) this.show(toast);
+      this.lateRasters.clear();
+      this.lateAnswered = false;
+      this.deps.canRasterize();
     });
     contents.on('render-process-gone', (_event, details) => {
       this.loaded = false;
       this.deps.log(`[overlay] renderer gone (${details.reason})`);
-      this.toastArea = { width: 0, height: 0 };
-      this.failOpen(new Error('The overlay page stopped'));
+      this.failAll(new Error('The overlay page stopped'));
+      this.dropRasters();
       this.applyMode();
       if (this.disposed || details.reason === 'clean-exit') return;
       const now = Date.now();
@@ -358,8 +436,14 @@ export class OverlayHost implements ToastSink {
     return this.currentMode;
   }
 
+  // A closing window destroys the view before its last blur events ask, and reading a destroyed view's webContents throws.
   get focused(): boolean {
-    return !this.disposed && !this.view.webContents.isDestroyed() && this.view.webContents.isFocused();
+    return !this.disposed && !this.deps.window.isDestroyed() && !this.view.webContents.isDestroyed() && this.view.webContents.isFocused();
+  }
+
+  // Whether a request of this kind is on screen, for channels that act only while their popup shows.
+  isOpen(kind: OverlayRequest['kind']): boolean {
+    return this.open.some((entry) => entry.request.kind === kind);
   }
 
   load(): void {
@@ -375,35 +459,64 @@ export class OverlayHost implements ToastSink {
     return new Promise((resolve) => this.view.webContents.once('did-finish-load', () => resolve()));
   }
 
-  // F6's toast stop: keyboard focus moves to the toast stack, which only shows in toasts mode.
-  focusToasts(): void {
-    if (this.currentMode !== 'toasts') return;
-    this.view.webContents.focus();
-    this.send(OVERLAY_CHANNELS.toastsFocus, undefined);
-  }
-
   /**
    * Shows a validated popup and resolves with the user's answer. Rejects when the overlay is not loaded, does not
-   * acknowledge the request within OVERLAY_ACK_TIMEOUT_MS, or crashes. Focus returns to returnFocus when it closes.
+   * acknowledge the request within OVERLAY_ACK_TIMEOUT_MS, or crashes; `shown` runs once the overlay acknowledges it.
+   * Focus returns to returnFocus once every open request has closed.
    */
-  request(request: OverlayRequest, returnFocus: WebContents | undefined): Promise<OverlayAnswer> {
+  request(request: OverlayRequest, returnFocus: WebContents | undefined, shown?: () => void): Promise<OverlayAnswer> {
     if (this.disposed || !this.loaded || this.view.webContents.isDestroyed() || this.view.webContents.isCrashed()) {
       return Promise.reject(new Error('The overlay is not available'));
     }
-    const previous = this.open;
-    if (previous) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
-    else this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
+    // Focus returns where it was before the first of the requests that are open together.
+    if (this.open.length === 0) this.returnFocus = returnFocus === this.view.webContents ? undefined : returnFocus;
+    if (request.kind !== 'message') {
+      for (const previous of this.open.filter((entry) => entry.request.kind !== 'message')) this.settle(previous, { kind: 'dismissed' }, { keepFocus: true });
+    }
     return new Promise<OverlayAnswer>((resolve, reject) => {
-      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, ackTimer: undefined };
-      open.ackTimer = setTimeout(() => {
-        if (this.open !== open) return;
+      const open: OpenRequest = { id: randomUUID(), request, resolve, reject, shown, cancelAckDeadline: undefined };
+      open.cancelAckDeadline = tickDeadline(OVERLAY_ACK_TIMEOUT_MS, () => {
+        if (!this.open.includes(open)) return;
         this.deps.log(`[overlay] the overlay did not acknowledge a ${request.kind} request within ${OVERLAY_ACK_TIMEOUT_MS} ms; hiding it`);
-        this.failOpen(new Error('The overlay did not respond'));
-      }, OVERLAY_ACK_TIMEOUT_MS);
-      this.open = open;
+        this.failAll(new Error('The overlay did not respond'));
+      });
+      this.open = [...this.open, open];
       this.applyMode();
-      this.view.webContents.focus();
+      if (this.deps.window.isFocused()) this.focus();
+      else this.deps.awaitActivation();
       this.send(OVERLAY_CHANNELS.request, { requestId: open.id, request });
+    });
+  }
+
+  /** Gives the open popups keyboard focus; nothing while none is open. */
+  focus(): void {
+    if (this.open.length === 0 || this.disposed || this.view.webContents.isDestroyed()) return;
+    this.view.webContents.focus();
+  }
+
+  /**
+   * Has the overlay page draw main's art and resolves with its PNG once validPng accepts it; undefined when the page is not
+   * loaded, crashes, answers null or a malformed image, or misses RASTER_TIMEOUT_MS.
+   */
+  rasterize(art: RasterArt): Promise<Buffer | undefined> {
+    if (this.disposed || !this.loaded || this.view.webContents.isDestroyed() || this.view.webContents.isCrashed() || this.rasters.size >= MAX_PENDING_RASTERS) {
+      return Promise.resolve(undefined);
+    }
+    const id = randomUUID();
+    return new Promise((resolve) => {
+      const cancelDeadline = tickDeadline(RASTER_TIMEOUT_MS, () => {
+        if (!this.rasters.delete(id)) return;
+        this.deps.log(`[overlay] the overlay did not rasterize an image within ${RASTER_TIMEOUT_MS} ms`);
+        this.lateRasters.add(id);
+        for (const oldest of this.lateRasters) {
+          if (this.lateRasters.size <= MAX_PENDING_RASTERS) break;
+          this.lateRasters.delete(oldest);
+        }
+        resolve(undefined);
+      });
+      this.rasters.set(id, { width: art.width, height: art.height, resolve, cancelDeadline });
+      const request: OverlayRasterRequest = { id, art };
+      this.send(OVERLAY_CHANNELS.rasterize, request);
     });
   }
 
@@ -411,14 +524,6 @@ export class OverlayHost implements ToastSink {
   restack(): void {
     if (this.disposed || this.deps.window.isDestroyed()) return;
     this.deps.window.contentView.addChildView(this.view);
-  }
-
-  show(toast: OverlayToast): void {
-    this.send(OVERLAY_CHANNELS.toast, toast);
-  }
-
-  dismiss(id: string): void {
-    this.send(OVERLAY_CHANNELS.toastDismiss, id);
   }
 
   sendTheme(theme: PanelTheme): void {
@@ -430,15 +535,11 @@ export class OverlayHost implements ToastSink {
     this.send(OVERLAY_CHANNELS.state, this.deps.state());
   }
 
-  // Undefined until the page has loaded, so toasts wait in the notification service and replay on load.
-  get toastSink(): ToastSink | undefined {
-    return this.loaded && !this.disposed ? this : undefined;
-  }
-
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.failOpen(new Error('The window closed'));
+    this.failAll(new Error('The window closed'));
+    this.dropRasters();
     if (!this.deps.window.isDestroyed()) this.deps.window.removeListener('resize', this.onResize);
     const contents = this.view.webContents;
     if (contents.isDestroyed()) return;
@@ -447,10 +548,14 @@ export class OverlayHost implements ToastSink {
     contents.close();
   }
 
+  private openById(requestId: unknown): OpenRequest | undefined {
+    return this.open.find((entry) => entry.id === requestId);
+  }
+
   private settle(open: OpenRequest, answer: OverlayAnswer, options?: { readonly keepFocus: boolean }): void {
-    if (this.open !== open) return;
-    clearTimeout(open.ackTimer);
-    this.open = undefined;
+    if (!this.open.includes(open)) return;
+    open.cancelAckDeadline?.();
+    this.open = this.open.filter((entry) => entry !== open);
     if (options?.keepFocus) {
       this.send(OVERLAY_CHANNELS.cancel, open.id);
       open.resolve(answer);
@@ -460,14 +565,26 @@ export class OverlayHost implements ToastSink {
     open.resolve(answer);
   }
 
-  private failOpen(err: Error): void {
-    const open = this.open;
-    if (!open) return;
-    clearTimeout(open.ackTimer);
-    this.open = undefined;
-    this.send(OVERLAY_CHANNELS.cancel, open.id);
+  // A hung, crashed or closing overlay rejects every open request.
+  private failAll(err: Error): void {
+    const failed = this.open;
+    if (failed.length === 0) return;
+    this.open = [];
+    for (const open of failed) {
+      open.cancelAckDeadline?.();
+      this.send(OVERLAY_CHANNELS.cancel, open.id);
+    }
     this.applyMode();
-    open.reject(err);
+    for (const open of failed) open.reject(err);
+  }
+
+  private dropRasters(): void {
+    const dropped = [...this.rasters.values()];
+    this.rasters.clear();
+    for (const pending of dropped) {
+      pending.cancelDeadline();
+      pending.resolve(undefined);
+    }
   }
 
   private releaseFocus(hadFocus: boolean): void {
@@ -477,18 +594,12 @@ export class OverlayHost implements ToastSink {
     else if (hadFocus) this.deps.focusOutside();
   }
 
-  private targetMode(): OverlayMode {
-    if (this.open) return 'full';
-    if (this.loaded && this.toastArea.width > 0 && this.toastArea.height > 0) return 'toasts';
-    return 'hidden';
-  }
-
   private applyMode(): void {
     if (this.disposed || this.deps.window.isDestroyed()) return;
     const previous = this.currentMode;
     // Read before the view hides: hiding it may blur it, and focus would then go nowhere.
     const hadFocus = this.focused;
-    const mode = this.targetMode();
+    const mode: OverlayMode = this.open.length > 0 ? 'full' : 'hidden';
     this.currentMode = mode;
     if (mode === 'hidden') {
       this.view.setVisible(false);
@@ -496,20 +607,13 @@ export class OverlayHost implements ToastSink {
       // The overlay draws at the shell's zoom, so the shell's CSS-pixel anchors land unchanged.
       const zoom = this.deps.window.webContents.getZoomFactor();
       if (!this.view.webContents.isDestroyed()) this.view.webContents.setZoomFactor(zoom);
-      this.view.setBounds(this.boundsFor(mode, zoom));
+      const { width, height } = this.deps.window.getContentBounds();
+      this.view.setBounds({ x: 0, y: 0, width, height });
       if (mode !== previous) this.restack();
       this.view.setVisible(true);
     }
-    // A hidden view keeps keyboard focus, so focus leaves with the popup and with the last toast.
-    if ((previous === 'full' && mode !== 'full') || (previous !== 'hidden' && mode === 'hidden')) this.releaseFocus(hadFocus);
-  }
-
-  private boundsFor(mode: 'toasts' | 'full', zoom: number): Rectangle {
-    const { width, height } = this.deps.window.getContentBounds();
-    if (mode === 'full') return { x: 0, y: 0, width, height };
-    const areaWidth = Math.min(width, Math.ceil(this.toastArea.width * zoom));
-    const areaHeight = Math.min(height, Math.ceil(this.toastArea.height * zoom));
-    return { x: width - areaWidth, y: height - areaHeight, width: areaWidth, height: areaHeight };
+    // A hidden view keeps keyboard focus, so focus leaves with the popup.
+    if (previous === 'full' && mode === 'hidden') this.releaseFocus(hadFocus);
   }
 
   // Main's own overlay features (the settings modal) post and listen on the overlay page through these.

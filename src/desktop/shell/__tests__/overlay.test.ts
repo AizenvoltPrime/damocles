@@ -2,7 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
-import type { OverlayRequest } from '../../preload/overlay-channels';
+import type { OverlayRequest, OverlayToast } from '../../preload/overlay-channels';
+import type { NoticeSeverity } from '../../preload/notifications';
+import NotifierApp from '../overlay/NotifierApp.vue';
 import OverlayApp from '../overlay/OverlayApp.vue';
 import { placePopup } from '../overlay/placement';
 import { shellI18n } from '../i18n';
@@ -23,6 +25,17 @@ function mountOverlay(): VueWrapper {
   return wrapper;
 }
 
+// The desktop popup window's page, the only one that renders toasts.
+function mountNotifier(): VueWrapper {
+  const wrapper = mount(NotifierApp, {
+    props: { api },
+    global: { plugins: [shellI18n], stubs: { transition: false, 'transition-group': false } },
+    attachTo: document.body,
+  });
+  mounted.push(wrapper);
+  return wrapper;
+}
+
 async function open(wrapper: VueWrapper, id: string, request: OverlayRequest): Promise<void> {
   api.request(id, request);
   await flushPromises();
@@ -32,6 +45,10 @@ async function open(wrapper: VueWrapper, id: string, request: OverlayRequest): P
 const press = (key: string, init: KeyboardEventInit = {}): void => {
   (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, ...init }));
 };
+
+function notice(id: string, severity: NoticeSeverity, message: string, actions: string[]): OverlayToast {
+  return { id, at: Date.now(), lifeMs: 8000, remainingMs: 8000, body: { kind: 'notice', severity, message, actions } };
+}
 
 const ANCHOR = { x: 40, y: 50, width: 0, height: 0 };
 const MENU: OverlayRequest = {
@@ -178,7 +195,7 @@ describe('overlay requests', () => {
     });
     const dialog = wrapper.get('[role="alertdialog"]');
     expect(dialog.attributes('aria-modal')).toBe('true');
-    expect(wrapper.get(`#${dialog.attributes('aria-labelledby')}`).text()).toBe('Delete Session');
+    expect(dialog.attributes('aria-labelledby')!.split(' ').map((id) => wrapper.get(`#${id}`).text()).join(' ')).toBe('Caution Delete Session');
     expect(dialog.text()).toContain('<b>Fix login</b>');
     expect(dialog.find('b').exists()).toBe(false);
     expect(wrapper.get('[data-testid="overlay-confirm-warning"] svg').classes()).toContain('d-spinning');
@@ -197,6 +214,31 @@ describe('overlay requests', () => {
 
     await accept.trigger('click');
     await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'confirm', confirmed: true }));
+  });
+
+  it('focuses Confirm first when the confirmation is not destructive, and Escape or the scrim answers not confirmed', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    const request: OverlayRequest = { kind: 'confirm', title: 'Reset layout', message: 'Put every pane back?', confirmLabel: 'Reset', cancelLabel: 'Cancel', danger: false };
+    await open(wrapper, 'r1', request);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="overlay-confirm-accept"]').element);
+    press('Escape');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r1', { kind: 'confirm', confirmed: false }));
+
+    await open(wrapper, 'r2', request);
+    await wrapper.get('[data-overlay-id="r2"]').trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('r2', { kind: 'confirm', confirmed: false }));
+  });
+
+  it('answers a message dialog\'s scrim click as Cancel, and a click inside the dialog as nothing', async () => {
+    const wrapper = mountOverlay();
+    await flushPromises();
+    await open(wrapper, 'm1', { kind: 'message', severity: 'info', message: 'Switch?', actions: ['Switch'], cancelLabel: 'Cancel', defaultAction: 0 });
+    await wrapper.get('[role="alertdialog"]').trigger('click');
+    await flushPromises();
+    expect(api.answer).not.toHaveBeenCalled();
+    await wrapper.get('[data-overlay-id="m1"]').trigger('click');
+    await vi.waitFor(() => expect(api.answer).toHaveBeenCalledWith('m1', { kind: 'message', action: null }));
   });
 
   it('marks only a warning about running work with a spinner', async () => {
@@ -253,29 +295,43 @@ describe('overlay locale', () => {
     api.pushState({ locale: 'el', platform: 'win32' });
     await flushPromises();
     expect(document.documentElement.lang).toBe('el');
-    expect(wrapper.get('[data-testid="overlay-toasts"]').attributes('aria-label')).toBe('Ειδοποιήσεις');
+    await open(wrapper, 'r1', MENU);
+    expect(wrapper.get('[role="menu"]').attributes('aria-label')).toBe('Actions for Fix login');
   });
 
-  it('labels the collapsed toasts with one Greek message', async () => {
-    const wrapper = mountOverlay();
+  it('labels the popup page\'s stack and its collapsed toasts in Greek after a language change', async () => {
+    const wrapper = mountNotifier();
     await flushPromises();
     api.pushState({ locale: 'el', platform: 'win32' });
-    for (const id of ['t1', 't2', 't3', 't4']) api.toast({ id, severity: 'info', message: `toast ${id}`, actions: [] });
+    for (const id of ['t1', 't2', 't3', 't4']) api.toast(notice(id, 'info', `toast ${id}`, []));
     await flushPromises();
 
+    expect(document.documentElement.lang).toBe('el');
+    expect(wrapper.get('[data-testid="overlay-toasts"]').attributes('aria-label')).toBe('Ειδοποιήσεις');
     expect(wrapper.get('[data-testid="overlay-toasts-more"]').text()).toBe('1 ακόμα · Απόρριψη όλων');
   });
 });
 
 describe('toasts', () => {
-  it('shows at most three, collapses the rest into "N more · Dismiss all" and reports the stack area', async () => {
+  it('render only in the popup page, never in the overlay', async () => {
     const wrapper = mountOverlay();
     await flushPromises();
-    expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 0, height: 0 });
-    const stack = wrapper.get('[data-testid="overlay-toasts"]');
-    (stack.element as HTMLElement).getBoundingClientRect = () => ({ left: 0, top: 0, right: 360, bottom: 99.2, x: 0, y: 0, width: 360, height: 99.2, toJSON: () => ({}) });
+    api.toast(notice('t1', 'info', 'saved', []));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="overlay-toasts"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="overlay-toast"]').exists()).toBe(false);
+    expect(api.onToast).not.toHaveBeenCalled();
+  });
 
-    for (const id of ['t1', 't2', 't3', 't4', 't5']) api.toast({ id, severity: 'info', message: `toast ${id}`, actions: id === 't5' ? ['Retry'] : [] });
+  it('shows at most three, collapses the rest into "N more · Dismiss all" and reports the stack area', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 0, height: 0, parts: [] });
+    const stack = wrapper.get('[data-testid="overlay-toasts"]');
+    Object.defineProperty(stack.element, 'offsetWidth', { value: 380 });
+    Object.defineProperty(stack.element, 'offsetHeight', { value: 99.2 });
+
+    for (const id of ['t1', 't2', 't3', 't4', 't5']) api.toast(notice(id, 'info', `toast ${id}`, id === 't5' ? ['Retry'] : []));
     await flushPromises();
     expect(wrapper.findAll('[data-testid="overlay-toast"]').map((toast) => toast.text())).toEqual([
       expect.stringContaining('toast t3'),
@@ -283,64 +339,124 @@ describe('toasts', () => {
       expect.stringContaining('toast t5'),
     ]);
     expect(wrapper.get('[data-testid="overlay-toasts-more"]').text()).toBe('2 more · Dismiss all');
-    expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 392, height: 132 });
+    expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 412, height: 132, parts: [] });
 
-    await wrapper.findAll('[data-testid="overlay-toast"]')[2]!.get('button').trigger('click');
+    await wrapper.findAll('[data-testid="overlay-toast"]')[2]!.get('[data-toast-primary]').trigger('click');
     expect(api.resolveToast).toHaveBeenCalledWith('t5', 'Retry');
     api.dismissToast('t4');
-    await flushPromises();
-    expect(wrapper.find('[data-testid="overlay-toasts-more"]').exists()).toBe(false);
-    expect(wrapper.findAll('[data-testid="overlay-toast"]')).toHaveLength(3);
+    // A toast and the pill stay in the DOM while their exit plays.
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="overlay-toasts-more"]').exists()).toBe(false));
+    await vi.waitFor(() => expect(wrapper.findAll('[data-testid="overlay-toast"]')).toHaveLength(3));
 
-    api.toast({ id: 't6', severity: 'error', message: 'boom', actions: [] });
+    api.toast(notice('t6', 'error', 'boom', []));
     await flushPromises();
     await wrapper.get('[data-testid="overlay-toasts-more"]').trigger('click');
     expect(vi.mocked(api.resolveToast).mock.calls.slice(1)).toEqual([['t1'], ['t2'], ['t3'], ['t6']]);
-    expect(wrapper.findAll('[data-testid="overlay-toast"]')).toHaveLength(0);
-    expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 0, height: 0 });
+    await vi.waitFor(() => expect(wrapper.findAll('[data-testid="overlay-toast"]')).toHaveLength(0));
+    // The area shrinks once the last exit has played, so main never cuts it short.
+    await vi.waitFor(() => expect(api.reportToastArea).toHaveBeenLastCalledWith({ width: 0, height: 0, parts: [] }));
+  });
+
+  it('reports the layout boxes of its toasts and pill within the area, and when the pointer moves onto or off them', async () => {
+    const wrapper = mountNotifier();
+    await flushPromises();
+    const stack = wrapper.get('[data-testid="overlay-toasts"]');
+    const layout = (element: Element, box: { left: number; top: number; width: number; height: number }): void => {
+      for (const [key, value] of Object.entries({ offsetLeft: box.left, offsetTop: box.top, offsetWidth: box.width, offsetHeight: box.height })) {
+        Object.defineProperty(element, key, { value, configurable: true });
+      }
+    };
+    layout(stack.element, { left: 0, top: 0, width: 380, height: 220 });
+    for (const id of ['t1', 't2', 't3', 't4']) api.toast(notice(id, 'info', `toast ${id}`, []));
+    await flushPromises();
+    const pill = wrapper.get('[data-testid="overlay-toasts-more"]');
+    const cards = wrapper.findAll('[data-testid="overlay-toast"]');
+    layout(pill.element, { left: 144, top: 0, width: 92, height: 24 });
+    cards.forEach((card, index) => layout(card.element, { left: 0, top: 34 + index * 66, width: 380, height: 56 }));
+    FakeResizeObserver.instances.find((observer) => observer.observed.includes(stack.element))!.callback();
+    expect(api.reportToastArea).toHaveBeenLastCalledWith({
+      width: 412,
+      height: 252,
+      parts: [
+        { x: 160, y: 16, width: 92, height: 24 },
+        { x: 16, y: 50, width: 380, height: 56 },
+        { x: 16, y: 116, width: 380, height: 56 },
+        { x: 16, y: 182, width: 380, height: 56 },
+      ],
+    });
+
+    const over = (target: EventTarget): void => {
+      target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    };
+    over(cards[1]!.get('p').element);
+    over(cards[2]!.element);
+    expect(api.reportToastPointer).toHaveBeenCalledTimes(1);
+    expect(api.reportToastPointer).toHaveBeenLastCalledWith(true);
+    over(document.body);
+    expect(api.reportToastPointer).toHaveBeenLastCalledWith(false);
+    over(pill.element);
+    expect(api.reportToastPointer).toHaveBeenLastCalledWith(true);
+    // The pointer leaves the page from the pill.
+    pill.element.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }));
+    expect(api.reportToastPointer).toHaveBeenLastCalledWith(false);
+    expect(api.reportToastPointer).toHaveBeenCalledTimes(4);
   });
 
   it('shows toasts in arrival order and announces an error assertively and every other toast politely, through regions present while empty', async () => {
-    const wrapper = mountOverlay();
+    const wrapper = mountNotifier();
     await flushPromises();
     const polite = wrapper.get('[data-testid="overlay-toasts-polite"]');
     const assertive = wrapper.get('[data-testid="overlay-toasts-assertive"]');
     expect(polite.attributes('aria-live')).toBe('polite');
     expect(assertive.attributes('aria-live')).toBe('assertive');
 
-    api.toast({ id: 'i', severity: 'info', message: 'saved', actions: [] });
-    api.toast({ id: 'w', severity: 'warning', message: 'careful', actions: [] });
-    api.toast({ id: 'e', severity: 'error', message: 'failed', actions: [] });
+    // What a screen reader hears: the text each region gains, whether as new nodes or as changed text.
+    const heard = (region: Element): string[] => {
+      const texts: string[] = [];
+      new MutationObserver((records) => {
+        for (const record of records) {
+          if (record.type === 'characterData') texts.push(record.target.textContent?.trim() ?? '');
+          for (const node of record.addedNodes) texts.push(node.textContent?.trim() ?? '');
+        }
+      }).observe(region, { childList: true, characterData: true, subtree: true });
+      return texts;
+    };
+    const politeHeard = heard(polite.element);
+    const assertiveHeard = heard(assertive.element);
+
+    // Main replays every waiting toast in one burst when the page loads.
+    api.toast(notice('i', 'info', 'saved', []));
+    api.toast(notice('w', 'warning', 'careful', []));
+    api.toast(notice('e', 'error', 'failed', []));
     await flushPromises();
     expect(wrapper.findAll('[data-testid="overlay-toast"]').map((toast) => toast.attributes('data-toast-id'))).toEqual(['i', 'w', 'e']);
-    expect(polite.text()).toContain('careful');
-    expect(assertive.text()).toContain('failed');
-    expect(assertive.text()).not.toContain('careful');
-  });
+    expect(politeHeard.filter(Boolean)).toEqual(['Information: saved', 'Warning: careful']);
+    expect(assertiveHeard.filter(Boolean)).toEqual(['Error: failed']);
 
-  it('lies under a popup, so a dialog scrim covers the toasts', async () => {
-    const wrapper = mountOverlay();
-    api.toast({ id: 't1', severity: 'info', message: 'saved', actions: [] });
-    await open(wrapper, 'c1', { kind: 'confirm', title: 'Delete', message: 'Sure?', confirmLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
-    const stack = wrapper.get('[data-testid="overlay-toasts"]').element;
-    const dialog = wrapper.get('[data-testid="overlay-confirm"]').element;
-    expect(stack.compareDocumentPosition(dialog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // A toast's announcement goes with it, unheard; the same text again is heard again.
+    api.dismissToast('i');
+    api.toast(notice('i2', 'info', 'saved', []));
+    await flushPromises();
+    expect(politeHeard.filter(Boolean)).toEqual(['Information: saved', 'Warning: careful', 'Information: saved']);
+    expect(polite.findAll('p').map((node) => node.text())).toEqual(['Warning: careful', 'Information: saved']);
   });
 
   it('takes F6 focus on the newest toast, keeps Tab inside the stack, hands Escape to main and refocuses when the focused toast goes', async () => {
-    const wrapper = mountOverlay();
-    api.toast({ id: 'old', severity: 'info', message: 'older', actions: [] });
-    api.toast({ id: 'new', severity: 'error', message: 'crashed', actions: ['Reload Chat'] });
+    const wrapper = mountNotifier();
+    api.toast(notice('old', 'info', 'older', []));
+    api.toast(notice('new', 'error', 'crashed', ['Reload Chat']));
     await flushPromises();
     const toast = (id: string) => wrapper.get(`[data-toast-id="${id}"]`);
 
     api.focusToasts();
     expect(document.activeElement?.textContent?.trim()).toBe('Reload Chat');
-    (toast('new').get('[data-testid="overlay-toast-dismiss"]').element as HTMLElement).focus();
+    const last = toast('new').findAll('button').at(-1)!;
+    expect(last.text()).toBe('Reload Chat');
+    (last.element as HTMLElement).focus();
     press('Tab');
-    expect(document.activeElement).toBe(toast('old').get('button').element);
+    expect(document.activeElement).toBe(toast('old').get('[data-testid="overlay-toast-dismiss"]').element);
     press('Tab', { shiftKey: true });
-    expect(document.activeElement).toBe(toast('new').get('[data-testid="overlay-toast-dismiss"]').element);
+    expect(document.activeElement).toBe(last.element);
 
     press('Escape');
     expect(api.leaveToasts).toHaveBeenCalledTimes(1);
@@ -349,6 +465,50 @@ describe('toasts', () => {
     await toast('new').get('[data-testid="overlay-toast-dismiss"]').trigger('click');
     await flushPromises();
     expect(api.resolveToast).toHaveBeenCalledWith('new', undefined);
-    expect(document.activeElement).toBe(toast('old').get('button').element);
+    expect(document.activeElement).toBe(toast('old').get('[data-testid="overlay-toast-dismiss"]').element);
+    expect(api.leaveToasts).toHaveBeenCalledTimes(1);
+
+    // The last toast going takes focus out of the popup window at once, while its exit still plays.
+    await toast('old').get('[data-testid="overlay-toast-dismiss"]').trigger('click');
+    expect(api.leaveToasts).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps focus in the stack when the card or the pill holding it goes unanswered', async () => {
+    const wrapper = mountNotifier();
+    for (const id of ['t1', 't2', 't3']) api.toast(notice(id, 'info', `toast ${id}`, ['Open']));
+    await flushPromises();
+    const primary = (id: string): Element => wrapper.get(`[data-toast-id="${id}"] [data-toast-primary]`).element;
+
+    // A newer toast collapses the focused card into the pill.
+    (primary('t1') as HTMLElement).focus();
+    api.toast(notice('t4', 'info', 'toast t4', ['Open']));
+    await flushPromises();
+    expect(document.activeElement).toBe(primary('t4'));
+
+    // Main dismisses the toast behind the focused pill, and the pill goes.
+    (wrapper.get('[data-testid="overlay-toasts-more"]').element as HTMLElement).focus();
+    api.dismissToast('t1');
+    await flushPromises();
+    expect(document.activeElement).toBe(primary('t4'));
+    expect(api.leaveToasts).not.toHaveBeenCalled();
+  });
+
+  it('ends the hold of a card that leaves the visible three, so main runs its timer again while it waits in the pill', async () => {
+    const wrapper = mountNotifier();
+    for (const id of ['t1', 't2', 't3']) api.toast(notice(id, 'info', `toast ${id}`, []));
+    await flushPromises();
+    await wrapper.get('[data-toast-id="t1"]').trigger('mouseenter');
+    expect(api.holdToast).toHaveBeenLastCalledWith('t1', true);
+
+    api.toast(notice('t4', 'info', 'toast t4', []));
+    await flushPromises();
+    expect(api.holdToast).toHaveBeenLastCalledWith('t1', false);
+    expect(api.holdToast).toHaveBeenCalledTimes(2);
+
+    // A held card main takes away is finished there; nothing is left to release.
+    await wrapper.get('[data-toast-id="t2"]').trigger('mouseenter');
+    api.dismissToast('t2');
+    await flushPromises();
+    expect(vi.mocked(api.holdToast).mock.calls.slice(2)).toEqual([['t2', true]]);
   });
 });

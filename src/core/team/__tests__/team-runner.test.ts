@@ -561,7 +561,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
       createSession: async (opts: Record<string, unknown>) => { sessionOpts.push(opts); return stubMemberSession(); },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
-      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its second argument. The
       // snapshot is NON-EMPTY and built by the real builder, which is what makes the spawn site's use
       // of it observable at all — see `team-mcp-fixture.ts` for why an empty one proved nothing.
       buildAgentToolset: (ctx: AgentMcpContext) => {
@@ -571,7 +571,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
         toolsetSnapshots.push(mcp);
         return { toolNames, customTools, mcp, readOnly: ctx.kind === 'reviewer' };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset, readOnly: boolean) => {
+      buildExtensionFactory: (_agent: unknown, mcp: NestedMcpToolset, readOnly: boolean) => {
         factoryMcpSnapshots.push(mcp);
         factoryReadOnly.push(readOnly);
         return (() => undefined) as never;
@@ -1201,15 +1201,15 @@ function makeModelWiringRunner(
       createSession: async (opts: Record<string, unknown>) => { sessionOpts.set(currentName, opts); return stubMemberSession(); },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
-      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its second argument. The
       // empty snapshot here is the REAL `buildNestedMcpToolset(pi, null, …)` value, not a hand-written
-      // stand-in — a fake that returned `{}` or dropped the third arg would fake away exactly the
+      // stand-in — a fake that returned `{}` or dropped the second arg would fake away exactly the
       // `tools:` ⟺ `customTools` correspondence acceptance criterion 1 exists to catch (brief §4.9).
       buildAgentToolset: () => {
         const { toolNames, customTools, mcp } = teamAgentToolset();
         return { toolNames, customTools, mcp };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
+      buildExtensionFactory: (_agent: unknown, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
       cancelAgentDialogs: () => undefined,
@@ -1338,15 +1338,15 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
       },
       forgetSession: () => undefined,
       // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
-      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its second argument. The
       // empty snapshot here is the REAL `buildNestedMcpToolset(pi, null, …)` value, not a hand-written
-      // stand-in — a fake that returned `{}` or dropped the third arg would fake away exactly the
+      // stand-in — a fake that returned `{}` or dropped the second arg would fake away exactly the
       // `tools:` ⟺ `customTools` correspondence acceptance criterion 1 exists to catch (brief §4.9).
       buildAgentToolset: () => {
         const { toolNames, customTools, mcp } = teamAgentToolset();
         return { toolNames, customTools, mcp };
       },
-      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
+      buildExtensionFactory: (_agent: unknown, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
       cancelAgentDialogs: () => undefined,

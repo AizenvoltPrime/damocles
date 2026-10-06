@@ -5,7 +5,7 @@ import type { SubagentState, SubagentResult } from '@shared/types/subagents';
 import type { AgentUsageTotals } from '@shared/usage-accounting';
 import type { EffortBadgeLevel } from '@shared/effort-badge';
 import type { HistoryAgentMessage, HistoryToolCall, ContentBlock, ImageBlock, ToolUseBlock, TextBlock, ThinkingBlock } from '@shared/types/content';
-import { resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
+import { replacesToolStatus, resolveCancelledStatus, TERMINAL_TOOL_STATUSES } from './tool-cancelled-status';
 
 export interface StreamingSubagentMessage {
   sdkMessageId: string;
@@ -16,24 +16,6 @@ export interface StreamingSubagentMessage {
 }
 
 type ToolStatus = { status: ToolCall['status']; result?: string; errorMessage?: string; imageCount?: number };
-
-// Status priority for preventing downgrades (higher = more final)
-const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
-  'pending': 0,
-  'awaiting_approval': 1,
-  'approved': 2,
-  'running': 3,
-  // Strictly over every live status and strictly under every recorded outcome: a real result replaces
-  // it, a spinner never does.
-  'unrecorded': 4,
-  // Terminal, so it must outrank every live status; least informative of the terminal ones, so a
-  // recorded result may still replace it.
-  'abandoned': 5,
-  'denied': 5,
-  'failed': 5,
-  'completed': 6,
-  'cancelled': 6,
-};
 
 /** The card heading: a resume card names the agent it continues until the agent's own details arrive. */
 export function subagentHeading(
@@ -454,8 +436,6 @@ export const useSubagentStore = defineStore('subagent', () => {
     durationMs?: number,
     imageCount?: number
   ): boolean {
-    const newPriority = STATUS_PRIORITY[status] ?? 0;
-
     // Live output is view state for a running call, so the keys are dropped rather than set to
     // undefined, which exactOptionalPropertyTypes rejects.
     const applyStatus = (tool: ToolCall): ToolCall => {
@@ -476,7 +456,7 @@ export const useSubagentStore = defineStore('subagent', () => {
       const toolIndex = subagent.toolCalls.findIndex(t => t.id === toolUseId);
       const directTool = toolIndex === -1 ? undefined : subagent.toolCalls[toolIndex];
       if (directTool) {
-        if (newPriority < (STATUS_PRIORITY[directTool.status] ?? 0)) return true;
+        if (!replacesToolStatus(directTool.status, status)) return true;
 
         const updatedToolCalls = [...subagent.toolCalls];
         updatedToolCalls[toolIndex] = applyStatus(directTool);
@@ -496,7 +476,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         const nestedTool = msgToolIndex === -1 ? undefined : msg.toolCalls[msgToolIndex];
         if (!nestedTool) continue;
 
-        if (newPriority < (STATUS_PRIORITY[nestedTool.status] ?? 0)) return true;
+        if (!replacesToolStatus(nestedTool.status, status)) return true;
 
         const updatedMsgToolCalls = [...msg.toolCalls];
         updatedMsgToolCalls[msgToolIndex] = applyStatus(nestedTool);

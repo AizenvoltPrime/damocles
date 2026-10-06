@@ -62,7 +62,7 @@ describe('SETTINGS_VIEW lists', () => {
     const requests: readonly string[] = SETTINGS_VIEW_REQUESTS;
     for (const forbidden of [
       'ready', 'log', 'sendMessage', 'queueMessage', 'resumeSession', 'clearSession', 'interrupt', 'cancelSession', 'rewindToMessage',
-      'approveEdit', 'answerQuestion', 'answerForm', 'approvePlan', 'approveSkill', 'answerElicitation', 'teamAgentPermissionResponse',
+      'approveEdit', 'answerQuestion', 'answerForm', 'approvePlan', 'approveSkill', 'answerElicitation',
       'openFile', 'openRewindDiff', 'openSessionLog', 'openAgentLog', 'bindPlanToSession', 'requestPlanFileCandidates', 'compassNavigateToNode', 'openBrowser',
       'settingsFileLoad', 'settingsFileSave', 'revealSettingsFile', 'setLanguagePreference', 'setProjectTrusted', 'deleteSession',
       'stopSubagent', 'cancelTeam',
@@ -102,7 +102,7 @@ describe('PanelManager view attachment', () => {
     h!.routed.length = 0;
 
     await h!.manager.dispatchFromView(panelId, { type: 'setBudgetLimit', budgetUsd: 5 });
-    await h!.manager.dispatchFromView(panelId, { type: 'ready' });
+    await h!.manager.dispatchFromView(panelId, { type: 'ready', panelToken: '00000000-0000-4000-8000-000000000000' });
     await h!.manager.dispatchFromView(panelId, { type: 'sendMessage', content: SENTINEL_KEY });
     await h!.manager.dispatchFromView(panelId, { type: '__proto__' } as unknown as WebviewToExtensionMessage);
 

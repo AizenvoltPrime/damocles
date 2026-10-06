@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
@@ -103,6 +103,28 @@ describe('SubscriptionUsageOverlay account profile', () => {
     expect(wrapper.find('[data-testid="claude-account"]').exists()).toBe(false);
     expect(wrapper.find('[role="progressbar"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("Couldn't load account details");
+  });
+});
+
+describe('SubscriptionUsageOverlay reset captions', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows a reset later today on the 24-hour clock and a later one with its weekday', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2025, 11, 31, 1, 0));
+    const wrapper = mountWith({
+      status: 'ok',
+      bars: [
+        { id: 'five_hour', utilization: 32, resetsAt: new Date(2025, 11, 31, 6, 10).getTime() },
+        { id: 'seven_day', utilization: 82, resetsAt: new Date(2026, 0, 3, 5, 0).getTime() },
+      ],
+    });
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Resets at 06:10');
+    expect(wrapper.text()).toContain('Resets Saturday 05:00');
   });
 });
 

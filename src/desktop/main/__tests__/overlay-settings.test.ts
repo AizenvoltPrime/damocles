@@ -226,6 +226,7 @@ describe('OverlaySettings', () => {
     expect(Object.keys(prefs.values).sort()).toEqual([
       'damocles.desktop.language',
       'damocles.desktop.notifications.enabled',
+      'damocles.desktop.notifications.sound',
       'damocles.desktop.reduceMotion',
       'damocles.desktop.restoreLayout',
       'damocles.desktop.theme',

@@ -1,5 +1,5 @@
 import type { Component } from 'vue';
-import { Ban, CircleCheck, CircleX, Clock, Eye, LoaderCircle } from 'lucide-vue-next';
+import { Ban, CircleAlert, CircleCheck, CircleX, Clock, Eye, LoaderCircle } from 'lucide-vue-next';
 import type { TeamAgent, TeamAgentStatus } from '@shared/types/team';
 
 // `avatar` colours an initial on a tint of its own colour (style.css `.d-tone-*`).
@@ -69,10 +69,12 @@ export interface AgentStatusChip {
   color: string;
   /** The agent is working now: its icon turns and a header dot breathes. */
   live: boolean;
-  labelKey: `team.statusLabel.${TeamAgentStatus}`;
+  /** The agent waits on the user: its icon and a header dot breathe (`.d-pulsing`). */
+  attention: boolean;
+  labelKey: `team.statusLabel.${TeamAgentStatus | 'needsYou'}`;
 }
 
-type ChipStyle = Omit<AgentStatusChip, 'labelKey'>;
+type ChipStyle = Omit<AgentStatusChip, 'labelKey' | 'attention'>;
 
 /** The one status presentation for subagents, teams and team members (Chat Panel.dc.html `STATUS`), on every card and overlay. */
 const AGENT_STATUS_CHIPS: Record<TeamAgentStatus, ChipStyle> = {
@@ -86,8 +88,12 @@ const AGENT_STATUS_CHIPS: Record<TeamAgentStatus, ChipStyle> = {
   monitoring: { icon: Eye, color: 'd-tone-info', live: false },
 };
 
-export function agentStatusChip(status: TeamAgentStatus): AgentStatusChip {
-  return { ...AGENT_STATUS_CHIPS[status], labelKey: `team.statusLabel.${status}` };
+// The chat header's and the desktop sidebar's "needs you": warning tone and an alert mark.
+const NEEDS_YOU_CHIP: AgentStatusChip = { icon: CircleAlert, color: 'd-tone-warning', live: false, attention: true, labelKey: 'team.statusLabel.needsYou' };
+
+/** `awaitingUser`: the session state names a pending prompt of this agent, or of a member of this team, which outranks the status. */
+export function agentStatusChip(status: TeamAgentStatus, awaitingUser = false): AgentStatusChip {
+  return awaitingUser ? NEEDS_YOU_CHIP : { ...AGENT_STATUS_CHIPS[status], attention: false, labelKey: `team.statusLabel.${status}` };
 }
 
 const WORKING: ReadonlySet<TeamAgentStatus> = new Set(['pending', 'running', 'awaiting-review', 'standby', 'monitoring']);

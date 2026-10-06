@@ -134,7 +134,7 @@ describe('WebviewExtensionUIContext.forAgent (Slice 2)', () => {
     // assertion exists to stop.
     const long = ui.forAgent({ agentId: 'ag-2', agentName: 'B'.repeat(1000) });
     void long.select('Pick', ['a']);
-    expect(lastRequest(out).agentName).toBe(`${'B'.repeat(57)}...`);
+    expect(lastRequest(out).agentName).toBe(`${'B'.repeat(59)}…`);
     expect(lastRequest(out).agentName!.length).toBe(60);
   });
 
@@ -158,7 +158,7 @@ describe('WebviewExtensionUIContext.forAgent (Slice 2)', () => {
 
     const name = lastRequest(out).agentName!;
     expect(name).not.toContain('\uFFFD');
-    expect(name).toBe(`${'😀'.repeat(57)}...`);
+    expect(name).toBe(`${'😀'.repeat(59)}…`);
     expect([...name]).toHaveLength(60);
   });
 

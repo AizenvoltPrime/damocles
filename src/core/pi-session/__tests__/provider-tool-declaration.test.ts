@@ -16,6 +16,7 @@ import { getCurrentSystemPrompt, getCurrentTools } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { buildAgentStartResult } from '../agent-start';
 import type { PanelGateContext } from '../permission-gate';
+import { ShellCancelStore } from '../tools/shell-cancel-registry';
 
 /**
  * What a provider actually receives.
@@ -61,6 +62,7 @@ function panelStub(): PanelGateContext {
   return {
     permissionHandler: {} as PanelGateContext['permissionHandler'],
     isPlanMode: () => false,
+    shellCancel: new ShellCancelStore().forContext(() => undefined),
     budgetStopRequested: () => false,
     getSessionModel: () => 'claude-opus-5-5',
     getSystemPromptEnv: () => ({

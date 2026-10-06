@@ -19,8 +19,27 @@ export type PermissionUpdate =
       destination: PermissionUpdateDestination;
     };
 
+/**
+ * Who raised a prompt, as core resolved it when the prompt was raised: the chat's own agent, a subagent by its
+ * record id, or a member of the chat's running team. The team's names are model text, sanitized at capture.
+ */
+export type PromptOwner =
+  | { readonly kind: 'main' }
+  | { readonly kind: 'subagent'; readonly agentId: string }
+  | { readonly kind: 'team'; readonly teamId: string; readonly agentId: string; readonly teamTitle?: string; readonly agentName?: string };
+
+/** The permission state that approved an open prompt because it no longer asks for that call: a mode, or YOLO. */
+export type PromptApprover = 'default' | 'acceptEdits' | 'plan' | 'yolo';
+
+/** An unanswered prompt and who raised it, as the session state names it. */
+export interface PendingPromptOwner {
+  readonly id: string;
+  readonly owner: PromptOwner;
+}
+
 export interface PendingPermissionInfo {
   toolUseId: string;
+  owner: PromptOwner;
   toolName: string;
   /** What the generic prompt shows for a tool with no dedicated view. */
   toolInput?: Record<string, unknown>;

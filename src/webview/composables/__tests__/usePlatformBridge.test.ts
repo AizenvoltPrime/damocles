@@ -19,9 +19,9 @@ describe('usePlatformBridge host selection', () => {
     window.damoclesBridge = { postMessage: vi.fn(), onMessage: vi.fn(() => () => {}), getState: vi.fn(), setState: vi.fn() };
     const { usePlatformBridge } = await import('../usePlatformBridge');
     const bridge = usePlatformBridge();
-    usePlatformBridge().postMessage({ type: 'ready' });
+    usePlatformBridge().postMessage({ type: 'cancelSession' });
 
-    bridge.postMessage({ type: 'ready' });
+    bridge.postMessage({ type: 'cancelSession' });
     bridge.setState({ b: 2 });
     const received: ExtensionToWebviewMessage[] = [];
     const off = bridge.onMessage((m) => received.push(m));
@@ -31,7 +31,7 @@ describe('usePlatformBridge host selection', () => {
 
     expect(g.acquireVsCodeApi).toHaveBeenCalledTimes(1);
     expect(api.postMessage).toHaveBeenCalledTimes(2);
-    expect(api.postMessage).toHaveBeenCalledWith({ type: 'ready' });
+    expect(api.postMessage).toHaveBeenCalledWith({ type: 'cancelSession' });
     expect(api.setState).toHaveBeenCalledWith({ b: 2 });
     expect(bridge.getState()).toEqual({ a: 1 });
     expect(received).toEqual([{ type: 'ping' }]);
@@ -55,7 +55,7 @@ describe('usePlatformBridge host selection', () => {
     const { usePlatformBridge } = await import('../usePlatformBridge');
     const bridge = usePlatformBridge();
 
-    bridge.postMessage({ type: 'ready' });
+    bridge.postMessage({ type: 'cancelSession' });
     bridge.setState({ tab: 'y' });
     const received: ExtensionToWebviewMessage[] = [];
     const off = bridge.onMessage((m) => received.push(m));
@@ -63,7 +63,7 @@ describe('usePlatformBridge host selection', () => {
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'window-event-ignored' } }));
     off();
 
-    expect(desktop.postMessage).toHaveBeenCalledWith({ type: 'ready' });
+    expect(desktop.postMessage).toHaveBeenCalledWith({ type: 'cancelSession' });
     expect(desktop.setState).toHaveBeenCalledWith({ tab: 'y' });
     expect(bridge.getState()).toEqual({ tab: 'x' });
     expect(received).toEqual([{ type: 'ping' }]);

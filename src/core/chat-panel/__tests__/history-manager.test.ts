@@ -41,7 +41,7 @@ function harness(): {
   const session = {
     publishAccountInfo: () => posted.push({
       type: 'accountInfo',
-      data: { model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+      data: { model: 'gpt-6.1-sol', dollarBilled: true },
     }),
   } as unknown as ChatSession;
   const manager = new HistoryManager({
@@ -53,7 +53,7 @@ function harness(): {
 
 /**
  * A session reopened from the picker may never run a turn, and the replay carries no panel state, so
- * the restore itself has to deliver the account chip.
+ * the restore itself has to deliver the account state.
  */
 describe('HistoryManager.loadSessionHistory', () => {
   it('delivers account state to the restored panel with no turn', async () => {
@@ -65,7 +65,7 @@ describe('HistoryManager.loadSessionHistory', () => {
     expect(account).toHaveLength(1);
     expect(account[0]).toEqual({
       type: 'accountInfo',
-      data: { model: 'gpt-6.1-sol', tokenSource: 'openai-api-key', dollarBilled: true },
+      data: { model: 'gpt-6.1-sol', dollarBilled: true },
     });
   });
 

@@ -196,6 +196,7 @@ export class FormManager {
         type: 'requestForm',
         toolUseId,
         form,
+        owner: this.state.promptOwner(context.parentToolUseId),
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       };
 

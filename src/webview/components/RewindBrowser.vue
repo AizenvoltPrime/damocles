@@ -27,6 +27,12 @@ function showFileBadge(item: RewindHistoryItem): boolean {
   return (item.kind !== 'compaction' || isCheckpointBacked(item)) && item.filesAffected > 0;
 }
 
+/** Whether a list row shows the "Not rewindable" badge. A chat with no project folder restores files
+ *  on no row, and the selected row's notes already say why, so its rows carry no badge. */
+function showNotRewindableBadge(item: RewindHistoryItem): boolean {
+  return item.notRewindable !== undefined && item.notRewindable.reason !== 'no-project';
+}
+
 const props = defineProps<{
   prompts: RewindHistoryItem[];
   /** Pre-rewind snapshots, newest first; each can put back the files its rewind replaced. */
@@ -233,7 +239,7 @@ function truncateContent(content: string, maxLength: number = 60): string {
             class="relative z-2 flex-none self-center rounded-full bg-(--d-hover) px-1.75 font-mono text-10.5 whitespace-nowrap text-(--d-muted)"
           >{{ t('rewind.filesAffected', { n: prompt.filesAffected }, prompt.filesAffected) }}</span>
           <span
-            v-if="prompt.notRewindable"
+            v-if="showNotRewindableBadge(prompt)"
             data-testid="rewind-row-not-rewindable"
             class="relative z-2 flex-none self-center rounded-full bg-[color-mix(in_srgb,var(--d-warning)_20%,transparent)] px-1.75 text-10.5 whitespace-nowrap text-(--d-warning-text)"
           >{{ t('rewind.notRewindable.badge') }}</span>

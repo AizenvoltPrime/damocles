@@ -39,6 +39,21 @@
 @keyframes d-pop-top{from{opacity:0;transform:translateY(4px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes d-pop-top-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(4px) scale(.97)}}
 
+/* A label replaced in place: the old one leaves upwards, the new one rises into its slot. */
+@keyframes d-swap-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes d-swap-out{from{opacity:1;transform:none}to{opacity:0;transform:translateY(-5px)}}
+
+/* A card the user asked to see: it nudges forward while an inset accent ring flashes twice. */
+@keyframes d-attention{0%{transform:none}35%{transform:scale(1.012)}100%{transform:none}}
+@keyframes d-attention-ring{0%,100%{opacity:0}20%,60%{opacity:1}40%{opacity:.25}}
+@keyframes d-zoom-out{from{opacity:1;transform:none}to{opacity:0;transform:scale(.97) translateY(8px)}}
+@keyframes nt-out{from{opacity:1;transform:none}to{opacity:0;transform:translateX(28px) scale(.98)}}
+
+/* Desktop notifications: a toast's life drains from --life-from (the share of its life left) to nothing; the bell rings and its badge pops. */
+@keyframes nt-life{from{transform:scaleX(var(--life-from,1))}to{transform:scaleX(0)}}
+@keyframes d-wiggle{0%,100%{transform:rotate(0)}15%{transform:rotate(14deg)}30%{transform:rotate(-12deg)}45%{transform:rotate(9deg)}60%{transform:rotate(-6deg)}75%{transform:rotate(3deg)}}
+@keyframes d-badge-pop{0%{opacity:0;transform:scale(.4)}60%{opacity:1;transform:scale(1.18)}100%{opacity:1;transform:scale(1)}}
+
 /* Vue <Transition name="t-…"> classes. Leave animations hold their last frame so nothing flashes before removal. */
 .t-fade-enter-active{animation:o-fade .2s var(--ease-out)}
 .t-fade-leave-active{animation:o-fade-out .14s ease-in both}
@@ -48,6 +63,8 @@
 .t-pop-top-leave-active{animation:d-pop-top-out .12s ease-in both}
 .t-up-enter-active{animation:d-up .3s var(--ease-out)}
 .t-up-leave-active{animation:o-up-out .16s ease-in both}
+.t-swap-enter-active{display:inline-block;animation:d-swap-in .2s var(--ease-out)}
+.t-swap-leave-active{display:inline-block;animation:d-swap-out .12s ease-in both}
 /* An overlay root (scrim) carries the longest animation so Vue waits for its .o-panel child too. */
 .t-overlay-enter-active{animation:o-fade .26s var(--ease-out)}
 .t-overlay-leave-active{animation:o-fade-out .18s ease-in both}
@@ -78,6 +95,10 @@
 /* Attention ring around a rounded box; the colour is the box's currentColor. Needs no wrapper. */
 .d-ring{position:relative;isolation:isolate}
 .d-ring::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:currentColor;opacity:0;pointer-events:none;animation:d-ring 1.6s var(--ease-out) infinite}
+
+/* Played once by `playAttention` (composables/useAttention.ts). The ring sits inside the box, so an overflow-hidden card keeps it; its colour is the card's --attention-ring. */
+.d-attention{position:relative;animation:d-attention .5s var(--ease-spring)}
+.d-attention::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 2px var(--attention-ring,currentColor);opacity:0;pointer-events:none;animation:d-attention-ring 1.1s var(--ease-out) both}
 
 /* Indeterminate progress: a band that sweeps a track with overflow hidden. */
 .d-sweep-bar{position:relative;overflow:hidden}

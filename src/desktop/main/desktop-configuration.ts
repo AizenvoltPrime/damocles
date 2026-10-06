@@ -6,6 +6,7 @@ export const REDUCE_MOTION_SETTING = 'damocles.desktop.reduceMotion';
 export const LANGUAGE_SETTING = 'damocles.desktop.language';
 export const RESTORE_LAYOUT_SETTING = 'damocles.desktop.restoreLayout';
 export const NOTIFICATIONS_SETTING = 'damocles.desktop.notifications.enabled';
+export const NOTIFICATION_SOUND_SETTING = 'damocles.desktop.notifications.sound';
 
 export const THEME_PREFERENCES = ['system', 'dark', 'light'] as const;
 export type ThemePreference = (typeof THEME_PREFERENCES)[number];
@@ -60,7 +61,13 @@ export const DESKTOP_CONFIGURATION: Readonly<Record<string, DesktopSettingProper
     type: 'boolean',
     default: true,
     scope: 'application',
-    description: 'Also show each in-app notification as an operating system notification while the window is not focused.',
+    description: 'Show pop-ups when a chat needs you (an approval, a plan, a question, a team review, a finished, paused or limited chat) at the bottom-right of the screen, above other apps. When off, they still collect in the notification center.',
+  },
+  [NOTIFICATION_SOUND_SETTING]: {
+    type: 'boolean',
+    default: true,
+    scope: 'application',
+    description: 'Play a short sound with each desktop pop-up.',
   },
 };
 
