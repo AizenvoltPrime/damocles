@@ -1,4 +1,4 @@
-import { bootMessages, conversation, FOLDERS, folderKey, settings, windowTitle } from '../lib/script.ts';
+import { bootMessages, conversation, FOLDERS, folderKey, settingsUpdate, windowTitle } from '../lib/script.ts';
 import type { Scene } from '../lib/scene.ts';
 
 const WEB_SID = '0197a3c9-8d02-7c4e-b1a7-5e3f9a2c6d18';
@@ -33,7 +33,7 @@ export const folders: Scene = {
     await stage.pause(700);
     const web = folderKey('acme-web');
     await stage.send(
-      { type: 'settingsUpdate', settings: settings('acceptEdits', true) },
+      settingsUpdate('acceptEdits', true),
       { type: 'workspaceFolderUpdate', folders: FOLDERS, panelFolderKey: web, defaultFolderKey: folderKey('acme-api'), switched: true },
       { type: 'mcpConfigUpdate', servers: [], configErrors: [], localMcpUnignored: false },
       { type: 'sessionStarted', sessionId: WEB_SID },

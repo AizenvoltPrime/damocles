@@ -2,12 +2,21 @@ import type { ExtensionToWebviewMessage } from '../../../src/shared/types/messag
 import type { ContentBlock } from '../../../src/shared/types/content.ts';
 import type { ExtensionSettings, ModelInfo, PermissionMode } from '../../../src/shared/types/settings.ts';
 import type { WorkspaceFolderInfo } from '../../../src/shared/types/workspace-folders.ts';
+import type { PromptOwner } from '../../../src/shared/types/permissions.ts';
 import type { AgentUsageTotals } from '../../../src/shared/usage-accounting.ts';
 import type { Stage } from './stage.ts';
 
 export const SID = '0197a3c2-5e1f-7b2a-9c44-2f1d8e6b0a11';
 export const MODEL = 'claude-opus-5-5';
 export const WORKSPACE = 'c:/dev/acme-api';
+export const MAIN: PromptOwner = { kind: 'main' };
+
+/** The session state the extension publishes; `pending` names the chat's own unanswered prompts by tool call id. */
+export const sessionState = (state: 'idle' | 'running' | 'requires_action', sessionId = SID, pending: string[] = []): ExtensionToWebviewMessage =>
+  ({ type: 'sessionStateChanged', state, sessionId, pendingPrompts: pending.map((id) => ({ id, owner: MAIN })) });
+
+export const settingsUpdate = (permissionMode: PermissionMode = 'default', yolo = false): ExtensionToWebviewMessage =>
+  ({ type: 'settingsUpdate', settings: settings(permissionMode, yolo), workspaceWritable: true });
 
 /** A multi-root window, so the panel shows its folder chip. */
 export const FOLDERS = ['acme-api', 'acme-web', 'acme-infra'].map((name): WorkspaceFolderInfo => ({
@@ -32,7 +41,7 @@ const MODELS: ModelInfo[] = [
 export function settings(permissionMode: PermissionMode = 'default', yolo = false): ExtensionSettings {
   return {
     maxTurns: 100, maxBudgetUsd: null, taskBudget: null, permissionMode, defaultPermissionMode: 'default',
-    enableFileCheckpointing: true, sandbox: { enabled: false }, autoCompact: { enabled: false, triggerPercent: 80 },
+    enableFileCheckpointing: true, checkpointRetentionDays: 30, sandbox: { enabled: false }, autoCompact: { enabled: false, triggerPercent: 80 },
     cacheWarming: 'off', dangerouslySkipPermissions: yolo, defaultDangerouslySkipPermissions: false,
     ideContextEnabled: true, pinnedHeaderHidden: false,
     team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
@@ -43,8 +52,8 @@ export function settings(permissionMode: PermissionMode = 'default', yolo = fals
 export function bootMessages({ mode = 'default', yolo = false }: BootOptions = {}): ExtensionToWebviewMessage[] {
   const panelFolderKey = folderKey('acme-api');
   return [
-    { type: 'sessionStateChanged', state: 'idle', sessionId: '' },
-    { type: 'settingsUpdate', settings: settings(mode, yolo) },
+    sessionState('idle', ''),
+    settingsUpdate(mode, yolo),
     { type: 'mcpConfigUpdate', servers: [], configErrors: [], localMcpUnignored: false },
     { type: 'modelUpdate', activeModel: MODEL, defaultModel: MODEL, contextWindowSize: 1_000_000 },
     { type: 'panelThinkingUpdate', panel: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, panelModel: MODEL, defaults: { thinkingDisabled: false, effort: 'high', maxThinkingTokens: null }, defaultsModel: MODEL },
@@ -53,7 +62,7 @@ export function bootMessages({ mode = 'default', yolo = false }: BootOptions = {
     { type: 'storedSessions', sessions: [], hasMore: false, nextOffset: 0, isFirstPage: true },
     { type: 'promptHistory', history: [], hasMore: false },
     { type: 'sessionStarted', sessionId: SID },
-    { type: 'accountInfo', data: { model: MODEL, subscriptionType: 'allowance', dollarBilled: false } },
+    { type: 'accountInfo', data: { model: MODEL, dollarBilled: false } },
     { type: 'availableModels', models: MODELS },
   ];
 }
@@ -95,7 +104,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
       await stage.send(
         { type: 'userMessage', content: text, correlationId, promptIndex: turn - 1 },
         { type: 'processing', isProcessing: true },
-        { type: 'sessionStateChanged', state: 'running', sessionId: sid },
+        sessionState('running', sid),
         { type: 'userMessageIdAssigned', sdkMessageId: entryId, correlationId },
       );
       checkpoints.push(entryId);
@@ -181,7 +190,7 @@ export function conversation(stage: Stage, opts: { parentToolUseId?: string; mes
         { type: 'sessionUsage', usage, numTurns: turn },
         { type: 'done', data: { type: 'result', session_id: sid, is_done: true, stop_reason: null } },
         { type: 'processing', isProcessing: false },
-        { type: 'sessionStateChanged', state: 'idle', sessionId: sid },
+        sessionState('idle', sid),
         { type: 'stopInfo', lastAssistantMessage },
         { type: 'checkpointInfo', userMessageIds: [...checkpoints] },
       );

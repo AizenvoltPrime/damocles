@@ -1,4 +1,4 @@
-import { bootMessages, conversation, SID } from '../lib/script.ts';
+import { bootMessages, conversation, sessionState } from '../lib/script.ts';
 import { steer, team as startTeam, type MemberSpec } from '../lib/agents.ts';
 import { agentCard, overlayClose, stopButton, type Scene } from '../lib/scene.ts';
 
@@ -78,7 +78,7 @@ export const team: Scene = {
     await stage.click(stopButton(stage));
     await cancelled;
     await stage.send(
-      { type: 'sessionStateChanged', state: 'idle', sessionId: SID },
+      sessionState('idle'),
       { type: 'toolAbandoned', toolUseId: CREATE, toolName: 'create_team', parentToolUseId: null },
       { type: 'teamPhaseUpdate', teamId: TEAM_ID, phase: 'synthesizing' },
       { type: 'sessionCancelled' },

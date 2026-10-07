@@ -115,9 +115,8 @@ export async function steer(stage: Stage, targets: SteerTargetInfo[], rowText: s
   stage.respond('requestSteerTargets', () => [{ type: 'steerTargets', agents: targets }]);
   const input = stage.page.locator('textarea').first();
   await stage.typeInto(input, '/steer ', { delayMs: 60 });
-  // The picker is teleported to <body>; transcript cards also use .cursor-pointer, so scope to the popup.
-  const popup = stage.page.locator('div.shadow-xl.origin-bottom').first();
-  const row = popup.locator('div.cursor-pointer', { hasText: rowText }).first();
+  const popup = stage.page.getByRole('listbox').filter({ hasText: rowText }).last();
+  const row = popup.getByRole('option').filter({ hasText: rowText }).first();
   await row.waitFor();
   await stage.focus([popup, input], { maxZoom: 1.5 });
   await stage.pause(900);

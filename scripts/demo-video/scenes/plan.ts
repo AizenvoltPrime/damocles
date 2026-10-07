@@ -1,4 +1,4 @@
-import { bootMessages, conversation, settings, SID } from '../lib/script.ts';
+import { bootMessages, conversation, MAIN, sessionState, settingsUpdate } from '../lib/script.ts';
 import type { Scene } from '../lib/scene.ts';
 
 const PLAN_PATH = 'C:/Users/dev/.damocles/plans/add-audit-log-0197a3c2.md';
@@ -53,14 +53,14 @@ export const plan: Scene = {
     await c.bill({ totalInputTokens: 900, totalOutputTokens: 620, cacheReadTokens: 20000, costUsd: 0.029 });
     await stage.send(
       { type: 'toolPending', toolUseId: 'toolu_p_exit', toolName: 'ExitPlanMode', input: {}, parentToolUseId: null },
-      { type: 'requestPlanApproval', toolUseId: 'toolu_p_exit', planContent: PLAN },
-      { type: 'sessionStateChanged', state: 'requires_action', sessionId: SID },
+      { type: 'requestPlanApproval', toolUseId: 'toolu_p_exit', planContent: PLAN, owner: MAIN },
+      sessionState('requires_action', undefined, ['toolu_p_exit']),
     );
     await stage.caption('Nothing is written until you approve the plan.');
     await stage.pause(600);
     await stage.focus([
       stage.page.getByRole('heading', { name: 'Audit log for admin actions' }).last(),
-      stage.page.getByRole('listitem').filter({ hasText: 'each route writes its event' }).last(),
+      stage.page.getByRole('button', { name: 'Yes, auto-accept edits' }),
     ], { maxZoom: 1.4 });
     await stage.pause(2400);
     stage.unfocus();
@@ -69,8 +69,8 @@ export const plan: Scene = {
     await stage.click(stage.page.getByRole('button', { name: 'Yes, auto-accept edits' }));
     await approved;
     await stage.send(
-      { type: 'sessionStateChanged', state: 'running', sessionId: SID },
-      { type: 'settingsUpdate', settings: settings('acceptEdits') },
+      sessionState('running'),
+      settingsUpdate('acceptEdits'),
       { type: 'toolCompleted', toolUseId: 'toolu_p_exit', toolName: 'ExitPlanMode', result: 'Plan approved. Proceeding with implementation.', durationMs: 5200 },
     );
     c.startMessage();

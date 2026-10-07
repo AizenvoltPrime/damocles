@@ -1,4 +1,4 @@
-import { bootMessages, conversation, SID } from '../lib/script.ts';
+import { bootMessages, conversation, sessionState } from '../lib/script.ts';
 import { steer, subagent, type SubagentSpec } from '../lib/agents.ts';
 import { agentCard, overlayClose, stopButton, type Scene } from '../lib/scene.ts';
 
@@ -78,7 +78,7 @@ export const subagents: Scene = {
     await stage.click(stopButton(stage));
     await cancelled;
     await stage.send(
-      { type: 'sessionStateChanged', state: 'idle', sessionId: SID },
+      sessionState('idle'),
       { type: 'toolAbandoned', toolUseId: MAP.toolUseId, toolName: 'Agent', parentToolUseId: null },
       { type: 'toolAbandoned', toolUseId: MW.toolUseId, toolName: 'Agent', parentToolUseId: null },
       { type: 'sessionCancelled' },

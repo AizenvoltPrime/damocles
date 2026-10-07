@@ -19,6 +19,9 @@ function run(cmd: string, args: string[]): Promise<string> {
   });
 }
 
+/** Near-lossless working clips on NVIDIA's encoder; the final video stays on libx264, which is smaller at equal quality. */
+const INTERMEDIATE_CODEC = ['-c:v', 'h264_nvenc', '-preset', 'p4', '-rc', 'constqp', '-qp', '14'];
+
 const ffmpeg = (args: string[]) => run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args]);
 
 export async function probeDuration(file: string): Promise<number> {
@@ -46,7 +49,7 @@ async function framesToClip(rec: Recording, out: string): Promise<void> {
   });
   lines.push(`file '${path.basename(rec.frames.at(-1)!.file)}'`);
   fs.writeFileSync(list, lines.join('\n'));
-  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-vf', `fps=${FPS},format=yuv420p`, '-c:v', 'libx264', '-crf', '12', '-preset', 'fast', out]);
+  await ffmpeg(['-f', 'concat', '-safe', '0', '-i', list, '-vf', `fps=${FPS},format=yuv420p`, ...INTERMEDIATE_CODEC, out]);
 }
 
 /** Captions stay clear of both ends, because scenes overlap by XFADE at each joint and two scenes' captions would blend. */
@@ -119,17 +122,17 @@ export interface SceneInputs {
   workDir: string;
   /** Where the scene starts in the final video, so the backdrop drift continues across joints. */
   t0: number;
-  /** Rebuild capture.mp4 from the frames; otherwise reuse the one already built from this recording. */
-  freshCapture: boolean;
   /** Holds the backdrop still, for the GIF, where a moving backdrop changes every pixel of every frame. */
   stillBackdrop?: boolean;
   out: string;
 }
 
 /** One scene: the capture in the window chrome over the drifting backdrop, filmed by the camera, with caption pills below. */
-export async function composeScene({ rec, art, captionImages, workDir, t0, freshCapture, stillBackdrop = false, out }: SceneInputs): Promise<string> {
+export async function composeScene({ rec, art, captionImages, workDir, t0, stillBackdrop = false, out }: SceneInputs): Promise<string> {
   const raw = path.join(workDir, 'capture.mp4');
-  if (freshCapture || !fs.existsSync(raw)) await framesToClip(rec, raw);
+  // A capture older than the scene's recording.json was built from an earlier filming.
+  const recorded = fs.statSync(path.join(workDir, 'recording.json')).mtimeMs;
+  if (!fs.existsSync(raw) || fs.statSync(raw).mtimeMs < recorded) await framesToClip(rec, raw);
   const drift = driftExpr(stillBackdrop ? t0.toFixed(3) : `${t0.toFixed(3)}+t`);
   const camera = cameraFilter(rec.camera);
   const graph = [
@@ -150,12 +153,12 @@ export async function composeScene({ rec, art, captionImages, workDir, t0, fresh
   fs.writeFileSync(graphFile, graph.join(';\n'));
   const still = (file: string) => ['-loop', '1', '-framerate', String(FPS), '-t', rec.duration.toFixed(3), '-i', file];
   await ffmpeg(['-i', raw, ...still(art.backdrop), ...still(art.frame), ...captionImages.flatMap(still),
-    '-/filter_complex', graphFile, '-map', '[v]', '-t', rec.duration.toFixed(3), '-c:v', 'libx264', '-crf', '12', '-preset', 'fast', '-r', String(FPS), out]);
+    '-/filter_complex', graphFile, '-map', '[v]', '-t', rec.duration.toFixed(3), ...INTERMEDIATE_CODEC, '-r', String(FPS), out]);
   return out;
 }
 
 export async function composeCard(framesPattern: string, out: string): Promise<string> {
-  await ffmpeg(['-framerate', String(FPS), '-i', framesPattern, '-vf', 'format=yuv420p', '-c:v', 'libx264', '-crf', '12', '-preset', 'fast', out]);
+  await ffmpeg(['-framerate', String(FPS), '-i', framesPattern, '-vf', 'format=yuv420p', ...INTERMEDIATE_CODEC, out]);
   return out;
 }
 

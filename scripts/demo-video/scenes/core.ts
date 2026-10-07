@@ -1,4 +1,5 @@
-import { bootMessages, conversation, SID } from '../lib/script.ts';
+import { createTwoFilesPatch, FILE_HEADERS_ONLY } from 'diff';
+import { bootMessages, conversation, MAIN, sessionState } from '../lib/script.ts';
 import { permissionOption, type Scene } from '../lib/scene.ts';
 import { AUTH_PATH, AUTH_TS, EDIT_OLD, EDIT_NEW, EDIT2_OLD, EDIT2_NEW, TEST_FRAMES } from './fixtures.ts';
 
@@ -17,7 +18,7 @@ export const core: Scene = {
   boot: bootMessages(),
   async run(stage) {
     const c = conversation(stage);
-    await stage.caption('Ask in plain language. Claude or GPT works inside VS Code.');
+    await stage.caption('Ask in plain language. Claude, GPT and other models work inside VS Code.');
     await stage.pause(600);
     const entryId = await c.prompt(PROMPT);
 
@@ -41,17 +42,17 @@ export const core: Scene = {
     await c.seal();
     await c.bill({ totalInputTokens: 900, totalOutputTokens: 320, cacheReadTokens: 25000, costUsd: 0.038 });
     await stage.send(
-      { type: 'requestPermission', toolUseId: 'toolu_edit1', toolName: 'Edit', toolInput: edit1, filePath: AUTH_PATH, originalContent: AUTH_TS, proposedContent: AUTH_TS.replace(EDIT_OLD, EDIT_NEW), editLineNumber: 4 },
-      { type: 'sessionStateChanged', state: 'requires_action', sessionId: SID },
+      { type: 'requestPermission', toolUseId: 'toolu_edit1', toolName: 'Edit', toolInput: edit1, filePath: AUTH_PATH, patch: createTwoFilesPatch(AUTH_PATH, AUTH_PATH, AUTH_TS, AUTH_TS.replace(EDIT_OLD, EDIT_NEW), undefined, undefined, { context: 4, headerOptions: FILE_HEADERS_ONLY }), owner: MAIN, editLineNumber: 4 },
+      sessionState('requires_action', undefined, ['toolu_edit1']),
     );
     await stage.caption('Edits wait for your approval, shown as a highlighted diff.');
     stage.mark('gif-start');
     await stage.focus(stage.page.locator('[role="region"][aria-label="Permission request"]'), { maxZoom: 1.3 });
     await stage.pause(2600);
     const approved = stage.waitForPost('approveEdit');
-    await stage.click(permissionOption(stage, 'Yes, accept all edits'));
+    await stage.click(permissionOption(stage, 'yes-accept-all'));
     await approved;
-    await stage.send({ type: 'sessionStateChanged', state: 'running', sessionId: SID });
+    await stage.send(sessionState('running'));
     await c.runTool('toolu_edit1', 'Edit', edit1, `The file ${AUTH_PATH} has been updated.`, { durationMs: 18 });
 
     c.startMessage();
@@ -67,17 +68,17 @@ export const core: Scene = {
     await c.seal();
     await c.bill({ totalInputTokens: 600, totalOutputTokens: 60, cacheReadTokens: 27000, costUsd: 0.019 });
     await stage.send(
-      { type: 'requestPermission', toolUseId: 'toolu_bash1', toolName: 'Bash', toolInput: bash, command: 'npm test', suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }] },
-      { type: 'sessionStateChanged', state: 'requires_action', sessionId: SID },
+      { type: 'requestPermission', toolUseId: 'toolu_bash1', toolName: 'Bash', toolInput: bash, command: 'npm test', suggestions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }], owner: MAIN },
+      sessionState('requires_action', undefined, ['toolu_bash1']),
     );
     await stage.caption('Shell commands ask first, then stream their output as they run.');
     await stage.focus(stage.page.locator('[role="region"][aria-label="Permission request"]'), { maxZoom: 1.3 });
     await stage.pause(1500);
     const ran = stage.waitForPost('approveEdit');
-    await stage.click(permissionOption(stage, 'Yes'));
+    await stage.click(permissionOption(stage, 'yes'));
     await ran;
     stage.unfocus();
-    await stage.send({ type: 'sessionStateChanged', state: 'running', sessionId: SID });
+    await stage.send(sessionState('running'));
     await c.runTool('toolu_bash1', 'Bash', bash, TEST_FRAMES.at(-1)!, { durationMs: 2140, progress: TEST_FRAMES, stepMs: 420 });
     stage.mark('gif-end');
 
@@ -90,7 +91,7 @@ export const core: Scene = {
 
     await stage.caption('Every prompt is a checkpoint: roll files back, fork the chat, or both.');
     stage.respond('requestRewindHistory', () => [{
-      type: 'rewindHistory', canFork: true, prompts: [{
+      type: 'rewindHistory', canFork: true, restorePoints: [], prompts: [{
         kind: 'prompt', messageId: entryId, content: PROMPT, timestamp: Date.now() - 60_000, filesAffected: 1,
         files: [{ path: AUTH_PATH, displayName: 'auth.ts' }], linesChanged: { added: 9, removed: 1 },
       }],

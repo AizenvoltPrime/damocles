@@ -13,17 +13,14 @@ export interface Scene {
   run(stage: Stage): Promise<void>;
 }
 
-/** The PermissionPrompt option whose label is `label` ("Yes", "Yes, accept all edits", ...). */
-export const permissionOption = (stage: Stage, label: string): Locator =>
-  stage.page
-    .locator('[role="region"][aria-label="Permission request"] [role="option"]')
-    .filter({ hasText: new RegExp(`^\\d?\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+/** The PermissionPrompt option by its value (`yes`, `yes-accept-all`, `no`, ...). */
+export const permissionOption = (stage: Stage, value: string): Locator => stage.page.getByTestId(`permission-option-${value}`);
 
-/** The composer's Stop button, shown in place of Send while a turn runs; it has no accessible name. */
-export const stopButton = (stage: Stage): Locator => stage.page.locator('button.bg-destructive').last();
+/** The composer's send button while a turn runs and the input is empty, when it stops the turn. */
+export const stopButton = (stage: Stage): Locator => stage.page.getByTestId('composer-send').and(stage.page.getByRole('button', { name: 'Stop (Esc)' }));
 
 /** A subagent or team card in the transcript, found by the description or title it shows. */
 export const agentCard = (stage: Stage, text: string): Locator => stage.page.locator('div.cursor-pointer', { hasText: text }).first();
 
-/** The back arrow of the topmost overlay. */
-export const overlayClose = (stage: Stage): Locator => stage.page.locator('[role="dialog"]').last().getByRole('button', { name: 'Close' }).first();
+/** The close button of the topmost overlay. */
+export const overlayClose = (stage: Stage): Locator => stage.page.locator('[data-testid="overlay-close"]:visible').last();

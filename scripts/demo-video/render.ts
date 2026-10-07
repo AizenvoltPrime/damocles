@@ -45,13 +45,13 @@ try {
   const artDir = path.join(outDir, 'art');
   const art = await renderArtwork(browser, repoRoot, artDir);
 
-  const recordings = new Map<string, { rec: Recording; fresh: boolean }>();
+  const recordings = new Map<string, Recording>();
   for (const scene of SCENES) {
     const dir = path.join(outDir, 'scenes', scene.id);
     const meta = path.join(dir, 'recording.json');
     if (only && !only.has(scene.id)) {
       if (!fs.existsSync(meta)) throw new Error(`[${scene.id}] has no saved recording; film it with --only ${scene.id}`);
-      recordings.set(scene.id, { rec: JSON.parse(fs.readFileSync(meta, 'utf8')) as Recording, fresh: false });
+      recordings.set(scene.id, JSON.parse(fs.readFileSync(meta, 'utf8')) as Recording);
       continue;
     }
     console.log(`[${scene.id}] filming`);
@@ -68,7 +68,7 @@ try {
     await stage.page.context().close();
     fs.writeFileSync(meta, JSON.stringify(rec));
     console.log(`[${scene.id}] ${rec.frames.length} frames over ${rec.duration.toFixed(1)}s`);
-    recordings.set(scene.id, { rec, fresh: true });
+    recordings.set(scene.id, rec);
   }
 
   // Each clip starts XFADE before the previous one ends.
@@ -76,15 +76,15 @@ try {
   const clips = [await composeCard(await renderCard(browser, repoRoot, art, 'intro', INTRO_SECONDS, FPS, 0, path.join(artDir, 'intro')), path.join(artDir, 'intro.mp4'))];
   const gifCuts: GifCut[] = [];
   for (const scene of SCENES) {
-    const { rec, fresh } = recordings.get(scene.id)!;
+    const rec = recordings.get(scene.id)!;
     const dir = path.join(outDir, 'scenes', scene.id);
     console.log(`[${scene.id}] composing`);
     const captionImages = await renderCaptions(browser, rec.captions, scene.chapter, scene.accent, dir);
-    const inputs = { rec, art, captionImages, workDir: dir, t0, freshCapture: fresh };
+    const inputs = { rec, art, captionImages, workDir: dir, t0 };
     clips.push(await composeScene({ ...inputs, out: path.join(dir, 'scene.mp4') }));
     const { 'gif-start': from, 'gif-end': to } = rec.marks;
     if (from !== undefined && to !== undefined) {
-      gifCuts.push({ clip: await composeScene({ ...inputs, freshCapture: false, stillBackdrop: true, out: path.join(dir, 'scene-gif.mp4') }), from, to });
+      gifCuts.push({ clip: await composeScene({ ...inputs, stillBackdrop: true, out: path.join(dir, 'scene-gif.mp4') }), from, to });
     }
     t0 += rec.duration - XFADE;
   }

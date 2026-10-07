@@ -108,7 +108,10 @@ export async function openStage(browser: Browser, url: string, boot: ExtensionTo
   page.on('pageerror', (err) => console.error('[webview error]', err.message));
 
   const posted: WebviewToExtensionMessage[] = [];
-  const responders = new Map<PostType, Responder>([['ready', () => boot]]);
+  const responders = new Map<PostType, Responder>([
+    ['ready', () => boot],
+    ['requestCustomSlashCommands', () => [{ type: 'customSlashCommands', commands: [] }]],
+  ]);
   const waiters: { type: PostType; from: number; resolve: (m: WebviewToExtensionMessage) => void }[] = [];
   let cursor = { x: 1180, y: 640 };
 

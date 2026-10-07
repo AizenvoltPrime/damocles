@@ -103,11 +103,11 @@ function captionHtml(chapter: string, accent: Accent, text: string): string {
 
 /** Animations are authored as CSS and rendered paused, one seek per frame, so card timing never depends on the machine. */
 function cardHtml(iconDataUrl: string, backdropUrl: string, kind: 'intro' | 'outro'): string {
-  const pills = ['Claude &amp; GPT', 'Diff approval', 'Plan mode', 'Folder per panel', 'Subagents', 'Teams', '/steer', 'Usage stats'];
+  const pills = ['Claude, GPT &amp; more', 'Diff approval', 'Plan mode', 'Folder per panel', 'Subagents', 'Teams', '/steer', 'Usage stats'];
   const body = kind === 'intro'
     ? `<div class="tag rise" style="animation-delay:.75s">An AI coding agent inside VS Code</div>
        <div class="pills">${pills.map((p, i) => `<span class="pop" style="animation-delay:${(1.15 + i * 0.09).toFixed(2)}s">${p}</span>`).join('')}</div>`
-    : `<div class="tag rise" style="animation-delay:.55s">Install it from the VS Code Marketplace</div>
+    : `<div class="tag rise" style="animation-delay:.55s">For VS Code, Windows, macOS and Linux</div>
        <div class="url rise" style="animation-delay:.9s">github.com/AizenvoltPrime/damocles</div>`;
   return `<!doctype html><html><head><style>${FONTS}
   html, body { width: ${CANVAS_W}px; height: ${CANVAS_H}px; overflow: hidden; background: #002b36; }
